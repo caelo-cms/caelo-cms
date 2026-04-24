@@ -1,77 +1,32 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * RLS policy generator applied after every migration.
+ * RLS policy model reference for Caelo.
  *
- * Every table in both databases must have:
- *   - ENABLE ROW LEVEL SECURITY
- *   - FORCE ROW LEVEL SECURITY (so even the table owner is subject to policies)
- *   - at least one policy that references `current_setting('caelo.actor_id', true)`
- *     (cms_admin) or `current_setting('caelo.plugin_id', true)` (cms_public)
+ * As of Phase 1.2, RLS policies live in committed SQL migration files
+ * (9999_rls_policies.sql per database) — schema and policy co-evolve, drift
+ * is caught by the drift check in migrate.ts. This module no longer generates
+ * SQL at runtime; it documents the policy shapes so future phases (P11 plugin
+ * tables, P2 user/role tables, etc.) can follow a known pattern.
  *
- * A NULL / empty session setting yields no matching rows — fail closed.
+ *   Per-actor (cms_admin):
+ *     USING      (<actor_col> = NULLIF(current_setting('caelo.actor_id', true), '')::uuid
+ *                 OR current_setting('caelo.actor_kind', true) = 'system')
+ *     WITH CHECK (same — the `system` bypass must apply to writes too, or seeds
+ *                 and P2 actor creation fail.)
+ *
+ *   Per-plugin (cms_public):
+ *     USING      (<plugin_col> = NULLIF(current_setting('caelo.plugin_id', true), ''))
+ *     WITH CHECK (same)
+ *
+ * `NULLIF(..., '')` is load-bearing: a missing session setting returns empty
+ * string in Postgres (not NULL), and NULLIF normalises it to NULL for
+ * consistent fail-closed semantics — `NULL = anything` is NULL, which RLS
+ * treats as no match.
+ *
+ * Every table in `public` schema must have at least one pg_policies row, or
+ * `migrate.ts`'s drift check fails. Meta tables (`__drizzle_migrations`) get
+ * an open policy so the migration runner can operate normally.
  */
 
-export type RlsScope =
-  | { kind: "per_actor_row"; actorIdColumn: string; systemBypass: boolean }
-  | { kind: "per_plugin_row"; pluginIdColumn: string };
-
-export interface RlsSpec {
-  table: string;
-  scope: RlsScope;
-}
-
-export function buildRlsSql(specs: readonly RlsSpec[]): string {
-  const statements: string[] = [];
-  for (const spec of specs) {
-    statements.push(`ALTER TABLE ${spec.table} ENABLE ROW LEVEL SECURITY;`);
-    statements.push(`ALTER TABLE ${spec.table} FORCE ROW LEVEL SECURITY;`);
-
-    if (spec.scope.kind === "per_actor_row") {
-      const systemBypass = spec.scope.systemBypass
-        ? "OR current_setting('caelo.actor_kind', true) = 'system'"
-        : "";
-      statements.push(
-        `DROP POLICY IF EXISTS ${spec.table}_actor_scope ON ${spec.table};`,
-        `CREATE POLICY ${spec.table}_actor_scope ON ${spec.table}`,
-        `  USING (${spec.scope.actorIdColumn} = NULLIF(current_setting('caelo.actor_id', true), '')::uuid ${systemBypass})`,
-        `  WITH CHECK (${spec.scope.actorIdColumn} = NULLIF(current_setting('caelo.actor_id', true), '')::uuid ${systemBypass});`,
-      );
-    } else {
-      statements.push(
-        `DROP POLICY IF EXISTS ${spec.table}_plugin_scope ON ${spec.table};`,
-        `CREATE POLICY ${spec.table}_plugin_scope ON ${spec.table}`,
-        `  USING (${spec.scope.pluginIdColumn} = NULLIF(current_setting('caelo.plugin_id', true), ''))`,
-        `  WITH CHECK (${spec.scope.pluginIdColumn} = NULLIF(current_setting('caelo.plugin_id', true), ''));`,
-      );
-    }
-  }
-  return `${statements.join("\n")}\n`;
-}
-
-/** cms_admin table policies. */
-export const CMS_ADMIN_RLS: readonly RlsSpec[] = [
-  {
-    table: "actors",
-    // actors are self-owned: an actor row matches when its id equals the current actor.
-    scope: { kind: "per_actor_row", actorIdColumn: "id", systemBypass: true },
-  },
-  {
-    table: "audit_events",
-    scope: { kind: "per_actor_row", actorIdColumn: "actor_id", systemBypass: true },
-  },
-];
-
-/** cms_public table policies. */
-export const CMS_PUBLIC_RLS: readonly RlsSpec[] = [
-  {
-    table: "rls_sentinel",
-    scope: { kind: "per_plugin_row", pluginIdColumn: "plugin_id" },
-  },
-];
-
-/** Grants applied in cms_public after schema creation so public_role can INSERT into declared plugin tables. */
-export const CMS_PUBLIC_GRANTS_SQL = `
-GRANT USAGE ON SCHEMA public TO public_role;
-GRANT SELECT, INSERT ON rls_sentinel TO public_role;
-`;
+export {};

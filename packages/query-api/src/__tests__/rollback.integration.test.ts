@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Transaction rollback integration tests.
- *
- * Two guarantees the adapter must provide:
- *   1. A handler that throws after a partial write rolls back all of its work —
- *      no partial rows persist.
- *   2. A handler that returns `Err(...)` still commits (intentional handler
- *      error is part of normal business flow, not a rollback signal).
- *
- * Also exercises the rate-limit hook stub so P13 can swap in a real limiter
- * without code changes.
+ * Transaction rollback + rate-limit-hook integration tests.
+ *   1. Handler that throws after a partial write rolls back the whole txn.
+ *   2. NULL actor_id fails (NOT NULL + RLS regression anchor).
+ *   3. RateLimiter stub short-circuits the handler when non-null; default
+ *      allow-all limiter is invisible.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -49,8 +44,7 @@ beforeAll(async () => {
       input: z.object({}),
       output: z.object({}),
       handler: async (ctx, _input, tx) => {
-        const txD = tx as unknown as { execute: (s: ReturnType<typeof sql>) => Promise<unknown> };
-        await txD.execute(sql`
+        await tx.execute(sql`
           INSERT INTO audit_events (actor_id, operation, input_hash, succeeded)
           VALUES (${ctx.actorId}::uuid, 'rollback.write_then_throw', 'partial', true)
         `);
@@ -66,13 +60,13 @@ beforeAll(async () => {
       input: z.object({}),
       output: z.object({ count: z.number() }),
       handler: async (_ctx, _input, tx) => {
-        const txD = tx as unknown as { execute: (s: ReturnType<typeof sql>) => Promise<unknown> };
-        const rows = (await txD.execute(
+        const rows = (await tx.execute(
           sql`SELECT count(*)::int as c FROM audit_events WHERE operation = 'rollback.write_then_throw'`,
         )) as unknown as { c: number }[];
         const first = rows[0];
-        if (!first)
+        if (!first) {
           return err({ kind: "HandlerError", operation: "rollback.count_mine", message: "no row" });
+        }
         return ok({ count: first.c });
       },
     }),
@@ -85,10 +79,9 @@ beforeAll(async () => {
       input: z.object({}),
       output: z.object({}),
       handler: async (_ctx, _input, tx) => {
-        const txD = tx as unknown as { execute: (s: ReturnType<typeof sql>) => Promise<unknown> };
-        // NOT NULL + RLS must both reject a NULL actor_id. We cast NULL to uuid so
-        // the type system doesn't catch it — Postgres should.
-        await txD.execute(sql`
+        // NOT NULL + RLS must both reject a NULL actor_id. We cast NULL to uuid
+        // so the type system doesn't catch it — Postgres should.
+        await tx.execute(sql`
           INSERT INTO audit_events (actor_id, operation, input_hash, succeeded)
           VALUES (NULL::uuid, 'rollback.null_actor_id', 'x', true)
         `);
@@ -126,7 +119,7 @@ describe("rate-limit hook", () => {
   it("a limiter that returns RateLimited is honoured and short-circuits the handler", async () => {
     const options: ExecuteOptions = {
       rateLimiter: {
-        async check(_ctx, name) {
+        async check(_c, name) {
           return { kind: "RateLimited", operation: name, retryAfterMs: 250 };
         },
       },
@@ -136,7 +129,7 @@ describe("rate-limit hook", () => {
     if (!result.ok) expect(result.error.kind).toBe("RateLimited");
   });
 
-  it("the default stub limiter allows everything (so P1 callers see no behaviour change)", async () => {
+  it("the default stub limiter allows everything", async () => {
     const result = await execute(registry, adapter, ctx, "rollback.count_mine", {});
     expect(result.ok).toBe(true);
   });

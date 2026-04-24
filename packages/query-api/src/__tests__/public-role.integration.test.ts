@@ -5,8 +5,7 @@
  * the API Gateway actually holds at runtime. The main RLS adversarial matrix
  * runs as admin_role (via PUBLIC_ADMIN_DATABASE_URL) because FORCE RLS catches
  * it either way, but we want at least one end-to-end test on the real role so
- * a future GRANT regression (e.g. accidentally revoking SELECT on a plugin
- * table) is caught here, not in P13 against a live gateway.
+ * a future GRANT regression is caught here, not in P13 against a live gateway.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -41,8 +40,7 @@ beforeAll(async () => {
       input: z.object({ payload: z.string() }),
       output: z.object({}),
       handler: async (ctx, input, tx) => {
-        const txD = tx as unknown as { execute: (s: ReturnType<typeof sql>) => Promise<unknown> };
-        await txD.execute(sql`
+        await tx.execute(sql`
           INSERT INTO rls_sentinel (plugin_id, payload) VALUES (${ctx.pluginId ?? ""}, ${input.payload})
         `);
         return ok({});
@@ -57,8 +55,7 @@ beforeAll(async () => {
       input: z.object({}),
       output: z.object({ count: z.number() }),
       handler: async (_ctx, _input, tx) => {
-        const txD = tx as unknown as { execute: (s: ReturnType<typeof sql>) => Promise<unknown> };
-        const rows = (await txD.execute(
+        const rows = (await tx.execute(
           sql`SELECT count(*)::int as c FROM rls_sentinel`,
         )) as unknown as { c: number }[];
         return ok({ count: rows[0]?.c ?? 0 });
@@ -68,10 +65,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // Clean up any rows this test inserted. public_role has INSERT + SELECT on
-  // rls_sentinel but DELETE is admin-only, and the adapter's admin pool targets
-  // cms_admin — so open a dedicated admin_role-on-cms_public connection just for
-  // this teardown.
+  // public_role has INSERT + SELECT on rls_sentinel but not DELETE. Clean up
+  // via a dedicated admin_role-on-cms_public connection.
   const admin = new SQL(PUBLIC_ADMIN_URL);
   try {
     await admin.unsafe(`DELETE FROM rls_sentinel WHERE plugin_id = 'public_role_test'`);

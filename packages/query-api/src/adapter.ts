@@ -5,19 +5,32 @@ import { err } from "@caelo/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
-import type { QueryError } from "./errors.js";
-import { isRlsDenial } from "./errors.js";
-import type { OperationDefinition, TransactionRunner } from "./operation.js";
+import { isRlsDenial, type QueryError } from "./errors.js";
+import type { OperationDefinition } from "./operation.js";
 
 /**
  * Two connection pools per process — one per PostgreSQL role. Application code
- * never mixes roles in a single query. The admin pool sees `cms_admin` only,
- * the public pool sees `cms_public` only. Declared at adapter-construction time;
- * never swapped at runtime (swapping a role mid-flight would break RLS intent).
+ * never mixes roles in a single query. The admin pool targets `cms_admin` (the
+ * authoring database, connected as `admin_role`); the public pool targets
+ * `cms_public` and is expected to connect as either `public_role` (API
+ * Gateway runtime path) or `admin_role` (admin-side reads of plugin data for
+ * moderation + migrations).
+ *
+ * The adapter verifies role + database identity on first use via
+ * `current_user` / `current_database()` — misconfiguration (e.g. a typo that
+ * swaps the two URLs) fails loudly rather than allowing the RLS model to
+ * silently misbehave.
  */
 export interface AdapterConfig {
   readonly adminDatabaseUrl: string;
   readonly publicDatabaseUrl: string;
+  /** Disable the startup self-check. Only for tests that deliberately assert it triggers. */
+  readonly skipRoleVerification?: boolean;
+}
+
+interface ConnectionIdentity {
+  readonly user: string;
+  readonly database: string;
 }
 
 export class DatabaseAdapter {
@@ -25,38 +38,85 @@ export class DatabaseAdapter {
   readonly #public: BunSQLDatabase;
   readonly #adminRaw: SQL;
   readonly #publicRaw: SQL;
+  readonly #skipVerify: boolean;
+  #verifyPromise: Promise<void> | null = null;
 
   constructor(config: AdapterConfig) {
     this.#adminRaw = new SQL(config.adminDatabaseUrl);
     this.#publicRaw = new SQL(config.publicDatabaseUrl);
     this.#admin = drizzle(this.#adminRaw);
     this.#public = drizzle(this.#publicRaw);
+    this.#skipVerify = config.skipRoleVerification === true;
+  }
+
+  /**
+   * One-shot startup self-check. Asserts that:
+   *   - the admin pool connects as `admin_role` to `cms_admin`
+   *   - the public pool connects to `cms_public` as `admin_role` or `public_role`
+   *
+   * Memoised — runs once and remembers. Exposed as a public method so callers
+   * can fail-fast on startup instead of at first op. Also runs automatically
+   * before the first `runOperation()` unless `skipRoleVerification` is set.
+   */
+  verifyRoles(): Promise<void> {
+    // Not `async` on purpose — we return the cached Promise *reference* so a
+    // second call === the first; `async` would wrap it in a fresh Promise and
+    // break that identity.
+    if (this.#verifyPromise !== null) return this.#verifyPromise;
+    this.#verifyPromise = this.#verifyRolesOnce();
+    return this.#verifyPromise;
+  }
+
+  async #verifyRolesOnce(): Promise<void> {
+    const admin = await this.#identity(this.#adminRaw);
+    if (admin.user !== "admin_role" || admin.database !== "cms_admin") {
+      throw new Error(
+        `DatabaseAdapter admin pool expected (admin_role, cms_admin) but connected as (${admin.user}, ${admin.database}). Check ADMIN_DATABASE_URL.`,
+      );
+    }
+    const pub = await this.#identity(this.#publicRaw);
+    if (pub.database !== "cms_public") {
+      throw new Error(
+        `DatabaseAdapter public pool expected database cms_public but connected to ${pub.database}. Check PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL.`,
+      );
+    }
+    if (pub.user !== "admin_role" && pub.user !== "public_role") {
+      throw new Error(
+        `DatabaseAdapter public pool expected user admin_role or public_role, got ${pub.user}.`,
+      );
+    }
+  }
+
+  async #identity(pool: SQL): Promise<ConnectionIdentity> {
+    const rows =
+      (await pool`SELECT current_user::text AS user, current_database()::text AS database`) as unknown as ConnectionIdentity[];
+    const row = rows[0];
+    if (!row) throw new Error("connection identity probe returned no row");
+    return row;
   }
 
   /**
    * Execute an operation inside a transaction scoped to the caller's identity.
-   * The `SET LOCAL` session vars make the RLS policies observable via
-   * `current_setting('caelo.actor_id', true)` etc. Rollback on handler failure
-   * undoes both the data writes and the session settings.
+   * Session vars are set via `set_config(name, value, true)` (parameterised) so
+   * there is no string interpolation at the SQL boundary.
    */
   async runOperation<I, O>(
     op: OperationDefinition<I, O>,
     ctx: ExecutionContext,
     validatedInput: I,
   ): Promise<Result<O, QueryError>> {
+    if (!this.#skipVerify) await this.verifyRoles();
+
     const db = op.database === "cms_admin" ? this.#admin : this.#public;
 
     try {
-      const result = await db.transaction(async (tx) => {
-        await tx.execute(sql.raw(`SET LOCAL caelo.actor_id = '${sanitize(ctx.actorId)}'`));
-        await tx.execute(sql.raw(`SET LOCAL caelo.actor_kind = '${sanitize(ctx.actorKind)}'`));
-        const pluginSetting = ctx.pluginId ? sanitize(ctx.pluginId) : "";
-        await tx.execute(sql.raw(`SET LOCAL caelo.plugin_id = '${pluginSetting}'`));
+      return await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
+        await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
+        await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
 
-        const runner = tx as unknown as TransactionRunner;
-        return await op.handler(ctx, validatedInput, runner);
+        return await op.handler(ctx, validatedInput, tx);
       });
-      return result;
     } catch (thrown) {
       if (isRlsDenial(thrown)) {
         return err({
@@ -85,25 +145,10 @@ export class DatabaseAdapter {
     return this.#publicRaw;
   }
 
-  // Narrow re-exports for handlers that want typed drizzle query builders.
   get admin(): BunSQLDatabase {
     return this.#admin;
   }
   get public(): BunSQLDatabase {
     return this.#public;
   }
-}
-
-/**
- * Defence-in-depth: we only accept session-var values that are safe characters.
- * The inputs come from our own `ExecutionContext` so they should already be
- * UUIDs / enum strings / plugin ids, but cheap guard for a critical invariant.
- */
-function sanitize(value: string): string {
-  if (!/^[A-Za-z0-9_\-.:@]*$/.test(value)) {
-    throw new Error(
-      `refusing to SET LOCAL with unsafe characters in value: ${JSON.stringify(value)}`,
-    );
-  }
-  return value;
 }

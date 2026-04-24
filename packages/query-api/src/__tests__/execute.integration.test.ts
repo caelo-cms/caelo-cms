@@ -3,8 +3,7 @@
 /**
  * Integration test: happy-path round-trip through the whole Query API stack
  * against a real PostgreSQL instance. Requires the compose stack to be running
- * and migrations applied. Tests that were intended to exercise RLS live in
- * rls.integration.test.ts; the role leak check lives in role-isolation.integration.test.ts.
+ * and migrations applied.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -38,20 +37,22 @@ beforeAll(async () => {
       name: "test.audit.record",
       actorScope: ["human", "system"],
       database: "cms_admin",
-      input: z.object({ operation: z.string(), inputHash: z.string(), succeeded: z.boolean() }),
+      input: z.object({
+        operation: z.string(),
+        inputHash: z.string(),
+        succeeded: z.boolean(),
+      }),
       output: z.object({ id: z.string() }),
       handler: async (ctx, input, tx) => {
-        const txAsDrizzle = tx as unknown as {
-          execute: (s: ReturnType<typeof sql>) => Promise<unknown>;
-        };
-        const resultSet = (await txAsDrizzle.execute(sql`
+        const rows = (await tx.execute(sql`
           INSERT INTO audit_events (actor_id, operation, input_hash, succeeded)
           VALUES (${ctx.actorId}::uuid, ${input.operation}, ${input.inputHash}, ${input.succeeded})
           RETURNING id
         `)) as unknown as { id: string }[];
-        const first = resultSet[0];
-        if (!first)
+        const first = rows[0];
+        if (!first) {
           return err({ kind: "HandlerError", operation: "test.audit.record", message: "no row" });
+        }
         return ok({ id: first.id });
       },
     }),

@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { ActorKind, ExecutionContext, Result } from "@caelo/shared";
+import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type { z } from "zod";
 import type { QueryError } from "./errors.js";
 
 /**
- * `TransactionRunner` is the injected DB surface inside a handler. It wraps a
- * drizzle transaction that already has `SET LOCAL caelo.actor_id / actor_kind /
- * plugin_id` applied, so every query runs under the caller's identity with RLS
- * policies live. Exact shape is filled in by the Adapter at runtime — handlers
- * see an opaque handle they pass to drizzle query builders.
+ * The database handle a handler receives. We extract it directly from
+ * drizzle's `BunSQLDatabase.transaction` signature so `handler` bodies get
+ * full typing on `tx.execute(sql`...`)`, `tx.select()`, etc. — no branded
+ * placeholder, no `as unknown as` casts. The transaction is already wrapped
+ * in `set_config('caelo.actor_id' / 'actor_kind' / 'plugin_id', ..., true)`
+ * by the Adapter so RLS policies evaluate under the caller's identity.
+ *
+ * No schema generic is carried here — handlers use the `sql` template tag
+ * for ad-hoc queries in P1. P3+ (which introduces drizzle schema objects)
+ * can introduce a schema-aware variant if needed.
  */
-export interface TransactionRunner {
-  readonly __brand: "TransactionRunner";
-}
+export type TransactionRunner = Parameters<Parameters<BunSQLDatabase["transaction"]>[0]>[0];
 
 export type OperationHandler<I, O> = (
   ctx: ExecutionContext,
