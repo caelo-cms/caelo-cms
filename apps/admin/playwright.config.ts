@@ -9,6 +9,10 @@ import { defineConfig } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./e2e",
+  // Custom glob — file ends with `.browser.ts` so Bun's default test runner
+  // (which matches `*.test.ts` / `*.spec.ts`) doesn't pick these up during
+  // `bun test` in the unit/integration job.
+  testMatch: "**/*.browser.ts",
   timeout: 30_000,
   fullyParallel: false,
   forbidOnly: !!process.env["CI"],
