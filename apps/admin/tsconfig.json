@@ -7,5 +7,13 @@
     "noEmit": false
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../../packages/shared" }, { "path": "../../packages/query-api" }]
+  "references": [
+    {
+      "path": "../../packages/shared"
+    },
+    {
+      "path": "../../packages/query-api"
+    }
+  ],
+  "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]
 }

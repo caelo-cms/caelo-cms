@@ -85,6 +85,7 @@ These cannot be violated by any change, AI-generated or human:
 - **Three-tier test strategy, enforced per phase** — see the Testing Strategy Matrix in the master plan. Every phase declares (a) unit tests covering its pure logic and Zod schemas, (b) integration tests covering its Query API ops / Validator rules / Adapter behaviour against a real Postgres, (c) Playwright E2E flows covering its user-visible behaviour.
 - **Coverage gates in CI:** unit ≥ 90%, integration ≥ 80% of declared Query API ops, E2E: every verification-table row has a Playwright script that encodes it and CI fails if any are missing.
 - **Every bug fix lands with a regression test** that would have caught it — same tier as the bug (unit/integration/E2E).
+- **Tests run under `bun test`** — Bun's native test runner. Import `describe` / `it` / `expect` / etc. from `bun:test`. Do not add Vitest (or Jest) back — we deliberately standardised on Bun to cut the dep tree and match contributor instinct. Coverage: `bun test --coverage`.
 - **No mocked PostgreSQL for Query API tests** — run against a real Postgres in the compose stack. Mocks diverge from prod; we've committed to two real databases, tests exercise both.
 - **Playwright runs against the real compose stack**, not a dev server in isolation. Every phase adding a screen adds a Playwright flow.
 - **Plugin sandbox tests include adversarial cases** — attempts to escape the sandbox must be in the test suite and must fail.

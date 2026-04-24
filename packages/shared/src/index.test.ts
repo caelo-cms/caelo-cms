@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { PROJECT_NAME } from "./index.js";
 
 describe("shared scaffold", () => {

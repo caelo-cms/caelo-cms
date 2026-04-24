@@ -7,17 +7,49 @@ on:
     branches: [main]
 
 jobs:
+  lockfile:
+    name: Lockfile freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install without frozen lockfile
+        run: bun install
+
+      - name: Assert lockfile is up to date
+        run: |
+          if ! git diff --exit-code -- bun.lock package.json apps/*/package.json packages/*/package.json; then
+            echo ""
+            echo "::error::bun.lock is out of date with package.json files."
+            echo "::error::Run 'bun install' locally and commit the resulting bun.lock."
+            exit 1
+          fi
+
   check:
-    name: Typecheck, Lint, Test
+    name: Lint, Typecheck, Test, License
+    needs: lockfile
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    env:
+      POSTGRES_USER: caelo
+      POSTGRES_PASSWORD: caelo_ci
+      POSTGRES_DB: postgres
+      POSTGRES_PORT: 5432
+      DATABASE_URL: postgres://caelo:caelo_ci@localhost:5432/postgres
 
     services:
       postgres:
         image: postgres:17-alpine
         env:
           POSTGRES_USER: caelo
-          POSTGRES_PASSWORD: caelo_dev
+          POSTGRES_PASSWORD: caelo_ci
           POSTGRES_DB: postgres
         ports:
           - 5432:5432
@@ -35,7 +67,7 @@ jobs:
         with:
           bun-version: 1.3.13
 
-      - name: Install dependencies
+      - name: Install dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
 
       - name: Lint
@@ -45,6 +77,7 @@ jobs:
         run: bun run typecheck
 
       - name: Test
-        run: bun run test
-        env:
-          DATABASE_URL: postgres://caelo:caelo_dev@localhost:5432/postgres
+        run: bun test
+
+      - name: License check (MPL-2.0 compatibility)
+        run: bun run license:check

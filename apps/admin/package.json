@@ -5,7 +5,7 @@
   "license": "MPL-2.0",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc -b"
   },
   "dependencies": {
     "@caelo/query-api": "workspace:*",

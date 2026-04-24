@@ -10,15 +10,17 @@ Initialise the Bun monorepo with TypeScript (strict), Biome, Zod, Vitest, a root
 ## End-to-end verification
 `bun install && docker compose up -d && bun test` green on empty scaffold.
 
-## Versions pinned (verified against npm registry at time of scaffold)
+## Versions pinned (verified against npm registry, latest confirmed working)
 
 | Tool | Version | Source |
 |---|---|---|
 | Bun (runtime + package manager) | 1.3.13 | github.com/oven-sh/bun latest release |
-| TypeScript | 5.9.3 | npm registry (5.x chosen for tooling-compat stability; 6.x is on `latest` but we keep to 5.x until Biome/@types/bun confirm support) |
+| TypeScript | 6.0.3 | npm registry `latest` (verified compatible with Biome 2.4.13 + `@types/bun` 1.3.13 + project-references build) |
 | @biomejs/biome | 2.4.13 | npm registry `latest` |
 | Zod | 4.3.6 | npm registry `latest` |
 | Vitest | 4.1.5 | npm registry `latest` |
+| @types/bun | 1.3.13 | npm registry `latest` |
+| license-checker-rseidelsohn | 4.4.2 | npm registry `latest` (Apache-2.0) |
 | PostgreSQL image | `postgres:17-alpine` | Docker Hub |
 
 ## Files created
@@ -75,13 +77,23 @@ All three commands should pass. The GitHub Actions workflow in `.github/workflow
 
 | Check | Result |
 |---|---|
-| `bun install` | 106 packages installed, clean lockfile |
-| `docker compose up -d` | `caelo-postgres` healthy on :5432 |
+| `bun install` | 140 packages installed, clean lockfile |
+| `docker compose up -d` | `caelo-postgres` healthy on :5432 via `env_file` |
 | `bun run lint` | 27 files checked, 0 issues |
-| `bun run typecheck` | all 7 workspaces pass |
-| `bun run test` | 1 file / 1 test passing (the shared-scaffold smoke test) |
+| `bun run typecheck` | `tsc -b` clean across all 7 workspace project references |
+| `bun run test` | 1 file / 1 test passing |
+| `bun run license:check` | all transitive deps on the MPL-2.0-compatible allowlist |
 
-Two small fixes were needed during first-run verification and are recorded for any future regeneration:
+## Hardening pass (applied 2026-04-24)
+
+Four follow-ups that should not wait for P1:
+
+1. **Secrets hygiene.** `docker-compose.yml` no longer hardcodes credentials — all three Postgres env vars (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`) come from `.env` via `env_file`. `.env.example` is committed as the template; `.env` is gitignored (`!.env.example` negation keeps the template visible). CI workflow sets the same variables inline under `env:` since CI test creds are workflow-scoped, not committed secrets.
+2. **Project references are now functional.** Root `typecheck` is `tsc -b` using the solution `tsconfig.json` + per-workspace `composite` projects. Incremental build caching via `.tsbuildinfo` (gitignored). Per-workspace `typecheck` scripts are `tsc -b` too so `cd packages/shared && bun run typecheck` also builds incrementally.
+3. **License check runs in CI.** New `license:check` script runs `license-checker-rseidelsohn` against the production dep tree with an `--onlyAllow` allowlist of MPL-2.0-compatible licenses (MPL-2.0, Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0, Unlicense, Python-2.0, BlueOak-1.0.0). CI step added after test. A GPL/AGPL/SSPL dep will fail the job mechanically — no reviewer-trust required.
+4. **TypeScript 6.0.3.** Bumped from 5.9.3 — verified compatible with Biome 2.4.13, `@types/bun` 1.3.13, and project-references build mode.
+
+Two small scaffold fixes recorded for any future regeneration:
 
 - Biome 2.2+ dropped the trailing `/**` in folder-ignore globs — patterns are now `!**/dist` not `!**/dist/**`.
 - Internal relative test imports must use `./index.js` (or no extension), not `./index.ts`, unless `allowImportingTsExtensions` is enabled — we keep it disabled so emitted declarations resolve cleanly.
@@ -91,4 +103,3 @@ Two small fixes were needed during first-run verification and are recorded for a
 - `packages/migrations/` is empty by design — migration tooling choice (drizzle-kit vs Atlas) is a P1 decision.
 - `apps/admin/` is a stub; SvelteKit + svelte-adapter-bun install is a P2 task.
 - `apps/static-generator/` is a stub; Astro install is a P6 task.
-- TypeScript is pinned to 5.9.3 pending Biome 2.x / `@types/bun` confirmation of 6.x compat — revisit before P1 starts (npm shows 6.0.3 on `latest`).
