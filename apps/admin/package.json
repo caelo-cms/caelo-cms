@@ -7,9 +7,9 @@
   "scripts": {
     "sync": "svelte-kit sync",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig tsconfig.json && tsc --noEmit",
-    "dev": "svelte-kit sync && vite dev",
-    "build": "svelte-kit sync && vite build",
-    "preview": "vite preview",
+    "dev": "svelte-kit sync && bun --bun vite dev",
+    "build": "svelte-kit sync && bun --bun vite build",
+    "preview": "bun --bun vite preview",
     "e2e": "playwright test"
   },
   "dependencies": {
