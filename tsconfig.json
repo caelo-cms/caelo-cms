@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/query-api" },
+    { "path": "./packages/plugin-sdk" },
+    { "path": "./packages/provisioning" },
+    { "path": "./apps/admin" },
+    { "path": "./apps/api-gateway" },
+    { "path": "./apps/static-generator" }
+  ]
+}

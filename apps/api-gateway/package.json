@@ -1,0 +1,14 @@
+{
+  "name": "@caelo/api-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MPL-2.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@caelo/query-api": "workspace:*",
+    "@caelo/shared": "workspace:*"
+  }
+}
