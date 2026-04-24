@@ -7,6 +7,7 @@
   "references": [
     { "path": "./packages/shared" },
     { "path": "./packages/query-api" },
+    { "path": "./packages/admin-core" },
     { "path": "./packages/plugin-sdk" },
     { "path": "./packages/provisioning" },
     { "path": "./packages/migrations" },

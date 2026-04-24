@@ -5,10 +5,22 @@
   "license": "MPL-2.0",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc -b"
+    "sync": "svelte-kit sync",
+    "typecheck": "svelte-kit sync && tsc --noEmit",
+    "dev": "svelte-kit sync && vite dev",
+    "build": "svelte-kit sync && vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
+    "@caelo/admin-core": "workspace:*",
     "@caelo/query-api": "workspace:*",
     "@caelo/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@sveltejs/kit": "2.58.0",
+    "@sveltejs/vite-plugin-svelte": "7.0.0",
+    "svelte": "5.55.5",
+    "svelte-adapter-bun": "1.0.1",
+    "vite": "8.0.10"
   }
 }

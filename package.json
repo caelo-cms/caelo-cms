@@ -10,7 +10,7 @@
     "packages/*"
   ],
   "scripts": {
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && bun run --filter=@caelo/admin typecheck",
     "typecheck:clean": "tsc -b --clean",
     "test": "bun test",
     "lint": "biome check .",

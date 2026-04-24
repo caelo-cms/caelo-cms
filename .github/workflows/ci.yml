@@ -88,6 +88,9 @@ jobs:
           chmod +x packages/migrations/src/bootstrap.sh
           packages/migrations/src/bootstrap.sh
 
+      - name: Sync SvelteKit types (generates .svelte-kit/types for the admin app)
+        run: bun run --filter=@caelo/admin sync
+
       - name: Lint
         run: bun run lint
 
