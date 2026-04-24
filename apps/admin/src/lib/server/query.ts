@@ -20,8 +20,7 @@ function ensure(): { adapter: DatabaseAdapter; registry: OperationRegistry } {
   if (_adapter && _registry) return { adapter: _adapter, registry: _registry };
 
   const adminUrl = process.env["ADMIN_DATABASE_URL"];
-  const publicUrl =
-    process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? process.env["PUBLIC_DATABASE_URL"];
+  const publicUrl = process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? process.env["PUBLIC_DATABASE_URL"];
   if (!adminUrl) throw new Error("ADMIN_DATABASE_URL is required");
   if (!publicUrl) {
     throw new Error("PUBLIC_ADMIN_DATABASE_URL or PUBLIC_DATABASE_URL is required");
