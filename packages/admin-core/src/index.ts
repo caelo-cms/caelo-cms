@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+export * from "./audit.js";
 export * from "./ops/auth.js";
 export * from "./ops/roles.js";
 export * from "./ops/users.js";

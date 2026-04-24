@@ -4,6 +4,7 @@ import { defineOperation } from "@caelo/query-api";
 import { err, ok } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { recordAudit } from "../audit.js";
 import { PERMISSIONS, type Permission } from "../permissions.js";
 
 const PermissionEnum = z.enum(
@@ -61,8 +62,14 @@ export const createRoleOp = defineOperation({
     permissions: z.array(PermissionEnum).default([]),
   }),
   output: z.object({ roleId: z.string() }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     if (input.name === "owner" || input.name === "editor" || input.name === "reviewer") {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        operation: "roles.create",
+        input,
+        succeeded: false,
+      });
       return err({
         kind: "HandlerError",
         operation: "roles.create",
@@ -86,6 +93,12 @@ export const createRoleOp = defineOperation({
         `);
       }
     }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "roles.create",
+      input,
+      succeeded: true,
+    });
     return ok({ roleId });
   },
 });
@@ -96,7 +109,7 @@ export const deleteRoleOp = defineOperation({
   database: "cms_admin",
   input: z.object({ roleId: z.string() }),
   output: z.object({}),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT is_builtin FROM roles WHERE id = ${input.roleId}::uuid
     `)) as unknown as { is_builtin: boolean }[];
@@ -105,6 +118,12 @@ export const deleteRoleOp = defineOperation({
       return err({ kind: "HandlerError", operation: "roles.delete", message: "role not found" });
     }
     if (target.is_builtin) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        operation: "roles.delete",
+        input,
+        succeeded: false,
+      });
       return err({
         kind: "HandlerError",
         operation: "roles.delete",
@@ -112,6 +131,12 @@ export const deleteRoleOp = defineOperation({
       });
     }
     await tx.execute(sql`DELETE FROM roles WHERE id = ${input.roleId}::uuid`);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "roles.delete",
+      input,
+      succeeded: true,
+    });
     return ok({});
   },
 });
@@ -125,7 +150,7 @@ export const updateRolePermissionsOp = defineOperation({
     permissions: z.array(PermissionEnum),
   }),
   output: z.object({}),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     await tx.execute(sql`DELETE FROM role_permissions WHERE role_id = ${input.roleId}::uuid`);
     for (const perm of input.permissions) {
       await tx.execute(sql`
@@ -133,6 +158,12 @@ export const updateRolePermissionsOp = defineOperation({
         SELECT ${input.roleId}::uuid, p.id FROM permissions p WHERE p.name = ${perm}
       `);
     }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "roles.update_permissions",
+      input,
+      succeeded: true,
+    });
     return ok({});
   },
 });

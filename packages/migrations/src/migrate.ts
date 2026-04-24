@@ -73,10 +73,18 @@ async function runMigrations(sql: SQL, dir: string): Promise<void> {
       .split("--> statement-breakpoint")
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
-    for (const stmt of statements) {
-      await sql.unsafe(stmt);
-    }
-    await sql`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (${hash}, ${Date.now()})`;
+
+    // Run each migration inside a transaction with SET LOCAL caelo.actor_kind = 'system'
+    // so seed INSERTs can write to RLS-`FORCE`d tables (actors, audit_events, etc.).
+    // CREATE DATABASE isn't in migrations — those are handled by bootstrap.sh — so
+    // it's safe to wrap everything in BEGIN/COMMIT here.
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      for (const stmt of statements) {
+        await tx.unsafe(stmt);
+      }
+      await tx`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (${hash}, ${Date.now()})`;
+    });
     console.log(`applied: ${hash}`);
   }
 }

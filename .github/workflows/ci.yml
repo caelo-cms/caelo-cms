@@ -105,3 +105,68 @@ jobs:
 
       - name: License check (MPL-2.0 compatibility)
         run: bun run license:check
+
+  e2e:
+    name: Playwright E2E (admin shell smoke)
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      POSTGRES_USER: caelo
+      POSTGRES_PASSWORD: caelo_ci
+      POSTGRES_DB: postgres
+      POSTGRES_PORT: 5432
+      ADMIN_ROLE_PASSWORD: caelo_admin_ci
+      PUBLIC_ROLE_PASSWORD: caelo_public_ci
+      ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_admin
+      PUBLIC_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_public
+      PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_ci@localhost:5432/cms_public
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: caelo
+          POSTGRES_PASSWORD: caelo_ci
+          POSTGRES_DB: postgres
+          ADMIN_ROLE_PASSWORD: caelo_admin_ci
+          PUBLIC_ROLE_PASSWORD: caelo_public_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U caelo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Bootstrap databases
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        run: |
+          chmod +x packages/migrations/src/bootstrap.sh
+          packages/migrations/src/bootstrap.sh
+
+      - name: Run migrations
+        run: bun run db:migrate
+
+      - name: Install Playwright chromium
+        run: bun x playwright install chromium --with-deps
+        working-directory: apps/admin
+
+      - name: Run Playwright smoke tests
+        run: bun run e2e
+        working-directory: apps/admin

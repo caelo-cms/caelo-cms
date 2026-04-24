@@ -4,7 +4,7 @@
 </script>
 
 <nav>
-  <a href="/">← Dashboard</a>
+  <a href="/security">← Security</a>
 </nav>
 
 <h1>Roles</h1>
@@ -24,6 +24,7 @@
       <small>Permissions: {role.permissions.join(", ") || "(none)"}</small>
       {#if !role.isBuiltin}
         <form method="post" action="?/delete" style="display: inline">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
           <input type="hidden" name="roleId" value={role.id} />
           <button type="submit">Delete</button>
         </form>
@@ -34,6 +35,7 @@
 
 <h2>Create a custom role</h2>
 <form method="post" action="?/create">
+  <input type="hidden" name="_csrf" value={data.csrfToken} />
   <label>
     Name (lowercase, digits, _ or -)
     <input name="name" type="text" required pattern="[a-z][a-z0-9_-]*" />

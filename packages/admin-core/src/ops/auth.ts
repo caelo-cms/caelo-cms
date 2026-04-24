@@ -4,14 +4,10 @@ import { defineOperation } from "@caelo/query-api";
 import { err, ok } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { recordAudit, SYSTEM_ACTOR_ID } from "../audit.js";
 import { verifyPassword } from "../password.js";
 import { generateCsrfToken, generateSessionToken, SESSION_TTL_MS } from "../tokens.js";
 
-/**
- * Exchange an email + password for a fresh session. Runs as `system` because
- * the caller has no identity yet; the Validator's actor-scope check means only
- * unauthenticated app routes can invoke this op.
- */
 export const loginOp = defineOperation({
   name: "auth.login",
   actorScope: ["system"],
@@ -25,18 +21,22 @@ export const loginOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT u.id AS id, u.password_hash AS password_hash
+      SELECT u.id::text AS id, u.password_hash AS password_hash
       FROM users u
       WHERE u.email = ${input.email}
       LIMIT 1
     `)) as unknown as { id: string; password_hash: string }[];
     const user = rows[0];
 
-    // Verify regardless of whether the user exists — same time cost on either
-    // branch, so an attacker can't enumerate valid emails via response timing.
-    // We still reveal "invalid credentials" uniformly.
-    const ok_ = user ? await verifyPassword(input.password, user.password_hash) : false;
-    if (!user || !ok_) {
+    const passwordOk = user ? await verifyPassword(input.password, user.password_hash) : false;
+
+    if (!user || !passwordOk) {
+      await recordAudit(tx, {
+        actorId: SYSTEM_ACTOR_ID,
+        operation: "auth.login",
+        input,
+        succeeded: false,
+      });
       return err({
         kind: "HandlerError",
         operation: "auth.login",
@@ -48,22 +48,22 @@ export const loginOp = defineOperation({
     const csrfToken = generateCsrfToken();
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
 
-    // Sweep expired sessions for this user opportunistically.
     await tx.execute(
       sql`DELETE FROM sessions WHERE user_id = ${user.id}::uuid AND expires_at < now()`,
     );
-
     await tx.execute(sql`
       INSERT INTO sessions (token, user_id, csrf_token, expires_at)
       VALUES (${token}, ${user.id}::uuid, ${csrfToken}, ${expiresAt.toISOString()})
     `);
 
-    return ok({
-      userId: user.id,
-      token,
-      csrfToken,
-      expiresAt: expiresAt.toISOString(),
+    await recordAudit(tx, {
+      actorId: user.id,
+      operation: "auth.login",
+      input,
+      succeeded: true,
     });
+
+    return ok({ userId: user.id, token, csrfToken, expiresAt: expiresAt.toISOString() });
   },
 });
 
@@ -73,17 +73,18 @@ export const logoutOp = defineOperation({
   database: "cms_admin",
   input: z.object({ token: z.string() }),
   output: z.object({}),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     await tx.execute(sql`DELETE FROM sessions WHERE token = ${input.token}`);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "auth.logout",
+      input,
+      succeeded: true,
+    });
     return ok({});
   },
 });
 
-/**
- * Look up a session by token → returns the user and the permission grants
- * implied by their roles. Invoked by the hooks.server.ts middleware on every
- * request to establish the per-request `ExecutionContext`.
- */
 export const resolveSessionOp = defineOperation({
   name: "auth.resolve_session",
   actorScope: ["system"],
@@ -99,7 +100,7 @@ export const resolveSessionOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT s.user_id AS user_id,
+      SELECT s.user_id::text AS user_id,
              u.email AS email,
              s.csrf_token AS csrf_token,
              s.expires_at AS expires_at
@@ -133,8 +134,7 @@ export const resolveSessionOp = defineOperation({
 
     const roleRows = (await tx.execute(sql`
       SELECT r.name AS name
-      FROM user_roles ur
-      JOIN roles r ON r.id = ur.role_id
+      FROM user_roles ur JOIN roles r ON r.id = ur.role_id
       WHERE ur.user_id = ${row.user_id}::uuid
     `)) as unknown as { name: string }[];
 

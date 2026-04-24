@@ -4,13 +4,13 @@ import { defineOperation } from "@caelo/query-api";
 import { err, ok } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { recordAudit, SYSTEM_ACTOR_ID } from "../audit.js";
 import { hashPassword } from "../password.js";
 
 /**
- * First-run owner bootstrap. Succeeds only when zero users exist; any
- * subsequent call returns `Err('HandlerError')`. Creates the `actors` row
- * first, then the `users` row linked to it, then assigns the built-in
- * `owner` role.
+ * First-run owner bootstrap. Serialised via `pg_advisory_xact_lock` so two
+ * concurrent setup POSTs can't both pass the guard under the default READ
+ * COMMITTED isolation.
  */
 export const createFirstOwnerOp = defineOperation({
   name: "users.create_first_owner",
@@ -23,10 +23,20 @@ export const createFirstOwnerOp = defineOperation({
   }),
   output: z.object({ userId: z.string() }),
   handler: async (_ctx, input, tx) => {
+    // Advisory lock keyed on a fixed integer ("setup"). Held for the tx; two
+    // concurrent callers serialise so only one observes "no users yet".
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(736578)`);
+
     const existing = (await tx.execute(sql`SELECT 1 AS exists FROM users LIMIT 1`)) as unknown as {
       exists: number;
     }[];
     if (existing.length > 0) {
+      await recordAudit(tx, {
+        actorId: SYSTEM_ACTOR_ID,
+        operation: "users.create_first_owner",
+        input,
+        succeeded: false,
+      });
       return err({
         kind: "HandlerError",
         operation: "users.create_first_owner",
@@ -39,7 +49,7 @@ export const createFirstOwnerOp = defineOperation({
     const actorRows = (await tx.execute(sql`
       INSERT INTO actors (kind, display_name)
       VALUES ('human', ${input.displayName})
-      RETURNING id
+      RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const actorId = actorRows[0]?.id;
     if (!actorId) {
@@ -54,20 +64,21 @@ export const createFirstOwnerOp = defineOperation({
       INSERT INTO users (id, email, password_hash, is_first_owner)
       VALUES (${actorId}::uuid, ${input.email}, ${passwordHash}, true)
     `);
-
     await tx.execute(sql`
       INSERT INTO user_roles (user_id, role_id)
       SELECT ${actorId}::uuid, r.id FROM roles r WHERE r.name = 'owner'
     `);
 
+    await recordAudit(tx, {
+      actorId: SYSTEM_ACTOR_ID,
+      operation: "users.create_first_owner",
+      input,
+      succeeded: true,
+    });
     return ok({ userId: actorId });
   },
 });
 
-/**
- * Read-only flag used by the `/setup` route to decide whether to render the
- * owner-creation form or redirect to `/login`.
- */
 export const isSetupCompleteOp = defineOperation({
   name: "users.is_setup_complete",
   actorScope: ["system"],
@@ -79,5 +90,188 @@ export const isSetupCompleteOp = defineOperation({
       sql`SELECT EXISTS(SELECT 1 FROM users) AS complete`,
     )) as unknown as { complete: boolean }[];
     return ok({ complete: rows[0]?.complete ?? false });
+  },
+});
+
+export const listUsersOp = defineOperation({
+  name: "users.list",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({}),
+  output: z.object({
+    users: z.array(
+      z.object({
+        id: z.string(),
+        email: z.string(),
+        displayName: z.string(),
+        isFirstOwner: z.boolean(),
+        createdAt: z.string(),
+        roles: z.array(z.string()),
+      }),
+    ),
+  }),
+  handler: async (_ctx, _input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT u.id::text AS id,
+             u.email AS email,
+             a.display_name AS "displayName",
+             u.is_first_owner AS "isFirstOwner",
+             u.created_at AS "createdAt"
+      FROM users u JOIN actors a ON a.id = u.id
+      ORDER BY u.created_at ASC
+    `)) as unknown as {
+      id: string;
+      email: string;
+      displayName: string;
+      isFirstOwner: boolean;
+      createdAt: string | Date;
+    }[];
+    const roleRows = (await tx.execute(sql`
+      SELECT ur.user_id::text AS user_id, r.name AS role
+      FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+    `)) as unknown as { user_id: string; role: string }[];
+    const roles = new Map<string, string[]>();
+    for (const r of roleRows) {
+      const arr = roles.get(r.user_id) ?? [];
+      arr.push(r.role);
+      roles.set(r.user_id, arr);
+    }
+    return ok({
+      users: rows.map((u) => ({
+        ...u,
+        createdAt: u.createdAt instanceof Date ? u.createdAt.toISOString() : String(u.createdAt),
+        roles: roles.get(u.id) ?? [],
+      })),
+    });
+  },
+});
+
+export const createUserOp = defineOperation({
+  name: "users.create",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({
+    email: z.string().email().max(254),
+    password: z.string().min(8).max(256),
+    displayName: z.string().min(1).max(128),
+    roleNames: z.array(z.string()).default([]),
+  }),
+  output: z.object({ userId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const dup = (await tx.execute(
+      sql`SELECT 1 AS exists FROM users WHERE email = ${input.email} LIMIT 1`,
+    )) as unknown as { exists: number }[];
+    if (dup.length > 0) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        operation: "users.create",
+        input,
+        succeeded: false,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "users.create",
+        message: "email already exists",
+      });
+    }
+
+    const passwordHash = await hashPassword(input.password);
+    const actorRows = (await tx.execute(sql`
+      INSERT INTO actors (kind, display_name)
+      VALUES ('human', ${input.displayName})
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const userId = actorRows[0]?.id;
+    if (!userId) {
+      return err({ kind: "HandlerError", operation: "users.create", message: "no id returned" });
+    }
+
+    await tx.execute(sql`
+      INSERT INTO users (id, email, password_hash, is_first_owner)
+      VALUES (${userId}::uuid, ${input.email}, ${passwordHash}, false)
+    `);
+
+    for (const roleName of input.roleNames) {
+      await tx.execute(sql`
+        INSERT INTO user_roles (user_id, role_id)
+        SELECT ${userId}::uuid, r.id FROM roles r WHERE r.name = ${roleName}
+        ON CONFLICT DO NOTHING
+      `);
+    }
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "users.create",
+      input,
+      succeeded: true,
+    });
+    return ok({ userId });
+  },
+});
+
+export const setUserRolesOp = defineOperation({
+  name: "users.set_roles",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({
+    userId: z.string(),
+    roleNames: z.array(z.string()),
+  }),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    await tx.execute(sql`DELETE FROM user_roles WHERE user_id = ${input.userId}::uuid`);
+    for (const roleName of input.roleNames) {
+      await tx.execute(sql`
+        INSERT INTO user_roles (user_id, role_id)
+        SELECT ${input.userId}::uuid, r.id FROM roles r WHERE r.name = ${roleName}
+        ON CONFLICT DO NOTHING
+      `);
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "users.set_roles",
+      input,
+      succeeded: true,
+    });
+    return ok({});
+  },
+});
+
+export const deleteUserOp = defineOperation({
+  name: "users.delete",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ userId: z.string() }),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT is_first_owner FROM users WHERE id = ${input.userId}::uuid
+    `)) as unknown as { is_first_owner: boolean }[];
+    const target = rows[0];
+    if (!target) {
+      return err({ kind: "HandlerError", operation: "users.delete", message: "user not found" });
+    }
+    if (target.is_first_owner) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        operation: "users.delete",
+        input,
+        succeeded: false,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "users.delete",
+        message: "cannot delete the first owner",
+      });
+    }
+    await tx.execute(sql`DELETE FROM users WHERE id = ${input.userId}::uuid`);
+    await tx.execute(sql`DELETE FROM actors WHERE id = ${input.userId}::uuid`);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "users.delete",
+      input,
+      succeeded: true,
+    });
+    return ok({});
   },
 });

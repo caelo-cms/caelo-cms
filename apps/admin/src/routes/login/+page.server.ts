@@ -4,6 +4,7 @@ import { execute } from "@caelo/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS } from "$lib/server/guards.js";
 import { adapter, registry } from "$lib/server/query.js";
+import { loginLimiter } from "$lib/server/rate-limit.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -15,10 +16,21 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
-  default: async ({ request, cookies, locals }) => {
+  default: async ({ request, cookies, locals, getClientAddress }) => {
     const form = await request.formData();
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
+
+    // Per-IP rate limit: 5 attempts / 5 minutes. Protects against brute force
+    // without needing a full distributed limiter — P13 swaps in the gateway's.
+    const ip = getClientAddress();
+    if (!loginLimiter.consume(ip)) {
+      const retryMs = loginLimiter.retryAfterMs(ip);
+      return fail(429, {
+        email,
+        error: `Too many login attempts. Try again in ${Math.ceil(retryMs / 1000)}s.`,
+      });
+    }
 
     const result = await execute(registry, adapter, locals.ctx, "auth.login", { email, password });
     if (!result.ok) {

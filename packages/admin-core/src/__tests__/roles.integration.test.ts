@@ -21,7 +21,8 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 
 const systemCtx: ExecutionContext = {
-  actorId: "00000000-0000-0000-0000-0000000000bb",
+  // Must reference the seeded system actor so recordAudit's FK holds.
+  actorId: "00000000-0000-0000-0000-00000000ffff",
   actorKind: "system",
   requestId: "roles-test",
 };
