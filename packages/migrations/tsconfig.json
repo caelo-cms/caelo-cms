@@ -7,13 +7,5 @@
     "noEmit": false
   },
   "include": ["src/**/*"],
-  "references": [
-    {
-      "path": "../shared"
-    },
-    {
-      "path": "../migrations"
-    }
-  ],
   "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]
 }

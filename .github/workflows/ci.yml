@@ -32,7 +32,7 @@ jobs:
           fi
 
   check:
-    name: Lint, Typecheck, Test, License
+    name: Lint, Typecheck, Migrate, Test, License
     needs: lockfile
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -42,7 +42,11 @@ jobs:
       POSTGRES_PASSWORD: caelo_ci
       POSTGRES_DB: postgres
       POSTGRES_PORT: 5432
-      DATABASE_URL: postgres://caelo:caelo_ci@localhost:5432/postgres
+      ADMIN_ROLE_PASSWORD: caelo_admin_ci
+      PUBLIC_ROLE_PASSWORD: caelo_public_ci
+      ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_admin
+      PUBLIC_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5432/cms_public
+      PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_ci@localhost:5432/cms_public
 
     services:
       postgres:
@@ -51,6 +55,8 @@ jobs:
           POSTGRES_USER: caelo
           POSTGRES_PASSWORD: caelo_ci
           POSTGRES_DB: postgres
+          ADMIN_ROLE_PASSWORD: caelo_admin_ci
+          PUBLIC_ROLE_PASSWORD: caelo_public_ci
         ports:
           - 5432:5432
         options: >-
@@ -70,11 +76,27 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
 
+      - name: Bootstrap databases (roles + cms_admin + cms_public)
+        run: |
+          PGPASSWORD=$POSTGRES_PASSWORD psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -v ON_ERROR_STOP=1 -c "
+            CREATE ROLE admin_role NOINHERIT LOGIN PASSWORD '$ADMIN_ROLE_PASSWORD';
+            CREATE ROLE public_role NOINHERIT LOGIN PASSWORD '$PUBLIC_ROLE_PASSWORD';
+            CREATE DATABASE cms_admin OWNER admin_role;
+            CREATE DATABASE cms_public OWNER admin_role;
+            REVOKE ALL ON DATABASE cms_admin FROM PUBLIC;
+            REVOKE ALL ON DATABASE cms_public FROM PUBLIC;
+            GRANT CONNECT ON DATABASE cms_admin TO admin_role;
+            GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;
+          "
+
       - name: Lint
         run: bun run lint
 
       - name: Typecheck
         run: bun run typecheck
+
+      - name: Run migrations
+        run: bun run db:migrate
 
       - name: Test
         run: bun test

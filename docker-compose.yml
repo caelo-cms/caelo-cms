@@ -8,10 +8,15 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      ADMIN_ROLE_PASSWORD: ${ADMIN_ROLE_PASSWORD}
+      PUBLIC_ROLE_PASSWORD: ${PUBLIC_ROLE_PASSWORD}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # First-run bootstrap: creates admin_role + public_role + cms_admin + cms_public
+      # before any migration runs. Executes only when the data volume is empty.
+      - ./packages/migrations/src/bootstrap.sh:/docker-entrypoint-initdb.d/01-bootstrap.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s

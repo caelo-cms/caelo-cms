@@ -1,0 +1,28 @@
+{
+  "name": "@caelo/migrations",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MPL-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema/cms_admin": "./src/schema/cms_admin/index.ts",
+    "./schema/cms_public": "./src/schema/cms_public/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "generate:admin": "drizzle-kit generate --config=drizzle.config.cms-admin.ts",
+    "generate:public": "drizzle-kit generate --config=drizzle.config.cms-public.ts",
+    "migrate:admin": "bun run src/migrate.ts admin",
+    "migrate:public": "bun run src/migrate.ts public",
+    "migrate": "bun run migrate:admin && bun run migrate:public"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.10"
+  }
+}

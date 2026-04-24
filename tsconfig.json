@@ -9,6 +9,7 @@
     { "path": "./packages/query-api" },
     { "path": "./packages/plugin-sdk" },
     { "path": "./packages/provisioning" },
+    { "path": "./packages/migrations" },
     { "path": "./apps/admin" },
     { "path": "./apps/api-gateway" },
     { "path": "./apps/static-generator" }
