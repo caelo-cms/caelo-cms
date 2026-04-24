@@ -77,17 +77,21 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Bootstrap databases (roles + cms_admin + cms_public)
+        # CREATE DATABASE cannot run inside a transaction block, and `psql -c`
+        # implicitly wraps multi-statement input in one. Run each DDL action as
+        # its own invocation so they each get a dedicated implicit txn (or none).
+        env:
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
         run: |
-          PGPASSWORD=$POSTGRES_PASSWORD psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -v ON_ERROR_STOP=1 -c "
-            CREATE ROLE admin_role NOINHERIT LOGIN PASSWORD '$ADMIN_ROLE_PASSWORD';
-            CREATE ROLE public_role NOINHERIT LOGIN PASSWORD '$PUBLIC_ROLE_PASSWORD';
-            CREATE DATABASE cms_admin OWNER admin_role;
-            CREATE DATABASE cms_public OWNER admin_role;
-            REVOKE ALL ON DATABASE cms_admin FROM PUBLIC;
-            REVOKE ALL ON DATABASE cms_public FROM PUBLIC;
-            GRANT CONNECT ON DATABASE cms_admin TO admin_role;
-            GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;
-          "
+          PSQL="psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -v ON_ERROR_STOP=1"
+          $PSQL -c "CREATE ROLE admin_role NOINHERIT LOGIN PASSWORD '$ADMIN_ROLE_PASSWORD';"
+          $PSQL -c "CREATE ROLE public_role NOINHERIT LOGIN PASSWORD '$PUBLIC_ROLE_PASSWORD';"
+          $PSQL -c "CREATE DATABASE cms_admin OWNER admin_role;"
+          $PSQL -c "CREATE DATABASE cms_public OWNER admin_role;"
+          $PSQL -c "REVOKE ALL ON DATABASE cms_admin FROM PUBLIC;"
+          $PSQL -c "REVOKE ALL ON DATABASE cms_public FROM PUBLIC;"
+          $PSQL -c "GRANT CONNECT ON DATABASE cms_admin TO admin_role;"
+          $PSQL -c "GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;"
 
       - name: Lint
         run: bun run lint
