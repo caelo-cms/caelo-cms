@@ -1,6 +1,6 @@
 # Phase 0 — Repo bootstrap, tooling & CLAUDE.md
 
-**Status:** ✓ complete — scaffold verified end-to-end on 2026-04-24. `bun install && docker compose up -d && bun run lint && bun run typecheck && bun run test` all green.
+**Status:** ✓ complete (incl. hardening passes 1 & 2) — verified locally and on GitHub Actions. Remote CI run 24909449858 green (26s). Commit: `287699f` on `origin/main`.
 **Dependencies:** none (greenfield).
 **Unblocks:** P1, P2.
 
@@ -84,9 +84,14 @@ All three commands should pass. The GitHub Actions workflow in `.github/workflow
 | `bun run test` | 1 file / 1 test passing |
 | `bun run license:check` | all transitive deps on the MPL-2.0-compatible allowlist |
 
-## Hardening pass (applied 2026-04-24)
+## Hardening passes (applied 2026-04-24)
 
-Four follow-ups that should not wait for P1:
+**Pass 2** (adopted after review):
+
+5. **Lockfile freshness gate in CI.** Dedicated `lockfile` job runs before the main `check` job: `bun install` (no `--frozen-lockfile`) then `git diff --exit-code` against `bun.lock` + all `package.json` files. Fails with *"run 'bun install' locally and commit the resulting bun.lock"* if anyone bumps a version without regenerating the lockfile.
+6. **Drop Vitest, adopt `bun test`.** Removed `vitest` + `vitest.config.ts`; seed test imports from `bun:test`; ~40 transitive deps dropped. CLAUDE.md §6 gains a one-liner forbidding Vitest re-adds. Per-workspace tsconfigs now `exclude` test files from compilation so compiled artifacts never double-discover under `dist/`.
+
+**Pass 1** — four follow-ups that should not wait for P1:
 
 1. **Secrets hygiene.** `docker-compose.yml` no longer hardcodes credentials — all three Postgres env vars (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`) come from `.env` via `env_file`. `.env.example` is committed as the template; `.env` is gitignored (`!.env.example` negation keeps the template visible). CI workflow sets the same variables inline under `env:` since CI test creds are workflow-scoped, not committed secrets.
 2. **Project references are now functional.** Root `typecheck` is `tsc -b` using the solution `tsconfig.json` + per-workspace `composite` projects. Incremental build caching via `.tsbuildinfo` (gitignored). Per-workspace `typecheck` scripts are `tsc -b` too so `cd packages/shared && bun run typecheck` also builds incrementally.
