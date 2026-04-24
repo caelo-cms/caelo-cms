@@ -1,6 +1,6 @@
 # Phase 1 — Database + Query API foundation
 
-**Status:** plan ready — awaits user approval before execution.
+**Status:** ✓ complete — verified locally and on GitHub Actions. Remote CI run 24910415208 green; commits `f8e4e53` (feat) + `59ff4b1` (CI fix) on `origin/main`. 15 tests pass (3 unit + 12 integration incl. 4-case RLS adversarial matrix + cross-DB role-leak check).
 **Dependencies:** P0 (✓ complete).
 **Unblocks:** P2 (admin shell auth), P3 (content model).
 
@@ -189,4 +189,13 @@ No `postgres` / `pg` / `node-postgres` — Bun.sql used directly via `drizzle-or
 
 ---
 
-Ready to execute once approved. Estimated effort: 1 focused session (~4–6 hours incl. test matrix + green CI).
+## Execution notes (for future reference)
+
+Two surprises caught during the implementation pass; both are recorded in the main commit body and worth remembering:
+
+1. **RLS `WITH CHECK` needs the same system-kind bypass as `USING`.** Without it, even `system` callers (seed, bootstrap, P2 actor creation) cannot INSERT rows whose `id != current_setting('caelo.actor_id')`. Fixed by extending the bypass clause in `packages/migrations/src/rls.ts` `buildRlsSql`.
+2. **Drizzle wraps driver errors in `DrizzleQueryError`.** The inner Postgres `errno: '42501'` is only reachable via the `.cause` chain. `isRlsDenial` now walks up to 5 levels of `.cause` and checks both `.errno` (Bun.SQL) and `.code` (pg-style drivers).
+
+Migration runs are invoked from the repo root (`bun run db:migrate`) so Bun auto-loads `.env`. The per-workspace scripts in `@caelo/migrations` still work for direct invocation but require env vars to be in the current shell.
+
+CI bootstrap runs each DDL statement as a separate `psql -c` because `CREATE DATABASE cannot run inside a transaction block` and `psql -c "stmt1; stmt2;"` wraps in one implicit txn. Do not refactor back into a single heredoc.
