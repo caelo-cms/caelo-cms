@@ -23,7 +23,10 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "bun run build && bun run preview",
+    // `vite preview` runs under Node, which doesn't expose the `bun` built-in
+    // we import from in `$lib/server/query.ts`. Instead build once, then start
+    // the adapter-bun output directly under Bun.
+    command: "bun run build && PORT=4173 bun run build/index.js",
     url: "http://localhost:4173",
     reuseExistingServer: !process.env["CI"],
     timeout: 120_000,
