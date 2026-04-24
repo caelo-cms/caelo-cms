@@ -10,6 +10,7 @@ export type QueryError =
   | { readonly kind: "UnknownOperation"; readonly name: string }
   | { readonly kind: "ValidationFailed"; readonly issues: z.ZodIssue[] }
   | { readonly kind: "ActorScopeRejected"; readonly operation: string; readonly actorKind: string }
+  | { readonly kind: "RateLimited"; readonly operation: string; readonly retryAfterMs?: number }
   | { readonly kind: "RLSDenied"; readonly operation: string; readonly detail: string }
   | { readonly kind: "HandlerError"; readonly operation: string; readonly message: string };
 

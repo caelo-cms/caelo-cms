@@ -52,6 +52,17 @@ async function runMigrations(sql: SQL, dir: string): Promise<void> {
       created_at bigint not null
     )
   `;
+  // Bookkeeping table: never touched via the Query API, always via this runner as
+  // admin_role. Enable RLS (without FORCE) so the "every table has RLS" invariant
+  // is mechanically true, and add an open policy so admin_role operates normally.
+  // public_role has no GRANT on this table at all, so it can't reach it either way.
+  await sql.unsafe(`ALTER TABLE __drizzle_migrations ENABLE ROW LEVEL SECURITY`);
+  await sql.unsafe(
+    `DROP POLICY IF EXISTS __drizzle_migrations_bookkeeping ON __drizzle_migrations`,
+  );
+  await sql.unsafe(
+    `CREATE POLICY __drizzle_migrations_bookkeeping ON __drizzle_migrations USING (true) WITH CHECK (true)`,
+  );
 
   for (const file of files) {
     const hash = file.split("/").at(-1) ?? file;

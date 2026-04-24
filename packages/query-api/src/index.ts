@@ -2,7 +2,7 @@
 
 export { type AdapterConfig, DatabaseAdapter } from "./adapter.js";
 export { isRlsDenial, PG_INSUFFICIENT_PRIVILEGE, type QueryError } from "./errors.js";
-export { execute } from "./execute.js";
+export { allowAllRateLimiter, type ExecuteOptions, execute, type RateLimiter } from "./execute.js";
 export {
   defineOperation,
   type OperationDefinition,

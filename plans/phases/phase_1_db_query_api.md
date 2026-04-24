@@ -1,6 +1,6 @@
 # Phase 1 — Database + Query API foundation
 
-**Status:** ✓ complete — verified locally and on GitHub Actions. Remote CI run 24910415208 green; commits `f8e4e53` (feat) + `59ff4b1` (CI fix) on `origin/main`. 15 tests pass (3 unit + 12 integration incl. 4-case RLS adversarial matrix + cross-DB role-leak check).
+**Status:** ✓ complete (incl. P1.1 follow-up pass) — verified locally and on GitHub Actions. 20 tests pass across 8 files (unit + 4-case RLS adversarial + cross-DB role leak + transaction rollback + NULL actor_id + public_role production path + rate-limiter hook).
 **Dependencies:** P0 (✓ complete).
 **Unblocks:** P2 (admin shell auth), P3 (content model).
 
@@ -87,7 +87,7 @@ packages/migrations/
 ├── drizzle.config.cms-public.ts
 ├── package.json                             # @caelo/migrations, scripts: db:bootstrap, migrate:admin, migrate:public
 ├── src/
-│   ├── bootstrap.sql                         # roles + DBs; idempotent
+│   ├── bootstrap.sh                          # roles + DBs; idempotent; shell (not SQL) so env-var substitution works at initdb time
 │   ├── rls.ts                                # policy-template generator
 │   ├── schema/
 │   │   ├── cms_admin/
