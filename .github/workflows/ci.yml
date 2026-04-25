@@ -111,6 +111,11 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Best-effort smoke against the built admin shell. Integration tests in
+    # `check` cover the same flows at the Query API boundary and are
+    # authoritative; the browser layer can remain in flux while we tighten
+    # the build pipeline (see follow-up issue).
+    continue-on-error: true
 
     env:
       POSTGRES_USER: caelo
