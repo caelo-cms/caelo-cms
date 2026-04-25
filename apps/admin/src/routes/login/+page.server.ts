@@ -3,11 +3,11 @@
 import { execute } from "@caelo/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS } from "$lib/server/guards.js";
-import { adapter, registry } from "$lib/server/query.js";
-import { loginLimiter } from "$lib/server/rate-limit.js";
+import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
+  const { adapter, registry } = getQueryContext();
   const setup = await execute(registry, adapter, locals.ctx, "users.is_setup_complete", {});
   const complete = setup.ok ? (setup.value as { complete: boolean }).complete : false;
   if (!complete) throw redirect(303, "/setup");
@@ -17,18 +17,18 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
   default: async ({ request, cookies, locals, getClientAddress }) => {
+    const { adapter, registry, loginLimiter } = getQueryContext();
     const form = await request.formData();
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
 
-    // Per-IP rate limit: 5 attempts / 5 minutes. Protects against brute force
-    // without needing a full distributed limiter — P13 swaps in the gateway's.
+    // Postgres-backed sliding-window limiter — shared across admin replicas.
     const ip = getClientAddress();
-    if (!loginLimiter.consume(ip)) {
-      const retryMs = loginLimiter.retryAfterMs(ip);
+    const decision = await loginLimiter.consume(`login:${ip}`);
+    if (!decision.allowed) {
       return fail(429, {
         email,
-        error: `Too many login attempts. Try again in ${Math.ceil(retryMs / 1000)}s.`,
+        error: `Too many login attempts. Try again in ${Math.ceil(decision.retryAfterMs / 1000)}s.`,
       });
     }
 

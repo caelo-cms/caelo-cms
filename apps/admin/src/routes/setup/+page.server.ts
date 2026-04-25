@@ -2,10 +2,11 @@
 
 import { execute } from "@caelo/query-api";
 import { fail, redirect } from "@sveltejs/kit";
-import { adapter, registry } from "$lib/server/query.js";
+import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
+  const { adapter, registry } = getQueryContext();
   const setup = await execute(registry, adapter, locals.ctx, "users.is_setup_complete", {});
   const complete = setup.ok ? (setup.value as { complete: boolean }).complete : false;
   if (complete) throw redirect(303, "/login");
@@ -14,6 +15,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
   default: async ({ request, locals }) => {
+    const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");

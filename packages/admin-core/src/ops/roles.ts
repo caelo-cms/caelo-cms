@@ -69,6 +69,7 @@ export const createRoleOp = defineOperation({
         operation: "roles.create",
         input,
         succeeded: false,
+        resultSummary: "builtin-name-rejected",
       });
       return err({
         kind: "HandlerError",
@@ -98,6 +99,8 @@ export const createRoleOp = defineOperation({
       operation: "roles.create",
       input,
       succeeded: true,
+      entityId: roleId,
+      resultSummary: `name=${input.name},perms=${input.permissions.length}`,
     });
     return ok({ roleId });
   },
@@ -123,6 +126,8 @@ export const deleteRoleOp = defineOperation({
         operation: "roles.delete",
         input,
         succeeded: false,
+        entityId: input.roleId,
+        resultSummary: "builtin-protected",
       });
       return err({
         kind: "HandlerError",
@@ -136,6 +141,7 @@ export const deleteRoleOp = defineOperation({
       operation: "roles.delete",
       input,
       succeeded: true,
+      entityId: input.roleId,
     });
     return ok({});
   },
@@ -163,6 +169,8 @@ export const updateRolePermissionsOp = defineOperation({
       operation: "roles.update_permissions",
       input,
       succeeded: true,
+      entityId: input.roleId,
+      resultSummary: `perms=${input.permissions.length}`,
     });
     return ok({});
   },

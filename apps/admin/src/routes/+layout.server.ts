@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { signCsrfToken } from "@caelo/admin-core";
 import type { LayoutServerLoad } from "./$types";
 
 /**
- * Exposes the session's CSRF token to every authenticated page so forms can
- * include it as a hidden `_csrf` input. Also surfaces user identity fields
- * that almost every page wants to render.
+ * Exposes a freshly-signed per-render CSRF token to every authenticated
+ * page. The token is HMAC-SHA256(session.csrf_secret, timestamp.nonce) and
+ * expires after 1h. Forms include it as a hidden `_csrf` input; the server
+ * validates by recomputing on submit.
  */
 export const load: LayoutServerLoad = async ({ locals }) => {
+  const csrfToken = locals.user ? await signCsrfToken(locals.user.csrfSecret) : "";
   return {
-    csrfToken: locals.user?.csrfToken ?? "",
+    csrfToken,
     currentUser: locals.user ? { email: locals.user.email, roles: [...locals.user.roles] } : null,
   };
 };

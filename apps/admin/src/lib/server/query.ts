@@ -1,23 +1,29 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { registerAdminOps } from "@caelo/admin-core";
+import { PostgresRateLimiter, registerAdminOps } from "@caelo/admin-core";
 import { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
 
 /**
- * Lazy-initialised adapter + registry. SvelteKit's build step imports every
- * `+page.server.ts` (and transitively `$lib/server/*`) under Bun to do route
- * discovery / SSR bundling — at that point `process.env.ADMIN_DATABASE_URL`
- * is not set. Throwing here crashes the build even though no real op runs.
+ * Explicit, lazy query context. Server modules call `getQueryContext()` and
+ * destructure the adapter / registry / limiters they need. Construction +
+ * `verifyRoles()` happen on first call and are memoised.
  *
- * Deferring construction to first request also means the build-time analysis
- * only loads the module graph; the actual DB pools open at first request.
+ * Replaces the earlier Proxy-based exports — `instanceof` and `typeof` checks
+ * now behave normally, and a misconfigured deploy can be caught by
+ * `healthcheck.ts` before any user request rather than at first interaction.
  */
 
-let _adapter: DatabaseAdapter | null = null;
-let _registry: OperationRegistry | null = null;
+interface QueryContext {
+  readonly adapter: DatabaseAdapter;
+  readonly registry: OperationRegistry;
+  readonly loginLimiter: PostgresRateLimiter;
+}
 
-function ensure(): { adapter: DatabaseAdapter; registry: OperationRegistry } {
-  if (_adapter && _registry) return { adapter: _adapter, registry: _registry };
+let _ctx: QueryContext | null = null;
+let _verifyPromise: Promise<void> | null = null;
+
+export function getQueryContext(): QueryContext {
+  if (_ctx) return _ctx;
 
   const adminUrl = process.env["ADMIN_DATABASE_URL"];
   const publicUrl = process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? process.env["PUBLIC_DATABASE_URL"];
@@ -26,32 +32,24 @@ function ensure(): { adapter: DatabaseAdapter; registry: OperationRegistry } {
     throw new Error("PUBLIC_ADMIN_DATABASE_URL or PUBLIC_DATABASE_URL is required");
   }
 
-  _adapter = new DatabaseAdapter({
+  const adapter = new DatabaseAdapter({
     adminDatabaseUrl: adminUrl,
     publicDatabaseUrl: publicUrl,
   });
-  _registry = new OperationRegistry();
-  registerAdminOps(_registry);
-  return { adapter: _adapter, registry: _registry };
+  const registry = new OperationRegistry();
+  registerAdminOps(registry);
+
+  const loginLimiter = new PostgresRateLimiter(adapter, {
+    windowMs: 5 * 60 * 1000,
+    limit: 5,
+  });
+
+  _ctx = { adapter, registry, loginLimiter };
+  return _ctx;
 }
 
-/**
- * Proxy objects that look like eager exports but construct on first access.
- * Callers use `adapter` / `registry` as if they were already built; the first
- * property access triggers construction.
- */
-export const adapter = new Proxy({} as DatabaseAdapter, {
-  get(_t, p) {
-    const a = ensure().adapter as unknown as Record<string | symbol, unknown>;
-    const v = a[p];
-    return typeof v === "function" ? v.bind(ensure().adapter) : v;
-  },
-});
-
-export const registry = new Proxy({} as OperationRegistry, {
-  get(_t, p) {
-    const r = ensure().registry as unknown as Record<string | symbol, unknown>;
-    const v = r[p];
-    return typeof v === "function" ? v.bind(ensure().registry) : v;
-  },
-});
+export function verifyQueryContextRoles(): Promise<void> {
+  if (_verifyPromise) return _verifyPromise;
+  _verifyPromise = getQueryContext().adapter.verifyRoles();
+  return _verifyPromise;
+}

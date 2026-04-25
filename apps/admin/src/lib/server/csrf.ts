@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { verifyCsrfToken } from "@caelo/admin-core";
 import { error } from "@sveltejs/kit";
 
 /**
- * Double-submit CSRF check. Pairs with SvelteKit's built-in Origin check:
- * every POST form from an authenticated context includes a hidden `_csrf`
- * input whose value must equal `locals.user.csrfToken`. Login / setup skip
- * this because the user has no session yet; Origin + rate-limit cover them.
+ * Per-form CSRF check. Pairs with the per-render `signCsrfToken` call in
+ * `+layout.server.ts`. The secret stays on the server; the form carries a
+ * short-lived HMAC-derived token. Validation re-derives and compares.
  */
-export function assertCsrfToken(form: FormData, locals: App.Locals): void {
+export async function assertCsrfToken(form: FormData, locals: App.Locals): Promise<void> {
   if (!locals.user) throw error(401, "Not authenticated");
   const provided = String(form.get("_csrf") ?? "");
-  if (!provided || provided !== locals.user.csrfToken) {
-    throw error(403, "CSRF token mismatch");
-  }
+  const ok = await verifyCsrfToken(locals.user.csrfSecret, provided);
+  if (!ok) throw error(403, "CSRF token mismatch");
 }

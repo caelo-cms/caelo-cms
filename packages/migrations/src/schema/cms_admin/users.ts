@@ -18,4 +18,7 @@ export const users = pgTable("users", {
   /** True only for the first Owner created during `/setup`; used to disable the setup route afterwards. */
   isFirstOwner: boolean("is_first_owner").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  /** Soft-delete marker — non-null means the account is disabled. Hard delete
+   * would FK-cascade through actors → audit_events and erase history. */
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });

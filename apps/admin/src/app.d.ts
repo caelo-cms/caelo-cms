@@ -11,7 +11,9 @@ declare global {
         readonly email: string;
         readonly roles: readonly string[];
         readonly permissions: ReadonlySet<string>;
-        readonly csrfToken: string;
+        /** Long-lived per-session secret, server-only. Forms use a derived
+         * per-render token via {@link signCsrfToken}; never expose this. */
+        readonly csrfSecret: string;
       } | null;
       /** ExecutionContext used by Query API ops in this request. */
       ctx: ExecutionContext;

@@ -20,10 +20,11 @@ export const loginOp = defineOperation({
     expiresAt: z.string(),
   }),
   handler: async (_ctx, input, tx) => {
+    // Soft-deleted users cannot log in.
     const rows = (await tx.execute(sql`
       SELECT u.id::text AS id, u.password_hash AS password_hash
       FROM users u
-      WHERE u.email = ${input.email}
+      WHERE u.email = ${input.email} AND u.deleted_at IS NULL
       LIMIT 1
     `)) as unknown as { id: string; password_hash: string }[];
     const user = rows[0];
@@ -36,6 +37,9 @@ export const loginOp = defineOperation({
         operation: "auth.login",
         input,
         succeeded: false,
+        // No email or password fingerprint here — leaking either weakens
+        // the credential-stuffing protection from constant-time matching.
+        resultSummary: user ? "wrong-password" : "no-such-user",
       });
       return err({
         kind: "HandlerError",
@@ -61,6 +65,10 @@ export const loginOp = defineOperation({
       operation: "auth.login",
       input,
       succeeded: true,
+      entityId: user.id,
+      // Record only the last 8 chars of the session token so two distinct
+      // logins with the same email don't collide on input_hash.
+      resultSummary: `token=…${token.slice(-8)}`,
     });
 
     return ok({ userId: user.id, token, csrfToken, expiresAt: expiresAt.toISOString() });
@@ -80,6 +88,8 @@ export const logoutOp = defineOperation({
       operation: "auth.logout",
       input,
       succeeded: true,
+      entityId: ctx.actorId,
+      resultSummary: `token=…${input.token.slice(-8)}`,
     });
     return ok({});
   },
@@ -99,6 +109,8 @@ export const resolveSessionOp = defineOperation({
     roles: z.array(z.string()),
   }),
   handler: async (_ctx, input, tx) => {
+    // Soft-deleted users have their sessions wiped at delete time, but a stale
+    // token with a soft-deleted owner must still be rejected here.
     const rows = (await tx.execute(sql`
       SELECT s.user_id::text AS user_id,
              u.email AS email,
@@ -108,6 +120,7 @@ export const resolveSessionOp = defineOperation({
       JOIN users u ON u.id = s.user_id
       WHERE s.token = ${input.token}
         AND s.expires_at > now()
+        AND u.deleted_at IS NULL
       LIMIT 1
     `)) as unknown as {
       user_id: string;

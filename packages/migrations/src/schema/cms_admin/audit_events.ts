@@ -17,5 +17,12 @@ export const auditEvents = pgTable("audit_events", {
   operation: text("operation").notNull(),
   inputHash: text("input_hash").notNull(),
   succeeded: boolean("succeeded").notNull(),
+  /** Subject of the operation when it has one — the user/role/etc the op acted on.
+   * Lets `who did what to whom` queries work without parsing input_hash. */
+  entityId: uuid("entity_id"),
+  /** Short, redaction-aware result fingerprint — e.g. last 8 chars of a session token,
+   * permission count after an update, attempted-email on a failed login. Distinguishes
+   * two events with identical input but different outcomes. */
+  resultSummary: text("result_summary"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

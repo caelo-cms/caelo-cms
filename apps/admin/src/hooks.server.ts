@@ -3,9 +3,8 @@
 import { execute } from "@caelo/query-api";
 import type { ExecutionContext } from "@caelo/shared";
 import type { Handle } from "@sveltejs/kit";
-import { adapter, registry } from "$lib/server/query.js";
-
-const SESSION_COOKIE = "caelo_session";
+import { SESSION_COOKIE } from "$lib/server/guards.js";
+import { getQueryContext } from "$lib/server/query.js";
 
 const SYSTEM_CTX: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -14,17 +13,12 @@ const SYSTEM_CTX: ExecutionContext = {
 };
 
 /**
- * Per-request middleware:
- *   1. Read session cookie.
- *   2. Resolve the session → user + permissions (query runs as `system`
- *      because we don't know the user yet).
- *   3. Populate `locals.user` (null when anonymous) and `locals.ctx` (for any
- *      subsequent op the route wants to run under the user's identity).
- *
- * Route guards live inside `+page.server.ts` / `+server.ts` files; this hook
- * only *populates* identity, it does not deny access.
+ * Per-request middleware: resolve session cookie → populate `locals.user` +
+ * `locals.ctx`. The `csrfSecret` field is the long-lived per-session secret —
+ * forms use a derived per-render token via `signCsrfToken`.
  */
 export const handle: Handle = async ({ event, resolve }) => {
+  const { adapter, registry } = getQueryContext();
   const token = event.cookies.get(SESSION_COOKIE);
   let user: App.Locals["user"] = null;
 
@@ -47,10 +41,9 @@ export const handle: Handle = async ({ event, resolve }) => {
         email: v.email,
         roles: v.roles,
         permissions: new Set(v.permissions),
-        csrfToken: v.csrfToken,
+        csrfSecret: v.csrfToken, // op output is the long-lived secret
       };
     } else {
-      // Expired / revoked — drop the cookie.
       event.cookies.delete(SESSION_COOKIE, { path: "/" });
     }
   }

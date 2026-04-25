@@ -4,11 +4,12 @@ import { execute } from "@caelo/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
-import { adapter, registry } from "$lib/server/query.js";
+import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "users.manage");
+  const { adapter, registry } = getQueryContext();
 
   const [usersResult, rolesResult] = await Promise.all([
     execute(registry, adapter, locals.ctx, "users.list", {}),
@@ -39,8 +40,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 export const actions: Actions = {
   create: async ({ request, locals }) => {
     requirePermission(locals, "users.manage");
+    const { adapter, registry } = getQueryContext();
     const form = await request.formData();
-    assertCsrfToken(form, locals);
+    await assertCsrfToken(form, locals);
 
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
@@ -59,8 +61,9 @@ export const actions: Actions = {
 
   setRoles: async ({ request, locals }) => {
     requirePermission(locals, "users.manage");
+    const { adapter, registry } = getQueryContext();
     const form = await request.formData();
-    assertCsrfToken(form, locals);
+    await assertCsrfToken(form, locals);
 
     const userId = String(form.get("userId") ?? "");
     const roleNames = form.getAll("roleNames").map(String).filter(Boolean);
@@ -75,8 +78,9 @@ export const actions: Actions = {
 
   delete: async ({ request, locals }) => {
     requirePermission(locals, "users.manage");
+    const { adapter, registry } = getQueryContext();
     const form = await request.formData();
-    assertCsrfToken(form, locals);
+    await assertCsrfToken(form, locals);
 
     const userId = String(form.get("userId") ?? "");
     const result = await execute(registry, adapter, locals.ctx, "users.delete", { userId });

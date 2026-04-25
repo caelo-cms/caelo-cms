@@ -3,7 +3,6 @@
 import type { TransactionRunner } from "@caelo/query-api";
 import { sql } from "drizzle-orm";
 
-/** Fields that must never appear in the audit input_hash pre-image. */
 const SENSITIVE_KEYS = new Set(["password", "token", "csrfToken", "passwordHash"]);
 
 function redact(value: unknown): unknown {
@@ -19,7 +18,6 @@ function redact(value: unknown): unknown {
   return value;
 }
 
-/** Stable canonical JSON (sorted keys) + sha256, used for the audit row's input_hash column. */
 async function canonicalHash(input: unknown): Promise<string> {
   const canonical = JSON.stringify(redact(input), (_key, val) => {
     if (val && typeof val === "object" && !Array.isArray(val)) {
@@ -35,10 +33,10 @@ async function canonicalHash(input: unknown): Promise<string> {
 }
 
 /**
- * Record one audit row for the current Query API op. Called from every handler
- * before returning; the row lives in the same transaction as the write, so a
- * handler that throws rolls back both its data *and* its audit entry — good,
- * because an audit log listing actions that didn't happen is worse than none.
+ * Record one audit row. The `entityId` + `resultSummary` columns distinguish
+ * two events whose input_hash collides — e.g. a failed `users.delete` and a
+ * successful one with the same target id, or a regenerated session that uses
+ * the same email but yields a different token.
  */
 export async function recordAudit(
   tx: TransactionRunner,
@@ -47,12 +45,25 @@ export async function recordAudit(
     operation: string;
     input: unknown;
     succeeded: boolean;
+    /** The subject of the operation (target user id, role id, etc.). */
+    entityId?: string | null;
+    /** Short, redaction-aware fingerprint of the result. Never put secrets here. */
+    resultSummary?: string | null;
   },
 ): Promise<void> {
   const hash = await canonicalHash(opts.input);
+  const entityId = opts.entityId ?? null;
+  const resultSummary = opts.resultSummary ?? null;
   await tx.execute(sql`
-    INSERT INTO audit_events (actor_id, operation, input_hash, succeeded)
-    VALUES (${opts.actorId}::uuid, ${opts.operation}, ${hash}, ${opts.succeeded})
+    INSERT INTO audit_events (actor_id, operation, input_hash, succeeded, entity_id, result_summary)
+    VALUES (
+      ${opts.actorId}::uuid,
+      ${opts.operation},
+      ${hash},
+      ${opts.succeeded},
+      ${entityId === null ? null : sql`${entityId}::uuid`},
+      ${resultSummary}
+    )
   `);
 }
 
