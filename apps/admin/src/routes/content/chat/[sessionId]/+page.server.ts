@@ -28,7 +28,11 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     }[];
   };
   const modules = modulesR.ok
-    ? (modulesR.value as { modules: { id: string; slug: string; displayName: string }[] }).modules
+    ? (
+        modulesR.value as {
+          modules: { id: string; slug: string; displayName: string; html: string }[];
+        }
+      ).modules
     : [];
   return {
     session: sessionData.session,

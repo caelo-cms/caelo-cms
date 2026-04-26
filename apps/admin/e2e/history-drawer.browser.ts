@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
+import { clearLoginRateBucket } from "./helpers.js";
+
+test.beforeAll(clearLoginRateBucket);
 
 /**
  * P4 verification flow: edit a module twice, open the Advanced History

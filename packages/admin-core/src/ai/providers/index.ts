@@ -10,7 +10,7 @@
  */
 
 import type { AIProvider, ProviderName } from "../provider.js";
-import { AnthropicProvider, FixtureProvider } from "./anthropic.js";
+import { AnthropicProvider } from "./anthropic.js";
 
 export interface ProviderConfig {
   readonly name: ProviderName;
@@ -32,4 +32,4 @@ export function makeProvider(config: ProviderConfig): AIProvider {
   }
 }
 
-export { AnthropicProvider, FixtureProvider };
+export { AnthropicProvider, FixtureProvider, MultiFixtureProvider } from "./anthropic.js";

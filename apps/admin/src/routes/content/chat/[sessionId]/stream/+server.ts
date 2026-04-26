@@ -18,6 +18,17 @@ import type { RequestHandler } from "./$types";
 
 const AI_ACTOR_ID = "00000000-0000-0000-0000-000000000a1a";
 const ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY";
+/**
+ * P5.1 fixture-replay mode. When CAELO_AI_FIXTURE is set to a JSONL
+ * file path (one ProviderEvent per line), the SSE endpoint constructs a
+ * FixtureProvider instead of hitting the live API. Lets Playwright
+ * exercise chat flows end-to-end without ANTHROPIC_API_KEY.
+ *
+ * The fixture file may also be a JSON array of arrays (one inner array
+ * per loop iteration) — used for tool-use → continuation flows. The
+ * loader sniffs the first non-whitespace character to decide.
+ */
+const AI_FIXTURE_PATH_ENV = "CAELO_AI_FIXTURE";
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
   requirePermission(locals, "content.read");
@@ -36,30 +47,65 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
   const { adapter, registry } = getQueryContext();
 
-  // Resolve provider config + key. P5 ships only the Anthropic adapter.
-  const apiKey = process.env[ANTHROPIC_API_KEY_ENV];
-  if (!apiKey) {
-    return new Response(
-      `data: ${JSON.stringify({
-        kind: "error",
-        message: `${ANTHROPIC_API_KEY_ENV} not set`,
-      })}\n\ndata: ${JSON.stringify({ kind: "done" })}\n\n`,
-      { headers: { "content-type": "text/event-stream" } },
-    );
-  }
-  const providersResult = await execute(registry, adapter, locals.ctx, "ai_providers.list", {});
-  const provider = providersResult.ok
-    ? (
-        providersResult.value as { providers: { name: string; config: Record<string, unknown> }[] }
-      ).providers.find((p) => p.name === "anthropic")
-    : undefined;
-  const model =
-    (provider?.config && typeof provider.config["model"] === "string"
-      ? (provider.config["model"] as string)
-      : null) ?? "claude-opus-4-7";
+  // Provider selection:
+  //   1. If CAELO_AI_FIXTURE points at a readable file, use FixtureProvider
+  //      (Playwright + dev). The env var can stay set globally — only
+  //      requests where the file actually exists go down the fixture path,
+  //      so production deployments without the file fall through to the
+  //      live adapter.
+  //   2. Else use the configured Anthropic adapter with ANTHROPIC_API_KEY.
+  const fixturePath = process.env[AI_FIXTURE_PATH_ENV];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const fixtureAvailable = Boolean(fixturePath && existsSync(fixturePath));
+  let aiProvider: import("@caelo/admin-core").AIProvider;
+  if (fixtureAvailable && fixturePath) {
+    const raw = readFileSync(fixturePath, "utf8").trim();
+    const { MultiFixtureProvider, FixtureProvider } = await import("@caelo/admin-core");
+    if (raw.startsWith("[")) {
+      const parsed = JSON.parse(raw) as
+        | import("@caelo/admin-core").ProviderEvent[]
+        | import("@caelo/admin-core").ProviderEvent[][];
+      // Sniff: array of arrays → multi-loop fixture; flat array → single shot.
+      const isMulti = Array.isArray(parsed) && parsed.length > 0 && Array.isArray(parsed[0]);
+      aiProvider = isMulti
+        ? new MultiFixtureProvider(parsed as import("@caelo/admin-core").ProviderEvent[][])
+        : new FixtureProvider(parsed as import("@caelo/admin-core").ProviderEvent[]);
+    } else {
+      // JSONL: one ProviderEvent per line (single-shot only).
+      const events = raw
+        .split("\n")
+        .filter((l) => l.trim().length > 0)
+        .map((l) => JSON.parse(l) as import("@caelo/admin-core").ProviderEvent);
+      aiProvider = new FixtureProvider(events);
+    }
+  } else {
+    const apiKey = process.env[ANTHROPIC_API_KEY_ENV];
+    if (!apiKey) {
+      return new Response(
+        `data: ${JSON.stringify({
+          kind: "error",
+          message: `${ANTHROPIC_API_KEY_ENV} not set`,
+        })}\n\ndata: ${JSON.stringify({ kind: "done" })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    const providersResult = await execute(registry, adapter, locals.ctx, "ai_providers.list", {});
+    const provider = providersResult.ok
+      ? (
+          providersResult.value as {
+            providers: { name: string; config: Record<string, unknown> }[];
+          }
+        ).providers.find((p) => p.name === "anthropic")
+      : undefined;
+    const model =
+      (provider?.config && typeof provider.config["model"] === "string"
+        ? (provider.config["model"] as string)
+        : null) ?? "claude-opus-4-7";
 
-  const { makeProvider, createDefaultToolRegistry } = await import("@caelo/admin-core");
-  const aiProvider = makeProvider({ name: "anthropic", apiKey, model });
+    const { makeProvider } = await import("@caelo/admin-core");
+    aiProvider = makeProvider({ name: "anthropic", apiKey, model });
+  }
+  const { createDefaultToolRegistry } = await import("@caelo/admin-core");
   const tools = createDefaultToolRegistry();
 
   const aiCtx = {

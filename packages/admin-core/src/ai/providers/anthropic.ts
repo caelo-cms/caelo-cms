@@ -259,3 +259,28 @@ export class FixtureProvider implements AIProvider {
     for (const e of this.#events) yield e;
   }
 }
+
+/**
+ * Multi-loop fixture for tool-use → continuation flows. The chat runner
+ * calls `generate()` once per loop iteration: first call returns the
+ * queue's first sub-array (typically ending in stopReason `tool_use`),
+ * second call returns the continuation after the tool result lands. Past
+ * the queue, returns a single end_turn event so the runner exits cleanly.
+ */
+export class MultiFixtureProvider extends FixtureProvider {
+  readonly #queue: readonly (readonly ProviderEvent[])[];
+  #idx = 0;
+
+  constructor(queue: readonly (readonly ProviderEvent[])[], model = "claude-opus-4-7") {
+    super([], model);
+    this.#queue = queue;
+  }
+
+  override async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
+    const events = this.#queue[this.#idx] ?? [
+      { kind: "done", stopReason: "end_turn" } as ProviderEvent,
+    ];
+    this.#idx += 1;
+    for (const e of events) yield e;
+  }
+}

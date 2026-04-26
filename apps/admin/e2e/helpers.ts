@@ -23,3 +23,21 @@ export function runBunInline(script: string, extraEnv: Record<string, string> = 
     throw new Error(`bun -e failed (status ${result.status}): ${result.stderr || result.stdout}`);
   }
 }
+
+/**
+ * Clears the per-IP login rate-limit bucket. globalSetup clears it once at
+ * suite start; per-spec login attempts in a long batch run can re-fill it,
+ * so chat specs that login from multiple browser contexts call this in
+ * test.beforeAll.
+ */
+export function clearLoginRateBucket(): void {
+  runBunInline(`
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx\`DELETE FROM rate_limit_buckets WHERE key LIKE 'login:%'\`;
+    });
+    await sql.end();
+  `);
+}

@@ -46,6 +46,11 @@ export default defineConfig({
       PUBLIC_ADMIN_DATABASE_URL: process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? "",
       PUBLIC_DATABASE_URL: process.env["PUBLIC_DATABASE_URL"] ?? "",
       ORIGIN: "http://localhost:4173",
+      // Fixture-replay mode: the SSE chat endpoint reads this file per
+      // request instead of hitting the live API. The Playwright specs that
+      // need a deterministic chat response write the fixture to this exact
+      // path before sending the message.
+      CAELO_AI_FIXTURE: "/tmp/caelo-ai-fixture.json",
     },
   },
 });
