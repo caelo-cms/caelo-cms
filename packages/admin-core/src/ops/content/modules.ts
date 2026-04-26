@@ -155,7 +155,10 @@ export const createModuleOp = defineOperation({
 
 export const updateModuleOp = defineOperation({
   name: "modules.update",
-  actorScope: ["human", "system"],
+  // P5: AI in scope for the `edit_module` tool — the only mutation the
+  // AI can reach in this phase. Page / template / cross-module surfaces
+  // stay AI-blocked until their tools land in later phases.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: moduleUpdateSchema,
   output: z.object({}),
@@ -201,6 +204,8 @@ export const updateModuleOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "modules.update",
         description: `modules.update slug=${state.slug}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "module", entityId: input.moduleId, state }],
       });
     }
