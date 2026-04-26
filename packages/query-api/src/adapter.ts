@@ -114,6 +114,16 @@ export class DatabaseAdapter {
         await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
         await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
         await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
+        // P5: optional chat-branch / chat-task identity. Snapshot writes
+        // read these via ctx.chatBranchId / ctx.chatTaskId; the session
+        // vars exist for any future read-side query that wants to scope
+        // by branch without an extra parameter.
+        await tx.execute(
+          sql`SELECT set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true)`,
+        );
+        await tx.execute(
+          sql`SELECT set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`,
+        );
 
         return await op.handler(ctx, validatedInput, tx);
       });

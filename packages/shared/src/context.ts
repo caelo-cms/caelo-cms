@@ -19,4 +19,16 @@ export interface ExecutionContext {
   readonly pluginId?: string;
   /** Opaque id for audit trace / log correlation. */
   readonly requestId: string;
+  /**
+   * P5: when set, all snapshot rows emitted by ops in this transaction
+   * carry this chat_branch_id. Reads that opt into branch-aware mode
+   * resolve the chat's branch state when present, else fall back to main.
+   */
+  readonly chatBranchId?: string;
+  /**
+   * P5: when set, snapshots emitted during this op group under the same
+   * chat_task_id so the timeline UX (P10A's task-grouped collapsing) can
+   * fold consecutive AI actions into one entry.
+   */
+  readonly chatTaskId?: string;
 }
