@@ -12,6 +12,7 @@ import { err, ok, pageCreateSchema, pageSetModulesSchema, pageUpdateSchema } fro
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { emitSnapshot, loadPageLayoutState, loadPageState } from "../../snapshots/index.js";
 import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
 
 const pageRowSchema = z.object({
@@ -280,6 +281,15 @@ export const createPageOp = defineOperation({
       entityId: pageId,
       resultSummary: `slug=${input.slug},locale=${input.locale}`,
     });
+    const state = await loadPageState(tx, pageId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "pages.create",
+        description: `pages.create slug=${input.slug} locale=${input.locale}`,
+        entities: [{ kind: "page", entityId: pageId, state }],
+      });
+    }
     return ok({ pageId });
   },
 });
@@ -353,6 +363,15 @@ export const updatePageOp = defineOperation({
       succeeded: true,
       entityId: input.pageId,
     });
+    const state = await loadPageState(tx, input.pageId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "pages.update",
+        description: `pages.update slug=${state.slug}`,
+        entities: [{ kind: "page", entityId: input.pageId, state }],
+      });
+    }
     return ok({});
   },
 });
@@ -476,6 +495,14 @@ export const setPageModulesOp = defineOperation({
       entityId: input.pageId,
       resultSummary: `blocks=${input.blocks.length},modules=${allModuleIds.length}`,
     });
+    // Layout-only edit — emit a page_layout_snapshot, not a full page snapshot.
+    const layoutState = await loadPageLayoutState(tx, input.pageId);
+    await emitSnapshot(tx, {
+      actorId: ctx.actorId,
+      opKind: "pages.set_modules",
+      description: `pages.set_modules blocks=${input.blocks.length}`,
+      entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
+    });
     return ok({});
   },
 });
@@ -518,6 +545,15 @@ export const deletePageOp = defineOperation({
       entityId: input.pageId,
       resultSummary: "soft-deleted",
     });
+    const state = await loadPageState(tx, input.pageId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "pages.delete",
+        description: `pages.delete slug=${state.slug}`,
+        entities: [{ kind: "page", entityId: input.pageId, state }],
+      });
+    }
     return ok({});
   },
 });

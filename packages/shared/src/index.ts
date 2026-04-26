@@ -5,3 +5,4 @@ export const PROJECT_NAME = "caelo-cms";
 export * from "./content.js";
 export * from "./context.js";
 export * from "./result.js";
+export * from "./snapshots.js";

@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Typed `state` payloads for snapshot rows. The JSONB column on each
+ * snapshot table holds these shapes verbatim. `schemaVersion` is on every
+ * shape so revert ops can grow a version-shape map when payloads evolve;
+ * P4 only has version 1.
+ *
+ * The shapes intentionally mirror the live-row shape (snake_case mapped to
+ * camelCase) so the revert op can splat back into the live row without a
+ * field-by-field translation.
+ */
+
+export type StateSchemaVersion = 1;
+
+export interface ModuleState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly slug: string;
+  readonly displayName: string;
+  readonly html: string;
+  readonly css: string;
+  readonly js: string;
+  readonly deletedAt: string | null;
+}
+
+export interface TemplateState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly slug: string;
+  readonly displayName: string;
+  readonly html: string;
+  readonly css: string;
+  readonly deletedAt: string | null;
+  readonly blocks: readonly {
+    readonly name: string;
+    readonly displayName: string;
+    readonly position: number;
+  }[];
+}
+
+export interface PageState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly slug: string;
+  readonly locale: string;
+  readonly title: string;
+  readonly templateId: string;
+  readonly status: "draft" | "published";
+  readonly version: number;
+  readonly deletedAt: string | null;
+}
+
+export interface PageLayoutState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly blocks: readonly {
+    readonly blockName: string;
+    readonly moduleIds: readonly string[];
+  }[];
+}

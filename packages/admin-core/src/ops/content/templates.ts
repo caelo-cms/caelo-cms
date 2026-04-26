@@ -10,6 +10,7 @@ import { err, ok, templateCreateSchema, templateUpdateSchema } from "@caelo/shar
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { emitSnapshot, loadTemplateState } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
 
 const templateRowSchema = z.object({
@@ -179,6 +180,15 @@ export const createTemplateOp = defineOperation({
       entityId: templateId,
       resultSummary: `slug=${input.slug}`,
     });
+    const state = await loadTemplateState(tx, templateId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "templates.create",
+        description: `templates.create slug=${input.slug}`,
+        entities: [{ kind: "template", entityId: templateId, state }],
+      });
+    }
     return ok({ templateId });
   },
 });
@@ -215,6 +225,15 @@ export const updateTemplateOp = defineOperation({
       succeeded: true,
       entityId: input.templateId,
     });
+    const state = await loadTemplateState(tx, input.templateId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "templates.update",
+        description: `templates.update slug=${state.slug}`,
+        entities: [{ kind: "template", entityId: input.templateId, state }],
+      });
+    }
     return ok({});
   },
 });
@@ -277,6 +296,15 @@ export const deleteTemplateOp = defineOperation({
       entityId: input.templateId,
       resultSummary: "soft-deleted",
     });
+    const state = await loadTemplateState(tx, input.templateId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "templates.delete",
+        description: `templates.delete slug=${state.slug}`,
+        entities: [{ kind: "template", entityId: input.templateId, state }],
+      });
+    }
     return ok({});
   },
 });

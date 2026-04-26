@@ -11,6 +11,7 @@ import { err, ok, templateBlocksSetSchema } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { emitSnapshot, loadTemplateState } from "../../snapshots/index.js";
 
 export const setTemplateBlocksOp = defineOperation({
   name: "template_blocks.set",
@@ -70,6 +71,15 @@ export const setTemplateBlocksOp = defineOperation({
       entityId: input.templateId,
       resultSummary: `blocks=${input.blocks.length}`,
     });
+    const state = await loadTemplateState(tx, input.templateId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "template_blocks.set",
+        description: `template_blocks.set slug=${state.slug} blocks=${input.blocks.length}`,
+        entities: [{ kind: "template", entityId: input.templateId, state }],
+      });
+    }
     return ok({});
   },
 });

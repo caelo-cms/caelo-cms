@@ -11,6 +11,7 @@ import { err, moduleCreateSchema, moduleUpdateSchema, ok } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { emitSnapshot, loadModuleState } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
 
 const moduleRowSchema = z.object({
@@ -139,6 +140,15 @@ export const createModuleOp = defineOperation({
       entityId: moduleId,
       resultSummary: `slug=${input.slug}`,
     });
+    const state = await loadModuleState(tx, moduleId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "modules.create",
+        description: `modules.create slug=${input.slug}`,
+        entities: [{ kind: "module", entityId: moduleId, state }],
+      });
+    }
     return ok({ moduleId });
   },
 });
@@ -185,6 +195,15 @@ export const updateModuleOp = defineOperation({
         .filter(Boolean)
         .join(",")}`,
     });
+    const state = await loadModuleState(tx, input.moduleId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "modules.update",
+        description: `modules.update slug=${state.slug}`,
+        entities: [{ kind: "module", entityId: input.moduleId, state }],
+      });
+    }
     return ok({});
   },
 });
@@ -229,6 +248,15 @@ export const deleteModuleOp = defineOperation({
       entityId: input.moduleId,
       resultSummary: "soft-deleted",
     });
+    const state = await loadModuleState(tx, input.moduleId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "modules.delete",
+        description: `modules.delete slug=${state.slug}`,
+        entities: [{ kind: "module", entityId: input.moduleId, state }],
+      });
+    }
     return ok({});
   },
 });
