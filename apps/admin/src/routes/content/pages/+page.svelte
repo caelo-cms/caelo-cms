@@ -12,6 +12,11 @@
 {#if form?.error}
   <p class="error">{form.error}</p>
 {/if}
+{#if form?.published}
+  <p class="ok">
+    Published — {form.published.pageCount} page(s), {form.published.fileCount} file(s) live.
+  </p>
+{/if}
 
 <h2>Existing pages</h2>
 {#if data.pages.length === 0}
@@ -23,6 +28,11 @@
         <a href={`/content/pages/${p.id}`}><strong>{p.slug}</strong></a>
         ({p.locale}) — {p.title}
         <small>[{p.status}] updated {p.updatedAt.slice(0, 10)}</small>
+        <form method="post" action="?/publish" style="display:inline">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <input type="hidden" name="pageId" value={p.id} />
+          <button type="submit">{p.status === "published" ? "Re-publish" : "Publish"}</button>
+        </form>
       </li>
     {/each}
   </ul>

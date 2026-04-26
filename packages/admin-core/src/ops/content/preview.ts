@@ -9,10 +9,9 @@
  */
 
 import { defineOperation } from "@caelo/query-api";
-import { err, ok } from "@caelo/shared";
+import { composePagePreview, err, ok } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { composePagePreview } from "../../preview/compose.js";
 
 export const renderPagePreviewOp = defineOperation({
   name: "pages.render_preview",

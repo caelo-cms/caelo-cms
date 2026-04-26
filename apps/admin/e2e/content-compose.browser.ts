@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
+import { clearLoginRateBucket } from "./helpers.js";
+
+test.beforeAll(clearLoginRateBucket);
 
 /**
  * P3 verification flow: dev owner logs in, creates a template + module + page,

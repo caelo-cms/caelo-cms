@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
+import { clearLoginRateBucket } from "./helpers.js";
+
+test.beforeAll(clearLoginRateBucket);
 
 /**
  * §4 invariant: provider brand never surfaces in the editor chat UI —

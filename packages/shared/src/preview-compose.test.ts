@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { composePagePreview } from "../preview/compose.js";
+import { composePagePreview } from "./preview-compose.js";
 
 const blankModule = {
   moduleId: "00000000-0000-0000-0000-000000000000",

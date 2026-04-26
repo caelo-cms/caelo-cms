@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { applySlotReplacements } from "../preview/scanner.js";
+import { applySlotReplacements } from "./preview-scanner.js";
 
 const map = (entries: [string, string][]) => new Map(entries);
 

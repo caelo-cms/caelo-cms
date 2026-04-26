@@ -36,6 +36,12 @@ import {
   listTemplatesOp,
   updateTemplateOp,
 } from "./ops/content/templates.js";
+import {
+  listDeployRunsOp,
+  listDeployTargetsOp,
+  promoteDeployOp,
+  triggerDeployOp,
+} from "./ops/deploy.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
 import { aggregateAiCallsOp } from "./ops/security/ai_calls.js";
 import {
@@ -123,4 +129,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listAiProvidersOp);
   registry.register(setAiProvidersOp);
   registry.register(aggregateAiCallsOp);
+  // P6 deploy
+  registry.register(listDeployTargetsOp);
+  registry.register(listDeployRunsOp);
+  registry.register(triggerDeployOp);
+  registry.register(promoteDeployOp);
 }

@@ -15,6 +15,7 @@
   "dependencies": {
     "@caelo/query-api": "workspace:*",
     "@caelo/shared": "workspace:*",
+    "@caelo/static-generator": "workspace:*",
     "drizzle-orm": "0.45.2",
     "htmlparser2": "^12.0.0",
     "zod": "4.3.6"

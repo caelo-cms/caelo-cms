@@ -25,7 +25,7 @@
  * the admin; in P11, plugin Web Components inside Shadow DOM).
  */
 
-import { applySlotReplacements } from "./scanner.js";
+import { applySlotReplacements } from "./preview-scanner.js";
 
 export interface ComposeModule {
   readonly moduleId: string;

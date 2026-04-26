@@ -16,7 +16,8 @@
 <ul>
   <li><a href="/security/users">Users</a> — create, update, delete admin users; assign roles</li>
   <li><a href="/security/roles">Roles</a> — built-in roles + Owner-defined custom roles</li>
-  <li><a href="/security/ai">AI provider</a> <em>(populated in P5)</em></li>
+  <li><a href="/security/ai">AI provider</a></li>
   <li><a href="/security/domains">Domains</a> <em>(populated in P9 / P14)</em></li>
-  <li><a href="/security/costs">AI cost controls</a> <em>(populated in P5 / P16)</em></li>
+  <li><a href="/security/costs">AI cost controls</a></li>
+  <li><a href="/security/deployments">Deployments</a> — Ops view: dev / staging / production + promote</li>
 </ul>

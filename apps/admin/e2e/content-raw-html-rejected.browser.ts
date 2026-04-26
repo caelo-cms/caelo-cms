@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
+import { clearLoginRateBucket } from "./helpers.js";
 
-// Dev-owner seed + login-bucket clear handled by Playwright globalSetup.
+test.beforeAll(clearLoginRateBucket);
 
 /**
  * §3.1 invariant — user-facing surface.

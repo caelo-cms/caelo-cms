@@ -18,7 +18,12 @@ export default defineConfig({
   // for either prerequisite.
   globalSetup: "./e2e/global-setup.ts",
   timeout: 30_000,
+  // workers:1 + fullyParallel:false → strict serial execution. Required
+  // because chat specs share `/tmp/caelo-ai-fixture.json`; running two
+  // specs concurrently lets one spec's writeFileSync clobber another
+  // mid-test and the SSE endpoint reads the wrong fixture.
   fullyParallel: false,
+  workers: 1,
   forbidOnly: !!process.env["CI"],
   retries: 0,
   reporter: [["list"]],

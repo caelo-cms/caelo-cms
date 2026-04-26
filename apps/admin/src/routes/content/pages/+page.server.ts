@@ -59,4 +59,37 @@ export const actions: Actions = {
     const pageId = (result.value as { pageId: string }).pageId;
     throw redirect(303, `/content/pages/${pageId}`);
   },
+  publish: async ({ request, locals }) => {
+    requirePermission(locals, "deploy.trigger");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+
+    const pageId = String(form.get("pageId") ?? "");
+    const updateResult = await execute(registry, adapter, locals.ctx, "pages.update", {
+      pageId,
+      status: "published",
+    });
+    if (!updateResult.ok) return fail(400, { error: "Could not publish page." });
+
+    // Editor view: one click maps to "deploy to default target".
+    // Ops users see the dev/staging/production model at /security/deployments.
+    const deployResult = await execute(registry, adapter, locals.ctx, "deploy.trigger", {});
+    if (!deployResult.ok) {
+      return fail(500, { error: "Page marked published but deploy failed." });
+    }
+    const summary = deployResult.value as {
+      targetName: string;
+      pageCount: number;
+      fileCount: number;
+    };
+    return {
+      published: {
+        pageId,
+        targetName: summary.targetName,
+        pageCount: summary.pageCount,
+        fileCount: summary.fileCount,
+      },
+    };
+  },
 };

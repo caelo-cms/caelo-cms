@@ -14,7 +14,8 @@
       "!**/.astro",
       "!**/coverage",
       "!**/playwright-report",
-      "!**/test-results"
+      "!**/test-results",
+      "!**/output"
     ]
   },
   "formatter": {

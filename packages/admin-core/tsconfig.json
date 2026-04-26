@@ -7,6 +7,10 @@
     "noEmit": false
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../shared" }, { "path": "../query-api" }],
+  "references": [
+    { "path": "../shared" },
+    { "path": "../query-api" },
+    { "path": "../../apps/static-generator" }
+  ],
   "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]
 }

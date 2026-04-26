@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
-import { runBunInline } from "./helpers.js";
+import { clearLoginRateBucket, runBunInline } from "./helpers.js";
+
+test.beforeAll(clearLoginRateBucket);
 
 /**
  * Reviewer role has `content.read` but not `content.write`. They can browse
