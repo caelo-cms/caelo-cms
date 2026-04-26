@@ -13,6 +13,7 @@
 </p>
 
 <nav>
+  <a href="/content">Content</a>
   <a href="/security/roles">Manage roles</a>
   <form method="post" action="/logout" style="display: inline">
     <button type="submit">Log out</button>
