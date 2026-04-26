@@ -28,6 +28,14 @@ import {
   updateTemplateOp,
 } from "./ops/content/templates.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
+import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
+import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
+import { moduleImpactOp } from "./ops/snapshots/impact.js";
+import { listSnapshotsOp } from "./ops/snapshots/list.js";
+import { revertModuleOp } from "./ops/snapshots/revert_module.js";
+import { revertPageOp } from "./ops/snapshots/revert_page.js";
+import { revertSiteOp } from "./ops/snapshots/revert_site.js";
+import { revertTemplateOp } from "./ops/snapshots/revert_template.js";
 import {
   createFirstOwnerOp,
   createUserOp,
@@ -71,4 +79,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setPageModulesOp);
   registry.register(deletePageOp);
   registry.register(renderPagePreviewOp);
+  // P4 snapshots
+  registry.register(listSnapshotsOp);
+  registry.register(getSnapshotWithEntitiesOp);
+  registry.register(moduleImpactOp);
+  registry.register(revertSiteOp);
+  registry.register(revertModuleOp);
+  registry.register(revertTemplateOp);
+  registry.register(revertPageOp);
+  registry.register(archiveOlderThanOp);
 }
