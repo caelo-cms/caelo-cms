@@ -51,6 +51,10 @@
   <button type="submit">Save</button>
 </form>
 
+<p>
+  <a href={`/content/modules/${module.id}/history`}>View history →</a>
+</p>
+
 {#if !module.deletedAt}
   <h2>Danger zone</h2>
   <form method="post" action="?/delete">

@@ -21,4 +21,7 @@
     <code>&lt;caelo-slot name="…"&gt;</code> markers
   </li>
   <li><a href="/content/pages">Pages</a> — composed from modules; preview in an iframe</li>
+  <li>
+    <a href="/content/history">History</a> — every site snapshot, with per-entity revert
+  </li>
 </ul>

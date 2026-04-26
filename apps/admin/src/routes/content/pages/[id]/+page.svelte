@@ -95,6 +95,8 @@
   <a href={`/content/pages/${page.id}/preview`} target="_blank" rel="noopener"
     >Open preview in a new tab →</a
   >
+  &nbsp;|&nbsp;
+  <a href={`/content/pages/${page.id}/history`}>View history →</a>
 </p>
 
 <h2>Metadata</h2>
