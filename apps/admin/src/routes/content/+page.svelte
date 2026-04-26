@@ -24,4 +24,8 @@
   <li>
     <a href="/content/history">History</a> — every site snapshot, with per-entity revert
   </li>
+  <li>
+    <a href="/content/chat">Chats</a> — talk to the AI; tool calls land snapshots on a
+    chat branch, Publish merges to main
+  </li>
 </ul>
