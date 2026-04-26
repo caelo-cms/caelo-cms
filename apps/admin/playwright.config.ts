@@ -13,6 +13,10 @@ export default defineConfig({
   // (which matches `*.test.ts` / `*.spec.ts`) doesn't pick these up during
   // `bun test` in the unit/integration job.
   testMatch: "**/*.browser.ts",
+  // globalSetup seeds the dev owner and clears the login rate-limit bucket
+  // once before any spec runs. Specs no longer need their own beforeAll hooks
+  // for either prerequisite.
+  globalSetup: "./e2e/global-setup.ts",
   timeout: 30_000,
   fullyParallel: false,
   forbidOnly: !!process.env["CI"],
@@ -26,14 +30,22 @@ export default defineConfig({
     // `vite preview` runs under Node, which doesn't expose the `bun` built-in
     // we import from in `$lib/server/query.ts`. Instead build once, then start
     // the adapter-bun output directly under Bun.
-    command: "bun run build && PORT=4173 bun run build/index.js",
+    //
+    // ORIGIN is load-bearing: svelte-adapter-bun does not infer it, so without
+    // an explicit value SvelteKit's cross-site Origin check 403s every form
+    // POST (login, setup, role creation). Behind a real reverse proxy this is
+    // the public URL; for the smoke server it's the loopback baseURL.
+    command: "bun run build && PORT=4173 ORIGIN=http://localhost:4173 bun run build/index.js",
     url: "http://localhost:4173",
     reuseExistingServer: !process.env["CI"],
-    timeout: 120_000,
+    // Cold builds on first run can take longer than 120s when node_modules has
+    // just been installed. Bump to 240s — local subsequent runs reuse.
+    timeout: 240_000,
     env: {
       ADMIN_DATABASE_URL: process.env["ADMIN_DATABASE_URL"] ?? "",
       PUBLIC_ADMIN_DATABASE_URL: process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? "",
       PUBLIC_DATABASE_URL: process.env["PUBLIC_DATABASE_URL"] ?? "",
+      ORIGIN: "http://localhost:4173",
     },
   },
 });
