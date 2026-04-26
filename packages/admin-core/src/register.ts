@@ -2,6 +2,15 @@
 
 import type { OperationRegistry } from "@caelo/query-api";
 import { loginOp, logoutOp, resolveSessionOp } from "./ops/auth.js";
+import { appendChatMessageOp, recordAiCallOp } from "./ops/chat/messages.js";
+import { publishChatSessionOp } from "./ops/chat/publish.js";
+import {
+  archiveChatSessionOp,
+  createChatSessionOp,
+  getChatSessionOp,
+  listChatSessionsOp,
+  renameChatSessionOp,
+} from "./ops/chat/sessions.js";
 import {
   createModuleOp,
   deleteModuleOp,
@@ -28,6 +37,15 @@ import {
   updateTemplateOp,
 } from "./ops/content/templates.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
+import { aggregateAiCallsOp } from "./ops/security/ai_calls.js";
+import {
+  listAiMemoryOp,
+  listMemoryProposalsOp,
+  proposeAiMemoryOp,
+  reviewAiMemoryOp,
+  setAiMemoryOp,
+} from "./ops/security/ai_memory.js";
+import { listAiProvidersOp, setAiProvidersOp } from "./ops/security/ai_providers.js";
 import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
 import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
 import { moduleImpactOp } from "./ops/snapshots/impact.js";
@@ -88,4 +106,21 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(revertTemplateOp);
   registry.register(revertPageOp);
   registry.register(archiveOlderThanOp);
+  // P5 chat + AI memory + provider config + accounting
+  registry.register(listChatSessionsOp);
+  registry.register(createChatSessionOp);
+  registry.register(getChatSessionOp);
+  registry.register(renameChatSessionOp);
+  registry.register(archiveChatSessionOp);
+  registry.register(appendChatMessageOp);
+  registry.register(recordAiCallOp);
+  registry.register(publishChatSessionOp);
+  registry.register(listAiMemoryOp);
+  registry.register(setAiMemoryOp);
+  registry.register(proposeAiMemoryOp);
+  registry.register(listMemoryProposalsOp);
+  registry.register(reviewAiMemoryOp);
+  registry.register(listAiProvidersOp);
+  registry.register(setAiProvidersOp);
+  registry.register(aggregateAiCallsOp);
 }
