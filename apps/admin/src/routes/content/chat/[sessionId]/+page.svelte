@@ -9,7 +9,13 @@
   };
   type Msg = { id: string; role: "user" | "assistant" | "tool"; content: string };
   type Chip = { moduleId: string; selector: string; label: string };
-  type ProposedDiff = { moduleId: string; before: string; after: string };
+  type ProposedDiff = {
+    moduleId: string;
+    before: string;
+    after: string;
+    /** P5.2 #5 — per-change checkbox state for partial publish. */
+    selected: boolean;
+  };
   let messages = $state<Msg[]>(data.messages as Msg[]);
   let composer = $state("");
   let streaming = $state(false);
@@ -94,6 +100,7 @@
                     moduleId: args.moduleId,
                     before: moduleStateBefore[args.moduleId] ?? "",
                     after: args.html,
+                    selected: true,
                   },
                 ];
               }
@@ -106,6 +113,7 @@
                     moduleId: args.moduleId,
                     before: moduleStateBefore[args.moduleId] ?? "",
                     after: args.html,
+                    selected: true,
                   },
                 ];
               }
@@ -234,6 +242,24 @@
       <p>{pendingChanges} pending change{pendingChanges === 1 ? "" : "s"}.</p>
       <form method="post" action="?/publish">
         <input type="hidden" name="_csrf" value={data.csrfToken} />
+        {#if proposedDiffs.length > 0}
+          <ul style="list-style: none; padding: 0; margin: 0 0 0.5rem">
+            {#each proposedDiffs as d, i (`${d.moduleId}-${i}`)}
+              <li>
+                <label style="display: flex; gap: 0.4rem; align-items: center">
+                  <input
+                    type="checkbox"
+                    name="entity"
+                    value={`module:${d.moduleId}`}
+                    checked={d.selected}
+                  />
+                  module {d.moduleId.slice(0, 8)}
+                </label>
+              </li>
+            {/each}
+          </ul>
+          <small><em>Untick to leave the change on the chat branch.</em></small>
+        {/if}
         <button type="submit">Publish</button>
       </form>
     {/if}

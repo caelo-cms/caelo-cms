@@ -33,3 +33,10 @@ export function makeProvider(config: ProviderConfig): AIProvider {
 }
 
 export { AnthropicProvider, FixtureProvider, MultiFixtureProvider } from "./anthropic.js";
+export {
+  clearAllTestProviders,
+  clearTestProvider,
+  isTestRegistryEnabled,
+  registerTestProvider,
+  resolveTestProvider,
+} from "./test-registry.js";

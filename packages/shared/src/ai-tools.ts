@@ -75,6 +75,23 @@ export const chatRenameSessionInput = z
 export const chatPublishInput = z
   .object({
     chatSessionId: z.string().uuid(),
+    /**
+     * Optional partial-publish filter (P5.2 #5). When present, only
+     * entities listed here are merged into main; the rest stay on the
+     * branch for a later publish. Empty array means "publish nothing"
+     * and is rejected; omit the field to publish everything.
+     */
+    entities: z
+      .array(
+        z
+          .object({
+            kind: z.enum(["module", "template", "page", "pageLayout"]),
+            entityId: z.string().uuid(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .optional(),
   })
   .strict();
 

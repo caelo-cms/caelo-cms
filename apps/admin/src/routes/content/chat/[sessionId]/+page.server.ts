@@ -47,8 +47,23 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
+    // P5.2 #5 — partial publish. Form sends `entity[]` as `kind:id`
+    // pairs (one per ticked checkbox). Empty array → publish everything.
+    const rawEntities = form.getAll("entity");
+    const entities: { kind: "module" | "template" | "page" | "pageLayout"; entityId: string }[] =
+      [];
+    for (const e of rawEntities) {
+      const [kind, id] = String(e).split(":");
+      if (
+        (kind === "module" || kind === "template" || kind === "page" || kind === "pageLayout") &&
+        id
+      ) {
+        entities.push({ kind, entityId: id });
+      }
+    }
     const result = await execute(registry, adapter, locals.ctx, "chat.publish", {
       chatSessionId: params.sessionId,
+      ...(entities.length > 0 ? { entities } : {}),
     });
     if (!result.ok) return fail(400, { error: "Could not publish chat." });
     throw redirect(303, `/content/chat/${params.sessionId}`);

@@ -7,9 +7,16 @@
  *
  * Provider brand never appears in event payloads — the runner emits
  * abstract events (text-delta, tool-start, tool-result, …).
+ *
+ * Provider selection (in order):
+ *   1. Header `x-caelo-test-provider: <name>` resolves a fixture from
+ *      the in-memory test registry (Playwright). The registry is
+ *      hard-disabled when NODE_ENV='production', so a deployed instance
+ *      cannot be coerced into using a fake AI by setting the header.
+ *   2. The configured Anthropic adapter with ANTHROPIC_API_KEY.
  */
 
-import { runChatTurn } from "@caelo/admin-core";
+import { resolveTestProvider, runChatTurn } from "@caelo/admin-core";
 import { execute } from "@caelo/query-api";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
@@ -18,17 +25,7 @@ import type { RequestHandler } from "./$types";
 
 const AI_ACTOR_ID = "00000000-0000-0000-0000-000000000a1a";
 const ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY";
-/**
- * P5.1 fixture-replay mode. When CAELO_AI_FIXTURE is set to a JSONL
- * file path (one ProviderEvent per line), the SSE endpoint constructs a
- * FixtureProvider instead of hitting the live API. Lets Playwright
- * exercise chat flows end-to-end without ANTHROPIC_API_KEY.
- *
- * The fixture file may also be a JSON array of arrays (one inner array
- * per loop iteration) — used for tool-use → continuation flows. The
- * loader sniffs the first non-whitespace character to decide.
- */
-const AI_FIXTURE_PATH_ENV = "CAELO_AI_FIXTURE";
+const TEST_PROVIDER_HEADER = "x-caelo-test-provider";
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
   requirePermission(locals, "content.read");
@@ -37,48 +34,24 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   // form-encoded, so the existing assertCsrfToken helper doesn't apply).
   const csrf = request.headers.get("x-csrf-token") ?? "";
   if (!locals.user) throw error(401, "Not authenticated");
-  // verifyCsrfToken via @caelo/admin-core.
   const { verifyCsrfToken } = await import("@caelo/admin-core");
   if (!(await verifyCsrfToken(locals.user.csrfSecret, csrf))) {
     throw error(403, "CSRF token mismatch");
   }
 
   const body = (await request.json()) as { content: string; chips?: unknown[] };
-
   const { adapter, registry } = getQueryContext();
 
-  // Provider selection:
-  //   1. If CAELO_AI_FIXTURE points at a readable file, use FixtureProvider
-  //      (Playwright + dev). The env var can stay set globally — only
-  //      requests where the file actually exists go down the fixture path,
-  //      so production deployments without the file fall through to the
-  //      live adapter.
-  //   2. Else use the configured Anthropic adapter with ANTHROPIC_API_KEY.
-  const fixturePath = process.env[AI_FIXTURE_PATH_ENV];
-  const { existsSync, readFileSync } = await import("node:fs");
-  const fixtureAvailable = Boolean(fixturePath && existsSync(fixturePath));
-  let aiProvider: import("@caelo/admin-core").AIProvider;
-  if (fixtureAvailable && fixturePath) {
-    const raw = readFileSync(fixturePath, "utf8").trim();
-    const { MultiFixtureProvider, FixtureProvider } = await import("@caelo/admin-core");
-    if (raw.startsWith("[")) {
-      const parsed = JSON.parse(raw) as
-        | import("@caelo/admin-core").ProviderEvent[]
-        | import("@caelo/admin-core").ProviderEvent[][];
-      // Sniff: array of arrays → multi-loop fixture; flat array → single shot.
-      const isMulti = Array.isArray(parsed) && parsed.length > 0 && Array.isArray(parsed[0]);
-      aiProvider = isMulti
-        ? new MultiFixtureProvider(parsed as import("@caelo/admin-core").ProviderEvent[][])
-        : new FixtureProvider(parsed as import("@caelo/admin-core").ProviderEvent[]);
-    } else {
-      // JSONL: one ProviderEvent per line (single-shot only).
-      const events = raw
-        .split("\n")
-        .filter((l) => l.trim().length > 0)
-        .map((l) => JSON.parse(l) as import("@caelo/admin-core").ProviderEvent);
-      aiProvider = new FixtureProvider(events);
+  let aiProvider: import("@caelo/admin-core").AIProvider | null = null;
+  const testProviderName = request.headers.get(TEST_PROVIDER_HEADER);
+  if (testProviderName) {
+    aiProvider = resolveTestProvider(testProviderName);
+    if (!aiProvider) {
+      throw error(400, `unknown test provider: ${testProviderName}`);
     }
-  } else {
+  }
+
+  if (!aiProvider) {
     const apiKey = process.env[ANTHROPIC_API_KEY_ENV];
     if (!apiKey) {
       return new Response(
@@ -114,6 +87,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     requestId: `chat-${params.sessionId}`,
   };
 
+  // P5.2 #2: pipe the request abort signal into runChatTurn so closing
+  // the browser tab mid-stream stops the loop and marks the in-flight
+  // assistant message as 'interrupted'.
+  const abortSignal = request.signal;
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
@@ -126,6 +104,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             tools,
             aiCtx,
             humanCtx: locals.ctx,
+            abortSignal,
           },
           {
             chatSessionId: params.sessionId,
@@ -135,14 +114,17 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
               : [],
           },
         )) {
+          if (abortSignal.aborted) break;
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
         }
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ kind: "error", message })}\n\n`),
-        );
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ kind: "done" })}\n\n`));
+        if (!abortSignal.aborted) {
+          const message = e instanceof Error ? e.message : String(e);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ kind: "error", message })}\n\n`),
+          );
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ kind: "done" })}\n\n`));
+        }
       } finally {
         controller.close();
       }

@@ -67,12 +67,27 @@ function buildRequestBody(input: GenerateInput, model: string): Record<string, u
     };
   });
 
-  // Cache the system prompt + tool catalogue per the streaming docs —
-  // they rarely change between calls in the same session, so the savings
-  // accumulate fast.
-  const systemBlock = input.cacheBreakpoints?.includes("system")
-    ? [{ type: "text", text: input.systemPrompt, cache_control: { type: "ephemeral" } }]
-    : input.systemPrompt;
+  // System prompt structure (P5.2 #4):
+  //   - chunked form: each {body, cacheable, label} chunk becomes a text
+  //     block; cacheable chunks carry `cache_control: ephemeral` so the
+  //     prompt-cache prefix stays warm across turns even when volatile
+  //     chunks (chips) change.
+  //   - flat string with cacheBreakpoints.system: legacy single-block cache.
+  //   - flat string without breakpoint: plain string body.
+  let systemBlock: unknown;
+  if (typeof input.systemPrompt !== "string") {
+    systemBlock = input.systemPrompt.map((c) =>
+      c.cacheable
+        ? { type: "text", text: c.body, cache_control: { type: "ephemeral" } }
+        : { type: "text", text: c.body },
+    );
+  } else if (input.cacheBreakpoints?.includes("system")) {
+    systemBlock = [
+      { type: "text", text: input.systemPrompt, cache_control: { type: "ephemeral" } },
+    ];
+  } else {
+    systemBlock = input.systemPrompt;
+  }
 
   const body: Record<string, unknown> = {
     model,
@@ -223,6 +238,7 @@ export class AnthropicProvider implements AIProvider {
         "content-type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: input.abortSignal,
     });
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
@@ -232,7 +248,10 @@ export class AnthropicProvider implements AIProvider {
     }
     const reader = res.body.getReader();
     try {
-      yield* translate(readSse(reader));
+      for await (const ev of translate(readSse(reader))) {
+        if (input.abortSignal?.aborted) return;
+        yield ev;
+      }
     } finally {
       reader.releaseLock();
     }

@@ -5,6 +5,12 @@
  * call. Pulls Owner-curated `site_ai_memory` slots, orders them
  * deterministically (so prompt-cache hits accumulate across calls),
  * and appends a brief tool catalogue.
+ *
+ * Returns ordered chunks (P5.2 #4) so adapters that support prompt-
+ * cache can mark the long-lived chunks (`base`, `memory`, `tools`)
+ * cacheable while leaving short-lived chunks (per-turn chips,
+ * engaged-skill bodies) outside the cache. `composeSystemPromptString`
+ * concatenates for callers that don't care about the structure.
  */
 
 const SLOT_ORDER = ["brand-voice", "tone", "banned-phrases", "instructions", "glossary"] as const;
@@ -27,6 +33,12 @@ export interface ToolCatalogueEntry {
   readonly description: string;
 }
 
+// SystemPromptChunk is defined in ./provider.ts so adapters can import
+// it without pulling in the system-prompt composer; we re-use that type here.
+import type { SystemPromptChunk } from "./provider.js";
+
+export type { SystemPromptChunk } from "./provider.js";
+
 const BASE_SYSTEM = [
   "You are Caelo, an AI co-editor for a content management system.",
   "Editors describe what they want changed; you respond conversationally and use tools",
@@ -34,14 +46,23 @@ const BASE_SYSTEM = [
   "Never call tools other than the ones listed below.",
 ].join(" ");
 
-export function composeSystemPrompt(
+/**
+ * Optional per-call volatile context: chips, ephemeral skill bodies.
+ * Anything that changes turn-to-turn goes here so the cache prefix
+ * stays stable.
+ */
+export interface VolatileContext {
+  readonly chipsBlock?: string;
+  readonly skillsBlock?: string;
+}
+
+export function composeSystemPromptChunks(
   memory: readonly MemoryRow[],
   tools: readonly ToolCatalogueEntry[],
-): string {
-  const sections: string[] = [BASE_SYSTEM];
+  volatile: VolatileContext = {},
+): SystemPromptChunk[] {
+  const chunks: SystemPromptChunk[] = [{ body: BASE_SYSTEM, cacheable: true, label: "base" }];
 
-  // Memory in fixed slot order so prompt-cache breakpoints land on a
-  // stable byte sequence between calls. Empty slots are skipped.
   const bySlot = new Map(memory.map((m) => [m.slot, m.body.trim()]));
   const memoryLines: string[] = [];
   for (const slot of SLOT_ORDER) {
@@ -50,16 +71,39 @@ export function composeSystemPrompt(
     memoryLines.push(`## ${SLOT_HEADINGS[slot]}\n${body}`);
   }
   if (memoryLines.length > 0) {
-    sections.push(["# Site memory", ...memoryLines].join("\n\n"));
+    chunks.push({
+      body: ["# Site memory", ...memoryLines].join("\n\n"),
+      cacheable: true,
+      label: "memory",
+    });
   }
 
-  // Tool catalogue mirrors the provider tool list 1:1; the model gets
-  // schemas separately via the provider tools field, so we just remind
-  // it of the names + purposes here.
   if (tools.length > 0) {
     const toolLines = tools.map((t) => `- **${t.name}** — ${t.description}`);
-    sections.push(["# Available tools", ...toolLines].join("\n"));
+    chunks.push({
+      body: ["# Available tools", ...toolLines].join("\n"),
+      cacheable: true,
+      label: "tools",
+    });
   }
 
-  return sections.join("\n\n");
+  // Volatile chunks go last so the cache prefix above stays byte-stable.
+  if (volatile.skillsBlock && volatile.skillsBlock.trim().length > 0) {
+    chunks.push({ body: volatile.skillsBlock, cacheable: false, label: "skills" });
+  }
+  if (volatile.chipsBlock && volatile.chipsBlock.trim().length > 0) {
+    chunks.push({ body: volatile.chipsBlock, cacheable: false, label: "chips" });
+  }
+
+  return chunks;
+}
+
+/** Backwards-compatible flat-string composer. */
+export function composeSystemPrompt(
+  memory: readonly MemoryRow[],
+  tools: readonly ToolCatalogueEntry[],
+): string {
+  return composeSystemPromptChunks(memory, tools)
+    .map((c) => c.body)
+    .join("\n\n");
 }

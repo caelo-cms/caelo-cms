@@ -36,9 +36,26 @@ export interface ProviderToolCall {
   readonly arguments: unknown;
 }
 
+/**
+ * One chunk of the system prompt with explicit cache eligibility.
+ * Anthropic adapters set `cache_control: ephemeral` on chunks marked
+ * `cacheable: true` and ship the volatile chunks (chips) without it,
+ * so prompt-cache stays warm across turns even as chips change.
+ * Providers without prompt-cache concatenate chunks and ignore the flag.
+ */
+export interface SystemPromptChunk {
+  readonly body: string;
+  readonly cacheable: boolean;
+  /** Stable label for telemetry / debugging — not sent to the model. */
+  readonly label: string;
+}
+
 export interface GenerateInput {
-  /** System prompt — site_ai_memory + tool catalogue. */
-  readonly systemPrompt: string;
+  /**
+   * Either a flat string (legacy) or an ordered list of chunks. Adapters
+   * that support prompt-cache treat the chunked form as cache breakpoints.
+   */
+  readonly systemPrompt: string | readonly SystemPromptChunk[];
   readonly messages: readonly ChatMessageInput[];
   readonly tools: readonly ToolDefinition[];
   /** Anthropic-style cache breakpoints; ignored by providers that don't
@@ -47,6 +64,8 @@ export interface GenerateInput {
   /** Optional per-call overrides. */
   readonly maxTokens?: number;
   readonly temperature?: number;
+  /** When the host request aborts, providers should stop emitting events. */
+  readonly abortSignal?: AbortSignal;
 }
 
 export type ProviderEvent =

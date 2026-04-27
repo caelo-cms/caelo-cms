@@ -41,3 +41,47 @@ export function clearLoginRateBucket(): void {
     await sql.end();
   `);
 }
+
+/**
+ * P5.2 #1 — register a per-spec fixture provider in the running admin
+ * process. Pass any unique `name` (typically `${spec}-${Date.now()}`)
+ * and the SSE endpoint will resolve it via `x-caelo-test-provider`.
+ *
+ * Returns the same name so callers can pass it straight to fetch.
+ */
+export async function registerTestProvider(
+  baseURL: string,
+  name: string,
+  events: unknown[] | unknown[][],
+): Promise<string> {
+  const res = await fetch(`${baseURL}/__test/providers`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, events }),
+  });
+  if (!res.ok) {
+    throw new Error(`registerTestProvider failed: ${res.status} ${await res.text()}`);
+  }
+  return name;
+}
+
+export async function clearTestProvider(baseURL: string, name: string): Promise<void> {
+  await fetch(`${baseURL}/__test/providers?name=${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Wires a Playwright BrowserContext so every chat-stream POST carries
+ * the `x-caelo-test-provider: <name>` header. Lives on the context, not
+ * the global state, so two specs can run in parallel without colliding.
+ */
+import type { BrowserContext } from "@playwright/test";
+
+export async function attachTestProviderHeader(ctx: BrowserContext, name: string): Promise<void> {
+  await ctx.route(/\/content\/chat\/[^/]+\/stream$/, async (route) => {
+    const req = route.request();
+    const headers = { ...req.headers(), "x-caelo-test-provider": name };
+    await route.continue({ headers });
+  });
+}

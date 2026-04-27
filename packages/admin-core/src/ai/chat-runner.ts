@@ -3,25 +3,29 @@
 /**
  * Orchestrates a single user→AI turn:
  *   1. Persist the user message + chips.
- *   2. Build messages history + system prompt.
+ *   2. Build messages history + system prompt (chunked for prompt-cache).
  *   3. Loop:
- *      - call provider.generate
+ *      - call provider.generate (signal-aware)
  *      - relay text deltas to the client (yielded events)
  *      - persist any assistant text + tool_calls
- *      - dispatch each tool; persist the tool result message
+ *      - dispatch each tool (skip + replay cached if dup id) and
+ *        persist the tool result
  *      - if the model said `stop_reason=tool_use`, loop again with the
  *        new transcript so the model can read the tool result and reply
  *      - else exit
  *   4. Record one ai_calls row aggregating usage across the loop.
  *
- * All persistence goes through Query API ops (one tx each) so a tool
- * call lands its own snapshot via the existing emitSnapshot path on
- * `modules.update` — the AI's writes are revertible exactly like a
- * human's.
- *
- * The runner yields a typed event stream the SSE endpoint relays to the
- * browser. No provider-brand strings leak into client-facing event
- * shapes.
+ * P5.2 additions:
+ *  - `abortSignal` propagates to the provider stream and to every
+ *    yield site; on abort the in-flight assistant message is marked
+ *    `status='interrupted'` and tool dispatch stops mid-loop.
+ *  - Tool-call dispatch is deduped by (chat_session_id, tool_call_id)
+ *    via `chat.lookup_tool_result` / `chat.cache_tool_result` so a
+ *    runner re-entry (retry, restart, double-fire) cannot mutate the
+ *    same module twice.
+ *  - `composeSystemPromptChunks` returns ordered chunks the Anthropic
+ *    adapter caches selectively — chips/skills (volatile) sit after
+ *    the cached prefix so changing them doesn't bust the cache.
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
@@ -29,14 +33,16 @@ import { execute } from "@caelo/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo/shared";
 
 import type { AIProvider, ChatMessageInput } from "./provider.js";
-import { composeSystemPrompt } from "./system-prompt.js";
+import { composeSystemPromptChunks } from "./system-prompt.js";
 import type { ToolRegistry } from "./tools/index.js";
 
 export type ClientEvent =
   | { kind: "text-delta"; text: string }
   | { kind: "tool-start"; toolCallId: string; name: string; arguments: unknown }
   | { kind: "tool-result"; toolCallId: string; ok: boolean; content: string }
+  | { kind: "tool-result-cached"; toolCallId: string }
   | { kind: "assistant-message-saved"; messageId: string }
+  | { kind: "interrupted"; messageId: string | null }
   | { kind: "usage"; inputTokens: number; outputTokens: number; cachedTokens: number; cost: number }
   | { kind: "done" }
   | { kind: "error"; message: string };
@@ -54,6 +60,8 @@ export interface ChatRunnerOptions {
   readonly inputCostPerMTok?: number;
   readonly outputCostPerMTok?: number;
   readonly maxToolLoops?: number;
+  /** P5.2 #2 — propagated to the provider; aborts halt the loop cleanly. */
+  readonly abortSignal?: AbortSignal;
 }
 
 const DEFAULT_INPUT_COST_PER_M = 15; // Opus 4.7 input rate, USD per 1M tokens
@@ -68,11 +76,12 @@ export async function* runChatTurn(
   options: ChatRunnerOptions,
   input: ChatSendMessageInput,
 ): AsyncIterable<ClientEvent> {
-  const { adapter, registry, provider, tools, aiCtx, humanCtx } = options;
+  const { adapter, registry, provider, tools, aiCtx, humanCtx, abortSignal } = options;
   const inputCost = options.inputCostPerMTok ?? DEFAULT_INPUT_COST_PER_M;
   const outputCost = options.outputCostPerMTok ?? DEFAULT_OUTPUT_COST_PER_M;
   const maxLoops = options.maxToolLoops ?? 5;
   const startedAt = Date.now();
+  const aborted = (): boolean => abortSignal?.aborted === true;
 
   // 1. Persist the user message.
   const userContent =
@@ -133,9 +142,19 @@ export async function* runChatTurn(
     toolCallId: m.toolCallId ?? undefined,
   }));
 
-  const systemPrompt = composeSystemPrompt(
+  // P5.2 #4 — chunked system prompt. Chips render as a volatile chunk
+  // so they don't bust the cache prefix (BASE + memory + tools).
+  const chipsBlock =
+    input.chips.length > 0
+      ? [
+          "# Element references in this turn",
+          ...input.chips.map((c) => `- ${c.label} (module=${c.moduleId}, selector=${c.selector})`),
+        ].join("\n")
+      : undefined;
+  const systemChunks = composeSystemPromptChunks(
     memory,
     tools.catalogue().map((t) => ({ name: t.name, description: t.description })),
+    { chipsBlock },
   );
 
   // AI calls all run with chatBranchId set so the snapshot lands tagged.
@@ -152,19 +171,22 @@ export async function* runChatTurn(
   let succeeded = true;
   type StopReason = "end_turn" | "tool_use" | "max_tokens" | "error";
   let stopReason: StopReason = "end_turn";
+  let lastAssistantMessageId: string | null = null;
 
   for (let loop = 0; loop < maxLoops; loop++) {
+    if (aborted()) break;
     const accumulatedText: string[] = [];
     const accumulatedToolCalls: { id: string; name: string; arguments: unknown }[] = [];
     let loopStop: StopReason = "end_turn";
 
     let providerErr = false;
     for await (const ev of provider.generate({
-      systemPrompt,
+      systemPrompt: systemChunks,
       messages,
       tools: tools.catalogue(),
-      cacheBreakpoints: ["system", "tools"],
+      abortSignal,
     })) {
+      if (aborted()) break;
       if (ev.kind === "text-delta") {
         accumulatedText.push(ev.text);
         yield { kind: "text-delta", text: ev.text };
@@ -193,11 +215,13 @@ export async function* runChatTurn(
       role: "assistant",
       content: assistantContent,
       toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : null,
+      status: aborted() ? "interrupted" : "complete",
     });
     if (assistantSave.ok) {
+      lastAssistantMessageId = (assistantSave.value as { messageId: string }).messageId;
       yield {
         kind: "assistant-message-saved",
-        messageId: (assistantSave.value as { messageId: string }).messageId,
+        messageId: lastAssistantMessageId,
       };
     }
 
@@ -211,25 +235,54 @@ export async function* runChatTurn(
       },
     ];
 
+    if (aborted()) break;
     if (loopStop !== "tool_use" || accumulatedToolCalls.length === 0) {
       stopReason = loopStop;
       break;
     }
 
     // Dispatch each tool call sequentially and append a tool result.
+    // P5.2 #3 — dedupe by (chat_session_id, tool_call_id).
     for (const call of accumulatedToolCalls) {
+      if (aborted()) break;
       yield {
         kind: "tool-start",
         toolCallId: call.id,
         name: call.name,
         arguments: call.arguments,
       };
-      const result = await tools.dispatch(call.name, call.arguments, aiCtxWithBranch, {
-        adapter,
-        registry,
+
+      const cachedLookup = await execute(registry, adapter, humanCtx, "chat.lookup_tool_result", {
         chatSessionId: input.chatSessionId,
-        chatBranchId: session.session.chatBranchId,
+        toolCallId: call.id,
       });
+      const cachedHit =
+        cachedLookup.ok &&
+        (cachedLookup.value as { cached: { ok: boolean; content: string } | null }).cached;
+
+      let result: { ok: boolean; content: string };
+      if (cachedHit) {
+        result = {
+          ok: cachedHit.ok,
+          content: cachedHit.content,
+        };
+        yield { kind: "tool-result-cached", toolCallId: call.id };
+      } else {
+        result = await tools.dispatch(call.name, call.arguments, aiCtxWithBranch, {
+          adapter,
+          registry,
+          chatSessionId: input.chatSessionId,
+          chatBranchId: session.session.chatBranchId,
+        });
+        await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
+          chatSessionId: input.chatSessionId,
+          toolCallId: call.id,
+          toolName: call.name,
+          ok: result.ok,
+          content: result.content,
+        });
+      }
+
       yield {
         kind: "tool-result",
         toolCallId: call.id,
@@ -244,6 +297,12 @@ export async function* runChatTurn(
       });
       messages.push({ role: "tool", content: result.content, toolCallId: call.id });
     }
+  }
+
+  if (aborted() && lastAssistantMessageId) {
+    await execute(registry, adapter, humanCtx, "chat.mark_message_interrupted", {
+      messageId: lastAssistantMessageId,
+    });
   }
 
   const usdCost = (totalIn / 1_000_000) * inputCost + (totalOut / 1_000_000) * outputCost;
@@ -264,8 +323,11 @@ export async function* runChatTurn(
     cachedTokens: totalCached,
     costEstimateMicrocents: microcents(usdCost),
     durationMs: Date.now() - startedAt,
-    succeeded: succeeded && stopReason !== "error",
+    succeeded: succeeded && stopReason !== "error" && !aborted(),
   });
 
+  if (aborted()) {
+    yield { kind: "interrupted", messageId: lastAssistantMessageId };
+  }
   yield { kind: "done" };
 }

@@ -28,6 +28,7 @@ export const appendChatMessageOp = defineOperation({
       tokensIn: z.number().int().nullable().optional(),
       tokensOut: z.number().int().nullable().optional(),
       cachedTokens: z.number().int().nullable().optional(),
+      status: z.enum(["complete", "interrupted"]).optional(),
     })
     .strict(),
   output: messageRow,
@@ -35,7 +36,7 @@ export const appendChatMessageOp = defineOperation({
     const rows = (await tx.execute(sql`
       INSERT INTO chat_messages (
         chat_session_id, role, content, tool_calls, tool_call_id,
-        tokens_in, tokens_out, cached_tokens
+        tokens_in, tokens_out, cached_tokens, status
       )
       VALUES (
         ${input.chatSessionId}::uuid,
@@ -45,7 +46,8 @@ export const appendChatMessageOp = defineOperation({
         ${input.toolCallId ?? null},
         ${input.tokensIn ?? null},
         ${input.tokensOut ?? null},
-        ${input.cachedTokens ?? null}
+        ${input.cachedTokens ?? null},
+        ${input.status ?? "complete"}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -62,6 +64,82 @@ export const appendChatMessageOp = defineOperation({
       WHERE id = ${input.chatSessionId}::uuid
     `);
     return ok({ messageId: id });
+  },
+});
+
+/**
+ * Mark an existing assistant message as interrupted (P5.2 #2). Called by
+ * the chat-runner when the SSE request aborts mid-stream so the UI can
+ * render an "interrupted" badge instead of a silently truncated reply.
+ */
+export const markChatMessageInterruptedOp = defineOperation({
+  name: "chat.mark_message_interrupted",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ messageId: z.string().uuid() }).strict(),
+  output: z.object({}),
+  handler: async (_ctx, input, tx) => {
+    await tx.execute(sql`
+      UPDATE chat_messages SET status = 'interrupted'
+      WHERE id = ${input.messageId}::uuid
+    `);
+    return ok({});
+  },
+});
+
+/**
+ * P5.2 #3 — tool-call dedup. Cache the result of a tool dispatch keyed
+ * by (chat_session_id, tool_call_id). The runner consults this before
+ * executing the tool; second invocation returns the cached row.
+ */
+export const cacheToolResultOp = defineOperation({
+  name: "chat.cache_tool_result",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      toolCallId: z.string(),
+      toolName: z.string(),
+      ok: z.boolean(),
+      content: z.string(),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (_ctx, input, tx) => {
+    await tx.execute(sql`
+      INSERT INTO chat_tool_results (chat_session_id, tool_call_id, tool_name, result_ok, result_content)
+      VALUES (${input.chatSessionId}::uuid, ${input.toolCallId}, ${input.toolName}, ${input.ok}, ${input.content})
+      ON CONFLICT (chat_session_id, tool_call_id) DO NOTHING
+    `);
+    return ok({});
+  },
+});
+
+export const lookupToolResultOp = defineOperation({
+  name: "chat.lookup_tool_result",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      toolCallId: z.string(),
+    })
+    .strict(),
+  output: z.object({
+    cached: z.object({ toolName: z.string(), ok: z.boolean(), content: z.string() }).nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT tool_name, result_ok, result_content
+      FROM chat_tool_results
+      WHERE chat_session_id = ${input.chatSessionId}::uuid AND tool_call_id = ${input.toolCallId}
+      LIMIT 1
+    `)) as unknown as { tool_name: string; result_ok: boolean; result_content: string }[];
+    const r = rows[0];
+    return ok({
+      cached: r ? { toolName: r.tool_name, ok: r.result_ok, content: r.result_content } : null,
+    });
   },
 });
 

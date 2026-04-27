@@ -18,12 +18,11 @@ export default defineConfig({
   // for either prerequisite.
   globalSetup: "./e2e/global-setup.ts",
   timeout: 30_000,
-  // workers:1 + fullyParallel:false → strict serial execution. Required
-  // because chat specs share `/tmp/caelo-ai-fixture.json`; running two
-  // specs concurrently lets one spec's writeFileSync clobber another
-  // mid-test and the SSE endpoint reads the wrong fixture.
-  fullyParallel: false,
-  workers: 1,
+  // P5.2 #1 — chat fixtures live in process memory now (registered via
+  // POST /__test/providers, matched by `x-caelo-test-provider` header),
+  // so specs no longer share filesystem state and parallel workers are
+  // safe again.
+  fullyParallel: true,
   forbidOnly: !!process.env["CI"],
   retries: 0,
   reporter: [["list"]],
@@ -51,11 +50,12 @@ export default defineConfig({
       PUBLIC_ADMIN_DATABASE_URL: process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? "",
       PUBLIC_DATABASE_URL: process.env["PUBLIC_DATABASE_URL"] ?? "",
       ORIGIN: "http://localhost:4173",
-      // Fixture-replay mode: the SSE chat endpoint reads this file per
-      // request instead of hitting the live API. The Playwright specs that
-      // need a deterministic chat response write the fixture to this exact
-      // path before sending the message.
-      CAELO_AI_FIXTURE: "/tmp/caelo-ai-fixture.json",
+      // NODE_ENV must be unset / non-production for the test-provider
+      // registry (`/__test/providers`) to accept registrations. The
+      // production build runtime sets NODE_ENV=production by default
+      // when invoked through `bun run build/index.js`; we override here
+      // so Playwright specs can register fixtures.
+      NODE_ENV: "development",
     },
   },
 });

@@ -2,7 +2,13 @@
 
 import type { OperationRegistry } from "@caelo/query-api";
 import { loginOp, logoutOp, resolveSessionOp } from "./ops/auth.js";
-import { appendChatMessageOp, recordAiCallOp } from "./ops/chat/messages.js";
+import {
+  appendChatMessageOp,
+  cacheToolResultOp,
+  lookupToolResultOp,
+  markChatMessageInterruptedOp,
+  recordAiCallOp,
+} from "./ops/chat/messages.js";
 import { publishChatSessionOp } from "./ops/chat/publish.js";
 import {
   archiveChatSessionOp,
@@ -119,6 +125,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(renameChatSessionOp);
   registry.register(archiveChatSessionOp);
   registry.register(appendChatMessageOp);
+  registry.register(markChatMessageInterruptedOp);
+  registry.register(cacheToolResultOp);
+  registry.register(lookupToolResultOp);
   registry.register(recordAiCallOp);
   registry.register(publishChatSessionOp);
   registry.register(listAiMemoryOp);
