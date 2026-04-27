@@ -36,8 +36,28 @@ export const siteMemoryProposeToolInput = z
  * The set of tools shipped in P5. Other phases extend by adding a new
  * entry; the dispatcher walks this map at registration time.
  */
-export const AI_TOOLS = ["edit_module", "site_memory.propose"] as const;
+/**
+ * P6.7.3 — `add_module_to_page` AI tool. Creates a new module and
+ * inserts it into a target page's block at the requested position. The
+ * AI passes html (and optionally css/js) and a sluggable displayName;
+ * the tool generates a unique slug.
+ */
+export const addModuleToPageToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    blockName: z.string().min(1).max(80),
+    /** "top" | "bottom" | a 0-based integer index. */
+    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+    displayName: z.string().min(1).max(128),
+    html: z.string().min(1).max(50_000),
+    css: z.string().max(50_000).optional(),
+    js: z.string().max(50_000).optional(),
+  })
+  .strict();
+
+export const AI_TOOLS = ["edit_module", "site_memory_propose", "add_module_to_page"] as const;
 export type AiToolName = (typeof AI_TOOLS)[number];
+export type AddModuleToPageToolInput = z.infer<typeof addModuleToPageToolInput>;
 
 /** Chat ops input shapes — used by the SvelteKit form actions. */
 export const chatCreateSessionInput = z
@@ -62,6 +82,14 @@ export const chatSendMessageInput = z
           .strict(),
       )
       .default([]),
+    /**
+     * P6.7.3 — the active /edit page id, threaded so the chat-runner can
+     * compose a Current-page volatile chunk in the system prompt and so
+     * tools that operate on a page (add_module_to_page) know the target
+     * without a chip. Optional because the standalone chat editor at
+     * /content/chat doesn't have a page context.
+     */
+    activePageId: z.string().uuid().optional(),
   })
   .strict();
 

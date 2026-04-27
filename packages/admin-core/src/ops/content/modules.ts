@@ -97,7 +97,10 @@ export const getModuleOp = defineOperation({
 
 export const createModuleOp = defineOperation({
   name: "modules.create",
-  actorScope: ["human", "system"],
+  // P6.7.3 — AI can create modules via the `add_module_to_page` tool
+  // (and templates-fan-out variants in later phases). Same audit +
+  // snapshot path as a human create, just with actor_kind=ai.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: moduleCreateSchema,
   output: z.object({ moduleId: z.string() }),

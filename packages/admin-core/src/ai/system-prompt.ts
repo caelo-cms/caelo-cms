@@ -47,13 +47,14 @@ const BASE_SYSTEM = [
 ].join(" ");
 
 /**
- * Optional per-call volatile context: chips, ephemeral skill bodies.
- * Anything that changes turn-to-turn goes here so the cache prefix
- * stays stable.
+ * Optional per-call volatile context: chips, ephemeral skill bodies,
+ * the active /edit page's modules + blocks. Anything that changes
+ * turn-to-turn goes here so the cache prefix stays stable.
  */
 export interface VolatileContext {
   readonly chipsBlock?: string;
   readonly skillsBlock?: string;
+  readonly pageContextBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -90,6 +91,9 @@ export function composeSystemPromptChunks(
   // Volatile chunks go last so the cache prefix above stays byte-stable.
   if (volatile.skillsBlock && volatile.skillsBlock.trim().length > 0) {
     chunks.push({ body: volatile.skillsBlock, cacheable: false, label: "skills" });
+  }
+  if (volatile.pageContextBlock && volatile.pageContextBlock.trim().length > 0) {
+    chunks.push({ body: volatile.pageContextBlock, cacheable: false, label: "page-context" });
   }
   if (volatile.chipsBlock && volatile.chipsBlock.trim().length > 0) {
     chunks.push({ body: volatile.chipsBlock, cacheable: false, label: "chips" });

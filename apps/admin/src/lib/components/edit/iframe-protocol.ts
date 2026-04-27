@@ -39,8 +39,13 @@ export interface ReloadMessage {
   kind: "caelo:reload";
 }
 
+export interface SetEditModeMessage {
+  kind: "caelo:set-edit-mode";
+  on: boolean;
+}
+
 export type IframeToParent = ReadyMessage | NavigatedMessage | ElementClickedMessage;
-export type ParentToIframe = ReloadMessage;
+export type ParentToIframe = ReloadMessage | SetEditModeMessage;
 export type CaeloMessage = IframeToParent | ParentToIframe;
 
 export function isCaeloMessage(value: unknown): value is CaeloMessage {
@@ -50,6 +55,7 @@ export function isCaeloMessage(value: unknown): value is CaeloMessage {
     k === "caelo:ready" ||
     k === "caelo:navigated" ||
     k === "caelo:element-clicked" ||
-    k === "caelo:reload"
+    k === "caelo:reload" ||
+    k === "caelo:set-edit-mode"
   );
 }

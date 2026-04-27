@@ -279,6 +279,7 @@
       {initialMessages}
       {modules}
       {csrfToken}
+      {activePageId}
       compact
       onToolResult={handleToolResult}
     />

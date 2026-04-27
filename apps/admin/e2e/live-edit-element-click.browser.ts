@@ -94,28 +94,22 @@ test("clicking an element in the live-preview iframe appends a chip", async ({ p
   await page.goto(`/edit?page=${ids.pg}`);
   await expect(page).toHaveURL(/\/edit/, { timeout: 15_000 });
 
-  // Wait for the iframe to surface the tagged element.
+  // P6.7.3 — toolbar toggle replaces the modifier combo. Flip Edit on
+  // before clicking the iframe element.
+  await page.locator('[data-testid="edit-mode-toggle"]').click();
+
   const previewFrame = page.frameLocator("iframe[title='Live preview']");
   const taggedH1 = previewFrame.locator("h1[data-caelo-module-id]");
   await expect(taggedH1).toContainText("HERO_CLICK_TARGET", { timeout: 15_000 });
 
-  // P6.7.2 — clicks only fire chips with Alt+Control+Meta held. Dispatch
-  // a synthesized MouseEvent so (a) we bypass the floating overlay's
-  // pointer interception and (b) the inject-script's capture listener
-  // sees the modifier flags directly on the event.
+  // Synthesize the click so we bypass the floating overlay's pointer
+  // interception. With edit mode ON the inject-script's capture
+  // listener treats every same-page click as a chip emit regardless of
+  // modifier flags.
   await taggedH1.evaluate((el: HTMLElement) => {
-    el.dispatchEvent(
-      new MouseEvent("click", {
-        bubbles: true,
-        cancelable: true,
-        altKey: true,
-        ctrlKey: true,
-        metaKey: true,
-      }),
-    );
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
 
-  // The chip lands in the composer.
   const chip = page.locator('[data-testid="chip"]').first();
   await expect(chip).toBeVisible({ timeout: 5_000 });
 });

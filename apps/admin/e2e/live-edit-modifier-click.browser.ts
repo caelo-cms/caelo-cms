@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7.2 — element clicks inside the iframe only fire chips when the
- * Alt+Control+Meta modifier combo is held. Without the combo, clicks
- * pass through naturally so the user can click around their site like
- * a normal visitor.
+ * P6.7.3 — element clicks inside the iframe only fire chips when the
+ * toolbar's Edit-mode toggle is ON. With it OFF, clicks pass through
+ * naturally so the user can click around their site like a normal
+ * visitor. Replaced the prior 3-key-modifier flow with this toggle.
  */
 
 import { spawnSync } from "node:child_process";
@@ -49,7 +49,7 @@ test.afterAll(() => {
   );
 });
 
-test("modifier-gated click: no chip without combo; chip with combo", async ({ page }) => {
+test("toolbar-toggle gating: no chip when off; chip when on", async ({ page }) => {
   const seed = runBunInlineCapture(
     `
     import { SQL } from "bun";
@@ -93,11 +93,10 @@ test("modifier-gated click: no chip without combo; chip with combo", async ({ pa
   const taggedH1 = previewFrame.locator("h1[data-caelo-module-id]");
   await expect(taggedH1).toContainText("HERO_MOD_TEST", { timeout: 15_000 });
 
-  // Synthesize click events directly so (a) we bypass the floating
-  // overlay's pointer interception and (b) the inject-script's capture
-  // listener reads modifier flags straight off the MouseEvent.
+  const toggle = page.locator('[data-testid="edit-mode-toggle"]');
 
-  // Without modifiers — click should NOT produce a chip.
+  // Toggle OFF (default) — click should NOT produce a chip.
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await taggedH1.evaluate((el: HTMLElement) => {
     el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
@@ -105,17 +104,11 @@ test("modifier-gated click: no chip without combo; chip with combo", async ({ pa
   await page.waitForTimeout(500);
   await expect(chip).toHaveCount(0);
 
-  // With Alt+Control+Meta — click DOES produce a chip.
+  // Click the toolbar toggle ON — chip lands.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await taggedH1.evaluate((el: HTMLElement) => {
-    el.dispatchEvent(
-      new MouseEvent("click", {
-        bubbles: true,
-        cancelable: true,
-        altKey: true,
-        ctrlKey: true,
-        metaKey: true,
-      }),
-    );
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   await expect(chip.first()).toBeVisible({ timeout: 5_000 });
 });

@@ -151,10 +151,67 @@ export async function* runChatTurn(
           ...input.chips.map((c) => `- ${c.label} (module=${c.moduleId}, selector=${c.selector})`),
         ].join("\n")
       : undefined;
+
+  // P6.7.3 — Current-page volatile chunk. When the live-edit surface
+  // sends `activePageId`, we load the page + its modules + the
+  // template's blocks and surface that as a per-call context block so
+  // the AI knows what's on the page and which tool to use ("I want a
+  // button at the top" → add_module_to_page; "make the hero red" →
+  // edit_module on the matching module-id).
+  let pageContextBlock: string | undefined;
+  if (input.activePageId) {
+    const pageR = await execute(registry, adapter, humanCtx, "pages.get_with_modules", {
+      pageId: input.activePageId,
+    });
+    if (pageR.ok) {
+      const v = pageR.value as {
+        page: {
+          id: string;
+          slug: string;
+          locale: string;
+          title: string;
+          status: string;
+          templateId: string;
+          blocks: {
+            blockName: string;
+            modules: { moduleId: string; slug: string; displayName: string; html: string }[];
+          }[];
+        };
+      };
+      const lines: string[] = [
+        "# Current page",
+        `Page: ${v.page.slug} (locale=${v.page.locale}, status=${v.page.status}, id=${v.page.id})`,
+        `Template id: ${v.page.templateId}`,
+        `Blocks (in render order): ${v.page.blocks.map((b) => b.blockName).join(", ") || "(none)"}`,
+        "",
+        "## Modules currently on this page",
+      ];
+      for (const b of v.page.blocks) {
+        if (b.modules.length === 0) {
+          lines.push(`- block "${b.blockName}": (empty)`);
+          continue;
+        }
+        for (let i = 0; i < b.modules.length; i++) {
+          const m = b.modules[i];
+          if (!m) continue;
+          const snippet = m.html.length > 200 ? `${m.html.slice(0, 200)}…` : m.html;
+          lines.push(
+            `- block "${b.blockName}" pos ${i}: id=${m.moduleId} slug=${m.slug} (${m.displayName}) — ${snippet}`,
+          );
+        }
+      }
+      lines.push("");
+      lines.push(
+        "Tool guidance: edit_module to change an existing module; add_module_to_page to insert a NEW module into a block on this page (use position='top' or 'bottom' or a number). Always reference real module ids from the list above.",
+      );
+      pageContextBlock = lines.join("\n");
+    }
+  }
+
   const systemChunks = composeSystemPromptChunks(
     memory,
     tools.catalogue().map((t) => ({ name: t.name, description: t.description })),
-    { chipsBlock },
+    { chipsBlock, pageContextBlock },
   );
 
   // AI calls all run with chatBranchId set so the snapshot lands tagged.

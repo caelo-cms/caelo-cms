@@ -2,7 +2,7 @@
 
 /**
  * Site memory proposal end-to-end:
- *   - AI proposes a memory addition mid-chat (tool call site_memory.propose)
+ *   - AI proposes a memory addition mid-chat (tool call site_memory_propose)
  *   - Owner sees the queue at /security/ai/memory-proposals
  *   - Owner accepts → memory body updates
  *   - The accepted body shows up at /security/ai/memory
@@ -48,7 +48,7 @@ test("AI proposes memory → Owner accepts → memory updates", async ({ context
       {
         kind: "tool-call",
         id: "tu_mem",
-        name: "site_memory.propose",
+        name: "site_memory_propose",
         arguments: {
           slot: "instructions",
           body: PROPOSAL_BODY,

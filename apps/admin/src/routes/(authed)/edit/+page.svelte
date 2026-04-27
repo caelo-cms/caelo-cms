@@ -20,7 +20,7 @@
    */
 
   import { goto } from "$app/navigation";
-  import { ArrowLeft } from "lucide-svelte";
+  import { ArrowLeft, MousePointerClick } from "lucide-svelte";
   import { onMount } from "svelte";
   import Overlay from "$lib/components/edit/Overlay.svelte";
   import {
@@ -29,6 +29,7 @@
   } from "$lib/components/edit/iframe-protocol.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Combobox } from "$lib/components/ui/combobox/index.js";
+  import { cn } from "$lib/utils.js";
   import {
     Dialog,
     DialogContent,
@@ -66,6 +67,21 @@
   let pendingChanges = $state(0);
   let pendingSwitchTo = $state<string | null>(null);
   let dialogOpen = $state(false);
+  // P6.7.3 — Edit mode toggle. ON: clicks in the iframe become chips.
+  // OFF: live-site browsing (links navigate, JS runs).
+  let editMode = $state(false);
+
+  function setEditMode(on: boolean): void {
+    editMode = on;
+    iframe?.contentWindow?.postMessage(
+      { kind: "caelo:set-edit-mode", on },
+      window.location.origin,
+    );
+  }
+
+  function toggleEditMode(): void {
+    setEditMode(!editMode);
+  }
 
   function onPageChange(value: string): void {
     if (value === activePageId) return;
@@ -113,6 +129,16 @@
             },
           }),
         );
+      } else if (msg.kind === "caelo:ready") {
+        // The iframe finished loading — re-apply edit-mode if it was on
+        // before the navigation/reload. The iframe forgets the body
+        // class on each load.
+        if (editMode) {
+          iframe?.contentWindow?.postMessage(
+            { kind: "caelo:set-edit-mode", on: true },
+            window.location.origin,
+          );
+        }
       } else if (msg.kind === "caelo:navigated") {
         displayPath = { locale: msg.locale, slug: msg.slug };
         // Click-through navigation inside the iframe — sync activePageId
@@ -161,8 +187,24 @@
       class="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
       data-testid="edit-url"
     >{urlText}</code>
+    <button
+      type="button"
+      onclick={toggleEditMode}
+      data-testid="edit-mode-toggle"
+      aria-pressed={editMode}
+      class={cn(
+        "ml-auto inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+        editMode
+          ? "border-blue-500 bg-blue-500 text-white hover:bg-blue-600"
+          : "border-border bg-background text-foreground hover:bg-accent",
+      )}
+      title="When on, clicks in the page select an element to edit"
+    >
+      <MousePointerClick class="size-3.5" />
+      {editMode ? "Editing — click an element" : "Edit elements"}
+    </button>
     {#if data.pages.length > 0}
-      <div class="ml-auto w-64">
+      <div class="w-64">
         <Combobox
           items={data.pages.map((p) => ({
             value: p.id,
@@ -174,7 +216,7 @@
         />
       </div>
     {:else}
-      <span class="ml-auto text-muted-foreground">
+      <span class="text-muted-foreground">
         No pages yet —
         <a class="underline" href="/content/pages">create one</a>.
       </span>

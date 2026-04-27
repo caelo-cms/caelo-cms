@@ -140,7 +140,9 @@ export const getPageOp = defineOperation({
  */
 export const getPageWithModulesOp = defineOperation({
   name: "pages.get_with_modules",
-  actorScope: ["human", "system"],
+  // P6.7.3 — AI reads the page's modules to compose Current-page system
+  // context and to splice via add_module_to_page. Read-only.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ pageId: z.string().uuid() }),
   output: z.object({ page: pageWithModulesSchema }),
@@ -386,7 +388,9 @@ export const updatePageOp = defineOperation({
  */
 export const setPageModulesOp = defineOperation({
   name: "pages.set_modules",
-  actorScope: ["human", "system"],
+  // P6.7.3 — AI writes via add_module_to_page. Branch-aware snapshot
+  // emission keeps changes scoped to the chat branch.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: pageSetModulesSchema,
   output: z.object({}),

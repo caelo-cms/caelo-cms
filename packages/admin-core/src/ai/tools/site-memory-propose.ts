@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * AI tool: site_memory.propose. Queues a proposal in
+ * AI tool: site_memory_propose. Queues a proposal in
  * `site_memory_proposals`; never writes to `site_ai_memory` directly.
  * Owners review the queue at /security/ai/memory-proposals.
  */
@@ -13,7 +13,11 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 export const siteMemoryProposeTool: ToolDefinitionWithHandler<
   import("@caelo/shared").SiteMemoryProposeToolInput
 > = {
-  name: "site_memory.propose",
+  // P6.7.2 — Anthropic's tool-name validator rejects dots
+  // (`^[a-zA-Z0-9_-]{1,128}$`). Keep this as snake_case so the live
+  // provider call works; tests using the fixture provider don't
+  // enforce this regex but the live API does.
+  name: "site_memory_propose",
   description:
     "Propose an addition to the site's AI memory (brand voice, tone, banned " +
     "phrases, instructions, glossary). The proposal queues for Owner review " +

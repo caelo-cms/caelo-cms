@@ -39,7 +39,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     throw error(403, "CSRF token mismatch");
   }
 
-  const body = (await request.json()) as { content: string; chips?: unknown[] };
+  const body = (await request.json()) as {
+    content: string;
+    chips?: unknown[];
+    activePageId?: string;
+  };
   const { adapter, registry } = getQueryContext();
 
   let aiProvider: import("@caelo/admin-core").AIProvider | null = null;
@@ -112,6 +116,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             chips: Array.isArray(body.chips)
               ? (body.chips as { moduleId: string; selector: string; label: string }[])
               : [],
+            ...(typeof body.activePageId === "string" && body.activePageId.length > 0
+              ? { activePageId: body.activePageId }
+              : {}),
           },
         )) {
           if (abortSignal.aborted) break;

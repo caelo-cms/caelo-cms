@@ -66,6 +66,8 @@
      * overflows when embedded in the floating overlay.
      */
     compact?: boolean;
+    /** P6.7.3 — when set, the runner gets a Current-page system block. */
+    activePageId?: string | null;
     onToolResult?: (payload: ToolResultPayload) => void;
   }
   let {
@@ -75,6 +77,7 @@
     csrfToken,
     formError = null,
     compact = false,
+    activePageId = null,
     onToolResult,
   }: Props = $props();
 
@@ -83,6 +86,9 @@
   let streaming = $state(false);
   let streamingText = $state("");
   let pendingChanges = $state(0);
+  /** P6.7.3 — surface SSE error events + failed tool results so users
+   *  see a banner instead of a silent no-op when the AI stack errors. */
+  let chatError = $state<string | null>(null);
   // Pinned chips (from session.pinnedElements) ride every send; transient
   // chips (dropdown picks, iframe element-clicks) are sent once and cleared.
   let chips = $state<Chip[]>(
@@ -168,6 +174,7 @@
     const text = composer;
     const sentChips = chips;
     composer = "";
+    chatError = null;
     // Pinned chips ride every send; transient chips clear after.
     chips = chips.filter((c) => c.pinned);
     streaming = true;
@@ -176,7 +183,11 @@
     const res = await fetch(`/content/chat/${session.id}/stream`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
-      body: JSON.stringify({ content: text, chips: sentChips }),
+      body: JSON.stringify({
+        content: text,
+        chips: sentChips,
+        ...(activePageId ? { activePageId } : {}),
+      }),
     });
     if (!res.body) {
       streaming = false;
@@ -197,7 +208,11 @@
         if (line.startsWith("data: ")) {
           try {
             const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
-            if (ev["kind"] === "text-delta") streamingText += String(ev["text"] ?? "");
+            if (ev["kind"] === "error") {
+              chatError = typeof ev["message"] === "string" ? ev["message"] : "Chat failed.";
+            } else if (ev["kind"] === "tool-result" && ev["ok"] === false) {
+              chatError = `Tool call failed: ${String(ev["content"] ?? "unknown error")}`;
+            } else if (ev["kind"] === "text-delta") streamingText += String(ev["text"] ?? "");
             else if (ev["kind"] === "tool-result" && ev["ok"]) {
               pendingChanges += 1;
               const args = (ev["arguments"] as { moduleId?: string; html?: string }) ?? {};
@@ -319,6 +334,13 @@
             <li class="rounded-md border-l-4 border-muted-foreground/40 bg-muted p-3 text-sm">
               <strong>AI:</strong>
               <pre class="m-0 whitespace-pre-wrap font-sans">{streamingText}</pre>
+            </li>
+          {/if}
+          {#if chatError}
+            <li data-testid="chat-error">
+              <Alert variant="destructive">
+                <AlertDescription>{chatError}</AlertDescription>
+              </Alert>
             </li>
           {/if}
         </ul>
