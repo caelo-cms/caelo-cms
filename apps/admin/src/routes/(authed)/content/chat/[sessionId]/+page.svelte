@@ -6,9 +6,9 @@
 </script>
 
 <ChatPanel
-  session={data.session as never}
-  initialMessages={data.messages as never}
-  modules={data.modules as never}
+  session={data.session}
+  initialMessages={data.messages}
+  modules={data.modules}
   csrfToken={data.csrfToken}
   formError={form?.error ?? null}
 />

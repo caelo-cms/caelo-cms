@@ -23,24 +23,8 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
   import { cn } from "$lib/utils.js";
+  import type { ChatMessage, ChatModule, ChatSession } from "./types.js";
 
-  interface Session {
-    id: string;
-    title: string;
-    chatBranchId: string;
-    publishedAt: string | null;
-  }
-  interface Module {
-    id: string;
-    slug: string;
-    displayName: string;
-    html?: string;
-  }
-  interface Msg {
-    id: string;
-    role: "user" | "assistant" | "tool";
-    content: string;
-  }
   interface Chip {
     moduleId: string;
     selector: string;
@@ -54,15 +38,15 @@
   }
 
   interface Props {
-    session: Session;
-    initialMessages: Msg[];
-    modules: Module[];
+    session: ChatSession;
+    initialMessages: ChatMessage[];
+    modules: ChatModule[];
     csrfToken: string;
     formError?: string | null;
   }
   let { session, initialMessages, modules, csrfToken, formError = null }: Props = $props();
 
-  let messages = $state<Msg[]>(initialMessages);
+  let messages = $state<ChatMessage[]>(initialMessages);
   let composer = $state("");
   let streaming = $state(false);
   let streamingText = $state("");

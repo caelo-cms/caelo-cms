@@ -93,6 +93,21 @@ These cannot be violated by any change, AI-generated or human:
 
 ---
 
+## 6A. UI components (Tailwind 4 + shadcn-svelte)
+
+Landed in P6.5. Conventions any session touching admin UI should follow:
+
+- **Components live in `apps/admin/src/lib/components/ui/`** — owned by this repo (the shadcn-svelte CLI generates them; we then maintain them). Adding a new one: `bunx shadcn-svelte@latest add <name>`. Do not edit generated files to fork them; treat each as a checkpointed copy that can be regenerated.
+- **All styling is Tailwind utilities** + the per-component variants emitted by the shadcn CLI. Do not write new `<style>` blocks unless absolutely necessary (a one-off CSS-only animation is fine; a per-route stylesheet is not).
+- **`cn()` for any class string that mixes a base + a variant** (`$lib/utils.js`). Pure-static class strings can stay as plain template literals — the rule is "if a conditional or a variant is involved, route through `cn()`".
+- **`buttonVariants()` for link-as-button** elements (`<a class={buttonVariants({ variant, size })}>`). Don't hand-roll button styling on `<a>` tags — when the button design evolves, every styled link follows automatically.
+- **Native `<select>`** via the `Select` wrapper at `lib/components/ui/select/`. The bits-ui `Combobox` is the right primitive for searchable / virtualised pickers (P6.7's page picker uses it); a plain `<select>` keeps form-submission semantics simple for the routine case.
+- **Variant exports live in sibling `.ts` files** (e.g. `button-variants.ts`), not in a `<script module>` block — TS doesn't surface named exports from `.svelte` modules to the type system reliably yet.
+- **Empty states use `<EmptyStatePlaceholder>`** at `lib/components/`. P6.6 polishes the inner shape (illustrations, primary CTAs); the hook stays.
+- **Toasts via `svelte-sonner`** through `lib/components/ui/sonner`. Mounted once in the root layout. Form actions pair with `use:enhance` — a single layout-level `$effect` watches `$page.form` and fires `toast.success(...)` / `toast.error(...)`. Don't sprinkle toast calls inside route components.
+
+---
+
 ## 7. Security posture
 
 - **Secrets never in code or `.env` files committed to git.** Always via the provider-appropriate secrets manager, even in dev (use a local Vault/Doppler/MinIO-hosted fake).

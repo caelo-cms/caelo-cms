@@ -2,12 +2,19 @@
 
 import { execute } from "@caelo/query-api";
 import { error, fail, redirect } from "@sveltejs/kit";
+import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
-export const load: PageServerLoad = async ({ params, locals }) => {
+interface ChatPageData {
+  session: ChatSession;
+  messages: ChatMessage[];
+  modules: ChatModule[];
+}
+
+export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPageData> => {
   requirePermission(locals, "content.read");
   const { adapter, registry } = getQueryContext();
   const [sessionR, modulesR] = await Promise.all([
@@ -18,22 +25,10 @@ export const load: PageServerLoad = async ({ params, locals }) => {
   ]);
   if (!sessionR.ok) throw error(404, "Chat not found");
   const sessionData = sessionR.value as {
-    session: { id: string; title: string; chatBranchId: string; publishedAt: string | null };
-    messages: {
-      id: string;
-      role: "user" | "assistant" | "tool";
-      content: string;
-      toolCalls: unknown;
-      createdAt: string;
-    }[];
+    session: ChatSession;
+    messages: (ChatMessage & { toolCalls: unknown; createdAt: string })[];
   };
-  const modules = modulesR.ok
-    ? (
-        modulesR.value as {
-          modules: { id: string; slug: string; displayName: string; html: string }[];
-        }
-      ).modules
-    : [];
+  const modules = modulesR.ok ? (modulesR.value as { modules: ChatModule[] }).modules : [];
   return {
     session: sessionData.session,
     messages: sessionData.messages,

@@ -11,6 +11,7 @@
   } from "$lib/components/ui/card/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import { Progress } from "$lib/components/ui/progress/index.js";
+  import { Select } from "$lib/components/ui/select/index.js";
   import {
     Table,
     TableBody,
@@ -72,27 +73,19 @@
         <input type="hidden" name="_csrf" value={data.csrfToken} />
         <div class="space-y-1">
           <Label for="fromTarget">From</Label>
-          <select
-            id="fromTarget"
-            name="fromTarget"
-            class="flex h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
+          <Select id="fromTarget" name="fromTarget" class="w-auto">
             {#each data.targets as t (t.id)}
               <option value={t.name}>{t.name}</option>
             {/each}
-          </select>
+          </Select>
         </div>
         <div class="space-y-1">
           <Label for="toTarget">To</Label>
-          <select
-            id="toTarget"
-            name="toTarget"
-            class="flex h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
+          <Select id="toTarget" name="toTarget" class="w-auto">
             {#each data.targets as t (t.id)}
               <option value={t.name}>{t.name}</option>
             {/each}
-          </select>
+          </Select>
         </div>
         <Button type="submit">Promote</Button>
       </form>

@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -12,6 +13,7 @@
   } from "$lib/components/ui/card/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
+  import { Select } from "$lib/components/ui/select/index.js";
   import {
     Table,
     TableBody,
@@ -62,7 +64,10 @@
     </CardHeader>
     <CardContent>
       {#if data.pages.length === 0}
-        <p class="text-sm text-muted-foreground"><em>No pages yet.</em></p>
+        <EmptyStatePlaceholder
+          title="No pages yet"
+          description="Create your first page below to start composing modules."
+        />
       {:else}
         <Table>
           <TableHeader>
@@ -141,16 +146,11 @@
           </div>
           <div class="space-y-2">
             <Label for="templateId">Template</Label>
-            <select
-              id="templateId"
-              name="templateId"
-              required
-              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
+            <Select id="templateId" name="templateId" required>
               {#each data.templates as t (t.id)}
                 <option value={t.id}>{t.slug} — {t.displayName}</option>
               {/each}
-            </select>
+            </Select>
           </div>
           <div class="md:col-span-2">
             <Button type="submit">Create</Button>

@@ -11,6 +11,7 @@
   } from "$lib/components/ui/card/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
+  import { Select } from "$lib/components/ui/select/index.js";
 
   let { data, form } = $props();
   type Module = { moduleId: string; slug: string; displayName: string; isDeleted?: boolean };
@@ -119,14 +120,10 @@
         </div>
         <div class="space-y-2">
           <Label for="status">Status</Label>
-          <select
-            id="status"
-            name="status"
-            class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
+          <Select id="status" name="status">
             <option value="draft" selected={page.status === "draft"}>Draft</option>
             <option value="published" selected={page.status === "published"}>Published</option>
-          </select>
+          </Select>
         </div>
         <div class="md:col-span-2">
           <Button type="submit">Save metadata</Button>
@@ -187,10 +184,9 @@
               {/if}
               <div class="mt-3 space-y-2">
                 <Label for={`add-module-${block.blockName}`}>Add module</Label>
-                <select
+                <Select
                   id={`add-module-${block.blockName}`}
-                  class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  onchange={(e) => {
+                  onchange={(e: Event) => {
                     const target = e.currentTarget as HTMLSelectElement;
                     const value = target.value;
                     if (value) addModule(block.blockName, value);
@@ -201,7 +197,7 @@
                   {#each allModules as m (m.id)}
                     <option value={m.id}>{m.slug} — {m.displayName}</option>
                   {/each}
-                </select>
+                </Select>
               </div>
             </fieldset>
           {/each}

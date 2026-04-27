@@ -50,11 +50,28 @@
     ].filter((i) => i.show),
   );
 
-  const breadcrumbSegments = $derived(
-    page.url.pathname
-      .split("/")
-      .filter((s) => s.length > 0 && !s.match(/^[0-9a-f-]{36}$/))
-      .map((s) => s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, " ")),
+  /**
+   * Breadcrumb trail derived from the URL. Each segment is a `(href,
+   * label)` pair so every step is clickable and can return the user to
+   * the parent list. UUID segments collapse into the previous label
+   * ("Pages / <uuid>" → just "Pages → <last-known-label>"). Entity-name
+   * resolution (page slug instead of "Page") is P6.6 polish.
+   */
+  const breadcrumbCrumbs = $derived(
+    (() => {
+      const parts = page.url.pathname.split("/").filter((s) => s.length > 0);
+      const out: { href: string; label: string }[] = [];
+      let acc = "";
+      for (const part of parts) {
+        acc += `/${part}`;
+        if (part.match(/^[0-9a-f-]{36}$/)) continue; // skip UUIDs
+        out.push({
+          href: acc,
+          label: part.charAt(0).toUpperCase() + part.slice(1).replace(/-/g, " "),
+        });
+      }
+      return out;
+    })(),
   );
 </script>
 
@@ -110,14 +127,20 @@
       class="sticky top-0 z-30 flex h-14 items-center gap-4 border-b bg-background/95 px-4 backdrop-blur md:px-6"
     >
       <nav aria-label="Breadcrumb" class="flex items-center gap-2 text-sm">
-        {#if breadcrumbSegments.length === 0}
+        {#if breadcrumbCrumbs.length === 0}
           <span class="font-medium">Dashboard</span>
         {:else}
-          {#each breadcrumbSegments as segment, i (i)}
+          {#each breadcrumbCrumbs as crumb, i (crumb.href)}
             {#if i > 0}<span class="text-muted-foreground">/</span>{/if}
-            <span class={i === breadcrumbSegments.length - 1 ? "font-medium" : "text-muted-foreground"}
-              >{segment}</span
-            >
+            {#if i === breadcrumbCrumbs.length - 1}
+              <span class="font-medium">{crumb.label}</span>
+            {:else}
+              <a
+                href={crumb.href}
+                class="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                >{crumb.label}</a
+              >
+            {/if}
           {/each}
         {/if}
       </nav>
