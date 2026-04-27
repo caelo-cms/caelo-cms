@@ -24,19 +24,12 @@
     permissions: string[];
     csrfToken: string;
     userEmail?: string | null;
-    /**
-     * Page-content wrapper mode. `centered` (default) caps width at
-     * max-w-7xl with px+py padding. `bare` drops both for routes that
-     * want the full viewport (P6.7's `/edit` live-edit overlay).
-     */
-    pageWrapper?: "centered" | "bare";
     children?: import("svelte").Snippet;
   }
   let {
     permissions,
     csrfToken,
     userEmail = null,
-    pageWrapper = "centered",
     children,
   }: Props = $props();
 
@@ -169,13 +162,9 @@
       </div>
     </header>
     <main class="flex-1">
-      {#if pageWrapper === "bare"}
+      <div class="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
         {@render children?.()}
-      {:else}
-        <div class="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
-          {@render children?.()}
-        </div>
-      {/if}
+      </div>
     </main>
   </div>
 </div>

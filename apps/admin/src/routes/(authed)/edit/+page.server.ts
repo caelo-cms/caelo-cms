@@ -34,9 +34,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     }),
   ]);
 
-  const pages = pagesR.ok
-    ? (pagesR.value as { pages: PageRow[] }).pages.filter((p) => p.status === "published")
-    : [];
+  // P6.7.2 — drop the `published` filter. The live-edit surface always
+  // renders the latest editable composition (chat-branch-aware via
+  // pages.render_preview); whether a page is `draft` or `published` is
+  // irrelevant for previewing inside /edit. The published static site
+  // is what Caddy serves on :8082 — not what /edit shows.
+  const pages = pagesR.ok ? (pagesR.value as { pages: PageRow[] }).pages : [];
   const sessions = sessionsR.ok ? (sessionsR.value as { sessions: ChatSession[] }).sessions : [];
 
   // Pick or create the active chat session. URL param wins; otherwise
@@ -61,9 +64,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   if (!activeChat) throw redirect(303, "/content/chat");
 
   // Pick the page to render in the iframe. URL param wins; otherwise
-  // the first published page.
+  // prefer the seeded `home` slug; otherwise the first page in the list.
   const queryPage = url.searchParams.get("page");
-  const activePageId = pages.find((p) => p.id === queryPage)?.id ?? pages[0]?.id ?? null;
+  const home = pages.find((p) => p.slug === "home" && p.locale === "en");
+  const activePage = pages.find((p) => p.id === queryPage) ?? home ?? pages[0] ?? null;
+  const activePageId = activePage?.id ?? null;
 
   // Load the chat's messages + the modules list (powers the chip picker
   // inside the embedded ChatPanel).

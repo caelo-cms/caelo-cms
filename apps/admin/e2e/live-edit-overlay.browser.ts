@@ -100,7 +100,12 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
     [
       {
         kind: "tool-call",
-        id: "tu_le",
+        // Unique id per spec run — the chat-runner caches tool results
+        // by (chatSessionId, toolCallId), and the spec's own load logic
+        // reuses the most-recent unpublished session across runs. A
+        // collision would short-circuit the dispatch and skip snapshot
+        // emission, leaving HERO_BEFORE in the iframe.
+        id: `tu_le_${ts}`,
         name: "edit_module",
         arguments: { moduleId: ids.mod, html: "<h1>HERO_FROM_AI</h1>" },
       },

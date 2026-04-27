@@ -40,11 +40,17 @@
   });
 </script>
 
-<AppShell
-  permissions={data.permissions}
-  csrfToken={data.csrfToken}
-  userEmail={data.currentUser?.email ?? null}
-  pageWrapper={page.url.pathname.startsWith("/edit") ? "bare" : "centered"}
->
+{#if page.url.pathname.startsWith("/edit")}
+  <!-- P6.7.2 — /edit is the chrome-less surface: no AppShell, no sidebar,
+       no topbar. Auth + CSRF still flow from the layout's server load.
+       The route renders its own slim toolbar + iframe + chat overlay. -->
   {@render children()}
-</AppShell>
+{:else}
+  <AppShell
+    permissions={data.permissions}
+    csrfToken={data.csrfToken}
+    userEmail={data.currentUser?.email ?? null}
+  >
+    {@render children()}
+  </AppShell>
+{/if}

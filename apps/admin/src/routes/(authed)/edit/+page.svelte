@@ -2,14 +2,25 @@
   // SPDX-License-Identifier: MPL-2.0
 
   /**
-   * P6.7 — the live-edit surface. Full-bleed iframe of the user's site
-   * (rendered branch-aware via /edit/preview/[pageId]?branch=...) with
-   * the floating chat overlay on top. Element clicks inside the iframe
-   * postMessage chips into the overlay's composer; AI tool results
-   * postMessage a reload back to the iframe.
+   * P6.7.2 — chrome-less live-edit. The whole viewport is the iframe of
+   * the user's site, with a slim 40 px toolbar at the top (wordmark +
+   * URL + page picker + back-to-admin) and the floating chat overlay on
+   * top. AppShell sidebar/topbar are absent here (handled by the
+   * (authed)/+layout.svelte pathname branch).
+   *
+   * The iframe loads /edit/preview-by-path/<locale>/<slug> so a relative
+   * <a href> inside the iframe naturally navigates within the same
+   * preview surface. The injected runtime posts caelo:navigated on
+   * every load — the parent updates activePageId/URL/chat-branch
+   * context to match.
+   *
+   * Element-click chips only fire while alt+ctrl+meta are held (see
+   * inject-script). Without modifier the iframe behaves like the live
+   * site.
    */
 
   import { goto } from "$app/navigation";
+  import { ArrowLeft } from "lucide-svelte";
   import { onMount } from "svelte";
   import Overlay from "$lib/components/edit/Overlay.svelte";
   import {
@@ -29,29 +40,33 @@
 
   let { data, form } = $props();
   let activePageId = $state(data.activePageId ?? "");
-  // Surfaced from the action result so the overlay can swap into the
-  // "Staged — Confirm publish" state. Cleared on a fresh AI tool result.
+  // Active page metadata derived from activePageId — drives URL display.
+  const activePage = $derived(data.pages.find((p) => p.id === activePageId) ?? null);
+  // The path the iframe is currently showing (covers click-through nav
+  // inside the iframe; updated by `caelo:navigated` postMessage). Falls
+  // back to the active page's locale + slug on first load.
+  let displayPath = $state<{ locale: string; slug: string } | null>(null);
+  const urlText = $derived.by(() => {
+    const cur = displayPath ?? (activePage ? { locale: activePage.locale, slug: activePage.slug } : null);
+    if (!cur) return "—";
+    return cur.locale === "en" ? `/${cur.slug}` : `/${cur.locale}/${cur.slug}`;
+  });
+
   const stagedPreviewUrl = $derived(
-    form && "staged" in form && form.staged ? (form.staged as { previewUrl?: string }).previewUrl ?? null : null,
+    form && "staged" in form && form.staged
+      ? (form.staged as { previewUrl?: string }).previewUrl ?? null
+      : null,
   );
   const previewSrc = $derived(
-    activePageId
-      ? `/edit/preview/${activePageId}?branch=${data.activeChat.chatBranchId}`
+    activePage
+      ? `/edit/preview-by-path/${activePage.locale}/${activePage.slug}?branch=${data.activeChat.chatBranchId}`
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);
-  // Increments on every successful AI tool result; cleared after a successful
-  // page switch / publish. Drives the "stay vs publish first" Dialog when the
-  // user picks a different page in the Combobox while the chat has
-  // unpublished branch snapshots.
   let pendingChanges = $state(0);
   let pendingSwitchTo = $state<string | null>(null);
   let dialogOpen = $state(false);
 
-  /**
-   * Page picker change. If the chat has pending branch snapshots, hold the
-   * switch in a confirm Dialog; otherwise navigate immediately.
-   */
   function onPageChange(value: string): void {
     if (value === activePageId) return;
     if (pendingChanges > 0) {
@@ -83,18 +98,12 @@
     pendingSwitchTo = null;
   }
 
-  /**
-   * iframe → parent: caelo:ready (currently noop), caelo:element-clicked
-   * (forward to the overlay's chip composer via window event so the
-   * embedded ChatPanel picks it up — the overlay listens for it).
-   */
   onMount(() => {
     const handler = (ev: MessageEvent) => {
       if (ev.source !== iframe?.contentWindow) return;
       if (!isCaeloMessage(ev.data)) return;
       const msg = ev.data as CaeloMessage;
       if (msg.kind === "caelo:element-clicked") {
-        // Bubble through a CustomEvent the overlay's ChatPanel listens to.
         window.dispatchEvent(
           new CustomEvent("caelo:chip", {
             detail: {
@@ -104,30 +113,56 @@
             },
           }),
         );
+      } else if (msg.kind === "caelo:navigated") {
+        displayPath = { locale: msg.locale, slug: msg.slug };
+        // Click-through navigation inside the iframe — sync activePageId
+        // (and the parent URL) so the chat-branch context follows. We
+        // skip if the iframe is just confirming the current page on
+        // initial load.
+        if (msg.pageId !== activePageId) {
+          activePageId = msg.pageId;
+          const url = new URL(window.location.href);
+          url.searchParams.set("page", msg.pageId);
+          void goto(url.toString(), {
+            replaceState: true,
+            noScroll: true,
+            keepFocus: true,
+          });
+        }
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   });
 
-  /**
-   * parent → iframe: caelo:reload after each AI tool result so the
-   * iframe re-fetches the branch-aware preview.
-   */
   function onAiToolResult(payload: { ok: boolean }): void {
     if (payload.ok) pendingChanges += 1;
     iframe?.contentWindow?.postMessage({ kind: "caelo:reload" }, window.location.origin);
   }
 </script>
 
-<div class="relative flex h-[calc(100vh-3.5rem)] w-full">
-  <!-- Page-picker strip -->
-  <div
-    class="absolute left-0 right-[400px] top-0 z-30 flex h-12 items-center gap-3 border-b bg-background/95 px-4 text-sm backdrop-blur"
+<div class="relative flex h-screen w-full flex-col">
+  <!-- Slim toolbar — wordmark + URL + page picker + back-to-admin. No
+       sidebar, no breadcrumbs, no admin chrome. -->
+  <header
+    class="z-30 flex h-11 shrink-0 items-center gap-3 border-b bg-background px-3 text-sm"
+    data-testid="edit-toolbar"
   >
-    <span class="text-muted-foreground">Editing:</span>
+    <a
+      href="/"
+      class="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
+      data-testid="back-to-admin"
+    >
+      <ArrowLeft class="size-4" />
+      <span class="font-semibold">Caelo</span>
+    </a>
+    <span class="text-muted-foreground/50">/</span>
+    <code
+      class="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
+      data-testid="edit-url"
+    >{urlText}</code>
     {#if data.pages.length > 0}
-      <div class="w-72">
+      <div class="ml-auto w-64">
         <Combobox
           items={data.pages.map((p) => ({
             value: p.id,
@@ -135,19 +170,19 @@
           }))}
           bind:value={activePageId}
           onValueChange={onPageChange}
-          placeholder="Pick a page…"
+          placeholder="Switch page…"
         />
       </div>
     {:else}
-      <span class="text-muted-foreground">
-        No published pages yet —
+      <span class="ml-auto text-muted-foreground">
+        No pages yet —
         <a class="underline" href="/content/pages">create one</a>.
       </span>
     {/if}
-  </div>
+  </header>
 
-  <!-- Iframe -->
-  <div class="flex-1 pt-12">
+  <!-- Full-bleed iframe -->
+  <div class="flex-1">
     {#if previewSrc}
       <iframe
         bind:this={iframe}
@@ -158,7 +193,7 @@
       ></iframe>
     {:else}
       <div class="flex h-full items-center justify-center text-muted-foreground">
-        Pick a page to start editing.
+        No page selected.
       </div>
     {/if}
   </div>

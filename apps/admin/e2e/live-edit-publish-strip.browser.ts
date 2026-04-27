@@ -92,7 +92,8 @@ test("Stage and Confirm publish strip in the overlay", async ({ context, page })
     [
       {
         kind: "tool-call",
-        id: "tu_strip",
+        // Unique id per run — see note in live-edit-overlay.browser.ts.
+        id: `tu_strip_${ts}`,
         name: "edit_module",
         arguments: { moduleId: ids.mod, html: "<h1>STRIP_AFTER</h1>" },
       },

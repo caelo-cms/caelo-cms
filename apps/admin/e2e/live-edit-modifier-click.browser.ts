@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7 — clicking an element inside the live-preview iframe surfaces a
- * chip in the overlay composer. The injected runtime captures the click,
- * postMessages caelo:element-clicked to the parent, /edit/+page.svelte
- * dispatches a window CustomEvent, and ChatPanel listens for it and
- * appends to its chip array.
+ * P6.7.2 — element clicks inside the iframe only fire chips when the
+ * Alt+Control+Meta modifier combo is held. Without the combo, clicks
+ * pass through naturally so the user can click around their site like
+ * a normal visitor.
  */
 
 import { spawnSync } from "node:child_process";
@@ -27,9 +26,9 @@ test.beforeAll(() => {
 });
 
 const ts = Date.now();
-const TPL_SLUG = `e2e-le-click-tpl-${ts}`;
-const MOD_SLUG = `e2e-le-click-mod-${ts}`;
-const PAGE_SLUG = `e2e-le-click-page-${ts}`;
+const TPL_SLUG = `e2e-le-mod-tpl-${ts}`;
+const MOD_SLUG = `e2e-le-mod-mod-${ts}`;
+const PAGE_SLUG = `e2e-le-mod-page-${ts}`;
 
 test.afterAll(() => {
   runBunInline(
@@ -50,9 +49,7 @@ test.afterAll(() => {
   );
 });
 
-test("clicking an element in the live-preview iframe appends a chip", async ({ page }) => {
-  // Seed a draft page with a module whose outermost element will gain a
-  // data-caelo-module-id attribute via composePagePreview.
+test("modifier-gated click: no chip without combo; chip with combo", async ({ page }) => {
   const seed = runBunInlineCapture(
     `
     import { SQL } from "bun";
@@ -67,11 +64,11 @@ test("clicking an element in the live-preview iframe appends a chip", async ({ p
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${tpl[0].id}::uuid, 'content', 'Content', 0)\`;
       const mod = await tx\`
         INSERT INTO modules (slug, display_name, html)
-        VALUES (\${process.env.MOD_SLUG}, 'le mod', '<h1>HERO_CLICK_TARGET</h1>')
+        VALUES (\${process.env.MOD_SLUG}, 'mod', '<h1>HERO_MOD_TEST</h1>')
         RETURNING id::text AS id\`;
       const pg = await tx\`
         INSERT INTO pages (slug, locale, title, template_id, status)
-        VALUES (\${process.env.PAGE_SLUG}, 'en', 'LE Click Page', \${tpl[0].id}::uuid, 'draft')
+        VALUES (\${process.env.PAGE_SLUG}, 'en', 'Mod Page', \${tpl[0].id}::uuid, 'draft')
         RETURNING id::text AS id\`;
       out.pg = pg[0].id;
       await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id) VALUES (\${out.pg}::uuid, 'content', 0, \${mod[0].id}::uuid)\`;
@@ -89,20 +86,26 @@ test("clicking an element in the live-preview iframe appends a chip", async ({ p
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/", { timeout: 15_000 });
 
-  // Use the URL ?page param for deterministic page selection — the
-  // toolbar's bits-ui Combobox doesn't expose role=combobox.
   await page.goto(`/edit?page=${ids.pg}`);
   await expect(page).toHaveURL(/\/edit/, { timeout: 15_000 });
 
-  // Wait for the iframe to surface the tagged element.
   const previewFrame = page.frameLocator("iframe[title='Live preview']");
   const taggedH1 = previewFrame.locator("h1[data-caelo-module-id]");
-  await expect(taggedH1).toContainText("HERO_CLICK_TARGET", { timeout: 15_000 });
+  await expect(taggedH1).toContainText("HERO_MOD_TEST", { timeout: 15_000 });
 
-  // P6.7.2 — clicks only fire chips with Alt+Control+Meta held. Dispatch
-  // a synthesized MouseEvent so (a) we bypass the floating overlay's
-  // pointer interception and (b) the inject-script's capture listener
-  // sees the modifier flags directly on the event.
+  // Synthesize click events directly so (a) we bypass the floating
+  // overlay's pointer interception and (b) the inject-script's capture
+  // listener reads modifier flags straight off the MouseEvent.
+
+  // Without modifiers — click should NOT produce a chip.
+  await taggedH1.evaluate((el: HTMLElement) => {
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  const chip = page.locator('[data-testid="chip"]');
+  await page.waitForTimeout(500);
+  await expect(chip).toHaveCount(0);
+
+  // With Alt+Control+Meta — click DOES produce a chip.
   await taggedH1.evaluate((el: HTMLElement) => {
     el.dispatchEvent(
       new MouseEvent("click", {
@@ -114,8 +117,5 @@ test("clicking an element in the live-preview iframe appends a chip", async ({ p
       }),
     );
   });
-
-  // The chip lands in the composer.
-  const chip = page.locator('[data-testid="chip"]').first();
-  await expect(chip).toBeVisible({ timeout: 5_000 });
+  await expect(chip.first()).toBeVisible({ timeout: 5_000 });
 });

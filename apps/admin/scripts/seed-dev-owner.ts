@@ -71,6 +71,64 @@ try {
       SELECT ${actorId}::uuid, r.id FROM roles r WHERE r.name = 'owner'
       ON CONFLICT DO NOTHING
     `;
+
+    // P6.7.2 — default homepage. A fresh install with zero pages has
+    // nothing for /edit to render, so the live-edit surface is dead on
+    // first land. Seed a minimal `home` page (idempotent; checks slug
+    // first) so the user sees a real preview the first time they click
+    // "Live edit". Status stays `draft` — nothing publishes yet.
+    const existingHome = (await tx`
+      SELECT id FROM pages WHERE slug = 'home' AND locale = 'en'
+    `) as unknown as { id: string }[];
+    if (!existingHome[0]) {
+      const tpl = (await tx`
+        INSERT INTO templates (slug, display_name, html, css)
+        VALUES (
+          'home-template',
+          'Home Template',
+          '<!doctype html><html><head><title>Home</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
+          ''
+        )
+        ON CONFLICT (slug) DO UPDATE SET display_name = EXCLUDED.display_name
+        RETURNING id::text AS id
+      `) as unknown as { id: string }[];
+      const tplId = tpl[0]?.id;
+      if (!tplId) throw new Error("seed home template returned no row");
+
+      await tx`
+        INSERT INTO template_blocks (template_id, name, display_name, position)
+        VALUES (${tplId}::uuid, 'content', 'Content', 0)
+        ON CONFLICT (template_id, name) DO NOTHING
+      `;
+
+      const mod = (await tx`
+        INSERT INTO modules (slug, display_name, html, css, js)
+        VALUES (
+          'home-welcome',
+          'Welcome',
+          '<section style="padding:4rem 2rem;text-align:center;font-family:system-ui;"><h1 style="font-size:2.5rem;margin:0 0 1rem;">Welcome to your new Caelo site</h1><p style="color:#666;font-size:1.1rem;margin:0 0 2rem;">Tell the AI what to change. Hold Option + Control + Command and click any element to scope an edit.</p><a href="/about" style="display:inline-block;padding:0.75rem 1.5rem;background:#3b82f6;color:#fff;text-decoration:none;border-radius:6px;font-weight:500;">Learn more</a></section>',
+          '',
+          ''
+        )
+        ON CONFLICT (slug) DO UPDATE SET display_name = EXCLUDED.display_name
+        RETURNING id::text AS id
+      `) as unknown as { id: string }[];
+      const modId = mod[0]?.id;
+      if (!modId) throw new Error("seed home module returned no row");
+
+      const pg = (await tx`
+        INSERT INTO pages (slug, locale, title, template_id, status)
+        VALUES ('home', 'en', 'Home', ${tplId}::uuid, 'draft')
+        RETURNING id::text AS id
+      `) as unknown as { id: string }[];
+      const pgId = pg[0]?.id;
+      if (!pgId) throw new Error("seed home page returned no row");
+
+      await tx`
+        INSERT INTO page_modules (page_id, block_name, position, module_id)
+        VALUES (${pgId}::uuid, 'content', 0, ${modId}::uuid)
+      `;
+    }
   });
 } finally {
   await sql.end();
