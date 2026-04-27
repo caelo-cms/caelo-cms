@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { composePagePreview, tagModuleId } from "./preview-compose.js";
+import {
+  ComposeError,
+  composePagePreview,
+  composePageWithLayout,
+  tagModuleId,
+} from "./preview-compose.js";
 
 const blankModule = {
   moduleId: "00000000-0000-0000-0000-000000000000",
@@ -155,5 +160,84 @@ describe("composePagePreview tags every module's outermost element", () => {
     });
     expect(out.html).toContain(`<p data-caelo-module-id="mod-a">1</p>`);
     expect(out.html).toContain(`<p data-caelo-module-id="mod-b">2</p>`);
+  });
+});
+
+describe("composePageWithLayout", () => {
+  const layoutHtml = `<!doctype html><html><head></head><body><header><caelo-slot name="header">_</caelo-slot></header><main><caelo-slot name="content">_</caelo-slot></main></body></html>`;
+  const templateHtml = `<body><caelo-slot name="content">_</caelo-slot></body>`;
+
+  it("aggregates CSS in layout → template → modules order", () => {
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "/* TPL */",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            {
+              ...blankModule,
+              moduleId: "11111111-1111-1111-1111-111111111111",
+              html: "<p>x</p>",
+              css: "/* MOD */",
+            },
+          ],
+        },
+      ],
+      layoutHtml,
+      layoutCss: "/* LAYOUT */",
+      layoutBlocks: [],
+      layoutSlug: "test",
+    });
+    const css = out.html.slice(
+      out.html.indexOf(`<style data-source="modules">`),
+      out.html.indexOf("</style>", out.html.indexOf(`<style data-source="modules">`)),
+    );
+    const layoutIdx = css.indexOf("/* LAYOUT */");
+    const tplIdx = css.indexOf("/* TPL */");
+    const modIdx = css.indexOf("/* MOD */");
+    expect(layoutIdx).toBeGreaterThanOrEqual(0);
+    expect(tplIdx).toBeGreaterThan(layoutIdx);
+    expect(modIdx).toBeGreaterThan(tplIdx);
+  });
+
+  it("throws ComposeError when the layout lacks a content slot", () => {
+    expect(() =>
+      composePageWithLayout({
+        templateHtml,
+        templateCss: "",
+        blocks: [],
+        layoutHtml: `<!doctype html><html><body><header>chrome</header></body></html>`,
+        layoutCss: "",
+        layoutBlocks: [],
+        layoutSlug: "broken",
+      }),
+    ).toThrow(ComposeError);
+  });
+
+  it("peels a body-wrapping <caelo-slot name='content'> with single-quote attrs", () => {
+    // Single-quote attribute would have failed the previous regex peel
+    // and produced a nested <caelo-slot> in the output. With the
+    // parser-based peel, the wrapping slot is removed and the inner
+    // <p>BODY</p> lands directly in the layout's content slot.
+    const out = composePageWithLayout({
+      templateHtml: `<body><caelo-slot name='content'>_</caelo-slot></body>`,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [{ ...blankModule, html: "<p>BODY</p>" }],
+        },
+      ],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+    });
+    expect(out.html).toContain("<p");
+    expect(out.html).toContain(">BODY</p>");
+    // Exactly one caelo-slot[name=content] in output (the layout's own).
+    const matches = out.html.match(/caelo-slot[^>]*name=["']content["']/g) ?? [];
+    expect(matches.length).toBe(1);
   });
 });

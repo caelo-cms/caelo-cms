@@ -46,7 +46,13 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
     // Resolve slugs to ids via existing read ops first; that way slug
     // typos surface a clear "not found" rather than the op-level
     // ActorScopeRejected (which would mask the real issue).
-    const currentRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "site_defaults.get", {});
+    const currentRes = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      ctx,
+      "site_defaults.get",
+      {},
+    );
     if (!currentRes.ok) {
       return {
         ok: false,

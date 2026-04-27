@@ -165,7 +165,7 @@ export const createLayoutOp = defineOperation({
       path: ["html"],
     })
     .refine((v) => v.blocks.some((b) => b.name === "content"), {
-      message: 'blocks must include a `content` entry',
+      message: "blocks must include a `content` entry",
       path: ["blocks"],
     }),
   output: z.object({ layoutId: z.string() }),

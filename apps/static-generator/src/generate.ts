@@ -25,7 +25,7 @@
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo/query-api";
-import { composePageWithLayout } from "@caelo/shared";
+import { ComposeError, composePageWithLayout } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 
 export interface DeployTarget {
@@ -174,7 +174,17 @@ export async function generateSite(args: {
   }[];
   const layoutModulesByLayout = new Map<
     string,
-    Map<string, { moduleId: string; slug: string; displayName: string; html: string; css: string; js: string }[]>
+    Map<
+      string,
+      {
+        moduleId: string;
+        slug: string;
+        displayName: string;
+        html: string;
+        css: string;
+        js: string;
+      }[]
+    >
   >();
   for (const r of layoutModRows) {
     let perLayout = layoutModulesByLayout.get(r.layout_id);
@@ -237,15 +247,30 @@ export async function generateSite(args: {
             blockName,
             modules,
           }));
-    const composed = composePageWithLayout({
-      templateHtml: page.template_html,
-      templateCss: page.template_css,
-      blocks,
-      structuredSets,
-      layoutHtml: page.layout_html,
-      layoutCss: page.layout_css,
-      layoutBlocks,
-    });
+    // P6.7.6 — composer throws ComposeError on layout misconfiguration
+    // (e.g. layout HTML missing the required `content` slot). Surface
+    // it with the page slug so the deploy operator can locate the
+    // offending row, rather than silently emitting a body-less page.
+    let composed: ReturnType<typeof composePageWithLayout>;
+    try {
+      composed = composePageWithLayout({
+        templateHtml: page.template_html,
+        templateCss: page.template_css,
+        blocks,
+        structuredSets,
+        layoutHtml: page.layout_html,
+        layoutCss: page.layout_css,
+        layoutBlocks,
+        layoutSlug: page.layout_slug,
+      });
+    } catch (e) {
+      if (e instanceof ComposeError) {
+        throw new Error(
+          `static-generator: page slug=${page.slug} locale=${page.locale}: ${e.message}`,
+        );
+      }
+      throw e;
+    }
 
     const relPath = pageOutputPath(page.slug);
     const filePath = join(buildDir, relPath);

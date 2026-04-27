@@ -26,6 +26,30 @@ import {
 test.beforeAll(() => {
   clearLoginRateBucket();
   resetOverlayLayoutFor("dev-owner@example.com");
+  // Earlier specs (template-switch, isolation) may have re-pointed
+  // home-template or attached layout_modules to site-default. Reset
+  // to a known state so the AI's add_module_to_layout call lands on
+  // a clean slate.
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    const c = new SQL(process.env.ADMIN_DATABASE_URL);
+    await c.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx\`UPDATE layouts SET deleted_at = NULL WHERE slug IN ('site-default','bare','centered')\`;
+      await tx\`
+        UPDATE templates
+        SET layout_id = (SELECT id FROM layouts WHERE slug = 'site-default')
+        WHERE slug = 'home-template'
+      \`;
+      const sd = ((await tx\`SELECT id::text AS id FROM layouts WHERE slug='site-default'\`)[0])?.id;
+      if (sd) {
+        await tx\`DELETE FROM layout_modules WHERE layout_id = \${sd}::uuid AND block_name = 'footer'\`;
+      }
+    });
+    await c.end();
+    `,
+  );
 });
 
 const ts = Date.now();

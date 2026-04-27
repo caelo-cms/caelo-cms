@@ -15,7 +15,7 @@
  */
 
 import { defineOperation } from "@caelo/query-api";
-import { composePageWithLayout, err, ok } from "@caelo/shared";
+import { ComposeError, composePageWithLayout, err, ok } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -243,15 +243,28 @@ export const renderPagePreviewOp = defineOperation({
       modules,
     }));
 
-    const composed = composePageWithLayout({
-      templateHtml: pageRow.template_html,
-      templateCss: pageRow.template_css,
-      blocks,
-      structuredSets: { byKindSlug },
-      layoutHtml: pageRow.layout_html,
-      layoutCss: pageRow.layout_css,
-      layoutBlocks,
-    });
+    let composed: ReturnType<typeof composePageWithLayout>;
+    try {
+      composed = composePageWithLayout({
+        templateHtml: pageRow.template_html,
+        templateCss: pageRow.template_css,
+        blocks,
+        structuredSets: { byKindSlug },
+        layoutHtml: pageRow.layout_html,
+        layoutCss: pageRow.layout_css,
+        layoutBlocks,
+        layoutSlug: pageRow.layout_slug,
+      });
+    } catch (e) {
+      if (e instanceof ComposeError) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.render_preview",
+          message: e.message,
+        });
+      }
+      throw e;
+    }
     return ok({
       html: composed.html,
       replacedSlots: [...composed.replacedSlots],

@@ -45,12 +45,15 @@ export const setTemplateLayoutTool: ToolDefinitionWithHandler<
     if (!layout) {
       return { ok: false, content: `layout "${input.layoutSlug}" not found` };
     }
-    const upd = await execute(toolCtx.registry, toolCtx.adapter, ctx, "templates.update", {
+    const upd = await execute(toolCtx.registry, toolCtx.adapter, ctx, "templates.set_layout", {
       templateId: input.templateId,
       layoutId: layout.id,
     });
     if (!upd.ok) {
-      return { ok: false, content: `templates.update failed: ${describeError(upd.error)}` };
+      return {
+        ok: false,
+        content: `templates.set_layout failed: ${describeError(upd.error)}`,
+      };
     }
     return {
       ok: true,

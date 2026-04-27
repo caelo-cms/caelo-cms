@@ -25,7 +25,11 @@
  * the admin; in P11, plugin Web Components inside Shadow DOM).
  */
 
-import { applySlotReplacements } from "./preview-scanner.js";
+import {
+  applySlotReplacements,
+  extractInnerOfTopLevelContentSlot,
+  listSlotNames,
+} from "./preview-scanner.js";
 
 export interface ComposeModule {
   readonly moduleId: string;
@@ -239,9 +243,11 @@ export function tagModuleId(html: string, moduleId: string): string {
  *   - other layout blocks (header / footer / etc.) → concatenated HTML
  *     from `layoutBlocks` (per-block module attachments)
  *
- * Per CLAUDE.md §2 no-fallbacks: a missing layout / missing `content`
- * block is the *caller*'s job to surface as a structured error before
- * calling here. This function trusts its inputs.
+ * Per CLAUDE.md §2 no-fallbacks: validates the layout has the required
+ * `<caelo-slot name="content">` slot before rendering. Throws
+ * `ComposeError` if the layout is malformed so callers (preview op +
+ * static generator) surface it as a structured failure rather than
+ * silently emitting broken HTML.
  */
 export interface ComposeLayoutBlock {
   readonly blockName: string;
@@ -252,6 +258,25 @@ export interface ComposeWithLayoutInput extends ComposeInput {
   readonly layoutHtml: string;
   readonly layoutCss: string;
   readonly layoutBlocks: readonly ComposeLayoutBlock[];
+  /** Optional layout slug carried into ComposeError messages. */
+  readonly layoutSlug?: string;
+}
+
+/**
+ * Typed failure for the layout-aware composer. Use `kind` to dispatch:
+ *   - `layout-missing-content`: the layout HTML lacks
+ *     `<caelo-slot name="content">…</caelo-slot>` so the page body has
+ *     nowhere to land.
+ */
+export class ComposeError extends Error {
+  readonly kind: "layout-missing-content";
+  readonly layoutSlug: string | undefined;
+  constructor(kind: "layout-missing-content", message: string, layoutSlug?: string) {
+    super(message);
+    this.name = "ComposeError";
+    this.kind = kind;
+    this.layoutSlug = layoutSlug;
+  }
 }
 
 const BODY_OPEN_RE = /<body\b[^>]*>/i;
@@ -266,10 +291,12 @@ const BODY_OPEN_RE = /<body\b[^>]*>/i;
  * Legacy templates often wrap their slot in `<body><caelo-slot
  * name="content">…</caelo-slot></body>` — peel off the redundant
  * `<caelo-slot>` so we don't end up with the layout's own slot
- * containing yet another `<caelo-slot>`.
+ * containing yet another `<caelo-slot>`. The peel uses the same
+ * htmlparser2 Parser as `applySlotReplacements` so quoting / attribute
+ * ordering / whitespace variations are handled uniformly (the previous
+ * regex silently fell through on `name='content'`, attr reordering,
+ * etc., producing nested-slot output).
  */
-const SLOT_CONTENT_WRAP_RE = /^\s*<caelo-slot\s+name="content"\s*>([\s\S]*)<\/caelo-slot>\s*$/i;
-
 function extractBodyInner(composedHtml: string): string {
   const open = BODY_OPEN_RE.exec(composedHtml);
   const close = BODY_CLOSE_RE.exec(composedHtml);
@@ -280,18 +307,38 @@ function extractBodyInner(composedHtml: string): string {
     const start = open.index + open[0].length;
     inner = composedHtml.slice(start, close.index);
   }
-  const slotMatch = SLOT_CONTENT_WRAP_RE.exec(inner);
-  if (slotMatch?.[1] !== undefined) return slotMatch[1];
-  return inner;
+  const peeled = extractInnerOfTopLevelContentSlot(inner);
+  return peeled ?? inner;
 }
 
 export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOutput {
+  // No-fallbacks (CLAUDE.md §2): validate the layout declares a
+  // `content` slot up-front, before rendering. The htmlparser2-based
+  // walk handles attribute quoting / ordering uniformly; a layout
+  // without the slot is a misconfiguration that must surface to the
+  // caller, not silently emit a body-less page.
+  if (!listSlotNames(input.layoutHtml).includes("content")) {
+    const slug = input.layoutSlug ?? "(unknown)";
+    throw new ComposeError(
+      "layout-missing-content",
+      `layout "${slug}" is missing the required \`<caelo-slot name="content">\` slot — fix via /security/layouts`,
+      input.layoutSlug,
+    );
+  }
+
+  // CSS / JS aggregation order: layout (ground) → template (overrides
+  // layout) → modules (highest specificity). The array's source order
+  // drives cascade order in the emitted <style> tag, so we push in
+  // priority sequence rather than mixing push + unshift (which is
+  // brittle and reads as a bug).
+  const cssParts: string[] = [];
+  const jsParts: string[] = [];
+  if (input.layoutCss.trim().length > 0) cssParts.push(input.layoutCss);
+  if (input.templateCss.trim().length > 0) cssParts.push(input.templateCss);
+
   // 1. Render the page modules into the template (slot replacement only;
   //    no head/body manipulation here — that belongs to the layout).
   const templateContentByName = new Map<string, string>();
-  const moduleCssParts: string[] = [];
-  const moduleJsParts: string[] = [];
-  if (input.templateCss.trim().length > 0) moduleCssParts.push(input.templateCss);
   for (const block of input.blocks) {
     const renderedModuleHtml = block.modules.map((m) => {
       const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
@@ -300,8 +347,8 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     });
     templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) {
-      if (m.css.trim().length > 0) moduleCssParts.push(m.css);
-      if (m.js.trim().length > 0) moduleJsParts.push(m.js);
+      if (m.css.trim().length > 0) cssParts.push(m.css);
+      if (m.js.trim().length > 0) jsParts.push(m.js);
     }
   }
   const renderedTemplate = applySlotReplacements(input.templateHtml, {
@@ -310,10 +357,11 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   const innerBody = extractBodyInner(renderedTemplate.html);
 
   // 2. Build per-layout-block contents (header / footer / etc.) +
-  //    aggregate layout CSS/JS.
+  //    aggregate their CSS/JS at module specificity (already higher
+  //    than layout/template because the layout/template parts went
+  //    in first above).
   const layoutContentByName = new Map<string, string>();
   layoutContentByName.set("content", innerBody);
-  if (input.layoutCss.trim().length > 0) moduleCssParts.unshift(input.layoutCss);
   for (const block of input.layoutBlocks) {
     if (block.blockName === "content") continue; // reserved for the page body
     const renderedModuleHtml = block.modules.map((m) => {
@@ -323,8 +371,8 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     });
     layoutContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) {
-      if (m.css.trim().length > 0) moduleCssParts.push(m.css);
-      if (m.js.trim().length > 0) moduleJsParts.push(m.js);
+      if (m.css.trim().length > 0) cssParts.push(m.css);
+      if (m.js.trim().length > 0) jsParts.push(m.js);
     }
   }
 
@@ -338,18 +386,18 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   if (themeCss !== null) {
     html = injectBefore(html, HEAD_CLOSE_RE, `<style data-source="theme">${themeCss}</style>`);
   }
-  if (moduleCssParts.length > 0) {
+  if (cssParts.length > 0) {
     html = injectBefore(
       html,
       HEAD_CLOSE_RE,
-      `<style data-source="modules">\n${moduleCssParts.join("\n")}\n</style>`,
+      `<style data-source="modules">\n${cssParts.join("\n")}\n</style>`,
     );
   }
-  if (moduleJsParts.length > 0) {
+  if (jsParts.length > 0) {
     html = injectBefore(
       html,
       BODY_CLOSE_RE,
-      `<script defer data-source="modules">\n${moduleJsParts.join("\n")}\n</script>`,
+      `<script defer data-source="modules">\n${jsParts.join("\n")}\n</script>`,
     );
   }
 

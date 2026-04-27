@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { Bot, Coins, Globe, Rocket, Users, UsersRound } from "lucide-svelte";
+  import { Bot, Coins, Globe, Layout, Rocket, Settings, Users, UsersRound } from "lucide-svelte";
   import {
     Card,
     CardDescription,
@@ -11,6 +11,8 @@
   const tiles = [
     { href: "/security/users", label: "Users", desc: "Create, update, delete admin users", icon: Users },
     { href: "/security/roles", label: "Roles", desc: "Built-in + Owner-defined custom roles", icon: UsersRound },
+    { href: "/security/layouts", label: "Layouts", desc: "Site-wide chrome (header / footer / nav)", icon: Layout },
+    { href: "/security/site-defaults", label: "Site defaults", desc: "Default layout + template for new pages", icon: Settings },
     { href: "/security/ai", label: "AI provider", desc: "Anthropic configuration + active provider", icon: Bot },
     { href: "/security/deployments", label: "Deployments", desc: "Ops view — dev / staging / production + promote", icon: Rocket },
     { href: "/security/costs", label: "AI cost controls", desc: "Token + spend dashboard", icon: Coins },

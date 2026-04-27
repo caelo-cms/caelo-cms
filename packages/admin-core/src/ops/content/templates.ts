@@ -230,8 +230,9 @@ export const createTemplateOp = defineOperation({
 
 export const updateTemplateOp = defineOperation({
   name: "templates.update",
-  // P6.7.6 — AI calls this via set_template_layout to re-point chrome.
-  actorScope: ["human", "ai", "system"],
+  // Human-only writes. AI re-points layouts via the narrow
+  // `templates.set_layout` op below — never via this surface.
+  actorScope: ["human", "system"],
   database: "cms_admin",
   input: templateUpdateSchema,
   output: z.object({}),
@@ -280,6 +281,69 @@ export const updateTemplateOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "templates.update",
         description: `templates.update slug=${state.slug}`,
+        entities: [{ kind: "template", entityId: input.templateId, state }],
+      });
+    }
+    return ok({});
+  },
+});
+
+/**
+ * P6.7.6 review pass — narrow AI-allowed surface for re-pointing a
+ * template's layout. Distinct from `templates.update` so the AI cannot
+ * smuggle html/css/displayName patches through a layout-targeting tool.
+ */
+export const setTemplateLayoutOp = defineOperation({
+  name: "templates.set_layout",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      templateId: z.string().uuid(),
+      layoutId: z.string().uuid(),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const tplOk = (await tx.execute(sql`
+      SELECT 1 FROM templates WHERE id = ${input.templateId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as { exists: number }[];
+    if (tplOk.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "templates.set_layout",
+        message: "template not found",
+      });
+    }
+    const layoutOk = (await tx.execute(sql`
+      SELECT 1 FROM layouts WHERE id = ${input.layoutId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as { exists: number }[];
+    if (layoutOk.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "templates.set_layout",
+        message: "layout not found or deleted",
+      });
+    }
+    await tx.execute(sql`
+      UPDATE templates
+      SET layout_id = ${input.layoutId}::uuid, updated_at = now()
+      WHERE id = ${input.templateId}::uuid
+    `);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "templates.set_layout",
+      input,
+      succeeded: true,
+      entityId: input.templateId,
+      resultSummary: `layout=${input.layoutId}`,
+    });
+    const state = await loadTemplateState(tx, input.templateId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "templates.update",
+        description: `templates.set_layout slug=${state.slug}`,
         entities: [{ kind: "template", entityId: input.templateId, state }],
       });
     }

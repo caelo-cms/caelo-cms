@@ -50,6 +50,7 @@ import {
   deleteTemplateOp,
   getTemplateOp,
   listTemplatesOp,
+  setTemplateLayoutOp,
   updateTemplateOp,
 } from "./ops/content/templates.js";
 import {
@@ -125,6 +126,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getTemplateOp);
   registry.register(createTemplateOp);
   registry.register(updateTemplateOp);
+  registry.register(setTemplateLayoutOp);
   registry.register(deleteTemplateOp);
   registry.register(setTemplateBlocksOp);
   registry.register(listPagesOp);

@@ -23,6 +23,89 @@ import { Parser } from "htmlparser2";
 
 const SLOT_TAG = "caelo-slot";
 
+/**
+ * P6.7.6 review pass — return the list of `<caelo-slot name="…">` slot
+ * names declared in `html`, in source order. Used by the layout-aware
+ * composer to validate that a layout declares the required `content`
+ * slot before rendering, so misconfigurations error loudly per the
+ * no-fallbacks invariant. Walks the same htmlparser2 Parser as
+ * `applySlotReplacements` so attribute quoting / ordering / whitespace
+ * are handled uniformly.
+ */
+export function listSlotNames(html: string): readonly string[] {
+  const names: string[] = [];
+  const parser = new Parser(
+    {
+      onopentag(name, attrs) {
+        if (name !== SLOT_TAG) return;
+        names.push(attrs["name"] ?? "");
+      },
+    },
+    { lowerCaseTags: true, recognizeSelfClosing: false },
+  );
+  parser.write(html);
+  parser.end();
+  return names;
+}
+
+/**
+ * P6.7.6 review pass — when a rendered template body is exactly one
+ * top-level `<caelo-slot name="content">…</caelo-slot>` element
+ * (typical of legacy templates whose body wraps the slot directly),
+ * peel the wrapper and return just its inner HTML. Returns `null` when
+ * the body has multiple top-level elements, no top-level content slot,
+ * or any other shape — so the caller can fall back to using the body
+ * as-is.
+ *
+ * Replaces the previous regex-based peel which silently failed on
+ * single-quote attributes, attribute reordering, or whitespace
+ * variations.
+ */
+export function extractInnerOfTopLevelContentSlot(html: string): string | null {
+  let depth = 0;
+  let topLevelOpens = 0;
+  let topLevelTextBetween = false;
+  let contentSlotInnerStart = -1;
+  let contentSlotInnerEnd = -1;
+  let foundContentSlot = false;
+  const parser = new Parser(
+    {
+      onopentag(name, attrs) {
+        if (depth === 0) {
+          topLevelOpens += 1;
+          if (name === SLOT_TAG && attrs["name"] === "content" && topLevelOpens === 1) {
+            foundContentSlot = true;
+            contentSlotInnerStart = parser.endIndex + 1;
+          }
+        }
+        depth += 1;
+      },
+      onclosetag(name) {
+        depth -= 1;
+        if (depth === 0 && name === SLOT_TAG && foundContentSlot && contentSlotInnerEnd === -1) {
+          contentSlotInnerEnd = parser.startIndex;
+        }
+      },
+      ontext(text) {
+        if (depth === 0 && text.trim().length > 0) topLevelTextBetween = true;
+      },
+    },
+    { lowerCaseTags: true, recognizeSelfClosing: false },
+  );
+  parser.write(html);
+  parser.end();
+  if (
+    !foundContentSlot ||
+    topLevelOpens !== 1 ||
+    topLevelTextBetween ||
+    contentSlotInnerStart === -1 ||
+    contentSlotInnerEnd === -1
+  ) {
+    return null;
+  }
+  return html.slice(contentSlotInnerStart, contentSlotInnerEnd);
+}
+
 export interface SlotReplacement {
   /** Inner HTML for each `<caelo-slot name="…">`. */
   readonly contentByName: ReadonlyMap<string, string>;
