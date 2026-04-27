@@ -53,5 +53,35 @@ export const handle: Handle = async ({ event, resolve }) => {
     ? { actorId: user.id, actorKind: "human", requestId: crypto.randomUUID() }
     : { ...SYSTEM_CTX, requestId: crypto.randomUUID() };
 
-  return resolve(event);
+  const response = await resolve(event);
+
+  // P6.7.5 — fallback redirect lookup on a 404. In production Caddy
+  // serves redirects from `_redirects.caddy`; the admin / smoke server
+  // consults the `redirects` table directly so dev paths and tests see
+  // the same behaviour without Caddy in front. We only check on 404 to
+  // keep the happy path single-query.
+  if (response.status === 404 && event.request.method === "GET") {
+    try {
+      const lookup = await execute(registry, adapter, SYSTEM_CTX, "redirects.lookup", {
+        fromPath: event.url.pathname,
+      });
+      if (lookup.ok) {
+        const m = (
+          lookup.value as {
+            match: { toPath: string; statusCode: number } | null;
+          }
+        ).match;
+        if (m) {
+          return new Response(null, {
+            status: m.statusCode,
+            headers: { Location: m.toPath },
+          });
+        }
+      }
+    } catch {
+      // best-effort; never let a redirect lookup fail the original 404.
+    }
+  }
+
+  return response;
 };

@@ -51,6 +51,12 @@ import {
   triggerDeployOp,
   updateDeployProgressOp,
 } from "./ops/deploy.js";
+import {
+  createRedirectOp,
+  deleteRedirectOp,
+  listRedirectsOp,
+  lookupRedirectOp,
+} from "./ops/redirects.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
 import { aggregateAiCallsOp } from "./ops/security/ai_calls.js";
 import {
@@ -69,6 +75,12 @@ import { revertModuleOp } from "./ops/snapshots/revert_module.js";
 import { revertPageOp } from "./ops/snapshots/revert_page.js";
 import { revertSiteOp } from "./ops/snapshots/revert_site.js";
 import { revertTemplateOp } from "./ops/snapshots/revert_template.js";
+import {
+  deleteStructuredSetOp,
+  getStructuredSetOp,
+  listStructuredSetsOp,
+  setStructuredSetOp,
+} from "./ops/structured_sets.js";
 import { getUserPreferenceOp, setUserPreferenceOp } from "./ops/user_preferences.js";
 import {
   createFirstOwnerOp,
@@ -152,5 +164,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P6.7 — live-edit overlay
   registry.register(getUserPreferenceOp);
   registry.register(setUserPreferenceOp);
+  registry.register(createRedirectOp);
+  registry.register(listRedirectsOp);
+  registry.register(lookupRedirectOp);
+  registry.register(deleteRedirectOp);
+  registry.register(setStructuredSetOp);
+  registry.register(getStructuredSetOp);
+  registry.register(listStructuredSetsOp);
+  registry.register(deleteStructuredSetOp);
   registry.register(setPinnedElementsOp);
 }

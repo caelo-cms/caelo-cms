@@ -26,7 +26,7 @@ export const editModuleToolInput = z
 
 export const siteMemoryProposeToolInput = z
   .object({
-    slot: z.enum(["brand-voice", "tone", "banned-phrases", "instructions", "glossary"]),
+    slot: z.enum(["purpose", "brand-voice", "tone", "banned-phrases", "instructions", "glossary"]),
     body: z.string().min(1).max(4000),
     rationale: z.string().min(1).max(1000),
   })
@@ -78,6 +78,14 @@ export const AI_TOOLS = [
   "site_memory_propose",
   "add_module_to_page",
   "add_module_to_template",
+  "create_page",
+  "rename_page",
+  "set_page_title",
+  "change_page_slug",
+  "delete_page",
+  "remove_module_from_page",
+  "set_structured_set",
+  "update_theme",
 ] as const;
 export type AiToolName = (typeof AI_TOOLS)[number];
 export type AddModuleToPageToolInput = z.infer<typeof addModuleToPageToolInput>;
@@ -153,7 +161,7 @@ export const chatPublishInput = z
 
 export const aiMemorySetInput = z
   .object({
-    slot: z.enum(["brand-voice", "tone", "banned-phrases", "instructions", "glossary"]),
+    slot: z.enum(["purpose", "brand-voice", "tone", "banned-phrases", "instructions", "glossary"]),
     body: z.string().max(4000),
   })
   .strict();
@@ -174,8 +182,103 @@ export const aiProvidersSetInput = z
   })
   .strict();
 
+/**
+ * P6.7.5 — page-lifecycle tools. Three identifiers, three independent
+ * tools so the AI never silently substitutes one for another.
+ */
+const slugInputSchema = z
+  .string()
+  .min(1)
+  .max(120)
+  .regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase letters/digits/hyphens, leading non-hyphen");
+
+export const createPageToolInput = z
+  .object({
+    name: z.string().min(1).max(256),
+    title: z.string().min(1).max(256),
+    slug: slugInputSchema,
+    locale: z.string().min(2).max(10).default("en"),
+    templateId: z.string().uuid(),
+    status: z.enum(["draft", "published"]).default("draft"),
+  })
+  .strict();
+
+export const renamePageToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    newName: z.string().min(1).max(256),
+  })
+  .strict();
+
+export const setPageTitleToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    newTitle: z.string().min(1).max(256),
+  })
+  .strict();
+
+export const changePageSlugToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    newSlug: slugInputSchema,
+    /**
+     * `auto` (default): create a 301 from the old slug → new slug.
+     * `skip`: only choose when the user explicitly says they don't
+     * want existing inbound links to redirect.
+     */
+    redirectFromOld: z.enum(["auto", "skip"]).default("auto"),
+  })
+  .strict();
+
+export const deletePageToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    /** '404' returns a not-found; 'redirect' creates a 301 to redirectTo. */
+    disposition: z.enum(["404", "redirect"]),
+    redirectTo: z.string().min(1).max(500).optional(),
+  })
+  .strict()
+  .refine(
+    (v) => v.disposition === "404" || (v.redirectTo !== undefined && v.redirectTo.length > 0),
+    {
+      message: "redirectTo is required when disposition='redirect'",
+      path: ["redirectTo"],
+    },
+  );
+
+export const removeModuleFromPageToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    moduleId: z.string().uuid(),
+  })
+  .strict();
+
+export const setStructuredSetToolInput = z
+  .object({
+    kind: z.enum(["nav-menu", "taxonomy", "theme", "tags", "link-list"]),
+    slug: slugInputSchema,
+    displayName: z.string().min(1).max(200),
+    items: z.array(z.unknown()),
+  })
+  .strict();
+
+export const updateThemeToolInput = z
+  .object({
+    /** Map of token name to value. Merges into the existing theme/site set. */
+    tokens: z.record(z.string(), z.string()),
+  })
+  .strict();
+
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
+export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
+export type RenamePageToolInput = z.infer<typeof renamePageToolInput>;
+export type SetPageTitleToolInput = z.infer<typeof setPageTitleToolInput>;
+export type ChangePageSlugToolInput = z.infer<typeof changePageSlugToolInput>;
+export type DeletePageToolInput = z.infer<typeof deletePageToolInput>;
+export type RemoveModuleFromPageToolInput = z.infer<typeof removeModuleFromPageToolInput>;
+export type SetStructuredSetToolInput = z.infer<typeof setStructuredSetToolInput>;
+export type UpdateThemeToolInput = z.infer<typeof updateThemeToolInput>;
 export type ChatCreateSessionInput = z.infer<typeof chatCreateSessionInput>;
 export type ChatSendMessageInput = z.infer<typeof chatSendMessageInput>;
 export type ChatRenameSessionInput = z.infer<typeof chatRenameSessionInput>;

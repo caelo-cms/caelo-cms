@@ -211,10 +211,23 @@ export async function* runChatTurn(
       }
       lines.push("");
       lines.push(
-        "Tool guidance:",
+        "Tool guidance (module / page level):",
         "- edit_module — change an existing module's content (always reference a real module id from a BEGIN marker above).",
         "- add_module_to_page — insert a NEW module into a block on THIS page only. Use for one-off content (a CTA on the homepage, an FAQ on /about). Position is 'top', 'bottom', or a 0-based index.",
         '- add_module_to_template — create a NEW module and fan it out to EVERY page using this template at the same block + position. Use only when the user explicitly asks for site-wide content ("add a footer to every page", "a header banner across the site"). Pass the Template id above.',
+        "- remove_module_from_page — drop a module from a page's layout (the module row stays for re-use elsewhere).",
+        "",
+        "Tool guidance (page lifecycle — three independent identifiers):",
+        "- A page has THREE separately-editable identifiers. Never silently substitute one for another:",
+        "  * `name`  — the editor's friendly label (page picker, breadcrumbs). Internal-only.",
+        "  * `title` — the HTML <title> tag (browser tab, search-engine SERP). Public.",
+        "  * `slug`  — the URL path component. Public, indexed, every link points at it.",
+        "- create_page(name, title, slug, templateId, ...) — make a new page.",
+        '- rename_page(pageId, newName) — internal label only. Use when the user says "rename" without mentioning URL or tab.',
+        '- set_page_title(pageId, newTitle) — HTML <title> only. Use when the user mentions "browser tab", "<title>", or "SERP".',
+        "- change_page_slug(pageId, newSlug, redirectFromOld=auto) — URL only. Auto-creates a 301 from the old URL. Use only when the user explicitly mentions changing the URL / slug / path.",
+        "- delete_page(pageId, disposition='404'|'redirect', redirectTo?) — soft-delete. ALWAYS confirm with the user which behaviour they want for the dead URL; suggest a redirect target (parent section, sibling, or /) when proposing redirect.",
+        '- When a request is ambiguous (e.g. just "rename to About"), ASK: "Should I update only the internal name, the <title> tag, or the URL too?"',
         "",
         'When the user asks for a copy change like "make the headline more meaningful" or "rewrite the welcome paragraph", read the surrounding modules in this block to keep the new copy coherent across the whole page.',
       );
@@ -222,10 +235,79 @@ export async function* runChatTurn(
     }
   }
 
+  // P6.7.5 — All-pages, Theme, Structured-sets, Dead-links volatile
+  // chunks. Each is short and skipped when empty so a fresh install
+  // doesn't drown in placeholders.
+  let allPagesBlock: string | undefined;
+  const allPagesR = await execute(registry, adapter, humanCtx, "pages.list", {});
+  if (allPagesR.ok) {
+    const ps = (
+      allPagesR.value as {
+        pages: {
+          id: string;
+          slug: string;
+          locale: string;
+          name: string;
+          title: string;
+          status: string;
+        }[];
+      }
+    ).pages;
+    if (ps.length > 0) {
+      allPagesBlock = [
+        "# All pages on this site",
+        "Use these (slug, locale) pairs as link targets — never invent a URL.",
+        ...ps.map(
+          (p) =>
+            `- id=${p.id} name="${p.name}" title="${p.title}" url=${p.locale === "en" ? `/${p.slug}` : `/${p.locale}/${p.slug}`} status=${p.status}`,
+        ),
+      ].join("\n");
+    }
+  }
+
+  let themeBlock: string | undefined;
+  const themeR = await execute(registry, adapter, humanCtx, "structured_sets.get", {
+    kind: "theme",
+    slug: "site",
+  });
+  if (themeR.ok) {
+    const set = (themeR.value as { set: { items: unknown } | null }).set;
+    if (set && Array.isArray(set.items) && set.items.length > 0) {
+      const tokens = set.items as { token: string; value: string }[];
+      themeBlock = [
+        "# Theme tokens (CSS variables on :root)",
+        "Use `var(--<token>)` in generated HTML/CSS instead of raw hex codes when the user wants brand-consistent colors / fonts.",
+        ...tokens.map((t) => `- --${t.token}: ${t.value}`),
+        "",
+        "Update with the `update_theme` tool: update_theme({tokens: {colorPrimary: '#0066ff'}}).",
+      ].join("\n");
+    }
+  }
+
+  let structuredSetsBlock: string | undefined;
+  const setsR = await execute(registry, adapter, humanCtx, "structured_sets.list", {});
+  if (setsR.ok) {
+    const sets = (
+      setsR.value as {
+        sets: { kind: string; slug: string; displayName: string; items: unknown }[];
+      }
+    ).sets.filter((s) => s.kind !== "theme");
+    if (sets.length > 0) {
+      structuredSetsBlock = [
+        "# Structured-data sets you can edit",
+        "Each is a typed named list. Use `set_structured_set` to replace a set's items.",
+        ...sets.map((s) => {
+          const items = Array.isArray(s.items) ? (s.items as unknown[]) : [];
+          return `- ${s.kind}/${s.slug} ("${s.displayName}") — ${items.length} item${items.length === 1 ? "" : "s"}`;
+        }),
+      ].join("\n");
+    }
+  }
+
   const systemChunks = composeSystemPromptChunks(
     memory,
     tools.catalogue().map((t) => ({ name: t.name, description: t.description })),
-    { chipsBlock, pageContextBlock },
+    { chipsBlock, pageContextBlock, allPagesBlock, themeBlock, structuredSetsBlock },
   );
 
   // AI calls all run with chatBranchId set so the snapshot lands tagged.

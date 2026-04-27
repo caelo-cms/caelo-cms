@@ -82,13 +82,15 @@ describe("P5 actor scope: modules.update widened to include AI", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("AI cannot call pages.update", async () => {
+  it("AI can call pages.update (P6.7.5 — drives rename_page / set_page_title / change_page_slug)", async () => {
+    // Non-existent page → HandlerError(page not found), NOT
+    // ActorScopeRejected. Proves the validator allows AI through.
     const r = await execute(registry, adapter, AI, "pages.update", {
       pageId: "11111111-1111-4111-8111-111111111111",
       title: "x",
     });
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect((r.error as { kind: string }).kind).toBe("ActorScopeRejected");
+    expect((r.error as { kind: string }).kind).toBe("HandlerError");
   });
 });

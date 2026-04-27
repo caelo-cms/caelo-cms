@@ -163,10 +163,26 @@ export const renderPagePreviewOp = defineOperation({
       modules,
     }));
 
+    // P6.7.5 — load structured sets (theme + nav-menu + others) so the
+    // composer can render nav menus from typed items + inject theme
+    // tokens into <head>.
+    const setRows = (await tx.execute(sql`
+      SELECT kind, slug, items::text AS items FROM structured_sets
+    `)) as unknown as { kind: string; slug: string; items: string }[];
+    const byKindSlug: Record<string, unknown[]> = {};
+    for (const r of setRows) {
+      try {
+        byKindSlug[`${r.kind}/${r.slug}`] = JSON.parse(r.items) as unknown[];
+      } catch {
+        // ignore malformed rows
+      }
+    }
+
     const composed = composePagePreview({
       templateHtml: pageRow.template_html,
       templateCss: pageRow.template_css,
       blocks,
+      structuredSets: { byKindSlug },
     });
     return ok({
       html: composed.html,

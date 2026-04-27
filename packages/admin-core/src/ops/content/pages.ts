@@ -19,6 +19,8 @@ const pageRowSchema = z.object({
   id: z.string(),
   slug: z.string(),
   locale: z.string(),
+  /** P6.7.5 — internal editor label, distinct from `title` and `slug`. */
+  name: z.string(),
   title: z.string(),
   templateId: z.string(),
   status: z.enum(["draft", "published"]),
@@ -57,6 +59,7 @@ type RawPageRow = {
   id: string;
   slug: string;
   locale: string;
+  name: string | null;
   title: string;
   template_id: string;
   status: "draft" | "published";
@@ -79,6 +82,11 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
     id: r.id,
     slug: r.slug,
     locale: r.locale,
+    // P6.7.5 — legacy rows + raw INSERTs may leave `name` null. The
+    // rest of the codebase treats name as a non-null friendly label,
+    // so we fall back to title here so the editor never shows a blank
+    // page picker entry.
+    name: r.name ?? r.title,
     title: r.title,
     templateId: r.template_id,
     status: r.status,
@@ -105,7 +113,7 @@ export const listPagesOp = defineOperation({
     if (!input.includeDeleted) filters.push(sql`deleted_at IS NULL`);
     if (input.locale !== undefined) filters.push(sql`locale = ${input.locale}`);
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, locale, title, template_id::text AS template_id,
+      SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages
       ${buildWhere(filters)}
@@ -123,7 +131,7 @@ export const getPageOp = defineOperation({
   output: z.object({ page: pageRowSchema }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, locale, title, template_id::text AS template_id,
+      SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -150,7 +158,7 @@ export const getPageWithModulesOp = defineOperation({
   output: z.object({ page: pageWithModulesSchema }),
   handler: async (_ctx, input, tx) => {
     const pageRows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, locale, title, template_id::text AS template_id,
+      SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -228,7 +236,9 @@ export const getPageWithModulesOp = defineOperation({
 
 export const createPageOp = defineOperation({
   name: "pages.create",
-  actorScope: ["human", "system"],
+  // P6.7.5 — AI calls this via the `create_page` tool. Validator + audit
+  // + snapshot all run in the same path as a human create.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: pageCreateSchema,
   output: z.object({ pageId: z.string() }),
@@ -269,8 +279,15 @@ export const createPageOp = defineOperation({
       });
     }
     const rows = (await tx.execute(sql`
-      INSERT INTO pages (slug, locale, title, template_id, status)
-      VALUES (${input.slug}, ${input.locale}, ${input.title}, ${input.templateId}::uuid, ${input.status})
+      INSERT INTO pages (slug, locale, name, title, template_id, status)
+      VALUES (
+        ${input.slug},
+        ${input.locale},
+        ${input.name ?? input.title},
+        ${input.title},
+        ${input.templateId}::uuid,
+        ${input.status}
+      )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const pageId = rows[0]?.id;
@@ -300,7 +317,11 @@ export const createPageOp = defineOperation({
 
 export const updatePageOp = defineOperation({
   name: "pages.update",
-  actorScope: ["human", "system"],
+  // P6.7.5 — AI calls this via the rename_page / set_page_title /
+  // change_page_slug tools. The tool layer carries the intent split
+  // (name vs title vs slug) so the AI can never silently substitute
+  // one identifier for another.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: pageUpdateSchema,
   output: z.object({}),
@@ -351,8 +372,30 @@ export const updatePageOp = defineOperation({
     // helper just emits `template_id = $n::uuid` rather than `= $n` (which
     // would need a separate query path). version bumps in the same UPDATE so
     // the patch lands atomically with the new token.
+    // P6.7.5 — `name`, `title`, and `slug` are independently patchable.
+    // The slug change additionally needs a (slug, locale) uniqueness
+    // pre-check; we run it here since `pages.update` is the canonical
+    // mutation entry-point for renames.
+    if (input.slug !== undefined) {
+      const dup = (await tx.execute(sql`
+        SELECT 1 FROM pages
+        WHERE slug = ${input.slug}
+          AND id <> ${input.pageId}::uuid
+          AND deleted_at IS NULL
+        LIMIT 1
+      `)) as unknown as { exists: number }[];
+      if (dup.length > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.update",
+          message: `slug "${input.slug}" already in use`,
+        });
+      }
+    }
     const sets = buildPatchSet({
+      name: input.name,
       title: input.title,
+      slug: input.slug,
       template_id: input.templateId !== undefined ? sql`${input.templateId}::uuid` : undefined,
       status: input.status,
       version: sql`version + 1`,
@@ -515,7 +558,10 @@ export const setPageModulesOp = defineOperation({
 
 export const deletePageOp = defineOperation({
   name: "pages.delete",
-  actorScope: ["human", "system"],
+  // P6.7.5 — AI calls this via the `delete_page` tool. The tool layer
+  // requires an explicit `disposition` (404 vs redirect) and a
+  // confirmed `redirectTo`; the op stays a plain soft-delete.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ pageId: z.string().uuid() }),
   output: z.object({}),

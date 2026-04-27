@@ -13,9 +13,17 @@
  * concatenates for callers that don't care about the structure.
  */
 
-const SLOT_ORDER = ["brand-voice", "tone", "banned-phrases", "instructions", "glossary"] as const;
+const SLOT_ORDER = [
+  "purpose",
+  "brand-voice",
+  "tone",
+  "banned-phrases",
+  "instructions",
+  "glossary",
+] as const;
 
 const SLOT_HEADINGS: Record<(typeof SLOT_ORDER)[number], string> = {
+  purpose: "Purpose",
   "brand-voice": "Brand voice",
   tone: "Tone",
   "banned-phrases": "Banned phrases",
@@ -55,6 +63,12 @@ export interface VolatileContext {
   readonly chipsBlock?: string;
   readonly skillsBlock?: string;
   readonly pageContextBlock?: string;
+  /** P6.7.5 — full site page list, so AI can pick real link targets. */
+  readonly allPagesBlock?: string;
+  /** P6.7.5 — current theme tokens (CSS variables). */
+  readonly themeBlock?: string;
+  /** P6.7.5 — named structured-data sets the AI can edit (nav-menu, tags, etc.). */
+  readonly structuredSetsBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -91,6 +105,15 @@ export function composeSystemPromptChunks(
   // Volatile chunks go last so the cache prefix above stays byte-stable.
   if (volatile.skillsBlock && volatile.skillsBlock.trim().length > 0) {
     chunks.push({ body: volatile.skillsBlock, cacheable: false, label: "skills" });
+  }
+  if (volatile.themeBlock && volatile.themeBlock.trim().length > 0) {
+    chunks.push({ body: volatile.themeBlock, cacheable: false, label: "theme" });
+  }
+  if (volatile.allPagesBlock && volatile.allPagesBlock.trim().length > 0) {
+    chunks.push({ body: volatile.allPagesBlock, cacheable: false, label: "all-pages" });
+  }
+  if (volatile.structuredSetsBlock && volatile.structuredSetsBlock.trim().length > 0) {
+    chunks.push({ body: volatile.structuredSetsBlock, cacheable: false, label: "structured-sets" });
   }
   if (volatile.pageContextBlock && volatile.pageContextBlock.trim().length > 0) {
     chunks.push({ body: volatile.pageContextBlock, cacheable: false, label: "page-context" });

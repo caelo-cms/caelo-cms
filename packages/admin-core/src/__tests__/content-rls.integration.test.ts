@@ -56,8 +56,8 @@ beforeAll(async () => {
       `) as unknown as { id: string }[];
       seededModuleId = mod[0]?.id ?? "";
       const pg = (await tx`
-        INSERT INTO pages (slug, locale, title, template_id)
-        VALUES (${PAGE_SLUG}, 'en', 'RLS P', ${seededTemplateId}::uuid)
+        INSERT INTO pages (slug, locale, name, title, template_id)
+        VALUES (${PAGE_SLUG}, 'en', 'RLS P', 'RLS P', ${seededTemplateId}::uuid)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seededPageId = pg[0]?.id ?? "";

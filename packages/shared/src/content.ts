@@ -103,6 +103,8 @@ export const pageCreateSchema = z
   .object({
     slug: slugSchema,
     locale: localeSchema.default("en"),
+    /** P6.7.5 — internal editor label. Defaults to title if omitted. */
+    name: z.string().min(1).max(256).optional(),
     title: z.string().min(1).max(256),
     templateId: z.string().uuid(),
     status: pageStatusSchema.default("draft"),
@@ -118,7 +120,10 @@ export const pageUpdateSchema = z
      * Routes that load the page first should always pass it back.
      */
     expectedVersion: z.number().int().nonnegative().optional(),
+    /** P6.7.5 — three independently-editable identifiers. */
+    name: z.string().min(1).max(256).optional(),
     title: z.string().min(1).max(256).optional(),
+    slug: slugSchema.optional(),
     templateId: z.string().uuid().optional(),
     status: pageStatusSchema.optional(),
   })

@@ -41,10 +41,18 @@ export interface ComposeBlock {
   readonly modules: readonly ComposeModule[];
 }
 
+/** P6.7.5 — structured sets carried into the composer so nav-menu
+ *  modules render from typed items and theme tokens flow into <head>. */
+export interface ComposeStructuredSets {
+  /** Map keyed by `<kind>/<slug>` (e.g. `nav-menu/header-main`). */
+  readonly byKindSlug: Readonly<Record<string, readonly unknown[]>>;
+}
+
 export interface ComposeInput {
   readonly templateHtml: string;
   readonly templateCss: string;
   readonly blocks: readonly ComposeBlock[];
+  readonly structuredSets?: ComposeStructuredSets;
 }
 
 export interface ComposeOutput {
@@ -73,10 +81,18 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   for (const block of input.blocks) {
     // P6.7 — tag every module's outermost element with
     // `data-caelo-module-id="<uuid>"` so the live-edit overlay's iframe
-    // hover affordances can identify the clicked module. Stays in the
-    // production build too — harmless presence; a P12 plugin can strip
-    // it if a site wants minimal HTML.
-    const html = block.modules.map((m) => tagModuleId(m.html, m.moduleId)).join("\n");
+    // hover affordances can identify the clicked module.
+    //
+    // P6.7.5 — modules whose slug matches a `nav-menu/<slug>` set get
+    // their HTML replaced by a fresh render of the menu items. That's
+    // what makes a slug change update every menu without touching
+    // module HTML.
+    const renderedModuleHtml = block.modules.map((m) => {
+      const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
+      const baseHtml = navMenuItems !== null ? renderNavMenuHtml(navMenuItems) : m.html;
+      return tagModuleId(baseHtml, m.moduleId);
+    });
+    const html = renderedModuleHtml.join("\n");
     contentByName.set(block.blockName, html);
     for (const m of block.modules) {
       if (m.css.trim().length > 0) allCss.push(m.css);
@@ -86,6 +102,14 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
 
   const replaced = applySlotReplacements(input.templateHtml, { contentByName });
   let html = replaced.html;
+
+  // P6.7.5 — theme tokens become CSS custom properties on :root. Goes
+  // first so module CSS can `var(--color-primary)` and override.
+  const themeCss = renderThemeCss(input.structuredSets);
+  if (themeCss !== null) {
+    const styleTag = `<style data-source="theme">${themeCss}</style>`;
+    html = injectBefore(html, HEAD_CLOSE_RE, styleTag);
+  }
 
   if (allCss.length > 0) {
     const styleTag = `<style data-source="modules">\n${allCss.join("\n")}\n</style>`;
@@ -113,6 +137,88 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
  * Exported so callers (admin preview endpoint, static generator,
  * tests) can reuse the same logic.
  */
+/**
+ * P6.7.5 — return the items for a `nav-menu/<slug>` set when a module's
+ * slug starts with `nav-menu-`. Returns null when the module is not a
+ * nav menu (so the composer falls back to its stored HTML).
+ *
+ * Convention: a module slug `nav-menu-header-main` resolves to
+ * structuredSets[`nav-menu/header-main`].
+ */
+function lookupNavMenuItems(
+  moduleSlug: string,
+  sets: ComposeStructuredSets | undefined,
+): readonly unknown[] | null {
+  if (!sets) return null;
+  const prefix = "nav-menu-";
+  if (!moduleSlug.startsWith(prefix)) return null;
+  const setSlug = moduleSlug.slice(prefix.length);
+  const items = sets.byKindSlug[`nav-menu/${setSlug}`];
+  return items ?? null;
+}
+
+interface NavMenuItem {
+  label: string;
+  href: string;
+  target?: "_self" | "_blank";
+  children?: NavMenuItem[];
+}
+
+function escapeAttr(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+function escapeText(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Render a nav-menu's typed items into HTML. Recursively handles
+ * children for submenus. Plain `<nav><ul><li>` so site CSS can theme
+ * it via the `caelo-nav-menu` class.
+ */
+function renderNavMenuHtml(items: readonly unknown[]): string {
+  const safeItems = items.filter((it): it is NavMenuItem => {
+    if (!it || typeof it !== "object") return false;
+    const o = it as { label?: unknown; href?: unknown };
+    return typeof o.label === "string" && typeof o.href === "string";
+  });
+  return `<nav class="caelo-nav-menu"><ul>${safeItems.map(renderNavItem).join("")}</ul></nav>`;
+}
+function renderNavItem(item: NavMenuItem): string {
+  const target = item.target === "_blank" ? ' target="_blank" rel="noopener"' : "";
+  const inner =
+    item.children && item.children.length > 0
+      ? `<ul>${item.children.map(renderNavItem).join("")}</ul>`
+      : "";
+  return `<li><a href="${escapeAttr(item.href)}"${target}>${escapeText(item.label)}</a>${inner}</li>`;
+}
+
+interface ThemeTokenItem {
+  token: string;
+  value: string;
+}
+/**
+ * Render the theme/site set's tokens as `:root { --token: value; }` CSS.
+ * Returns null when no theme is configured so the composer skips
+ * injecting an empty <style> tag.
+ */
+function renderThemeCss(sets: ComposeStructuredSets | undefined): string | null {
+  if (!sets) return null;
+  const items = sets.byKindSlug["theme/site"];
+  if (!items || items.length === 0) return null;
+  const tokens = items.filter((it): it is ThemeTokenItem => {
+    if (!it || typeof it !== "object") return false;
+    const o = it as { token?: unknown; value?: unknown };
+    return typeof o.token === "string" && typeof o.value === "string";
+  });
+  if (tokens.length === 0) return null;
+  return `:root{${tokens.map((t) => `--${t.token}: ${t.value};`).join("")}}`;
+}
+
 export function tagModuleId(html: string, moduleId: string): string {
   if (!html) return html;
   const firstOpen = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/;

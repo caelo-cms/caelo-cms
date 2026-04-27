@@ -9,3 +9,4 @@ export * from "./preview-compose.js";
 export * from "./preview-scanner.js";
 export * from "./result.js";
 export * from "./snapshots.js";
+export * from "./structured-sets.js";

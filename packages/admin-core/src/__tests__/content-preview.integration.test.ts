@@ -111,6 +111,7 @@ describe("pages.render_preview", () => {
     });
 
     const r = await execute(registry, adapter, systemCtx, "pages.render_preview", { pageId });
+    if (!r.ok) console.error("render_preview error:", r.error);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const { html, replacedSlots, missingSlots } = r.value as {

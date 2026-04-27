@@ -117,8 +117,8 @@ try {
       if (!modId) throw new Error("seed home module returned no row");
 
       const pg = (await tx`
-        INSERT INTO pages (slug, locale, title, template_id, status)
-        VALUES ('home', 'en', 'Home', ${tplId}::uuid, 'draft')
+        INSERT INTO pages (slug, locale, name, title, template_id, status)
+        VALUES ('home', 'en', 'Home', 'Home', ${tplId}::uuid, 'draft')
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const pgId = pg[0]?.id;
@@ -129,6 +129,55 @@ try {
         VALUES (${pgId}::uuid, 'content', 0, ${modId}::uuid)
       `;
     }
+
+    // P6.7.5 — default structured sets so a fresh install has a
+    // working header / footer / theme / tags primitive out of the box.
+    // Idempotent: ON CONFLICT (kind, slug) DO NOTHING keeps user edits
+    // intact across re-seed.
+    await tx`
+      INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
+      VALUES (
+        'nav-menu', 'header-main', 'Header navigation',
+        ${[{ label: "Home", href: "/home" }]}::jsonb,
+        ${actorId}::uuid
+      )
+      ON CONFLICT (kind, slug) DO NOTHING
+    `;
+    await tx`
+      INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
+      VALUES (
+        'nav-menu', 'footer-main', 'Footer navigation',
+        ${[]}::jsonb,
+        ${actorId}::uuid
+      )
+      ON CONFLICT (kind, slug) DO NOTHING
+    `;
+    await tx`
+      INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
+      VALUES (
+        'theme', 'site', 'Site theme',
+        ${[
+          { token: "color-primary", value: "#3b82f6", scope: "color" },
+          { token: "color-bg", value: "#ffffff", scope: "color" },
+          { token: "color-fg", value: "#0f172a", scope: "color" },
+          { token: "color-accent", value: "#6366f1", scope: "color" },
+          { token: "font-heading", value: "system-ui, sans-serif", scope: "font" },
+          { token: "font-body", value: "system-ui, sans-serif", scope: "font" },
+          { token: "space-unit", value: "0.5rem", scope: "space" },
+        ]}::jsonb,
+        ${actorId}::uuid
+      )
+      ON CONFLICT (kind, slug) DO NOTHING
+    `;
+    await tx`
+      INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
+      VALUES (
+        'tags', 'blog', 'Blog tags',
+        ${[]}::jsonb,
+        ${actorId}::uuid
+      )
+      ON CONFLICT (kind, slug) DO NOTHING
+    `;
   });
 } finally {
   await sql.end();
