@@ -304,10 +304,91 @@ export async function* runChatTurn(
     }
   }
 
+  // P6.7.6 — layouts (site-wide chrome) + site_defaults so the AI knows
+  // which layout/template to use when creating a page and which tool
+  // surface (page / template / layout) is appropriate for a given
+  // change request.
+  let layoutsBlock: string | undefined;
+  let siteDefaultsBlock: string | undefined;
+  const layoutsR = await execute(registry, adapter, humanCtx, "layouts.list", {
+    includeDeleted: false,
+  });
+  const tplsR = await execute(registry, adapter, humanCtx, "templates.list", {
+    includeDeleted: false,
+  });
+  const defaultsR = await execute(registry, adapter, humanCtx, "site_defaults.get", {});
+  if (layoutsR.ok) {
+    const layouts = (
+      layoutsR.value as {
+        layouts: {
+          id: string;
+          slug: string;
+          displayName: string;
+          blocks: { name: string; displayName: string }[];
+        }[];
+      }
+    ).layouts;
+    if (layouts.length > 0) {
+      layoutsBlock = [
+        "# Layouts on this site (site-wide chrome)",
+        "Layouts wrap every page on every template bound to them. The `content` block always holds the rendered template; other blocks (header, footer, nav) are filled by `add_module_to_layout`.",
+        ...layouts.map(
+          (l) =>
+            `- ${l.slug} ("${l.displayName}") — blocks: ${l.blocks.map((b) => b.name).join(", ")}`,
+        ),
+        "",
+        "Three add-module surfaces — pick by intent:",
+        "- one page only        → `add_module_to_page`",
+        "- every page on a template → `add_module_to_template`",
+        "- every page on the site (or a whole layout) → `add_module_to_layout` (e.g. layoutSlug='site-default', blockName='footer')",
+        "",
+        "`create_layout` and `set_site_defaults` are Owner-only — AI calls reject; surface the permission requirement instead of trying again.",
+      ].join("\n");
+    }
+  }
+  if (defaultsR.ok && tplsR.ok) {
+    const defaults = (
+      defaultsR.value as {
+        defaults: {
+          defaultLayoutSlug: string;
+          defaultTemplateSlug: string;
+        } | null;
+      }
+    ).defaults;
+    const tpls = (tplsR.value as { templates: { id: string; slug: string; layoutId: string }[] })
+      .templates;
+    const layoutBySlug = new Map<string, string>();
+    if (layoutsR.ok) {
+      for (const l of (layoutsR.value as { layouts: { id: string; slug: string }[] }).layouts) {
+        layoutBySlug.set(l.id, l.slug);
+      }
+    }
+    const templateLines = tpls.map(
+      (t) => `- ${t.slug} → ${layoutBySlug.get(t.layoutId) ?? "(unknown layout)"}`,
+    );
+    siteDefaultsBlock = [
+      "# Site defaults (used when caller omits a layout/template)",
+      defaults
+        ? `- default layout: ${defaults.defaultLayoutSlug}\n- default template: ${defaults.defaultTemplateSlug}`
+        : "- (none configured yet — Owner can set via /security/site-defaults)",
+      "",
+      "# Templates → layouts",
+      ...(templateLines.length > 0 ? templateLines : ["- (no templates yet)"]),
+    ].join("\n");
+  }
+
   const systemChunks = composeSystemPromptChunks(
     memory,
     tools.catalogue().map((t) => ({ name: t.name, description: t.description })),
-    { chipsBlock, pageContextBlock, allPagesBlock, themeBlock, structuredSetsBlock },
+    {
+      chipsBlock,
+      pageContextBlock,
+      allPagesBlock,
+      themeBlock,
+      structuredSetsBlock,
+      layoutsBlock,
+      siteDefaultsBlock,
+    },
   );
 
   // AI calls all run with chatBranchId set so the snapshot lands tagged.

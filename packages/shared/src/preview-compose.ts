@@ -230,3 +230,141 @@ export function tagModuleId(html: string, moduleId: string): string {
   const replaced = `<${m[1]}${tagAttrs} data-caelo-module-id="${moduleId}">`;
   return html.slice(0, m.index) + replaced + html.slice(m.index + m[0].length);
 }
+
+/**
+ * P6.7.6 — layout-aware composer. Runs the template composer first,
+ * extracts the resulting body content, then renders the layout HTML
+ * substituting:
+ *   - `<caelo-slot name="content">` → the body of the rendered template
+ *   - other layout blocks (header / footer / etc.) → concatenated HTML
+ *     from `layoutBlocks` (per-block module attachments)
+ *
+ * Per CLAUDE.md §2 no-fallbacks: a missing layout / missing `content`
+ * block is the *caller*'s job to surface as a structured error before
+ * calling here. This function trusts its inputs.
+ */
+export interface ComposeLayoutBlock {
+  readonly blockName: string;
+  readonly modules: readonly ComposeModule[];
+}
+
+export interface ComposeWithLayoutInput extends ComposeInput {
+  readonly layoutHtml: string;
+  readonly layoutCss: string;
+  readonly layoutBlocks: readonly ComposeLayoutBlock[];
+}
+
+const BODY_OPEN_RE = /<body\b[^>]*>/i;
+
+/**
+ * Extract the inner body HTML from a fully rendered template document.
+ * If the template HTML has no <body> (legacy fragment templates), the
+ * whole composed string is returned as-is — the layout's
+ * `<caelo-slot name="content">` becomes a generic mount point and the
+ * layout owns <html><head><body>.
+ *
+ * Legacy templates often wrap their slot in `<body><caelo-slot
+ * name="content">…</caelo-slot></body>` — peel off the redundant
+ * `<caelo-slot>` so we don't end up with the layout's own slot
+ * containing yet another `<caelo-slot>`.
+ */
+const SLOT_CONTENT_WRAP_RE = /^\s*<caelo-slot\s+name="content"\s*>([\s\S]*)<\/caelo-slot>\s*$/i;
+
+function extractBodyInner(composedHtml: string): string {
+  const open = BODY_OPEN_RE.exec(composedHtml);
+  const close = BODY_CLOSE_RE.exec(composedHtml);
+  let inner: string;
+  if (!open || !close || close.index < open.index) {
+    inner = composedHtml;
+  } else {
+    const start = open.index + open[0].length;
+    inner = composedHtml.slice(start, close.index);
+  }
+  const slotMatch = SLOT_CONTENT_WRAP_RE.exec(inner);
+  if (slotMatch?.[1] !== undefined) return slotMatch[1];
+  return inner;
+}
+
+export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOutput {
+  // 1. Render the page modules into the template (slot replacement only;
+  //    no head/body manipulation here — that belongs to the layout).
+  const templateContentByName = new Map<string, string>();
+  const moduleCssParts: string[] = [];
+  const moduleJsParts: string[] = [];
+  if (input.templateCss.trim().length > 0) moduleCssParts.push(input.templateCss);
+  for (const block of input.blocks) {
+    const renderedModuleHtml = block.modules.map((m) => {
+      const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
+      const baseHtml = navMenuItems !== null ? renderNavMenuHtml(navMenuItems) : m.html;
+      return tagModuleId(baseHtml, m.moduleId);
+    });
+    templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
+    for (const m of block.modules) {
+      if (m.css.trim().length > 0) moduleCssParts.push(m.css);
+      if (m.js.trim().length > 0) moduleJsParts.push(m.js);
+    }
+  }
+  const renderedTemplate = applySlotReplacements(input.templateHtml, {
+    contentByName: templateContentByName,
+  });
+  const innerBody = extractBodyInner(renderedTemplate.html);
+
+  // 2. Build per-layout-block contents (header / footer / etc.) +
+  //    aggregate layout CSS/JS.
+  const layoutContentByName = new Map<string, string>();
+  layoutContentByName.set("content", innerBody);
+  if (input.layoutCss.trim().length > 0) moduleCssParts.unshift(input.layoutCss);
+  for (const block of input.layoutBlocks) {
+    if (block.blockName === "content") continue; // reserved for the page body
+    const renderedModuleHtml = block.modules.map((m) => {
+      const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
+      const baseHtml = navMenuItems !== null ? renderNavMenuHtml(navMenuItems) : m.html;
+      return tagModuleId(baseHtml, m.moduleId);
+    });
+    layoutContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
+    for (const m of block.modules) {
+      if (m.css.trim().length > 0) moduleCssParts.push(m.css);
+      if (m.js.trim().length > 0) moduleJsParts.push(m.js);
+    }
+  }
+
+  // 3. Render the layout HTML, substituting all named slots.
+  const replaced = applySlotReplacements(input.layoutHtml, {
+    contentByName: layoutContentByName,
+  });
+  let html = replaced.html;
+
+  const themeCss = renderThemeCss(input.structuredSets);
+  if (themeCss !== null) {
+    html = injectBefore(html, HEAD_CLOSE_RE, `<style data-source="theme">${themeCss}</style>`);
+  }
+  if (moduleCssParts.length > 0) {
+    html = injectBefore(
+      html,
+      HEAD_CLOSE_RE,
+      `<style data-source="modules">\n${moduleCssParts.join("\n")}\n</style>`,
+    );
+  }
+  if (moduleJsParts.length > 0) {
+    html = injectBefore(
+      html,
+      BODY_CLOSE_RE,
+      `<script defer data-source="modules">\n${moduleJsParts.join("\n")}\n</script>`,
+    );
+  }
+
+  // De-duplicate slot accounting across both passes — the template's
+  // `content` slot and the layout's `content` slot are conceptually the
+  // same surface to a caller asking "did content get filled?".
+  const replacedSet = new Set<string>([
+    ...renderedTemplate.replacedSlots,
+    ...replaced.replacedSlots,
+  ]);
+  const missingSet = new Set<string>([...renderedTemplate.missingSlots, ...replaced.missingSlots]);
+  for (const name of replacedSet) missingSet.delete(name);
+  return {
+    html,
+    replacedSlots: [...replacedSet],
+    missingSlots: [...missingSet],
+  };
+}

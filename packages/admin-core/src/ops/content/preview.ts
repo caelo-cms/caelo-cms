@@ -15,7 +15,7 @@
  */
 
 import { defineOperation } from "@caelo/query-api";
-import { composePagePreview, err, ok } from "@caelo/shared";
+import { composePageWithLayout, err, ok } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -60,8 +60,12 @@ export const renderPagePreviewOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const pageRows = (await tx.execute(sql`
       SELECT p.id::text AS page_id, p.slug AS slug, p.locale AS locale,
-             t.html AS template_html, t.css AS template_css
-      FROM pages p JOIN templates t ON t.id = p.template_id
+             t.html AS template_html, t.css AS template_css,
+             l.id::text AS layout_id, l.slug AS layout_slug,
+             l.html AS layout_html, l.css AS layout_css
+      FROM pages p
+      JOIN templates t ON t.id = p.template_id
+      JOIN layouts l   ON l.id = t.layout_id
       WHERE p.id = ${input.pageId}::uuid AND p.deleted_at IS NULL LIMIT 1
     `)) as unknown as {
       page_id: string;
@@ -69,6 +73,10 @@ export const renderPagePreviewOp = defineOperation({
       locale: string;
       template_html: string;
       template_css: string;
+      layout_id: string;
+      layout_slug: string;
+      layout_html: string;
+      layout_css: string;
     }[];
     const pageRow = pageRows[0];
     if (!pageRow) {
@@ -76,6 +84,20 @@ export const renderPagePreviewOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.render_preview",
         message: "page not found",
+      });
+    }
+    // P6.7.6 no-fallbacks invariant — the layout must declare a
+    // `content` block (the slot the template renders into). Surface a
+    // loud error if it doesn't, instead of silently producing chrome
+    // with no body.
+    const layoutBlocksRows = (await tx.execute(sql`
+      SELECT name FROM layout_blocks WHERE layout_id = ${pageRow.layout_id}::uuid
+    `)) as unknown as { name: string }[];
+    if (!layoutBlocksRows.some((r) => r.name === "content")) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.render_preview",
+        message: `layout "${pageRow.layout_slug}" is missing the required \`content\` block — fix via /security/layouts`,
       });
     }
 
@@ -178,11 +200,57 @@ export const renderPagePreviewOp = defineOperation({
       }
     }
 
-    const composed = composePagePreview({
+    // P6.7.6 — load layout modules (chrome) for every layout block
+    // except `content` (which is filled by the rendered template).
+    const layoutModRows = (await tx.execute(sql`
+      SELECT lm.block_name AS block_name,
+             lm.position   AS position,
+             m.id::text    AS module_id,
+             m.slug        AS slug,
+             m.display_name AS display_name,
+             m.html        AS html,
+             m.css         AS css,
+             m.js          AS js
+      FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
+      WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
+      ORDER BY lm.block_name ASC, lm.position ASC
+    `)) as unknown as ModuleSourceRow[];
+    const layoutGrouped = new Map<
+      string,
+      {
+        moduleId: string;
+        slug: string;
+        displayName: string;
+        html: string;
+        css: string;
+        js: string;
+      }[]
+    >();
+    for (const r of layoutModRows) {
+      const arr = layoutGrouped.get(r.block_name) ?? [];
+      arr.push({
+        moduleId: r.module_id,
+        slug: r.slug,
+        displayName: r.display_name,
+        html: r.html,
+        css: r.css,
+        js: r.js,
+      });
+      layoutGrouped.set(r.block_name, arr);
+    }
+    const layoutBlocks = [...layoutGrouped.entries()].map(([blockName, modules]) => ({
+      blockName,
+      modules,
+    }));
+
+    const composed = composePageWithLayout({
       templateHtml: pageRow.template_html,
       templateCss: pageRow.template_css,
       blocks,
       structuredSets: { byKindSlug },
+      layoutHtml: pageRow.layout_html,
+      layoutCss: pageRow.layout_css,
+      layoutBlocks,
     });
     return ok({
       html: composed.html,

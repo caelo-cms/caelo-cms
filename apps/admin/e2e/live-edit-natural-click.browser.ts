@@ -54,8 +54,8 @@ test("link click without modifier navigates the iframe; URL display updates", as
       await sql.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
         const tpl = await tx\`
-          INSERT INTO templates (slug, display_name, html, css)
-          VALUES (\${process.env.TPL_SLUG}, 'le', '<body><caelo-slot name="content">_</caelo-slot></body>', '')
+          INSERT INTO templates (slug, display_name, html, css, layout_id)
+          VALUES (\${process.env.TPL_SLUG}, 'le', '<body><caelo-slot name="content">_</caelo-slot></body>', '', (SELECT id FROM layouts WHERE slug = 'site-default'))
           RETURNING id::text AS id\`;
         out.tpl = tpl[0].id;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${out.tpl}::uuid, 'content', 'Content', 0)\`;

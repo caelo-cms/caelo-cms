@@ -69,6 +69,10 @@ export interface VolatileContext {
   readonly themeBlock?: string;
   /** P6.7.5 — named structured-data sets the AI can edit (nav-menu, tags, etc.). */
   readonly structuredSetsBlock?: string;
+  /** P6.7.6 — available layouts + their blocks (chrome shells). */
+  readonly layoutsBlock?: string;
+  /** P6.7.6 — site_defaults singleton + per-template layout binding. */
+  readonly siteDefaultsBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -114,6 +118,12 @@ export function composeSystemPromptChunks(
   }
   if (volatile.structuredSetsBlock && volatile.structuredSetsBlock.trim().length > 0) {
     chunks.push({ body: volatile.structuredSetsBlock, cacheable: false, label: "structured-sets" });
+  }
+  if (volatile.layoutsBlock && volatile.layoutsBlock.trim().length > 0) {
+    chunks.push({ body: volatile.layoutsBlock, cacheable: false, label: "layouts" });
+  }
+  if (volatile.siteDefaultsBlock && volatile.siteDefaultsBlock.trim().length > 0) {
+    chunks.push({ body: volatile.siteDefaultsBlock, cacheable: false, label: "site-defaults" });
   }
   if (volatile.pageContextBlock && volatile.pageContextBlock.trim().length > 0) {
     chunks.push({ body: volatile.pageContextBlock, cacheable: false, label: "page-context" });

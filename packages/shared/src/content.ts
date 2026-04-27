@@ -64,6 +64,12 @@ export const templateCreateSchema = z
     displayName: displayNameSchema,
     html: z.string().max(TEMPLATE_HTML_MAX, `html exceeds ${TEMPLATE_HTML_MAX} bytes`),
     css: z.string().max(TEMPLATE_CSS_MAX, `css exceeds ${TEMPLATE_CSS_MAX} bytes`).default(""),
+    /**
+     * P6.7.6 — every template binds to one layout. When omitted, the
+     * handler resolves to `site_defaults.default_layout_id` at create
+     * time. (Stored data, not a render-time fallback — see CLAUDE.md §2.)
+     */
+    layoutId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -73,6 +79,8 @@ export const templateUpdateSchema = z
     displayName: displayNameSchema.optional(),
     html: z.string().max(TEMPLATE_HTML_MAX).optional(),
     css: z.string().max(TEMPLATE_CSS_MAX).optional(),
+    /** P6.7.6 — re-point the template to a different layout. */
+    layoutId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -106,7 +114,12 @@ export const pageCreateSchema = z
     /** P6.7.5 — internal editor label. Defaults to title if omitted. */
     name: z.string().min(1).max(256).optional(),
     title: z.string().min(1).max(256),
-    templateId: z.string().uuid(),
+    /**
+     * P6.7.6 — optional. When omitted, the handler resolves to
+     * `site_defaults.default_template_id` at create time. Stored data,
+     * not a render-time fallback (CLAUDE.md §2 no-fallbacks).
+     */
+    templateId: z.string().uuid().optional(),
     status: pageStatusSchema.default("draft"),
   })
   .strict();

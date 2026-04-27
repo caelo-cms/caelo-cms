@@ -47,8 +47,8 @@ test("Ops: build staging → promote to production", async ({ page }) => {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const tpl = await tx\`
-        INSERT INTO templates (slug, display_name, html, css)
-        VALUES (\${process.env.TPL_SLUG}, 'ops', '<body><caelo-slot name="main">_</caelo-slot></body>', '')
+        INSERT INTO templates (slug, display_name, html, css, layout_id)
+        VALUES (\${process.env.TPL_SLUG}, 'ops', '<body><caelo-slot name="main">_</caelo-slot></body>', '', (SELECT id FROM layouts WHERE slug = 'bare'))
         RETURNING id::text AS id\`;
       const tplId = tpl[0].id;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${tplId}::uuid, 'main', 'Main', 0)\`;

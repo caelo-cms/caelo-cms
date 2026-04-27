@@ -81,19 +81,39 @@ try {
       SELECT id FROM pages WHERE slug = 'home' AND locale = 'en'
     `) as unknown as { id: string }[];
     if (!existingHome[0]) {
+      // P6.7.6 — every template binds to a layout. The migration seeded
+      // `site-default`; bind home-template to it explicitly so a fresh
+      // install (which runs migrations + seed-dev in sequence) has the
+      // chrome wrapping by default.
       const tpl = (await tx`
-        INSERT INTO templates (slug, display_name, html, css)
+        INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (
           'home-template',
           'Home Template',
           '<!doctype html><html><head><title>Home</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
-          ''
+          '',
+          (SELECT id FROM layouts WHERE slug = 'site-default')
         )
         ON CONFLICT (slug) DO UPDATE SET display_name = EXCLUDED.display_name
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const tplId = tpl[0]?.id;
       if (!tplId) throw new Error("seed home template returned no row");
+
+      // Idempotent: ensure site_defaults points at the seeded
+      // home-template + site-default layout. Migration tries to
+      // INSERT only if home-template existed at migrate time; on a
+      // fresh DB it doesn't, so we backfill here.
+      await tx`
+        INSERT INTO site_defaults (id, default_layout_id, default_template_id)
+        SELECT 1,
+               (SELECT id FROM layouts   WHERE slug = 'site-default'),
+               ${tplId}::uuid
+        ON CONFLICT (id) DO UPDATE SET
+          default_layout_id   = EXCLUDED.default_layout_id,
+          default_template_id = EXCLUDED.default_template_id,
+          updated_at          = now()
+      `;
 
       await tx`
         INSERT INTO template_blocks (template_id, name, display_name, position)

@@ -120,7 +120,10 @@ describe("pages.render_preview", () => {
       missingSlots: string[];
     };
     expect(replacedSlots).toEqual(["content"]);
-    expect(missingSlots).toEqual([]);
+    // P6.7.6 — site-default layout adds header/footer slots that this
+    // page leaves empty; they show up as missing (no layout_modules
+    // attached). That's expected behaviour, not a regression.
+    expect(missingSlots.sort()).toEqual(["footer", "header"]);
     expect(html).toContain("HELLO_A");
     expect(html).toContain("HELLO_B");
     expect(html.indexOf("HELLO_A")).toBeLessThan(html.indexOf("HELLO_B"));

@@ -14,6 +14,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { emitSnapshot, loadPageLayoutState, loadPageState } from "../../snapshots/index.js";
 import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
+import { readSiteDefaults } from "../site_defaults.js";
 
 const pageRowSchema = z.object({
   id: z.string(),
@@ -243,8 +244,24 @@ export const createPageOp = defineOperation({
   input: pageCreateSchema,
   output: z.object({ pageId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // P6.7.6 — caller may omit templateId; resolve to site_defaults at
+    // create time. Failing to resolve = structured error, never a
+    // silent fallback (CLAUDE.md §2 no-fallbacks).
+    let templateId = input.templateId;
+    if (templateId === undefined) {
+      const defaults = await readSiteDefaults(tx);
+      if (!defaults) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.create",
+          message:
+            "no templateId provided and site_defaults is empty — seed site_defaults via /security/site-defaults or pass an explicit templateId",
+        });
+      }
+      templateId = defaults.defaultTemplateId;
+    }
     const tplExists = (await tx.execute(sql`
-      SELECT 1 FROM templates WHERE id = ${input.templateId}::uuid AND deleted_at IS NULL LIMIT 1
+      SELECT 1 FROM templates WHERE id = ${templateId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as { exists: number }[];
     if (tplExists.length === 0) {
       await recordAudit(tx, {
@@ -285,7 +302,7 @@ export const createPageOp = defineOperation({
         ${input.locale},
         ${input.name ?? input.title},
         ${input.title},
-        ${input.templateId}::uuid,
+        ${templateId}::uuid,
         ${input.status}
       )
       RETURNING id::text AS id

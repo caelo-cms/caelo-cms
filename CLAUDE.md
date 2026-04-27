@@ -42,6 +42,7 @@ These cannot be violated by any change, AI-generated or human:
 - **Click-to-chat chips append, never fork.** Clicking an element's "Edit in chat" affordance adds a reference chip to the *current* chat composer; it does not open a new chat.
 - **Chat sessions run on ephemeral preview branches.** Changes from one chat never enter another chat's view until published; publishing merges the chat's branch into main.
 - **AI-written site memory is proposal-gated.** The `site-memory-learner` never writes to `site_ai_memory` directly — every suggestion goes through the Owner review queue alongside skill proposals.
+- **No fallbacks pre-1.0.** Until Caelo ships its first official version, every code path that could "default to something sensible when data is missing" must instead **fail loudly with a structured error pointing at what's missing**. Defaults are stored data (e.g. `site_defaults.default_layout_id` / `default_template_id`) that the create-time resolver consults — they are NOT silent recovery paths at read time. Hidden fallbacks during pre-1.0 mask schema drift, broken seeds, and partial migrations; we want crashes that point at the missing data, not silently-degraded renders that read "fine" but use stale or substituted state.
 
 ---
 

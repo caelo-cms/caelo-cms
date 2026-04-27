@@ -38,7 +38,8 @@ export type SnapshotOpKind =
   | "snapshots.revert_module"
   | "snapshots.revert_template"
   | "snapshots.revert_page"
-  | "chat.publish";
+  | "chat.publish"
+  | "layout_modules.set";
 
 export type SnapshotEntity =
   | { readonly kind: "module"; readonly entityId: string; readonly state: ModuleState }

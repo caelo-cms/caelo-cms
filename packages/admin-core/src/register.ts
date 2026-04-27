@@ -19,6 +19,15 @@ import {
   setPinnedElementsOp,
 } from "./ops/chat/sessions.js";
 import {
+  createLayoutOp,
+  deleteLayoutOp,
+  getLayoutBlockModulesOp,
+  getLayoutOp,
+  listLayoutsOp,
+  setLayoutModulesOp,
+  updateLayoutOp,
+} from "./ops/content/layouts.js";
+import {
   createModuleOp,
   deleteModuleOp,
   getModuleOp,
@@ -67,6 +76,7 @@ import {
   setAiMemoryOp,
 } from "./ops/security/ai_memory.js";
 import { listAiProvidersOp, setAiProvidersOp } from "./ops/security/ai_providers.js";
+import { getSiteDefaultsOp, setSiteDefaultsOp } from "./ops/site_defaults.js";
 import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
 import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
 import { moduleImpactOp } from "./ops/snapshots/impact.js";
@@ -173,4 +183,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listStructuredSetsOp);
   registry.register(deleteStructuredSetOp);
   registry.register(setPinnedElementsOp);
+  // P6.7.6 — layouts (site-wide chrome) + site_defaults singleton.
+  registry.register(listLayoutsOp);
+  registry.register(getLayoutOp);
+  registry.register(createLayoutOp);
+  registry.register(updateLayoutOp);
+  registry.register(deleteLayoutOp);
+  registry.register(getLayoutBlockModulesOp);
+  registry.register(setLayoutModulesOp);
+  registry.register(getSiteDefaultsOp);
+  registry.register(setSiteDefaultsOp);
 }

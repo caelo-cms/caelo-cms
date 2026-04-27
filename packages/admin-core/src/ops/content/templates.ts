@@ -12,6 +12,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { emitSnapshot, loadTemplateState } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
+import { readSiteDefaults } from "../site_defaults.js";
 
 const templateRowSchema = z.object({
   id: z.string(),
@@ -19,6 +20,8 @@ const templateRowSchema = z.object({
   displayName: z.string(),
   html: z.string(),
   css: z.string(),
+  /** P6.7.6 — every template binds to one layout. */
+  layoutId: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
@@ -31,6 +34,7 @@ type RawTemplateRow = {
   display_name: string;
   html: string;
   css: string;
+  layout_id: string;
   created_at: string | Date;
   updated_at: string | Date;
   deleted_at: string | Date | null;
@@ -64,6 +68,7 @@ function rowsToTemplates(
     displayName: t.display_name,
     html: t.html,
     css: t.css,
+    layoutId: t.layout_id,
     createdAt: iso(t.created_at),
     updatedAt: iso(t.updated_at),
     deletedAt: t.deleted_at === null ? null : iso(t.deleted_at),
@@ -82,11 +87,13 @@ export const listTemplatesOp = defineOperation({
       input.includeDeleted
         ? sql`
             SELECT id::text AS id, slug, display_name, html, css,
+                   layout_id::text AS layout_id,
                    created_at, updated_at, deleted_at
             FROM templates ORDER BY created_at ASC
           `
         : sql`
             SELECT id::text AS id, slug, display_name, html, css,
+                   layout_id::text AS layout_id,
                    created_at, updated_at, deleted_at
             FROM templates WHERE deleted_at IS NULL ORDER BY created_at ASC
           `,
@@ -108,6 +115,7 @@ export const getTemplateOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const templates = (await tx.execute(sql`
       SELECT id::text AS id, slug, display_name, html, css,
+             layout_id::text AS layout_id,
              created_at, updated_at, deleted_at
       FROM templates WHERE id = ${input.templateId}::uuid LIMIT 1
     `)) as unknown as RawTemplateRow[];
@@ -159,9 +167,36 @@ export const createTemplateOp = defineOperation({
         message: "slug already in use",
       });
     }
+    // P6.7.6 — every template binds to one layout. Caller may pass an
+    // explicit layoutId; otherwise resolve to site_defaults at create
+    // time. Fail loudly if neither is available — no silent fallback.
+    let layoutId = input.layoutId;
+    if (layoutId === undefined) {
+      const defaults = await readSiteDefaults(tx);
+      if (!defaults) {
+        return err({
+          kind: "HandlerError",
+          operation: "templates.create",
+          message:
+            "no layoutId provided and site_defaults is empty — seed site_defaults via /security/site-defaults or pass an explicit layoutId",
+        });
+      }
+      layoutId = defaults.defaultLayoutId;
+    } else {
+      const layoutOk = (await tx.execute(sql`
+        SELECT 1 FROM layouts WHERE id = ${layoutId}::uuid AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as { exists: number }[];
+      if (layoutOk.length === 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "templates.create",
+          message: "layout not found or deleted",
+        });
+      }
+    }
     const rows = (await tx.execute(sql`
-      INSERT INTO templates (slug, display_name, html, css)
-      VALUES (${input.slug}, ${input.displayName}, ${input.html}, ${input.css})
+      INSERT INTO templates (slug, display_name, html, css, layout_id)
+      VALUES (${input.slug}, ${input.displayName}, ${input.html}, ${input.css}, ${layoutId}::uuid)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const templateId = rows[0]?.id;
@@ -195,7 +230,8 @@ export const createTemplateOp = defineOperation({
 
 export const updateTemplateOp = defineOperation({
   name: "templates.update",
-  actorScope: ["human", "system"],
+  // P6.7.6 — AI calls this via set_template_layout to re-point chrome.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: templateUpdateSchema,
   output: z.object({}),
@@ -210,10 +246,23 @@ export const updateTemplateOp = defineOperation({
         message: "template not found",
       });
     }
+    if (input.layoutId !== undefined) {
+      const layoutOk = (await tx.execute(sql`
+        SELECT 1 FROM layouts WHERE id = ${input.layoutId}::uuid AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as { exists: number }[];
+      if (layoutOk.length === 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "templates.update",
+          message: "layout not found or deleted",
+        });
+      }
+    }
     const sets = buildPatchSet({
       display_name: input.displayName,
       html: input.html,
       css: input.css,
+      layout_id: input.layoutId !== undefined ? sql`${input.layoutId}::uuid` : undefined,
     });
     await tx.execute(sql`
       UPDATE templates SET ${sets} WHERE id = ${input.templateId}::uuid

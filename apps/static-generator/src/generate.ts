@@ -25,7 +25,7 @@
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo/query-api";
-import { composePagePreview } from "@caelo/shared";
+import { composePageWithLayout } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 
 export interface DeployTarget {
@@ -53,6 +53,10 @@ interface PageRow {
   status: "draft" | "published";
   template_html: string;
   template_css: string;
+  layout_id: string;
+  layout_slug: string;
+  layout_html: string;
+  layout_css: string;
 }
 
 interface ModuleRow {
@@ -126,13 +130,69 @@ export async function generateSite(args: {
     SELECT p.id::text AS page_id,
            p.slug, p.locale, p.title, p.status,
            t.html AS template_html,
-           t.css  AS template_css
-    FROM pages p JOIN templates t ON t.id = p.template_id
+           t.css  AS template_css,
+           l.id::text AS layout_id,
+           l.slug AS layout_slug,
+           l.html AS layout_html,
+           l.css  AS layout_css
+    FROM pages p
+    JOIN templates t ON t.id = p.template_id
+    JOIN layouts l   ON l.id = t.layout_id
     WHERE p.deleted_at IS NULL
       AND t.deleted_at IS NULL
+      AND l.deleted_at IS NULL
       AND p.status = 'published'
     ORDER BY p.slug ASC
   `)) as unknown as PageRow[];
+
+  // P6.7.6 — load layout modules once for the whole build, keyed by
+  // layout_id. Per-page composition picks its layout's set; same
+  // rationale as structured sets above.
+  const layoutModRows = (await tx.execute(sql`
+    SELECT lm.layout_id::text AS layout_id,
+           lm.block_name AS block_name,
+           lm.position   AS position,
+           m.id::text    AS module_id,
+           m.slug        AS slug,
+           m.display_name AS display_name,
+           m.html        AS html,
+           m.css         AS css,
+           m.js          AS js
+    FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
+    WHERE m.deleted_at IS NULL
+    ORDER BY lm.layout_id, lm.block_name ASC, lm.position ASC
+  `)) as unknown as {
+    layout_id: string;
+    block_name: string;
+    position: number;
+    module_id: string;
+    slug: string;
+    display_name: string;
+    html: string;
+    css: string;
+    js: string;
+  }[];
+  const layoutModulesByLayout = new Map<
+    string,
+    Map<string, { moduleId: string; slug: string; displayName: string; html: string; css: string; js: string }[]>
+  >();
+  for (const r of layoutModRows) {
+    let perLayout = layoutModulesByLayout.get(r.layout_id);
+    if (!perLayout) {
+      perLayout = new Map();
+      layoutModulesByLayout.set(r.layout_id, perLayout);
+    }
+    const arr = perLayout.get(r.block_name) ?? [];
+    arr.push({
+      moduleId: r.module_id,
+      slug: r.slug,
+      displayName: r.display_name,
+      html: r.html,
+      css: r.css,
+      js: r.js,
+    });
+    perLayout.set(r.block_name, arr);
+  }
 
   // P6.7.5 — load structured sets once for the whole build so each
   // page's composer gets the same theme + nav-menu state. Re-querying
@@ -169,11 +229,22 @@ export async function generateSite(args: {
     `)) as unknown as ModuleRow[];
 
     const blocks = groupModulesByBlock(modRows);
-    const composed = composePagePreview({
+    const layoutBlocksMap = layoutModulesByLayout.get(page.layout_id);
+    const layoutBlocks =
+      layoutBlocksMap === undefined
+        ? []
+        : [...layoutBlocksMap.entries()].map(([blockName, modules]) => ({
+            blockName,
+            modules,
+          }));
+    const composed = composePageWithLayout({
       templateHtml: page.template_html,
       templateCss: page.template_css,
       blocks,
       structuredSets,
+      layoutHtml: page.layout_html,
+      layoutCss: page.layout_css,
+      layoutBlocks,
     });
 
     const relPath = pageOutputPath(page.slug);

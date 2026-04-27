@@ -44,8 +44,9 @@ beforeAll(async () => {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const tpl = (await tx`
-        INSERT INTO templates (slug, display_name, html)
-        VALUES (${TPL_SLUG}, 'RLS T', '<body></body>')
+        INSERT INTO templates (slug, display_name, html, layout_id)
+        VALUES (${TPL_SLUG}, 'RLS T', '<body></body>',
+                (SELECT id FROM layouts WHERE slug = 'site-default'))
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seededTemplateId = tpl[0]?.id ?? "";

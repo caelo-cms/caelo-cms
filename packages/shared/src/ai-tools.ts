@@ -86,6 +86,11 @@ export const AI_TOOLS = [
   "remove_module_from_page",
   "set_structured_set",
   "update_theme",
+  "add_module_to_layout",
+  "remove_module_from_layout",
+  "set_template_layout",
+  "create_layout",
+  "set_site_defaults",
 ] as const;
 export type AiToolName = (typeof AI_TOOLS)[number];
 export type AddModuleToPageToolInput = z.infer<typeof addModuleToPageToolInput>;
@@ -269,6 +274,72 @@ export const updateThemeToolInput = z
   })
   .strict();
 
+/**
+ * P6.7.6 — layout-layer tools. Layouts are site-wide chrome (header /
+ * footer / nav) that wraps every page on every template bound to the
+ * layout. `add_module_to_layout` reaches every page across the site
+ * with one call; `set_template_layout` re-points a template's chrome.
+ * `create_layout` and `set_site_defaults` are Owner-only at the op
+ * level — AI calls reject with ActorScopeRejected and the chat surfaces
+ * the permission requirement.
+ */
+export const addModuleToLayoutToolInput = z
+  .object({
+    layoutSlug: slugInputSchema,
+    blockName: z.string().min(1).max(80),
+    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+    displayName: z.string().min(1).max(128),
+    html: z.string().min(1).max(50_000),
+    css: z.string().max(50_000).optional(),
+    js: z.string().max(50_000).optional(),
+  })
+  .strict();
+
+export const removeModuleFromLayoutToolInput = z
+  .object({
+    layoutSlug: slugInputSchema,
+    moduleId: z.string().uuid(),
+  })
+  .strict();
+
+export const setTemplateLayoutToolInput = z
+  .object({
+    templateId: z.string().uuid(),
+    layoutSlug: slugInputSchema,
+  })
+  .strict();
+
+export const createLayoutToolInput = z
+  .object({
+    slug: slugInputSchema,
+    displayName: z.string().min(1).max(200),
+    html: z.string().min(1).max(50_000),
+    css: z.string().max(50_000).optional(),
+    blocks: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1).max(80),
+            displayName: z.string().min(1).max(200),
+            position: z.number().int().min(0).max(1000),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(20),
+  })
+  .strict();
+
+export const setSiteDefaultsToolInput = z
+  .object({
+    defaultLayoutSlug: slugInputSchema.optional(),
+    defaultTemplateSlug: slugInputSchema.optional(),
+  })
+  .strict()
+  .refine((v) => v.defaultLayoutSlug !== undefined || v.defaultTemplateSlug !== undefined, {
+    message: "must provide at least one of defaultLayoutSlug, defaultTemplateSlug",
+  });
+
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
@@ -286,3 +357,8 @@ export type ChatPublishInput = z.infer<typeof chatPublishInput>;
 export type AiMemorySetInput = z.infer<typeof aiMemorySetInput>;
 export type AiMemoryReviewInput = z.infer<typeof aiMemoryReviewInput>;
 export type AiProvidersSetInput = z.infer<typeof aiProvidersSetInput>;
+export type AddModuleToLayoutToolInput = z.infer<typeof addModuleToLayoutToolInput>;
+export type RemoveModuleFromLayoutToolInput = z.infer<typeof removeModuleFromLayoutToolInput>;
+export type SetTemplateLayoutToolInput = z.infer<typeof setTemplateLayoutToolInput>;
+export type CreateLayoutToolInput = z.infer<typeof createLayoutToolInput>;
+export type SetSiteDefaultsToolInput = z.infer<typeof setSiteDefaultsToolInput>;
