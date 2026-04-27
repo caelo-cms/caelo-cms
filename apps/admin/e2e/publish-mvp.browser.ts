@@ -103,12 +103,12 @@ test("editor Publish button → static dist updated", async ({ page }) => {
 
   // P6.2 #3 — editor publish is now Stage → Confirm. Stage runs the
   // staging build and surfaces a preview URL; Confirm promotes to prod.
+  // P6.5 — pages list is a <table>, so rows are <tr>.
   await page.goto("/content/pages");
-  const row = page.locator("li").filter({ hasText: PAGE_SLUG });
+  const row = page.locator("tr").filter({ hasText: PAGE_SLUG });
   await row.getByRole("button", { name: /^stage$/i }).click();
   await expect(page.getByText(/Staged —/)).toBeVisible({ timeout: 15_000 });
-  // After Stage the row's button changes to "Confirm publish".
-  const stagedRow = page.locator("li").filter({ hasText: PAGE_SLUG });
+  const stagedRow = page.locator("tr").filter({ hasText: PAGE_SLUG });
   await stagedRow.getByRole("button", { name: /^confirm publish$/i }).click();
   await expect(page.getByText(/Published to production/)).toBeVisible({ timeout: 15_000 });
 

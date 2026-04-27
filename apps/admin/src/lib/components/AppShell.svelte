@@ -1,0 +1,140 @@
+<script lang="ts">
+  // SPDX-License-Identifier: MPL-2.0
+  import { page } from "$app/state";
+  import {
+    FileText,
+    Layers,
+    Layout,
+    LayoutDashboard,
+    LogOut,
+    MessageSquare,
+    Moon,
+    Rocket,
+    ShieldCheck,
+    Sun,
+  } from "lucide-svelte";
+  import { mode, toggleMode } from "mode-watcher";
+  const isDark = $derived(mode.current === "dark");
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { Separator } from "$lib/components/ui/separator/index.js";
+  import { cn } from "$lib/utils.js";
+
+  interface Props {
+    permissions: string[];
+    csrfToken: string;
+    userEmail?: string | null;
+    children?: import("svelte").Snippet;
+  }
+  let { permissions, csrfToken, userEmail = null, children }: Props = $props();
+
+  const has = (p: string) => permissions.includes(p);
+  const navItems = $derived(
+    [
+      { href: "/", label: "Dashboard", icon: LayoutDashboard, show: true },
+      { href: "/content/pages", label: "Pages", icon: FileText, show: has("content.read") },
+      { href: "/content/modules", label: "Modules", icon: Layers, show: has("content.read") },
+      {
+        href: "/content/templates",
+        label: "Templates",
+        icon: Layout,
+        show: has("content.read"),
+      },
+      { href: "/content/chat", label: "Chats", icon: MessageSquare, show: has("content.write") },
+      {
+        href: "/security/deployments",
+        label: "Deployments",
+        icon: Rocket,
+        show: has("ops.view"),
+      },
+      { href: "/security", label: "Security", icon: ShieldCheck, show: has("settings.read") },
+    ].filter((i) => i.show),
+  );
+
+  const breadcrumbSegments = $derived(
+    page.url.pathname
+      .split("/")
+      .filter((s) => s.length > 0 && !s.match(/^[0-9a-f-]{36}$/))
+      .map((s) => s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, " ")),
+  );
+</script>
+
+<div class="flex min-h-screen w-full">
+  <aside class="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r bg-card md:flex">
+    <div class="flex h-14 items-center border-b px-4">
+      <a href="/" class="flex items-center gap-2 font-semibold">
+        <span
+          class="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground"
+        >
+          C
+        </span>
+        Caelo
+      </a>
+    </div>
+    <nav aria-label="Main navigation" class="flex-1 space-y-1 px-2 py-4">
+      {#each navItems as item (item.href)}
+        {@const Active =
+          page.url.pathname === item.href ||
+          (item.href !== "/" && page.url.pathname.startsWith(`${item.href}/`))}
+        <a
+          href={item.href}
+          class={cn(
+            "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
+            Active
+              ? "bg-accent text-accent-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+          )}
+        >
+          <item.icon class="size-4" />
+          {item.label}
+        </a>
+      {/each}
+    </nav>
+    <Separator />
+    <div class="flex flex-col gap-1 p-2 text-sm">
+      {#if userEmail}
+        <p class="truncate px-3 py-1 text-xs text-muted-foreground" title={userEmail}>
+          {userEmail}
+        </p>
+      {/if}
+      <form method="post" action="/logout">
+        <input type="hidden" name="_csrf" value={csrfToken} />
+        <Button variant="ghost" size="sm" type="submit" class="w-full justify-start gap-3">
+          <LogOut class="size-4" /> Log out
+        </Button>
+      </form>
+    </div>
+  </aside>
+
+  <div class="flex w-full flex-1 flex-col">
+    <header
+      class="sticky top-0 z-30 flex h-14 items-center gap-4 border-b bg-background/95 px-4 backdrop-blur md:px-6"
+    >
+      <nav aria-label="Breadcrumb" class="flex items-center gap-2 text-sm">
+        {#if breadcrumbSegments.length === 0}
+          <span class="font-medium">Dashboard</span>
+        {:else}
+          {#each breadcrumbSegments as segment, i (i)}
+            {#if i > 0}<span class="text-muted-foreground">/</span>{/if}
+            <span class={i === breadcrumbSegments.length - 1 ? "font-medium" : "text-muted-foreground"}
+              >{segment}</span
+            >
+          {/each}
+        {/if}
+      </nav>
+      <div class="ml-auto flex items-center gap-2">
+        <Button variant="ghost" size="icon" aria-label="Toggle theme" onclick={toggleMode}>
+          {#if isDark}
+            <Sun class="size-4" />
+          {:else}
+            <Moon class="size-4" />
+          {/if}
+        </Button>
+      </div>
+    </header>
+    <main class="flex-1">
+      <div class="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
+        {@render children?.()}
+      </div>
+    </main>
+  </div>
+</div>

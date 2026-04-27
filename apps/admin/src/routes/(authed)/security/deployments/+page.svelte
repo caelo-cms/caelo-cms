@@ -1,0 +1,154 @@
+<script lang="ts">
+  // SPDX-License-Identifier: MPL-2.0
+  import { Badge, type BadgeVariant } from "$lib/components/ui/badge/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import {
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+  } from "$lib/components/ui/card/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
+  import { Progress } from "$lib/components/ui/progress/index.js";
+  import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+  } from "$lib/components/ui/table/index.js";
+
+  let { data } = $props();
+
+  const statusVariant = (status: string): BadgeVariant => {
+    if (status === "succeeded") return "success";
+    if (status === "failed") return "destructive";
+    if (status === "running") return "secondary";
+    return "outline";
+  };
+</script>
+
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight">Deployments</h1>
+    <p class="text-sm text-muted-foreground">
+      Three-environment Ops view. Editors see only Publish; this page exposes the underlying flow.
+    </p>
+  </div>
+
+  <Card>
+    <CardHeader>
+      <CardTitle class="text-base">Targets</CardTitle>
+    </CardHeader>
+    <CardContent>
+      <ul class="space-y-2">
+        {#each data.targets as t (t.id)}
+          <li class="flex items-center gap-3 rounded-md border p-3">
+            <strong>{t.name}</strong>
+            <Badge variant="outline"><code>{t.env}</code></Badge>
+            <span class="text-xs text-muted-foreground">
+              out_dir={t.outDir} robots={t.robotsDefault}{t.isDefault ? " (default)" : ""}
+            </span>
+            <form method="post" action="?/trigger" class="ml-auto">
+              <input type="hidden" name="_csrf" value={data.csrfToken} />
+              <input type="hidden" name="targetName" value={t.name} />
+              <Button type="submit" size="sm" variant="outline">Build {t.name}</Button>
+            </form>
+          </li>
+        {/each}
+      </ul>
+    </CardContent>
+  </Card>
+
+  <Card>
+    <CardHeader>
+      <CardTitle class="text-base">Promote</CardTitle>
+      <CardDescription>Atomic copy from one target's last build to another's current.</CardDescription>
+    </CardHeader>
+    <CardContent>
+      <form method="post" action="?/promote" class="flex flex-wrap items-end gap-3">
+        <input type="hidden" name="_csrf" value={data.csrfToken} />
+        <div class="space-y-1">
+          <Label for="fromTarget">From</Label>
+          <select
+            id="fromTarget"
+            name="fromTarget"
+            class="flex h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {#each data.targets as t (t.id)}
+              <option value={t.name}>{t.name}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="space-y-1">
+          <Label for="toTarget">To</Label>
+          <select
+            id="toTarget"
+            name="toTarget"
+            class="flex h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {#each data.targets as t (t.id)}
+              <option value={t.name}>{t.name}</option>
+            {/each}
+          </select>
+        </div>
+        <Button type="submit">Promote</Button>
+      </form>
+    </CardContent>
+  </Card>
+
+  <Card>
+    <CardHeader>
+      <CardTitle class="text-base">Recent runs</CardTitle>
+    </CardHeader>
+    <CardContent>
+      {#if data.runs.length === 0}
+        <p class="text-sm text-muted-foreground"><em>No deploy runs yet.</em></p>
+      {:else}
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Target</TableHead>
+              <TableHead>Env</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Started</TableHead>
+              <TableHead>Pages / files</TableHead>
+              <TableHead>Progress</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {#each data.runs as r (r.id)}
+              <TableRow>
+                <TableCell><strong>{r.targetName}</strong></TableCell>
+                <TableCell><code>{r.env}</code></TableCell>
+                <TableCell>
+                  <Badge variant={statusVariant(r.status)}>{r.targetName} {r.status}</Badge>
+                </TableCell>
+                <TableCell class="text-muted-foreground">
+                  {r.startedAt.slice(0, 19).replace("T", " ")}
+                </TableCell>
+                <TableCell>
+                  {#if r.pageCount !== null}
+                    {r.pageCount} / {r.fileCount}
+                  {:else}
+                    —
+                  {/if}
+                </TableCell>
+                <TableCell>
+                  {#if r.progress && r.status === "running"}
+                    <Progress value={r.progress.pagesDone} max={Math.max(1, r.progress.pagesTotal)} />
+                  {/if}
+                  {#if r.errorMessage}
+                    <pre class="mt-1 max-w-xl whitespace-pre-wrap text-xs text-destructive">{r.errorMessage}</pre>
+                  {/if}
+                </TableCell>
+              </TableRow>
+            {/each}
+          </TableBody>
+        </Table>
+      {/if}
+    </CardContent>
+  </Card>
+</div>
