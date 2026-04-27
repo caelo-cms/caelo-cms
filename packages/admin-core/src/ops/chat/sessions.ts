@@ -16,6 +16,14 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 
+const pinnedElement = z
+  .object({
+    moduleId: z.string().uuid(),
+    selector: z.string(),
+    label: z.string(),
+  })
+  .strict();
+
 const sessionRow = z.object({
   id: z.string(),
   title: z.string(),
@@ -25,7 +33,27 @@ const sessionRow = z.object({
   lastActiveAt: z.string(),
   publishedAt: z.string().nullable(),
   archivedAt: z.string().nullable(),
+  pinnedElements: z.array(pinnedElement),
 });
+
+interface PinnedElement {
+  moduleId: string;
+  selector: string;
+  label: string;
+}
+
+function parsePinnedElements(raw: unknown): PinnedElement[] {
+  const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!Array.isArray(arr)) return [];
+  return arr.filter(
+    (e): e is PinnedElement =>
+      typeof e === "object" &&
+      e !== null &&
+      typeof (e as PinnedElement).moduleId === "string" &&
+      typeof (e as PinnedElement).selector === "string" &&
+      typeof (e as PinnedElement).label === "string",
+  );
+}
 
 export const listChatSessionsOp = defineOperation({
   name: "chat.list_sessions",
@@ -38,7 +66,8 @@ export const listChatSessionsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, title, created_by::text AS created_by,
              chat_branch_id::text AS chat_branch_id,
-             created_at, last_active_at, published_at, archived_at
+             created_at, last_active_at, published_at, archived_at,
+             pinned_elements
       FROM chat_sessions
       WHERE created_by = ${ctx.actorId}::uuid ${archivedFilter}
       ORDER BY last_active_at DESC
@@ -52,6 +81,7 @@ export const listChatSessionsOp = defineOperation({
       last_active_at: string | Date;
       published_at: string | Date | null;
       archived_at: string | Date | null;
+      pinned_elements: unknown;
     }[];
     const iso = (v: string | Date | null): string | null => {
       if (v === null) return null;
@@ -67,6 +97,7 @@ export const listChatSessionsOp = defineOperation({
         lastActiveAt: iso(r.last_active_at) ?? "",
         publishedAt: iso(r.published_at),
         archivedAt: iso(r.archived_at),
+        pinnedElements: parsePinnedElements(r.pinned_elements),
       })),
     });
   },
@@ -129,7 +160,8 @@ export const getChatSessionOp = defineOperation({
     const sessionRows = (await tx.execute(sql`
       SELECT id::text AS id, title, created_by::text AS created_by,
              chat_branch_id::text AS chat_branch_id,
-             created_at, last_active_at, published_at, archived_at
+             created_at, last_active_at, published_at, archived_at,
+             pinned_elements
       FROM chat_sessions
       WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
       LIMIT 1
@@ -142,6 +174,7 @@ export const getChatSessionOp = defineOperation({
       last_active_at: string | Date;
       published_at: string | Date | null;
       archived_at: string | Date | null;
+      pinned_elements: unknown;
     }[];
     const session = sessionRows[0];
     if (!session) {
@@ -181,6 +214,7 @@ export const getChatSessionOp = defineOperation({
         lastActiveAt: iso(session.last_active_at) ?? "",
         publishedAt: iso(session.published_at),
         archivedAt: iso(session.archived_at),
+        pinnedElements: parsePinnedElements(session.pinned_elements),
       },
       messages: msgs.map((m) => {
         const parsedTools =
@@ -218,6 +252,31 @@ export const renameChatSessionOp = defineOperation({
       succeeded: true,
       entityId: input.chatSessionId,
     });
+    return ok({});
+  },
+});
+
+// Pinning is a UI affordance the human owner of the chat invokes; the AI
+// never reaches into it (an AI tool call rewriting another user's
+// `pinned_elements` doesn't make sense anyway because the WHERE clause
+// scopes by created_by). Keep this human-only.
+export const setPinnedElementsOp = defineOperation({
+  name: "chat.set_pinned_elements",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      pinnedElements: z.array(pinnedElement),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    await tx.execute(sql`
+      UPDATE chat_sessions
+      SET pinned_elements = ${JSON.stringify(input.pinnedElements)}::jsonb
+      WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
+    `);
     return ok({});
   },
 });

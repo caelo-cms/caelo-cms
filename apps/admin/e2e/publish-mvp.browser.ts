@@ -117,7 +117,10 @@ test("editor Publish button → static dist updated", async ({ page }) => {
   const pageFile = resolve(distDir, PAGE_SLUG, "index.html");
   expect(existsSync(pageFile)).toBe(true);
   const html = readFileSync(pageFile, "utf8");
-  expect(html).toContain(`<p>${uniqueText}</p>`);
+  // P6.7 — every module gains data-caelo-module-id; assert by content
+  // + attribute presence rather than the literal opening tag.
+  expect(html).toContain(`>${uniqueText}</p>`);
+  expect(html).toContain("data-caelo-module-id=");
 
   // robots.txt for production allows crawlers.
   const robots = readFileSync(resolve(distDir, "robots.txt"), "utf8");

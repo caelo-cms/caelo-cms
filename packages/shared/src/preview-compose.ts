@@ -71,7 +71,12 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   if (input.templateCss.trim().length > 0) allCss.push(input.templateCss);
 
   for (const block of input.blocks) {
-    const html = block.modules.map((m) => m.html).join("\n");
+    // P6.7 — tag every module's outermost element with
+    // `data-caelo-module-id="<uuid>"` so the live-edit overlay's iframe
+    // hover affordances can identify the clicked module. Stays in the
+    // production build too — harmless presence; a P12 plugin can strip
+    // it if a site wants minimal HTML.
+    const html = block.modules.map((m) => tagModuleId(m.html, m.moduleId)).join("\n");
     contentByName.set(block.blockName, html);
     for (const m of block.modules) {
       if (m.css.trim().length > 0) allCss.push(m.css);
@@ -96,4 +101,26 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     replacedSlots: replaced.replacedSlots,
     missingSlots: replaced.missingSlots,
   };
+}
+
+/**
+ * Insert `data-caelo-module-id="<id>"` into the first opening tag of
+ * the module's HTML. Idempotent — re-tagging an already-tagged module
+ * is a no-op. Comments / DOCTYPE / leading whitespace before the first
+ * tag are tolerated. Modules that have no opening tag (pure text)
+ * return unchanged because there's nothing to attach to.
+ *
+ * Exported so callers (admin preview endpoint, static generator,
+ * tests) can reuse the same logic.
+ */
+export function tagModuleId(html: string, moduleId: string): string {
+  if (!html) return html;
+  const firstOpen = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/;
+  const m = firstOpen.exec(html);
+  if (!m) return html;
+  // Already tagged?
+  const tagAttrs = m[2] ?? "";
+  if (/\sdata-caelo-module-id\s*=/.test(tagAttrs)) return html;
+  const replaced = `<${m[1]}${tagAttrs} data-caelo-module-id="${moduleId}">`;
+  return html.slice(0, m.index) + replaced + html.slice(m.index + m[0].length);
 }

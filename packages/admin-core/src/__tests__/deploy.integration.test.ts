@@ -151,7 +151,10 @@ describe("P6 deploy.trigger", () => {
     const distDir = join(testRoot, "output", "production", "current");
     expect(existsSync(join(distDir, `${PAGE_SLUG}/index.html`))).toBe(true);
     const html = await readFile(join(distDir, `${PAGE_SLUG}/index.html`), "utf8");
-    expect(html).toContain("<p>hello world</p>");
+    // P6.7 tagged outermost element with data-caelo-module-id; assert
+    // by content + attribute presence rather than the literal opening tag.
+    expect(html).toContain(">hello world</p>");
+    expect(html).toContain("data-caelo-module-id=");
     expect(html).toContain("color:red");
 
     const robots = await readFile(join(distDir, "robots.txt"), "utf8");

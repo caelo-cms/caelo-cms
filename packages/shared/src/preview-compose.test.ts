@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { composePagePreview } from "./preview-compose.js";
+import { composePagePreview, tagModuleId } from "./preview-compose.js";
 
 const blankModule = {
   moduleId: "00000000-0000-0000-0000-000000000000",
@@ -31,7 +31,9 @@ describe("composePagePreview", () => {
         },
       ],
     });
-    expect(out.html).toContain(`<caelo-slot name="content"><p>HELLO</p></caelo-slot>`);
+    expect(out.html).toContain(
+      `<caelo-slot name="content"><p data-caelo-module-id="00000000-0000-0000-0000-000000000000">HELLO</p></caelo-slot>`,
+    );
     expect(out.html).toContain(`<style data-source="modules">`);
     expect(out.html).toContain(`p { color: red; }`);
     expect(out.html).toContain(`<script defer data-source="modules">`);
@@ -59,7 +61,12 @@ describe("composePagePreview", () => {
         },
       ],
     });
-    expect(out.html).toContain(`<p>A</p>\n<p>B</p>`);
+    // Both modules use the same blank moduleId so the data-attr collides;
+    // ordering is what matters here. Just assert both are present in
+    // sequence with the expected separator.
+    expect(out.html).toMatch(
+      /<p data-caelo-module-id="[^"]+">A<\/p>\n<p data-caelo-module-id="[^"]+">B<\/p>/,
+    );
   });
 
   it("emits template CSS before module CSS so module rules win on tie specificity", () => {
@@ -94,5 +101,59 @@ describe("composePagePreview", () => {
       blocks: [],
     });
     expect(out.missingSlots).toEqual(["missing"]);
+  });
+});
+
+describe("tagModuleId (P6.7 live-edit overlay support)", () => {
+  it("adds data-caelo-module-id to the first opening tag", () => {
+    expect(tagModuleId("<p>hello</p>", "abc-123")).toBe(
+      `<p data-caelo-module-id="abc-123">hello</p>`,
+    );
+  });
+
+  it("is idempotent — re-running on tagged HTML is a no-op", () => {
+    const once = tagModuleId("<p>x</p>", "id-1");
+    expect(tagModuleId(once, "id-1")).toBe(once);
+  });
+
+  it("only tags the FIRST opening tag — siblings stay untouched", () => {
+    const out = tagModuleId("<p>a</p><p>b</p>", "id-1");
+    expect(out).toBe(`<p data-caelo-module-id="id-1">a</p><p>b</p>`);
+  });
+
+  it("tolerates leading whitespace + comments before the first tag", () => {
+    const out = tagModuleId("  <!-- hi -->\n<div>x</div>", "id-9");
+    expect(out).toContain(`<div data-caelo-module-id="id-9">x</div>`);
+  });
+
+  it("returns unchanged when there is no opening tag (pure text)", () => {
+    expect(tagModuleId("plain text", "id-1")).toBe("plain text");
+  });
+
+  it("preserves existing attributes on the first tag", () => {
+    expect(tagModuleId(`<h1 class="hero" id="x">A</h1>`, "id-7")).toBe(
+      `<h1 class="hero" id="x" data-caelo-module-id="id-7">A</h1>`,
+    );
+  });
+});
+
+describe("composePagePreview tags every module's outermost element", () => {
+  const slot = `<body><caelo-slot name="content">_</caelo-slot></body>`;
+  it("threads the moduleId through the composed output", () => {
+    const out = composePagePreview({
+      templateHtml: slot,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            { moduleId: "mod-a", slug: "a", displayName: "A", html: "<p>1</p>", css: "", js: "" },
+            { moduleId: "mod-b", slug: "b", displayName: "B", html: "<p>2</p>", css: "", js: "" },
+          ],
+        },
+      ],
+    });
+    expect(out.html).toContain(`<p data-caelo-module-id="mod-a">1</p>`);
+    expect(out.html).toContain(`<p data-caelo-module-id="mod-b">2</p>`);
   });
 });

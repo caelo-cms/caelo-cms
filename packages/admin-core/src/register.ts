@@ -16,6 +16,7 @@ import {
   getChatSessionOp,
   listChatSessionsOp,
   renameChatSessionOp,
+  setPinnedElementsOp,
 } from "./ops/chat/sessions.js";
 import {
   createModuleOp,
@@ -68,6 +69,7 @@ import { revertModuleOp } from "./ops/snapshots/revert_module.js";
 import { revertPageOp } from "./ops/snapshots/revert_page.js";
 import { revertSiteOp } from "./ops/snapshots/revert_site.js";
 import { revertTemplateOp } from "./ops/snapshots/revert_template.js";
+import { getUserPreferenceOp, setUserPreferenceOp } from "./ops/user_preferences.js";
 import {
   createFirstOwnerOp,
   createUserOp,
@@ -147,4 +149,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);
+  // P6.7 — live-edit overlay
+  registry.register(getUserPreferenceOp);
+  registry.register(setUserPreferenceOp);
+  registry.register(setPinnedElementsOp);
 }

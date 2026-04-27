@@ -12,6 +12,7 @@
     Rocket,
     ShieldCheck,
     Sun,
+    Wand2,
   } from "lucide-svelte";
   import { mode, toggleMode } from "mode-watcher";
   const isDark = $derived(mode.current === "dark");
@@ -23,14 +24,27 @@
     permissions: string[];
     csrfToken: string;
     userEmail?: string | null;
+    /**
+     * Page-content wrapper mode. `centered` (default) caps width at
+     * max-w-7xl with px+py padding. `bare` drops both for routes that
+     * want the full viewport (P6.7's `/edit` live-edit overlay).
+     */
+    pageWrapper?: "centered" | "bare";
     children?: import("svelte").Snippet;
   }
-  let { permissions, csrfToken, userEmail = null, children }: Props = $props();
+  let {
+    permissions,
+    csrfToken,
+    userEmail = null,
+    pageWrapper = "centered",
+    children,
+  }: Props = $props();
 
   const has = (p: string) => permissions.includes(p);
   const navItems = $derived(
     [
       { href: "/", label: "Dashboard", icon: LayoutDashboard, show: true },
+      { href: "/edit", label: "Live edit", icon: Wand2, show: has("content.write") },
       { href: "/content/pages", label: "Pages", icon: FileText, show: has("content.read") },
       { href: "/content/modules", label: "Modules", icon: Layers, show: has("content.read") },
       {
@@ -155,9 +169,13 @@
       </div>
     </header>
     <main class="flex-1">
-      <div class="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
+      {#if pageWrapper === "bare"}
         {@render children?.()}
-      </div>
+      {:else}
+        <div class="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
+          {@render children?.()}
+        </div>
+      {/if}
     </main>
   </div>
 </div>

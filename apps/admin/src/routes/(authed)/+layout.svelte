@@ -44,6 +44,7 @@
   permissions={data.permissions}
   csrfToken={data.csrfToken}
   userEmail={data.currentUser?.email ?? null}
+  pageWrapper={page.url.pathname.startsWith("/edit") ? "bare" : "centered"}
 >
   {@render children()}
 </AppShell>

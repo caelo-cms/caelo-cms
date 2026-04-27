@@ -37,14 +37,35 @@
     selected: boolean;
   }
 
+  /**
+   * Callback fired on every successful `tool-result` SSE event. P6.7's
+   * live-edit overlay subscribes here so it can postMessage a reload
+   * to the iframe whenever the AI mutates a module. The chat editor at
+   * /content/chat/[sessionId] doesn't pass this prop.
+   */
+  type ToolResultPayload = {
+    toolCallId: string;
+    ok: boolean;
+    content: string;
+    arguments?: { moduleId?: string; html?: string };
+  };
+
   interface Props {
     session: ChatSession;
     initialMessages: ChatMessage[];
     modules: ChatModule[];
     csrfToken: string;
     formError?: string | null;
+    onToolResult?: (payload: ToolResultPayload) => void;
   }
-  let { session, initialMessages, modules, csrfToken, formError = null }: Props = $props();
+  let {
+    session,
+    initialMessages,
+    modules,
+    csrfToken,
+    formError = null,
+    onToolResult,
+  }: Props = $props();
 
   let messages = $state<ChatMessage[]>(initialMessages);
   let composer = $state("");
@@ -123,6 +144,16 @@
                   },
                 ];
               }
+              // P6.7 — notify the live-edit overlay so it can reload
+              // the iframe. The runtime payload has `arguments` only on
+              // the `tool-start` event from the runner, but we forward
+              // the args we have to keep the surface uniform.
+              onToolResult?.({
+                toolCallId: String(ev["toolCallId"] ?? ""),
+                ok: true,
+                content: String(ev["content"] ?? ""),
+                arguments: args,
+              });
             } else if (ev["kind"] === "tool-start") {
               const args = (ev["arguments"] as { moduleId?: string; html?: string }) ?? {};
               if (typeof args.moduleId === "string" && typeof args.html === "string") {

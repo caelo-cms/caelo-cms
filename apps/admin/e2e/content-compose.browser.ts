@@ -88,6 +88,8 @@ test("compose a page from a module and preview it", async ({ page, request }) =>
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toContain("text/html");
   const body = await res.text();
-  expect(body).toContain(`<p>${MODULE_TEXT}</p>`);
+  // P6.7 — every module's outermost element carries data-caelo-module-id.
+  expect(body).toContain(`>${MODULE_TEXT}</p>`);
+  expect(body).toContain("data-caelo-module-id=");
   expect(body).toContain(`<caelo-slot name="content">`);
 });
