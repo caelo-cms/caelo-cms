@@ -72,21 +72,33 @@ export const actions: Actions = {
     });
     if (!updateResult.ok) return fail(400, { error: "Could not publish page." });
 
-    // Editor view: one click maps to "deploy to default target".
-    // Ops users see the dev/staging/production model at /security/deployments.
-    const deployResult = await execute(registry, adapter, locals.ctx, "deploy.trigger", {});
-    if (!deployResult.ok) {
-      return fail(500, { error: "Page marked published but deploy failed." });
+    // Editor view (no `ops.view`): one click goes through the staging
+    // gate per CMS_REQUIREMENTS §16.5 — `deploy.trigger {staging}`
+    // followed by `deploy.promote {staging → production}`. Editors with
+    // `ops.view` use the explicit two-step at /security/deployments.
+    const stagingDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
+      targetName: "staging",
+    });
+    if (!stagingDeploy.ok) {
+      return fail(500, { error: "Page marked published but staging build failed." });
     }
-    const summary = deployResult.value as {
-      targetName: string;
+    const promote = await execute(registry, adapter, locals.ctx, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+    });
+    if (!promote.ok) {
+      return fail(500, {
+        error: "Staging build succeeded but promotion to production failed.",
+      });
+    }
+    const summary = stagingDeploy.value as {
       pageCount: number;
       fileCount: number;
     };
     return {
       published: {
         pageId,
-        targetName: summary.targetName,
+        targetName: "production",
         pageCount: summary.pageCount,
         fileCount: summary.fileCount,
       },

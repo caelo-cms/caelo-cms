@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Staging vhost. Per CMS_REQUIREMENTS §16.5 staging is always noindexed at
+# the serving layer (not just via robots.txt body) — `X-Robots-Tag:
+# noindex, nofollow` is enforced here so a misconfigured robots.txt can
+# never accidentally let a bot index a staging page.
+#
+# `try_files` falls back to <slug>/index.html so the page-output paths
+# the static generator emits ("about/index.html") work as clean URLs.
+
+:80 {
+	root * /srv
+	encode gzip
+	header X-Robots-Tag "noindex, nofollow"
+	try_files {path} {path}/index.html
+	file_server
+}

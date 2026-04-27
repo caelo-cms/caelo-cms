@@ -23,5 +23,28 @@ services:
       timeout: 5s
       retries: 10
 
+  # P6 — local serving layer for the static generator's output. Two
+  # Caddy vhosts mount the per-env dist directory and serve <slug>/index.html
+  # behind clean URLs. Staging adds X-Robots-Tag: noindex per
+  # CMS_REQUIREMENTS §16.5 so a misconfigured robots.txt cannot leak.
+  # Production passes through to the page's emitted robots.txt.
+  caddy-staging:
+    image: caddy:2-alpine
+    container_name: caelo-caddy-staging
+    ports:
+      - "${STAGING_PORT:-8081}:80"
+    volumes:
+      - ./packages/provisioning/caddy/Caddyfile.staging:/etc/caddy/Caddyfile:ro
+      - ./apps/admin/output/staging:/srv:ro
+
+  caddy-production:
+    image: caddy:2-alpine
+    container_name: caelo-caddy-production
+    ports:
+      - "${PRODUCTION_PORT:-8082}:80"
+    volumes:
+      - ./packages/provisioning/caddy/Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - ./apps/admin/output/production:/srv:ro
+
 volumes:
   postgres_data:

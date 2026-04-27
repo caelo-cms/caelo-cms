@@ -19,11 +19,11 @@
  * the deploy_runs row already records who, when, and the outcome.
  */
 
-import { cp, mkdir, rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { defineOperation } from "@caelo/query-api";
 import { err, ok } from "@caelo/shared";
-import { type DeployTarget, generateSite } from "@caelo/static-generator";
+import { buildRobotsTxt, type DeployTarget, generateSite } from "@caelo/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 
@@ -300,9 +300,33 @@ export const promoteDeployOp = defineOperation({
       });
     }
     try {
-      await rm(toDir, { recursive: true, force: true });
+      // P6.1 — preserve toDir's inode for serving-layer bind mounts.
+      // We can't `rm + mkdir + cp` because Docker Desktop / VirtioFS
+      // desyncs the bind mount when the directory is recreated. Walk
+      // the source tree instead, writing each file in place and pruning
+      // stale entries that aren't in the source.
       await mkdir(toDir, { recursive: true });
-      await cp(fromDir, toDir, { recursive: true });
+      await syncTree(fromDir, toDir);
+      // robots.txt and routing-manifest.json are per-target — overwrite
+      // them with the destination target's values so production never
+      // ends up serving staging's `Disallow: /` body.
+      await writeFile(join(toDir, "robots.txt"), buildRobotsTxt(to.robots_default), "utf8");
+      const manifestRaw = await readFile(join(toDir, "routing-manifest.json"), "utf8").catch(
+        () => "{}",
+      );
+      try {
+        const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
+        manifest["target"] = to.name;
+        manifest["env"] = to.env;
+        await writeFile(
+          join(toDir, "routing-manifest.json"),
+          JSON.stringify(manifest, null, 2),
+          "utf8",
+        );
+      } catch {
+        // Malformed manifest — leave the copy alone; nothing in P6 reads
+        // it operationally and P13/P15 will rebuild via deploy.trigger.
+      }
       await tx.execute(sql`
         UPDATE deploy_runs
         SET status = 'succeeded', finished_at = now(),
@@ -326,3 +350,50 @@ export const promoteDeployOp = defineOperation({
     }
   },
 });
+
+/**
+ * Recursive directory sync that preserves the destination root's inode
+ * (load-bearing for Docker bind mounts on macOS). Files in src overwrite
+ * files in dst at the same relative path; files in dst not present in
+ * src are pruned. Empty subdirs in dst are removed bottom-up.
+ */
+async function syncTree(src: string, dst: string): Promise<void> {
+  const tryRm = async (path: string, opts: Parameters<typeof rm>[1] = {}) => {
+    try {
+      await rm(path, opts);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "EFAULT" && code !== "ENOENT") throw e;
+    }
+  };
+  const srcFiles = new Set<string>();
+  const collect = async (rel: string): Promise<void> => {
+    const entries = await readdir(join(src, rel), { withFileTypes: true });
+    for (const entry of entries) {
+      const childRel = rel ? join(rel, entry.name) : entry.name;
+      if (entry.isDirectory()) await collect(childRel);
+      else srcFiles.add(childRel);
+    }
+  };
+  await collect("");
+  for (const rel of srcFiles) {
+    await mkdir(join(dst, rel, ".."), { recursive: true });
+    await copyFile(join(src, rel), join(dst, rel));
+  }
+  const sweep = async (rel: string): Promise<void> => {
+    const here = join(dst, rel);
+    if (!(await stat(here).catch(() => null))) return;
+    const entries = await readdir(here, { withFileTypes: true });
+    for (const entry of entries) {
+      const childRel = rel ? join(rel, entry.name) : entry.name;
+      if (entry.isDirectory()) {
+        await sweep(childRel);
+        const remaining = await readdir(join(dst, childRel)).catch(() => []);
+        if (remaining.length === 0) await tryRm(join(dst, childRel), { recursive: false });
+      } else if (!srcFiles.has(childRel)) {
+        await tryRm(join(dst, childRel), { force: true });
+      }
+    }
+  };
+  await sweep("");
+}

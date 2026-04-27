@@ -76,10 +76,15 @@ test("Advanced History drawer reverts a module", async ({ page }) => {
   await page.goto(`/content/modules/${moduleId}`);
   await expect(page.locator('textarea[name="html"]')).toHaveValue(`<p>${V1_TEXT}</p>`);
 
-  // History timeline now has a "revert module → snapshot …" entry at the top.
+  // History timeline now contains a "revert module → …" entry. Other
+  // parallel specs may emit unrelated snapshots so we filter for the
+  // revert row rather than asserting on the global first li.
   await page.goto("/content/history");
-  const firstItem = page.locator("li").first();
-  await expect(firstItem).toContainText(/revert module/i);
+  const revertItem = page
+    .locator("li")
+    .filter({ hasText: /revert module/i })
+    .first();
+  await expect(revertItem).toBeVisible();
 
   // Cleanup the page slug if any test created it (none here, but defensive).
   void PAGE_SLUG;

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Production vhost. No noindex header — the bot-indexing behavior comes
+# straight from each page's emitted robots.txt (CMS_REQUIREMENTS §8.3).
+
+:80 {
+	root * /srv
+	encode gzip
+	try_files {path} {path}/index.html
+	file_server
+}
