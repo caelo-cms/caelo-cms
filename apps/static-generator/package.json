@@ -9,8 +9,12 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "bin": {
+    "caelo-static-generator": "./src/cli.ts"
+  },
   "scripts": {
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "generate": "bun run src/cli.ts"
   },
   "dependencies": {
     "@caelo/query-api": "workspace:*",

@@ -46,7 +46,9 @@ import {
   listDeployRunsOp,
   listDeployTargetsOp,
   promoteDeployOp,
+  rollbackDeployOp,
   triggerDeployOp,
+  updateDeployProgressOp,
 } from "./ops/deploy.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
 import { aggregateAiCallsOp } from "./ops/security/ai_calls.js";
@@ -143,4 +145,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listDeployRunsOp);
   registry.register(triggerDeployOp);
   registry.register(promoteDeployOp);
+  registry.register(rollbackDeployOp);
+  registry.register(updateDeployProgressOp);
 }

@@ -86,7 +86,7 @@ test("Ops: build staging → promote to production", async ({ page }) => {
 
   await expect(page.getByText(/staging.*succeeded/i).first()).toBeVisible({ timeout: 15_000 });
 
-  const stagingDir = resolve(process.cwd(), "output/staging");
+  const stagingDir = resolve(process.cwd(), "output/staging/current");
   const stagingPage = resolve(stagingDir, PAGE_SLUG, "index.html");
   expect(existsSync(stagingPage)).toBe(true);
   expect(readFileSync(stagingPage, "utf8")).toContain(`OPS_${PAGE_SLUG}`);
@@ -100,7 +100,12 @@ test("Ops: build staging → promote to production", async ({ page }) => {
 
   await expect(page.getByText(/production.*succeeded/i).first()).toBeVisible({ timeout: 15_000 });
 
-  const productionPage = resolve(process.cwd(), "output/production", PAGE_SLUG, "index.html");
+  const productionPage = resolve(
+    process.cwd(),
+    "output/production/current",
+    PAGE_SLUG,
+    "index.html",
+  );
   expect(existsSync(productionPage)).toBe(true);
   expect(readFileSync(productionPage, "utf8")).toContain(`OPS_${PAGE_SLUG}`);
 });

@@ -59,7 +59,19 @@ export const actions: Actions = {
     const pageId = (result.value as { pageId: string }).pageId;
     throw redirect(303, `/content/pages/${pageId}`);
   },
-  publish: async ({ request, locals }) => {
+  // P6.2 #3 — preview → confirm publish. Editor flow is now two clicks:
+  //
+  //   1. "Stage" runs `pages.update {status: published}` then
+  //      `deploy.trigger {staging}` and returns a staging preview URL.
+  //      Production stays untouched.
+  //   2. "Confirm publish" runs `deploy.promote {staging → production}`
+  //      from the form returned by step 1.
+  //
+  // This honours CMS_REQUIREMENTS §16.5 in spirit — staging is a
+  // *gate*, not a stepping stone — while keeping the editor mental
+  // model simple. Editors with `ops.view` still get the explicit
+  // multi-target dashboard at /security/deployments.
+  stage: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
@@ -70,37 +82,49 @@ export const actions: Actions = {
       pageId,
       status: "published",
     });
-    if (!updateResult.ok) return fail(400, { error: "Could not publish page." });
+    if (!updateResult.ok) return fail(400, { error: "Could not mark page as published." });
 
-    // Editor view (no `ops.view`): one click goes through the staging
-    // gate per CMS_REQUIREMENTS §16.5 — `deploy.trigger {staging}`
-    // followed by `deploy.promote {staging → production}`. Editors with
-    // `ops.view` use the explicit two-step at /security/deployments.
     const stagingDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
       targetName: "staging",
     });
     if (!stagingDeploy.ok) {
-      return fail(500, { error: "Page marked published but staging build failed." });
+      return fail(500, { error: "Staging build failed." });
     }
+    const summary = stagingDeploy.value as {
+      pageCount: number;
+      fileCount: number;
+      buildId: string;
+    };
+
+    const stagingBaseUrl = process.env["CAELO_STAGING_BASE_URL"] ?? "http://localhost:8081";
+    return {
+      staged: {
+        pageId,
+        pageCount: summary.pageCount,
+        fileCount: summary.fileCount,
+        buildId: summary.buildId,
+        previewUrl: `${stagingBaseUrl}`,
+      },
+    };
+  },
+  confirmPublish: async ({ request, locals }) => {
+    requirePermission(locals, "deploy.trigger");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const pageId = String(form.get("pageId") ?? "");
+
     const promote = await execute(registry, adapter, locals.ctx, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
     });
     if (!promote.ok) {
-      return fail(500, {
-        error: "Staging build succeeded but promotion to production failed.",
-      });
+      return fail(500, { error: "Promotion to production failed." });
     }
-    const summary = stagingDeploy.value as {
-      pageCount: number;
-      fileCount: number;
-    };
     return {
       published: {
         pageId,
         targetName: "production",
-        pageCount: summary.pageCount,
-        fileCount: summary.fileCount,
       },
     };
   },

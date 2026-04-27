@@ -1,6 +1,12 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   let { data, form } = $props();
+  /**
+   * P6.2 #3 — when the editor clicks "Stage", `form.staged` carries the
+   * pageId of the page now staged + the staging preview URL. We render a
+   * "Confirm publish" button on that row until the editor confirms or
+   * the page reloads.
+   */
 </script>
 
 <nav>
@@ -13,8 +19,14 @@
   <p class="error">{form.error}</p>
 {/if}
 {#if form?.published}
+  <p class="ok">Published to production.</p>
+{/if}
+{#if form?.staged}
   <p class="ok">
-    Published — {form.published.pageCount} page(s), {form.published.fileCount} file(s) live.
+    Staged — {form.staged.pageCount} page(s), {form.staged.fileCount} file(s) on staging.
+    Preview: <a href={form.staged.previewUrl} target="_blank" rel="noopener"
+      >{form.staged.previewUrl}</a
+    >. Click <strong>Confirm publish</strong> below to ship to production.
   </p>
 {/if}
 
@@ -28,11 +40,19 @@
         <a href={`/content/pages/${p.id}`}><strong>{p.slug}</strong></a>
         ({p.locale}) — {p.title}
         <small>[{p.status}] updated {p.updatedAt.slice(0, 10)}</small>
-        <form method="post" action="?/publish" style="display:inline">
-          <input type="hidden" name="_csrf" value={data.csrfToken} />
-          <input type="hidden" name="pageId" value={p.id} />
-          <button type="submit">{p.status === "published" ? "Re-publish" : "Publish"}</button>
-        </form>
+        {#if form?.staged?.pageId === p.id}
+          <form method="post" action="?/confirmPublish" style="display:inline">
+            <input type="hidden" name="_csrf" value={data.csrfToken} />
+            <input type="hidden" name="pageId" value={p.id} />
+            <button type="submit">Confirm publish</button>
+          </form>
+        {:else}
+          <form method="post" action="?/stage" style="display:inline">
+            <input type="hidden" name="_csrf" value={data.csrfToken} />
+            <input type="hidden" name="pageId" value={p.id} />
+            <button type="submit">{p.status === "published" ? "Re-stage" : "Stage"}</button>
+          </form>
+        {/if}
       </li>
     {/each}
   </ul>

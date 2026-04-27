@@ -8,6 +8,7 @@ export * from "./ai/tools/index.js";
 export * from "./audit.js";
 export * from "./csrf.js";
 export * from "./ops/auth.js";
+export * from "./ops/deploy.js";
 export * from "./ops/roles.js";
 export * from "./ops/users.js";
 export * from "./password.js";

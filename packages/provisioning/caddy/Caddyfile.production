@@ -2,9 +2,16 @@
 #
 # Production vhost. No noindex header — the bot-indexing behavior comes
 # straight from each page's emitted robots.txt (CMS_REQUIREMENTS §8.3).
+#
+# P6.2 — root is /srv/current, a symlink the deploy.trigger /
+# deploy.promote / deploy.rollback ops atomically re-target. The
+# routing manifest (/srv/current/routing-manifest.json) lists every
+# emitted page + its output path; P9 will swap this Caddyfile for one
+# that consults the manifest to handle locale URL strategies, and P13
+# will use the same indirection for A/B variant edge selection.
 
 :80 {
-	root * /srv
+	root * /srv/current
 	encode gzip
 	try_files {path} {path}/index.html
 	file_server

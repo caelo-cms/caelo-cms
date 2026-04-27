@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { PostgresRateLimiter, registerAdminOps } from "@caelo/admin-core";
+import { PostgresRateLimiter, registerAdminOps, setDeployBridge } from "@caelo/admin-core";
 import { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
 
 /**
@@ -43,6 +43,11 @@ export function getQueryContext(): QueryContext {
     windowMs: 5 * 60 * 1000,
     limit: 5,
   });
+
+  // P6.2 — the deploy.trigger op spawns the static-generator CLI as a
+  // subprocess and writes progress rows back via the same registry the
+  // host uses. We hand it the registry+adapter pair here.
+  setDeployBridge({ registry, adapter });
 
   _ctx = { adapter, registry, loginLimiter };
   return _ctx;

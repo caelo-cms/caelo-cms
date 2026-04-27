@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
 import type { ExecutionContext } from "@caelo/shared";
 import { SQL } from "bun";
+import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
@@ -66,6 +67,10 @@ beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
+  // P6.2 — the trigger op spawns the static-generator CLI as a
+  // subprocess and writes progress rows back via the bridge. Tests
+  // configure it the same way the route layer does at startup.
+  setDeployBridge({ registry, adapter });
   testRoot = await mkdtemp(join(tmpdir(), "caelo-p6-"));
 });
 
@@ -133,12 +138,17 @@ describe("P6 deploy.trigger", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const out = result.value as { pageCount: number; fileCount: number; runId: string };
+    const out = result.value as {
+      pageCount: number;
+      fileCount: number;
+      runId: string;
+      buildId: string;
+    };
     expect(out.pageCount).toBe(1);
-    // 1 page file + robots.txt + routing-manifest.json
     expect(out.fileCount).toBe(3);
 
-    const distDir = join(testRoot, "output", "production");
+    // P6.2 — files live under builds/<runId>; current symlink points there.
+    const distDir = join(testRoot, "output", "production", "current");
     expect(existsSync(join(distDir, `${PAGE_SLUG}/index.html`))).toBe(true);
     const html = await readFile(join(distDir, `${PAGE_SLUG}/index.html`), "utf8");
     expect(html).toContain("<p>hello world</p>");
@@ -152,6 +162,7 @@ describe("P6 deploy.trigger", () => {
     expect(manifest.target).toBe("production");
     expect(manifest.pageCount).toBe(1);
     expect(manifest.variants).toEqual([]);
+    expect(manifest.runId).toBe(out.buildId);
   });
 
   it("staging robots.txt blocks crawlers", async () => {
@@ -160,7 +171,10 @@ describe("P6 deploy.trigger", () => {
       repoRoot: testRoot,
     });
     expect(result.ok).toBe(true);
-    const robots = await readFile(join(testRoot, "output", "staging", "robots.txt"), "utf8");
+    const robots = await readFile(
+      join(testRoot, "output", "staging", "current", "robots.txt"),
+      "utf8",
+    );
     expect(robots).toContain("Disallow: /");
   });
 

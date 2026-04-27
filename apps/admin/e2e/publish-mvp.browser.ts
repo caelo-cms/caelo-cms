@@ -101,16 +101,19 @@ test("editor Publish button → static dist updated", async ({ page }) => {
   await page.getByRole("button", { name: /^save layout$/i }).click();
   await expect(page.getByText(/Saved\./)).toBeVisible({ timeout: 15_000 });
 
-  // Editor view — Publish button on the pages list.
+  // P6.2 #3 — editor publish is now Stage → Confirm. Stage runs the
+  // staging build and surfaces a preview URL; Confirm promotes to prod.
   await page.goto("/content/pages");
   const row = page.locator("li").filter({ hasText: PAGE_SLUG });
-  await row.getByRole("button", { name: /^publish$/i }).click();
-  await expect(page.getByText(/Published —/)).toBeVisible({ timeout: 15_000 });
+  await row.getByRole("button", { name: /^stage$/i }).click();
+  await expect(page.getByText(/Staged —/)).toBeVisible({ timeout: 15_000 });
+  // After Stage the row's button changes to "Confirm publish".
+  const stagedRow = page.locator("li").filter({ hasText: PAGE_SLUG });
+  await stagedRow.getByRole("button", { name: /^confirm publish$/i }).click();
+  await expect(page.getByText(/Published to production/)).toBeVisible({ timeout: 15_000 });
 
-  // The default target (production) gets the dist. Webserver cwd is
-  // apps/admin (where Playwright also runs from) so dist lives at
-  // ./output/production relative to cwd.
-  const distDir = resolve(process.cwd(), "output/production");
+  // P6.2 #2 — files live under output/<env>/current/ (the symlink).
+  const distDir = resolve(process.cwd(), "output/production/current");
   const pageFile = resolve(distDir, PAGE_SLUG, "index.html");
   expect(existsSync(pageFile)).toBe(true);
   const html = readFileSync(pageFile, "utf8");

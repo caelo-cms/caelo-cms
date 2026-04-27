@@ -135,11 +135,15 @@ test("AI edit → publish chat → publish page → served from Caddy", async ({
   await expect(page.getByText(/1 pending change/i)).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: /^publish$/i }).click();
 
-  // Editor publish on the page: routes through staging → promote.
+  // P6.2 #3 — Stage then Confirm publish. Two clicks instead of one,
+  // staging acts as a real preview-gate before production.
   await page.goto("/content/pages");
   const row = page.locator("li").filter({ hasText: PAGE_SLUG });
-  await row.getByRole("button", { name: /^publish$/i }).click();
-  await expect(page.getByText(/Published —/)).toBeVisible({ timeout: 30_000 });
+  await row.getByRole("button", { name: /^stage$/i }).click();
+  await expect(page.getByText(/Staged —/)).toBeVisible({ timeout: 30_000 });
+  const stagedRow = page.locator("li").filter({ hasText: PAGE_SLUG });
+  await stagedRow.getByRole("button", { name: /^confirm publish$/i }).click();
+  await expect(page.getByText(/Published to production/)).toBeVisible({ timeout: 15_000 });
 
   // Caddy on :8082 (production) now serves the page with the AI edit.
   // Retry briefly because the Caddy file mount picks up changes near-instantly

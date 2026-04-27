@@ -7,9 +7,13 @@
 #
 # `try_files` falls back to <slug>/index.html so the page-output paths
 # the static generator emits ("about/index.html") work as clean URLs.
+#
+# P6.2 — root is /srv/current, a symlink the deploy.trigger op atomically
+# re-targets to the most recent build. Caddy follows the symlink at
+# request time so a deploy is invisible to in-flight requests.
 
 :80 {
-	root * /srv
+	root * /srv/current
 	encode gzip
 	header X-Robots-Tag "noindex, nofollow"
 	try_files {path} {path}/index.html

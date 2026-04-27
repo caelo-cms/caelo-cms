@@ -6,7 +6,7 @@ import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
 import { isRlsDenial, type QueryError } from "./errors.js";
-import type { OperationDefinition } from "./operation.js";
+import type { OperationDefinition, TransactionRunner } from "./operation.js";
 
 /**
  * Two connection pools per process — one per PostgreSQL role. Application code
@@ -145,6 +145,32 @@ export class DatabaseAdapter {
 
   async close(): Promise<void> {
     await Promise.all([this.#adminRaw.end(), this.#publicRaw.end()]);
+  }
+
+  /**
+   * Open an admin-DB transaction with the caller's identity set via
+   * session vars and run an arbitrary callback. Used by tooling that
+   * needs the same RLS-correct read view as the Query API ops but is
+   * not itself an op (e.g. the static generator subprocess in P6.2).
+   *
+   * Throws on RLS denial and any handler error — callers handle their
+   * own error shape since they don't pass through the op result type.
+   */
+  async withAdminTransaction<T>(
+    ctx: ExecutionContext,
+    fn: (tx: TransactionRunner) => Promise<T>,
+  ): Promise<T> {
+    if (!this.#skipVerify) await this.verifyRoles();
+    return await this.#admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
+      await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
+      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
+      await tx.execute(
+        sql`SELECT set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true)`,
+      );
+      await tx.execute(sql`SELECT set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+      return await fn(tx);
+    });
   }
 
   /** Test-only: raw access for fixture setup / adversarial direct queries. */

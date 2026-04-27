@@ -28,6 +28,11 @@ services:
   # behind clean URLs. Staging adds X-Robots-Tag: noindex per
   # CMS_REQUIREMENTS §16.5 so a misconfigured robots.txt cannot leak.
   # Production passes through to the page's emitted robots.txt.
+  # P6.2 — bind-mount the per-env output dir (containing builds/ +
+  # current). The Caddyfile reads /srv/current/<request> so the symlink
+  # swap takes effect at request time. Bind mounts on macOS Docker
+  # Desktop now stay stable across deploys because we never destroy the
+  # mounted directory's inode (only the `current` symlink target moves).
   caddy-staging:
     image: caddy:2-alpine
     container_name: caelo-caddy-staging

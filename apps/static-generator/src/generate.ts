@@ -3,14 +3,26 @@
 /**
  * Static generator entry point. Takes a transaction handle on `cms_admin`
  * plus a `DeployTarget` and emits one HTML file per published page into
- * `target.outDir`, plus `robots.txt` and `routing-manifest.json`.
+ * a fresh build directory, then mirrors the build into `current/` so
+ * the serving layer (Caddy / nginx) sees the latest content.
  *
- * Pure function over data: no IO except file writes. Composition reuses
- * `composePagePreview` from admin-core so preview and production produce
- * the same HTML byte-for-byte.
+ * Layout per env:
+ *   output/<env>/builds/<runId>/  ← fresh build, immutable once done
+ *   output/<env>/builds/<runId>/index.html / robots.txt / ...
+ *   output/<env>/current/         ← regular dir mirroring the latest build
+ *
+ * Caddy bind-mounts `output/<env>` and serves from `/srv/current`. We
+ * sync the build into `current/` in place rather than swapping a symlink
+ * because Docker Desktop / VirtioFS bind mounts on macOS don't follow
+ * symlinks reliably across the host/container boundary. The
+ * `builds/<runId>/` archive stays immutable for content-addressed
+ * rollback (`deploy.rollback` re-syncs an older build into `current/`).
+ *
+ * Composition reuses `composePagePreview` from shared so preview and
+ * production produce the same HTML byte-for-byte.
  */
 
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo/query-api";
 import { composePagePreview } from "@caelo/shared";
@@ -29,6 +41,8 @@ export interface GenerateResult {
   readonly pageCount: number;
   readonly fileCount: number;
   readonly durationMs: number;
+  /** Absolute path to the build dir under builds/<runId>. */
+  readonly buildDir: string;
 }
 
 interface PageRow {
@@ -63,6 +77,9 @@ interface VariantManifestEntry {
   outputPath: string;
 }
 
+/** Optional progress callback so the parent process can show pagesDone/total. */
+export type ProgressCallback = (progress: { pagesDone: number; pagesTotal: number }) => void;
+
 /**
  * Emits a stable file path for a published page. Slug "/" or "" or "home"
  * become `index.html`; everything else becomes `<slug>/index.html` so the
@@ -88,24 +105,22 @@ export function buildRobotsTxt(robots: "index" | "noindex"): string {
 export async function generateSite(args: {
   tx: TransactionRunner;
   target: DeployTarget;
+  /** Stable id (deploy_runs.id) used as the build directory name. */
+  runId: string;
   /** Optional repo root so out_dir resolves against it; defaults to cwd. */
   repoRoot?: string;
+  /** Optional progress callback fired after each page is written. */
+  onProgress?: ProgressCallback;
 }): Promise<GenerateResult> {
   const start = Date.now();
-  const { tx, target } = args;
+  const { tx, target, runId } = args;
   const root = args.repoRoot ?? process.cwd();
   const outDir = resolve(root, target.outDir);
+  const buildsDir = join(outDir, "builds");
+  const buildDir = join(buildsDir, runId);
+  const currentLink = join(outDir, "current");
 
-  // Write into outDir without a wipe. Two reasons:
-  //   1. Bind-mounted serving containers (Caddy in compose) lose track
-  //      of the directory contents on macOS Docker Desktop / VirtioFS
-  //      after a rapid rm-then-recreate cycle. Stale-file accumulation
-  //      is preferable to a serving layer that 404s after every deploy.
-  //   2. Production deploys generally re-publish the same page slugs,
-  //      so writes overwrite in place. Stale entries for deleted pages
-  //      are pruned by the post-write reconciliation below.
-  await mkdir(outDir, { recursive: true });
-  const writtenFiles = new Set<string>();
+  await mkdir(buildDir, { recursive: true });
 
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id,
@@ -121,8 +136,11 @@ export async function generateSite(args: {
 
   let fileCount = 0;
   const variantEntries: VariantManifestEntry[] = [];
+  args.onProgress?.({ pagesDone: 0, pagesTotal: pageRows.length });
 
-  for (const page of pageRows) {
+  for (let i = 0; i < pageRows.length; i++) {
+    const page = pageRows[i];
+    if (!page) continue;
     const modRows = (await tx.execute(sql`
       SELECT pm.block_name, pm.position,
              m.id::text AS module_id,
@@ -142,10 +160,9 @@ export async function generateSite(args: {
     });
 
     const relPath = pageOutputPath(page.slug);
-    const filePath = join(outDir, relPath);
+    const filePath = join(buildDir, relPath);
     await mkdir(join(filePath, ".."), { recursive: true });
     await writeFile(filePath, composed.html, "utf8");
-    writtenFiles.add(relPath);
     fileCount += 1;
 
     // A/B variant emission hook: when modules carry experiment_id +
@@ -157,9 +174,8 @@ export async function generateSite(args: {
     for (const m of modRows) {
       if (m.experiment_id && m.variant_label) {
         const variantPath = `module/${m.module_id}/${m.variant_label}.html`;
-        await mkdir(join(outDir, "module", m.module_id), { recursive: true });
-        await writeFile(join(outDir, variantPath), m.html, "utf8");
-        writtenFiles.add(variantPath);
+        await mkdir(join(buildDir, "module", m.module_id), { recursive: true });
+        await writeFile(join(buildDir, variantPath), m.html, "utf8");
         fileCount += 1;
         variantEntries.push({
           pageSlug: page.slug,
@@ -170,37 +186,59 @@ export async function generateSite(args: {
         });
       }
     }
+    args.onProgress?.({ pagesDone: i + 1, pagesTotal: pageRows.length });
   }
 
-  await writeFile(join(outDir, "robots.txt"), buildRobotsTxt(target.robotsDefault), "utf8");
-  writtenFiles.add("robots.txt");
+  await writeFile(join(buildDir, "robots.txt"), buildRobotsTxt(target.robotsDefault), "utf8");
   fileCount += 1;
 
   const manifest = {
     target: target.name,
     env: target.env,
+    runId,
     builtAt: new Date().toISOString(),
     pageCount: pageRows.length,
+    pages: pageRows.map((p) => ({
+      slug: p.slug,
+      locale: p.locale,
+      outputPath: pageOutputPath(p.slug),
+    })),
     variants: variantEntries,
   };
-  await writeFile(join(outDir, "routing-manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
-  writtenFiles.add("routing-manifest.json");
+  await writeFile(
+    join(buildDir, "routing-manifest.json"),
+    JSON.stringify(manifest, null, 2),
+    "utf8",
+  );
   fileCount += 1;
 
-  // Reconcile: prune anything in outDir we did not write this run. We
-  // delete files individually (not the parent directory) so the bind
-  // mount inode stays stable, then sweep empty dirs bottom-up.
-  await pruneStaleFiles(outDir, writtenFiles);
+  // Atomic-ish swap. `current/` is a regular directory (not a symlink)
+  // because Docker Desktop / VirtioFS bind mounts on macOS don't follow
+  // symlinks reliably across the host/container boundary. We sync the
+  // build dir's contents into `current/` in place — same files, same
+  // dirs, the bind mount stays valid because the directory inode never
+  // changes. The `builds/<runId>/` archive stays for content-addressed
+  // history and for `deploy.rollback` to copy back when invoked.
+  await mkdir(currentLink, { recursive: true });
+  await syncContents(buildDir, currentLink);
 
-  return { pageCount: pageRows.length, fileCount, durationMs: Date.now() - start };
+  // Best-effort old-build retention: keep the most recent 5, remove the
+  // rest. Failures are swallowed because they don't affect the live
+  // serving target (which is `current/`).
+  await pruneOldBuilds(buildsDir, runId, 5);
+
+  return { pageCount: pageRows.length, fileCount, durationMs: Date.now() - start, buildDir };
 }
 
-async function pruneStaleFiles(outDir: string, written: ReadonlySet<string>): Promise<void> {
-  // macOS Docker Desktop's VirtioFS occasionally returns EFAULT on `rm`
-  // calls against paths visible inside an active bind mount. Stale
-  // files staying behind on disk is preferable to a hard build failure
-  // — they just accumulate slowly and don't break serving (Caddy 404s
-  // anything we didn't write fresh because URLs map to live pages).
+/**
+ * Mirror `src` into `dst` so dst contains exactly src's tree. Files are
+ * overwritten in place; files in dst not present in src are removed.
+ * Empty subdirectories are pruned bottom-up. Tolerates EFAULT on rm
+ * (Docker Desktop quirk on rm-inside-bind-mount on macOS) so a build
+ * never fails the whole deploy because a stale child couldn't be
+ * unlinked.
+ */
+async function syncContents(src: string, dst: string): Promise<void> {
   const tryRm = async (path: string, opts: Parameters<typeof rm>[1] = {}) => {
     try {
       await rm(path, opts);
@@ -209,21 +247,55 @@ async function pruneStaleFiles(outDir: string, written: ReadonlySet<string>): Pr
       if (code !== "EFAULT" && code !== "ENOENT") throw e;
     }
   };
-  const walk = async (rel: string): Promise<void> => {
-    const abs = join(outDir, rel);
-    const entries = await readdir(abs, { withFileTypes: true });
+  const srcFiles = new Set<string>();
+  const collect = async (rel: string): Promise<void> => {
+    const entries = await readdir(join(src, rel), { withFileTypes: true });
+    for (const entry of entries) {
+      const childRel = rel ? join(rel, entry.name) : entry.name;
+      if (entry.isDirectory()) await collect(childRel);
+      else srcFiles.add(childRel);
+    }
+  };
+  await collect("");
+  for (const rel of srcFiles) {
+    await mkdir(join(dst, rel, ".."), { recursive: true });
+    await copyFile(join(src, rel), join(dst, rel));
+  }
+  const sweep = async (rel: string): Promise<void> => {
+    const here = join(dst, rel);
+    if (!(await stat(here).catch(() => null))) return;
+    const entries = await readdir(here, { withFileTypes: true });
     for (const entry of entries) {
       const childRel = rel ? join(rel, entry.name) : entry.name;
       if (entry.isDirectory()) {
-        await walk(childRel);
-        const remaining = await readdir(join(outDir, childRel)).catch(() => []);
-        if (remaining.length === 0) await tryRm(join(outDir, childRel), { recursive: false });
-      } else if (!written.has(childRel)) {
-        await tryRm(join(outDir, childRel), { force: true });
+        await sweep(childRel);
+        const remaining = await readdir(join(dst, childRel)).catch(() => []);
+        if (remaining.length === 0) await tryRm(join(dst, childRel), { recursive: false });
+      } else if (!srcFiles.has(childRel)) {
+        await tryRm(join(dst, childRel), { force: true });
       }
     }
   };
-  await walk("");
+  await sweep("");
+}
+
+async function pruneOldBuilds(buildsDir: string, keepRunId: string, retain: number): Promise<void> {
+  try {
+    const entries = await readdir(buildsDir, { withFileTypes: true });
+    const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+    if (dirs.length <= retain) return;
+    // Keep the most recent `retain` by mtime (proxied by name; UUIDs sort
+    // lexicographically — fine for ordering, not strictly chronological,
+    // so we additionally never delete keepRunId).
+    const sorted = dirs.sort();
+    const toDrop = sorted.slice(0, sorted.length - retain);
+    for (const name of toDrop) {
+      if (name === keepRunId) continue;
+      await rm(join(buildsDir, name), { recursive: true, force: true }).catch(() => {});
+    }
+  } catch {
+    // Builds dir doesn't exist yet, nothing to prune.
+  }
 }
 
 function groupModulesByBlock(rows: readonly ModuleRow[]): {
