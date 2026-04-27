@@ -178,34 +178,45 @@ export async function* runChatTurn(
           }[];
         };
       };
+      // P6.7.4 — render the page like a visitor would see it, with each
+      // module's full HTML wrapped in BEGIN/END markers carrying the
+      // module id + slug + block + position. The AI gets both the
+      // visual structure ("make the headline more meaningful for this
+      // landing page" works) and the module boundaries (so edit_module
+      // / add_module_to_page calls reference a real id).
       const lines: string[] = [
         "# Current page",
         `Page: ${v.page.slug} (locale=${v.page.locale}, status=${v.page.status}, id=${v.page.id})`,
         `Template id: ${v.page.templateId}`,
         `Blocks (in render order): ${v.page.blocks.map((b) => b.blockName).join(", ") || "(none)"}`,
         "",
-        "## Modules currently on this page",
+        "## Page content (rendered with module boundaries)",
+        "",
       ];
       for (const b of v.page.blocks) {
         if (b.modules.length === 0) {
-          lines.push(`- block "${b.blockName}": (empty)`);
+          lines.push(`<!-- block=${b.blockName} (empty) -->`);
           continue;
         }
         for (let i = 0; i < b.modules.length; i++) {
           const m = b.modules[i];
           if (!m) continue;
-          const snippet = m.html.length > 200 ? `${m.html.slice(0, 200)}…` : m.html;
+          const safeName = m.displayName.replace(/"/g, '\\"');
           lines.push(
-            `- block "${b.blockName}" pos ${i}: id=${m.moduleId} slug=${m.slug} (${m.displayName}) — ${snippet}`,
+            `<!-- BEGIN module=${m.moduleId} slug=${m.slug} block=${b.blockName} position=${i} displayName="${safeName}" -->`,
           );
+          lines.push(m.html);
+          lines.push(`<!-- END module=${m.moduleId} -->`);
         }
       }
       lines.push("");
       lines.push(
         "Tool guidance:",
-        "- edit_module — change an existing module's content (always reference a real module id from the list above).",
-        "- add_module_to_page — insert a NEW module into a block on THIS page only. Use this for one-off content (a CTA on the homepage, an FAQ section on /about). Position is 'top', 'bottom', or a 0-based index.",
-        '- add_module_to_template — create a NEW module and fan it out to EVERY page using this template at the same block + position. Use this only when the user explicitly asks for site-wide content ("add a footer to every page", "a header banner across the site"). Pass the templateId from this block\'s header.',
+        "- edit_module — change an existing module's content (always reference a real module id from a BEGIN marker above).",
+        "- add_module_to_page — insert a NEW module into a block on THIS page only. Use for one-off content (a CTA on the homepage, an FAQ on /about). Position is 'top', 'bottom', or a 0-based index.",
+        '- add_module_to_template — create a NEW module and fan it out to EVERY page using this template at the same block + position. Use only when the user explicitly asks for site-wide content ("add a footer to every page", "a header banner across the site"). Pass the Template id above.',
+        "",
+        'When the user asks for a copy change like "make the headline more meaningful" or "rewrite the welcome paragraph", read the surrounding modules in this block to keep the new copy coherent across the whole page.',
       );
       pageContextBlock = lines.join("\n");
     }

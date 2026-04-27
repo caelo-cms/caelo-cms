@@ -24,32 +24,44 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   requirePermission(locals, "content.write");
   const { adapter, registry } = getQueryContext();
 
-  const [pagesR, sessionsR, prefsR] = await Promise.all([
+  // Load pages + the user's overlay layout in parallel. We can't load
+  // chat sessions yet because the filter depends on the active page.
+  const [pagesR, prefsR] = await Promise.all([
     execute(registry, adapter, locals.ctx, "pages.list", {}),
-    execute(registry, adapter, locals.ctx, "chat.list_sessions", {
-      includeArchived: false,
-    }),
     execute(registry, adapter, locals.ctx, "user_preferences.get", {
       key: "edit_overlay_layout",
     }),
   ]);
 
   // P6.7.2 — drop the `published` filter. The live-edit surface always
-  // renders the latest editable composition (chat-branch-aware via
-  // pages.render_preview); whether a page is `draft` or `published` is
-  // irrelevant for previewing inside /edit. The published static site
-  // is what Caddy serves on :8082 — not what /edit shows.
+  // renders the latest editable composition; whether a page is `draft`
+  // or `published` is irrelevant for previewing inside /edit.
   const pages = pagesR.ok ? (pagesR.value as { pages: PageRow[] }).pages : [];
+
+  // Pick the page to render in the iframe. URL param wins; otherwise
+  // prefer the seeded `home` slug; otherwise the first page in the list.
+  const queryPage = url.searchParams.get("page");
+  const home = pages.find((p) => p.slug === "home" && p.locale === "en");
+  const activePage = pages.find((p) => p.id === queryPage) ?? home ?? pages[0] ?? null;
+  const activePageId = activePage?.id ?? null;
+
+  // P6.7.4 — chats are now scoped to the active page. Load the page's
+  // bound chats + pick the most-recent unpublished one; if none, create
+  // a fresh page-bound session. Cross-page chats remain accessible from
+  // /content/chat — they don't show up in this dropdown.
+  const sessionsR = await execute(registry, adapter, locals.ctx, "chat.list_sessions", {
+    includeArchived: false,
+    pageId: activePageId,
+  });
   const sessions = sessionsR.ok ? (sessionsR.value as { sessions: ChatSession[] }).sessions : [];
 
-  // Pick or create the active chat session. URL param wins; otherwise
-  // the most-recent unpublished session; otherwise create a fresh one.
   const queryChat = url.searchParams.get("chat");
   let activeChat: ChatSession | null =
     sessions.find((s) => s.id === queryChat) ?? sessions.find((s) => !s.publishedAt) ?? null;
   if (!activeChat) {
     const created = await execute(registry, adapter, locals.ctx, "chat.create_session", {
-      title: "Live edit",
+      title: activePage ? `Live edit · ${activePage.slug}` : "Live edit",
+      ...(activePageId ? { pageId: activePageId } : {}),
     });
     if (created.ok) {
       const id = (created.value as { chatSessionId: string; chatBranchId: string }).chatSessionId;
@@ -62,13 +74,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     }
   }
   if (!activeChat) throw redirect(303, "/content/chat");
-
-  // Pick the page to render in the iframe. URL param wins; otherwise
-  // prefer the seeded `home` slug; otherwise the first page in the list.
-  const queryPage = url.searchParams.get("page");
-  const home = pages.find((p) => p.slug === "home" && p.locale === "en");
-  const activePage = pages.find((p) => p.id === queryPage) ?? home ?? pages[0] ?? null;
-  const activePageId = activePage?.id ?? null;
 
   // Load the chat's messages + the modules list (powers the chip picker
   // inside the embedded ChatPanel).
@@ -105,6 +110,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     messages,
     modules,
     layout,
+    /** P6.7.4 — chats bound to the active page (for the history dropdown). */
+    pageChats: sessions.map((s) => ({
+      id: s.id,
+      title: s.title,
+      lastActiveAt: s.lastActiveAt,
+      publishedAt: s.publishedAt,
+    })),
   };
 };
 
@@ -149,6 +161,28 @@ export const actions: Actions = {
         previewUrl: stagingBaseUrl,
       },
     };
+  },
+  /**
+   * P6.7.4 — "+ New chat" creates a fresh page-bound session and
+   * redirects with `?chat=<id>` so the loader picks it up. Page id is
+   * carried in the form so we don't have to re-derive activePage.
+   */
+  newChat: async ({ request, locals, url }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const pageId = String(form.get("pageId") ?? "");
+    const created = await execute(registry, adapter, locals.ctx, "chat.create_session", {
+      title: "New chat",
+      ...(pageId.length > 0 ? { pageId } : {}),
+    });
+    if (!created.ok) return fail(500, { error: "Could not create chat." });
+    const newId = (created.value as { chatSessionId: string }).chatSessionId;
+    const next = new URL(url);
+    next.searchParams.set("chat", newId);
+    if (pageId.length > 0) next.searchParams.set("page", pageId);
+    throw redirect(303, `${next.pathname}${next.search}`);
   },
   confirmPublish: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");

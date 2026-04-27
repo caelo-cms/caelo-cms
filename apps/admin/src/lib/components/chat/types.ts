@@ -19,12 +19,18 @@ export interface ChatSession {
   title: string;
   chatBranchId: string;
   publishedAt: string | null;
+  /** ISO timestamp of the last interaction; drives the history dropdown's relative time. */
+  lastActiveAt?: string;
   /**
    * P6.7 — chips the human owner has locked across messages so the AI
    * sees them on every send within this session. Optional on the wire
    * because pre-P6.7 sessions have no column value yet.
    */
   pinnedElements?: PinnedElement[];
+  /** P6.7.4 — page the chat is bound to (or null for cross-site chats). */
+  pageId?: string | null;
+  /** P6.7.4 — template the chat is bound to (or null). */
+  templateId?: string | null;
 }
 
 export interface ChatModule {

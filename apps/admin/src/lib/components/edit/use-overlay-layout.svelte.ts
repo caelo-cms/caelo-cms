@@ -21,6 +21,10 @@ export interface OverlayLayout {
   /** Floating-mode size. Ignored in pinned modes. */
   width: number;
   height: number;
+  /** P6.7.4 — pinned-bottom strip height (px). Drag the top edge to resize. */
+  pinnedHeight: number;
+  /** P6.7.4 — pinned-right strip width (px). Drag the left edge to resize. */
+  pinnedWidth: number;
 }
 
 export const DEFAULT_LAYOUT: OverlayLayout = {
@@ -30,6 +34,8 @@ export const DEFAULT_LAYOUT: OverlayLayout = {
   y: 80,
   width: 360,
   height: 480,
+  pinnedHeight: 320,
+  pinnedWidth: 380,
 };
 
 const PREFERENCE_KEY = "edit_overlay_layout";

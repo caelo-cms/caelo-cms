@@ -83,7 +83,26 @@
 
   let messages = $state<ChatMessage[]>(initialMessages);
   let composer = $state("");
+  let composerEl = $state<HTMLTextAreaElement | null>(null);
   let streaming = $state(false);
+
+  /**
+   * P6.7.4 — auto-grow the composer from one row up to 6, then scroll.
+   * Called from `oninput` and after a send clears the value. Plain
+   * function (not a Svelte effect) so it doesn't race with chip /
+   * message state updates the way an `$effect` tracking
+   * `composer.length` did.
+   */
+  function autoSizeComposer(): void {
+    const el = composerEl;
+    if (!el) return;
+    el.style.height = "auto";
+    const lineHeight = 22;
+    const padding = 16;
+    const maxRows = 6;
+    const max = lineHeight * maxRows + padding;
+    el.style.height = `${Math.min(max, el.scrollHeight)}px`;
+  }
   let streamingText = $state("");
   let pendingChanges = $state(0);
   /** P6.7.3 — surface SSE error events + failed tool results so users
@@ -179,6 +198,8 @@
     chips = chips.filter((c) => c.pinned);
     streaming = true;
     streamingText = "";
+    // Snap the composer back to one row after clearing it.
+    queueMicrotask(autoSizeComposer);
     messages = [...messages, { id: `local-${Date.now()}`, role: "user", content: text }];
     const res = await fetch(`/content/chat/${session.id}/stream`, {
       method: "POST",
@@ -386,8 +407,11 @@
         >
           <Textarea
             bind:value={composer}
-            rows={3}
+            bind:ref={composerEl}
+            rows={1}
             placeholder="Tell the AI what to change…"
+            class="resize-none"
+            oninput={autoSizeComposer}
           />
           <div class="flex items-center gap-2">
             <Label for="picker" class="text-xs text-muted-foreground">+ Reference module</Label>

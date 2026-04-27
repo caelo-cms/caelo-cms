@@ -3,16 +3,35 @@
 
   /**
    * P6.7 — the floating chat overlay that sits on top of the live-edit
-   * iframe. Wraps `<ChatPanel>` plus a top-strip Stage / Confirm publish
-   * form. Drag/resize/pin/collapse state persists per-user via the
-   * `user_preferences` ops.
+   * iframe. P6.7.4 changes:
+   *   - Clearer pin icons (Move / PanelBottom / PanelRight) + tooltips.
+   *   - Resize affordance for pinned-bottom (top edge → height) and
+   *     pinned-right (left edge → width). New pinnedHeight + pinnedWidth
+   *     fields on OverlayLayout.
+   *   - Publish strip moved out — lives in /edit's toolbar header now.
+   *   - Chat history dropdown + "+ New chat" form for page-bound chats.
    */
 
-  import { GripHorizontal, Maximize2, Minimize2, PinOff } from "lucide-svelte";
+  import {
+    History,
+    Move,
+    PanelBottom,
+    PanelRight,
+    Plus,
+    GripHorizontal,
+    Minimize2,
+  } from "lucide-svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
   import ChatPanel from "$lib/components/chat/ChatPanel.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Card } from "$lib/components/ui/card/index.js";
+  import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+  } from "$lib/components/ui/dropdown-menu/index.js";
   import { cn } from "$lib/utils.js";
   import {
     DEFAULT_LAYOUT,
@@ -29,21 +48,22 @@
     arguments?: { moduleId?: string; html?: string };
   };
 
+  interface PageChat {
+    id: string;
+    title: string;
+    lastActiveAt?: string;
+    publishedAt: string | null;
+  }
+
   interface Props {
     session: ChatSession;
     initialMessages: ChatMessage[];
     modules: ChatModule[];
     csrfToken: string;
     initialLayout?: OverlayLayout;
-    /** Active pageId — drives Stage/Confirm publish forms in the strip. */
     activePageId?: string | null;
-    /**
-     * Staging preview URL after a successful Stage. Surfaced as a prop so
-     * the parent /edit/+page.svelte (which owns the form-action result)
-     * can flow it down without the Overlay needing its own form-action
-     * subscription.
-     */
-    stagedPreviewUrl?: string | null;
+    /** P6.7.4 — chats bound to the active page for the history dropdown. */
+    pageChats?: PageChat[];
     onToolResult?: (payload: ToolResultPayload) => void;
   }
   let {
@@ -53,11 +73,13 @@
     csrfToken,
     initialLayout = DEFAULT_LAYOUT,
     activePageId = null,
-    stagedPreviewUrl = null,
+    pageChats = [],
     onToolResult,
   }: Props = $props();
 
-  let layout = $state<OverlayLayout>({ ...initialLayout });
+  // Old persisted layouts may lack pinnedHeight/pinnedWidth — merge with
+  // defaults so missing fields don't crash the resize math.
+  let layout = $state<OverlayLayout>({ ...DEFAULT_LAYOUT, ...initialLayout });
   const persist = debounced((next: OverlayLayout) => {
     void saveOverlayLayout(csrfToken, next);
   }, 500);
@@ -103,35 +125,56 @@
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
   }
 
-  // Resize handler for the SE corner (floating mode only).
+  // Resize handlers. SE corner in floating mode; top edge in
+  // pinned-bottom; left edge in pinned-right.
+  type ResizeKind = "se" | "top" | "left";
   let resizeState: {
+    kind: ResizeKind;
     startX: number;
     startY: number;
     origW: number;
     origH: number;
   } | null = null;
   const MIN_W = 280;
-  const MIN_H = 320;
-  function onPointerDownResize(e: PointerEvent): void {
-    if (layout.pin !== "floating") return;
+  const MIN_H = 220;
+
+  function startResize(kind: ResizeKind, e: PointerEvent): void {
     e.stopPropagation();
+    e.preventDefault();
     resizeState = {
+      kind,
       startX: e.clientX,
       startY: e.clientY,
-      origW: layout.width,
-      origH: layout.height,
+      origW: kind === "left" ? layout.pinnedWidth : layout.width,
+      origH: kind === "top" ? layout.pinnedHeight : layout.height,
     };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }
   function onPointerMoveResize(e: PointerEvent): void {
     if (!resizeState) return;
-    const dw = e.clientX - resizeState.startX;
-    const dh = e.clientY - resizeState.startY;
-    layout = {
-      ...layout,
-      width: Math.max(MIN_W, resizeState.origW + dw),
-      height: Math.max(MIN_H, resizeState.origH + dh),
-    };
+    const dx = e.clientX - resizeState.startX;
+    const dy = e.clientY - resizeState.startY;
+    if (resizeState.kind === "se") {
+      layout = {
+        ...layout,
+        width: Math.max(MIN_W, resizeState.origW + dx),
+        height: Math.max(MIN_H, resizeState.origH + dy),
+      };
+    } else if (resizeState.kind === "top") {
+      // Dragging up grows the pinned-bottom strip; clamp to viewport-100.
+      const max = (typeof window !== "undefined" ? window.innerHeight : 800) - 100;
+      layout = {
+        ...layout,
+        pinnedHeight: Math.max(MIN_H, Math.min(max, resizeState.origH - dy)),
+      };
+    } else {
+      // Dragging left grows the pinned-right strip.
+      const max = (typeof window !== "undefined" ? window.innerWidth : 1200) - 200;
+      layout = {
+        ...layout,
+        pinnedWidth: Math.max(MIN_W, Math.min(max, resizeState.origW - dx)),
+      };
+    }
   }
   function onPointerUpResize(e: PointerEvent): void {
     resizeState = null;
@@ -143,29 +186,36 @@
     layout.collapsed
       ? "right: 24px; bottom: 24px; width: 56px; height: 56px;"
       : layout.pin === "pinned-bottom"
-        ? "left: 0; right: 0; bottom: 0; height: 320px;"
+        ? `left: 0; right: 0; bottom: 0; height: ${layout.pinnedHeight}px;`
         : layout.pin === "pinned-right"
-          ? "right: 0; top: 56px; bottom: 0; width: 380px;"
+          ? `right: 0; top: 56px; bottom: 0; width: ${layout.pinnedWidth}px;`
           : `left: ${layout.x}px; top: ${layout.y}px; width: ${layout.width}px; height: ${layout.height}px;`,
   );
 
-  // Stage/Confirm strip state — bumps when the AI lands a tool result so
-  // the Stage button enables.
-  let pendingChanges = $state(0);
-
   function handleToolResult(payload: ToolResultPayload): void {
-    if (payload.ok) pendingChanges += 1;
     onToolResult?.(payload);
+  }
+
+  function fmtRelative(iso: string | undefined): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    const diff = Date.now() - d.getTime();
+    if (diff < 60_000) return "just now";
+    if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
+    if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`;
+    return `${Math.round(diff / 86_400_000)}d ago`;
   }
 </script>
 
 {#if layout.collapsed}
   <button
     type="button"
-    class="fixed z-40 rounded-full bg-primary p-3 text-primary-foreground shadow-lg hover:scale-105"
+    class="fixed z-40 inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg hover:scale-105"
     style={positionStyle}
-    aria-label="Open live-edit overlay"
+    aria-label="Open live-edit chat overlay"
+    title="Open live-edit chat"
     onclick={toggleCollapsed}
+    data-testid="overlay-collapsed-button"
   >
     💬
   </button>
@@ -177,9 +227,38 @@
     )}
     style={positionStyle}
   >
+    <!-- Pinned-bottom: top-edge resize handle -->
+    {#if layout.pin === "pinned-bottom"}
+      <button
+        type="button"
+        aria-label="Resize chat strip height"
+        title="Drag to resize"
+        class="absolute left-0 right-0 top-0 z-10 h-1.5 cursor-ns-resize bg-transparent hover:bg-primary/20"
+        style="touch-action: none;"
+        onpointerdown={(e) => startResize("top", e)}
+        onpointermove={onPointerMoveResize}
+        onpointerup={onPointerUpResize}
+      ></button>
+    {/if}
+
+    <!-- Pinned-right: left-edge resize handle -->
+    {#if layout.pin === "pinned-right"}
+      <button
+        type="button"
+        aria-label="Resize chat strip width"
+        title="Drag to resize"
+        class="absolute bottom-0 left-0 top-0 z-10 w-1.5 cursor-ew-resize bg-transparent hover:bg-primary/20"
+        style="touch-action: none;"
+        onpointerdown={(e) => startResize("left", e)}
+        onpointermove={onPointerMoveResize}
+        onpointerup={onPointerUpResize}
+      ></button>
+    {/if}
+
     <!-- Title bar -->
     <div
       role="toolbar"
+      tabindex="0"
       aria-label="Live-edit overlay controls"
       class={cn(
         "flex items-center gap-1 border-b bg-muted/40 px-3 py-1.5",
@@ -191,6 +270,74 @@
     >
       <GripHorizontal class="size-4 text-muted-foreground" />
       <span class="text-xs font-medium text-muted-foreground">Live edit</span>
+
+      {#if activePageId}
+        <!-- Chat history dropdown + new-chat button -->
+        <DropdownMenu>
+          <DropdownMenuTrigger>
+            {#snippet child({ props })}
+              <Button
+                {...props}
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="Chat history"
+                title="Switch chat"
+                data-testid="chat-history-trigger"
+                class="ml-1 h-7 px-2"
+              >
+                <History class="size-3" />
+              </Button>
+            {/snippet}
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <div class="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+              Chats for this page
+            </div>
+            <DropdownMenuSeparator />
+            {#if pageChats.length === 0}
+              <DropdownMenuItem disabled>No chats yet</DropdownMenuItem>
+            {:else}
+              {#each pageChats as c (c.id)}
+                <DropdownMenuItem>
+                  {#snippet child({ props })}
+                    <a
+                      {...props}
+                      href={`/edit?page=${activePageId}&chat=${c.id}`}
+                      class={cn(
+                        "flex flex-col gap-0.5 px-2 py-1.5 text-xs",
+                        c.id === session.id && "bg-accent",
+                      )}
+                    >
+                      <span class="truncate">{c.title}</span>
+                      <span class="text-muted-foreground">{fmtRelative(c.lastActiveAt)}</span>
+                    </a>
+                  {/snippet}
+                </DropdownMenuItem>
+              {/each}
+            {/if}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem>
+              {#snippet child({ props })}
+                <form
+                  {...props}
+                  method="post"
+                  action="?/newChat"
+                  class="flex w-full items-center gap-1.5 px-2 py-1.5 text-xs hover:bg-accent"
+                >
+                  <input type="hidden" name="_csrf" value={csrfToken} />
+                  <input type="hidden" name="pageId" value={activePageId} />
+                  <Plus class="size-3" />
+                  <button type="submit" class="flex-1 text-left" data-testid="new-chat-btn">
+                    New chat
+                  </button>
+                </form>
+              {/snippet}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      {/if}
+
       <div class="ml-auto flex items-center gap-1">
         <Button
           type="button"
@@ -198,9 +345,10 @@
           size="sm"
           onclick={() => setPin("floating")}
           aria-label="Float"
-          class={cn(layout.pin === "floating" && "bg-accent")}
+          title="Float (drag to move)"
+          class={cn("h-7 px-2", layout.pin === "floating" && "bg-accent")}
         >
-          <PinOff class="size-3" />
+          <Move class="size-3" />
         </Button>
         <Button
           type="button"
@@ -208,9 +356,10 @@
           size="sm"
           onclick={() => setPin("pinned-bottom")}
           aria-label="Pin to bottom"
-          class={cn(layout.pin === "pinned-bottom" && "bg-accent")}
+          title="Pin to bottom"
+          class={cn("h-7 px-2", layout.pin === "pinned-bottom" && "bg-accent")}
         >
-          <Maximize2 class="size-3 rotate-90" />
+          <PanelBottom class="size-3" />
         </Button>
         <Button
           type="button"
@@ -218,62 +367,26 @@
           size="sm"
           onclick={() => setPin("pinned-right")}
           aria-label="Pin to right"
-          class={cn(layout.pin === "pinned-right" && "bg-accent")}
+          title="Pin to right"
+          class={cn("h-7 px-2", layout.pin === "pinned-right" && "bg-accent")}
         >
-          <Maximize2 class="size-3" />
+          <PanelRight class="size-3" />
         </Button>
-        <Button type="button" variant="ghost" size="sm" onclick={toggleCollapsed} aria-label="Collapse">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onclick={toggleCollapsed}
+          aria-label="Collapse"
+          title="Collapse"
+          class="h-7 px-2"
+        >
           <Minimize2 class="size-3" />
         </Button>
       </div>
     </div>
 
-    <!-- Stage / Confirm publish strip — present when a page is selected -->
-    {#if activePageId}
-      <div
-        class="flex flex-wrap items-center gap-2 border-b bg-background/80 px-3 py-1.5 text-xs"
-        data-testid="publish-strip"
-      >
-        {#if stagedPreviewUrl}
-          <span class="text-muted-foreground">
-            Staged —
-            <a
-              href={stagedPreviewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="underline"
-            >preview</a>
-          </span>
-          <form method="post" action="?/confirmPublish" class="ml-auto">
-            <input type="hidden" name="_csrf" value={csrfToken} />
-            <input type="hidden" name="pageId" value={activePageId} />
-            <Button type="submit" size="sm" data-testid="confirm-publish-btn">Confirm publish</Button>
-          </form>
-        {:else}
-          <span class="text-muted-foreground">
-            {pendingChanges === 0
-              ? "No pending changes."
-              : `${pendingChanges} pending change${pendingChanges === 1 ? "" : "s"}.`}
-          </span>
-          <form method="post" action="?/stage" class="ml-auto">
-            <input type="hidden" name="_csrf" value={csrfToken} />
-            <input type="hidden" name="pageId" value={activePageId} />
-            <Button
-              type="submit"
-              size="sm"
-              variant="outline"
-              disabled={pendingChanges === 0}
-              data-testid="stage-btn"
-            >Stage</Button>
-          </form>
-        {/if}
-      </div>
-    {/if}
-
-    <!-- Embedded chat panel — renders directly as the Card's flex child
-         so its `compact` mode (flex-1 min-h-0) takes the remaining
-         vertical space without an extra wrapper that would break the
-         h-full chain. -->
+    <!-- Embedded chat panel -->
     <ChatPanel
       {session}
       {initialMessages}
@@ -284,14 +397,15 @@
       onToolResult={handleToolResult}
     />
 
-    <!-- Resize handle (floating mode only) -->
+    <!-- SE-corner resize (floating mode only) -->
     {#if layout.pin === "floating"}
       <button
         type="button"
         aria-label="Resize overlay"
+        title="Drag to resize"
         class="absolute bottom-0 right-0 size-3 cursor-se-resize bg-transparent"
         style="touch-action: none;"
-        onpointerdown={onPointerDownResize}
+        onpointerdown={(e) => startResize("se", e)}
         onpointermove={onPointerMoveResize}
         onpointerup={onPointerUpResize}
       ></button>

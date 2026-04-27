@@ -87,6 +87,10 @@ export type AddModuleToTemplateToolInput = z.infer<typeof addModuleToTemplateToo
 export const chatCreateSessionInput = z
   .object({
     title: z.string().min(1).max(200).optional(),
+    /** P6.7.4 — bind the new chat to one page (live-edit surface). */
+    pageId: z.string().uuid().optional(),
+    /** P6.7.4 — bind the new chat to one template (template editor). */
+    templateId: z.string().uuid().optional(),
   })
   .strict();
 

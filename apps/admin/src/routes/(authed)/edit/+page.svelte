@@ -187,13 +187,68 @@
       class="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
       data-testid="edit-url"
     >{urlText}</code>
+
+    <!-- P6.7.4 — pending-changes pill + Stage / Confirm publish forms.
+         Lives here in the toolbar (not in the chat overlay) so it's
+         visible regardless of the chat's pin mode and frees space in
+         the chat strip. -->
+    {#if activePageId}
+      <div class="ml-auto flex items-center gap-2" data-testid="toolbar-publish">
+        {#if stagedPreviewUrl}
+          <span class="text-xs text-muted-foreground">
+            Staged —
+            <a
+              href={stagedPreviewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="underline"
+            >preview</a>
+          </span>
+          <form method="post" action="?/confirmPublish">
+            <input type="hidden" name="_csrf" value={data.csrfToken} />
+            <input type="hidden" name="pageId" value={activePageId} />
+            <Button type="submit" size="sm" data-testid="confirm-publish-btn">
+              Confirm publish
+            </Button>
+          </form>
+        {:else}
+          <span
+            class={cn(
+              "rounded-full px-2 py-0.5 text-xs font-medium",
+              pendingChanges === 0
+                ? "bg-muted text-muted-foreground"
+                : "bg-amber-500/15 text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-400",
+            )}
+            data-testid="pending-pill"
+          >
+            {pendingChanges === 0
+              ? "No pending changes"
+              : `${pendingChanges} pending change${pendingChanges === 1 ? "" : "s"}`}
+          </span>
+          <form method="post" action="?/stage">
+            <input type="hidden" name="_csrf" value={data.csrfToken} />
+            <input type="hidden" name="pageId" value={activePageId} />
+            <Button
+              type="submit"
+              size="sm"
+              variant="outline"
+              disabled={pendingChanges === 0}
+              data-testid="stage-btn"
+            >Stage</Button>
+          </form>
+        {/if}
+      </div>
+    {:else}
+      <div class="ml-auto"></div>
+    {/if}
+
     <button
       type="button"
       onclick={toggleEditMode}
       data-testid="edit-mode-toggle"
       aria-pressed={editMode}
       class={cn(
-        "ml-auto inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+        "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
         editMode
           ? "border-blue-500 bg-blue-500 text-white hover:bg-blue-600"
           : "border-border bg-background text-foreground hover:bg-accent",
@@ -248,7 +303,7 @@
     csrfToken={data.csrfToken}
     initialLayout={data.layout}
     activePageId={activePageId || null}
-    {stagedPreviewUrl}
+    pageChats={data.pageChats}
     onToolResult={onAiToolResult}
   />
 

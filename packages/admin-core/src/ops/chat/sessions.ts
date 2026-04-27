@@ -34,6 +34,10 @@ const sessionRow = z.object({
   publishedAt: z.string().nullable(),
   archivedAt: z.string().nullable(),
   pinnedElements: z.array(pinnedElement),
+  /** P6.7.4 — when set, the chat is scoped to a single page. */
+  pageId: z.string().nullable(),
+  /** P6.7.4 — when set, the chat is scoped to a template. */
+  templateId: z.string().nullable(),
 });
 
 interface PinnedElement {
@@ -59,17 +63,29 @@ export const listChatSessionsOp = defineOperation({
   name: "chat.list_sessions",
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z.object({ includeArchived: z.boolean().default(false) }),
+  input: z.object({
+    includeArchived: z.boolean().default(false),
+    /** P6.7.4 — when set, only return sessions bound to this page. */
+    pageId: z.string().uuid().nullable().optional(),
+    /** P6.7.4 — when set, only return sessions bound to this template. */
+    templateId: z.string().uuid().nullable().optional(),
+  }),
   output: z.object({ sessions: z.array(sessionRow) }),
   handler: async (ctx, input, tx) => {
     const archivedFilter = input.includeArchived ? sql`` : sql`AND archived_at IS NULL`;
+    const pageFilter = input.pageId ? sql`AND page_id = ${input.pageId}::uuid` : sql``;
+    const templateFilter = input.templateId
+      ? sql`AND template_id = ${input.templateId}::uuid`
+      : sql``;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, title, created_by::text AS created_by,
              chat_branch_id::text AS chat_branch_id,
              created_at, last_active_at, published_at, archived_at,
-             pinned_elements
+             pinned_elements,
+             page_id::text     AS page_id,
+             template_id::text AS template_id
       FROM chat_sessions
-      WHERE created_by = ${ctx.actorId}::uuid ${archivedFilter}
+      WHERE created_by = ${ctx.actorId}::uuid ${archivedFilter} ${pageFilter} ${templateFilter}
       ORDER BY last_active_at DESC
       LIMIT 100
     `)) as unknown as {
@@ -82,6 +98,8 @@ export const listChatSessionsOp = defineOperation({
       published_at: string | Date | null;
       archived_at: string | Date | null;
       pinned_elements: unknown;
+      page_id: string | null;
+      template_id: string | null;
     }[];
     const iso = (v: string | Date | null): string | null => {
       if (v === null) return null;
@@ -98,6 +116,8 @@ export const listChatSessionsOp = defineOperation({
         publishedAt: iso(r.published_at),
         archivedAt: iso(r.archived_at),
         pinnedElements: parsePinnedElements(r.pinned_elements),
+        pageId: r.page_id,
+        templateId: r.template_id,
       })),
     });
   },
@@ -111,9 +131,17 @@ export const createChatSessionOp = defineOperation({
   output: z.object({ chatSessionId: z.string(), chatBranchId: z.string() }),
   handler: async (ctx, input, tx) => {
     const title = input.title?.trim() || "New chat";
+    const pageId = input.pageId ?? null;
+    const templateId = input.templateId ?? null;
     const rows = (await tx.execute(sql`
-      INSERT INTO chat_sessions (title, created_by, chat_branch_id)
-      VALUES (${title}, ${ctx.actorId}::uuid, gen_random_uuid())
+      INSERT INTO chat_sessions (title, created_by, chat_branch_id, page_id, template_id)
+      VALUES (
+        ${title},
+        ${ctx.actorId}::uuid,
+        gen_random_uuid(),
+        ${pageId ? sql`${pageId}::uuid` : sql`NULL`},
+        ${templateId ? sql`${templateId}::uuid` : sql`NULL`}
+      )
       RETURNING id::text AS id, chat_branch_id::text AS chat_branch_id
     `)) as unknown as { id: string; chat_branch_id: string }[];
     const row = rows[0];
@@ -161,7 +189,9 @@ export const getChatSessionOp = defineOperation({
       SELECT id::text AS id, title, created_by::text AS created_by,
              chat_branch_id::text AS chat_branch_id,
              created_at, last_active_at, published_at, archived_at,
-             pinned_elements
+             pinned_elements,
+             page_id::text     AS page_id,
+             template_id::text AS template_id
       FROM chat_sessions
       WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
       LIMIT 1
@@ -175,6 +205,8 @@ export const getChatSessionOp = defineOperation({
       published_at: string | Date | null;
       archived_at: string | Date | null;
       pinned_elements: unknown;
+      page_id: string | null;
+      template_id: string | null;
     }[];
     const session = sessionRows[0];
     if (!session) {
@@ -215,6 +247,8 @@ export const getChatSessionOp = defineOperation({
         publishedAt: iso(session.published_at),
         archivedAt: iso(session.archived_at),
         pinnedElements: parsePinnedElements(session.pinned_elements),
+        pageId: session.page_id,
+        templateId: session.template_id,
       },
       messages: msgs.map((m) => {
         const parsedTools =

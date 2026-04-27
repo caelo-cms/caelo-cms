@@ -125,11 +125,17 @@ test("Stage and Confirm publish strip in the overlay", async ({ context, page })
   await page.getByRole("button", { name: /^send$/i }).click();
   await expect(previewFrame.locator("h1")).toContainText("STRIP_AFTER", { timeout: 15_000 });
 
-  // Stage the page from the overlay strip — surfaces the staged preview link.
-  const stageBtn = page.locator('[data-testid="stage-btn"]');
+  // P6.7.4 — Stage / Confirm-publish moved out of the overlay into the
+  // toolbar header. Pending pill shows "1 pending change"; Stage button
+  // enables; clicking it swaps the strip to the Confirm-publish state.
+  const toolbarPublish = page.locator('[data-testid="toolbar-publish"]');
+  await expect(toolbarPublish.locator('[data-testid="pending-pill"]')).toContainText(
+    /pending change/i,
+    { timeout: 5_000 },
+  );
+  const stageBtn = toolbarPublish.locator('[data-testid="stage-btn"]');
   await expect(stageBtn).toBeEnabled({ timeout: 5_000 });
   await stageBtn.click();
-  // After stage, the strip swaps to the Confirm publish state.
   const confirmBtn = page.locator('[data-testid="confirm-publish-btn"]');
   await expect(confirmBtn).toBeVisible({ timeout: 30_000 });
 });
