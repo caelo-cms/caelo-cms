@@ -156,6 +156,14 @@ describe("P6 deploy.trigger", () => {
     expect(html).toContain(">hello world</p>");
     expect(html).toContain("data-caelo-module-id=");
     expect(html).toContain("color:red");
+    // P6.7 — the live-edit overlay's injected runtime (`caelo:ready` /
+    // `caelo:element-clicked` / `caelo:reload`) must NEVER ship in the
+    // deployed build. It only lives in the admin's preview endpoint at
+    // /edit/preview/[pageId]. A regression here would expose every
+    // visitor's site to a postMessage protocol for an internal tool.
+    expect(html).not.toContain("caelo:ready");
+    expect(html).not.toContain("caelo:element-clicked");
+    expect(html).not.toContain("__caeloInjected");
 
     const robots = await readFile(join(distDir, "robots.txt"), "utf8");
     expect(robots).toContain("Allow: /");

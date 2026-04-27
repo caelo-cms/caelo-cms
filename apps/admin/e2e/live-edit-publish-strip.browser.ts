@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7 — flagship live-edit verification.
- *
- *   1. Owner logs in → lands on /edit by clicking the sidebar nav.
- *   2. Iframe loads the production preview of a seeded page.
- *   3. AI prompt (test-provider fixture) lands an `edit_module` tool call.
- *   4. Iframe re-renders within ~2s with the new HTML.
- *   5. Element click in the iframe surfaces a chip in the overlay composer.
+ * P6.7 — Stage and Confirm publish from inside the overlay's top strip,
+ * without leaving /edit. Drives an AI tool result to register a pending
+ * change, then clicks Stage and verifies the staging deploy succeeded.
  */
 
 import { spawnSync } from "node:child_process";
@@ -27,10 +23,10 @@ test.beforeAll(() => {
 });
 
 const ts = Date.now();
-const TPL_SLUG = `e2e-le-tpl-${ts}`;
-const MOD_SLUG = `e2e-le-mod-${ts}`;
-const PAGE_SLUG = `e2e-le-page-${ts}`;
-const PROVIDER = `live-edit-${ts}`;
+const TPL_SLUG = `e2e-le-strip-tpl-${ts}`;
+const MOD_SLUG = `e2e-le-strip-mod-${ts}`;
+const PAGE_SLUG = `e2e-le-strip-page-${ts}`;
+const PROVIDER = `live-edit-strip-${ts}`;
 const BASE = "http://localhost:4173";
 
 test.afterAll(async () => {
@@ -53,12 +49,8 @@ test.afterAll(async () => {
   );
 });
 
-test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
-  context,
-  page,
-}) => {
-  // Seed the page server-side so we can predict the moduleId for the
-  // test-provider fixture's edit_module tool call.
+test("Stage and Confirm publish strip in the overlay", async ({ context, page }) => {
+  // Seed the page so we know the moduleId for the fixture's tool call.
   const r = spawnSync(
     "bun",
     [
@@ -77,12 +69,12 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${out.tpl}::uuid, 'content', 'Content', 0)\`;
         const mod = await tx\`
           INSERT INTO modules (slug, display_name, html)
-          VALUES (\${process.env.MOD_SLUG}, 'le mod', '<h1>HERO_BEFORE</h1>')
+          VALUES (\${process.env.MOD_SLUG}, 'le mod', '<h1>STRIP_BEFORE</h1>')
           RETURNING id::text AS id\`;
         out.mod = mod[0].id;
         const pg = await tx\`
           INSERT INTO pages (slug, locale, title, template_id, status)
-          VALUES (\${process.env.PAGE_SLUG}, 'en', 'LE Page', \${out.tpl}::uuid, 'published')
+          VALUES (\${process.env.PAGE_SLUG}, 'en', 'LE Strip Page', \${out.tpl}::uuid, 'published')
           RETURNING id::text AS id\`;
         out.pg = pg[0].id;
         await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id) VALUES (\${out.pg}::uuid, 'content', 0, \${out.mod}::uuid)\`;
@@ -100,15 +92,15 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
     [
       {
         kind: "tool-call",
-        id: "tu_le",
+        id: "tu_strip",
         name: "edit_module",
-        arguments: { moduleId: ids.mod, html: "<h1>HERO_FROM_AI</h1>" },
+        arguments: { moduleId: ids.mod, html: "<h1>STRIP_AFTER</h1>" },
       },
       { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
       { kind: "done", stopReason: "tool_use" },
     ],
     [
-      { kind: "text-delta", text: "Updated the hero." },
+      { kind: "text-delta", text: "Updated." },
       { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
       { kind: "done", stopReason: "end_turn" },
     ],
@@ -121,25 +113,22 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/", { timeout: 15_000 });
 
-  // Navigate to /edit via the sidebar.
-  await page.getByRole("link", { name: /^Live edit$/ }).click();
-  await expect(page).toHaveURL(/\/edit(\?|$)/, { timeout: 15_000 });
-
-  // Pick the seeded page in the Combobox if not already active.
-  // The page-picker auto-selects the first published page on first load,
-  // and since we only just inserted ours, it might not be the selected
-  // value yet — explicit navigation via URL keeps the test deterministic.
   await page.goto(`/edit?page=${ids.pg}`);
+  await expect(page).toHaveURL(/\/edit/, { timeout: 15_000 });
 
-  // Wait for the iframe to load and verify the BEFORE state.
   const previewFrame = page.frameLocator("iframe[title='Live preview']");
-  await expect(previewFrame.locator("h1")).toContainText("HERO_BEFORE", { timeout: 15_000 });
+  await expect(previewFrame.locator("h1")).toContainText("STRIP_BEFORE", { timeout: 15_000 });
 
-  // Send a message through the overlay's composer.
+  // Drive an AI edit so pendingChanges > 0 and Stage enables.
   await page.locator("textarea").fill("change the hero");
   await page.getByRole("button", { name: /^send$/i }).click();
+  await expect(previewFrame.locator("h1")).toContainText("STRIP_AFTER", { timeout: 15_000 });
 
-  // After the AI tool result, the overlay posts a `caelo:reload` to the
-  // iframe — the new HERO text should appear within a few seconds.
-  await expect(previewFrame.locator("h1")).toContainText("HERO_FROM_AI", { timeout: 15_000 });
+  // Stage the page from the overlay strip — surfaces the staged preview link.
+  const stageBtn = page.locator('[data-testid="stage-btn"]');
+  await expect(stageBtn).toBeEnabled({ timeout: 5_000 });
+  await stageBtn.click();
+  // After stage, the strip swaps to the Confirm publish state.
+  const confirmBtn = page.locator('[data-testid="confirm-publish-btn"]');
+  await expect(confirmBtn).toBeVisible({ timeout: 30_000 });
 });

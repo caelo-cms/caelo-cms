@@ -16,26 +16,71 @@
     type CaeloMessage,
     isCaeloMessage,
   } from "$lib/components/edit/iframe-protocol.js";
+  import { Button } from "$lib/components/ui/button/index.js";
   import { Combobox } from "$lib/components/ui/combobox/index.js";
+  import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+  } from "$lib/components/ui/dialog/index.js";
 
-  let { data } = $props();
+  let { data, form } = $props();
   let activePageId = $state(data.activePageId ?? "");
+  // Surfaced from the action result so the overlay can swap into the
+  // "Staged — Confirm publish" state. Cleared on a fresh AI tool result.
+  const stagedPreviewUrl = $derived(
+    form && "staged" in form && form.staged ? (form.staged as { previewUrl?: string }).previewUrl ?? null : null,
+  );
   const previewSrc = $derived(
     activePageId
       ? `/edit/preview/${activePageId}?branch=${data.activeChat.chatBranchId}`
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);
+  // Increments on every successful AI tool result; cleared after a successful
+  // page switch / publish. Drives the "stay vs publish first" Dialog when the
+  // user picks a different page in the Combobox while the chat has
+  // unpublished branch snapshots.
+  let pendingChanges = $state(0);
+  let pendingSwitchTo = $state<string | null>(null);
+  let dialogOpen = $state(false);
 
   /**
-   * Page picker change → soft-navigate so the load function picks up
-   * the new query param (and the user's URL stays shareable).
+   * Page picker change. If the chat has pending branch snapshots, hold the
+   * switch in a confirm Dialog; otherwise navigate immediately.
    */
   function onPageChange(value: string): void {
+    if (value === activePageId) return;
+    if (pendingChanges > 0) {
+      pendingSwitchTo = value;
+      dialogOpen = true;
+      return;
+    }
+    commitPageSwitch(value);
+  }
+
+  function commitPageSwitch(value: string): void {
     activePageId = value;
     const url = new URL(window.location.href);
     url.searchParams.set("page", value);
     void goto(url.toString(), { replaceState: false, noScroll: true, keepFocus: true });
+  }
+
+  function dialogStay(): void {
+    dialogOpen = false;
+    pendingSwitchTo = null;
+  }
+
+  function dialogDiscard(): void {
+    if (pendingSwitchTo) {
+      pendingChanges = 0;
+      commitPageSwitch(pendingSwitchTo);
+    }
+    dialogOpen = false;
+    pendingSwitchTo = null;
   }
 
   /**
@@ -69,7 +114,8 @@
    * parent → iframe: caelo:reload after each AI tool result so the
    * iframe re-fetches the branch-aware preview.
    */
-  function onAiToolResult(): void {
+  function onAiToolResult(payload: { ok: boolean }): void {
+    if (payload.ok) pendingChanges += 1;
     iframe?.contentWindow?.postMessage({ kind: "caelo:reload" }, window.location.origin);
   }
 </script>
@@ -124,6 +170,30 @@
     modules={data.modules}
     csrfToken={data.csrfToken}
     initialLayout={data.layout}
+    activePageId={activePageId || null}
+    {stagedPreviewUrl}
     onToolResult={onAiToolResult}
   />
+
+  <!-- Page-switch with pending changes confirm Dialog -->
+  <Dialog bind:open={dialogOpen}>
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Pending changes on this chat</DialogTitle>
+        <DialogDescription>
+          You have {pendingChanges} pending change{pendingChanges === 1 ? "" : "s"}
+          on the current chat branch. Switching pages won't lose them — they'll
+          stay on this chat — but you'll need to come back to publish.
+        </DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button type="button" variant="outline" onclick={dialogStay}>
+          Stay on this page
+        </Button>
+        <Button type="button" onclick={dialogDiscard}>
+          Switch anyway
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
 </div>

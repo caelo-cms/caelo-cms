@@ -43,6 +43,35 @@ export function clearLoginRateBucket(): void {
 }
 
 /**
+ * Resets the dev-owner's edit_overlay_layout user_preference so live-edit
+ * specs don't inherit a viewport-busting drag from a previous run. Without
+ * this, persisted x/y can land the overlay outside the 1280×720 Playwright
+ * viewport — the chat composer is rendered but offscreen, and Send-button
+ * clicks time out with "element is outside of the viewport".
+ *
+ * RLS on user_preferences scopes by `caelo.actor_id`, so the cleanup needs
+ * to set actor_id to dev-owner explicitly — system kind alone doesn't pass
+ * the per-user policy.
+ */
+export function resetOverlayLayoutFor(email: string): void {
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const u = await tx\`SELECT id::text AS id FROM users WHERE email = \${process.env.EMAIL}\`;
+      if (u.length === 0) return;
+      await tx.unsafe(\`SET LOCAL caelo.actor_id = '\${u[0].id}'\`);
+      await tx\`DELETE FROM user_preferences WHERE key = 'edit_overlay_layout'\`;
+    });
+    await sql.end();
+    `,
+    { EMAIL: email },
+  );
+}
+
+/**
  * P5.2 #1 — register a per-spec fixture provider in the running admin
  * process. Pass any unique `name` (typically `${spec}-${Date.now()}`)
  * and the SSE endpoint will resolve it via `x-caelo-test-provider`.

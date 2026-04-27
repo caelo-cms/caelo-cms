@@ -11,6 +11,8 @@
    * to /content/chat/[sessionId]/stream stays untouched.
    */
 
+  import { Lock, Unlock } from "lucide-svelte";
+  import { onMount } from "svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
@@ -29,6 +31,8 @@
     moduleId: string;
     selector: string;
     label: string;
+    /** When true the chip rides every send within this session (P6.7). */
+    pinned?: boolean;
   }
   interface ProposedDiff {
     moduleId: string;
@@ -56,6 +60,12 @@
     modules: ChatModule[];
     csrfToken: string;
     formError?: string | null;
+    /**
+     * Sized-by-parent variant for the live-edit overlay. The default
+     * uses `h-[calc(100vh-12rem)]` which is right inside AppShell but
+     * overflows when embedded in the floating overlay.
+     */
+    compact?: boolean;
     onToolResult?: (payload: ToolResultPayload) => void;
   }
   let {
@@ -64,6 +74,7 @@
     modules,
     csrfToken,
     formError = null,
+    compact = false,
     onToolResult,
   }: Props = $props();
 
@@ -72,7 +83,16 @@
   let streaming = $state(false);
   let streamingText = $state("");
   let pendingChanges = $state(0);
-  let chips = $state<Chip[]>([]);
+  // Pinned chips (from session.pinnedElements) ride every send; transient
+  // chips (dropdown picks, iframe element-clicks) are sent once and cleared.
+  let chips = $state<Chip[]>(
+    (session.pinnedElements ?? []).map((p) => ({
+      moduleId: p.moduleId,
+      selector: p.selector,
+      label: p.label,
+      pinned: true,
+    })),
+  );
   let proposedDiffs = $state<ProposedDiff[]>([]);
   let pickedModuleId = $state("");
 
@@ -93,15 +113,63 @@
   }
 
   function removeChip(idx: number): void {
+    const removed = chips[idx];
     chips = chips.filter((_, i) => i !== idx);
+    if (removed?.pinned) void persistPinned();
   }
+
+  /**
+   * Toggle the pinned flag on a chip. Pinned chips persist on the chat
+   * session row and re-emit on every send within that chat. Pinning is a
+   * UI affordance — the AI never reaches into pinned_elements.
+   */
+  async function togglePin(idx: number): Promise<void> {
+    const c = chips[idx];
+    if (!c) return;
+    chips = chips.map((x, i) => (i === idx ? { ...x, pinned: !x.pinned } : x));
+    await persistPinned();
+  }
+
+  async function persistPinned(): Promise<void> {
+    const pinned = chips
+      .filter((c) => c.pinned)
+      .map((c) => ({ moduleId: c.moduleId, selector: c.selector, label: c.label }));
+    try {
+      await fetch("/edit/pinned", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
+        body: JSON.stringify({ chatSessionId: session.id, pinnedElements: pinned }),
+      });
+    } catch {
+      // best-effort
+    }
+  }
+
+  /**
+   * iframe → ChatPanel: a `caelo:chip` window CustomEvent (dispatched by
+   * /edit/+page.svelte's postMessage handler) appends a new chip referring
+   * to the clicked module. Append-only — multiple clicks accumulate so the
+   * user can select N elements then send "make them all green" in one turn.
+   */
+  onMount(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as Chip | undefined;
+      if (!detail || typeof detail.moduleId !== "string") return;
+      // De-dupe: don't add a chip already present (pinned or not).
+      if (chips.some((c) => c.moduleId === detail.moduleId && c.selector === detail.selector)) return;
+      chips = [...chips, { ...detail }];
+    };
+    window.addEventListener("caelo:chip", handler);
+    return () => window.removeEventListener("caelo:chip", handler);
+  });
 
   async function sendMessage(): Promise<void> {
     if (composer.trim().length === 0 || streaming) return;
     const text = composer;
     const sentChips = chips;
     composer = "";
-    chips = [];
+    // Pinned chips ride every send; transient chips clear after.
+    chips = chips.filter((c) => c.pinned);
     streaming = true;
     streamingText = "";
     messages = [...messages, { id: `local-${Date.now()}`, role: "user", content: text }];
@@ -203,17 +271,32 @@
   }
 </script>
 
-<div class="space-y-4">
-  <h1 class="text-2xl font-semibold tracking-tight">{session.title}</h1>
+<div
+  class={cn(
+    compact ? "flex min-h-0 flex-1 flex-col gap-2 p-2" : "space-y-4",
+  )}
+>
+  {#if !compact}
+    <h1 class="text-2xl font-semibold tracking-tight">{session.title}</h1>
+  {/if}
 
   {#if formError}
     <Alert variant="destructive"><AlertDescription>{formError}</AlertDescription></Alert>
   {/if}
 
-  <div class="grid gap-4 lg:grid-cols-[1fr_320px]">
+  <div
+    class={cn(
+      compact ? "flex min-h-0 flex-1 flex-col" : "grid gap-4 lg:grid-cols-[1fr_320px]",
+    )}
+  >
     <!-- Transcript + composer -->
-    <Card>
-      <CardContent class="flex h-[calc(100vh-12rem)] flex-col gap-3 p-4">
+    <Card class={cn(compact && "flex min-h-0 flex-col")}>
+      <CardContent
+        class={cn(
+          "flex flex-col gap-3 p-4",
+          compact ? "min-h-0 flex-1" : "h-[calc(100vh-12rem)]",
+        )}
+      >
         <ul class="flex-1 space-y-2 overflow-y-auto">
           {#each messages as m (m.id)}
             <li
@@ -243,9 +326,24 @@
         {#if chips.length > 0}
           <div class="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
             <span class="self-center"><em>Module references attached:</em></span>
-            {#each chips as c, i (`${c.moduleId}-${i}`)}
-              <span class="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-foreground">
+            {#each chips as c, i (`${c.moduleId}-${c.selector}-${i}`)}
+              <span
+                data-testid="chip"
+                class={cn(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-foreground",
+                  c.pinned ? "bg-amber-500/15 ring-1 ring-amber-500/40" : "bg-primary/10",
+                )}
+              >
                 {c.label}
+                <button
+                  type="button"
+                  onclick={() => void togglePin(i)}
+                  class="text-muted-foreground hover:text-foreground"
+                  aria-label={c.pinned ? "Unpin chip" : "Pin chip across messages"}
+                  title={c.pinned ? "Pinned across messages" : "Pin across messages"}
+                >
+                  {#if c.pinned}<Lock class="size-3" />{:else}<Unlock class="size-3" />{/if}
+                </button>
                 <button
                   type="button"
                   onclick={() => removeChip(i)}
@@ -295,7 +393,10 @@
       </CardContent>
     </Card>
 
-    <!-- Sidebar: Publish + diff + rename -->
+    <!-- Sidebar: Publish + diff + rename. Hidden in compact (overlay)
+         mode — the overlay carries its own Stage/Confirm strip and the
+         diff view lives in the main /content/chat surface. -->
+    {#if !compact}
     <aside class="space-y-4">
       <Card>
         <CardHeader>
@@ -376,5 +477,6 @@
         </CardContent>
       </Card>
     </aside>
+    {/if}
   </div>
 </div>
