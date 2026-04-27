@@ -138,3 +138,77 @@ test("duplicate_page clones home into a new slug; same module ids carry over", a
   expect(parsed.dup.length).toBe(parsed.src.length);
   expect(parsed.dup).toEqual(parsed.src);
 });
+
+/**
+ * P6.7.7 review pass — regression: a source page referencing a
+ * soft-deleted module must NOT propagate that dead reference into the
+ * clone. Seeds a temp page with one live + one soft-deleted module,
+ * runs `pages.duplicate` directly via the registry, asserts the clone
+ * has only the live row.
+ */
+test("duplicate filters out soft-deleted modules — only live rows clone over", () => {
+  const seedTs = ts + 1;
+  const SRC_SLUG = `e2e-dup-src-${seedTs}`;
+  const LIVE_MOD = `e2e-dup-live-${seedTs}`;
+  const DEAD_MOD = `e2e-dup-dead-${seedTs}`;
+  const CLONE_SLUG = `e2e-dup-clone-${seedTs}`;
+  const r = spawnSync(
+    "bun",
+    [
+      "-e",
+      `
+      import { SQL } from "bun";
+      import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
+      import { registerAdminOps } from "@caelo/admin-core";
+
+      const c = new SQL(process.env.ADMIN_DATABASE_URL);
+      let sourcePageId = "";
+      await c.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const tplId = ((await tx\`SELECT id::text AS id FROM templates WHERE slug = 'home-template' LIMIT 1\`)[0])?.id;
+        const live = ((await tx\`INSERT INTO modules (slug, display_name, html) VALUES (\${process.env.LIVE_MOD}, 'live', '<p>L</p>') RETURNING id::text AS id\`)[0])?.id;
+        const dead = ((await tx\`INSERT INTO modules (slug, display_name, html, deleted_at) VALUES (\${process.env.DEAD_MOD}, 'dead', '<p>D</p>', now()) RETURNING id::text AS id\`)[0])?.id;
+        const pg = ((await tx\`INSERT INTO pages (slug, locale, name, title, template_id, status) VALUES (\${process.env.SRC_SLUG}, 'en', 'src', 'src', \${tplId}::uuid, 'draft') RETURNING id::text AS id\`)[0])?.id;
+        await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id) VALUES
+          (\${pg}::uuid, 'content', 0, \${live}::uuid),
+          (\${pg}::uuid, 'content', 1, \${dead}::uuid)\`;
+        sourcePageId = pg;
+      });
+
+      const registry = new OperationRegistry();
+      registerAdminOps(registry);
+      const adapter = new DatabaseAdapter({
+        adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
+        publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL,
+      });
+      const ctx = { actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "system", requestId: "e2e-dup-dead" };
+      const res = await execute(registry, adapter, ctx, "pages.duplicate", {
+        sourcePageId,
+        newSlug: process.env.CLONE_SLUG,
+      });
+      if (!res.ok) throw new Error(JSON.stringify(res.error));
+
+      let clonedRows;
+      await c.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const cloneId = ((await tx\`SELECT id::text AS id FROM pages WHERE slug = \${process.env.CLONE_SLUG}\`)[0])?.id;
+        clonedRows = await tx\`SELECT module_id::text AS m FROM page_modules WHERE page_id = \${cloneId}::uuid\`;
+        // Cleanup
+        await tx\`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN (\${process.env.SRC_SLUG}, \${process.env.CLONE_SLUG}))\`;
+        await tx\`DELETE FROM pages WHERE slug IN (\${process.env.SRC_SLUG}, \${process.env.CLONE_SLUG})\`;
+        await tx\`DELETE FROM modules WHERE slug IN (\${process.env.LIVE_MOD}, \${process.env.DEAD_MOD})\`;
+      });
+      await c.end();
+      process.stdout.write(JSON.stringify({ rows: clonedRows.length }));
+      `,
+    ],
+    {
+      env: { ...process.env, SRC_SLUG, LIVE_MOD, DEAD_MOD, CLONE_SLUG },
+      encoding: "utf8",
+    },
+  );
+  if (r.status !== 0) throw new Error(r.stderr);
+  const out = JSON.parse(r.stdout) as { rows: number };
+  // Only the live module survives — the dead module is filtered out.
+  expect(out.rows).toBe(1);
+});

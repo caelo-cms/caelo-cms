@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo/query-api";
+import { structuredSetKind } from "@caelo/shared";
 import { error, fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
-const KINDS = ["nav-menu", "taxonomy", "theme", "tags", "link-list"] as const;
-
 export const load: PageServerLoad = ({ params, locals }) => {
   requirePermission(locals, "roles.manage");
-  if (!KINDS.includes(params.kind as (typeof KINDS)[number])) {
+  if (!structuredSetKind.safeParse(params.kind).success) {
     error(404, "Unknown structured-set kind");
   }
   return {};

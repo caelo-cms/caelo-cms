@@ -727,18 +727,47 @@ export const duplicatePageOp = defineOperation({
     // names, same positions. If the target template has different
     // block names, the migration is the caller's responsibility (use
     // change_template afterward).
+    //
+    // Filter out source rows whose module is soft-deleted. The plain
+    // `INSERT … SELECT FROM page_modules` would otherwise silently
+    // propagate dead references into the clone — a regression noticed
+    // in the P6.7.7 audit, since `pages.set_modules` rejects deleted
+    // module ids at write time and we want the same invariant here.
+    // The JOIN drops orphan rows; the audit summary surfaces the count
+    // so an operator can investigate the source page's stale links.
+    const sourceCounts = (await tx.execute(sql`
+      SELECT
+        (SELECT count(*)::int FROM page_modules WHERE page_id = ${input.sourcePageId}::uuid) AS total,
+        (SELECT count(*)::int FROM page_modules pm
+           JOIN modules m ON m.id = pm.module_id
+           WHERE pm.page_id = ${input.sourcePageId}::uuid AND m.deleted_at IS NULL) AS live
+    `)) as unknown as { total: number | string; live: number | string }[];
+    const totalSource =
+      typeof sourceCounts[0]?.total === "string"
+        ? Number.parseInt(sourceCounts[0].total, 10)
+        : (sourceCounts[0]?.total ?? 0);
+    const liveSource =
+      typeof sourceCounts[0]?.live === "string"
+        ? Number.parseInt(sourceCounts[0].live, 10)
+        : (sourceCounts[0]?.live ?? 0);
     await tx.execute(sql`
       INSERT INTO page_modules (page_id, block_name, position, module_id)
-      SELECT ${newPageId}::uuid, block_name, position, module_id
-      FROM page_modules WHERE page_id = ${input.sourcePageId}::uuid
+      SELECT ${newPageId}::uuid, pm.block_name, pm.position, pm.module_id
+      FROM page_modules pm
+      JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
+      WHERE pm.page_id = ${input.sourcePageId}::uuid
     `);
+    const droppedDeleted = totalSource - liveSource;
     await recordAudit(tx, {
       actorId: ctx.actorId,
       operation: "pages.duplicate",
       input,
       succeeded: true,
       entityId: newPageId,
-      resultSummary: `from=${source.slug} to=${input.newSlug}`,
+      resultSummary:
+        droppedDeleted > 0
+          ? `from=${source.slug} to=${input.newSlug} cloned=${liveSource} dropped_deleted=${droppedDeleted}`
+          : `from=${source.slug} to=${input.newSlug} cloned=${liveSource}`,
     });
     const state = await loadPageState(tx, newPageId);
     if (state) {

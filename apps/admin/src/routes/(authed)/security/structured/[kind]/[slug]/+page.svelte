@@ -44,6 +44,8 @@
 
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
+  {:else if form?.message}
+    <Alert><AlertDescription>{form.message}</AlertDescription></Alert>
   {/if}
 
   <Card>
@@ -61,7 +63,7 @@
             name="displayName"
             type="text"
             required
-            value={data.set.displayName} />
+            value={form?.values?.displayName ?? data.set.displayName} />
         </div>
         <div class="space-y-2">
           <Label for="items">items</Label>
@@ -71,7 +73,7 @@
             required
             rows="20"
             class="block w-full rounded-md border bg-background p-2 font-mono text-xs"
-            >{itemsJson}</textarea>
+            >{form?.values?.items ?? itemsJson}</textarea>
           <p class="text-xs text-muted-foreground">
             Saving runs the per-kind Zod validator; bad shape comes back as an explicit error
             message.

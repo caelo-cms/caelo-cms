@@ -18,7 +18,7 @@
     { kind: "tags", label: "Tags", desc: "Flat tag lists for content filtering" },
     { kind: "taxonomy", label: "Taxonomies", desc: "Tree-shaped category hierarchies" },
     { kind: "link-list", label: "Link lists", desc: "Footer 'legal', related resources" },
-    { kind: "theme", label: "Theme tokens", desc: "Single 'site' set — see /security/theme" },
+    { kind: "theme", label: "Theme tokens", desc: "CSS variables and design tokens" },
   ];
 
   const setsByKind = $derived(

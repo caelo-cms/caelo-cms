@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo/query-api";
-import { error, fail, redirect } from "@sveltejs/kit";
+import { structuredSetKind } from "@caelo/shared";
+import { error, fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
-
-const KINDS = ["nav-menu", "taxonomy", "theme", "tags", "link-list"] as const;
 
 interface SetRow {
   id: string;
@@ -20,7 +19,7 @@ interface SetRow {
 
 export const load: PageServerLoad = async ({ params, locals }) => {
   requirePermission(locals, "roles.manage");
-  if (!KINDS.includes(params.kind as (typeof KINDS)[number])) {
+  if (!structuredSetKind.safeParse(params.kind).success) {
     error(404, "Unknown structured-set kind");
   }
   const { adapter, registry } = getQueryContext();
@@ -42,16 +41,21 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const displayName = String(form.get("displayName") ?? "").trim();
     const itemsRaw = String(form.get("items") ?? "");
+    // Pass user input back on every failure path so the textarea
+    // preserves their broken edit instead of resetting to the original
+    // DB value — typing a fix requires keeping what they had.
+    const values = { items: itemsRaw, displayName };
     let items: unknown;
     try {
       items = JSON.parse(itemsRaw);
     } catch (e) {
       return fail(400, {
         error: `items must be valid JSON: ${e instanceof Error ? e.message : "parse error"}`,
+        values,
       });
     }
     if (!Array.isArray(items)) {
-      return fail(400, { error: "items must be a JSON array" });
+      return fail(400, { error: "items must be a JSON array", values });
     }
     const result = await execute(registry, adapter, locals.ctx, "structured_sets.set", {
       kind: params.kind,
@@ -61,8 +65,11 @@ export const actions: Actions = {
     });
     if (!result.ok) {
       const message = (result.error as { message?: string }).message ?? "Could not save set.";
-      return fail(400, { error: message });
+      return fail(400, { error: message, values });
     }
-    redirect(303, "/security/structured");
+    // Stay on the same page — matches the /security/layouts edit
+    // pattern and lets the user verify their change without an extra
+    // click back through the index.
+    return { ok: true, message: "Saved." };
   },
 };

@@ -29,7 +29,8 @@ export const setNavMenuTool: ToolDefinitionWithHandler<
     "Use when the user says 'edit the header menu', 'add a Pricing link to the nav', or 'remove About from the footer menu'. " +
     "Pass the FULL desired item list — the op replaces the menu, not appends. " +
     "Item shape: { label, href, target?, children?, adSlotId? }. " +
-    "Common slugs: header-main, footer-main.",
+    "Common slugs: header-main, footer-main. " +
+    "For non-menu structured sets (taxonomies, tags, link lists, theme tokens), use `set_structured_set` instead.",
   schema: setNavMenuToolInput,
   inputSchema: {
     type: "object",

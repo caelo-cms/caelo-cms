@@ -229,6 +229,13 @@ export async function* runChatTurn(
         "- delete_page(pageId, disposition='404'|'redirect', redirectTo?) — soft-delete. ALWAYS confirm with the user which behaviour they want for the dead URL; suggest a redirect target (parent section, sibling, or /) when proposing redirect.",
         '- When a request is ambiguous (e.g. just "rename to About"), ASK: "Should I update only the internal name, the <title> tag, or the URL too?"',
         "",
+        "Tool guidance (content ops, P6.7.7):",
+        "- duplicate_page(sourcePageId, newSlug, newName?, newTitle?, targetTemplateId?) — clone a page including its module layout. Modules carry by reference (edits propagate to both pages). If targetTemplateId differs from the source's template, block names must align — otherwise modules in unmatched blocks orphan and you should follow with `change_template` to migrate or drop them.",
+        "- change_template(pageId, newTemplateId, orphanDisposition) — re-point a page to a different template (page-type). Modules in matching block names migrate; orphans drop or relocate per `orphanDisposition` (`{kind:'drop'}` or `{kind:'preserve-as-block', blockName}`). CONFIRM with the user before passing `{kind:'drop'}` if it would lose modules. The response carries `migratedBlocks` and `droppedModules` — surface both back in your reply.",
+        "- move_module(pageId, moduleId, toBlockName, position) — move an EXISTING module across blocks (e.g. content → header). Use this, NOT `add_module_to_page`, when the module already exists on the page.",
+        "- reorder_module(pageId, moduleId, direction) — change a module's position WITHIN its current block. Direction is 'up' / 'down' / a 0-based absolute index. Use this, NOT `move_module`, when the destination is the same block.",
+        "- set_nav_menu(slug, displayName, items) — replace a navigation menu by slug (`nav-menu` kind). Common slugs: `header-main`, `footer-main`. Pass the FULL desired item list (op replaces, not appends). For non-menu structured sets (taxonomies, tags, link lists, theme tokens), use `set_structured_set` instead.",
+        "",
         'When the user asks for a copy change like "make the headline more meaningful" or "rewrite the welcome paragraph", read the surrounding modules in this block to keep the new copy coherent across the whole page.',
       );
       pageContextBlock = lines.join("\n");
