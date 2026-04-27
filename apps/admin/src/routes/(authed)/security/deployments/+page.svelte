@@ -52,6 +52,10 @@
             <span class="text-xs text-muted-foreground">
               out_dir={t.outDir} robots={t.robotsDefault}{t.isDefault ? " (default)" : ""}
             </span>
+            <!-- Plain POST — refreshing after a build runs another
+                 build, which is wasteful but not destructive. Keeping
+                 it native so the page-level data.targets list (which
+                 reads the "succeeded" status) refreshes correctly. -->
             <form method="post" action="?/trigger" class="ml-auto">
               <input type="hidden" name="_csrf" value={data.csrfToken} />
               <input type="hidden" name="targetName" value={t.name} />

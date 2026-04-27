@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { enhance } from "$app/forms";
   import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
@@ -98,13 +99,17 @@
                 <TableCell class="text-muted-foreground">{p.updatedAt.slice(0, 10)}</TableCell>
                 <TableCell class="text-right">
                   {#if form?.staged?.pageId === p.id}
-                    <form method="post" action="?/confirmPublish" class="inline">
+                    <!-- use:enhance — submitting via XHR keeps the URL
+                         clean (`/content/pages` instead of
+                         `/content/pages?/confirmPublish`) so a refresh
+                         doesn't re-promote the staging build. -->
+                    <form method="post" action="?/confirmPublish" use:enhance class="inline">
                       <input type="hidden" name="_csrf" value={data.csrfToken} />
                       <input type="hidden" name="pageId" value={p.id} />
                       <Button type="submit" size="sm">Confirm publish</Button>
                     </form>
                   {:else}
-                    <form method="post" action="?/stage" class="inline">
+                    <form method="post" action="?/stage" use:enhance class="inline">
                       <input type="hidden" name="_csrf" value={data.csrfToken} />
                       <input type="hidden" name="pageId" value={p.id} />
                       <Button type="submit" size="sm" variant="outline">Stage</Button>

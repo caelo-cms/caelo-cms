@@ -107,10 +107,13 @@ test("editor Publish button → static dist updated", async ({ page }) => {
   await page.goto("/content/pages");
   const row = page.locator("tr").filter({ hasText: PAGE_SLUG });
   await row.getByRole("button", { name: /^stage$/i }).click();
-  await expect(page.getByText(/Staged —/)).toBeVisible({ timeout: 15_000 });
+  // P6.7.4 — use:enhance now leaves both the page Alert and the
+  // layout-level Sonner toast on screen for the same form result.
+  // Pick the first match to satisfy strict-mode.
+  await expect(page.getByText(/Staged —/).first()).toBeVisible({ timeout: 15_000 });
   const stagedRow = page.locator("tr").filter({ hasText: PAGE_SLUG });
   await stagedRow.getByRole("button", { name: /^confirm publish$/i }).click();
-  await expect(page.getByText(/Published to production/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/Published to production/).first()).toBeVisible({ timeout: 15_000 });
 
   // P6.2 #2 — files live under output/<env>/current/ (the symlink).
   const distDir = resolve(process.cwd(), "output/production/current");

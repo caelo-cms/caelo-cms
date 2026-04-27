@@ -139,10 +139,10 @@ test("AI edit → publish chat → publish page → served from Caddy", async ({
   await page.goto("/content/pages");
   const row = page.locator("tr").filter({ hasText: PAGE_SLUG });
   await row.getByRole("button", { name: /^stage$/i }).click();
-  await expect(page.getByText(/Staged —/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/Staged —/).first()).toBeVisible({ timeout: 30_000 });
   const stagedRow = page.locator("tr").filter({ hasText: PAGE_SLUG });
   await stagedRow.getByRole("button", { name: /^confirm publish$/i }).click();
-  await expect(page.getByText(/Published to production/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/Published to production/).first()).toBeVisible({ timeout: 15_000 });
 
   // Caddy on :8082 (production) now serves the page with the AI edit.
   // Retry briefly because the Caddy file mount picks up changes near-instantly

@@ -19,6 +19,7 @@
    * site.
    */
 
+  import { enhance } from "$app/forms";
   import { goto } from "$app/navigation";
   import { ArrowLeft, MousePointerClick } from "lucide-svelte";
   import { onMount } from "svelte";
@@ -204,7 +205,12 @@
               class="underline"
             >preview</a>
           </span>
-          <form method="post" action="?/confirmPublish">
+          <!-- use:enhance so the form submits via XHR. Without it,
+               SvelteKit posts to `/edit?page=X?/confirmPublish` and
+               the browser leaves that URL in the address bar — a
+               refresh re-fires the action and re-promotes a possibly
+               stale staging build. -->
+          <form method="post" action="?/confirmPublish" use:enhance>
             <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="pageId" value={activePageId} />
             <Button type="submit" size="sm" data-testid="confirm-publish-btn">
@@ -225,7 +231,9 @@
               ? "No pending changes"
               : `${pendingChanges} pending change${pendingChanges === 1 ? "" : "s"}`}
           </span>
-          <form method="post" action="?/stage">
+          <!-- See note on confirmPublish above — use:enhance keeps the
+               URL clean so a refresh doesn't re-stage. -->
+          <form method="post" action="?/stage" use:enhance>
             <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="pageId" value={activePageId} />
             <Button
