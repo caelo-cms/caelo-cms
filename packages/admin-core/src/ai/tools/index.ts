@@ -4,14 +4,19 @@ import { addModuleToLayoutTool } from "./add-module-to-layout.js";
 import { addModuleToPageTool } from "./add-module-to-page.js";
 import { addModuleToTemplateTool } from "./add-module-to-template.js";
 import { changePageSlugTool } from "./change-page-slug.js";
+import { changeTemplateTool } from "./change-template.js";
 import { createLayoutTool } from "./create-layout.js";
 import { createPageTool } from "./create-page.js";
 import { deletePageTool } from "./delete-page.js";
 import { ToolRegistry } from "./dispatch.js";
+import { duplicatePageTool } from "./duplicate-page.js";
 import { editModuleTool } from "./edit-module.js";
+import { moveModuleTool } from "./move-module.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
 import { renamePageTool } from "./rename-page.js";
+import { reorderModuleTool } from "./reorder-module.js";
+import { setNavMenuTool } from "./set-nav-menu.js";
 import { setPageTitleTool } from "./set-page-title.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setStructuredSetTool } from "./set-structured-set.js";
@@ -43,6 +48,12 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(setTemplateLayoutTool);
   registry.register(createLayoutTool);
   registry.register(setSiteDefaultsTool);
+  // P6.7.7 — content-ops follow-ups.
+  registry.register(duplicatePageTool);
+  registry.register(changeTemplateTool);
+  registry.register(moveModuleTool);
+  registry.register(reorderModuleTool);
+  registry.register(setNavMenuTool);
   return registry;
 }
 

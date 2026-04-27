@@ -91,6 +91,11 @@ export const AI_TOOLS = [
   "set_template_layout",
   "create_layout",
   "set_site_defaults",
+  "duplicate_page",
+  "change_template",
+  "move_module",
+  "reorder_module",
+  "set_nav_menu",
 ] as const;
 export type AiToolName = (typeof AI_TOOLS)[number];
 export type AddModuleToPageToolInput = z.infer<typeof addModuleToPageToolInput>;
@@ -340,6 +345,80 @@ export const setSiteDefaultsToolInput = z
     message: "must provide at least one of defaultLayoutSlug, defaultTemplateSlug",
   });
 
+/**
+ * P6.7.7 — content-ops follow-ups: clone a page, swap a page's
+ * template, reorder modules within a block, move a module across
+ * blocks. All wrap existing or new ops; the tool layer captures the
+ * user-facing intent (which the system prompt steers the AI toward).
+ */
+export const duplicatePageToolInput = z
+  .object({
+    sourcePageId: z.string().uuid(),
+    newSlug: slugInputSchema,
+    newName: z.string().min(1).max(256).optional(),
+    newTitle: z.string().min(1).max(256).optional(),
+    targetTemplateId: z.string().uuid().optional(),
+    locale: z.string().min(2).max(10).optional(),
+  })
+  .strict();
+
+export const changeTemplateToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    newTemplateId: z.string().uuid(),
+    /**
+     * `drop` discards modules in blocks that don't exist on the new
+     * template. `preserve-as-block` reroutes them to a named block on
+     * the new template (must exist). The AI should ASK the user when
+     * the diff would drop modules; only pass `drop` after explicit
+     * confirmation.
+     */
+    orphanDisposition: z
+      .discriminatedUnion("kind", [
+        z.object({ kind: z.literal("drop") }).strict(),
+        z.object({ kind: z.literal("preserve-as-block"), blockName: slugInputSchema }).strict(),
+      ])
+      .default({ kind: "drop" }),
+  })
+  .strict();
+
+export const moveModuleToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    moduleId: z.string().uuid(),
+    toBlockName: z.string().min(1).max(80),
+    /** "top" | "bottom" | a 0-based index inside the destination block. */
+    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+  })
+  .strict();
+
+export const reorderModuleToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    moduleId: z.string().uuid(),
+    /**
+     * `up` / `down` shift one slot. An integer is an absolute 0-based
+     * target position within the same block.
+     */
+    direction: z.union([z.enum(["up", "down"]), z.number().int().min(0).max(1000)]),
+  })
+  .strict();
+
+/**
+ * Convenience wrapper over `set_structured_set` for the `nav-menu`
+ * kind specifically. Users say "edit the menu", not "set the
+ * structured set kind=nav-menu" — this maps natural language to the
+ * right tool. Items shape matches `navMenuItem` from
+ * @caelo/shared/structured-sets.
+ */
+export const setNavMenuToolInput = z
+  .object({
+    slug: slugInputSchema,
+    displayName: z.string().min(1).max(200),
+    items: z.array(z.unknown()),
+  })
+  .strict();
+
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
@@ -362,3 +441,8 @@ export type RemoveModuleFromLayoutToolInput = z.infer<typeof removeModuleFromLay
 export type SetTemplateLayoutToolInput = z.infer<typeof setTemplateLayoutToolInput>;
 export type CreateLayoutToolInput = z.infer<typeof createLayoutToolInput>;
 export type SetSiteDefaultsToolInput = z.infer<typeof setSiteDefaultsToolInput>;
+export type DuplicatePageToolInput = z.infer<typeof duplicatePageToolInput>;
+export type ChangeTemplateToolInput = z.infer<typeof changeTemplateToolInput>;
+export type MoveModuleToolInput = z.infer<typeof moveModuleToolInput>;
+export type ReorderModuleToolInput = z.infer<typeof reorderModuleToolInput>;
+export type SetNavMenuToolInput = z.infer<typeof setNavMenuToolInput>;

@@ -35,8 +35,10 @@ import {
   updateModuleOp,
 } from "./ops/content/modules.js";
 import {
+  changeTemplateOp,
   createPageOp,
   deletePageOp,
+  duplicatePageOp,
   getPageOp,
   getPageWithModulesOp,
   listPagesOp,
@@ -135,6 +137,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createPageOp);
   registry.register(updatePageOp);
   registry.register(setPageModulesOp);
+  registry.register(duplicatePageOp);
+  registry.register(changeTemplateOp);
   registry.register(deletePageOp);
   registry.register(renderPagePreviewOp);
   // P4 snapshots

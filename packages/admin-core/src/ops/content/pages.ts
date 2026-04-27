@@ -8,7 +8,15 @@
  */
 
 import { defineOperation } from "@caelo/query-api";
-import { err, ok, pageCreateSchema, pageSetModulesSchema, pageUpdateSchema } from "@caelo/shared";
+import {
+  err,
+  localeSchema,
+  ok,
+  pageCreateSchema,
+  pageSetModulesSchema,
+  pageUpdateSchema,
+  slugSchema,
+} from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -624,5 +632,284 @@ export const deletePageOp = defineOperation({
       });
     }
     return ok({});
+  },
+});
+
+/**
+ * P6.7.7 — clone an existing page (and its module layout) under a new
+ * slug. Modules are referenced by id, not deep-copied: edits to a
+ * shared module propagate to every page using it. The duplicated page
+ * inherits the source page's templateId by default; callers that need
+ * a different page-type pass `targetTemplateId` (validated like
+ * pages.update).
+ */
+export const duplicatePageOp = defineOperation({
+  name: "pages.duplicate",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      sourcePageId: z.string().uuid(),
+      newSlug: slugSchema,
+      newName: z.string().min(1).max(256).optional(),
+      newTitle: z.string().min(1).max(256).optional(),
+      targetTemplateId: z.string().uuid().optional(),
+      locale: localeSchema.optional(),
+    })
+    .strict(),
+  output: z.object({ pageId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const sourceRows = (await tx.execute(sql`
+      SELECT id::text AS id, slug, locale, name, title,
+             template_id::text AS template_id
+      FROM pages WHERE id = ${input.sourcePageId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as {
+      id: string;
+      slug: string;
+      locale: string;
+      name: string | null;
+      title: string;
+      template_id: string;
+    }[];
+    const source = sourceRows[0];
+    if (!source) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.duplicate",
+        message: "source page not found",
+      });
+    }
+    const locale = input.locale ?? source.locale;
+    const targetTemplateId = input.targetTemplateId ?? source.template_id;
+    if (input.targetTemplateId !== undefined) {
+      const tplOk = (await tx.execute(sql`
+        SELECT 1 FROM templates
+        WHERE id = ${input.targetTemplateId}::uuid AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as { exists: number }[];
+      if (tplOk.length === 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.duplicate",
+          message: "target template not found or deleted",
+        });
+      }
+    }
+    const dup = (await tx.execute(sql`
+      SELECT 1 FROM pages
+      WHERE slug = ${input.newSlug} AND locale = ${locale} AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as { exists: number }[];
+    if (dup.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.duplicate",
+        message: `page already exists for (slug=${input.newSlug}, locale=${locale})`,
+      });
+    }
+    const title = input.newTitle ?? source.title;
+    const name = input.newName ?? title;
+    const inserted = (await tx.execute(sql`
+      INSERT INTO pages (slug, locale, name, title, template_id, status)
+      VALUES (
+        ${input.newSlug}, ${locale}, ${name}, ${title},
+        ${targetTemplateId}::uuid, 'draft'
+      )
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const newPageId = inserted[0]?.id;
+    if (!newPageId) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.duplicate",
+        message: "no id returned",
+      });
+    }
+    // Modules carry over by reference — same module ids, same block
+    // names, same positions. If the target template has different
+    // block names, the migration is the caller's responsibility (use
+    // change_template afterward).
+    await tx.execute(sql`
+      INSERT INTO page_modules (page_id, block_name, position, module_id)
+      SELECT ${newPageId}::uuid, block_name, position, module_id
+      FROM page_modules WHERE page_id = ${input.sourcePageId}::uuid
+    `);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "pages.duplicate",
+      input,
+      succeeded: true,
+      entityId: newPageId,
+      resultSummary: `from=${source.slug} to=${input.newSlug}`,
+    });
+    const state = await loadPageState(tx, newPageId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "pages.create",
+        description: `pages.duplicate from=${source.slug} to=${input.newSlug}`,
+        entities: [{ kind: "page", entityId: newPageId, state }],
+      });
+    }
+    const layoutState = await loadPageLayoutState(tx, newPageId);
+    await emitSnapshot(tx, {
+      actorId: ctx.actorId,
+      opKind: "pages.set_modules",
+      description: `pages.duplicate layout from=${source.slug}`,
+      entities: [{ kind: "pageLayout", entityId: newPageId, state: layoutState }],
+    });
+    return ok({ pageId: newPageId });
+  },
+});
+
+/**
+ * P6.7.7 — re-point a page's templateId, migrating modules where the
+ * old + new template have matching block names. Modules in
+ * unmatched-named (`orphaned`) blocks are either dropped or relocated
+ * to a designated block per `orphanDisposition`. Returns the migrated
+ * + dropped lists so the AI can surface them.
+ */
+export const changeTemplateOp = defineOperation({
+  name: "pages.change_template",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      pageId: z.string().uuid(),
+      newTemplateId: z.string().uuid(),
+      orphanDisposition: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("drop") }).strict(),
+        z.object({ kind: z.literal("preserve-as-block"), blockName: slugSchema }).strict(),
+      ]),
+      expectedVersion: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  output: z.object({
+    migratedBlocks: z.array(z.string()),
+    droppedModules: z.array(z.object({ moduleId: z.string(), formerBlock: z.string() })),
+  }),
+  handler: async (ctx, input, tx) => {
+    const pageRows = (await tx.execute(sql`
+      SELECT slug, template_id::text AS template_id, version FROM pages
+      WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as {
+      slug: string;
+      template_id: string;
+      version: number | string;
+    }[];
+    const pageRow = pageRows[0];
+    if (!pageRow) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.change_template",
+        message: "page not found",
+      });
+    }
+    const currentVersion =
+      typeof pageRow.version === "string" ? Number.parseInt(pageRow.version, 10) : pageRow.version;
+    if (input.expectedVersion !== undefined && input.expectedVersion !== currentVersion) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.change_template",
+        message: `conflict: page changed since load (expected ${input.expectedVersion}, current ${currentVersion})`,
+      });
+    }
+    if (pageRow.template_id === input.newTemplateId) {
+      return ok({ migratedBlocks: [], droppedModules: [] });
+    }
+    const tplOk = (await tx.execute(sql`
+      SELECT 1 FROM templates
+      WHERE id = ${input.newTemplateId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as { exists: number }[];
+    if (tplOk.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.change_template",
+        message: "new template not found or deleted",
+      });
+    }
+    const newBlockRows = (await tx.execute(sql`
+      SELECT name FROM template_blocks WHERE template_id = ${input.newTemplateId}::uuid
+    `)) as unknown as { name: string }[];
+    const newBlockNames = new Set(newBlockRows.map((r) => r.name));
+
+    if (
+      input.orphanDisposition.kind === "preserve-as-block" &&
+      !newBlockNames.has(input.orphanDisposition.blockName)
+    ) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.change_template",
+        message: `orphan disposition block "${input.orphanDisposition.blockName}" does not exist on the new template`,
+      });
+    }
+
+    const pmRows = (await tx.execute(sql`
+      SELECT block_name, position, module_id::text AS module_id
+      FROM page_modules WHERE page_id = ${input.pageId}::uuid
+      ORDER BY block_name ASC, position ASC
+    `)) as unknown as { block_name: string; position: number; module_id: string }[];
+
+    const migratedBlocks = new Set<string>();
+    const droppedModules: { moduleId: string; formerBlock: string }[] = [];
+    const survivors: { block_name: string; module_id: string }[] = [];
+    const orphanBlock =
+      input.orphanDisposition.kind === "preserve-as-block"
+        ? input.orphanDisposition.blockName
+        : null;
+    for (const r of pmRows) {
+      if (newBlockNames.has(r.block_name)) {
+        migratedBlocks.add(r.block_name);
+        survivors.push({ block_name: r.block_name, module_id: r.module_id });
+      } else if (orphanBlock !== null) {
+        survivors.push({ block_name: orphanBlock, module_id: r.module_id });
+      } else {
+        droppedModules.push({ moduleId: r.module_id, formerBlock: r.block_name });
+      }
+    }
+
+    await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${input.pageId}::uuid`);
+    const positionByBlock = new Map<string, number>();
+    for (const s of survivors) {
+      const pos = positionByBlock.get(s.block_name) ?? 0;
+      await tx.execute(sql`
+        INSERT INTO page_modules (page_id, block_name, position, module_id)
+        VALUES (${input.pageId}::uuid, ${s.block_name}, ${pos}, ${s.module_id}::uuid)
+      `);
+      positionByBlock.set(s.block_name, pos + 1);
+    }
+    await tx.execute(sql`
+      UPDATE pages
+      SET template_id = ${input.newTemplateId}::uuid,
+          updated_at = now(),
+          version = version + 1
+      WHERE id = ${input.pageId}::uuid
+    `);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "pages.change_template",
+      input,
+      succeeded: true,
+      entityId: input.pageId,
+      resultSummary: `migrated=${migratedBlocks.size},dropped=${droppedModules.length}`,
+    });
+    const state = await loadPageState(tx, input.pageId);
+    if (state) {
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "pages.update",
+        description: `pages.change_template slug=${pageRow.slug}`,
+        entities: [{ kind: "page", entityId: input.pageId, state }],
+      });
+    }
+    const layoutState = await loadPageLayoutState(tx, input.pageId);
+    await emitSnapshot(tx, {
+      actorId: ctx.actorId,
+      opKind: "pages.set_modules",
+      description: `pages.change_template layout slug=${pageRow.slug}`,
+      entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
+    });
+    return ok({
+      migratedBlocks: [...migratedBlocks],
+      droppedModules,
+    });
   },
 });
