@@ -55,9 +55,33 @@ export const addModuleToPageToolInput = z
   })
   .strict();
 
-export const AI_TOOLS = ["edit_module", "site_memory_propose", "add_module_to_page"] as const;
+/**
+ * P6.7.3 — `add_module_to_template` AI tool. Same shape as
+ * `add_module_to_page` but fans the new module out to every page using
+ * the target template, inserting at the same block + position. Used
+ * for "site-wide" content (a global footer, a header banner, etc.).
+ */
+export const addModuleToTemplateToolInput = z
+  .object({
+    templateId: z.string().uuid(),
+    blockName: z.string().min(1).max(80),
+    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+    displayName: z.string().min(1).max(128),
+    html: z.string().min(1).max(50_000),
+    css: z.string().max(50_000).optional(),
+    js: z.string().max(50_000).optional(),
+  })
+  .strict();
+
+export const AI_TOOLS = [
+  "edit_module",
+  "site_memory_propose",
+  "add_module_to_page",
+  "add_module_to_template",
+] as const;
 export type AiToolName = (typeof AI_TOOLS)[number];
 export type AddModuleToPageToolInput = z.infer<typeof addModuleToPageToolInput>;
+export type AddModuleToTemplateToolInput = z.infer<typeof addModuleToTemplateToolInput>;
 
 /** Chat ops input shapes — used by the SvelteKit form actions. */
 export const chatCreateSessionInput = z

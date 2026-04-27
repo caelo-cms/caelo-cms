@@ -202,7 +202,10 @@ export async function* runChatTurn(
       }
       lines.push("");
       lines.push(
-        "Tool guidance: edit_module to change an existing module; add_module_to_page to insert a NEW module into a block on this page (use position='top' or 'bottom' or a number). Always reference real module ids from the list above.",
+        "Tool guidance:",
+        "- edit_module — change an existing module's content (always reference a real module id from the list above).",
+        "- add_module_to_page — insert a NEW module into a block on THIS page only. Use this for one-off content (a CTA on the homepage, an FAQ section on /about). Position is 'top', 'bottom', or a 0-based index.",
+        '- add_module_to_template — create a NEW module and fan it out to EVERY page using this template at the same block + position. Use this only when the user explicitly asks for site-wide content ("add a footer to every page", "a header banner across the site"). Pass the templateId from this block\'s header.',
       );
       pageContextBlock = lines.join("\n");
     }

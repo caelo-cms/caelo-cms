@@ -127,9 +127,10 @@ describe("modules CRUD", () => {
     expect(b.ok).toBe(false);
   });
 
-  it("rejects an AI actor (out of scope until P5)", async () => {
+  it("accepts an AI actor (P6.7.3 — add_module_to_page / template tools chain modules.create)", async () => {
+    // Use the seed AI actor row so the audit_events FK is satisfied.
     const aiCtx: ExecutionContext = {
-      actorId: "11111111-1111-4111-8111-111111111111",
+      actorId: "00000000-0000-0000-0000-000000000a1a",
       actorKind: "ai",
       requestId: "content-modules-ai-test",
     };
@@ -138,8 +139,6 @@ describe("modules CRUD", () => {
       displayName: "Nav",
       html: "<nav></nav>",
     });
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect((r.error as { kind: string }).kind).toBe("ActorScopeRejected");
+    expect(r.ok).toBe(true);
   });
 });

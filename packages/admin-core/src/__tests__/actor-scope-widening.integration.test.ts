@@ -37,7 +37,7 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx`DELETE FROM modules WHERE slug = ${SLUG}`;
+      await tx`DELETE FROM modules WHERE slug LIKE ${`${SLUG}%`}`;
     });
   } finally {
     await sql.end();
@@ -73,15 +73,13 @@ describe("P5 actor scope: modules.update widened to include AI", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("AI cannot call modules.create (still blocked at the validator)", async () => {
+  it("AI can call modules.create (P6.7.3 — drives add_module_to_page / add_module_to_template)", async () => {
     const r = await execute(registry, adapter, AI, "modules.create", {
-      slug: `${SLUG}-blocked`,
+      slug: `${SLUG}-ai-allowed`,
       displayName: "Y",
       html: "<p>x</p>",
     });
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect((r.error as { kind: string }).kind).toBe("ActorScopeRejected");
+    expect(r.ok).toBe(true);
   });
 
   it("AI cannot call pages.update", async () => {

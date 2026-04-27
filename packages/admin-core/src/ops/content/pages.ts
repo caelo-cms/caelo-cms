@@ -91,7 +91,9 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
 
 export const listPagesOp = defineOperation({
   name: "pages.list",
-  actorScope: ["human", "system"],
+  // P6.7.3 — AI lists pages from add_module_to_template to fan a new
+  // module out to every page sharing a template. Read-only.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({
     includeDeleted: z.boolean().default(false),
