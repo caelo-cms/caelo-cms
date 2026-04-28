@@ -85,13 +85,14 @@
 <div class="flex min-h-screen w-full">
   <aside class="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r bg-card md:flex">
     <div class="flex h-14 items-center border-b px-4">
-      <a href="/" class="flex items-center gap-2 font-semibold">
+      <a href="/" class="flex items-center gap-2 font-semibold" aria-label="Caelo CMS — Dashboard">
         <span
-          class="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground"
+          class="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-sm font-bold text-primary-foreground"
+          aria-hidden="true"
         >
           C
         </span>
-        Caelo
+        <span class="text-base tracking-tight">Caelo</span>
       </a>
     </div>
     <nav aria-label="Main navigation" class="flex-1 space-y-1 px-2 py-4">
@@ -102,7 +103,7 @@
         <a
           href={item.href}
           class={cn(
-            "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
+            "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors motion-reduce:transition-none",
             Active
               ? "bg-accent text-accent-foreground"
               : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",

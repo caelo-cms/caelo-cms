@@ -1,5 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { Layout } from "lucide-svelte";
+  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
@@ -42,7 +44,11 @@
     </CardHeader>
     <CardContent>
       {#if data.templates.length === 0}
-        <p class="text-sm text-muted-foreground"><em>No templates yet.</em></p>
+        <EmptyStatePlaceholder
+          icon={Layout}
+          title="No templates yet"
+          description="Templates define the named blocks (header, content, footer) a page-type provides. Create one below to start binding pages to it."
+        />
       {:else}
         <Table>
           <TableHeader>

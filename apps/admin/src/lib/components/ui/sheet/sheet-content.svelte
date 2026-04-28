@@ -21,7 +21,7 @@
   <DialogPrimitive.Content bind:ref class={cn(sheetVariants({ side }), className)} {...rest}>
     {@render children?.()}
     <DialogPrimitive.Close
-      class="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100"
+      class="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity motion-reduce:transition-none hover:opacity-100"
     >
       <X class="size-4" />
       <span class="sr-only">Close</span>

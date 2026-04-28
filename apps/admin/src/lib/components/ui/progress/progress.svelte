@@ -19,7 +19,7 @@
   class={cn("relative h-2 w-full overflow-hidden rounded-full bg-secondary", className)}
 >
   <div
-    class="h-full bg-primary transition-all"
+    class="h-full bg-primary transition-all motion-reduce:transition-none"
     style:width={`${pct}%`}
   ></div>
 </div>

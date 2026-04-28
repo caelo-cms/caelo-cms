@@ -17,7 +17,7 @@
     { href: "/security/ai", label: "AI provider", desc: "Anthropic configuration + active provider", icon: Bot },
     { href: "/security/deployments", label: "Deployments", desc: "Ops view — dev / staging / production + promote", icon: Rocket },
     { href: "/security/costs", label: "AI cost controls", desc: "Token + spend dashboard", icon: Coins },
-    { href: "/security/domains", label: "Domains", desc: "Populated in P9 / P14", icon: Globe },
+    { href: "/security/domains", label: "Domains", desc: "Locale + URL strategies, DNS records (lands with i18n + provisioning)", icon: Globe },
   ];
 </script>
 

@@ -57,7 +57,9 @@
       </CardHeader>
       <CardContent>
         {#if group.sets.length === 0}
-          <p class="text-sm text-muted-foreground">No {group.label.toLowerCase()} yet.</p>
+          <p class="text-sm text-muted-foreground">
+            No {group.label.toLowerCase()} yet — click "+ New" above to create one.
+          </p>
         {:else}
           <ul class="space-y-2">
             {#each group.sets as set (set.id)}

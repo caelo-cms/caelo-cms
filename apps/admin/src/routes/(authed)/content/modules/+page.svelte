@@ -1,5 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { Layers } from "lucide-svelte";
+  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
@@ -40,7 +42,11 @@
     </CardHeader>
     <CardContent>
       {#if data.modules.length === 0}
-        <p class="text-sm text-muted-foreground"><em>No modules yet.</em></p>
+        <EmptyStatePlaceholder
+          icon={Layers}
+          title="No modules yet"
+          description="Modules hold the HTML, CSS, and JS that pages assemble. Create your first one below to use it on a page."
+        />
       {:else}
         <Table>
           <TableHeader>

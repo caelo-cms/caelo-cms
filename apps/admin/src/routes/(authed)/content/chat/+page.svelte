@@ -1,5 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { MessageSquare } from "lucide-svelte";
+  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -38,7 +40,11 @@
     </CardHeader>
     <CardContent>
       {#if data.sessions.length === 0}
-        <p class="text-sm text-muted-foreground"><em>No chats yet.</em></p>
+        <EmptyStatePlaceholder
+          icon={MessageSquare}
+          title="No chats yet"
+          description="Chats are how you ask the AI to make changes. Click 'Live edit' on the sidebar or 'New chat' below to start one."
+        />
       {:else}
         <Table>
           <TableHeader>

@@ -1,5 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { Rocket } from "lucide-svelte";
+  import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
   import { Badge, type BadgeVariant } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
@@ -102,7 +104,11 @@
     </CardHeader>
     <CardContent>
       {#if data.runs.length === 0}
-        <p class="text-sm text-muted-foreground"><em>No deploy runs yet.</em></p>
+        <EmptyStatePlaceholder
+          icon={Rocket}
+          title="No deploy runs yet"
+          description="Trigger a build for staging or production from the Targets section above. Runs land here with progress + history."
+        />
       {:else}
         <Table>
           <TableHeader>

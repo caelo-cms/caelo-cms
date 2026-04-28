@@ -1,7 +1,10 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { enhance } from "$app/forms";
+  import { pageCreateSchema } from "@caelo/shared";
+  import { FileText } from "lucide-svelte";
   import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
+  import { bindZodForm } from "$lib/forms/zod-bind.svelte.js";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -25,6 +28,12 @@
   } from "$lib/components/ui/table/index.js";
 
   let { data, form } = $props();
+
+  // P6.6a — client-side Zod validation mirrors the same schema the
+  // server enforces, so the user sees per-field errors as they type.
+  // Slug uniqueness still requires a server round-trip; that error
+  // surfaces via the `form?.error` Alert above.
+  const createForm = bindZodForm(pageCreateSchema, { locale: "en", status: "draft" });
 </script>
 
 <div class="space-y-6">
@@ -66,8 +75,9 @@
     <CardContent>
       {#if data.pages.length === 0}
         <EmptyStatePlaceholder
+          icon={FileText}
           title="No pages yet"
-          description="Create your first page below to start composing modules."
+          description="Pages are how visitors find your site. Create one below to start composing modules into a published URL."
         />
       {:else}
         <Table>
@@ -139,26 +149,73 @@
           <input type="hidden" name="_csrf" value={data.csrfToken} />
           <div class="space-y-2">
             <Label for="slug">Slug</Label>
-            <Input id="slug" name="slug" type="text" pattern="[a-z0-9](?:[a-z0-9-]{'{0,62}'}[a-z0-9])?" required />
+            <Input
+              id="slug"
+              name="slug"
+              type="text"
+              pattern="[a-z0-9](?:[a-z0-9-]{'{0,62}'}[a-z0-9])?"
+              required
+              aria-invalid={createForm.errors.slug ? "true" : undefined}
+              aria-describedby={createForm.errors.slug ? "slug-err" : undefined}
+              oninput={(e) => createForm.update("slug", (e.currentTarget as HTMLInputElement).value)}
+            />
+            {#if createForm.errors.slug}
+              <p id="slug-err" class="text-xs text-destructive">{createForm.errors.slug}</p>
+            {/if}
           </div>
           <div class="space-y-2">
             <Label for="locale">Locale</Label>
-            <Input id="locale" name="locale" type="text" value="en" pattern="[a-z]{'{2}'}(-[A-Z]{'{2}'})?" required />
+            <Input
+              id="locale"
+              name="locale"
+              type="text"
+              value="en"
+              pattern="[a-z]{'{2}'}(-[A-Z]{'{2}'})?"
+              required
+              aria-invalid={createForm.errors.locale ? "true" : undefined}
+              aria-describedby={createForm.errors.locale ? "locale-err" : undefined}
+              oninput={(e) =>
+                createForm.update("locale", (e.currentTarget as HTMLInputElement).value)}
+            />
+            {#if createForm.errors.locale}
+              <p id="locale-err" class="text-xs text-destructive">{createForm.errors.locale}</p>
+            {/if}
           </div>
           <div class="space-y-2">
             <Label for="title">Title</Label>
-            <Input id="title" name="title" type="text" required />
+            <Input
+              id="title"
+              name="title"
+              type="text"
+              required
+              aria-invalid={createForm.errors.title ? "true" : undefined}
+              aria-describedby={createForm.errors.title ? "title-err" : undefined}
+              oninput={(e) =>
+                createForm.update("title", (e.currentTarget as HTMLInputElement).value)}
+            />
+            {#if createForm.errors.title}
+              <p id="title-err" class="text-xs text-destructive">{createForm.errors.title}</p>
+            {/if}
           </div>
           <div class="space-y-2">
             <Label for="templateId">Template</Label>
-            <Select id="templateId" name="templateId" required>
+            <Select
+              id="templateId"
+              name="templateId"
+              required
+              onchange={(e) =>
+                createForm.update(
+                  "templateId",
+                  (e.currentTarget as HTMLSelectElement).value || undefined,
+                )}
+            >
               {#each data.templates as t (t.id)}
                 <option value={t.id}>{t.slug} — {t.displayName}</option>
               {/each}
             </Select>
           </div>
           <div class="md:col-span-2">
-            <Button type="submit">Create</Button>
+            <Button type="submit" disabled={!createForm.valid}>Create</Button>
           </div>
         </form>
       {/if}
