@@ -3,6 +3,7 @@
   import { page } from "$app/state";
   import {
     FileText,
+    Image as ImageIcon,
     Layers,
     Layout,
     LayoutDashboard,
@@ -41,6 +42,7 @@
       { href: "/edit", label: "Live edit", icon: Wand2, show: has("content.write") },
       { href: "/content/pages", label: "Pages", icon: FileText, show: has("content.read") },
       { href: "/content/modules", label: "Modules", icon: Layers, show: has("content.read") },
+      { href: "/content/media", label: "Media", icon: ImageIcon, show: has("content.read") },
       {
         href: "/content/templates",
         label: "Templates",

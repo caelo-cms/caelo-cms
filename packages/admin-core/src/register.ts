@@ -65,6 +65,18 @@ import {
   triggerDeployOp,
   updateDeployProgressOp,
 } from "./ops/deploy.js";
+import {
+  mediaDeleteOp,
+  mediaGetOp,
+  mediaGetSettingsOp,
+  mediaListOp,
+  mediaListUsagesOp,
+  mediaRecentForAiOp,
+  mediaRecordUsageOp,
+  mediaUpdateAltOp,
+  mediaUploadOp,
+  setMediaCdnOp,
+} from "./ops/media.js";
 import { aggregateNotificationsOp } from "./ops/notifications.js";
 import {
   createRedirectOp,
@@ -208,4 +220,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(aggregateNotificationsOp);
   registry.register(completeOnboardingOp);
   registry.register(listBranchEditedModulesOp);
+  // P7 — media library.
+  registry.register(mediaUploadOp);
+  registry.register(mediaListOp);
+  registry.register(mediaGetOp);
+  registry.register(mediaUpdateAltOp);
+  registry.register(mediaDeleteOp);
+  registry.register(mediaRecordUsageOp);
+  registry.register(mediaRecentForAiOp);
+  registry.register(mediaListUsagesOp);
+  registry.register(mediaGetSettingsOp);
+  registry.register(setMediaCdnOp);
 }

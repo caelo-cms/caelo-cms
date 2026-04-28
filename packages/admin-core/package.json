@@ -17,7 +17,9 @@
     "@caelo/shared": "workspace:*",
     "@caelo/static-generator": "workspace:*",
     "drizzle-orm": "0.45.2",
+    "file-type": "^19",
     "htmlparser2": "^12.0.0",
+    "sharp": "^0.34",
     "zod": "4.3.6"
   }
 }

@@ -73,6 +73,8 @@ export interface VolatileContext {
   readonly layoutsBlock?: string;
   /** P6.7.6 — site_defaults singleton + per-template layout binding. */
   readonly siteDefaultsBlock?: string;
+  /** P7 — recent + most-used media so the AI can pick existing assets. */
+  readonly mediaBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -124,6 +126,9 @@ export function composeSystemPromptChunks(
   }
   if (volatile.siteDefaultsBlock && volatile.siteDefaultsBlock.trim().length > 0) {
     chunks.push({ body: volatile.siteDefaultsBlock, cacheable: false, label: "site-defaults" });
+  }
+  if (volatile.mediaBlock && volatile.mediaBlock.trim().length > 0) {
+    chunks.push({ body: volatile.mediaBlock, cacheable: false, label: "media" });
   }
   if (volatile.pageContextBlock && volatile.pageContextBlock.trim().length > 0) {
     chunks.push({ body: volatile.pageContextBlock, cacheable: false, label: "page-context" });

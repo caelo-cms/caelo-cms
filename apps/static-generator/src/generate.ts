@@ -27,6 +27,7 @@ import { join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo/query-api";
 import { ComposeError, composePageWithLayout } from "@caelo/shared";
 import { sql } from "drizzle-orm";
+import { readMediaSettings, runMediaPass } from "./media-pass.js";
 
 export interface DeployTarget {
   readonly id: string;
@@ -224,6 +225,12 @@ export async function generateSite(args: {
   const variantEntries: VariantManifestEntry[] = [];
   args.onProgress?.({ pagesDone: 0, pagesTotal: pageRows.length });
 
+  // Compose pages first (in memory), then run the media pass to
+  // rewrite /_caelo/media/... URLs and copy variant bytes into
+  // _assets/, then write the per-page HTML files. Two-pass keeps the
+  // media-pass deduped across pages — every (asset, variant) pair is
+  // copied once even when 50 pages reference it.
+  const composedPages: { html: string; pageSlug: string; relPath: string }[] = [];
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
     if (!page) continue;
@@ -272,11 +279,11 @@ export async function generateSite(args: {
       throw e;
     }
 
-    const relPath = pageOutputPath(page.slug);
-    const filePath = join(buildDir, relPath);
-    await mkdir(join(filePath, ".."), { recursive: true });
-    await writeFile(filePath, composed.html, "utf8");
-    fileCount += 1;
+    composedPages.push({
+      html: composed.html,
+      pageSlug: page.slug,
+      relPath: pageOutputPath(page.slug),
+    });
 
     // A/B variant emission hook: when modules carry experiment_id +
     // variant_label (P4 schema columns, P12A populates), the generator
@@ -300,6 +307,30 @@ export async function generateSite(args: {
       }
     }
     args.onProgress?.({ pagesDone: i + 1, pagesTotal: pageRows.length });
+  }
+
+  // P7 — media pass. Mutates each composedPages[i].html in place to
+  // swap /_caelo/media/... URLs for /_assets/...; copies variant bytes
+  // into <buildDir>/_assets/<asset-id>/<variant>.<ext>; emits the CDN
+  // manifest (always, even when CDN copy is off — manifest is empty
+  // then). No-op when the build references no media at all.
+  const mediaSettings = await readMediaSettings(tx);
+  const mediaRoot = resolve(root, process.env["MEDIA_ROOT_DIR"] ?? "data/media");
+  await runMediaPass({
+    tx,
+    buildDir,
+    pages: composedPages,
+    mediaRoot,
+    settings: mediaSettings,
+  });
+  // cdn_manifest.json is always written by runMediaPass.
+  fileCount += 1;
+
+  for (const p of composedPages) {
+    const filePath = join(buildDir, p.relPath);
+    await mkdir(join(filePath, ".."), { recursive: true });
+    await writeFile(filePath, p.html, "utf8");
+    fileCount += 1;
   }
 
   await writeFile(join(buildDir, "robots.txt"), buildRobotsTxt(target.robotsDefault), "utf8");

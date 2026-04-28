@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { PostgresRateLimiter, registerAdminOps, setDeployBridge } from "@caelo/admin-core";
+import {
+  LocalVolumeAdapter,
+  PostgresRateLimiter,
+  registerAdminOps,
+  setDeployBridge,
+  setMediaStorage,
+} from "@caelo/admin-core";
 import { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
 
 /**
@@ -48,6 +54,12 @@ export function getQueryContext(): QueryContext {
   // subprocess and writes progress rows back via the same registry the
   // host uses. We hand it the registry+adapter pair here.
   setDeployBridge({ registry, adapter });
+
+  // P7 — media storage. Local volume adapter with rootDir from env;
+  // cloud adapters land in P15. The directory is created lazily on
+  // first put (LocalVolumeAdapter handles `mkdir -p`).
+  const mediaRoot = process.env["MEDIA_ROOT_DIR"] ?? "data/media";
+  setMediaStorage(new LocalVolumeAdapter(mediaRoot));
 
   _ctx = { adapter, registry, loginLimiter };
   return _ctx;

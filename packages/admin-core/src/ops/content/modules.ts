@@ -7,12 +7,38 @@
  */
 
 import { defineOperation } from "@caelo/query-api";
-import { err, moduleCreateSchema, moduleUpdateSchema, ok } from "@caelo/shared";
+import { err, extractMediaRefs, moduleCreateSchema, moduleUpdateSchema, ok } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { emitSnapshot, loadModuleState } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
+
+/**
+ * Diff media references between two HTML strings and apply usage-count
+ * deltas. Called from create / update / delete handlers so the AI's
+ * `## Media` system-prompt block surfaces frequently-used assets.
+ */
+async function applyMediaUsageDelta(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  prevHtml: string,
+  nextHtml: string,
+): Promise<void> {
+  const prev = new Set(extractMediaRefs(prevHtml).map((r) => r.assetId));
+  const next = new Set(extractMediaRefs(nextHtml).map((r) => r.assetId));
+  const deltas = new Map<string, number>();
+  for (const id of next) if (!prev.has(id)) deltas.set(id, (deltas.get(id) ?? 0) + 1);
+  for (const id of prev) if (!next.has(id)) deltas.set(id, (deltas.get(id) ?? 0) - 1);
+  if (deltas.size === 0) return;
+  for (const [assetId, delta] of deltas) {
+    await tx.execute(sql`
+      UPDATE media_assets
+      SET usage_count = GREATEST(0, usage_count + ${delta}),
+          last_used_at = CASE WHEN ${delta} > 0 THEN now() ELSE last_used_at END
+      WHERE id = ${assetId}::uuid AND deleted_at IS NULL
+    `);
+  }
+}
 
 const moduleRowSchema = z.object({
   id: z.string(),
@@ -135,6 +161,9 @@ export const createModuleOp = defineOperation({
         message: "no id returned",
       });
     }
+    // P7 usage-tracker: a fresh module's HTML may already reference
+    // existing media (AI tool, paste-from-template, etc.).
+    await applyMediaUsageDelta(tx, "", input.html);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       operation: "modules.create",
@@ -166,10 +195,12 @@ export const updateModuleOp = defineOperation({
   input: moduleUpdateSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    const existing = (await tx.execute(sql`
-      SELECT 1 FROM modules WHERE id = ${input.moduleId}::uuid AND deleted_at IS NULL LIMIT 1
-    `)) as unknown as { exists: number }[];
-    if (existing.length === 0) {
+    // Fetch prev html before the update so the usage-tracker can diff.
+    const prevRows = (await tx.execute(sql`
+      SELECT html FROM modules WHERE id = ${input.moduleId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as { html: string }[];
+    const prev = prevRows[0];
+    if (!prev) {
       return err({
         kind: "HandlerError",
         operation: "modules.update",
@@ -186,6 +217,10 @@ export const updateModuleOp = defineOperation({
     await tx.execute(sql`
       UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid
     `);
+    // P7 usage-tracker: only diff when html changed.
+    if (input.html !== undefined) {
+      await applyMediaUsageDelta(tx, prev.html, input.html);
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       operation: "modules.update",
@@ -224,8 +259,8 @@ export const deleteModuleOp = defineOperation({
   output: z.object({}),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT deleted_at FROM modules WHERE id = ${input.moduleId}::uuid
-    `)) as unknown as { deleted_at: Date | null }[];
+      SELECT deleted_at, html FROM modules WHERE id = ${input.moduleId}::uuid
+    `)) as unknown as { deleted_at: Date | null; html: string }[];
     const target = rows[0];
     if (!target) {
       return err({
@@ -248,6 +283,8 @@ export const deleteModuleOp = defineOperation({
     await tx.execute(sql`
       UPDATE modules SET deleted_at = now() WHERE id = ${input.moduleId}::uuid
     `);
+    // P7 usage-tracker: deletion drops every reference the module held.
+    await applyMediaUsageDelta(tx, target.html, "");
     await recordAudit(tx, {
       actorId: ctx.actorId,
       operation: "modules.delete",

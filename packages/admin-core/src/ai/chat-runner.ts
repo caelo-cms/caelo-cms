@@ -384,6 +384,45 @@ export async function* runChatTurn(
     ].join("\n");
   }
 
+  // P7 — recent + most-used media so the AI can pick existing assets
+  // before suggesting an upload. URLs use the WebP-800 variant for
+  // raster images, `orig` for SVG / PDF / video. The composed page is
+  // already in `pageContextBlock` with literal /_caelo/media/... URLs;
+  // this block surfaces the *catalogue* of what's available beyond
+  // what the page currently uses.
+  let mediaBlock: string | undefined;
+  const mediaR = await execute(registry, adapter, humanCtx, "media.recent_for_ai", { limit: 30 });
+  if (mediaR.ok) {
+    const assets = (
+      mediaR.value as {
+        assets: {
+          id: string;
+          mime: string;
+          alt: string;
+          width: number | null;
+          height: number | null;
+          originalName: string;
+          usageCount: number;
+        }[];
+      }
+    ).assets;
+    if (assets.length > 0) {
+      const RASTER = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
+      const lines = assets.map((a) => {
+        const variant = RASTER.has(a.mime) ? "webp-800" : "orig";
+        const dims = a.width && a.height ? `, ${a.width}x${a.height}` : "";
+        const alt = a.alt ? `, alt="${a.alt}"` : "";
+        const used = a.usageCount > 0 ? ` (used ${a.usageCount}×)` : "";
+        return `- ${a.originalName} (${a.mime}${dims}${alt})${used} → /_caelo/media/${a.id}/${variant}`;
+      });
+      mediaBlock = [
+        "# Media (recent + frequently used)",
+        'Drop these URLs straight into module HTML via `<img src="..." alt="...">`. Always include a meaningful alt; if alt is empty above, ask the user or call `set_media_alt` if you have visual context. To search beyond this slice, call `find_media({ query, mime?, limit? })`. If nothing matches, ask the user to upload via /content/media.',
+        ...lines,
+      ].join("\n");
+    }
+  }
+
   const systemChunks = composeSystemPromptChunks(
     memory,
     tools.catalogue().map((t) => ({ name: t.name, description: t.description })),
@@ -395,6 +434,7 @@ export async function* runChatTurn(
       structuredSetsBlock,
       layoutsBlock,
       siteDefaultsBlock,
+      mediaBlock,
     },
   );
 

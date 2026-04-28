@@ -11,11 +11,13 @@ import { deletePageTool } from "./delete-page.js";
 import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { editModuleTool } from "./edit-module.js";
+import { findMediaTool } from "./find-media.js";
 import { moveModuleTool } from "./move-module.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
 import { renamePageTool } from "./rename-page.js";
 import { reorderModuleTool } from "./reorder-module.js";
+import { setMediaAltTool } from "./set-media-alt.js";
 import { setNavMenuTool } from "./set-nav-menu.js";
 import { setPageTitleTool } from "./set-page-title.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
@@ -54,6 +56,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(moveModuleTool);
   registry.register(reorderModuleTool);
   registry.register(setNavMenuTool);
+  // P7 — media library.
+  registry.register(findMediaTool);
+  registry.register(setMediaAltTool);
   return registry;
 }
 

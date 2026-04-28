@@ -6,6 +6,7 @@ export * from "./ai-tools.js";
 export * from "./auth-forms.js";
 export * from "./content.js";
 export * from "./context.js";
+export * from "./media.js";
 export * from "./preview-compose.js";
 export * from "./preview-scanner.js";
 export * from "./result.js";

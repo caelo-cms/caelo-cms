@@ -419,6 +419,48 @@ export const setNavMenuToolInput = z
   })
   .strict();
 
+/**
+ * P7 — `find_media`. Searches the media library by alt-text /
+ * filename / mime. Returns up to `limit` matches with the WebP-800
+ * URL pre-resolved (or `orig` for non-image kinds). The system prompt
+ * already lists recent + frequently-used media; this tool covers the
+ * "search for an image of a sunlit office" case where the asset isn't
+ * in the recent slice.
+ */
+export const findMediaToolInput = z
+  .object({
+    query: z.string().max(256).optional(),
+    mime: z
+      .enum([
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/avif",
+        "image/gif",
+        "image/svg+xml",
+        "application/pdf",
+        "video/mp4",
+      ])
+      .optional(),
+    limit: z.number().int().min(1).max(50).default(15),
+  })
+  .strict();
+export type FindMediaToolInput = z.infer<typeof findMediaToolInput>;
+
+/**
+ * P7 — `set_media_alt`. AI may improve a11y on an existing asset
+ * without a human round-trip (e.g. when the editor uploaded an image
+ * with the default alt and the AI reads its content). Updates only
+ * the alt field on `media_assets`.
+ */
+export const setMediaAltToolInput = z
+  .object({
+    assetId: z.string().uuid(),
+    alt: z.string().max(2048),
+  })
+  .strict();
+export type SetMediaAltToolInput = z.infer<typeof setMediaAltToolInput>;
+
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
