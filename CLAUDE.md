@@ -15,168 +15,98 @@ Caelo is an AI-first, open-source CMS, MPL 2.0 licensed. Key architectural ancho
 - **Module / snapshot architecture** (§3.2, §5) — pages assemble modules by live reference; every write emits a snapshot; snapshots group by chat task; chat-keyed Undo is the primary history surface.
 - **Skills system** (§17A) — Claude-style skills extend AI behaviour; auto-engaged per call; user can override per chat; new skills require human Owner site-wide activation.
 
-### Architecture at a glance
+### Content layer wiring — how a page becomes HTML
 
-A request never reaches Postgres without passing through the Query API → Validator → Adapter chain. This is the chokepoint that makes RLS, audit, snapshots, and per-actor scoping enforceable at all. Read this top-to-bottom when in doubt about where new code belongs.
+The content layer has four primitives — **layout, template, page, module** — plus a sideband of **structured sets** for typed lists. They wire together top-down: a layout owns site-wide chrome, a template defines a page-type's blocks, a page binds to one template and references modules into the template's blocks, modules are the content units. Composition is two-pass: template fills first, then the layout wraps it.
 
 ```
-                       ┌──────────────────────────────────────────────┐
-                       │  Public visitors (browsers, search engines)  │
-                       └──────────────┬───────────────────────────────┘
-                                      │ HTTPS
-                                      ▼
-                ┌──────────────────────────────────────────────────┐
-                │  Caddy (reverse proxy)                            │
-                │  staging :8081 (noindex)   production :8082       │
-                └──────┬───────────────────────────┬───────────────┘
-                       │ static files              │ /api (P12+)
-                       ▼                           ▼
-   ┌──────────────────────────────────┐   ┌──────────────────────────┐
-   │  output/<env>/current/            │   │  apps/api-gateway        │
-   │  HTML + assets emitted by         │   │  rate limit, PoW, public │
-   │  apps/static-generator            │   │  plugin write endpoints  │
-   │  (one file per page+locale)       │   │  (uses cms_public DB)    │
-   └──────────────────────────────────┘   └────────┬─────────────────┘
-                                                   │
-═══════════════════════════════════════════════════╪════════════════════════
-   AUTHORING SIDE (admin)                          │   PUBLIC SIDE (visitors)
-═══════════════════════════════════════════════════╪════════════════════════
-                                                   │
-   ┌─ Owners / Editors / Reviewers ─┐              │
-   │  Browser                        │              │
-   └──────────────┬──────────────────┘              │
-                  │ HTTPS, session cookie           │
-                  ▼                                  │
-   ┌────────────────────────────────────────────┐   │
-   │  apps/admin (SvelteKit + svelte-adapter-bun)│   │
-   │  ┌─ Layouts / routes ─────────────────────┐ │   │
-   │  │  /edit  (chrome-less live preview +    │ │   │
-   │  │         floating chat overlay,         │ │   │
-   │  │         iframe diff, Cmd-K palette)    │ │   │
-   │  │  /content/pages, /modules, /templates, │ │   │
-   │  │         /chat                          │ │   │
-   │  │  /security/users, /roles, /layouts,    │ │   │
-   │  │         /site-defaults, /structured,   │ │   │
-   │  │         /deployments, /ai, /costs      │ │   │
-   │  │  /onboarding (first-login tour)        │ │   │
-   │  └────────────────────────────────────────┘ │   │
-   │  Form actions, page loaders, /api endpoints │   │
-   └──────────────┬─────────────────────────────┘   │
-                  │ same process                      │
-                  ▼                                    │
-   ┌────────────────────────────────────────────────┐ │
-   │  packages/admin-core                            │ │
-   │  ┌─ AI ─────────────────────────────────────┐   │ │
-   │  │  chat-runner   provider abstraction       │   │ │
-   │  │  tool registry (edit_module, create_page, │   │ │
-   │  │      add_module_to_layout, change_template,│   │ │
-   │  │      set_nav_menu, …)                     │   │ │
-   │  │  system-prompt composer                   │   │ │
-   │  └───┬───────────────────────────────────────┘   │ │
-   │      │                                            │ │
-   │  ┌───▼─ Ops registry (29 files, ~80 ops) ───┐    │ │
-   │  │  pages.* (create/update/duplicate/         │   │ │
-   │  │    change_template/set_modules/…)          │   │ │
-   │  │  modules.*  templates.*  layouts.*          │   │ │
-   │  │  layout_modules.*  layout_blocks.*          │   │ │
-   │  │  template_blocks.*  site_defaults.*         │   │ │
-   │  │  structured_sets.*  redirects.*             │   │ │
-   │  │  chat.* (sessions, messages, branches,      │   │ │
-   │  │    publish, branch_edited_modules)          │   │ │
-   │  │  snapshots.* (revert_site/module/template/  │   │ │
-   │  │    page, list, impact, archive)             │   │ │
-   │  │  deploy.* (list_targets/runs, trigger,      │   │ │
-   │  │    promote, rollback, update_progress)      │   │ │
-   │  │  notifications.aggregate                    │   │ │
-   │  │  users.*  roles.*  auth.*                   │   │ │
-   │  │                                             │   │ │
-   │  │  Each op declares `actorScope`:             │   │ │
-   │  │    ["human","ai","system"]                  │   │ │
-   │  │  …rejected here if the actor isn't allowed. │   │ │
-   │  └───┬─────────────────────────────────────────┘   │ │
-   │      │ recordAudit + emitSnapshot run inside      │ │
-   │      │ every mutation handler's transaction.      │ │
-   │      ▼                                             │ │
-   │  audit.ts  snapshots/emit.ts                      │ │
-   └──────┬─────────────────────────────────────────────┘ │
-          │                                                │
-          ▼                                                │
-   ┌──────────────────────────────────────────────────┐    │
-   │  packages/query-api                               │    │
-   │  defineOperation → Validator (Zod .strict)        │    │
-   │  → DatabaseAdapter (Bun SQL + drizzle-orm)        │    │
-   │  → transaction with `set_config('caelo.actor_*')` │    │
-   │  → handler runs RLS-scoped per actor              │    │
-   └──────┬───────────────────────────────────────────┘    │
-          │                                                  │
-          ▼                                                  ▼
-   ┌────────────────────────────┐         ┌────────────────────────────┐
-   │  Postgres: cms_admin DB     │         │  Postgres: cms_public DB    │
-   │  role: admin_role (FORCE RLS│         │  role: public_role          │
-   │  on every table; per-actor  │         │  (INSERT-only, per-plugin   │
-   │  policies via               │         │  scoping)                   │
-   │  current_setting('caelo.    │         │                              │
-   │  actor_kind' / 'actor_id')) │         │  Plugin tables, comments,   │
-   │                             │         │  form submissions, sessions │
-   │  pages → templates →        │         │                              │
-   │    layouts (chrome)         │         └────────────────────────────┘
-   │  modules (live refs)        │           ▲ admin_role NEVER reaches
-   │  page_modules,              │           │ here. Strict role isolation.
-   │  layout_modules             │
-   │  site_snapshots →           │
-   │    {page,module,template,   │
-   │     pageLayout}_snapshots   │
-   │  chat_sessions,             │
-   │    chat_messages,           │
-   │    chat_branches            │
-   │  structured_sets,           │
-   │    site_defaults,           │
-   │    site_ai_memory           │
-   │  deploy_runs, deploy_targets│
-   │  redirects, audit_events,   │
-   │    rate_limit_buckets       │
-   │  users, sessions, actors,   │
-   │    roles, user_roles,       │
-   │    permissions              │
-   └────────────────────────────┘
+                         LAYOUT  (site-wide chrome)
+                         ───────────────────────────────────────
+                         html with named <caelo-slot> elements
+                         e.g. <header><caelo-slot name="header"/>
+                              <main><caelo-slot name="content"/>
+                              <footer><caelo-slot name="footer"/>
+                         layout_blocks: header, content, footer
+                          ▲                            │
+                          │                            │ fills its non-content
+              templates.layout_id                      │ blocks (header / footer)
+                          │                            │ from
+                          │                            ▼
+                         TEMPLATE  (page-type structure)             ┌──────────┐
+                         ───────────────────────────────────────     │  layout_ │
+                         html, fills the layout's `content` slot     │  modules │
+                         template_blocks: hero, body, sidebar, …     │  rows    │
+                          ▲                            ▲             └──────────┘
+                          │                            │                  │
+              pages.template_id                        │                  │ each row:
+                          │                            │                  │ (layout, block,
+                          │                            │ fills its         │  position) → module
+                          ▼                            │ blocks from       ▼
+                         PAGE  (the URL surface)                    ┌──────────┐
+                         ───────────────────────────────────────    │  MODULE  │
+                         slug, locale, title, status                │ html+css │
+                         pages.template_id, pages.layout_id (via)   │  +js     │
+                         live-references modules through            │ (live    │
+                          │                            ▲            │  refs)   │
+                          │                            │            └──────────┘
+                          ▼                            │                  ▲
+                         page_modules rows ────────────┘                  │
+                         (page, block, position) → module ────────────────┘
+                                                       reused across pages
 
-   Migrations: packages/migrations (SQL files, applied in order
-   0000…0022 — bootstrap, RLS, content, snapshots, chat, deploy,
-   live-edit, layouts, onboarding).
+         ┌───────────────────── COMPOSER (two-pass) ──────────────────────┐
+         │  packages/shared/preview-compose.ts                             │
+         │                                                                 │
+         │  pass 1: applySlotReplacements(template.html, page_modules)     │
+         │          → fills template's named slots, returns inner body     │
+         │  pass 2: applySlotReplacements(layout.html, {                   │
+         │            content: <pass-1 body>,                              │
+         │            header / footer / nav: layout_modules                │
+         │          })                                                     │
+         │                                                                 │
+         │  No-fallback: missing `content` slot in layout html →           │
+         │    `ComposeError("layout-missing-content")`, not silent render. │
+         │  Used by both /edit preview AND apps/static-generator (deploy). │
+         └─────────────────────────────────────────────────────────────────┘
 
-═══════════════════════════════════════════════════════════════════════
-   COMPOSITION FLOW (how a page becomes HTML)
-═══════════════════════════════════════════════════════════════════════
+         ┌─── STRUCTURED SETS (sideband, render-time injection) ──────────┐
+         │  packages/shared/structured-sets.ts                             │
+         │                                                                 │
+         │  kind=nav-menu  → renders into modules whose slug starts        │
+         │                   with `nav-menu-…` (header-main, footer-main)  │
+         │  kind=theme     → emits <style>:root{--token:value}</style>     │
+         │                   into <head> at compose time                   │
+         │  kind=taxonomy / tags / link-list — driven by future plugins    │
+         │                                                                 │
+         │  page-slug change rewrites every nav-menu / link-list href      │
+         │  in the same transaction as the redirect insert.                │
+         └─────────────────────────────────────────────────────────────────┘
 
-   modules ──referenced by──▶ page_modules ──belong to──▶ pages
-                                                            │
-                                                            ▼
-                                                      template
-                                                      (defines blocks)
-                                                            │
-                                                            ▼
-                                                      layout
-                                                      (site-wide chrome:
-                                                       header / content /
-                                                       footer slots)
-
-   composePageWithLayout (packages/shared/preview-compose.ts) is a
-   two-pass composer:
-     1. render the template, filling its named slots from page_modules
-     2. extract the body, substitute into the layout's
-        <caelo-slot name="content">
-   No-fallback: missing layout content slot → ComposeError, not a
-   silently-broken render.
-
-═══════════════════════════════════════════════════════════════════════
-   PROVISIONING (P14+)
-═══════════════════════════════════════════════════════════════════════
-
-   packages/provisioning  (Pulumi + TypeScript)
-     self-hosted: Docker Compose + Caddy + pgBackRest + MinIO
-     cloud:       GCP / AWS / Azure adapters (per-provider CDN,
-                  redirect generators, edge A/B split rules)
+         ┌─── SITE DEFAULTS (create-time resolver, NOT a fallback) ────────┐
+         │  pages.create / templates.create with no layoutId/templateId:   │
+         │    consult site_defaults singleton row → use those ids.         │
+         │  Render time NEVER consults defaults — missing data crashes     │
+         │  loudly per CLAUDE.md §2 no-fallbacks.                          │
+         └─────────────────────────────────────────────────────────────────┘
 ```
+
+**AI tool surface — three "add module" paths, picked by intent:**
+
+```
+   user says…                              tool                            blast radius
+   ────────────────────────────────────────────────────────────────────────────────────
+   "add a CTA on this page"            →  add_module_to_page              one page
+   "add a hero on every blog post"     →  add_module_to_template          all pages on template
+   "add a footer on every page"        →  add_module_to_layout            all pages on layout
+   "move the hero to the header"       →  move_module                     same page, cross-block
+   "show testimonials before gallery"  →  reorder_module                  same page, same block
+   "duplicate this page"               →  duplicate_page                  modules carry by reference
+   "switch this page to landing-tpl"   →  change_template                 modules migrate / orphan-disposition
+   "edit the menu"                     →  set_nav_menu                    structured_sets, kind=nav-menu
+   "make the primary brighter"         →  update_theme                    structured_sets, kind=theme
+```
+
+Mutations on layouts and site_defaults are Owner-only (`actorScope: ["human","system"]`); AI calls return `ActorScopeRejected` and the chat surfaces a permission message instead of trying again.
 
 ---
 
