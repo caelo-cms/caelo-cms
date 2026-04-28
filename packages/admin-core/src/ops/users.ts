@@ -313,3 +313,32 @@ export const deleteUserOp = defineOperation({
     return ok({});
   },
 });
+
+/**
+ * P6.6b — sets `users.onboarded_at = now()` for the calling user so
+ * the post-login layout stops redirecting them to /onboarding. Idempotent
+ * — calling on an already-onboarded user is a no-op (the UPDATE leaves
+ * the existing timestamp alone).
+ */
+export const completeOnboardingOp = defineOperation({
+  name: "users.complete_onboarding",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({}),
+  handler: async (ctx, _input, tx) => {
+    await tx.execute(sql`
+      UPDATE users
+      SET onboarded_at = COALESCE(onboarded_at, now())
+      WHERE id = ${ctx.actorId}::uuid
+    `);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "users.complete_onboarding",
+      input: {},
+      succeeded: true,
+      entityId: ctx.actorId,
+    });
+    return ok({});
+  },
+});

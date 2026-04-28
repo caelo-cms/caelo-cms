@@ -76,10 +76,17 @@ const SETUP_SCRIPT = `
       \`;
       actorId = actor[0].id;
       await tx\`
-        INSERT INTO users (id, email, password_hash, is_first_owner)
-        VALUES (\${actorId}::uuid, \${email}, \${passwordHash}, false)
+        INSERT INTO users (id, email, password_hash, is_first_owner, onboarded_at)
+        VALUES (\${actorId}::uuid, \${email}, \${passwordHash}, false, now())
       \`;
     }
+    // Defensive: existing dev-owner from prior runs may have null
+    // onboarded_at after migration 0022; bump it so the post-login
+    // redirect to /onboarding doesn't intercept the sweep.
+    await tx\`
+      UPDATE users SET onboarded_at = COALESCE(onboarded_at, now())
+      WHERE email = \${email}
+    \`;
     await tx\`
       INSERT INTO user_roles (user_id, role_id)
       SELECT \${actorId}::uuid, r.id FROM roles r WHERE r.name = 'owner'

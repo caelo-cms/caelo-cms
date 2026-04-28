@@ -35,6 +35,7 @@ export const handle: Handle = async ({ event, resolve }) => {
         csrfToken: string;
         permissions: string[];
         roles: string[];
+        onboardedAt: string | null;
       };
       user = {
         id: v.userId,
@@ -42,6 +43,7 @@ export const handle: Handle = async ({ event, resolve }) => {
         roles: v.roles,
         permissions: new Set(v.permissions),
         csrfSecret: v.csrfToken, // op output is the long-lived secret
+        onboardedAt: v.onboardedAt,
       };
     } else {
       event.cookies.delete(SESSION_COOKIE, { path: "/" });

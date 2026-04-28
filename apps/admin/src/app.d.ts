@@ -14,6 +14,8 @@ declare global {
         /** Long-lived per-session secret, server-only. Forms use a derived
          * per-render token via {@link signCsrfToken}; never expose this. */
         readonly csrfSecret: string;
+        /** P6.6b — null until the user finishes the first-login tour. */
+        readonly onboardedAt: string | null;
       } | null;
       /** ExecutionContext used by Query API ops in this request. */
       ctx: ExecutionContext;

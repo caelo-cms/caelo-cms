@@ -107,6 +107,9 @@ export const resolveSessionOp = defineOperation({
     expiresAt: z.string(),
     permissions: z.array(z.string()),
     roles: z.array(z.string()),
+    /** P6.6b — `null` means the user hasn't completed the first-login
+     *  onboarding tour; layout server-load redirects them to /onboarding. */
+    onboardedAt: z.string().nullable(),
   }),
   handler: async (_ctx, input, tx) => {
     // Soft-deleted users have their sessions wiped at delete time, but a stale
@@ -115,7 +118,8 @@ export const resolveSessionOp = defineOperation({
       SELECT s.user_id::text AS user_id,
              u.email AS email,
              s.csrf_token AS csrf_token,
-             s.expires_at AS expires_at
+             s.expires_at AS expires_at,
+             u.onboarded_at AS onboarded_at
       FROM sessions s
       JOIN users u ON u.id = s.user_id
       WHERE s.token = ${input.token}
@@ -127,6 +131,7 @@ export const resolveSessionOp = defineOperation({
       email: string;
       csrf_token: string;
       expires_at: string | Date;
+      onboarded_at: string | Date | null;
     }[];
     const row = rows[0];
     if (!row) {
@@ -159,6 +164,12 @@ export const resolveSessionOp = defineOperation({
         row.expires_at instanceof Date ? row.expires_at.toISOString() : String(row.expires_at),
       permissions: permRows.map((r) => r.name),
       roles: roleRows.map((r) => r.name),
+      onboardedAt:
+        row.onboarded_at === null
+          ? null
+          : row.onboarded_at instanceof Date
+            ? row.onboarded_at.toISOString()
+            : String(row.onboarded_at),
     });
   },
 });

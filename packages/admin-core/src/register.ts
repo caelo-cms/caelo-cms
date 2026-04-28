@@ -63,6 +63,7 @@ import {
   triggerDeployOp,
   updateDeployProgressOp,
 } from "./ops/deploy.js";
+import { aggregateNotificationsOp } from "./ops/notifications.js";
 import {
   createRedirectOp,
   deleteRedirectOp,
@@ -96,6 +97,7 @@ import {
 } from "./ops/structured_sets.js";
 import { getUserPreferenceOp, setUserPreferenceOp } from "./ops/user_preferences.js";
 import {
+  completeOnboardingOp,
   createFirstOwnerOp,
   createUserOp,
   deleteUserOp,
@@ -199,4 +201,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setLayoutModulesOp);
   registry.register(getSiteDefaultsOp);
   registry.register(setSiteDefaultsOp);
+  // P6.6b — UX polish surface.
+  registry.register(aggregateNotificationsOp);
+  registry.register(completeOnboardingOp);
 }

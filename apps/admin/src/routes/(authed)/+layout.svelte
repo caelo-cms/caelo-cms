@@ -3,6 +3,7 @@
   import { page } from "$app/state";
   import { toast } from "svelte-sonner";
   import AppShell from "$lib/components/AppShell.svelte";
+  import CommandPalette from "$lib/components/CommandPalette.svelte";
 
   let { data, children } = $props();
 
@@ -39,6 +40,11 @@
     }
   });
 </script>
+
+<!-- P6.6b — global Cmd+K command palette + vim-style two-key
+     shortcuts. Mounted once for every authenticated route; auto-skips
+     when focus is in an editable element. -->
+<CommandPalette />
 
 {#if page.url.pathname.startsWith("/edit")}
   <!-- P6.7.2 — /edit is the chrome-less surface: no AppShell, no sidebar,

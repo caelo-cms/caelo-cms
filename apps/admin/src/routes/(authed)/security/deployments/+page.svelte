@@ -1,6 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { Rocket } from "lucide-svelte";
+  import { onDestroy, onMount } from "svelte";
   import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
   import { Badge, type BadgeVariant } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -31,6 +32,47 @@
     if (status === "running") return "secondary";
     return "outline";
   };
+
+  // P6.6b — live progress polling. While any run is in `running` or
+  // `pending` state, refetch /api/deploy-runs every 1.5s and replace
+  // `data.runs` so the Progress bar and status badges advance without
+  // a manual reload. Polling stops when no in-flight rows remain.
+  // Uses the Page Visibility API to pause in background tabs.
+  let runs = $state(data.runs);
+  let pollHandle: ReturnType<typeof setInterval> | null = null;
+  const inFlight = $derived(
+    runs.some((r: { status: string }) => r.status === "running" || r.status === "pending"),
+  );
+
+  async function refetch() {
+    if (document.visibilityState !== "visible") return;
+    try {
+      const r = await fetch("/api/deploy-runs", { headers: { accept: "application/json" } });
+      if (!r.ok) return;
+      const json = (await r.json()) as { runs: typeof data.runs };
+      runs = json.runs;
+    } catch {
+      // Network blip — ignore; the next tick retries.
+    }
+  }
+  $effect(() => {
+    // (Re)start the interval whenever inFlight transitions to true,
+    // tear it down once everything's settled.
+    if (inFlight && !pollHandle) {
+      pollHandle = setInterval(refetch, 1_500);
+    } else if (!inFlight && pollHandle) {
+      clearInterval(pollHandle);
+      pollHandle = null;
+    }
+  });
+  onMount(() => {
+    // Initial refetch right after mount picks up any run that was
+    // already in flight when the page loaded.
+    void refetch();
+  });
+  onDestroy(() => {
+    if (pollHandle) clearInterval(pollHandle);
+  });
 </script>
 
 <div class="space-y-6">
@@ -103,7 +145,7 @@
       <CardTitle class="text-base">Recent runs</CardTitle>
     </CardHeader>
     <CardContent>
-      {#if data.runs.length === 0}
+      {#if runs.length === 0}
         <EmptyStatePlaceholder
           icon={Rocket}
           title="No deploy runs yet"
@@ -122,7 +164,7 @@
             </TableRow>
           </TableHeader>
           <TableBody>
-            {#each data.runs as r (r.id)}
+            {#each runs as r (r.id)}
               <TableRow>
                 <TableCell><strong>{r.targetName}</strong></TableCell>
                 <TableCell><code>{r.env}</code></TableCell>

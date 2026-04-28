@@ -41,8 +41,8 @@ const FIXTURE_SCRIPT = `
       const actorId = actor[0]?.id;
       if (!actorId) throw new Error("seed actor returned no row");
       await tx\`
-        INSERT INTO users (id, email, password_hash, is_first_owner)
-        VALUES (\${actorId}::uuid, \${email}, \${pwd}, false)
+        INSERT INTO users (id, email, password_hash, is_first_owner, onboarded_at)
+        VALUES (\${actorId}::uuid, \${email}, \${pwd}, false, now())
       \`;
       await tx\`
         INSERT INTO user_roles (user_id, role_id)
