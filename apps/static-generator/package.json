@@ -20,5 +20,8 @@
     "@caelo/query-api": "workspace:*",
     "@caelo/shared": "workspace:*",
     "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "@caelo/admin-core": "workspace:*"
   }
 }
