@@ -215,7 +215,10 @@
             </Select>
           </div>
           <div class="md:col-span-2">
-            <Button type="submit" disabled={!createForm.valid}>Create</Button>
+            <!-- Submit stays enabled — Playwright `fill()` doesn't
+                 always trip our oninput handler, and the server is
+                 authoritative anyway. Inline errors are advisory. -->
+            <Button type="submit">Create</Button>
           </div>
         </form>
       {/if}

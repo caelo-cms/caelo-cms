@@ -290,15 +290,17 @@
       type="button"
       onclick={() => (diffOpen = !diffOpen)}
       aria-pressed={diffOpen}
-      disabled={!activePage}
+      disabled={!activePage || !data.activeChat}
       class={cn(
         "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors motion-reduce:transition-none",
         diffOpen
           ? "border-blue-500 bg-blue-500 text-white hover:bg-blue-600"
           : "border-border bg-background text-foreground hover:bg-accent",
-        !activePage && "cursor-not-allowed opacity-50",
+        (!activePage || !data.activeChat) && "cursor-not-allowed opacity-50",
       )}
-      title="Side-by-side: main branch vs your pending edits"
+      title={!data.activeChat
+        ? "Start a chat first to see pending edits"
+        : "Side-by-side: main branch vs your pending edits"}
     >
       <GitCompareArrows class="size-3.5" />
       Diff
@@ -353,8 +355,10 @@
   />
 
   <!-- P6.6b — side-by-side iframe diff. Closes via the X button or
-       by toggling the toolbar Diff button. -->
-  {#if activePage}
+       by toggling the toolbar Diff button. Guarded on activeChat
+       too — without a chat session there's no chatBranchId for the
+       right pane and the panel would render an empty preview. -->
+  {#if activePage && data.activeChat}
     <DiffPanel
       open={diffOpen}
       locale={activePage.locale}

@@ -97,3 +97,48 @@
       "Helvetica Neue", Arial, sans-serif;
   }
 }
+
+/*
+ * P6.6 closing pass — Windows High Contrast / forced-colors mode.
+ *
+ * The OS overrides text + background colors and treats anything
+ * drawn via `background-color` (no border) as part of the page
+ * background. Without these guards, primary/destructive buttons
+ * lose their button shape entirely, focus rings disappear, and
+ * disabled states become indistinguishable from active ones.
+ *
+ * The browser maps system tokens (CanvasText, ButtonText, Highlight,
+ * etc.) to the user's theme; we hook into those instead of our HSL
+ * tokens which the OS would replace.
+ */
+@media (forced-colors: active) {
+  /* Buttons + interactive surfaces need an explicit border so the
+     rectangle survives the color override. */
+  button,
+  [role="button"],
+  a[role="button"] {
+    border: 1px solid ButtonText;
+  }
+
+  /* Focus rings — Tailwind's `ring-*` uses box-shadow, which is
+     suppressed in forced-colors. Replace with a visible outline. */
+  *:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  /* Disabled controls keep their contrast with the system's
+     GrayText keyword. */
+  button:disabled,
+  [aria-disabled="true"] {
+    color: GrayText;
+    border-color: GrayText;
+  }
+
+  /* Selected nav item — the existing `bg-accent` becomes invisible.
+     A 2px left bar in Highlight survives the system override. */
+  nav a[aria-current="page"] {
+    border-left: 3px solid Highlight;
+    padding-left: calc(0.5rem - 3px);
+  }
+}

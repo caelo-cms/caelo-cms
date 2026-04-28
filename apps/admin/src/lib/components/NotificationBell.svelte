@@ -14,6 +14,7 @@
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Card, CardContent } from "$lib/components/ui/card/index.js";
+  import { Skeleton } from "$lib/components/ui/skeleton/index.js";
 
   interface Counts {
     pendingProposals: number;
@@ -28,6 +29,7 @@
     staleBranches: 0,
     total: 0,
   });
+  let loaded = $state(false);
   let open = $state(false);
   let pollHandle: ReturnType<typeof setInterval> | null = null;
   let dropdownEl: HTMLDivElement | null = $state(null);
@@ -41,6 +43,7 @@
       if (!r.ok) return;
       const json = (await r.json()) as Counts;
       counts = json;
+      loaded = true;
     } catch {
       // Network failure is non-fatal — leave the last-known counts
       // visible until the next successful poll.
@@ -103,7 +106,15 @@
     <div class="absolute right-0 z-40 mt-2 w-80">
       <Card>
         <CardContent class="space-y-2 p-3 text-sm">
-          {#if counts.total === 0}
+          {#if !loaded}
+            <!-- P6.6 closing pass — Skeleton placeholder while the
+                 first fetch hasn't completed yet (fast path: ~50ms,
+                 visible on slow connections / cold-cache mounts). -->
+            <div class="space-y-2 py-1">
+              <Skeleton class="h-4 w-2/3" />
+              <Skeleton class="h-4 w-1/2" />
+            </div>
+          {:else if counts.total === 0}
             <p class="py-2 text-center text-sm text-muted-foreground">
               No pending notifications.
             </p>

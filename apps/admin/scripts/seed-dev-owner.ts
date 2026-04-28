@@ -61,10 +61,18 @@ try {
       if (!id) throw new Error("seed actor insert returned no row");
       actorId = id;
       await tx`
-        INSERT INTO users (id, email, password_hash, is_first_owner)
-        VALUES (${actorId}::uuid, ${EMAIL}, ${passwordHash}, false)
+        INSERT INTO users (id, email, password_hash, is_first_owner, onboarded_at)
+        VALUES (${actorId}::uuid, ${EMAIL}, ${passwordHash}, false, now())
       `;
     }
+    // P6.6 closing pass — defensive: previously-seeded dev-owner rows
+    // may have null onboarded_at after migration 0022 if the seed
+    // pre-dates this fix. Bump them so `bun run seed:dev` doesn't
+    // bounce the user through /onboarding on every fresh dev run.
+    await tx`
+      UPDATE users SET onboarded_at = COALESCE(onboarded_at, now())
+      WHERE email = ${EMAIL}
+    `;
 
     await tx`
       INSERT INTO user_roles (user_id, role_id)
