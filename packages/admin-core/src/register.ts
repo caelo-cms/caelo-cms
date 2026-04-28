@@ -24,6 +24,7 @@ import {
   getLayoutBlockModulesOp,
   getLayoutOp,
   listLayoutsOp,
+  setLayoutBlocksOp,
   setLayoutModulesOp,
   updateLayoutOp,
 } from "./ops/content/layouts.js";
@@ -198,6 +199,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(updateLayoutOp);
   registry.register(deleteLayoutOp);
   registry.register(getLayoutBlockModulesOp);
+  registry.register(setLayoutBlocksOp);
   registry.register(setLayoutModulesOp);
   registry.register(getSiteDefaultsOp);
   registry.register(setSiteDefaultsOp);

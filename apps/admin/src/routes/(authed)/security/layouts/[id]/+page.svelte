@@ -1,5 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { GripVertical, Trash2 } from "lucide-svelte";
+  import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { buttonVariants } from "$lib/components/ui/button/button-variants.js";
@@ -14,6 +16,47 @@
   import { Label } from "$lib/components/ui/label/index.js";
 
   let { data, form } = $props();
+
+  // P6.6b — block editor. Items load from the server as
+  // { name, displayName, position }; we sort + assign synthetic ids
+  // for dnd, then strip them on save. The `content` block is required
+  // (the renderer validates this); the UI prevents removing the last
+  // `content` row by disabling the trash button on it.
+  type Block = { id: string; name: string; displayName: string; position: number };
+  const initial: Block[] = data.layout.blocks
+    .slice()
+    .sort((a, b) => a.position - b.position)
+    .map((b, i) => ({ id: `${b.name}:${i}`, ...b }));
+  let blocks = $state<Block[]>(initial);
+
+  function onDndConsider(e: CustomEvent<DndEvent<Block>>): void {
+    blocks = e.detail.items;
+  }
+  function onDndFinalize(e: CustomEvent<DndEvent<Block>>): void {
+    blocks = e.detail.items;
+  }
+  function addBlock(): void {
+    blocks = [
+      ...blocks,
+      { id: `new:${Date.now()}`, name: "", displayName: "", position: blocks.length },
+    ];
+  }
+  function removeBlock(idx: number): void {
+    blocks = blocks.filter((_, i) => i !== idx);
+  }
+
+  // The serialised payload re-numbers `position` by current order so
+  // the d&d reorder always wins over the previously-stored positions.
+  const serialisedBlocks = $derived(
+    JSON.stringify(
+      blocks.map((b, i) => ({
+        name: b.name.trim(),
+        displayName: b.displayName.trim() || b.name.trim(),
+        position: i,
+      })),
+    ),
+  );
+  const hasContentBlock = $derived(blocks.some((b) => b.name.trim() === "content"));
 </script>
 
 <div class="space-y-6">
@@ -72,20 +115,85 @@
       <CardTitle class="text-base">Blocks</CardTitle>
     </CardHeader>
     <CardContent>
-      <ul class="space-y-1 text-sm">
-        {#each data.layout.blocks
-          .slice()
-          .sort((a, b) => a.position - b.position) as block (block.name)}
-          <li>
-            <strong>{block.name}</strong>
-            <span class="text-muted-foreground">— {block.displayName} (position {block.position})</span>
-          </li>
-        {/each}
-      </ul>
-      <p class="mt-2 text-xs text-muted-foreground">
-        Editing blocks (rename / re-order / add) is not yet exposed here. Re-create the layout if
-        the block topology needs to change.
-      </p>
+      <form method="post" action="?/setBlocks" class="space-y-3">
+        <input type="hidden" name="_csrf" value={data.csrfToken} />
+        <input type="hidden" name="blocks" value={serialisedBlocks} />
+        <ul
+          class="space-y-2"
+          use:dndzone={{ items: blocks, flipDurationMs: 150, dropTargetStyle: {} }}
+          onconsider={onDndConsider}
+          onfinalize={onDndFinalize}
+        >
+          {#each blocks as block, idx (block.id)}
+            <li
+              class="flex items-center gap-2 rounded-md border bg-background p-2"
+              data-id={block.id}
+            >
+              <span
+                class="cursor-grab text-muted-foreground motion-reduce:cursor-default"
+                aria-label="Drag to reorder"
+              >
+                <GripVertical class="size-4" aria-hidden="true" />
+              </span>
+              <Input
+                type="text"
+                placeholder="name (e.g. content, header, footer)"
+                pattern="[a-z0-9](?:[a-z0-9-]{'{0,62}'}[a-z0-9])?"
+                required
+                value={block.name}
+                oninput={(e: Event) => {
+                  blocks = blocks.map((b, i) =>
+                    i === idx ? { ...b, name: (e.currentTarget as HTMLInputElement).value } : b,
+                  );
+                }}
+                class="flex-1"
+              />
+              <Input
+                type="text"
+                placeholder="display name"
+                value={block.displayName}
+                oninput={(e: Event) => {
+                  blocks = blocks.map((b, i) =>
+                    i === idx
+                      ? { ...b, displayName: (e.currentTarget as HTMLInputElement).value }
+                      : b,
+                  );
+                }}
+                class="flex-1"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="Remove block"
+                disabled={block.name.trim() === "content" && !blocks.some(
+                  (b, i) => i !== idx && b.name.trim() === "content",
+                )}
+                title={block.name.trim() === "content"
+                  ? "The `content` block is required by the renderer"
+                  : "Remove block"}
+                onclick={() => removeBlock(idx)}
+              >
+                <Trash2 class="size-4" />
+              </Button>
+            </li>
+          {/each}
+        </ul>
+        {#if !hasContentBlock}
+          <p class="text-xs text-destructive">
+            A block named <code>content</code> is required — the renderer fills the page body into
+            it.
+          </p>
+        {/if}
+        <div class="flex items-center justify-between gap-2">
+          <Button type="button" variant="outline" size="sm" onclick={addBlock}>+ Add block</Button>
+          <Button type="submit" disabled={!hasContentBlock}>Save blocks</Button>
+        </div>
+        <p class="text-xs text-muted-foreground">
+          Drag the handle to reorder. Removing a block fails if any layout-modules still reference
+          it — detach those first via <code>remove_module_from_layout</code>.
+        </p>
+      </form>
     </CardContent>
   </Card>
 

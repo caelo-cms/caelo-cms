@@ -50,9 +50,18 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
   if (!page) throw error(404, `No page at ${locale}/${slug}`);
 
   const branch = url.searchParams.get("branch");
+  // P6.6b — `?exclude=<moduleId>,<moduleId>` lets the chat-side diff
+  // panel render a partial-publish view: the right iframe excludes
+  // specific module ids from the branch overlay so the user previews
+  // what the page looks like with a subset of edits rolled back.
+  const excludeRaw = url.searchParams.get("exclude");
+  const excludeBranchModules = excludeRaw
+    ? excludeRaw.split(",").filter((id) => id.length > 0)
+    : undefined;
   const composed = await execute(registry, adapter, locals.ctx, "pages.render_preview", {
     pageId: page.id,
     ...(branch ? { chatBranchId: branch } : {}),
+    ...(excludeBranchModules ? { excludeBranchModules } : {}),
   });
   if (!composed.ok) throw error(404, "Page render failed");
 

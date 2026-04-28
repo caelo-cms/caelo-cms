@@ -1,5 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { GripVertical } from "lucide-svelte";
+  import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
@@ -77,6 +79,32 @@
       next[idx] = above;
       return { ...b, modules: next };
     });
+  }
+
+  // P6.6b — drag-and-drop reordering. svelte-dnd-action requires a
+  // stable `id` per item; we synthesize `${blockName}:${moduleId}:${i}`
+  // because the same moduleId can appear in multiple blocks of the
+  // same page. The `consider` event fires during the drag (used to
+  // animate the live position); `finalize` is the commit point that
+  // updates `layout` so the hidden form input picks up the new order.
+  type DraggableModule = Module & { id: string };
+
+  function withDragIds(modules: Module[], blockName: string): DraggableModule[] {
+    return modules.map((m, i) => ({ ...m, id: `${blockName}:${m.moduleId}:${i}` }));
+  }
+  function stripDragIds(items: DraggableModule[]): Module[] {
+    return items.map(({ id: _ignored, ...rest }) => rest);
+  }
+
+  function onDndConsider(blockName: string, e: CustomEvent<DndEvent<DraggableModule>>): void {
+    layout = layout.map((b) =>
+      b.blockName === blockName ? { ...b, modules: stripDragIds(e.detail.items) } : b,
+    );
+  }
+  function onDndFinalize(blockName: string, e: CustomEvent<DndEvent<DraggableModule>>): void {
+    layout = layout.map((b) =>
+      b.blockName === blockName ? { ...b, modules: stripDragIds(e.detail.items) } : b,
+    );
   }
 </script>
 
@@ -157,9 +185,35 @@
               {#if block.modules.length === 0}
                 <p class="text-sm text-muted-foreground"><em>(empty)</em></p>
               {:else}
-                <ol class="space-y-1 text-sm">
-                  {#each block.modules as m, idx (`${m.moduleId}-${idx}`)}
-                    <li class="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1">
+                <!-- P6.6b — drag-and-drop reordering.
+                     dndzone returns items as a fresh array on every
+                     `consider` event; we strip the synthetic ids in
+                     onDndConsider/onDndFinalize before persisting back
+                     to `layout`. The ↑/× buttons stay as keyboard-
+                     accessible fallbacks for users who can't drag. -->
+                <ol
+                  class="space-y-1 text-sm"
+                  use:dndzone={{
+                    items: withDragIds(block.modules, block.blockName),
+                    flipDurationMs: 150,
+                    dropTargetStyle: {},
+                  }}
+                  onconsider={(e: CustomEvent<DndEvent<DraggableModule>>) =>
+                    onDndConsider(block.blockName, e)}
+                  onfinalize={(e: CustomEvent<DndEvent<DraggableModule>>) =>
+                    onDndFinalize(block.blockName, e)}
+                >
+                  {#each withDragIds(block.modules, block.blockName) as m (m.id)}
+                    <li
+                      class="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1"
+                      data-id={m.id}
+                    >
+                      <span
+                        class="cursor-grab text-muted-foreground motion-reduce:cursor-default"
+                        aria-label="Drag to reorder"
+                      >
+                        <GripVertical class="size-4" aria-hidden="true" />
+                      </span>
                       <span class="flex-1">
                         <span class="font-medium">{m.slug}</span> — {m.displayName}
                         {#if m.isDeleted}
@@ -170,13 +224,23 @@
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onclick={() => moveUp(block.blockName, idx)}>↑</Button
+                        aria-label="Move up"
+                        onclick={() =>
+                          moveUp(
+                            block.blockName,
+                            block.modules.findIndex((x) => x.moduleId === m.moduleId),
+                          )}>↑</Button
                       >
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onclick={() => removeAt(block.blockName, idx)}>×</Button
+                        aria-label="Remove"
+                        onclick={() =>
+                          removeAt(
+                            block.blockName,
+                            block.modules.findIndex((x) => x.moduleId === m.moduleId),
+                          )}>×</Button
                       >
                     </li>
                   {/each}

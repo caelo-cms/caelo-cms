@@ -21,8 +21,9 @@
 
   import { enhance } from "$app/forms";
   import { goto } from "$app/navigation";
-  import { ArrowLeft, MousePointerClick } from "lucide-svelte";
+  import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import { onMount } from "svelte";
+  import DiffPanel from "$lib/components/edit/DiffPanel.svelte";
   import Overlay from "$lib/components/edit/Overlay.svelte";
   import {
     type CaeloMessage,
@@ -71,6 +72,25 @@
   // P6.7.3 — Edit mode toggle. ON: clicks in the iframe become chips.
   // OFF: live-site browsing (links navigate, JS runs).
   let editMode = $state(false);
+  // P6.6b — side-by-side diff overlay toggle. The panel reads
+  // `editedModules` from the page data and renders main-vs-branch
+  // iframes; unchecking a module rolls back its branch overlay on
+  // the right via the preview op's `excludeBranchModules`.
+  let diffOpen = $state(false);
+  // Every module on the active page is a candidate for the per-module
+  // exclusion list. The diff panel's checkboxes let the user roll back
+  // any module's branch overlay to see what the page would look like
+  // without that pending edit. A "edited on this branch" filter would
+  // be more precise but the chat-runner doesn't surface per-module
+  // edit state today — surfacing all modules trusts the user to know
+  // which they touched, and is forward-compatible with a stricter
+  // filter if one lands.
+  const editedModules = $derived(
+    (data.modules ?? []).map((m) => ({
+      moduleId: m.id,
+      label: m.displayName ?? m.slug,
+    })),
+  );
 
   function setEditMode(on: boolean): void {
     editMode = on;
@@ -266,6 +286,23 @@
       <MousePointerClick class="size-3.5" />
       {editMode ? "Editing — click an element" : "Edit elements"}
     </button>
+    <button
+      type="button"
+      onclick={() => (diffOpen = !diffOpen)}
+      aria-pressed={diffOpen}
+      disabled={!activePage}
+      class={cn(
+        "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors motion-reduce:transition-none",
+        diffOpen
+          ? "border-blue-500 bg-blue-500 text-white hover:bg-blue-600"
+          : "border-border bg-background text-foreground hover:bg-accent",
+        !activePage && "cursor-not-allowed opacity-50",
+      )}
+      title="Side-by-side: main branch vs your pending edits"
+    >
+      <GitCompareArrows class="size-3.5" />
+      Diff
+    </button>
     {#if data.pages.length > 0}
       <div class="w-64">
         <Combobox
@@ -314,6 +351,19 @@
     pageChats={data.pageChats}
     onToolResult={onAiToolResult}
   />
+
+  <!-- P6.6b — side-by-side iframe diff. Closes via the X button or
+       by toggling the toolbar Diff button. -->
+  {#if activePage}
+    <DiffPanel
+      open={diffOpen}
+      locale={activePage.locale}
+      slug={activePage.slug}
+      chatBranchId={data.activeChat.chatBranchId}
+      editedModules={editedModules}
+      onclose={() => (diffOpen = false)}
+    />
+  {/if}
 
   <!-- Page-switch with pending changes confirm Dialog -->
   <Dialog bind:open={dialogOpen}>

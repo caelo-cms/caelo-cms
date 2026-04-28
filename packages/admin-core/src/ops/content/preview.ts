@@ -48,6 +48,15 @@ export const renderPagePreviewOp = defineOperation({
     .object({
       pageId: z.string().uuid(),
       chatBranchId: z.string().uuid().optional(),
+      /**
+       * P6.6b deferred — module ids whose branch state should be
+       * skipped when rendering. The right pane of the chat-side diff
+       * uses this to reveal what the page would look like if a
+       * specific module's pending edit were rolled back, while the
+       * rest of the branch's edits stay applied. Ignored when
+       * `chatBranchId` is omitted.
+       */
+      excludeBranchModules: z.array(z.string().uuid()).optional(),
     })
     .strict(),
   output: z.object({
@@ -119,6 +128,7 @@ export const renderPagePreviewOp = defineOperation({
     // page, look up the latest branch snapshot in the requested branch;
     // if found, swap its state in for the live module row. Modules with
     // no branch snapshot keep their live values.
+    const excludeSet = new Set(input.excludeBranchModules ?? []);
     if (input.chatBranchId && modRows.length > 0) {
       const branchRows = (await tx.execute(sql`
         SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
@@ -135,6 +145,10 @@ export const renderPagePreviewOp = defineOperation({
       for (const r of branchRows) branchByModule.set(r.module_id, r);
       try {
         for (const m of modRows) {
+          // P6.6b — skip the branch overlay for excluded modules so
+          // the right diff pane shows what the page would look like
+          // with this specific module's pending edit rolled back.
+          if (excludeSet.has(m.module_id)) continue;
           const b = branchByModule.get(m.module_id);
           if (!b) continue;
           const state = parseAndUpgradeModuleState(parseSnapshotState(b.state));

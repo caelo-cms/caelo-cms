@@ -54,6 +54,33 @@ export const actions: Actions = {
     return { ok: true, message: "Saved." };
   },
 
+  setBlocks: async ({ params, request, locals }) => {
+    requirePermission(locals, "roles.manage");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    // The block editor serialises its state into a single JSON field so
+    // the action handler doesn't have to parse N parallel form arrays.
+    let blocks: unknown;
+    try {
+      blocks = JSON.parse(String(form.get("blocks") ?? "[]"));
+    } catch {
+      return fail(400, { error: "blocks payload is not valid JSON" });
+    }
+    if (!Array.isArray(blocks)) {
+      return fail(400, { error: "blocks payload must be an array" });
+    }
+    const result = await execute(registry, adapter, locals.ctx, "layout_blocks.set", {
+      layoutId: params.id,
+      blocks,
+    });
+    if (!result.ok) {
+      const message = (result.error as { message?: string }).message ?? "Could not save blocks.";
+      return fail(400, { error: message });
+    }
+    return { ok: true, message: "Blocks saved." };
+  },
+
   delete: async ({ params, request, locals }) => {
     requirePermission(locals, "roles.manage");
     const { adapter, registry } = getQueryContext();

@@ -430,3 +430,106 @@ export const setLayoutModulesOp = defineOperation({
     return ok({});
   },
 });
+
+/**
+ * P6.6b deferred — atomic replace of `layout_blocks` for one layout.
+ * Mirror of `template_blocks.set`. Two additional invariants the
+ * template version doesn't need:
+ *   - `content` block is mandatory (the renderer requires the slot;
+ *     the layouts.create op already enforces this at create time).
+ *   - Reject if any layout_modules row references a block name
+ *     that's NOT in the new set; FK cascade would orphan, so we
+ *     surface the conflict and ask the operator to detach modules
+ *     first via remove_module_from_layout.
+ *
+ * Owner-only (`["human","system"]`). Block CRUD is the topology of
+ * the layout; ops on `layout_modules` are the chrome-content surface
+ * AI uses.
+ */
+const layoutBlocksSetSchema = z
+  .object({
+    layoutId: z.string().uuid(),
+    blocks: z.array(layoutBlockShape).min(1).max(20),
+  })
+  .strict()
+  .refine((v) => v.blocks.some((b) => b.name === "content"), {
+    message: "blocks must include a `content` entry",
+    path: ["blocks"],
+  });
+
+export const setLayoutBlocksOp = defineOperation({
+  name: "layout_blocks.set",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: layoutBlocksSetSchema,
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const layoutRows = (await tx.execute(sql`
+      SELECT slug FROM layouts WHERE id = ${input.layoutId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as { slug: string }[];
+    if (layoutRows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "layout_blocks.set",
+        message: "layout not found",
+      });
+    }
+
+    const seen = new Set<string>();
+    for (const b of input.blocks) {
+      if (seen.has(b.name)) {
+        return err({
+          kind: "HandlerError",
+          operation: "layout_blocks.set",
+          message: `duplicate block name: ${b.name}`,
+        });
+      }
+      seen.add(b.name);
+    }
+
+    const newBlockNames = [...seen];
+    const orphanRows = (await tx.execute(sql`
+      SELECT DISTINCT block_name FROM layout_modules
+      WHERE layout_id = ${input.layoutId}::uuid
+        AND block_name NOT IN (${sql.join(
+          newBlockNames.map((n) => sql`${n}`),
+          sql`, `,
+        )})
+    `)) as unknown as { block_name: string }[];
+    if (orphanRows.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "layout_blocks.set",
+        message: `cannot drop block(s) still referenced by layout_modules: ${orphanRows.map((r) => r.block_name).join(", ")}. Detach the modules first via remove_module_from_layout.`,
+      });
+    }
+
+    await tx.execute(sql`DELETE FROM layout_blocks WHERE layout_id = ${input.layoutId}::uuid`);
+    for (const b of input.blocks) {
+      await tx.execute(sql`
+        INSERT INTO layout_blocks (layout_id, name, display_name, position)
+        VALUES (${input.layoutId}::uuid, ${b.name}, ${b.displayName}, ${b.position})
+      `);
+    }
+    await tx.execute(sql`
+      UPDATE layouts SET updated_at = now() WHERE id = ${input.layoutId}::uuid
+    `);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "layout_blocks.set",
+      input,
+      succeeded: true,
+      entityId: input.layoutId,
+      resultSummary: `blocks=${input.blocks.length}`,
+    });
+    await emitSnapshot(tx, {
+      actorId: ctx.actorId,
+      opKind: "layout_modules.set",
+      description: `layout_blocks.set slug=${layoutRows[0]?.slug} blocks=${input.blocks.length}`,
+      chatTaskId: ctx.chatTaskId ?? null,
+      chatBranchId: ctx.chatBranchId ?? null,
+      entities: [],
+    });
+    return ok({});
+  },
+});
