@@ -101,6 +101,14 @@
         aria-hidden="true">{counts.total > 9 ? "9+" : counts.total}</span>
     {/if}
   </Button>
+  <!-- P6.6 polish — aria-live region announces count changes to
+       screen readers. Polite + atomic so the full message reads once
+       when `total` transitions; visually hidden via sr-only. -->
+  <span class="sr-only" aria-live="polite" aria-atomic="true">
+    {#if loaded && counts.total > 0}
+      {counts.total} pending notification{counts.total === 1 ? "" : "s"}
+    {/if}
+  </span>
 
   {#if open}
     <div class="absolute right-0 z-40 mt-2 w-80">

@@ -183,7 +183,20 @@
                 </TableCell>
                 <TableCell>
                   {#if r.progress && r.status === "running"}
-                    <Progress value={r.progress.pagesDone} max={Math.max(1, r.progress.pagesTotal)} />
+                    <!-- P6.6 polish — aria-live region announces page
+                         progress to screen readers as the poll ticks.
+                         `polite` so it doesn't interrupt other speech;
+                         the visually-hidden span carries the actual
+                         text content (the Progress bar isn't read). -->
+                    <div aria-live="polite" aria-atomic="true">
+                      <Progress
+                        value={r.progress.pagesDone}
+                        max={Math.max(1, r.progress.pagesTotal)}
+                      />
+                      <span class="sr-only">
+                        Deploying {r.targetName}: page {r.progress.pagesDone} of {r.progress.pagesTotal}
+                      </span>
+                    </div>
                   {/if}
                   {#if r.errorMessage}
                     <pre class="mt-1 max-w-xl whitespace-pre-wrap text-xs text-destructive">{r.errorMessage}</pre>

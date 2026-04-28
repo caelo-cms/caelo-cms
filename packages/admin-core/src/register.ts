@@ -14,6 +14,7 @@ import {
   archiveChatSessionOp,
   createChatSessionOp,
   getChatSessionOp,
+  listBranchEditedModulesOp,
   listChatSessionsOp,
   renameChatSessionOp,
   setPinnedElementsOp,
@@ -206,4 +207,5 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P6.6b — UX polish surface.
   registry.register(aggregateNotificationsOp);
   registry.register(completeOnboardingOp);
+  registry.register(listBranchEditedModulesOp);
 }

@@ -336,3 +336,27 @@ export const archiveChatSessionOp = defineOperation({
     return ok({});
   },
 });
+
+/**
+ * P6.6 polish — return the distinct module ids that have at least one
+ * snapshot tagged with this chat session's branch. The DiffPanel uses
+ * this to render only branch-edited rows in its checkbox list, instead
+ * of every module on the page. Read-only.
+ */
+export const listBranchEditedModulesOp = defineOperation({
+  name: "chat.branch_edited_modules",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ chatSessionId: z.string().uuid() }).strict(),
+  output: z.object({ moduleIds: z.array(z.string()) }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT DISTINCT ms.module_id::text AS module_id
+      FROM module_snapshots ms
+      JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+      JOIN chat_sessions cs  ON cs.chat_branch_id = ss.chat_branch_id
+      WHERE cs.id = ${input.chatSessionId}::uuid
+    `)) as unknown as { module_id: string }[];
+    return ok({ moduleIds: rows.map((r) => r.module_id) });
+  },
+});

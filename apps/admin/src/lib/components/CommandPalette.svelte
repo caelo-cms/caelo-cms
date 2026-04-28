@@ -143,6 +143,19 @@
     if (isEditableTarget(e.target)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
+    // P6.6 polish — `?` opens the palette pre-filtered to "shortcut"
+    // so a discoverable key takes a user from cold to seeing the
+    // whole keymap. Suppressed in editable elements like other
+    // shortcuts; Shift is required on most layouts to type `?`, but
+    // we accept it through the metaKey/altKey gate above (Shift is
+    // not blocked).
+    if (e.key === "?") {
+      e.preventDefault();
+      void openPalette();
+      query = "shortcut";
+      return;
+    }
+
     const k = e.key.toLowerCase();
     if (pendingLeader !== null) {
       // Second key of a sequence.
@@ -238,7 +251,8 @@
     </ul>
     <p class="border-t px-3 py-2 text-xs text-muted-foreground">
       Tip: press <kbd class="rounded border bg-muted px-1 py-0.5 text-[10px]">g</kbd> then a letter
-      anywhere in the admin to jump fast.
+      anywhere in the admin to jump fast — or
+      <kbd class="rounded border bg-muted px-1 py-0.5 text-[10px]">?</kbd> to reopen this palette.
     </p>
   </DialogContent>
 </Dialog>

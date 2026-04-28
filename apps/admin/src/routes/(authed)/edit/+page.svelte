@@ -77,20 +77,21 @@
   // iframes; unchecking a module rolls back its branch overlay on
   // the right via the preview op's `excludeBranchModules`.
   let diffOpen = $state(false);
-  // Every module on the active page is a candidate for the per-module
-  // exclusion list. The diff panel's checkboxes let the user roll back
-  // any module's branch overlay to see what the page would look like
-  // without that pending edit. A "edited on this branch" filter would
-  // be more precise but the chat-runner doesn't surface per-module
-  // edit state today — surfacing all modules trusts the user to know
-  // which they touched, and is forward-compatible with a stricter
-  // filter if one lands.
-  const editedModules = $derived(
-    (data.modules ?? []).map((m) => ({
+  // P6.6 polish — modules that actually have a branch snapshot for
+  // this chat's branch (i.e. the AI has edited them at least once).
+  // Backed by `chat.branch_edited_modules`; falls back to every
+  // module on the page if the server load returned an empty list
+  // (e.g. brand-new chat with zero edits → nothing to filter).
+  const editedModules = $derived.by(() => {
+    const ids = (data.branchEditedModuleIds ?? []) as string[];
+    const all = (data.modules ?? []).map((m) => ({
       moduleId: m.id,
       label: m.displayName ?? m.slug,
-    })),
-  );
+    }));
+    if (ids.length === 0) return all;
+    const editedSet = new Set(ids);
+    return all.filter((m) => editedSet.has(m.moduleId));
+  });
 
   function setEditMode(on: boolean): void {
     editMode = on;

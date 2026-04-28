@@ -5,6 +5,14 @@
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+  } from "$lib/components/ui/dialog/index.js";
+  import {
     Card,
     CardContent,
     CardDescription,
@@ -16,6 +24,18 @@
   import { Select } from "$lib/components/ui/select/index.js";
 
   let { data, form } = $props();
+
+  // P6.6 polish — concurrent-edit conflict surface. The server-side
+  // op returns "conflict: page changed since load (expected version
+  // X, current Y)" with a 409. We sniff that prefix to switch from
+  // the generic Alert to a Dialog with a Reload action; once the
+  // user dismisses or reloads, the dialog stays closed.
+  let conflictDismissed = $state(false);
+  const isConflict = $derived(
+    !conflictDismissed &&
+      typeof form?.error === "string" &&
+      form.error.toLowerCase().includes("conflict"),
+  );
   type Module = { moduleId: string; slug: string; displayName: string; isDeleted?: boolean };
   type Block = { blockName: string; modules: Module[] };
   const page = data.page as {
@@ -127,12 +147,34 @@
       <AlertDescription>This page is soft-deleted ({page.deletedAt}).</AlertDescription>
     </Alert>
   {/if}
-  {#if form?.error}
+  {#if form?.error && !isConflict}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {/if}
   {#if form?.ok}
     <Alert><AlertDescription>Saved.</AlertDescription></Alert>
   {/if}
+
+  <!-- P6.6 polish — version-conflict dialog. When another editor saved
+       this page between our load and our save, the server returns a
+       structured "conflict: ..." error. Instead of a generic toast,
+       surface a modal with a Reload button so the user can re-fetch
+       the latest state and retry their edit. The Cancel button just
+       dismisses; their unsaved layout/metadata edits stay in memory. -->
+  <Dialog open={isConflict} onOpenChange={(o) => { if (!o) conflictDismissed = true; }}>
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Page changed since you opened it</DialogTitle>
+        <DialogDescription>
+          {form?.error ?? "Another save landed before yours."} Your local edits are still here —
+          reload to pick up the latest version, then re-apply.
+        </DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button variant="outline" onclick={() => (conflictDismissed = true)}>Cancel</Button>
+        <Button onclick={() => location.reload()}>Reload page</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
 
   <Card>
     <CardHeader>

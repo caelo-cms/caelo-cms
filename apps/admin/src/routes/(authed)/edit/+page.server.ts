@@ -89,6 +89,20 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const modulesR = await execute(registry, adapter, locals.ctx, "modules.list", {});
   const modules = modulesR.ok ? (modulesR.value as { modules: ChatModule[] }).modules : [];
 
+  // P6.6 polish — module ids the AI has touched on this chat's branch.
+  // Drives the DiffPanel checkbox list so the user only sees rows
+  // that actually have a pending edit; the previous fallback rendered
+  // every module on the page.
+  let branchEditedModuleIds: string[] = [];
+  if (activeChat) {
+    const editedR = await execute(registry, adapter, locals.ctx, "chat.branch_edited_modules", {
+      chatSessionId: activeChat.id,
+    });
+    if (editedR.ok) {
+      branchEditedModuleIds = (editedR.value as { moduleIds: string[] }).moduleIds;
+    }
+  }
+
   // Layout preference — default if unset.
   let layout: OverlayLayout = DEFAULT_LAYOUT;
   if (prefsR.ok) {
@@ -109,6 +123,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     activeChat,
     messages,
     modules,
+    branchEditedModuleIds,
     layout,
     /** P6.7.4 — chats bound to the active page (for the history dropdown). */
     pageChats: sessions.map((s) => ({
