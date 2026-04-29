@@ -216,6 +216,10 @@ export interface MediaStorageAdapter {
 }
 
 /** Build the canonical storage key for a given asset variant. */
-export function buildStorageKey(sha256: string, variant: MediaVariantTag, ext: string): string {
+export function buildStorageKey(
+  sha256: string,
+  variant: MediaVariantTag | string,
+  ext: string,
+): string {
   return `${sha256}/${variant}.${ext}`;
 }

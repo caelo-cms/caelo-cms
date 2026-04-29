@@ -24,7 +24,15 @@ import {
 import sharp from "sharp";
 
 export interface PipelineOutputVariant {
-  variant: MediaVariantTag;
+  /**
+   * Variant tag — `MediaVariantTag` for the canonical ladder (orig +
+   * webp-1600/1200/800/400), or `<crop>-<width>` for focal-point
+   * cropped variants emitted by the crop fan-out (e.g. `square-800`).
+   * Type widened to `string` post-P7-opt-2 to admit cropped variants;
+   * the kebab-case slug regex in shared/media.ts:extractMediaRefs is
+   * the canonical accept set.
+   */
+  variant: MediaVariantTag | string;
   format: string;
   width: number | null;
   height: number | null;
