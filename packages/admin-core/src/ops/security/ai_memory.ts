@@ -145,7 +145,9 @@ export const proposeAiMemoryOp = defineOperation({
 
 export const listMemoryProposalsOp = defineOperation({
   name: "ai_memory.list_proposals",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI checks its own pending proposals when planning
+  // — avoids re-proposing the same memory the Owner is reviewing.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({
     status: z.enum(["pending", "accepted", "rejected", "all"]).default("pending"),

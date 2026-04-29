@@ -51,7 +51,9 @@ interface BranchSnapshotRow {
 
 export const renderPagePreviewOp = defineOperation({
   name: "pages.render_preview",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: read-only render. AI runs preview to verify edits
+  // before publishing — same path as the iframe in /content/pages/[id].
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({

@@ -131,7 +131,9 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
 
 export const listDeployTargetsOp = defineOperation({
   name: "deploy.list_targets",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI summarises deploy state when the user asks
+  // ("which environments are configured?"). Read-only.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}),
   output: z.object({ targets: z.array(targetRow) }),
@@ -147,7 +149,9 @@ export const listDeployTargetsOp = defineOperation({
 
 export const listDeployRunsOp = defineOperation({
   name: "deploy.list_runs",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI inspects deploy history when troubleshooting
+  // ("did the last build succeed?"). Read-only.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(200).default(50) }),
   output: z.object({ runs: z.array(runRow) }),

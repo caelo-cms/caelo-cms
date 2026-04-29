@@ -867,7 +867,9 @@ export const proposeAltOp = defineOperation({
 
 export const listAltProposalsOp = defineOperation({
   name: "media.list_alt_proposals",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI inspects pending alt proposals so it doesn't
+  // re-propose what the Owner is already reviewing.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -983,5 +985,68 @@ export const reviewAltProposalOp = defineOperation({
       resultSummary: input.accept ? "accepted" : "rejected",
     });
     return ok({});
+  },
+});
+
+// ---------------------------------------------------------------------
+// media.delete_many — bulk variant per CLAUDE.md §11. Lets the AI
+// clean N stale assets in one tool call. Mirrors the singular semantics:
+// soft-delete; force=true required when the asset is still referenced
+// (per-asset force flag — bulk applies the SAME force to every input).
+// ---------------------------------------------------------------------
+
+export const mediaDeleteManyOp = defineOperation({
+  name: "media.delete_many",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      assetIds: z.array(z.string().uuid()).min(1).max(200),
+      force: z.boolean().default(false),
+    })
+    .strict(),
+  output: z.object({
+    deleted: z.number().int(),
+    blocked: z.array(
+      z.object({
+        assetId: z.string(),
+        referencingModuleSlugs: z.array(z.string()),
+      }),
+    ),
+  }),
+  handler: async (ctx, input, tx) => {
+    let deleted = 0;
+    const blocked: { assetId: string; referencingModuleSlugs: string[] }[] = [];
+    for (const assetId of input.assetIds) {
+      const rows = (await tx.execute(sql`
+        SELECT usage_count FROM media_assets
+        WHERE id = ${assetId}::uuid AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as { usage_count: number | bigint | string }[];
+      const target = rows[0];
+      if (!target) continue;
+      const usage = Number(target.usage_count);
+      if (usage > 0 && !input.force) {
+        const refs = (await tx.execute(sql`
+          SELECT slug FROM modules
+          WHERE deleted_at IS NULL
+            AND html LIKE ${`%/_caelo/media/${assetId}/%`}
+        `)) as unknown as { slug: string }[];
+        blocked.push({ assetId, referencingModuleSlugs: refs.map((r) => r.slug) });
+        continue;
+      }
+      await tx.execute(sql`
+        UPDATE media_assets SET deleted_at = now()
+        WHERE id = ${assetId}::uuid
+      `);
+      deleted += 1;
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "media.delete_many",
+      input: { count: input.assetIds.length, force: input.force },
+      succeeded: true,
+      resultSummary: `deleted=${deleted},blocked=${blocked.length}`,
+    });
+    return ok({ deleted, blocked });
   },
 });

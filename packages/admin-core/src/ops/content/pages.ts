@@ -135,7 +135,8 @@ export const listPagesOp = defineOperation({
 
 export const getPageOp = defineOperation({
   name: "pages.get",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI reads page metadata for planning + tool args.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ pageId: z.string().uuid() }),
   output: z.object({ page: pageRowSchema }),

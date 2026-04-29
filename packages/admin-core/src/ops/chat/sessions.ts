@@ -61,7 +61,10 @@ function parsePinnedElements(raw: unknown): PinnedElement[] {
 
 export const listChatSessionsOp = defineOperation({
   name: "chat.list_sessions",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: read surface open to AI. The AI uses this in
+  // long-running sessions to find prior conversations on the same
+  // page / template and cite them.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({
     includeArchived: z.boolean().default(false),
@@ -69,6 +72,8 @@ export const listChatSessionsOp = defineOperation({
     pageId: z.string().uuid().nullable().optional(),
     /** P6.7.4 — when set, only return sessions bound to this template. */
     templateId: z.string().uuid().nullable().optional(),
+    /** §11 AI-first — substring search on the session title. */
+    query: z.string().max(256).optional(),
   }),
   output: z.object({ sessions: z.array(sessionRow) }),
   handler: async (ctx, input, tx) => {
@@ -77,6 +82,8 @@ export const listChatSessionsOp = defineOperation({
     const templateFilter = input.templateId
       ? sql`AND template_id = ${input.templateId}::uuid`
       : sql``;
+    const queryFilter =
+      input.query && input.query.length > 0 ? sql`AND title ILIKE ${`%${input.query}%`}` : sql``;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, title, created_by::text AS created_by,
              chat_branch_id::text AS chat_branch_id,
@@ -85,7 +92,7 @@ export const listChatSessionsOp = defineOperation({
              page_id::text     AS page_id,
              template_id::text AS template_id
       FROM chat_sessions
-      WHERE created_by = ${ctx.actorId}::uuid ${archivedFilter} ${pageFilter} ${templateFilter}
+      WHERE created_by = ${ctx.actorId}::uuid ${archivedFilter} ${pageFilter} ${templateFilter} ${queryFilter}
       ORDER BY last_active_at DESC
       LIMIT 100
     `)) as unknown as {
@@ -177,7 +184,10 @@ const sessionMessagesRow = z.object({
 
 export const getChatSessionOp = defineOperation({
   name: "chat.get_session",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: read surface open to AI. The chat-runner already
+  // executes as AI; without this scope it would have to use the human
+  // ctx detour for every session reload.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }),
   output: z.object({

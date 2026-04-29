@@ -164,7 +164,7 @@ Caelo is AI-first not just in branding — **the AI agent is the primary user of
 - **Cross-page / cross-domain patches that span >1 op call belong inside one op.** When you find yourself documenting "AI: call X, then Y, then Z in this order" — that's three round-trips of latency + token spend. Wrap it in a single op whose handler runs the chain in one tx (e.g., `change_page_slug` already does this — it does the slug update + redirect insert + structured-set rewrite + module-body rewrite in one boundary).
 - **Failure surfaces are AI-actionable.** Errors include the *next step the AI should try* in the message body — not just "validation failed." Example: `pages_seo.autofill`'s `AlreadyAutofilled` error suggests using `pages_seo.optimize` instead.
 
-When the audit finds an op that's "AI could call this but doesn't have a tool" or "AI would need 5 round-trips to do what one bulk call could", that's a P8-style review-pass item, not a future-phase polish item.
+When an audit finds an op that's "AI could call this but doesn't have a tool" or "AI would need 5 round-trips to do what one bulk call could", that's a review-pass item, not a future-phase polish item.
 
 ---
 

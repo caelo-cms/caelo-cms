@@ -78,7 +78,8 @@ function rowsToTemplates(
 
 export const listTemplatesOp = defineOperation({
   name: "templates.list",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI plans cross-template moves and needs broad read.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }),
   output: z.object({ templates: z.array(templateRowSchema) }),
@@ -108,7 +109,8 @@ export const listTemplatesOp = defineOperation({
 
 export const getTemplateOp = defineOperation({
   name: "templates.get",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI reads template state when planning page changes.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ templateId: z.string().uuid() }),
   output: z.object({ template: templateRowSchema }),

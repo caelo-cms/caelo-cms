@@ -79,7 +79,10 @@ function rowToModule(r: {
 
 export const listModulesOp = defineOperation({
   name: "modules.list",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: read surfaces are open to AI. The AI uses this
+  // to plan cross-module changes (e.g. "find every module with a
+  // hero in its slug").
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }),
   output: z.object({ modules: z.array(moduleRowSchema) }),
@@ -103,7 +106,8 @@ export const listModulesOp = defineOperation({
 
 export const getModuleOp = defineOperation({
   name: "modules.get",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: read surfaces are open to AI.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ moduleId: z.string().uuid() }),
   output: z.object({ module: moduleRowSchema }),
@@ -253,7 +257,9 @@ export const updateModuleOp = defineOperation({
 
 export const deleteModuleOp = defineOperation({
   name: "modules.delete",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI cleans up stale modules in routine maintenance.
+  // Soft-delete only; revert via the snapshots.revert_module path.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ moduleId: z.string().uuid() }),
   output: z.object({}),
@@ -303,5 +309,68 @@ export const deleteModuleOp = defineOperation({
       });
     }
     return ok({});
+  },
+});
+
+// ---------------------------------------------------------------------
+// modules.delete_many — bulk variant per CLAUDE.md §11. Soft-deletes
+// in a single tx; the same media-usage delta runs per affected module
+// so usage_count drops atomically.
+// ---------------------------------------------------------------------
+
+export const deleteModulesManyOp = defineOperation({
+  name: "modules.delete_many",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      moduleIds: z.array(z.string().uuid()).min(1).max(200),
+    })
+    .strict(),
+  output: z.object({
+    deleted: z.number().int(),
+    alreadyDeleted: z.number().int(),
+    notFound: z.number().int(),
+  }),
+  handler: async (ctx, input, tx) => {
+    let deleted = 0;
+    let alreadyDeleted = 0;
+    let notFound = 0;
+    for (const id of input.moduleIds) {
+      const rows = (await tx.execute(sql`
+        SELECT deleted_at, html FROM modules WHERE id = ${id}::uuid
+      `)) as unknown as { deleted_at: Date | null; html: string }[];
+      const target = rows[0];
+      if (!target) {
+        notFound += 1;
+        continue;
+      }
+      if (target.deleted_at !== null) {
+        alreadyDeleted += 1;
+        continue;
+      }
+      await tx.execute(sql`
+        UPDATE modules SET deleted_at = now() WHERE id = ${id}::uuid
+      `);
+      await applyMediaUsageDelta(tx, target.html, "");
+      const state = await loadModuleState(tx, id);
+      if (state) {
+        await emitSnapshot(tx, {
+          actorId: ctx.actorId,
+          opKind: "modules.delete",
+          description: `modules.delete_many slug=${state.slug}`,
+          entities: [{ kind: "module", entityId: id, state }],
+        });
+      }
+      deleted += 1;
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "modules.delete_many",
+      input,
+      succeeded: true,
+      resultSummary: `deleted=${deleted},alreadyDeleted=${alreadyDeleted},notFound=${notFound}`,
+    });
+    return ok({ deleted, alreadyDeleted, notFound });
   },
 });

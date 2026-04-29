@@ -27,7 +27,10 @@ const snapshotRowSchema = z.object({
  */
 export const listSnapshotsOp = defineOperation({
   name: "snapshots.list",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI inspects history when planning ("what changed
+  // on this page in the last 5 edits?"). Reads only — revert ops
+  // remain human-only since they're a publish-boundary decision.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: snapshotsListInput,
   output: z.object({ snapshots: z.array(snapshotRowSchema) }),

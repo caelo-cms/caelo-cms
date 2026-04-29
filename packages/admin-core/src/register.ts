@@ -32,6 +32,7 @@ import {
 import {
   createModuleOp,
   deleteModuleOp,
+  deleteModulesManyOp,
   getModuleOp,
   listModulesOp,
   updateModuleOp,
@@ -71,6 +72,7 @@ import {
   getProcessingStatusOp,
   listAltProposalsOp,
   listCropsOp,
+  mediaDeleteManyOp,
   mediaDeleteOp,
   mediaGetOp,
   mediaGetSettingsOp,
@@ -162,6 +164,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createModuleOp);
   registry.register(updateModuleOp);
   registry.register(deleteModuleOp);
+  registry.register(deleteModulesManyOp);
   registry.register(listTemplatesOp);
   registry.register(getTemplateOp);
   registry.register(createTemplateOp);
@@ -250,6 +253,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaGetOp);
   registry.register(mediaUpdateAltOp);
   registry.register(mediaDeleteOp);
+  registry.register(mediaDeleteManyOp);
   registry.register(mediaRecordUsageOp);
   registry.register(mediaRecentForAiOp);
   registry.register(mediaListUsagesOp);

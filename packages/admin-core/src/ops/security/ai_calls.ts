@@ -12,7 +12,9 @@ import { z } from "zod";
 
 export const aggregateAiCallsOp = defineOperation({
   name: "ai_calls.aggregate",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI summarises its own usage on user request
+  // ("what have I been spending on AI calls today?").
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({
     /** ISO timestamp lower bound. Default: 30 days ago. */
