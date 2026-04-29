@@ -166,6 +166,43 @@ Caelo is AI-first not just in branding — **the AI agent is the primary user of
 
 When an audit finds an op that's "AI could call this but doesn't have a tool" or "AI would need 5 round-trips to do what one bulk call could", that's a review-pass item, not a future-phase polish item.
 
+### 11.A. Human-confirmation gate (for hard-to-revert ops)
+
+§11 says "default actorScope is `human + ai + system`" and "the AI is the primary user." Most writes follow that and are immediately applied. But a small set of ops are **hard or impossible to revert cleanly** — adding/deleting a locale fans out URL changes across the entire site, deleting a layout cascades through every page on every template that binds to it, activating a plugin runs untrusted code. Those don't go human-only. **They go AI-proposable + human-approve-by-click.**
+
+The pattern, used uniformly across every gated domain:
+
+1. **AI calls `<domain>.propose_<action>`** with the full inputs. The handler writes a row to a per-domain `<domain>_pending_actions` table with `status='pending'`, computes a `preview` jsonb (blast-radius summary — affected page count, redirects to be created, etc.), records audit, returns `{proposalId, preview}`. AI scope is `human + ai + system`.
+2. **AI tells the user**: *"I prepared a proposal to add German. Click Approve at /security/locales/pending to apply."* The proposal renders in a small Owner queue with the AI-supplied payload + the computed preview + Approve / Reject / Edit-before-approving buttons.
+3. **The Approve action calls `<domain>.execute_proposal({ proposalId })`** which is `human + system` only. Handler reads the row, runs the real op inside one tx, marks the row `status='applied'`. The Reject path stamps `status='rejected'` + the actor + an optional reason.
+4. **The AI cannot bypass step 2.** No "auto-approve after 60 seconds." No "skip if the user said yes once before." Each instance gets its own click. The Owner panel shows the diff and the preview side-by-side.
+
+**What's hard-to-revert?** A working list (extend per-phase as the surface grows):
+
+| Domain | Op family | Why a click is required |
+|---|---|---|
+| locales | create, delete, set_default, update_strategy | URL-strategy change cascades; redirects required for every existing page in the affected locale. |
+| layouts | create, delete | Site-wide chrome change; affects every bound template's pages. |
+| plugins | activate | Per CMS_REQUIREMENTS §17.4 — already required; restated here for the unified pattern. |
+| site_defaults | set_default_layout, set_default_template, set_seo (when site_base_url changes) | Affects every new page going forward; base URL change rewrites every canonical at next deploy. |
+| snapshots | revert_site | Atomic site-wide rewind; one click rewinds hours of editor work. |
+| redirects | delete_many with `matches` substring matching ≥10 rows | Hard to predict the blast radius of a regex-style match. |
+| deploy | promote, rollback | Production-affecting; stays human-only per CMS_REQUIREMENTS §6 (Ops decision boundary, not a confirmation problem — these don't get the propose/execute split). |
+
+Routine ops — content edits, structured-sets writes, single-redirect tweaks, page slug changes, SEO field updates, media writes, alt proposals, role-list reads — stay `human + ai + system` *without* the gate. The AI proceeds on the routine 95% and asks for one click on the dangerous 5%.
+
+**Why a button-click instead of a separate scope?** Excluding the AI from `locales.create` forces a human round-trip every time. The button-gate lets the AI:
+- draft the locale row + display name + URL strategy with sensible defaults,
+- compute the URL fan-out preview ("creating `de` will require 14 redirect rows for existing pages once they're translated"),
+- queue the proposal,
+- and the human just clicks **Approve**. Same human-in-the-loop guarantee, ten times less friction than the AI-emails-the-Owner-for-approval pattern.
+
+Failure surface: when the AI tries `<domain>.execute_proposal` directly, it gets `ActorScopeRejected` with a message that points at the proposal flow. The AI tools' `description` field carries the two-step contract verbatim so the model says "I prepared this — click Approve" instead of claiming success: *"This is a TWO-STEP flow: (1) you propose, (2) the Owner clicks Approve at `/security/<domain>/pending`. Do not claim the action was applied."*
+
+**System-prompt support.** The `## <Domain>` block adds an "**Your pending proposals**" sub-section, filtered to the AI's own pending rows, so the AI doesn't re-propose what's already in the queue. Renders only when at least one pending row exists.
+
+**When to add a new gated op vs. a routine op:** ask "if the AI got this wrong, can the user undo it with one tool call?" If yes, ship it routine. If no — if the recovery is "redeploy", "manually create 20 redirects", "restore from a snapshot", "DNS-propagate a fix" — ship it gated.
+
 ---
 
 ## 12. When in doubt
