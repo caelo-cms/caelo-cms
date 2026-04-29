@@ -45,8 +45,11 @@ async function wipe(): Promise<void> {
       for (const code of TEST_LOCALES) {
         await tx`UPDATE locales SET is_default = false WHERE code = ${code}`;
         await tx`DELETE FROM locale_pending_actions WHERE payload->>'code' = ${code}`;
+        await tx`DELETE FROM pages WHERE locale = ${code}`;
         await tx`DELETE FROM locales WHERE code = ${code}`;
       }
+      // Clean redirects emitted by the redirect-creation tests.
+      await tx`DELETE FROM redirects WHERE from_path LIKE '/zz/%' OR from_path LIKE '/ab/%' OR from_path LIKE '/yy/%'`;
       await tx`UPDATE locales SET is_default = true WHERE code = 'en'`;
     });
   } finally {
@@ -221,6 +224,156 @@ describe("locales propose/execute split", () => {
     expect(aiReject.ok).toBe(false);
     if (!aiReject.ok) {
       expect(aiReject.error.kind).toBe("ActorScopeRejected");
+    }
+  });
+
+  // P9 review pass — execute path now creates redirects to honour the
+  // propose-time preview's `redirectsToCreate` count.
+  it("update_strategy execute creates 301 redirects for affected published pages", async () => {
+    // Seed a 'zz' locale on subdirectory + a published page.
+    const add = await execute(registry, adapter, aiCtx, "locales.propose_create", {
+      code: "zz",
+      displayName: "Test ZZ",
+      urlStrategy: "subdirectory",
+    });
+    if (!add.ok) throw new Error("propose_create failed");
+    await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId: (add.value as { proposalId: string }).proposalId,
+    });
+
+    // Seed one published page via raw SQL (skipping the page op chain
+    // for test isolation; we just need a row to drive redirect emission).
+    const sqlClient = new SQL(ADMIN_URL);
+    try {
+      await sqlClient.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`
+          INSERT INTO pages (slug, locale, name, title, template_id, status)
+          SELECT 'about', 'zz', 'About', 'About',
+                 (SELECT id FROM templates LIMIT 1), 'published'
+        `;
+      });
+    } finally {
+      await sqlClient.end();
+    }
+
+    // Now propose subdirectory → none and execute. The 'about' page's
+    // URL goes from /zz/about/ to /about/ — one same-host redirect.
+    const propose = await execute(registry, adapter, aiCtx, "locales.propose_update_strategy", {
+      code: "zz",
+      urlStrategy: "none",
+    });
+    if (!propose.ok) throw new Error("propose_update_strategy failed");
+    const exec = await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId: (propose.value as { proposalId: string }).proposalId,
+    });
+    expect(exec.ok).toBe(true);
+    if (!exec.ok) return;
+    const { redirectsCreated, crossHostShifts } = exec.value as {
+      redirectsCreated: number;
+      crossHostShifts: number;
+    };
+    expect(redirectsCreated).toBe(1);
+    expect(crossHostShifts).toBe(0);
+
+    // Verify the redirect row landed. resolveLocaleUrl emits paths
+    // without a trailing slash; deploy-layer routing handles the slash.
+    const lookup = await execute(registry, adapter, systemCtx, "redirects.lookup", {
+      fromPath: "/zz/about",
+    });
+    expect(lookup.ok).toBe(true);
+    if (!lookup.ok) return;
+    const row = (lookup.value as { match: { fromPath: string; toPath: string } | null }).match;
+    expect(row?.toPath).toBe("/about");
+  });
+
+  it("delete execute soft-deletes pages AND emits one redirect per page → '/'", async () => {
+    // Seed 'yy' locale + two published pages.
+    const add = await execute(registry, adapter, aiCtx, "locales.propose_create", {
+      code: "yy",
+      displayName: "Test YY",
+      urlStrategy: "subdirectory",
+    });
+    if (!add.ok) throw new Error("propose_create failed");
+    await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId: (add.value as { proposalId: string }).proposalId,
+    });
+    const sqlClient = new SQL(ADMIN_URL);
+    try {
+      await sqlClient.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`
+          INSERT INTO pages (slug, locale, name, title, template_id, status)
+          SELECT 'about-yy', 'yy', 'About', 'About',
+                 (SELECT id FROM templates LIMIT 1), 'published'
+        `;
+        await tx`
+          INSERT INTO pages (slug, locale, name, title, template_id, status)
+          SELECT 'contact-yy', 'yy', 'Contact', 'Contact',
+                 (SELECT id FROM templates LIMIT 1), 'published'
+        `;
+      });
+    } finally {
+      await sqlClient.end();
+    }
+
+    const propose = await execute(registry, adapter, aiCtx, "locales.propose_delete", {
+      code: "yy",
+    });
+    if (!propose.ok) throw new Error("propose_delete failed");
+    const exec = await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId: (propose.value as { proposalId: string }).proposalId,
+    });
+    expect(exec.ok).toBe(true);
+    if (!exec.ok) return;
+    const { redirectsCreated } = exec.value as { redirectsCreated: number };
+    expect(redirectsCreated).toBe(2);
+
+    // Locale row gone, both redirects exist with toPath='/'.
+    const get = await execute(registry, adapter, systemCtx, "locales.get", { code: "yy" });
+    if (!get.ok) return;
+    expect((get.value as { locale: unknown }).locale).toBeNull();
+    const lookup = await execute(registry, adapter, systemCtx, "redirects.lookup", {
+      fromPath: "/yy/about-yy",
+    });
+    if (!lookup.ok) return;
+    const row = (lookup.value as { match: { fromPath: string; toPath: string } | null }).match;
+    expect(row?.toPath).toBe("/");
+  });
+
+  it("translation_status enum accepts spec values, rejects legacy fresh/stale", async () => {
+    const sqlClient = new SQL(ADMIN_URL);
+    try {
+      await sqlClient.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`
+          INSERT INTO pages (slug, locale, name, title, template_id, status, translation_status)
+          SELECT 'enum-test', 'en', 'X', 'X',
+                 (SELECT id FROM templates LIMIT 1), 'draft', 'up_to_date'
+        `;
+      });
+      // Cleanup: delete the test row.
+      await sqlClient.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`DELETE FROM pages WHERE slug = 'enum-test' AND locale = 'en'`;
+      });
+      // Verify the legacy value is rejected.
+      let rejected = false;
+      try {
+        await sqlClient.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          await tx`
+            INSERT INTO pages (slug, locale, name, title, template_id, status, translation_status)
+            SELECT 'enum-test-bad', 'en', 'X', 'X',
+                   (SELECT id FROM templates LIMIT 1), 'draft', 'fresh'
+          `;
+        });
+      } catch {
+        rejected = true;
+      }
+      expect(rejected).toBe(true);
+    } finally {
+      await sqlClient.end();
     }
   });
 });

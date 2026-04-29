@@ -71,13 +71,15 @@ export async function recomputePageContentHash(
   `);
 
   // Recompute translation_status for variants that point at this page.
-  // A variant is fresh when its translated_from_hash matches the
-  // source's content_hash; otherwise stale.
+  // A variant is up_to_date when its translated_from_hash matches the
+  // source's content_hash; otherwise needs_update. (CMS_REQUIREMENTS §7.5
+  // — the spec vocabulary that the translation dashboard + Mode-1/Mode-2
+  // dispatch keys off.)
   await tx.execute(sql`
     UPDATE pages
     SET translation_status = CASE
-      WHEN translated_from_hash = ${hash} THEN 'fresh'
-      ELSE 'stale'
+      WHEN translated_from_hash = ${hash} THEN 'up_to_date'
+      ELSE 'needs_update'
     END
     WHERE slug = (SELECT slug FROM pages WHERE id = ${pageId}::uuid)
       AND id <> ${pageId}::uuid

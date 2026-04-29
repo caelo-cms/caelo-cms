@@ -181,10 +181,14 @@ export async function runSeoPass(args: {
   const localeByCode = new Map(locales.map((l) => [l.code, l]));
 
   // Compute auto-hreflang from sibling pages (same slug, different locale).
+  // Per CMS_REQUIREMENTS §7.3: only locales WITH a published translation
+  // count. Draft/scheduled variants must not surface in <head>.
   for (const bundle of seoBundles) {
     const siblings = (await args.tx.execute(sql`
       SELECT locale FROM pages
-      WHERE slug = ${bundle.slug} AND deleted_at IS NULL
+      WHERE slug = ${bundle.slug}
+        AND deleted_at IS NULL
+        AND status = 'published'
     `)) as unknown as { locale: string }[];
     const auto: { locale: string; url: string }[] = [];
     for (const s of siblings) {

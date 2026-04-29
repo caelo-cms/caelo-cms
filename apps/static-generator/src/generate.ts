@@ -90,11 +90,45 @@ export type ProgressCallback = (progress: { pagesDone: number; pagesTotal: numbe
  * Emits a stable file path for a published page. Slug "/" or "" or "home"
  * become `index.html`; everything else becomes `<slug>/index.html` so the
  * URL looks clean (no `.html` suffix served by static hosts).
+ *
+ * P9 review pass — when a locale config is supplied, the path is
+ * shaped per CMS_REQUIREMENTS §7.2:
+ *   - none         → `<slug>/index.html`              (no prefix)
+ *   - subdirectory → `<code>/<slug>/index.html`       (`/de/about/`)
+ *   - subdomain    → `_hosts/<urlHost>/<slug>/index.html`
+ *   - domain       → `_hosts/<urlHost>/<slug>/index.html`
+ *
+ * The `_hosts/<host>/...` directory is the per-host emission tree the
+ * deploy layer (P13/P14/P15) will hand each subdomain/domain its own
+ * subtree. Without a locale config (back-compat, no-locale tests) the
+ * function returns the original single-locale shape.
  */
-export function pageOutputPath(slug: string): string {
+export interface PageLocaleConfig {
+  readonly code: string;
+  readonly urlStrategy: "none" | "subdirectory" | "subdomain" | "domain";
+  readonly urlHost: string | null;
+}
+
+export function pageOutputPath(slug: string, locale?: PageLocaleConfig): string {
   const trimmed = slug.replace(/^\/+|\/+$/g, "");
-  if (trimmed === "" || trimmed === "home" || trimmed === "index") return "index.html";
-  return `${trimmed}/index.html`;
+  const isHome = trimmed === "" || trimmed === "home" || trimmed === "index";
+  const file = isHome ? "index.html" : `${trimmed}/index.html`;
+  if (!locale) return file;
+  switch (locale.urlStrategy) {
+    case "none":
+      return file;
+    case "subdirectory":
+      return `${locale.code}/${file}`;
+    case "subdomain":
+    case "domain": {
+      if (!locale.urlHost) {
+        throw new Error(
+          `pageOutputPath: locale '${locale.code}' urlStrategy='${locale.urlStrategy}' requires url_host`,
+        );
+      }
+      return `_hosts/${locale.urlHost}/${file}`;
+    }
+  }
 }
 
 /**
@@ -146,6 +180,25 @@ export async function generateSite(args: {
       AND p.status = 'published'
     ORDER BY p.slug ASC
   `)) as unknown as PageRow[];
+
+  // P9 review pass — load the locale registry so the emitter can shape
+  // file paths per (slug, locale) instead of slug alone. Otherwise two
+  // pages with the same slug but different locales collide on
+  // index.html. Throws loudly (no-fallbacks) if a page references a
+  // locale that isn't in the registry.
+  const localeRows = (await tx.execute(sql`
+    SELECT code, url_strategy, url_host FROM locales
+  `)) as unknown as {
+    code: string;
+    url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
+    url_host: string | null;
+  }[];
+  const localeByCode = new Map<string, PageLocaleConfig>(
+    localeRows.map((r) => [
+      r.code,
+      { code: r.code, urlStrategy: r.url_strategy, urlHost: r.url_host },
+    ]),
+  );
 
   // P6.7.6 — load layout modules once for the whole build, keyed by
   // layout_id. Per-page composition picks its layout's set; same
@@ -286,12 +339,18 @@ export async function generateSite(args: {
       throw e;
     }
 
+    const pageLocaleCfg = localeByCode.get(page.locale);
+    if (!pageLocaleCfg) {
+      throw new Error(
+        `static-generator: page slug=${page.slug} references locale='${page.locale}' which is not in the locales registry — deploy aborted (no-fallbacks)`,
+      );
+    }
     composedPages.push({
       html: composed.html,
       pageSlug: page.slug,
       pageLocale: page.locale,
       pageTitle: page.title,
-      relPath: pageOutputPath(page.slug),
+      relPath: pageOutputPath(page.slug, pageLocaleCfg),
     });
 
     // A/B variant emission hook: when modules carry experiment_id +
@@ -377,7 +436,7 @@ export async function generateSite(args: {
     pages: pageRows.map((p) => ({
       slug: p.slug,
       locale: p.locale,
-      outputPath: pageOutputPath(p.slug),
+      outputPath: pageOutputPath(p.slug, localeByCode.get(p.locale)),
     })),
     variants: variantEntries,
   };

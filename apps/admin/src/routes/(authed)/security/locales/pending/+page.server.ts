@@ -54,7 +54,18 @@ export const actions: Actions = {
           : "approve failed";
       return fail(400, { error: message });
     }
-    return { ok: true, message: "Proposal applied." };
+    const { redirectsCreated, crossHostShifts } = r.value as {
+      redirectsCreated: number;
+      crossHostShifts: number;
+    };
+    const parts: string[] = ["Proposal applied."];
+    if (redirectsCreated > 0)
+      parts.push(`${redirectsCreated} redirect${redirectsCreated === 1 ? "" : "s"} created.`);
+    if (crossHostShifts > 0)
+      parts.push(
+        `${crossHostShifts} cross-host page${crossHostShifts === 1 ? "" : "s"} need per-provider edge rules at deploy.`,
+      );
+    return { ok: true, message: parts.join(" ") };
   },
   reject: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");

@@ -382,9 +382,13 @@ export const renderPagePreviewOp = defineOperation({
     if (explicitHreflang.length > 0) {
       hreflang = explicitHreflang.map((r) => ({ locale: r.locale, url: r.url }));
     } else {
+      // Preview mirrors the static generator: only published variants
+      // count toward hreflang per CMS_REQUIREMENTS §7.3.
       const siblings = (await tx.execute(sql`
         SELECT locale FROM pages
-        WHERE slug = ${pageRow.slug} AND deleted_at IS NULL
+        WHERE slug = ${pageRow.slug}
+          AND deleted_at IS NULL
+          AND status = 'published'
       `)) as unknown as { locale: string }[];
       hreflang = [];
       for (const s of siblings) {

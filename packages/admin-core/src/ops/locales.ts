@@ -24,7 +24,7 @@
 
 import type { TransactionRunner } from "@caelo/query-api";
 import { defineOperation } from "@caelo/query-api";
-import { err, ok } from "@caelo/shared";
+import { err, type LocaleConfig, ok, resolveLocaleUrl } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -503,6 +503,65 @@ export const listPendingLocaleProposalsOp = defineOperation({
 
 const executeProposalInput = z.object({ proposalId: z.string().uuid() }).strict();
 
+interface LocaleConfigRow {
+  code: string;
+  display_name: string;
+  url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
+  url_host: string | null;
+  is_default: boolean;
+}
+
+async function loadLocaleConfig(tx: TransactionRunner, code: string): Promise<LocaleConfig | null> {
+  const rows = (await tx.execute(sql`
+    SELECT code, display_name, url_strategy, url_host, is_default
+    FROM locales WHERE code = ${code} LIMIT 1
+  `)) as unknown as LocaleConfigRow[];
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    code: r.code,
+    displayName: r.display_name,
+    urlStrategy: r.url_strategy,
+    urlHost: r.url_host,
+    isDefault: r.is_default,
+  };
+}
+
+async function readSiteBaseUrl(tx: TransactionRunner): Promise<string> {
+  const rows = (await tx.execute(sql`
+    SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
+  `)) as unknown as { site_base_url: string }[];
+  return rows[0]?.site_base_url ?? "http://localhost:8082";
+}
+
+/**
+ * Extract the path portion of an absolute URL. Used to convert
+ * resolveLocaleUrl output into the relative paths the redirects table
+ * stores. Returns null when the URL parse fails (defensive — caller
+ * skips that redirect rather than corrupting the table).
+ */
+function pathOf(absoluteUrl: string): string | null {
+  try {
+    const u = new URL(absoluteUrl);
+    return u.pathname || "/";
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns true when both URLs are on the same host (so a path-only
+ * redirect row is sufficient). Cross-host transitions need per-provider
+ * edge rules and ride out under a FIXME(p15) until cloud adapters land.
+ */
+function sameHost(a: string, b: string): boolean {
+  try {
+    return new URL(a).host === new URL(b).host;
+  } catch {
+    return false;
+  }
+}
+
 export const executeLocaleProposalOp = defineOperation({
   name: "locales.execute_proposal",
   // Why human-only: §11.A — the Approve button. AI calls hit
@@ -511,8 +570,16 @@ export const executeLocaleProposalOp = defineOperation({
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: executeProposalInput,
-  output: z.object({ applied: z.literal(true) }),
+  output: z.object({
+    applied: z.literal(true),
+    /** P9 review pass — number of `redirects` rows inserted as a side-effect. */
+    redirectsCreated: z.number().int().nonnegative(),
+    /** Pages whose URL changed cross-host (subdomain/domain) — per-provider rules apply at deploy. */
+    crossHostShifts: z.number().int().nonnegative(),
+  }),
   handler: async (ctx, input, tx) => {
+    let redirectsCreated = 0;
+    let crossHostShifts = 0;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, action_kind, payload, status
       FROM locale_pending_actions
@@ -554,34 +621,55 @@ export const executeLocaleProposalOp = defineOperation({
       `);
     } else if (proposal.action_kind === "delete") {
       const code = String(payload.code);
-      // Defensive: re-check default + page-count at execute time so a
-      // proposal queued before pages were created can't orphan content.
-      const dRows = (await tx.execute(sql`
-        SELECT is_default FROM locales WHERE code = ${code} LIMIT 1
-      `)) as unknown as { is_default: boolean }[];
-      if (!dRows[0]) {
+      const oldLocale = await loadLocaleConfig(tx, code);
+      if (!oldLocale) {
         return err({
           kind: "HandlerError",
           operation: "locales.execute_proposal",
           message: `locale '${code}' no longer exists`,
         });
       }
-      if (dRows[0].is_default) {
+      if (oldLocale.isDefault) {
         return err({
           kind: "HandlerError",
           operation: "locales.execute_proposal",
           message: "cannot delete the default locale — set a different default first",
         });
       }
-      const pageRows = (await tx.execute(sql`
-        SELECT count(*)::int AS c FROM pages WHERE locale = ${code} AND deleted_at IS NULL
-      `)) as unknown as { c: number }[];
-      if ((pageRows[0]?.c ?? 0) > 0) {
-        return err({
-          kind: "HandlerError",
-          operation: "locales.execute_proposal",
-          message: `${pageRows[0]?.c} pages still exist in '${code}' — delete or move them first`,
-        });
+      // P9 review pass — soft-delete the locale's pages AND insert a
+      // 301 from each page's old URL → '/' so external link equity
+      // still routes somewhere (Owner clicked Approve, this is the
+      // CLAUDE.md §11.A explicit-consent moment). Cross-host source
+      // URLs (subdomain/domain) get logged but no redirect row is
+      // inserted — those need per-provider edge rules.
+      const baseUrl = await readSiteBaseUrl(tx);
+      const livePages = (await tx.execute(sql`
+        SELECT id::text AS id, slug FROM pages
+        WHERE locale = ${code} AND deleted_at IS NULL
+      `)) as unknown as { id: string; slug: string }[];
+      for (const p of livePages) {
+        let oldUrl: string;
+        try {
+          oldUrl = resolveLocaleUrl(oldLocale, p.slug, baseUrl);
+        } catch {
+          continue;
+        }
+        const fromPath = pathOf(oldUrl);
+        const oldOnSameHost = sameHost(oldUrl, baseUrl);
+        if (fromPath && oldOnSameHost) {
+          const ins = (await tx.execute(sql`
+            INSERT INTO redirects (from_path, to_path, status_code, created_by)
+            VALUES (${fromPath}, '/', 301, ${ctx.actorId}::uuid)
+            ON CONFLICT (from_path) DO NOTHING
+            RETURNING id
+          `)) as unknown as { id: string }[];
+          if (ins.length > 0) redirectsCreated += 1;
+        } else {
+          crossHostShifts += 1;
+        }
+        await tx.execute(sql`
+          UPDATE pages SET deleted_at = now() WHERE id = ${p.id}::uuid
+        `);
       }
       await tx.execute(sql`DELETE FROM locales WHERE code = ${code}`);
     } else if (proposal.action_kind === "set_default") {
@@ -602,8 +690,16 @@ export const executeLocaleProposalOp = defineOperation({
       }
     } else if (proposal.action_kind === "update_strategy") {
       const code = String(payload.code);
-      const urlStrategy = String(payload.urlStrategy);
+      const urlStrategy = String(payload.urlStrategy) as LocaleConfig["urlStrategy"];
       const urlHost = (payload.urlHost as string | null | undefined) ?? null;
+      const oldLocale = await loadLocaleConfig(tx, code);
+      if (!oldLocale) {
+        return err({
+          kind: "HandlerError",
+          operation: "locales.execute_proposal",
+          message: `locale '${code}' no longer exists`,
+        });
+      }
       const updated = (await tx.execute(sql`
         UPDATE locales
         SET url_strategy = ${urlStrategy},
@@ -619,6 +715,45 @@ export const executeLocaleProposalOp = defineOperation({
           message: `locale '${code}' no longer exists`,
         });
       }
+      // P9 review pass — emit one 301 per published page from the old
+      // URL path → the new URL path. Same-host transitions land in the
+      // redirects table; cross-host transitions need per-provider edge
+      // rules and ride out under FIXME(p15) for cloud adapters.
+      const newLocale: LocaleConfig = { ...oldLocale, urlStrategy, urlHost };
+      const baseUrl = await readSiteBaseUrl(tx);
+      const livePages = (await tx.execute(sql`
+        SELECT slug FROM pages
+        WHERE locale = ${code} AND deleted_at IS NULL AND status = 'published'
+      `)) as unknown as { slug: string }[];
+      for (const p of livePages) {
+        let oldUrl: string;
+        let newUrl: string;
+        try {
+          oldUrl = resolveLocaleUrl(oldLocale, p.slug, baseUrl);
+          newUrl = resolveLocaleUrl(newLocale, p.slug, baseUrl);
+        } catch {
+          continue;
+        }
+        if (oldUrl === newUrl) continue;
+        const fromPath = pathOf(oldUrl);
+        const toPath = pathOf(newUrl);
+        const sameHostFromOld = sameHost(oldUrl, baseUrl);
+        const sameHostToNew = sameHost(newUrl, baseUrl);
+        if (fromPath && toPath && sameHostFromOld && sameHostToNew && fromPath !== toPath) {
+          const ins = (await tx.execute(sql`
+            INSERT INTO redirects (from_path, to_path, status_code, created_by)
+            VALUES (${fromPath}, ${toPath}, 301, ${ctx.actorId}::uuid)
+            ON CONFLICT (from_path) DO NOTHING
+            RETURNING id
+          `)) as unknown as { id: string }[];
+          if (ins.length > 0) redirectsCreated += 1;
+        } else {
+          // FIXME(p15): cross-host swap (subdomain/domain). Per-provider
+          // edge rules emit the redirect at deploy time; the redirects
+          // table only stores path-only entries.
+          crossHostShifts += 1;
+        }
+      }
     }
 
     await tx.execute(sql`
@@ -632,9 +767,12 @@ export const executeLocaleProposalOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.proposalId,
-      resultSummary: `${proposal.action_kind} applied`,
+      resultSummary:
+        redirectsCreated > 0 || crossHostShifts > 0
+          ? `${proposal.action_kind} applied redirects=${redirectsCreated} cross_host=${crossHostShifts}`
+          : `${proposal.action_kind} applied`,
     });
-    return ok({ applied: true as const });
+    return ok({ applied: true as const, redirectsCreated, crossHostShifts });
   },
 });
 
