@@ -18,11 +18,10 @@
 
   <Card>
     <CardHeader>
-      <CardTitle class="text-base">Available with i18n</CardTitle>
+      <CardTitle class="text-base">See <a href="/security/locales" class="underline">Locales &amp; URL routing</a></CardTitle>
       <CardDescription>
-        This panel ships with the internationalisation release. Until then, every page lives at <code
-          >/&lt;slug&gt;</code
-        > on a single domain.
+        P9 i18n shipped this surface under <code>/security/locales</code>. Per-locale strategy and
+        DNS guidance live there.
       </CardDescription>
     </CardHeader>
   </Card>

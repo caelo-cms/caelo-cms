@@ -444,6 +444,50 @@ export async function* runChatTurn(
     }
   }
 
+  // P9 — `## Locales` context block. Lists every locale with its URL
+  // strategy and surfaces pending proposals so the AI doesn't re-queue
+  // a change the Owner is already reviewing.
+  let localesBlock: string | undefined;
+  const localesR = await execute(registry, adapter, humanCtx, "locales.list", {});
+  if (localesR.ok) {
+    const rows = localesR.value as {
+      locales: {
+        code: string;
+        displayName: string;
+        urlStrategy: string;
+        urlHost: string | null;
+        isDefault: boolean;
+      }[];
+    };
+    if (rows.locales.length > 0) {
+      const lines = rows.locales.map((l) => {
+        const def = l.isDefault ? " (DEFAULT)" : "";
+        const host = l.urlHost ? ` host=${l.urlHost}` : "";
+        return `- ${l.code} "${l.displayName}" — ${l.urlStrategy}${host}${def}`;
+      });
+      const pendingR = await execute(registry, adapter, humanCtx, "locales.list_pending", {
+        status: "pending",
+      });
+      const pendingLines: string[] = [];
+      if (pendingR.ok) {
+        const p = pendingR.value as {
+          proposals: { id: string; actionKind: string; payload: unknown }[];
+        };
+        for (const pr of p.proposals.slice(0, 10)) {
+          pendingLines.push(
+            `  pending: ${pr.actionKind} ${JSON.stringify(pr.payload)} (id=${pr.id})`,
+          );
+        }
+      }
+      localesBlock = [
+        "# Locales",
+        "Adding/removing/retargeting a locale is TWO-STEP per CLAUDE.md §11.A: AI proposes via `propose_add_locale` / `propose_remove_locale` / `propose_set_default_locale` / `propose_update_locale_strategy`; an Owner clicks Approve at /security/locales/pending to apply. Do not claim the action was applied — tell the user the proposal is queued.",
+        ...lines,
+        ...(pendingLines.length > 0 ? ["Your pending proposals:", ...pendingLines] : []),
+      ].join("\n");
+    }
+  }
+
   const systemChunks = composeSystemPromptChunks(
     memory,
     tools.catalogue().map((t) => ({ name: t.name, description: t.description })),
@@ -457,6 +501,7 @@ export async function* runChatTurn(
       siteDefaultsBlock,
       mediaBlock,
       redirectsBlock,
+      localesBlock,
     },
   );
 

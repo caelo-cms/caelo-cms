@@ -23,6 +23,7 @@ import {
   ok,
   renderSeoHead,
   resolveCanonicalUrl,
+  resolveLocaleUrl,
   type SiteSeoSettings,
 } from "@caelo/shared";
 import { sql } from "drizzle-orm";
@@ -350,16 +351,71 @@ export const renderPagePreviewOp = defineOperation({
         void ext;
       }
     }
-    const hreflangRows = (await tx.execute(sql`
+    // P9 — preview matches the static generator: explicit hreflang
+    // overrides win, otherwise auto-compute from sibling-locale pages
+    // for the same slug. Locale registry drives URL strategy.
+    const localeRows = (await tx.execute(sql`
+      SELECT code, url_strategy, url_host, is_default FROM locales
+    `)) as unknown as {
+      code: string;
+      url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
+      url_host: string | null;
+      is_default: boolean;
+    }[];
+    const localeByCode = new Map(
+      localeRows.map((r) => [
+        r.code,
+        {
+          code: r.code,
+          urlStrategy: r.url_strategy,
+          urlHost: r.url_host,
+          isDefault: r.is_default,
+        },
+      ]),
+    );
+    const explicitHreflang = (await tx.execute(sql`
       SELECT locale, url FROM pages_hreflang
       WHERE page_id = ${input.pageId}::uuid
       ORDER BY locale
     `)) as unknown as { locale: string; url: string }[];
+    let hreflang: { locale: string; url: string }[];
+    if (explicitHreflang.length > 0) {
+      hreflang = explicitHreflang.map((r) => ({ locale: r.locale, url: r.url }));
+    } else {
+      const siblings = (await tx.execute(sql`
+        SELECT locale FROM pages
+        WHERE slug = ${pageRow.slug} AND deleted_at IS NULL
+      `)) as unknown as { locale: string }[];
+      hreflang = [];
+      for (const s of siblings) {
+        const cfg = localeByCode.get(s.locale);
+        if (!cfg) continue;
+        try {
+          hreflang.push({
+            locale: s.locale,
+            url: resolveLocaleUrl(
+              {
+                code: cfg.code,
+                displayName: cfg.code,
+                urlStrategy: cfg.urlStrategy,
+                urlHost: cfg.urlHost,
+                isDefault: cfg.isDefault,
+              },
+              pageRow.slug,
+              siteBaseUrl,
+            ),
+          });
+        } catch {
+          // Misconfigured locale — skip its hreflang entry.
+        }
+      }
+    }
     const canonical = resolveCanonicalUrl({
       siteBaseUrl,
       pageSlug: pageRow.slug,
       pageLocale: pageRow.locale,
       override: seoRow?.canonical_url ?? null,
+      localeConfig: localeByCode.get(pageRow.locale),
     });
     const headBlock = renderSeoHead({
       title: pageRow.title,
@@ -367,7 +423,7 @@ export const renderPagePreviewOp = defineOperation({
       canonical,
       noindex: seoRow?.noindex ?? false,
       ogImageUrl,
-      hreflang: hreflangRows.map((r) => ({ locale: r.locale, url: r.url })),
+      hreflang,
       organization,
     });
     html = injectSeoIntoHead(html, headBlock);

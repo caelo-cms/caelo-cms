@@ -17,10 +17,10 @@
     { href: "/security/media", label: "Media", desc: "CDN copy toggle + library stats", icon: ImageIcon },
     { href: "/security/seo", label: "SEO", desc: "Site base URL, sitemap toggle, organization JSON, stale-SEO queue", icon: Search },
     { href: "/security/redirects", label: "Redirects", desc: "301/302 path mappings; auto-emitted to per-provider redirect files", icon: ArrowRightLeft },
+    { href: "/security/locales", label: "Locales & URL routing", desc: "Languages + URL strategies; AI proposals queued for Owner approval", icon: Globe },
     { href: "/security/ai", label: "AI provider", desc: "Anthropic configuration + active provider", icon: Bot },
     { href: "/security/deployments", label: "Deployments", desc: "Ops view — dev / staging / production + promote", icon: Rocket },
     { href: "/security/costs", label: "AI cost controls", desc: "Token + spend dashboard", icon: Coins },
-    { href: "/security/domains", label: "Domains", desc: "Locale + URL strategies, DNS records (lands with i18n + provisioning)", icon: Globe },
   ];
 </script>
 

@@ -24,6 +24,7 @@ import { recordAudit } from "../../audit.js";
 import { emitSnapshot, loadPageLayoutState, loadPageState } from "../../snapshots/index.js";
 import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
 import { readSiteDefaults } from "../site_defaults.js";
+import { recomputePageContentHash } from "./content_hash.js";
 
 const pageRowSchema = z.object({
   id: z.string(),
@@ -338,6 +339,9 @@ export const createPageOp = defineOperation({
         entities: [{ kind: "page", entityId: pageId, state }],
       });
     }
+    // P9 — initial content_hash (will be empty-blocks until set_modules
+    // runs, but populates the column so list/get queries don't NULL-out).
+    await recomputePageContentHash(tx, pageId);
     return ok({ pageId });
   },
 });
@@ -579,6 +583,9 @@ export const setPageModulesOp = defineOperation({
       description: `pages.set_modules blocks=${input.blocks.length}`,
       entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
     });
+    // P9 — content changed; refresh content_hash + recompute
+    // translation_status for any variants of this page.
+    await recomputePageContentHash(tx, input.pageId);
     return ok({});
   },
 });
@@ -811,6 +818,8 @@ export const duplicatePageOp = defineOperation({
       description: `pages.duplicate layout from=${source.slug}`,
       entities: [{ kind: "pageLayout", entityId: newPageId, state: layoutState }],
     });
+    // P9 — populate the clone's content_hash now that its modules are linked.
+    await recomputePageContentHash(tx, newPageId);
     return ok({ pageId: newPageId });
   },
 });

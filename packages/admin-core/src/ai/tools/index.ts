@@ -19,6 +19,10 @@ import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
+import { proposeAddLocaleTool } from "./propose-add-locale.js";
+import { proposeRemoveLocaleTool } from "./propose-remove-locale.js";
+import { proposeSetDefaultLocaleTool } from "./propose-set-default-locale.js";
+import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
 import { renamePageTool } from "./rename-page.js";
@@ -75,6 +79,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(bulkCreateRedirectsTool);
   registry.register(bulkDeleteRedirectsTool);
   registry.register(bulkOptimizeSeoTool);
+  // P9 — locale propose tools (CLAUDE.md §11.A two-step gate).
+  registry.register(proposeAddLocaleTool);
+  registry.register(proposeRemoveLocaleTool);
+  registry.register(proposeSetDefaultLocaleTool);
+  registry.register(proposeUpdateLocaleStrategyTool);
   return registry;
 }
 

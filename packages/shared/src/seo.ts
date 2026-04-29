@@ -116,13 +116,30 @@ export function resolveCanonicalUrl(args: {
   pageSlug: string;
   pageLocale: string;
   override: string | null;
+  /** P9 — when present, the locale's url_strategy decides the URL shape. */
+  localeConfig?: {
+    code: string;
+    urlStrategy: "none" | "subdirectory" | "subdomain" | "domain";
+    urlHost: string | null;
+    isDefault: boolean;
+  };
 }): string {
   if (args.override && args.override.length > 0) return args.override;
   const base = args.siteBaseUrl.replace(/\/$/, "");
   // Slug `home` renders to root path per the existing pageOutputPath
   // contract in apps/static-generator.
-  if (args.pageSlug === "home" || args.pageSlug === "") return `${base}/`;
-  return `${base}/${args.pageSlug}/`;
+  const cleanSlug = args.pageSlug === "home" || args.pageSlug === "" ? "" : args.pageSlug;
+  const cfg = args.localeConfig;
+  if (cfg && cfg.urlStrategy !== "none") {
+    if (cfg.urlStrategy === "subdirectory") {
+      return cleanSlug ? `${base}/${cfg.code}/${cleanSlug}/` : `${base}/${cfg.code}/`;
+    }
+    if ((cfg.urlStrategy === "subdomain" || cfg.urlStrategy === "domain") && cfg.urlHost) {
+      const protocol = base.startsWith("http://") ? "http://" : "https://";
+      return cleanSlug ? `${protocol}${cfg.urlHost}/${cleanSlug}/` : `${protocol}${cfg.urlHost}/`;
+    }
+  }
+  return cleanSlug ? `${base}/${cleanSlug}/` : `${base}/`;
 }
 
 export interface SeoMetaInput {

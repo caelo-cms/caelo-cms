@@ -22,8 +22,10 @@ import { join } from "node:path";
 import type { TransactionRunner } from "@caelo/query-api";
 import {
   injectSeoIntoHead,
+  type LocaleConfig,
   renderSeoHead,
   resolveCanonicalUrl,
+  resolveLocaleUrl,
   type SiteSeoSettings,
 } from "@caelo/shared";
 import { sql } from "drizzle-orm";
@@ -151,9 +153,57 @@ export async function runSeoPass(args: {
     );
   }
 
-  // Hreflang rows — empty in P8 (P9 i18n populates).
+  // P9 — compute hreflang per page from the locale registry + sibling
+  // pages sharing the same slug across locales. Rows in `pages_hreflang`
+  // (P8 stub) act as explicit overrides; auto-computed entries fill in
+  // the rest. Hreflang is emitted in <head> only — not the sitemap —
+  // per crawler-coherency reasoning (P8 review pass decision).
   const pageIds = seoBundles.map((b) => b.pageId);
   const hreflangByPage = new Map<string, { locale: string; url: string }[]>();
+
+  const localeRows = (await args.tx.execute(sql`
+    SELECT code, display_name, url_strategy, url_host, is_default
+    FROM locales
+  `)) as unknown as {
+    code: string;
+    display_name: string;
+    url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
+    url_host: string | null;
+    is_default: boolean;
+  }[];
+  const locales: LocaleConfig[] = localeRows.map((r) => ({
+    code: r.code,
+    displayName: r.display_name,
+    urlStrategy: r.url_strategy,
+    urlHost: r.url_host,
+    isDefault: r.is_default,
+  }));
+  const localeByCode = new Map(locales.map((l) => [l.code, l]));
+
+  // Compute auto-hreflang from sibling pages (same slug, different locale).
+  for (const bundle of seoBundles) {
+    const siblings = (await args.tx.execute(sql`
+      SELECT locale FROM pages
+      WHERE slug = ${bundle.slug} AND deleted_at IS NULL
+    `)) as unknown as { locale: string }[];
+    const auto: { locale: string; url: string }[] = [];
+    for (const s of siblings) {
+      const cfg = localeByCode.get(s.locale);
+      if (!cfg) continue;
+      try {
+        auto.push({
+          locale: s.locale,
+          url: resolveLocaleUrl(cfg, bundle.slug, args.settings.siteBaseUrl),
+        });
+      } catch {
+        // Misconfigured locale (missing url_host) — skip its hreflang
+        // entry but keep the deploy going so the rest of the site builds.
+      }
+    }
+    if (auto.length > 0) hreflangByPage.set(bundle.pageId, auto);
+  }
+
+  // Explicit overrides from pages_hreflang win when present.
   for (const pid of pageIds) {
     const rows = (await args.tx.execute(sql`
       SELECT page_id::text AS page_id, locale, url
@@ -180,6 +230,7 @@ export async function runSeoPass(args: {
       pageSlug: bundle.slug,
       pageLocale: bundle.locale,
       override: bundle.canonicalOverride,
+      localeConfig: localeByCode.get(bundle.locale),
     });
     const ogImageUrl = bundle.ogImageAssetId
       ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)

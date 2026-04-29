@@ -1,0 +1,226 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * P9 — locales propose/execute split (CLAUDE.md §11.A). Asserts:
+ *   - AI can propose every locale change.
+ *   - The propose row lands in locale_pending_actions.
+ *   - The execute path rejects AI actors (ActorScopeRejected).
+ *   - A human can execute → the locale row mutates.
+ *   - Rejecting the proposal closes it without applying.
+ */
+
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
+import type { ExecutionContext } from "@caelo/shared";
+import { SQL } from "bun";
+import { registerAdminOps } from "../register.js";
+
+const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
+const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
+
+let adapter: DatabaseAdapter;
+let registry: OperationRegistry;
+
+const systemCtx: ExecutionContext = {
+  actorId: "00000000-0000-0000-0000-00000000ffff",
+  actorKind: "system",
+  requestId: "locales-test",
+};
+const aiCtx: ExecutionContext = {
+  ...systemCtx,
+  actorKind: "ai",
+  requestId: "locales-test-ai",
+};
+
+const TEST_LOCALES = ["xx", "yy", "zz", "ab"];
+
+async function wipe(): Promise<void> {
+  const sql = new SQL(ADMIN_URL);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // Strip is_default off any test locale, delete them, then make
+      // sure 'en' is back to default (no UNIQUE-violating overlap).
+      for (const code of TEST_LOCALES) {
+        await tx`UPDATE locales SET is_default = false WHERE code = ${code}`;
+        await tx`DELETE FROM locale_pending_actions WHERE payload->>'code' = ${code}`;
+        await tx`DELETE FROM locales WHERE code = ${code}`;
+      }
+      await tx`UPDATE locales SET is_default = true WHERE code = 'en'`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+beforeAll(async () => {
+  await wipe();
+  adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  registry = new OperationRegistry();
+  registerAdminOps(registry);
+});
+
+afterEach(async () => {
+  await wipe();
+});
+
+afterAll(async () => {
+  await adapter.close();
+});
+
+describe("locales propose/execute split", () => {
+  it("AI proposes a create; human executes; locale appears", async () => {
+    const propose = await execute(registry, adapter, aiCtx, "locales.propose_create", {
+      code: "xx",
+      displayName: "Test XX",
+      urlStrategy: "subdirectory",
+    });
+    expect(propose.ok).toBe(true);
+    if (!propose.ok) return;
+    const { proposalId } = propose.value as { proposalId: string };
+
+    // AI cannot execute — ActorScopeRejected at the validator.
+    const aiExec = await execute(registry, adapter, aiCtx, "locales.execute_proposal", {
+      proposalId,
+    });
+    expect(aiExec.ok).toBe(false);
+    if (!aiExec.ok) {
+      expect(aiExec.error.kind).toBe("ActorScopeRejected");
+    }
+
+    // Human (system here) can execute.
+    const exec = await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId,
+    });
+    expect(exec.ok).toBe(true);
+
+    const list = await execute(registry, adapter, systemCtx, "locales.list", {});
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+    const codes = (list.value as { locales: { code: string }[] }).locales.map((l) => l.code);
+    expect(codes).toContain("xx");
+  });
+
+  it("rejecting a proposal closes it without applying the change", async () => {
+    const propose = await execute(registry, adapter, aiCtx, "locales.propose_create", {
+      code: "yy",
+      displayName: "Test YY",
+      urlStrategy: "subdirectory",
+    });
+    expect(propose.ok).toBe(true);
+    if (!propose.ok) return;
+    const { proposalId } = propose.value as { proposalId: string };
+
+    const reject = await execute(registry, adapter, systemCtx, "locales.reject_proposal", {
+      proposalId,
+      note: "not now",
+    });
+    expect(reject.ok).toBe(true);
+
+    // Subsequent execute on a rejected proposal fails.
+    const exec = await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId,
+    });
+    expect(exec.ok).toBe(false);
+
+    const list = await execute(registry, adapter, systemCtx, "locales.list", {});
+    if (!list.ok) return;
+    const codes = (list.value as { locales: { code: string }[] }).locales.map((l) => l.code);
+    expect(codes).not.toContain("yy");
+  });
+
+  it("propose_delete refuses to queue removing the default locale", async () => {
+    const propose = await execute(registry, adapter, aiCtx, "locales.propose_delete", {
+      code: "en",
+    });
+    expect(propose.ok).toBe(false);
+    if (!propose.ok) {
+      expect(propose.error.kind).toBe("HandlerError");
+      const message = "message" in propose.error ? propose.error.message : "";
+      expect(message).toMatch(/default/);
+    }
+  });
+
+  it("set_default proposal flips is_default atomically on execute", async () => {
+    // Add a second locale first so we have somewhere to set default.
+    const addSecond = await execute(registry, adapter, aiCtx, "locales.propose_create", {
+      code: "zz",
+      displayName: "Test ZZ",
+      urlStrategy: "subdirectory",
+    });
+    if (!addSecond.ok) throw new Error("propose_create failed");
+    const proposalId1 = (addSecond.value as { proposalId: string }).proposalId;
+    await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId: proposalId1,
+    });
+
+    // Now propose set_default to zz.
+    const swap = await execute(registry, adapter, aiCtx, "locales.propose_set_default", {
+      code: "zz",
+    });
+    expect(swap.ok).toBe(true);
+    if (!swap.ok) return;
+    const { proposalId } = swap.value as { proposalId: string };
+    const exec = await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId,
+    });
+    expect(exec.ok).toBe(true);
+
+    const list = await execute(registry, adapter, systemCtx, "locales.list", {});
+    if (!list.ok) return;
+    const locales = (list.value as { locales: { code: string; isDefault: boolean }[] }).locales;
+    const def = locales.find((l) => l.isDefault);
+    expect(def?.code).toBe("zz");
+  });
+
+  it("update_strategy proposal applies new strategy + url_host on execute", async () => {
+    // Add a locale then propose changing its strategy.
+    const add = await execute(registry, adapter, aiCtx, "locales.propose_create", {
+      code: "ab",
+      displayName: "Test AB",
+      urlStrategy: "subdirectory",
+    });
+    if (!add.ok) throw new Error("propose_create failed");
+    await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId: (add.value as { proposalId: string }).proposalId,
+    });
+
+    const propose = await execute(registry, adapter, aiCtx, "locales.propose_update_strategy", {
+      code: "ab",
+      urlStrategy: "subdomain",
+      urlHost: "ab.example.com",
+    });
+    expect(propose.ok).toBe(true);
+    if (!propose.ok) return;
+    const exec = await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId: (propose.value as { proposalId: string }).proposalId,
+    });
+    expect(exec.ok).toBe(true);
+
+    const get = await execute(registry, adapter, systemCtx, "locales.get", { code: "ab" });
+    if (!get.ok) return;
+    const { locale } = get.value as {
+      locale: { urlStrategy: string; urlHost: string | null } | null;
+    };
+    expect(locale?.urlStrategy).toBe("subdomain");
+    expect(locale?.urlHost).toBe("ab.example.com");
+  });
+
+  it("AI cannot reject a proposal either (Owner-only too)", async () => {
+    const propose = await execute(registry, adapter, aiCtx, "locales.propose_create", {
+      code: "xx",
+      displayName: "X",
+      urlStrategy: "subdirectory",
+    });
+    if (!propose.ok) throw new Error("propose failed");
+    const { proposalId } = propose.value as { proposalId: string };
+    const aiReject = await execute(registry, adapter, aiCtx, "locales.reject_proposal", {
+      proposalId,
+    });
+    expect(aiReject.ok).toBe(false);
+    if (!aiReject.ok) {
+      expect(aiReject.error.kind).toBe("ActorScopeRejected");
+    }
+  });
+});

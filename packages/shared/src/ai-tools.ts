@@ -611,3 +611,42 @@ export type ChangeTemplateToolInput = z.infer<typeof changeTemplateToolInput>;
 export type MoveModuleToolInput = z.infer<typeof moveModuleToolInput>;
 export type ReorderModuleToolInput = z.infer<typeof reorderModuleToolInput>;
 export type SetNavMenuToolInput = z.infer<typeof setNavMenuToolInput>;
+
+/**
+ * P9 — locales propose tool schemas. Per CLAUDE.md §11.A all four
+ * write paths are TWO-STEP (AI proposes → Owner clicks Approve);
+ * the AI cannot bypass the click.
+ */
+const localeCodeToolSchema = z
+  .string()
+  .min(2)
+  .max(10)
+  .regex(/^[a-z]{2,3}(-[A-Za-z]{2,4})?$/, "BCP-47 like 'en' or 'de-AT'");
+const urlStrategyToolSchema = z.enum(["none", "subdirectory", "subdomain", "domain"]);
+
+export const proposeAddLocaleToolInput = z
+  .object({
+    code: localeCodeToolSchema,
+    displayName: z.string().min(1).max(120),
+    urlStrategy: urlStrategyToolSchema.default("subdirectory"),
+    urlHost: z.string().min(1).max(253).nullable().optional(),
+  })
+  .strict();
+export type ProposeAddLocaleToolInput = z.infer<typeof proposeAddLocaleToolInput>;
+
+export const proposeRemoveLocaleToolInput = z.object({ code: localeCodeToolSchema }).strict();
+export type ProposeRemoveLocaleToolInput = z.infer<typeof proposeRemoveLocaleToolInput>;
+
+export const proposeSetDefaultLocaleToolInput = z.object({ code: localeCodeToolSchema }).strict();
+export type ProposeSetDefaultLocaleToolInput = z.infer<typeof proposeSetDefaultLocaleToolInput>;
+
+export const proposeUpdateLocaleStrategyToolInput = z
+  .object({
+    code: localeCodeToolSchema,
+    urlStrategy: urlStrategyToolSchema,
+    urlHost: z.string().min(1).max(253).nullable().optional(),
+  })
+  .strict();
+export type ProposeUpdateLocaleStrategyToolInput = z.infer<
+  typeof proposeUpdateLocaleStrategyToolInput
+>;

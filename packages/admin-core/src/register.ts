@@ -67,6 +67,17 @@ import {
   updateDeployProgressOp,
 } from "./ops/deploy.js";
 import {
+  executeLocaleProposalOp,
+  getLocaleOp,
+  listLocalesOp,
+  listPendingLocaleProposalsOp,
+  proposeCreateLocaleOp,
+  proposeDeleteLocaleOp,
+  proposeSetDefaultLocaleOp,
+  proposeUpdateStrategyOp,
+  rejectLocaleProposalOp,
+} from "./ops/locales.js";
+import {
   addCropOp,
   deleteCropOp,
   getProcessingStatusOp,
@@ -119,6 +130,7 @@ import {
   siteDefaultsSetSeoOp,
 } from "./ops/seo.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp } from "./ops/site_defaults.js";
+import { getSiteSettingsOp, setSiteSettingsOp } from "./ops/site_settings.js";
 import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
 import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
 import { moduleImpactOp } from "./ops/snapshots/impact.js";
@@ -279,4 +291,16 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(siteDefaultsSetSeoOp);
   registry.register(lookupLinksInModulesOp);
   registry.register(rewriteModuleLinksOp);
+  // P9 — locale registry + propose/execute split + site_settings toggle.
+  registry.register(listLocalesOp);
+  registry.register(getLocaleOp);
+  registry.register(proposeCreateLocaleOp);
+  registry.register(proposeDeleteLocaleOp);
+  registry.register(proposeSetDefaultLocaleOp);
+  registry.register(proposeUpdateStrategyOp);
+  registry.register(listPendingLocaleProposalsOp);
+  registry.register(executeLocaleProposalOp);
+  registry.register(rejectLocaleProposalOp);
+  registry.register(getSiteSettingsOp);
+  registry.register(setSiteSettingsOp);
 }

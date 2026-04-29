@@ -77,6 +77,8 @@ export interface VolatileContext {
   readonly mediaBlock?: string;
   /** P8 AI-first — recent redirects so the AI can plan + cite without round-trip. */
   readonly redirectsBlock?: string;
+  /** P9 — locales registry + AI's own pending locale-change proposals. */
+  readonly localesBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -134,6 +136,9 @@ export function composeSystemPromptChunks(
   }
   if (volatile.redirectsBlock && volatile.redirectsBlock.trim().length > 0) {
     chunks.push({ body: volatile.redirectsBlock, cacheable: false, label: "redirects" });
+  }
+  if (volatile.localesBlock && volatile.localesBlock.trim().length > 0) {
+    chunks.push({ body: volatile.localesBlock, cacheable: false, label: "locales" });
   }
   if (volatile.pageContextBlock && volatile.pageContextBlock.trim().length > 0) {
     chunks.push({ body: volatile.pageContextBlock, cacheable: false, label: "page-context" });
