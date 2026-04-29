@@ -105,9 +105,26 @@ export const changePageSlugTool: ToolDefinitionWithHandler<
         return { ok: false, content: `redirects.create failed: ${describeError(red.error)}` };
     }
 
+    // P8 — rewrite every module's <a href="/<oldSlug>...">. The
+    // structured-set rewriter above covers nav-menus + link-lists;
+    // this covers the long tail of links inside module HTML bodies
+    // (CTAs, inline mentions, footer link cards) so a slug change
+    // doesn't strand any in-page link. System-actor op so the
+    // updates pass RLS regardless of the current ai/human ctx.
+    const moduleRewrite = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      { ...ctx, actorKind: "system" },
+      "pages.rewrite_module_links",
+      { oldSlug: page.slug, newSlug: input.newSlug },
+    );
+    const rewrittenModules = moduleRewrite.ok
+      ? (moduleRewrite.value as { rewrittenModuleIds: string[] }).rewrittenModuleIds.length
+      : 0;
+
     return {
       ok: true,
-      content: `slug changed: ${oldPath} → ${newPath}; rewrote ${rewritten} nav/link set${rewritten === 1 ? "" : "s"}; redirect ${input.redirectFromOld === "skip" ? "skipped" : "created (301)"}`,
+      content: `slug changed: ${oldPath} → ${newPath}; rewrote ${rewritten} nav/link set${rewritten === 1 ? "" : "s"} + ${rewrittenModules} module body link${rewrittenModules === 1 ? "" : "s"}; redirect ${input.redirectFromOld === "skip" ? "skipped" : "created (301)"}`,
     };
   },
 };

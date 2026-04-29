@@ -102,6 +102,17 @@ import {
   setAiMemoryOp,
 } from "./ops/security/ai_memory.js";
 import { listAiProvidersOp, setAiProvidersOp } from "./ops/security/ai_providers.js";
+import {
+  lookupLinksInModulesOp,
+  pagesSeoAutofillOp,
+  pagesSeoGetOp,
+  pagesSeoListStaleOp,
+  pagesSeoOptimizeOp,
+  pagesSeoSetOp,
+  rewriteModuleLinksOp,
+  siteDefaultsGetSeoOp,
+  siteDefaultsSetSeoOp,
+} from "./ops/seo.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp } from "./ops/site_defaults.js";
 import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
 import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
@@ -248,4 +259,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeAltOp);
   registry.register(listAltProposalsOp);
   registry.register(reviewAltProposalOp);
+  // P8 — SEO sidecar + slug-change link rewriter + site SEO defaults.
+  registry.register(pagesSeoGetOp);
+  registry.register(pagesSeoSetOp);
+  registry.register(pagesSeoAutofillOp);
+  registry.register(pagesSeoOptimizeOp);
+  registry.register(pagesSeoListStaleOp);
+  registry.register(siteDefaultsGetSeoOp);
+  registry.register(siteDefaultsSetSeoOp);
+  registry.register(lookupLinksInModulesOp);
+  registry.register(rewriteModuleLinksOp);
 }

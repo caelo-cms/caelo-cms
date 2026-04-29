@@ -461,6 +461,57 @@ export const setMediaAltToolInput = z
   .strict();
 export type SetMediaAltToolInput = z.infer<typeof setMediaAltToolInput>;
 
+/**
+ * P8 — `set_page_seo`. Manual / panel writes to the per-page SEO
+ * sidecar. AI calls this only on explicit user intent
+ * ("set the home meta description to ..."). Doesn't bump fingerprints
+ * (autofilled_at / optimized_at).
+ */
+export const setPageSeoToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    metaDescription: z.string().max(320).optional(),
+    ogImageAssetId: z.string().uuid().nullable().optional(),
+    canonicalUrl: z.string().max(2048).nullable().optional(),
+    noindex: z.boolean().optional(),
+    changefreq: z
+      .enum(["always", "hourly", "daily", "weekly", "monthly", "yearly", "never"])
+      .optional(),
+    priority: z.number().min(0).max(1).optional(),
+  })
+  .strict();
+export type SetPageSeoToolInput = z.infer<typeof setPageSeoToolInput>;
+
+/**
+ * P8 — `autofill_page_seo`. Fill-once. Refuses when the page's SEO
+ * was already autofilled. Triggered by the `seo-autofill` skill on
+ * the first-publish path.
+ */
+export const autofillPageSeoToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    metaDescription: z.string().min(1).max(320),
+    ogImageAssetId: z.string().uuid().nullable().optional(),
+  })
+  .strict();
+export type AutofillPageSeoToolInput = z.infer<typeof autofillPageSeoToolInput>;
+
+/**
+ * P8 — `optimize_page_seo`. Explicit re-optimization. Always allowed.
+ * Takes optional context (keyword analysis / intent shifts / branding
+ * changes). The AI can call this across N pages in one chat turn —
+ * the resulting changes batch into one Publish-pill confirm.
+ */
+export const optimizePageSeoToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    metaDescription: z.string().min(1).max(320),
+    ogImageAssetId: z.string().uuid().nullable().optional(),
+    context: z.string().max(4000).optional(),
+  })
+  .strict();
+export type OptimizePageSeoToolInput = z.infer<typeof optimizePageSeoToolInput>;
+
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreatePageToolInput = z.infer<typeof createPageToolInput>;

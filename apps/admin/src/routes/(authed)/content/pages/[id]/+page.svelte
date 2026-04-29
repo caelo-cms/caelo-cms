@@ -138,6 +138,7 @@
       <a class="underline" href={`/content/pages/${page.id}/preview`} target="_blank" rel="noopener"
         >Open preview ↗</a
       >
+      <a class="underline" href={`/content/pages/${page.id}/seo`}>SEO →</a>
       <a class="underline" href={`/content/pages/${page.id}/history`}>View history ↗</a>
     </div>
   </div>

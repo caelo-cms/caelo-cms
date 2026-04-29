@@ -3,6 +3,7 @@
 import { addModuleToLayoutTool } from "./add-module-to-layout.js";
 import { addModuleToPageTool } from "./add-module-to-page.js";
 import { addModuleToTemplateTool } from "./add-module-to-template.js";
+import { autofillPageSeoTool } from "./autofill-page-seo.js";
 import { changePageSlugTool } from "./change-page-slug.js";
 import { changeTemplateTool } from "./change-template.js";
 import { createLayoutTool } from "./create-layout.js";
@@ -13,12 +14,14 @@ import { duplicatePageTool } from "./duplicate-page.js";
 import { editModuleTool } from "./edit-module.js";
 import { findMediaTool } from "./find-media.js";
 import { moveModuleTool } from "./move-module.js";
+import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
 import { renamePageTool } from "./rename-page.js";
 import { reorderModuleTool } from "./reorder-module.js";
 import { setMediaAltTool } from "./set-media-alt.js";
 import { setNavMenuTool } from "./set-nav-menu.js";
+import { setPageSeoTool } from "./set-page-seo.js";
 import { setPageTitleTool } from "./set-page-title.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setStructuredSetTool } from "./set-structured-set.js";
@@ -59,6 +62,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // P7 — media library.
   registry.register(findMediaTool);
   registry.register(setMediaAltTool);
+  // P8 — SEO sidecar tools.
+  registry.register(setPageSeoTool);
+  registry.register(autofillPageSeoTool);
+  registry.register(optimizePageSeoTool);
   return registry;
 }
 

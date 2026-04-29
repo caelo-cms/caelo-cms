@@ -10,5 +10,6 @@ export * from "./media.js";
 export * from "./preview-compose.js";
 export * from "./preview-scanner.js";
 export * from "./result.js";
+export * from "./seo.js";
 export * from "./snapshots.js";
 export * from "./structured-sets.js";
