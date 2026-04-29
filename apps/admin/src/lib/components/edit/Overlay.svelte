@@ -21,8 +21,10 @@
     GripHorizontal,
     Minimize2,
   } from "lucide-svelte";
+  import { onDestroy, onMount } from "svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
   import ChatPanel from "$lib/components/chat/ChatPanel.svelte";
+  import MediaPicker from "$lib/components/MediaPicker.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Card } from "$lib/components/ui/card/index.js";
   import {
@@ -195,6 +197,43 @@
   function handleToolResult(payload: ToolResultPayload): void {
     onToolResult?.(payload);
   }
+
+  // P7 review-pass: Cmd+M opens the MediaPicker. The picker's onPick
+  // dispatches a `caelo:insert-into-composer` CustomEvent that the
+  // ChatPanel listens for; we don't reach into the panel's $state
+  // directly so the panel stays callable from /content/chat without
+  // /edit-specific coupling.
+  let mediaPickerOpen = $state(false);
+
+  function onMediaPicked(m: { url: string; alt: string }): void {
+    const altAttr = m.alt ? ` alt="${m.alt.replace(/"/g, "&quot;")}"` : ' alt=""';
+    const snippet = `<img src="${m.url}"${altAttr} />`;
+    document.dispatchEvent(
+      new CustomEvent("caelo:insert-into-composer", { detail: { text: snippet } }),
+    );
+  }
+
+  function onGlobalKeyDown(e: KeyboardEvent): void {
+    if (layout.collapsed) return;
+    if (!(e.metaKey || e.ctrlKey)) return;
+    if (e.key.toLowerCase() !== "m") return;
+    const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+    // Don't pre-empt the user typing m in some other input — only fire
+    // when focus is in the composer textarea OR not in any field at
+    // all (lets the user trigger from anywhere on /edit).
+    if (tag === "input" || tag === "select") return;
+    e.preventDefault();
+    mediaPickerOpen = true;
+  }
+
+  onMount(() => {
+    document.addEventListener("keydown", onGlobalKeyDown);
+  });
+  onDestroy(() => {
+    if (typeof document !== "undefined") {
+      document.removeEventListener("keydown", onGlobalKeyDown);
+    }
+  });
 
   function fmtRelative(iso: string | undefined): string {
     if (!iso) return "";
@@ -395,6 +434,15 @@
       {activePageId}
       compact
       onToolResult={handleToolResult}
+    />
+
+    <!-- P7 review-pass: Cmd+M opens the media picker; on pick, the URL +
+         alt drop into the chat composer as an <img> hint. The user
+         then describes what to do with it ("place this on the hero")
+         and the AI uses the URL via edit_module. -->
+    <MediaPicker
+      bind:open={mediaPickerOpen}
+      onPick={onMediaPicked}
     />
 
     <!-- SE-corner resize (floating mode only) -->

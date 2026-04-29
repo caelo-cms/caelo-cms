@@ -185,7 +185,35 @@
       chips = [...chips, { ...detail }];
     };
     window.addEventListener("caelo:chip", handler);
-    return () => window.removeEventListener("caelo:chip", handler);
+
+    // P7 review-pass — Cmd+M in /edit's overlay opens the MediaPicker;
+    // the picker dispatches `caelo:insert-into-composer` with an
+    // <img src="..."> snippet that we paste at the textarea caret.
+    const composerInsertHandler = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as { text?: string } | undefined;
+      const text = detail?.text;
+      if (typeof text !== "string" || text.length === 0) return;
+      const el = composerEl;
+      if (!el) {
+        composer = composer + (composer.length > 0 ? "\n" : "") + text;
+        return;
+      }
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      composer = composer.slice(0, start) + text + composer.slice(end);
+      queueMicrotask(() => {
+        el.focus();
+        const pos = start + text.length;
+        el.setSelectionRange(pos, pos);
+        autoSizeComposer();
+      });
+    };
+    document.addEventListener("caelo:insert-into-composer", composerInsertHandler);
+
+    return () => {
+      window.removeEventListener("caelo:chip", handler);
+      document.removeEventListener("caelo:insert-into-composer", composerInsertHandler);
+    };
   });
 
   async function sendMessage(): Promise<void> {

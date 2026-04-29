@@ -47,8 +47,11 @@
   let query = $state("");
   let assets = $state<AssetSummary[]>([]);
   let loading = $state(false);
+  let fetchToken = 0;
+  let queryTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function fetchAssets(): Promise<void> {
+    const myToken = ++fetchToken;
     loading = true;
     const params = new URLSearchParams();
     params.set("sort", "most_used");
@@ -57,11 +60,21 @@
       const res = await fetch(`/api/media/list?${params.toString()}`);
       if (res.ok) {
         const json = (await res.json()) as { assets: AssetSummary[] };
-        assets = json.assets;
+        // Drop stale results so a slow earlier fetch can't overwrite a
+        // newer one (race on rapid typing).
+        if (myToken === fetchToken) assets = json.assets;
       }
     } finally {
-      loading = false;
+      if (myToken === fetchToken) loading = false;
     }
+  }
+
+  /** 200 ms debounce — typical typing burst is faster than network. */
+  function scheduleFetch(): void {
+    if (queryTimer) clearTimeout(queryTimer);
+    queryTimer = setTimeout(() => {
+      void fetchAssets();
+    }, 200);
   }
 
   onMount(() => {
@@ -116,7 +129,7 @@
           value={query}
           oninput={(e) => {
             query = (e.currentTarget as HTMLInputElement).value;
-            void fetchAssets();
+            scheduleFetch();
           }}
           class="pl-7"
         />

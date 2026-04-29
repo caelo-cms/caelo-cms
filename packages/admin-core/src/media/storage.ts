@@ -15,7 +15,7 @@
  */
 
 import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { MediaStorageAdapter } from "@caelo/shared";
 import { Glob } from "bun";
 
@@ -70,7 +70,14 @@ export class LocalVolumeAdapter implements MediaStorageAdapter {
     }
   }
 
+  // P7 review-pass: cache the directory scan for 60 s so the Owner
+  // panel doesn't re-walk the tree on every render. Tradeoff: the
+  // panel may show stale numbers right after an upload; acceptable
+  // for a stats surface.
+  #cache: { value: number; expiresAt: number } | null = null;
   async totalSizeBytes(): Promise<number> {
+    const now = Date.now();
+    if (this.#cache && this.#cache.expiresAt > now) return this.#cache.value;
     let total = 0;
     const glob = new Glob("**/*");
     for await (const file of glob.scan({ cwd: this.#rootDir, absolute: true })) {
@@ -81,12 +88,19 @@ export class LocalVolumeAdapter implements MediaStorageAdapter {
         // Skip files that vanished mid-scan.
       }
     }
+    this.#cache = { value: total, expiresAt: now + 60_000 };
     return total;
   }
 
   /**
-   * Removes all files under a given sha-prefixed directory. Used by
-   * the delete op once every variant for that sha is gone.
+   * Removes all files under a given sha-prefixed directory.
+   *
+   * FIXME(orphan-scrubber): not currently called. The plan deferred a
+   * periodic orphan-blob scrubber that walks `media_assets.storage_key`
+   * vs `storage.exists()` and reconciles. When the first installation
+   * hits the rare orphan case (transaction-rollback after pipeline
+   * succeeded, or manual file delete), the scrubber lands and uses
+   * this method.
    */
   async pruneSha(sha: string): Promise<void> {
     const path = this.#pathFor(sha);
@@ -116,9 +130,4 @@ export function getMediaStorage(): MediaStorageAdapter {
     );
   }
   return storage;
-}
-
-/** Path helper used by the storage path containment check. */
-export function joinKeyPath(rootDir: string, key: string): string {
-  return join(resolve(rootDir), key);
 }

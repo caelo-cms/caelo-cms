@@ -103,21 +103,28 @@ export async function runMediaPipeline(
     };
   }
 
-  // Raster images — sharp pipeline. We re-encode `orig` only when
-  // stripping EXIF; otherwise the upload-bytes ARE the orig.
+  // Raster images — sharp pipeline. EXIF is stripped on EVERY emitted
+  // variant (privacy + consistent display): `.rotate()` reads the EXIF
+  // orientation tag, applies it as a real rotation, then the encoder
+  // writes a new file without the EXIF block. Without this, browsers
+  // that ignore EXIF (most non-Safari) render `orig` rotated wrong
+  // while WebP variants render right — a noticeable inconsistency.
   const meta = await sharp(body).metadata();
   const sourceWidth = meta.width ?? null;
   const sourceHeight = meta.height ?? null;
   const ext = pickExtension(mime);
 
+  const origRotated = await sharp(body).rotate().toBuffer({ resolveWithObject: true });
+  const origBody = new Uint8Array(origRotated.data);
+
   const origVariant: PipelineOutputVariant = {
     variant: "orig",
     format: extensionToFormat(ext),
-    width: sourceWidth,
-    height: sourceHeight,
-    sizeBytes: body.byteLength,
+    width: origRotated.info.width,
+    height: origRotated.info.height,
+    sizeBytes: origBody.byteLength,
     storageKey: buildStorageKey(sha, "orig", ext),
-    body,
+    body: origBody,
     contentType: mime,
   };
 

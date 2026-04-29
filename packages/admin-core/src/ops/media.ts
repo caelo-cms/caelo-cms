@@ -141,6 +141,17 @@ export const mediaUploadOp = defineOperation({
       LIMIT 1
     `)) as unknown as { id: string }[];
     if (existing[0]) {
+      // Re-uploads of the same content still need an audit trail entry
+      // so /security/audit shows who attempted the upload, even though
+      // no new row landed in media_assets.
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        operation: "media.upload",
+        input: { sha256: input.sha256, mime: input.mime, originalName: input.originalName },
+        succeeded: true,
+        entityId: existing[0].id,
+        resultSummary: "deduped",
+      });
       return ok({ assetId: existing[0].id, deduped: true });
     }
 

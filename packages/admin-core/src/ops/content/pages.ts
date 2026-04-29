@@ -10,6 +10,7 @@
 import { defineOperation } from "@caelo/query-api";
 import {
   err,
+  extractMediaRefs,
   localeSchema,
   ok,
   pageCreateSchema,
@@ -757,6 +758,30 @@ export const duplicatePageOp = defineOperation({
       JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
       WHERE pm.page_id = ${input.sourcePageId}::uuid
     `);
+    // P7 review-pass: bump media usage_count for every distinct asset
+    // referenced from the cloned modules' HTML. A duplicated page adds
+    // a fresh set of live references, so the AI's `## Media` block
+    // surfaces the asset as more popular. Same diff helper that
+    // modules.update calls; HTML is unchanged so we treat the empty
+    // string as "before" and the union of all module HTML as "after".
+    const clonedModules = (await tx.execute(sql`
+      SELECT m.html FROM page_modules pm
+      JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
+      WHERE pm.page_id = ${newPageId}::uuid
+    `)) as unknown as { html: string }[];
+    if (clonedModules.length > 0) {
+      const seen = new Set<string>();
+      for (const r of clonedModules) {
+        for (const ref of extractMediaRefs(r.html)) seen.add(ref.assetId);
+      }
+      for (const assetId of seen) {
+        await tx.execute(sql`
+          UPDATE media_assets
+          SET usage_count = usage_count + 1, last_used_at = now()
+          WHERE id = ${assetId}::uuid AND deleted_at IS NULL
+        `);
+      }
+    }
     const droppedDeleted = totalSource - liveSource;
     await recordAudit(tx, {
       actorId: ctx.actorId,
