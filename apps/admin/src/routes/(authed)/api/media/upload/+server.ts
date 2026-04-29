@@ -16,7 +16,7 @@
  * `/content/media/[id]` on success.
  */
 
-import { getMediaStorage, runMediaPipeline } from "@caelo/admin-core";
+import { getMediaStorage, getMediaStorageProvider, runMediaPipeline } from "@caelo/admin-core";
 import { execute } from "@caelo/query-api";
 import {
   MEDIA_ALLOWED_MIMES,
@@ -112,6 +112,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     height: result.height,
     alt: typeof altRaw === "string" ? altRaw.slice(0, 2048) : "",
     storageKey: result.variants[0]?.storageKey ?? `${sha}/orig`,
+    storageProvider: getMediaStorageProvider(),
     variants: result.variants.map((v) => ({
       variant: v.variant,
       format: v.format,

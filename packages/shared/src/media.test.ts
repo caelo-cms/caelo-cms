@@ -35,12 +35,19 @@ describe("media URL helpers", () => {
     ]);
   });
 
-  it("ignores non-canonical or unknown variant matches", () => {
+  it("ignores ill-formed asset ids; accepts kebab-case variants (crops post-P7-opt-2)", () => {
+    // Short id can never match (uuid pattern in the regex). A kebab-
+    // case variant matches — this widened post-P7 to accept focal-
+    // point crop variants like `square-800`. Unknown variants reach
+    // the renderer / static-generator media-pass which fails loudly
+    // when there's no media_variants row, per the no-fallbacks rule.
     const html = `
       <img src="/_caelo/media/short-id/webp-800" />
-      <img src="/_caelo/media/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/unknown-variant" />
+      <img src="/_caelo/media/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/square-800" />
     `;
-    expect(extractMediaRefs(html)).toEqual([]);
+    expect(extractMediaRefs(html)).toEqual([
+      { assetId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", variant: "square-800" },
+    ]);
   });
 
   it("buildStorageKey is sha-prefixed", () => {

@@ -84,8 +84,12 @@ export function buildMediaUrl(assetId: string, variant: MediaVariantTag): string
   return `${MEDIA_URL_PREFIX}/${assetId}/${variant}`;
 }
 
+// Variant token: `orig`, `webp-<width>`, or `<crop-name>-<width>`. We
+// accept any kebab-case slug so focal-point crop fan-outs like
+// `square-800` and `wide-1200` (added by P7 optimization #2) round-trip
+// without a regex update per crop name.
 const mediaUrlPattern = new RegExp(
-  `${MEDIA_URL_PREFIX}/([0-9a-f-]{36})/(orig|webp-1600|webp-1200|webp-800|webp-400)`,
+  `${MEDIA_URL_PREFIX}/([0-9a-f-]{36})/([a-z][a-z0-9-]{0,63})`,
   "g",
 );
 
@@ -95,14 +99,14 @@ const mediaUrlPattern = new RegExp(
  * media-pass. Returns a deduped list to keep callers' work proportional
  * to unique assets, not raw match count.
  */
-export function extractMediaRefs(html: string): { assetId: string; variant: MediaVariantTag }[] {
+export function extractMediaRefs(html: string): { assetId: string; variant: string }[] {
   const seen = new Set<string>();
-  const out: { assetId: string; variant: MediaVariantTag }[] = [];
+  const out: { assetId: string; variant: string }[] = [];
   for (const m of html.matchAll(mediaUrlPattern)) {
     const key = `${m[1]}/${m[2]}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ assetId: m[1] as string, variant: m[2] as MediaVariantTag });
+    out.push({ assetId: m[1] as string, variant: m[2] as string });
   }
   return out;
 }
@@ -123,10 +127,12 @@ export const mediaUploadInputSchema = z
     height: z.number().int().positive().nullable(),
     alt: z.string().max(2048).default(""),
     storageKey: z.string().min(1),
+    /** P7 optimization #3 — stamped by the upload endpoint via getMediaStorageProvider(). */
+    storageProvider: z.string().min(1).max(64).default("local"),
     variants: z
       .array(
         z.object({
-          variant: z.enum(MEDIA_VARIANT_TAGS),
+          variant: z.string().min(1).max(64),
           format: z.string().min(1).max(32),
           width: z.number().int().positive().nullable(),
           height: z.number().int().positive().nullable(),

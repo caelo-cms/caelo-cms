@@ -66,6 +66,11 @@ import {
   updateDeployProgressOp,
 } from "./ops/deploy.js";
 import {
+  addCropOp,
+  deleteCropOp,
+  getProcessingStatusOp,
+  listAltProposalsOp,
+  listCropsOp,
   mediaDeleteOp,
   mediaGetOp,
   mediaGetSettingsOp,
@@ -75,6 +80,9 @@ import {
   mediaRecordUsageOp,
   mediaUpdateAltOp,
   mediaUploadOp,
+  proposeAltOp,
+  reviewAltProposalOp,
+  setFocalPointOp,
   setMediaCdnOp,
 } from "./ops/media.js";
 import { aggregateNotificationsOp } from "./ops/notifications.js";
@@ -231,4 +239,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaListUsagesOp);
   registry.register(mediaGetSettingsOp);
   registry.register(setMediaCdnOp);
+  // P7 optimizations — focal-point/crops, processing status, alt proposals.
+  registry.register(setFocalPointOp);
+  registry.register(addCropOp);
+  registry.register(deleteCropOp);
+  registry.register(listCropsOp);
+  registry.register(getProcessingStatusOp);
+  registry.register(proposeAltOp);
+  registry.register(listAltProposalsOp);
+  registry.register(reviewAltProposalOp);
 }

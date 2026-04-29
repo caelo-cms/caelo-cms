@@ -116,4 +116,61 @@
       {/if}
     </CardContent>
   </Card>
+
+  <Card>
+    <CardHeader>
+      <CardTitle class="text-base">Alt-text proposals</CardTitle>
+      <CardDescription>
+        AI-suggested alt text from the alt scanner. Reviewed proposals are stamped with your
+        actor + timestamp; rejected ones stay for audit.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      {#if data.altProposals.length === 0}
+        <p class="text-sm text-muted-foreground">
+          No pending proposals. Run <code class="font-mono">bun run apps/admin/scripts/scan-media-alt.ts</code>
+          to generate suggestions for assets with missing alt text.
+        </p>
+      {:else}
+        <ul class="space-y-3 text-sm">
+          {#each data.altProposals as p (p.id)}
+            <li class="rounded-md border border-border p-3">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1 space-y-1">
+                  <p class="truncate font-medium">
+                    <a class="underline-offset-4 hover:underline" href={`/content/media/${p.assetId}`}>
+                      {p.assetName}
+                    </a>
+                  </p>
+                  {#if p.currentAlt}
+                    <p class="text-xs text-muted-foreground">Current: {p.currentAlt}</p>
+                  {:else}
+                    <p class="text-xs italic text-muted-foreground">Current: (no alt)</p>
+                  {/if}
+                  <p class="font-medium">Proposed: <span class="font-normal">{p.proposedAlt}</span></p>
+                  {#if p.rationale}
+                    <p class="text-xs text-muted-foreground">{p.rationale}</p>
+                  {/if}
+                </div>
+                <div class="flex shrink-0 gap-2">
+                  <form method="post" action="?/reviewAlt">
+                    <input type="hidden" name="_csrf" value={data.csrfToken} />
+                    <input type="hidden" name="proposalId" value={p.id} />
+                    <input type="hidden" name="accept" value="true" />
+                    <Button type="submit" size="sm">Accept</Button>
+                  </form>
+                  <form method="post" action="?/reviewAlt">
+                    <input type="hidden" name="_csrf" value={data.csrfToken} />
+                    <input type="hidden" name="proposalId" value={p.id} />
+                    <input type="hidden" name="accept" value="false" />
+                    <Button type="submit" size="sm" variant="outline">Reject</Button>
+                  </form>
+                </div>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </CardContent>
+  </Card>
 </div>

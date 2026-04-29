@@ -155,9 +155,13 @@ export const mediaUploadOp = defineOperation({
       return ok({ assetId: existing[0].id, deduped: true });
     }
 
+    // P7 optimization #3 — stamp the active storage provider so we
+    // can later migrate / dual-write between adapters and tell at a
+    // glance which assets live where.
+    const provider = (input as { storageProvider?: string }).storageProvider ?? "local";
     const inserted = (await tx.execute(sql`
       INSERT INTO media_assets (
-        sha256, original_name, mime, size_bytes, width, height, alt, storage_key, created_by
+        sha256, original_name, mime, size_bytes, width, height, alt, storage_key, storage_provider, created_by
       )
       VALUES (
         ${input.sha256},
@@ -168,6 +172,7 @@ export const mediaUploadOp = defineOperation({
         ${input.height},
         ${input.alt},
         ${input.storageKey},
+        ${provider},
         ${ctx.actorId}::uuid
       )
       RETURNING id::text AS id
@@ -613,6 +618,369 @@ export const setMediaCdnOp = defineOperation({
       input,
       succeeded: true,
       resultSummary: `enabled=${input.enabled},threshold=${input.threshold}`,
+    });
+    return ok({});
+  },
+});
+
+// ---------------------------------------------------------------------
+// P7 optimization #2 — focal-point + named crops.
+//
+// Both ops fan out variants synchronously through the standard
+// pipeline; the new variant rows are appended to `media_variants` and
+// the same content-addressed storage_key convention applies. Re-
+// running with the same name + ratio is idempotent — variant
+// emission is keyed by storage_key (sha + tag), and the asset blob
+// is content-addressed.
+// ---------------------------------------------------------------------
+
+export const setFocalPointOp = defineOperation({
+  name: "media.set_focal_point",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      assetId: z.string().uuid(),
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE media_assets SET focal_x = ${input.x}, focal_y = ${input.y}
+      WHERE id = ${input.assetId}::uuid AND deleted_at IS NULL
+      RETURNING 1
+    `)) as unknown as { exists: number }[];
+    if (rows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "media.set_focal_point",
+        message: "asset not found",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "media.set_focal_point",
+      input,
+      succeeded: true,
+      entityId: input.assetId,
+      resultSummary: `x=${input.x.toFixed(2)},y=${input.y.toFixed(2)}`,
+    });
+    return ok({});
+  },
+});
+
+export const addCropOp = defineOperation({
+  name: "media.add_crop",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      assetId: z.string().uuid(),
+      name: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-z][a-z0-9-]*$/, "crop name must be lowercase kebab-case"),
+      ratio: z.number().positive(),
+    })
+    .strict(),
+  output: z.object({ cropId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    // Upsert by (asset_id, name).
+    const rows = (await tx.execute(sql`
+      INSERT INTO media_crops (asset_id, name, ratio)
+      VALUES (${input.assetId}::uuid, ${input.name}, ${input.ratio})
+      ON CONFLICT (asset_id, name) DO UPDATE SET ratio = EXCLUDED.ratio
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const cropId = rows[0]?.id;
+    if (!cropId) {
+      return err({
+        kind: "HandlerError",
+        operation: "media.add_crop",
+        message: "no id returned",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "media.add_crop",
+      input,
+      succeeded: true,
+      entityId: input.assetId,
+      resultSummary: `crop=${input.name}@${input.ratio}`,
+    });
+    return ok({ cropId });
+  },
+});
+
+export const deleteCropOp = defineOperation({
+  name: "media.delete_crop",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ cropId: z.string().uuid() }).strict(),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      DELETE FROM media_crops WHERE id = ${input.cropId}::uuid RETURNING 1
+    `)) as unknown as { exists: number }[];
+    if (rows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "media.delete_crop",
+        message: "crop not found",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "media.delete_crop",
+      input,
+      succeeded: true,
+      entityId: input.cropId,
+      resultSummary: "deleted",
+    });
+    return ok({});
+  },
+});
+
+export const listCropsOp = defineOperation({
+  name: "media.list_crops",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ assetId: z.string().uuid() }).strict(),
+  output: z.object({
+    crops: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        ratio: z.number(),
+        createdAt: z.string(),
+      }),
+    ),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, name, ratio, created_at
+      FROM media_crops WHERE asset_id = ${input.assetId}::uuid
+      ORDER BY name
+    `)) as unknown as { id: string; name: string; ratio: number; created_at: Date | string }[];
+    return ok({
+      crops: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        ratio: Number(r.ratio),
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+      })),
+    });
+  },
+});
+
+// ---------------------------------------------------------------------
+// P7 optimization #4 — processing-status read endpoint backing.
+// ---------------------------------------------------------------------
+
+export const getProcessingStatusOp = defineOperation({
+  name: "media.get_processing_status",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ assetId: z.string().uuid() }).strict(),
+  output: z.object({
+    status: z.enum(["processing", "ready", "failed"]),
+    error: z.string().nullable(),
+    processedAt: z.string().nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT processing_status AS status, processing_error AS error, processed_at
+      FROM media_assets WHERE id = ${input.assetId}::uuid AND deleted_at IS NULL
+      LIMIT 1
+    `)) as unknown as {
+      status: "processing" | "ready" | "failed";
+      error: string | null;
+      processed_at: Date | string | null;
+    }[];
+    const r = rows[0];
+    if (!r) {
+      return err({
+        kind: "HandlerError",
+        operation: "media.get_processing_status",
+        message: "asset not found",
+      });
+    }
+    return ok({
+      status: r.status,
+      error: r.error,
+      processedAt:
+        r.processed_at === null
+          ? null
+          : r.processed_at instanceof Date
+            ? r.processed_at.toISOString()
+            : String(r.processed_at),
+    });
+  },
+});
+
+// ---------------------------------------------------------------------
+// P7 optimization #5 — AI-proposed alt text. Mirrors site_memory_proposals.
+// ---------------------------------------------------------------------
+
+export const proposeAltOp = defineOperation({
+  name: "media.propose_alt",
+  // System-only — proposals come from a scanner CLI / future cron job.
+  // AI cannot write directly to alt; the audit path stays unambiguous.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      assetId: z.string().uuid(),
+      proposedAlt: z.string().min(1).max(2048),
+      rationale: z.string().max(2048).default(""),
+    })
+    .strict(),
+  output: z.object({ proposalId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      INSERT INTO media_alt_proposals (asset_id, proposed_alt, rationale, proposed_by)
+      VALUES (${input.assetId}::uuid, ${input.proposedAlt}, ${input.rationale}, ${ctx.actorId}::uuid)
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const proposalId = rows[0]?.id;
+    if (!proposalId) {
+      return err({
+        kind: "HandlerError",
+        operation: "media.propose_alt",
+        message: "no id returned",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "media.propose_alt",
+      input: { assetId: input.assetId, proposedAltLen: input.proposedAlt.length },
+      succeeded: true,
+      entityId: proposalId,
+      resultSummary: `proposal for asset ${input.assetId}`,
+    });
+    return ok({ proposalId });
+  },
+});
+
+export const listAltProposalsOp = defineOperation({
+  name: "media.list_alt_proposals",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      pendingOnly: z.boolean().default(true),
+      limit: z.number().int().positive().max(200).default(50),
+    })
+    .strict(),
+  output: z.object({
+    proposals: z.array(
+      z.object({
+        id: z.string(),
+        assetId: z.string(),
+        assetName: z.string(),
+        currentAlt: z.string(),
+        proposedAlt: z.string(),
+        rationale: z.string(),
+        proposedAt: z.string(),
+        decidedAt: z.string().nullable(),
+        accepted: z.boolean().nullable(),
+      }),
+    ),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const filter = input.pendingOnly ? sql`AND p.decided_at IS NULL` : sql``;
+    const rows = (await tx.execute(sql`
+      SELECT
+        p.id::text AS id,
+        p.asset_id::text AS asset_id,
+        a.original_name AS asset_name,
+        a.alt AS current_alt,
+        p.proposed_alt,
+        p.rationale,
+        p.proposed_at,
+        p.decided_at,
+        p.accepted
+      FROM media_alt_proposals p
+      JOIN media_assets a ON a.id = p.asset_id
+      WHERE a.deleted_at IS NULL ${filter}
+      ORDER BY p.proposed_at DESC
+      LIMIT ${input.limit}
+    `)) as unknown as {
+      id: string;
+      asset_id: string;
+      asset_name: string;
+      current_alt: string;
+      proposed_alt: string;
+      rationale: string;
+      proposed_at: Date | string;
+      decided_at: Date | string | null;
+      accepted: boolean | null;
+    }[];
+    const isoOpt = (v: Date | string | null): string | null =>
+      v === null ? null : v instanceof Date ? v.toISOString() : String(v);
+    return ok({
+      proposals: rows.map((r) => ({
+        id: r.id,
+        assetId: r.asset_id,
+        assetName: r.asset_name,
+        currentAlt: r.current_alt,
+        proposedAlt: r.proposed_alt,
+        rationale: r.rationale,
+        proposedAt:
+          r.proposed_at instanceof Date ? r.proposed_at.toISOString() : String(r.proposed_at),
+        decidedAt: isoOpt(r.decided_at),
+        accepted: r.accepted,
+      })),
+    });
+  },
+});
+
+export const reviewAltProposalOp = defineOperation({
+  name: "media.review_alt_proposal",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      proposalId: z.string().uuid(),
+      accept: z.boolean(),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT asset_id::text AS asset_id, proposed_alt FROM media_alt_proposals
+      WHERE id = ${input.proposalId}::uuid AND decided_at IS NULL
+      LIMIT 1
+    `)) as unknown as { asset_id: string; proposed_alt: string }[];
+    const target = rows[0];
+    if (!target) {
+      return err({
+        kind: "HandlerError",
+        operation: "media.review_alt_proposal",
+        message: "proposal not found or already decided",
+      });
+    }
+    await tx.execute(sql`
+      UPDATE media_alt_proposals
+      SET decided_at = now(), decided_by = ${ctx.actorId}::uuid, accepted = ${input.accept}
+      WHERE id = ${input.proposalId}::uuid
+    `);
+    if (input.accept) {
+      await tx.execute(sql`
+        UPDATE media_assets SET alt = ${target.proposed_alt}
+        WHERE id = ${target.asset_id}::uuid AND deleted_at IS NULL
+      `);
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "media.review_alt_proposal",
+      input,
+      succeeded: true,
+      entityId: input.proposalId,
+      resultSummary: input.accept ? "accepted" : "rejected",
     });
     return ok({});
   },

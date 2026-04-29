@@ -120,9 +120,13 @@ export class LocalVolumeAdapter implements MediaStorageAdapter {
  * getMediaStorage().
  */
 let storage: MediaStorageAdapter | null = null;
-export function setMediaStorage(adapter: MediaStorageAdapter): void {
+let storageProvider = "local";
+
+export function setMediaStorage(adapter: MediaStorageAdapter, provider = "local"): void {
   storage = adapter;
+  storageProvider = provider;
 }
+
 export function getMediaStorage(): MediaStorageAdapter {
   if (!storage) {
     throw new Error(
@@ -130,4 +134,45 @@ export function getMediaStorage(): MediaStorageAdapter {
     );
   }
   return storage;
+}
+
+/** Provider tag stamped onto `media_assets.storage_provider` at upload. */
+export function getMediaStorageProvider(): string {
+  return storageProvider;
+}
+
+/**
+ * P7 optimization #3 — plugin seam. P11 plugin SDK lands the full
+ * sandboxed plugin loader, but the storage-adapter extension point is
+ * one of the cleanest single-extension examples and benefits cloud-bucket
+ * deployments today.
+ *
+ * Plugins call this at boot to swap LocalVolumeAdapter for an S3 / R2 /
+ * GCS adapter. `MEDIA_STORAGE_PROVIDER=<name>` env reads back through
+ * a registered factory so installations don't have to write boot code:
+ *
+ *   registerMediaStorageFactory("r2", (env) => new R2Adapter({
+ *     bucket: env.R2_BUCKET, accessKey: env.R2_KEY, ... }));
+ *   // then set MEDIA_STORAGE_PROVIDER=r2 in the env.
+ *
+ * Stays a no-op until P11 actually loads plugins; the registry is here
+ * now so the admin boot can read it without an interface change later.
+ */
+export type MediaStorageFactory = (env: NodeJS.ProcessEnv) => MediaStorageAdapter;
+
+const factories = new Map<string, MediaStorageFactory>();
+
+export function registerMediaStorageFactory(name: string, factory: MediaStorageFactory): void {
+  if (factories.has(name)) {
+    throw new Error(`media storage factory already registered: ${name}`);
+  }
+  factories.set(name, factory);
+}
+
+export function getMediaStorageFactory(name: string): MediaStorageFactory | undefined {
+  return factories.get(name);
+}
+
+export function listMediaStorageFactories(): string[] {
+  return [...factories.keys()];
 }

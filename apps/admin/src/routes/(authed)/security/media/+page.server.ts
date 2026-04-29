@@ -39,11 +39,33 @@ export const load: PageServerLoad = async ({ locals }) => {
 
   const visibleBytes = stats.assets.reduce((sum, a) => sum + Number(a.sizeBytes), 0);
 
+  // P7 optimization #5 — pending alt-text proposals from the scanner.
+  const props = await execute(registry, adapter, locals.ctx, "media.list_alt_proposals", {
+    pendingOnly: true,
+    limit: 50,
+  });
+  const altProposals = props.ok
+    ? (
+        props.value as {
+          proposals: {
+            id: string;
+            assetId: string;
+            assetName: string;
+            currentAlt: string;
+            proposedAlt: string;
+            rationale: string;
+            proposedAt: string;
+          }[];
+        }
+      ).proposals
+    : [];
+
   return {
     cdn,
     totalAssets: stats.totalCount,
     visibleBytes,
     topAssets: stats.assets,
+    altProposals,
   };
 };
 
@@ -70,5 +92,25 @@ export const actions: Actions = {
       return fail(400, { error: message });
     }
     return { ok: true, message: "Saved." };
+  },
+  reviewAlt: async ({ request, locals }) => {
+    requirePermission(locals, "roles.manage");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const proposalId = String(form.get("proposalId") ?? "");
+    const accept = form.get("accept") === "true";
+    const res = await execute(registry, adapter, locals.ctx, "media.review_alt_proposal", {
+      proposalId,
+      accept,
+    });
+    if (!res.ok) {
+      const message =
+        typeof res.error === "object" && res.error && "message" in res.error
+          ? String((res.error as { message: unknown }).message)
+          : "review failed";
+      return fail(400, { error: message });
+    }
+    return { ok: true, message: accept ? "Alt accepted." : "Proposal rejected." };
   },
 };

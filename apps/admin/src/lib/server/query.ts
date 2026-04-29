@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import {
+  getMediaStorageFactory,
   LocalVolumeAdapter,
   PostgresRateLimiter,
   registerAdminOps,
@@ -55,11 +56,24 @@ export function getQueryContext(): QueryContext {
   // host uses. We hand it the registry+adapter pair here.
   setDeployBridge({ registry, adapter });
 
-  // P7 — media storage. Local volume adapter with rootDir from env;
-  // cloud adapters land in P15. The directory is created lazily on
-  // first put (LocalVolumeAdapter handles `mkdir -p`).
-  const mediaRoot = process.env["MEDIA_ROOT_DIR"] ?? "data/media";
-  setMediaStorage(new LocalVolumeAdapter(mediaRoot));
+  // P7 — media storage. Local volume adapter with rootDir from env
+  // by default; plugins / cloud adapters override via the
+  // MEDIA_STORAGE_PROVIDER env + a registered factory (see
+  // registerMediaStorageFactory in @caelo/admin-core/media/storage).
+  const providerName = process.env["MEDIA_STORAGE_PROVIDER"] ?? "local";
+  if (providerName === "local") {
+    const mediaRoot = process.env["MEDIA_ROOT_DIR"] ?? "data/media";
+    setMediaStorage(new LocalVolumeAdapter(mediaRoot), "local");
+  } else {
+    const factory = getMediaStorageFactory(providerName);
+    if (!factory) {
+      throw new Error(
+        `MEDIA_STORAGE_PROVIDER=${providerName} but no factory registered. ` +
+          `Cloud adapters land in P15; until then, use the default 'local' provider.`,
+      );
+    }
+    setMediaStorage(factory(process.env), providerName);
+  }
 
   _ctx = { adapter, registry, loginLimiter };
   return _ctx;
