@@ -147,6 +147,7 @@ export const getTemplateOp = defineOperation({
 
 export const createTemplateOp = defineOperation({
   name: "templates.create",
+  // Why human-only: Owner-only per CMS_REQUIREMENTS §3.1 — page-type definitions affect every page that binds to them.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: templateCreateSchema,
@@ -355,6 +356,7 @@ export const setTemplateLayoutOp = defineOperation({
 
 export const deleteTemplateOp = defineOperation({
   name: "templates.delete",
+  // Why human-only: Owner-only — large blast radius (every page on the template fails).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ templateId: z.string().uuid() }),

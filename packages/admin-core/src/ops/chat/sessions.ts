@@ -132,7 +132,10 @@ export const listChatSessionsOp = defineOperation({
 
 export const createChatSessionOp = defineOperation({
   name: "chat.create_session",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI may spawn scoped chats (e.g. import-site skill
+  // creates a session per imported page). The session row is owned by
+  // the calling actor; AI sessions surface in the same picker.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: chatCreateSessionInput,
   output: z.object({ chatSessionId: z.string(), chatBranchId: z.string() }),
@@ -280,6 +283,7 @@ export const getChatSessionOp = defineOperation({
 
 export const renameChatSessionOp = defineOperation({
   name: "chat.rename_session",
+  // Why human-only: UI affordance bound to a specific human user.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: chatRenameSessionInput,
@@ -306,6 +310,7 @@ export const renameChatSessionOp = defineOperation({
 // scopes by created_by). Keep this human-only.
 export const setPinnedElementsOp = defineOperation({
   name: "chat.set_pinned_elements",
+  // Why human-only: per-user UI state; AI uses chips on the message instead.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -327,7 +332,9 @@ export const setPinnedElementsOp = defineOperation({
 
 export const archiveChatSessionOp = defineOperation({
   name: "chat.archive_session",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI archives its own scoped sessions when done.
+  // RLS enforces created_by ownership.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
   output: z.object({}),

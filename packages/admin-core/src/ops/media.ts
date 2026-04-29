@@ -381,7 +381,10 @@ export const mediaUpdateAltOp = defineOperation({
 
 export const mediaDeleteOp = defineOperation({
   name: "media.delete",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI cleans stale media. Soft-delete only; the
+  // referenced-rows guard refuses without `force=true` when usage_count
+  // > 0, so an over-eager AI can't strand modules silently.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: mediaDeleteInputSchema,
   output: z.object({
@@ -599,6 +602,7 @@ export const mediaGetSettingsOp = defineOperation({
 
 export const setMediaCdnOp = defineOperation({
   name: "site_defaults.set_media_cdn",
+  // Why human-only: Owner-only — CDN copy is a billing/infrastructure decision.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: mediaSetCdnInputSchema,
@@ -636,7 +640,9 @@ export const setMediaCdnOp = defineOperation({
 
 export const setFocalPointOp = defineOperation({
   name: "media.set_focal_point",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: visual content curation is AI territory ("center
+  // the focal point on the model's face"). Two floats; bounded.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -673,7 +679,10 @@ export const setFocalPointOp = defineOperation({
 
 export const addCropOp = defineOperation({
   name: "media.add_crop",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI declares named crops for layouts that need
+  // a square / wide / tall variant. Pipeline fans out the variants
+  // on the next call.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -717,7 +726,8 @@ export const addCropOp = defineOperation({
 
 export const deleteCropOp = defineOperation({
   name: "media.delete_crop",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: parity with add_crop.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ cropId: z.string().uuid() }).strict(),
   output: z.object({}),
@@ -942,6 +952,7 @@ export const listAltProposalsOp = defineOperation({
 
 export const reviewAltProposalOp = defineOperation({
   name: "media.review_alt_proposal",
+  // Why human-only: Owner approval queue — AI proposes via media.propose_alt; humans accept.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -997,7 +1008,9 @@ export const reviewAltProposalOp = defineOperation({
 
 export const mediaDeleteManyOp = defineOperation({
   name: "media.delete_many",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: AI uses this for routine library cleanup; same
+  // guard semantics as the singular `media.delete`.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({

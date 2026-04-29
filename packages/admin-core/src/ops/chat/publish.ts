@@ -31,6 +31,7 @@ import {
 
 export const publishChatSessionOp = defineOperation({
   name: "chat.publish",
+  // Why human-only: publish is a chat-keyed publish-boundary decision; AI proposes via the existing flow.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: chatPublishInput,

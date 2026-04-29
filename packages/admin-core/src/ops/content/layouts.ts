@@ -217,6 +217,7 @@ export const createLayoutOp = defineOperation({
 
 export const updateLayoutOp = defineOperation({
   name: "layouts.update",
+  // Why human-only: Owner-only — layouts are site-wide chrome; AI re-points templates via setTemplateLayout.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -275,6 +276,7 @@ export const updateLayoutOp = defineOperation({
 
 export const deleteLayoutOp = defineOperation({
   name: "layouts.delete",
+  // Why human-only: Owner-only — layouts are site-wide chrome.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ layoutId: z.string().uuid() }).strict(),
@@ -459,6 +461,7 @@ const layoutBlocksSetSchema = z
 
 export const setLayoutBlocksOp = defineOperation({
   name: "layout_blocks.set",
+  // Why human-only: Owner-only — block schema is structural; AI fills blocks via setLayoutModules.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: layoutBlocksSetSchema,

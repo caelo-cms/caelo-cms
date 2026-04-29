@@ -201,7 +201,10 @@ export const listStructuredSetsOp = defineOperation({
 
 export const deleteStructuredSetOp = defineOperation({
   name: "structured_sets.delete",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: parity with `set` — AI manages nav-menus / tags
+  // / link-lists end-to-end (create, edit, delete) instead of
+  // deferring deletes to a human round-trip.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ setId: z.string().uuid() }).strict(),
   output: z.object({}),

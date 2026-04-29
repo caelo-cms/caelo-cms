@@ -204,6 +204,7 @@ export const listMemoryProposalsOp = defineOperation({
 
 export const reviewAiMemoryOp = defineOperation({
   name: "ai_memory.review",
+  // Why human-only: Owner-only — accept/reject proposals; AI cannot review its own.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: aiMemoryReviewInput,

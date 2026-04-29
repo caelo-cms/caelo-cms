@@ -89,7 +89,10 @@ export const isSetupCompleteOp = defineOperation({
 
 export const listUsersOp = defineOperation({
   name: "users.list",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: read surface open to AI. Lets the AI answer
+  // "which users have access?" without a human round-trip. Writes
+  // (create, set_roles, delete) stay human-only — security domain.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }),
   output: z.object({
@@ -161,6 +164,7 @@ export const listUsersOp = defineOperation({
 
 export const createUserOp = defineOperation({
   name: "users.create",
+  // Why human-only: Owner-only — security domain.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({
@@ -225,6 +229,7 @@ export const createUserOp = defineOperation({
 
 export const setUserRolesOp = defineOperation({
   name: "users.set_roles",
+  // Why human-only: Owner-only — security domain.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({
@@ -260,6 +265,7 @@ export const setUserRolesOp = defineOperation({
  */
 export const deleteUserOp = defineOperation({
   name: "users.delete",
+  // Why human-only: Owner-only — security domain.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ userId: z.string() }),
@@ -322,6 +328,7 @@ export const deleteUserOp = defineOperation({
  */
 export const completeOnboardingOp = defineOperation({
   name: "users.complete_onboarding",
+  // Why human-only: per-user UI flag bumped from the /onboarding tour.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),

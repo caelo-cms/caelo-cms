@@ -29,6 +29,7 @@ import {
  */
 export const revertSiteOp = defineOperation({
   name: "snapshots.revert_site",
+  // Why human-only: Owner-only — atomic site-wide content rewind, large blast radius.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: revertSiteInput,

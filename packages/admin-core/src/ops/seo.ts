@@ -320,6 +320,7 @@ export const pagesSeoListStaleOp = defineOperation({
 
 export const siteDefaultsSetSeoOp = defineOperation({
   name: "site_defaults.set_seo",
+  // Why human-only: Owner-only — site-level config (base URL, sitemap toggle, organization JSON).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: siteDefaultsSetSeoInputSchema,

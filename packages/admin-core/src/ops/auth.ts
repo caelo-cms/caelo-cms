@@ -77,6 +77,7 @@ export const loginOp = defineOperation({
 
 export const logoutOp = defineOperation({
   name: "auth.logout",
+  // Why human-only: session boundary; AI never logs anyone out.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ token: z.string() }),

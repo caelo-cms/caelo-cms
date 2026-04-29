@@ -15,6 +15,7 @@ import { emitSnapshot, loadTemplateState } from "../../snapshots/index.js";
 
 export const setTemplateBlocksOp = defineOperation({
   name: "template_blocks.set",
+  // Why human-only: Owner-only — block schema is structural; AI changes module composition via pages.set_modules.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: templateBlocksSetSchema,

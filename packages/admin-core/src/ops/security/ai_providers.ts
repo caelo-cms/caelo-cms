@@ -22,7 +22,10 @@ const providerRow = z.object({
 
 export const listAiProvidersOp = defineOperation({
   name: "ai_providers.list",
-  actorScope: ["human", "system"],
+  // CLAUDE.md §11: read surface open to AI ("which provider is
+  // active?"). Writes stay Owner-only — provider config carries
+  // secrets and routing decisions.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}),
   output: z.object({ providers: z.array(providerRow) }),
@@ -51,6 +54,7 @@ export const listAiProvidersOp = defineOperation({
 
 export const setAiProvidersOp = defineOperation({
   name: "ai_providers.set",
+  // Why human-only: Owner-only — provider config carries secrets and routing decisions.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: aiProvidersSetInput,

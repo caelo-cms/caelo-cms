@@ -24,6 +24,7 @@ import {
  */
 export const revertPageOp = defineOperation({
   name: "snapshots.revert_page",
+  // Why human-only: Owner-only — page revert; AI proposes via chat-keyed Undo path.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: revertPageInput,

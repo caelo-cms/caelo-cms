@@ -312,6 +312,7 @@ async function runGenerator(
 
 export const updateDeployProgressOp = defineOperation({
   name: "deploy.update_progress",
+  // Why human-only: system internal callback; only the static-generator subprocess writes to it.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -460,6 +461,7 @@ export const triggerDeployOp = defineOperation({
  */
 export const promoteDeployOp = defineOperation({
   name: "deploy.promote",
+  // Why human-only: Ops-level decision per CMS_REQUIREMENTS §6 (staging → production gate).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({
@@ -595,6 +597,7 @@ export const promoteDeployOp = defineOperation({
  */
 export const rollbackDeployOp = defineOperation({
   name: "deploy.rollback",
+  // Why human-only: Ops-level decision per CMS_REQUIREMENTS §6.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z

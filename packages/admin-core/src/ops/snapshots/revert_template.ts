@@ -21,6 +21,7 @@ import {
  */
 export const revertTemplateOp = defineOperation({
   name: "snapshots.revert_template",
+  // Why human-only: Owner-only — template revert affects every bound page.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: revertTemplateInput,
