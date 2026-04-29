@@ -477,3 +477,71 @@ export const rewriteModuleLinksOp = defineOperation({
     return ok({ rewrittenModuleIds: rewritten });
   },
 });
+
+// ---------------------------------------------------------------------
+// P8 AI-first review pass — bulk SEO optimize. Per CLAUDE.md §11: when
+// the user asks to re-optimize SEO across N pages with shared context
+// (e.g. "we just rebranded from X to Y"), the AI should make ONE tool
+// call carrying all N updates instead of N round-trips. Single tx →
+// all-or-nothing.
+// ---------------------------------------------------------------------
+
+export const pagesSeoOptimizeManyOp = defineOperation({
+  name: "pages_seo.optimize_many",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      updates: z
+        .array(
+          z
+            .object({
+              pageId: z.string().uuid(),
+              metaDescription: z.string().min(1).max(320),
+              ogImageAssetId: z.string().uuid().nullable().optional(),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(200),
+      /** Shared context recorded in audit (keyword analysis, intent
+       *  shift, branding update — what justifies the bulk change). */
+      context: z.string().max(4000).optional(),
+    })
+    .strict(),
+  output: z.object({ updated: z.number().int() }),
+  handler: async (ctx, input, tx) => {
+    let updated = 0;
+    for (const u of input.updates) {
+      await tx.execute(sql`
+        INSERT INTO pages_seo (page_id) VALUES (${u.pageId}::uuid)
+        ON CONFLICT (page_id) DO NOTHING
+      `);
+      const og = u.ogImageAssetId ?? null;
+      const r = (await tx.execute(sql`
+        UPDATE pages_seo SET
+          meta_description = ${u.metaDescription},
+          og_image_asset_id = ${og === null ? null : sql`${og}::uuid`},
+          optimized_at = now(),
+          updated_at = now(),
+          updated_by = ${ctx.actorId}::uuid
+        WHERE page_id = ${u.pageId}::uuid
+        RETURNING 1
+      `)) as unknown as { exists: number }[];
+      updated += r.length;
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "pages_seo.optimize_many",
+      input: {
+        count: input.updates.length,
+        contextLen: input.context?.length ?? 0,
+      },
+      succeeded: true,
+      resultSummary: input.context
+        ? `pages=${updated},context-len=${input.context.length}`
+        : `pages=${updated}`,
+    });
+    return ok({ updated });
+  },
+});

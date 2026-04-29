@@ -423,6 +423,27 @@ export async function* runChatTurn(
     }
   }
 
+  // P8 AI-first review pass — `## Redirects` context block. Lets the
+  // AI plan slug-change conversations + bulk cleanup without a
+  // `find_redirects` round-trip when the table is small. Caps at 30
+  // most-recent rows; AI calls `find_redirects` for fuller search.
+  let redirectsBlock: string | undefined;
+  const redirR = await execute(registry, adapter, humanCtx, "redirects.list", { limit: 30 });
+  if (redirR.ok) {
+    const rows = redirR.value as {
+      redirects: { fromPath: string; toPath: string; statusCode: number }[];
+      totalCount: number;
+    };
+    if (rows.redirects.length > 0) {
+      const lines = rows.redirects.map((r) => `- ${r.fromPath} → ${r.toPath} (${r.statusCode})`);
+      redirectsBlock = [
+        `# Redirects (showing ${rows.redirects.length} of ${rows.totalCount})`,
+        "For more, call `find_redirects({ query?, statusCode?, limit? })`. To create / delete in bulk, prefer `bulk_create_redirects` / `bulk_delete_redirects` over multiple single-row tool calls.",
+        ...lines,
+      ].join("\n");
+    }
+  }
+
   const systemChunks = composeSystemPromptChunks(
     memory,
     tools.catalogue().map((t) => ({ name: t.name, description: t.description })),
@@ -435,6 +456,7 @@ export async function* runChatTurn(
       layoutsBlock,
       siteDefaultsBlock,
       mediaBlock,
+      redirectsBlock,
     },
   );
 

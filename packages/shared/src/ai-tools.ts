@@ -512,6 +512,78 @@ export const optimizePageSeoToolInput = z
   .strict();
 export type OptimizePageSeoToolInput = z.infer<typeof optimizePageSeoToolInput>;
 
+/**
+ * P8 AI-first review pass — bulk variants. Per CLAUDE.md §11, bulk
+ * tools save round-trips when the AI knows it has N changes to make
+ * in a single turn. The handlers run inside one transaction so the
+ * batch is all-or-nothing.
+ */
+export const findRedirectsToolInput = z
+  .object({
+    query: z.string().max(500).optional(),
+    statusCode: z
+      .union([z.literal(301), z.literal(302), z.literal(307), z.literal(308), z.literal(410)])
+      .optional(),
+    limit: z.number().int().min(1).max(200).default(50),
+  })
+  .strict();
+export type FindRedirectsToolInput = z.infer<typeof findRedirectsToolInput>;
+
+export const bulkCreateRedirectsToolInput = z
+  .object({
+    redirects: z
+      .array(
+        z
+          .object({
+            fromPath: z.string().min(1).max(500),
+            toPath: z.string().min(1).max(500),
+            statusCode: z
+              .union([
+                z.literal(301),
+                z.literal(302),
+                z.literal(307),
+                z.literal(308),
+                z.literal(410),
+              ])
+              .default(301),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(500),
+    upsert: z.boolean().default(false),
+  })
+  .strict();
+export type BulkCreateRedirectsToolInput = z.infer<typeof bulkCreateRedirectsToolInput>;
+
+export const bulkDeleteRedirectsToolInput = z
+  .object({
+    redirectIds: z.array(z.string().uuid()).max(500).optional(),
+    fromPaths: z.array(z.string().min(1).max(500)).max(500).optional(),
+    matches: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+export type BulkDeleteRedirectsToolInput = z.infer<typeof bulkDeleteRedirectsToolInput>;
+
+export const bulkOptimizeSeoToolInput = z
+  .object({
+    updates: z
+      .array(
+        z
+          .object({
+            pageId: z.string().uuid(),
+            metaDescription: z.string().min(1).max(320),
+            ogImageAssetId: z.string().uuid().nullable().optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(200),
+    context: z.string().max(4000).optional(),
+  })
+  .strict();
+export type BulkOptimizeSeoToolInput = z.infer<typeof bulkOptimizeSeoToolInput>;
+
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreatePageToolInput = z.infer<typeof createPageToolInput>;

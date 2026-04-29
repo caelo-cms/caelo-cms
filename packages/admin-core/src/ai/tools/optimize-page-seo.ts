@@ -18,11 +18,10 @@ export const optimizePageSeoTool: ToolDefinitionWithHandler<
 > = {
   name: "optimize_page_seo",
   description:
-    "Explicit re-optimization of per-page meta description (and optional og:image). " +
+    "Explicit re-optimization of per-page meta description (and optional og:image) for ONE page. " +
     "Use ONLY when the user explicitly asks to optimize / re-write SEO and provides context " +
     "(keyword research, intent shift, branding update). Always allowed regardless of fill state. " +
-    "When the user asks to optimize across multiple pages, call this once per page in the same turn — " +
-    "the changes batch into one Publish-pill preview. " +
+    "For 2+ pages prefer `bulk_optimize_seo` — one tool call carrying all updates instead of N round-trips. " +
     "Don't use for first-publish auto-fill — that's `autofill_page_seo`.",
   schema: optimizePageSeoToolInput,
   inputSchema: {

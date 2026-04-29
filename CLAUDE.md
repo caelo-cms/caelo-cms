@@ -147,7 +147,28 @@ Every phase updates `docs/` when it introduces user-visible behaviour. Caelo's d
 
 ---
 
-## 11. When in doubt
+## 11. AI-first op + tool design
+
+Caelo is AI-first not just in branding — **the AI agent is the primary user of the admin surface**. Most editors interact with Caelo by chatting; humans only fall back to the panel UI for permission-restricted Owner tasks (security, deploy, plugin activation) or when something has clearly broken. Op + tool design must reflect that:
+
+- **Default `actorScope` is `["human", "ai", "system"]`.** Narrower scopes need a `// Why human-only:` justification at the op definition. Examples that legitimately stay narrower:
+  - Auth + role mutations (humans only by definition).
+  - Plugin activation, layout creation, site_defaults writes (Owner gate per requirements).
+  - Locale + URL strategy config (admin-only per §17.4 of CMS_REQUIREMENTS).
+  - System-only utilities like `pages.rewrite_module_links` that the AI calls indirectly through a parent tool — these don't add a separate AI tool.
+- **Every routine domain ships a bulk variant alongside the singular form.** `redirects.create_many`, `pages_seo.set_many`, `media.delete_many`. The AI plans a multi-row change and posts it in one tool call; saves token cycles + tool-call rounds + a wall of `tool-call → tool-result` events in chat. The bulk handler validates + writes inside one transaction so partial-failure is impossible.
+- **Read surfaces are powerful.** Every domain has a list op with filter + free-text search + sort. AI calls `redirects.list({ matches: '/old/*' })` to find what to update without paginating through everything. List ops should be open to all actor kinds (`["human", "ai", "system"]`) — the AI needs broad read to plan good writes.
+- **AI tool descriptions optimise for the AI, not for human reviewers.** Each tool's `description` field carries: when to use, when NOT to use (which other tool wins), and the typical input shape. Bulk variants explicitly tell the AI to prefer them: *"Prefer `redirects.create_many` over multiple `redirects.create` calls when the user asks for >1 redirect."*
+- **System-prompt context blocks save tool calls.** The chat-runner's `## Pages`, `## Media`, `## Layouts` etc. blocks let the AI plan without a `*.list` round-trip. New domains should ship a corresponding context block when the data fits in <2 KB. Stale-state risk is fine; the AI can re-list when its plan turns out wrong.
+- **Bulk doesn't mean "1 + bulk".** Don't ship the singular op then bolt on a bulk variant a phase later. Singular is a special-case-of-bulk for n=1; just ship `set_many` with a 1-element array as the smallest case if the singular variant doesn't carry distinct semantics.
+- **Cross-page / cross-domain patches that span >1 op call belong inside one op.** When you find yourself documenting "AI: call X, then Y, then Z in this order" — that's three round-trips of latency + token spend. Wrap it in a single op whose handler runs the chain in one tx (e.g., `change_page_slug` already does this — it does the slug update + redirect insert + structured-set rewrite + module-body rewrite in one boundary).
+- **Failure surfaces are AI-actionable.** Errors include the *next step the AI should try* in the message body — not just "validation failed." Example: `pages_seo.autofill`'s `AlreadyAutofilled` error suggests using `pages_seo.optimize` instead.
+
+When the audit finds an op that's "AI could call this but doesn't have a tool" or "AI would need 5 round-trips to do what one bulk call could", that's a P8-style review-pass item, not a future-phase polish item.
+
+---
+
+## 12. When in doubt
 
 - Read the relevant section of `CMS_REQUIREMENTS.md` first — most architectural questions have already been decided.
 - Then consult `plans/MASTER_PLAN.md` and the relevant `plans/phases/phase_<N>_*.md` for execution specifics.

@@ -88,7 +88,9 @@ import {
 import { aggregateNotificationsOp } from "./ops/notifications.js";
 import {
   createRedirectOp,
+  createRedirectsManyOp,
   deleteRedirectOp,
+  deleteRedirectsManyOp,
   listRedirectsOp,
   lookupRedirectOp,
 } from "./ops/redirects.js";
@@ -107,6 +109,7 @@ import {
   pagesSeoAutofillOp,
   pagesSeoGetOp,
   pagesSeoListStaleOp,
+  pagesSeoOptimizeManyOp,
   pagesSeoOptimizeOp,
   pagesSeoSetOp,
   rewriteModuleLinksOp,
@@ -219,6 +222,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listRedirectsOp);
   registry.register(lookupRedirectOp);
   registry.register(deleteRedirectOp);
+  registry.register(createRedirectsManyOp);
+  registry.register(deleteRedirectsManyOp);
   registry.register(setStructuredSetOp);
   registry.register(getStructuredSetOp);
   registry.register(listStructuredSetsOp);
@@ -264,6 +269,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(pagesSeoSetOp);
   registry.register(pagesSeoAutofillOp);
   registry.register(pagesSeoOptimizeOp);
+  registry.register(pagesSeoOptimizeManyOp);
   registry.register(pagesSeoListStaleOp);
   registry.register(siteDefaultsGetSeoOp);
   registry.register(siteDefaultsSetSeoOp);

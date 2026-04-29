@@ -75,6 +75,8 @@ export interface VolatileContext {
   readonly siteDefaultsBlock?: string;
   /** P7 — recent + most-used media so the AI can pick existing assets. */
   readonly mediaBlock?: string;
+  /** P8 AI-first — recent redirects so the AI can plan + cite without round-trip. */
+  readonly redirectsBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -129,6 +131,9 @@ export function composeSystemPromptChunks(
   }
   if (volatile.mediaBlock && volatile.mediaBlock.trim().length > 0) {
     chunks.push({ body: volatile.mediaBlock, cacheable: false, label: "media" });
+  }
+  if (volatile.redirectsBlock && volatile.redirectsBlock.trim().length > 0) {
+    chunks.push({ body: volatile.redirectsBlock, cacheable: false, label: "redirects" });
   }
   if (volatile.pageContextBlock && volatile.pageContextBlock.trim().length > 0) {
     chunks.push({ body: volatile.pageContextBlock, cacheable: false, label: "page-context" });

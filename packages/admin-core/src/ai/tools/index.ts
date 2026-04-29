@@ -4,6 +4,9 @@ import { addModuleToLayoutTool } from "./add-module-to-layout.js";
 import { addModuleToPageTool } from "./add-module-to-page.js";
 import { addModuleToTemplateTool } from "./add-module-to-template.js";
 import { autofillPageSeoTool } from "./autofill-page-seo.js";
+import { bulkCreateRedirectsTool } from "./bulk-create-redirects.js";
+import { bulkDeleteRedirectsTool } from "./bulk-delete-redirects.js";
+import { bulkOptimizeSeoTool } from "./bulk-optimize-seo.js";
 import { changePageSlugTool } from "./change-page-slug.js";
 import { changeTemplateTool } from "./change-template.js";
 import { createLayoutTool } from "./create-layout.js";
@@ -13,6 +16,7 @@ import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { editModuleTool } from "./edit-module.js";
 import { findMediaTool } from "./find-media.js";
+import { findRedirectsTool } from "./find-redirects.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
@@ -66,6 +70,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(setPageSeoTool);
   registry.register(autofillPageSeoTool);
   registry.register(optimizePageSeoTool);
+  // P8 AI-first review pass — bulk variants + redirect surface.
+  registry.register(findRedirectsTool);
+  registry.register(bulkCreateRedirectsTool);
+  registry.register(bulkDeleteRedirectsTool);
+  registry.register(bulkOptimizeSeoTool);
   return registry;
 }
 
