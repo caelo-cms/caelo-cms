@@ -270,6 +270,57 @@ export const renderPagePreviewOp = defineOperation({
       modules,
     }));
 
+    // P9 — language-selector context for the preview. Lists every
+    // locale with a published variant of this page's slug so the
+    // composer can render `language-selector-*` modules. Mirrors what
+    // the static generator does at deploy. siteBaseUrl is loaded here
+    // (and reused by the SEO head block below) so resolveLocaleUrl
+    // gets the same base in both passes.
+    const earlySettingsRows = (await tx.execute(sql`
+      SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
+    `)) as unknown as { site_base_url: string }[];
+    const earlySiteBaseUrl = earlySettingsRows[0]?.site_base_url ?? "http://localhost:8082";
+    const langSiblings = (await tx.execute(sql`
+      SELECT locale FROM pages
+      WHERE slug = ${pageRow.slug}
+        AND deleted_at IS NULL
+        AND status = 'published'
+    `)) as unknown as { locale: string }[];
+    const langLocaleRows = (await tx.execute(sql`
+      SELECT code, url_strategy, url_host FROM locales
+    `)) as unknown as {
+      code: string;
+      url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
+      url_host: string | null;
+    }[];
+    const langLocaleByCode = new Map(langLocaleRows.map((l) => [l.code, l]));
+    const availableLocales = langSiblings
+      .map(({ locale }) => {
+        const cfg = langLocaleByCode.get(locale);
+        if (!cfg) return null;
+        try {
+          return {
+            code: locale,
+            displayName: locale,
+            href: resolveLocaleUrl(
+              {
+                code: cfg.code,
+                displayName: cfg.code,
+                urlStrategy: cfg.url_strategy,
+                urlHost: cfg.url_host,
+                isDefault: false,
+              },
+              pageRow.slug,
+              earlySiteBaseUrl,
+            ),
+            isCurrent: locale === pageRow.locale,
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+
     let composed: ReturnType<typeof composePageWithLayout>;
     try {
       composed = composePageWithLayout({
@@ -281,6 +332,7 @@ export const renderPagePreviewOp = defineOperation({
         layoutCss: pageRow.layout_css,
         layoutBlocks,
         layoutSlug: pageRow.layout_slug,
+        languageSelector: { availableLocales },
       });
     } catch (e) {
       if (e instanceof ComposeError) {

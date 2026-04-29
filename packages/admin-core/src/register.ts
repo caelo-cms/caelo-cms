@@ -58,6 +58,7 @@ import {
   setTemplateLayoutOp,
   updateTemplateOp,
 } from "./ops/content/templates.js";
+import { translationStatusMatrixOp } from "./ops/content/translation_status.js";
 import {
   listDeployRunsOp,
   listDeployTargetsOp,
@@ -303,4 +304,5 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectLocaleProposalOp);
   registry.register(getSiteSettingsOp);
   registry.register(setSiteSettingsOp);
+  registry.register(translationStatusMatrixOp);
 }

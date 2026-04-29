@@ -46,16 +46,23 @@ export interface LocaleConfig {
  * @returns Absolute URL, including scheme + host.
  */
 export function resolveLocaleUrl(locale: LocaleConfig, slug: string, siteBaseUrl: string): string {
-  const cleanSlug = slug.startsWith("/") ? slug.slice(1) : slug;
+  const stripped = slug.replace(/^\/+|\/+$/g, "");
+  // Home slug + empty/index variants render as the locale root.
+  // Non-home slugs get a trailing slash so the URL matches what the
+  // static host serves (clean URLs: every page is `<slug>/index.html`,
+  // browsers request `<slug>/`). Without this, redirect rows insert
+  // `/de/about` while users navigate to `/de/about/` and 301 misses.
+  const isHome = stripped === "" || stripped === "home" || stripped === "index";
+  const tail = isHome ? "" : `${stripped}/`;
   const base = siteBaseUrl.replace(/\/+$/, "");
   switch (locale.urlStrategy) {
     case "none":
-      return `${base}/${cleanSlug}`;
+      return tail ? `${base}/${tail}` : `${base}/`;
     case "subdirectory":
       // Default locale with strategy `subdirectory` still gets the prefix
       // unless the migration set strategy=none for it. The decision is
       // explicit per locale row, not implicit on isDefault.
-      return `${base}/${locale.code}/${cleanSlug}`;
+      return tail ? `${base}/${locale.code}/${tail}` : `${base}/${locale.code}/`;
     case "subdomain": {
       if (!locale.urlHost) {
         throw new Error(
@@ -63,7 +70,7 @@ export function resolveLocaleUrl(locale: LocaleConfig, slug: string, siteBaseUrl
         );
       }
       const protocol = base.startsWith("http://") ? "http://" : "https://";
-      return `${protocol}${locale.urlHost}/${cleanSlug}`;
+      return tail ? `${protocol}${locale.urlHost}/${tail}` : `${protocol}${locale.urlHost}/`;
     }
     case "domain": {
       if (!locale.urlHost) {
@@ -72,7 +79,7 @@ export function resolveLocaleUrl(locale: LocaleConfig, slug: string, siteBaseUrl
         );
       }
       const protocol = base.startsWith("http://") ? "http://" : "https://";
-      return `${protocol}${locale.urlHost}/${cleanSlug}`;
+      return tail ? `${protocol}${locale.urlHost}/${tail}` : `${protocol}${locale.urlHost}/`;
     }
   }
 }

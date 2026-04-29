@@ -30,6 +30,7 @@ import {
   extractInnerOfTopLevelContentSlot,
   listSlotNames,
 } from "./preview-scanner.js";
+import { type LanguageSelectorOverride, renderLanguageSelector } from "./structured-sets.js";
 
 export interface ComposeModule {
   readonly moduleId: string;
@@ -52,11 +53,27 @@ export interface ComposeStructuredSets {
   readonly byKindSlug: Readonly<Record<string, readonly unknown[]>>;
 }
 
+/**
+ * P9 — language-selector context. The caller (preview op + static
+ * generator) resolves the current page's per-locale URLs once and
+ * threads them in. The composer renders the selector when a module
+ * slug starts with `language-selector-`.
+ */
+export interface ComposeLanguageSelector {
+  readonly availableLocales: ReadonlyArray<{
+    code: string;
+    displayName: string;
+    href: string;
+    isCurrent: boolean;
+  }>;
+}
+
 export interface ComposeInput {
   readonly templateHtml: string;
   readonly templateCss: string;
   readonly blocks: readonly ComposeBlock[];
   readonly structuredSets?: ComposeStructuredSets;
+  readonly languageSelector?: ComposeLanguageSelector;
 }
 
 export interface ComposeOutput {
@@ -93,7 +110,15 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     // module HTML.
     const renderedModuleHtml = block.modules.map((m) => {
       const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-      const baseHtml = navMenuItems !== null ? renderNavMenuHtml(navMenuItems) : m.html;
+      const langSelector = lookupLanguageSelector(m.slug, input);
+      let baseHtml: string;
+      if (navMenuItems !== null) {
+        baseHtml = renderNavMenuHtml(navMenuItems);
+      } else if (langSelector !== null) {
+        baseHtml = langSelector;
+      } else {
+        baseHtml = m.html;
+      }
       return tagModuleId(baseHtml, m.moduleId);
     });
     const html = renderedModuleHtml.join("\n");
@@ -159,6 +184,35 @@ function lookupNavMenuItems(
   const setSlug = moduleSlug.slice(prefix.length);
   const items = sets.byKindSlug[`nav-menu/${setSlug}`];
   return items ?? null;
+}
+
+/**
+ * P9 — return rendered language-selector HTML when a module's slug
+ * starts with `language-selector-`. The set's items act as overrides
+ * (relabel a locale, hide one); the available-locale list comes from
+ * the caller via `input.languageSelector`. Returns null when the
+ * module is not a language selector.
+ *
+ * Convention: a module slug `language-selector-header` resolves to
+ * structuredSets[`language-selector/header`] for overrides, and the
+ * rendered HTML lists every locale that has a published variant of
+ * the current page.
+ */
+function lookupLanguageSelector(moduleSlug: string, input: ComposeInput): string | null {
+  const prefix = "language-selector-";
+  if (!moduleSlug.startsWith(prefix)) return null;
+  if (!input.languageSelector || input.languageSelector.availableLocales.length === 0) {
+    return null;
+  }
+  const setSlug = moduleSlug.slice(prefix.length);
+  const overridesUnknown = input.structuredSets?.byKindSlug[`language-selector/${setSlug}`];
+  const overrides = Array.isArray(overridesUnknown)
+    ? (overridesUnknown as LanguageSelectorOverride[])
+    : undefined;
+  return renderLanguageSelector({
+    availableLocales: input.languageSelector.availableLocales,
+    overrides,
+  });
 }
 
 interface NavMenuItem {
@@ -342,7 +396,15 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   for (const block of input.blocks) {
     const renderedModuleHtml = block.modules.map((m) => {
       const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-      const baseHtml = navMenuItems !== null ? renderNavMenuHtml(navMenuItems) : m.html;
+      const langSelector = lookupLanguageSelector(m.slug, input);
+      let baseHtml: string;
+      if (navMenuItems !== null) {
+        baseHtml = renderNavMenuHtml(navMenuItems);
+      } else if (langSelector !== null) {
+        baseHtml = langSelector;
+      } else {
+        baseHtml = m.html;
+      }
       return tagModuleId(baseHtml, m.moduleId);
     });
     templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
@@ -366,7 +428,15 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     if (block.blockName === "content") continue; // reserved for the page body
     const renderedModuleHtml = block.modules.map((m) => {
       const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-      const baseHtml = navMenuItems !== null ? renderNavMenuHtml(navMenuItems) : m.html;
+      const langSelector = lookupLanguageSelector(m.slug, input);
+      let baseHtml: string;
+      if (navMenuItems !== null) {
+        baseHtml = renderNavMenuHtml(navMenuItems);
+      } else if (langSelector !== null) {
+        baseHtml = langSelector;
+      } else {
+        baseHtml = m.html;
+      }
       return tagModuleId(baseHtml, m.moduleId);
     });
     layoutContentByName.set(block.blockName, renderedModuleHtml.join("\n"));

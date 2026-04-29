@@ -180,23 +180,29 @@ export async function runSeoPass(args: {
   }));
   const localeByCode = new Map(locales.map((l) => [l.code, l]));
 
-  // Compute auto-hreflang from sibling pages (same slug, different locale).
-  // Per CMS_REQUIREMENTS §7.3: only locales WITH a published translation
-  // count. Draft/scheduled variants must not surface in <head>.
+  // P9 review-pass optimisation: ONE query for the (slug, locale)
+  // matrix across all published pages, replacing N per-page queries.
+  // Per CMS_REQUIREMENTS §7.3: only locales WITH a published
+  // translation count. Draft/scheduled variants must not surface.
+  const siblingRows = (await args.tx.execute(sql`
+    SELECT slug, locale FROM pages
+    WHERE deleted_at IS NULL AND status = 'published'
+  `)) as unknown as { slug: string; locale: string }[];
+  const localesBySlug = new Map<string, string[]>();
+  for (const r of siblingRows) {
+    const arr = localesBySlug.get(r.slug) ?? [];
+    arr.push(r.locale);
+    localesBySlug.set(r.slug, arr);
+  }
   for (const bundle of seoBundles) {
-    const siblings = (await args.tx.execute(sql`
-      SELECT locale FROM pages
-      WHERE slug = ${bundle.slug}
-        AND deleted_at IS NULL
-        AND status = 'published'
-    `)) as unknown as { locale: string }[];
+    const siblings = localesBySlug.get(bundle.slug) ?? [];
     const auto: { locale: string; url: string }[] = [];
-    for (const s of siblings) {
-      const cfg = localeByCode.get(s.locale);
+    for (const localeCode of siblings) {
+      const cfg = localeByCode.get(localeCode);
       if (!cfg) continue;
       try {
         auto.push({
-          locale: s.locale,
+          locale: localeCode,
           url: resolveLocaleUrl(cfg, bundle.slug, args.settings.siteBaseUrl),
         });
       } catch {

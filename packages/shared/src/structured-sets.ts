@@ -88,9 +88,35 @@ export const linkListItem = z
   })
   .strict();
 
+/**
+ * P9 review-pass — `language-selector` kind. Items are user-supplied
+ * overrides (e.g. force a specific display label per locale); empty
+ * array means "auto-populate from the locale registry at render time."
+ * The renderer (apps/static-generator + preview op) reads the locale
+ * registry + the current page's slug + resolveLocaleUrl to emit
+ * `<a hreflang lang href>` rows. Closes CMS_REQUIREMENTS §7.8.
+ */
+export const languageSelectorOverride = z
+  .object({
+    /** BCP-47 locale code; must match a row in the locales registry. */
+    locale: z.string().min(2).max(10),
+    /** Override the locale's display_name when rendering this entry. */
+    label: z.string().min(1).max(120).optional(),
+    /** Hide this locale from the rendered selector even if it has a published page. */
+    hidden: z.boolean().optional(),
+  })
+  .strict();
+
 /** Discriminated kind → items array. The Query API op picks the
  *  validator at runtime by reading `kind` first. */
-export const structuredSetKind = z.enum(["nav-menu", "taxonomy", "theme", "tags", "link-list"]);
+export const structuredSetKind = z.enum([
+  "nav-menu",
+  "taxonomy",
+  "theme",
+  "tags",
+  "link-list",
+  "language-selector",
+]);
 export type StructuredSetKind = z.infer<typeof structuredSetKind>;
 
 /** Validate `items` against the right schema for `kind`. Throws a
@@ -116,6 +142,8 @@ export function validateStructuredSetItems(kind: StructuredSetKind, items: unkno
       return items.map((it) => tagItem.parse(it));
     case "link-list":
       return items.map((it) => linkListItem.parse(it));
+    case "language-selector":
+      return items.map((it) => languageSelectorOverride.parse(it));
   }
 }
 
@@ -124,3 +152,42 @@ export type TaxonomyItem = z.infer<typeof taxonomyItem>;
 export type ThemeToken = z.infer<typeof themeToken>;
 export type TagItem = z.infer<typeof tagItem>;
 export type LinkListItem = z.infer<typeof linkListItem>;
+export type LanguageSelectorOverride = z.infer<typeof languageSelectorOverride>;
+
+/**
+ * Render a `<nav class="caelo-language-selector">` with one `<a>`
+ * per locale that has a published variant of the current page. Pure
+ * function — caller threads the page's published-locale list and a
+ * URL resolver. Used by `composePagePreview` (admin) and the static
+ * generator (deploy) so byte-for-byte output parity holds.
+ *
+ * Per CMS_REQUIREMENTS §7.8: locales with no published variant for the
+ * current page are excluded.
+ */
+export function renderLanguageSelector(args: {
+  /** Each locale that has a published variant of the current page. */
+  readonly availableLocales: ReadonlyArray<{
+    code: string;
+    displayName: string;
+    href: string;
+    isCurrent: boolean;
+  }>;
+  /** Owner-supplied overrides (relabel a locale, hide one). */
+  readonly overrides?: ReadonlyArray<LanguageSelectorOverride>;
+}): string {
+  const overrideByLocale = new Map<string, LanguageSelectorOverride>(
+    (args.overrides ?? []).map((o) => [o.locale, o]),
+  );
+  const enc = (s: string): string =>
+    s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const items = args.availableLocales
+    .filter((l) => !overrideByLocale.get(l.code)?.hidden)
+    .map((l) => {
+      const override = overrideByLocale.get(l.code);
+      const label = override?.label ?? l.displayName;
+      const aria = l.isCurrent ? ' aria-current="true"' : "";
+      return `<a hreflang="${enc(l.code)}" lang="${enc(l.code)}" href="${enc(l.href)}"${aria}>${enc(label)}</a>`;
+    });
+  if (items.length === 0) return "";
+  return `<nav class="caelo-language-selector" aria-label="Language">${items.join("")}</nav>`;
+}

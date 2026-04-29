@@ -276,15 +276,15 @@ describe("locales propose/execute split", () => {
     expect(redirectsCreated).toBe(1);
     expect(crossHostShifts).toBe(0);
 
-    // Verify the redirect row landed. resolveLocaleUrl emits paths
-    // without a trailing slash; deploy-layer routing handles the slash.
+    // Verify the redirect row landed. resolveLocaleUrl emits trailing-
+    // slash paths so the row matches what the static host serves.
     const lookup = await execute(registry, adapter, systemCtx, "redirects.lookup", {
-      fromPath: "/zz/about",
+      fromPath: "/zz/about/",
     });
     expect(lookup.ok).toBe(true);
     if (!lookup.ok) return;
     const row = (lookup.value as { match: { fromPath: string; toPath: string } | null }).match;
-    expect(row?.toPath).toBe("/about");
+    expect(row?.toPath).toBe("/about/");
   });
 
   it("delete execute soft-deletes pages AND emits one redirect per page → '/'", async () => {
@@ -334,11 +334,69 @@ describe("locales propose/execute split", () => {
     if (!get.ok) return;
     expect((get.value as { locale: unknown }).locale).toBeNull();
     const lookup = await execute(registry, adapter, systemCtx, "redirects.lookup", {
-      fromPath: "/yy/about-yy",
+      fromPath: "/yy/about-yy/",
     });
     if (!lookup.ok) return;
     const row = (lookup.value as { match: { fromPath: string; toPath: string } | null }).match;
     expect(row?.toPath).toBe("/");
+  });
+
+  it("translation_status_matrix synthesises not_started for missing variants", async () => {
+    // Seed a 'zz' locale + a source-locale page on 'en'.
+    const add = await execute(registry, adapter, aiCtx, "locales.propose_create", {
+      code: "zz",
+      displayName: "Test ZZ",
+      urlStrategy: "subdirectory",
+    });
+    if (!add.ok) throw new Error("propose_create failed");
+    await execute(registry, adapter, systemCtx, "locales.execute_proposal", {
+      proposalId: (add.value as { proposalId: string }).proposalId,
+    });
+
+    const sqlClient = new SQL(ADMIN_URL);
+    try {
+      await sqlClient.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`
+          INSERT INTO pages (slug, locale, name, title, template_id, status, translation_status)
+          SELECT 'matrix-test', 'en', 'M', 'M',
+                 (SELECT id FROM templates LIMIT 1), 'draft', 'source'
+        `;
+      });
+    } finally {
+      await sqlClient.end();
+    }
+
+    const matrix = await execute(registry, adapter, systemCtx, "pages.translation_status_matrix", {
+      slug: "matrix-test",
+    });
+    expect(matrix.ok).toBe(true);
+    if (!matrix.ok) return;
+    const rows = (
+      matrix.value as {
+        rows: { slug: string; locale: string; status: string; pageId: string | null }[];
+      }
+    ).rows;
+
+    // EN row exists (source); ZZ row synthesised (not_started); EN's row
+    // has a real pageId, ZZ's pageId is null.
+    const en = rows.find((r) => r.locale === "en");
+    const zz = rows.find((r) => r.locale === "zz");
+    expect(en?.status).toBe("source");
+    expect(en?.pageId).not.toBeNull();
+    expect(zz?.status).toBe("not_started");
+    expect(zz?.pageId).toBeNull();
+
+    // Cleanup the test row.
+    const cleanup = new SQL(ADMIN_URL);
+    try {
+      await cleanup.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`DELETE FROM pages WHERE slug = 'matrix-test'`;
+      });
+    } finally {
+      await cleanup.end();
+    }
   });
 
   it("translation_status enum accepts spec values, rejects legacy fresh/stale", async () => {

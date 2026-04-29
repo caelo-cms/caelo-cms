@@ -42,25 +42,27 @@ const DE_DOMAIN: LocaleConfig = {
 };
 
 describe("resolveLocaleUrl", () => {
-  it("strategy=none yields bare slug under siteBaseUrl", () => {
-    expect(resolveLocaleUrl(ENG, "about", "https://example.com")).toBe("https://example.com/about");
+  it("strategy=none yields bare slug under siteBaseUrl with trailing slash", () => {
+    expect(resolveLocaleUrl(ENG, "about", "https://example.com")).toBe(
+      "https://example.com/about/",
+    );
   });
 
   it("strategy=subdirectory prefixes the locale code", () => {
     expect(resolveLocaleUrl(DE_SUBDIR, "about", "https://example.com")).toBe(
-      "https://example.com/de/about",
+      "https://example.com/de/about/",
     );
   });
 
   it("strategy=subdomain uses urlHost", () => {
     expect(resolveLocaleUrl(DE_SUBDOMAIN, "about", "https://example.com")).toBe(
-      "https://de.example.com/about",
+      "https://de.example.com/about/",
     );
   });
 
   it("strategy=domain uses urlHost", () => {
     expect(resolveLocaleUrl(DE_DOMAIN, "about", "https://example.com")).toBe(
-      "https://example.de/about",
+      "https://example.de/about/",
     );
   });
 
@@ -72,14 +74,84 @@ describe("resolveLocaleUrl", () => {
 
   it("trailing slashes on baseUrl are normalised", () => {
     expect(resolveLocaleUrl(ENG, "about", "https://example.com//")).toBe(
-      "https://example.com/about",
+      "https://example.com/about/",
     );
   });
 
   it("leading slashes on slug are stripped", () => {
     expect(resolveLocaleUrl(ENG, "/about", "https://example.com")).toBe(
-      "https://example.com/about",
+      "https://example.com/about/",
     );
+  });
+
+  it("home slug renders as the locale root (no extra path segment)", () => {
+    expect(resolveLocaleUrl(ENG, "home", "https://example.com")).toBe("https://example.com/");
+    expect(resolveLocaleUrl(DE_SUBDIR, "home", "https://example.com")).toBe(
+      "https://example.com/de/",
+    );
+    expect(resolveLocaleUrl(DE_SUBDOMAIN, "home", "https://example.com")).toBe(
+      "https://de.example.com/",
+    );
+  });
+});
+
+// renderLanguageSelector lives in structured-sets.ts but exercises the
+// same i18n primitives (resolveLocaleUrl produces hrefs the test feeds
+// in pre-resolved). Cover the three paths: vanilla render, override
+// relabel, hidden locale.
+import { renderLanguageSelector } from "./structured-sets.js";
+
+describe("renderLanguageSelector", () => {
+  const ENGLISH = {
+    code: "en",
+    displayName: "English",
+    href: "https://example.com/about/",
+    isCurrent: true,
+  };
+  const GERMAN = {
+    code: "de",
+    displayName: "Deutsch",
+    href: "https://example.com/de/about/",
+    isCurrent: false,
+  };
+
+  it("emits one anchor per locale + aria-current on the current page", () => {
+    const html = renderLanguageSelector({ availableLocales: [ENGLISH, GERMAN] });
+    expect(html).toContain('hreflang="en"');
+    expect(html).toContain('hreflang="de"');
+    expect(html).toContain('aria-current="true"');
+    expect(html).toContain("English");
+    expect(html).toContain("Deutsch");
+  });
+
+  it("override relabels a locale", () => {
+    const html = renderLanguageSelector({
+      availableLocales: [ENGLISH, GERMAN],
+      overrides: [{ locale: "de", label: "DE 🇩🇪" }],
+    });
+    expect(html).toContain("DE 🇩🇪");
+    expect(html).not.toContain("Deutsch");
+  });
+
+  it("hidden override drops the locale entirely", () => {
+    const html = renderLanguageSelector({
+      availableLocales: [ENGLISH, GERMAN],
+      overrides: [{ locale: "de", hidden: true }],
+    });
+    expect(html).toContain('hreflang="en"');
+    expect(html).not.toContain('hreflang="de"');
+  });
+
+  it("empty available list returns empty string", () => {
+    expect(renderLanguageSelector({ availableLocales: [] })).toBe("");
+  });
+
+  it("escapes attribute special chars", () => {
+    const html = renderLanguageSelector({
+      availableLocales: [{ code: "en", displayName: "EN&Co", href: "/?a=1&b=2", isCurrent: false }],
+    });
+    expect(html).toContain("a=1&amp;b=2");
+    expect(html).toContain("EN&amp;Co");
   });
 });
 

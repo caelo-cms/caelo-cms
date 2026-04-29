@@ -25,7 +25,7 @@
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo/query-api";
-import { ComposeError, composePageWithLayout } from "@caelo/shared";
+import { ComposeError, composePageWithLayout, resolveLocaleUrl } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { buildRobotsTxtWithSitemap, readSeoSettings, runSeoPass } from "./seo-pass.js";
@@ -275,6 +275,21 @@ export async function generateSite(args: {
     }
   }
 
+  // P9 — build the per-slug published-locale matrix once so the
+  // language-selector renderer can list cross-locale URLs without a
+  // per-page round-trip. Same shape the seo-pass hreflang block uses.
+  const seoSettings = await readSeoSettings(tx);
+  const slugLocaleRows = (await tx.execute(sql`
+    SELECT slug, locale FROM pages
+    WHERE deleted_at IS NULL AND status = 'published'
+  `)) as unknown as { slug: string; locale: string }[];
+  const localesBySlug = new Map<string, string[]>();
+  for (const r of slugLocaleRows) {
+    const arr = localesBySlug.get(r.slug) ?? [];
+    arr.push(r.locale);
+    localesBySlug.set(r.slug, arr);
+  }
+
   let fileCount = 0;
   const variantEntries: VariantManifestEntry[] = [];
   args.onProgress?.({ pagesDone: 0, pagesTotal: pageRows.length });
@@ -318,6 +333,39 @@ export async function generateSite(args: {
     // (e.g. layout HTML missing the required `content` slot). Surface
     // it with the page slug so the deploy operator can locate the
     // offending row, rather than silently emitting a body-less page.
+    // P9 — build the per-page languageSelector context. Lists every
+    // locale that has a published variant of this page's slug; the
+    // composer renders a `<nav>` of `<a>` rows when a module's slug
+    // starts with `language-selector-`. Empty when the page is the
+    // only published variant.
+    const pageLocaleSiblings = localesBySlug.get(page.slug) ?? [];
+    const availableLocales = pageLocaleSiblings
+      .map((code) => {
+        const cfg = localeByCode.get(code);
+        if (!cfg) return null;
+        try {
+          return {
+            code,
+            displayName: cfg.code,
+            href: resolveLocaleUrl(
+              {
+                code: cfg.code,
+                displayName: cfg.code,
+                urlStrategy: cfg.urlStrategy,
+                urlHost: cfg.urlHost,
+                isDefault: false,
+              },
+              page.slug,
+              seoSettings.siteBaseUrl,
+            ),
+            isCurrent: code === page.locale,
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+
     let composed: ReturnType<typeof composePageWithLayout>;
     try {
       composed = composePageWithLayout({
@@ -329,6 +377,7 @@ export async function generateSite(args: {
         layoutCss: page.layout_css,
         layoutBlocks,
         layoutSlug: page.layout_slug,
+        languageSelector: { availableLocales },
       });
     } catch (e) {
       if (e instanceof ComposeError) {
@@ -398,8 +447,8 @@ export async function generateSite(args: {
   // + hreflang. Emits sitemap.xml when site_defaults.sitemap_enabled
   // is on AND the env isn't noindex (staging stays out of the
   // sitemap regardless). Mutates each composedPages[i].html in place,
-  // same pattern as runMediaPass.
-  const seoSettings = await readSeoSettings(tx);
+  // same pattern as runMediaPass. seoSettings was hoisted earlier so
+  // the language-selector renderer can share the same siteBaseUrl.
   const seoResult = await runSeoPass({
     tx,
     buildDir,
