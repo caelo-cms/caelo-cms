@@ -11,7 +11,7 @@
 
   import MediaPicker from "$lib/components/MediaPicker.svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
-  import { Button, buttonVariants } from "$lib/components/ui/button/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
@@ -159,10 +159,34 @@
 
         <div class="flex gap-2">
           <Button type="submit">Save SEO</Button>
-          <a class={buttonVariants({ variant: "outline" })} href={`/content/chat?prompt=${encodeURIComponent(`Run seo-autofill on page ${page.slug}`)}`}>Autofill with AI</a>
-          <a class={buttonVariants({ variant: "outline" })} href={`/content/chat?prompt=${encodeURIComponent(`Run seo-optimize on page ${page.slug} with this context: <paste keyword analysis here>`)}`}>Re-optimize with AI</a>
         </div>
       </form>
+
+      <!-- P8 review-pass: Autofill / Re-optimize POST to the chat
+           index's create action with a `prompt` field; the action
+           creates a session and redirects to /content/chat/<id>?prompt=
+           which seeds the composer via the existing
+           caelo:insert-into-composer CustomEvent. -->
+      <div class="mt-4 flex gap-2">
+        <form method="post" action="/content/chat?/create">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <input
+            type="hidden"
+            name="prompt"
+            value={`Run seo-autofill on page ${page.slug}`}
+          />
+          <Button type="submit" variant="outline">Autofill with AI</Button>
+        </form>
+        <form method="post" action="/content/chat?/create">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <input
+            type="hidden"
+            name="prompt"
+            value={`Run seo-optimize on page ${page.slug} with this context: <paste keyword analysis here>`}
+          />
+          <Button type="submit" variant="outline">Re-optimize with AI</Button>
+        </form>
+      </div>
     </CardContent>
   </Card>
 

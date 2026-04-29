@@ -35,7 +35,10 @@ export const createRedirectOp = defineOperation({
   input: z
     .object({
       fromPath: z.string().min(1).max(500).regex(/^\//, "must start with /"),
-      toPath: z.string().min(1).max(500),
+      // Defense-in-depth: the admin form rewrites already check this,
+      // but the AI tool path (and any direct API caller) lands here.
+      // 410 Gone redirects use a sentinel `to` that's still rooted.
+      toPath: z.string().min(1).max(500).regex(/^\//, "must start with /"),
       statusCode: z
         .union([z.literal(301), z.literal(302), z.literal(307), z.literal(308), z.literal(410)])
         .default(301),

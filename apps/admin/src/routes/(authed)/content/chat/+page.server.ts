@@ -44,6 +44,16 @@ export const actions: Actions = {
     const result = await execute(registry, adapter, locals.ctx, "chat.create_session", {});
     if (!result.ok) return fail(400, { error: "Could not create chat." });
     const id = (result.value as { chatSessionId: string }).chatSessionId;
-    throw redirect(303, `/content/chat/${id}`);
+    // P8 review-pass: optional `prompt` field rides through to the
+    // session URL so the SEO panel's Autofill / Re-optimize buttons
+    // pre-seed the composer. The session page reads `?prompt=` on
+    // mount and dispatches the existing `caelo:insert-into-composer`
+    // CustomEvent that ChatPanel listens for.
+    const prompt = String(form.get("prompt") ?? "");
+    const target =
+      prompt.length > 0
+        ? `/content/chat/${id}?prompt=${encodeURIComponent(prompt)}`
+        : `/content/chat/${id}`;
+    throw redirect(303, target);
   },
 };

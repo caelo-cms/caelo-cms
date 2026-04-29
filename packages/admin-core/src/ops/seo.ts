@@ -28,6 +28,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { buildPatchSet } from "../sql-helpers.js";
 
 const seoRowOutput = z.object({
   pageId: z.string(),
@@ -111,92 +112,35 @@ export const pagesSeoSetOp = defineOperation({
   input: seoSetInputSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    // Upsert against the sidecar; the page_id FK is enforced. We do
-    // explicit UPDATE so partial inputs don't reset unrelated fields.
-    const sets: string[] = [];
-    const values: Record<string, unknown> = {};
-    if (input.metaDescription !== undefined) {
-      sets.push("meta_description = ${metaDescription}");
-      values.metaDescription = input.metaDescription;
-    }
-    if (input.ogImageAssetId !== undefined) {
-      sets.push("og_image_asset_id = ${ogImageAssetId}::uuid");
-      values.ogImageAssetId = input.ogImageAssetId;
-    }
-    if (input.canonicalUrl !== undefined) {
-      sets.push("canonical_url = ${canonicalUrl}");
-      values.canonicalUrl = input.canonicalUrl;
-    }
-    if (input.noindex !== undefined) {
-      sets.push("noindex = ${noindex}");
-      values.noindex = input.noindex;
-    }
-    if (input.changefreq !== undefined) {
-      sets.push("changefreq = ${changefreq}");
-      values.changefreq = input.changefreq;
-    }
-    if (input.priority !== undefined) {
-      sets.push("priority = ${priority}");
-      values.priority = input.priority;
-    }
-
-    if (sets.length === 0) {
-      return ok({});
-    }
-
-    // Bun SQL drizzle template doesn't take a free-form set list cleanly,
-    // so we issue per-field updates in a single CASE-style UPDATE. The
-    // inputs are Zod-validated; the column names below are server-
-    // controlled string constants.
+    // Ensure the sidecar row exists; subsequent UPDATE patches the
+    // provided fields in a single statement.
     await tx.execute(sql`
       INSERT INTO pages_seo (page_id) VALUES (${input.pageId}::uuid)
       ON CONFLICT (page_id) DO NOTHING
     `);
 
-    if (input.metaDescription !== undefined) {
-      await tx.execute(sql`
-        UPDATE pages_seo SET meta_description = ${input.metaDescription},
-          updated_at = now(), updated_by = ${ctx.actorId}::uuid
-        WHERE page_id = ${input.pageId}::uuid
-      `);
-    }
+    // Build the patch set from the provided fields. Same buildPatchSet
+    // helper that powers modules.update / pages.update so the SET
+    // clause emits cleanly with an `updated_at = now()` tail.
+    const patch: Record<string, unknown> = {
+      meta_description: input.metaDescription,
+      canonical_url: input.canonicalUrl,
+      noindex: input.noindex,
+      changefreq: input.changefreq,
+      priority: input.priority,
+    };
     if (input.ogImageAssetId !== undefined) {
-      const v = input.ogImageAssetId;
-      await tx.execute(sql`
-        UPDATE pages_seo SET
-          og_image_asset_id = ${v === null ? null : sql`${v}::uuid`},
-          updated_at = now(), updated_by = ${ctx.actorId}::uuid
-        WHERE page_id = ${input.pageId}::uuid
-      `);
+      patch.og_image_asset_id =
+        input.ogImageAssetId === null ? null : sql`${input.ogImageAssetId}::uuid`;
     }
-    if (input.canonicalUrl !== undefined) {
-      await tx.execute(sql`
-        UPDATE pages_seo SET canonical_url = ${input.canonicalUrl},
-          updated_at = now(), updated_by = ${ctx.actorId}::uuid
-        WHERE page_id = ${input.pageId}::uuid
-      `);
-    }
-    if (input.noindex !== undefined) {
-      await tx.execute(sql`
-        UPDATE pages_seo SET noindex = ${input.noindex},
-          updated_at = now(), updated_by = ${ctx.actorId}::uuid
-        WHERE page_id = ${input.pageId}::uuid
-      `);
-    }
-    if (input.changefreq !== undefined) {
-      await tx.execute(sql`
-        UPDATE pages_seo SET changefreq = ${input.changefreq},
-          updated_at = now(), updated_by = ${ctx.actorId}::uuid
-        WHERE page_id = ${input.pageId}::uuid
-      `);
-    }
-    if (input.priority !== undefined) {
-      await tx.execute(sql`
-        UPDATE pages_seo SET priority = ${input.priority},
-          updated_at = now(), updated_by = ${ctx.actorId}::uuid
-        WHERE page_id = ${input.pageId}::uuid
-      `);
-    }
+    const fieldCount = Object.values(patch).filter((v) => v !== undefined).length;
+    if (fieldCount === 0) return ok({});
+
+    const sets = buildPatchSet(patch);
+    await tx.execute(sql`
+      UPDATE pages_seo SET ${sets}, updated_by = ${ctx.actorId}::uuid
+      WHERE page_id = ${input.pageId}::uuid
+    `);
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -204,9 +148,8 @@ export const pagesSeoSetOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.pageId,
-      resultSummary: `fields=${sets.length}`,
+      resultSummary: `fields=${fieldCount}`,
     });
-    void values; // documented above; values map drives the optional updates.
     return ok({});
   },
 });

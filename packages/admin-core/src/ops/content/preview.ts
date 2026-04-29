@@ -15,7 +15,16 @@
  */
 
 import { defineOperation } from "@caelo/query-api";
-import { ComposeError, composePageWithLayout, err, ok } from "@caelo/shared";
+import {
+  ComposeError,
+  composePageWithLayout,
+  err,
+  injectSeoIntoHead,
+  ok,
+  renderSeoHead,
+  resolveCanonicalUrl,
+  type SiteSeoSettings,
+} from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -68,7 +77,7 @@ export const renderPagePreviewOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const pageRows = (await tx.execute(sql`
-      SELECT p.id::text AS page_id, p.slug AS slug, p.locale AS locale,
+      SELECT p.id::text AS page_id, p.slug AS slug, p.locale AS locale, p.title AS title,
              t.html AS template_html, t.css AS template_css,
              l.id::text AS layout_id, l.slug AS layout_slug,
              l.html AS layout_html, l.css AS layout_css
@@ -80,6 +89,7 @@ export const renderPagePreviewOp = defineOperation({
       page_id: string;
       slug: string;
       locale: string;
+      title: string;
       template_html: string;
       template_css: string;
       layout_id: string;
@@ -279,8 +289,89 @@ export const renderPagePreviewOp = defineOperation({
       }
       throw e;
     }
+    // P8 review-pass — preview parity with the static deploy.
+    // Without this, editors can't verify SEO meta / canonical /
+    // OG / JSON-LD before publishing. Loads pages_seo + site_defaults
+    // SEO settings + pages_hreflang inline; same shape as the static
+    // generator's seo-pass.ts. Missing rows (unfilled SEO) are
+    // tolerated — we just emit a head with whatever's present.
+    let html = composed.html;
+    const seoRows = (await tx.execute(sql`
+      SELECT meta_description, og_image_asset_id::text AS og_image_asset_id,
+             canonical_url, noindex
+      FROM pages_seo WHERE page_id = ${input.pageId}::uuid LIMIT 1
+    `)) as unknown as {
+      meta_description: string;
+      og_image_asset_id: string | null;
+      canonical_url: string | null;
+      noindex: boolean;
+    }[];
+    const seoRow = seoRows[0];
+    const settingsRows = (await tx.execute(sql`
+      SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json
+      FROM site_defaults WHERE id = 1 LIMIT 1
+    `)) as unknown as {
+      site_base_url: string;
+      sitemap_enabled: boolean;
+      organization_json: string | null;
+    }[];
+    const settingsRow = settingsRows[0];
+    let organization: SiteSeoSettings["organization"] = {};
+    if (settingsRow?.organization_json) {
+      try {
+        organization = JSON.parse(settingsRow.organization_json) as SiteSeoSettings["organization"];
+      } catch {
+        organization = {};
+      }
+    }
+    const siteBaseUrl = settingsRow?.site_base_url ?? "http://localhost:8082";
+
+    let ogImageUrl: string | null = null;
+    if (seoRow?.og_image_asset_id) {
+      const variants = (await tx.execute(sql`
+        SELECT variant, format FROM media_variants
+        WHERE asset_id = ${seoRow.og_image_asset_id}::uuid
+        ORDER BY
+          CASE variant
+            WHEN 'webp-1200' THEN 0 WHEN 'webp-1600' THEN 1
+            WHEN 'webp-800'  THEN 2 WHEN 'orig'      THEN 3 ELSE 4
+          END
+        LIMIT 1
+      `)) as unknown as { variant: string; format: string }[];
+      const v = variants[0];
+      if (v) {
+        const ext = v.format === "jpeg" ? "jpg" : v.format;
+        // Preview keeps the /_caelo/media URL form so the admin
+        // resolver serves the bytes; the static generator rewrites
+        // to /_assets at deploy.
+        ogImageUrl = `/_caelo/media/${seoRow.og_image_asset_id}/${v.variant}`;
+        void ext;
+      }
+    }
+    const hreflangRows = (await tx.execute(sql`
+      SELECT locale, url FROM pages_hreflang
+      WHERE page_id = ${input.pageId}::uuid
+      ORDER BY locale
+    `)) as unknown as { locale: string; url: string }[];
+    const canonical = resolveCanonicalUrl({
+      siteBaseUrl,
+      pageSlug: pageRow.slug,
+      pageLocale: pageRow.locale,
+      override: seoRow?.canonical_url ?? null,
+    });
+    const headBlock = renderSeoHead({
+      title: pageRow.title,
+      metaDescription: seoRow?.meta_description ?? "",
+      canonical,
+      noindex: seoRow?.noindex ?? false,
+      ogImageUrl,
+      hreflang: hreflangRows.map((r) => ({ locale: r.locale, url: r.url })),
+      organization,
+    });
+    html = injectSeoIntoHead(html, headBlock);
+
     return ok({
-      html: composed.html,
+      html,
       replacedSlots: [...composed.replacedSlots],
       missingSlots: [...composed.missingSlots],
       pageSlug: pageRow.slug,
