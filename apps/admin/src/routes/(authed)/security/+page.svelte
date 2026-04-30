@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { ArrowRightLeft, Bot, Coins, Database, Globe, Image as ImageIcon, Layout, Rocket, Search, Settings, Users, UsersRound } from "lucide-svelte";
+  import { ArrowRightLeft, Bot, Coins, Database, Globe, Image as ImageIcon, Layout, Rocket, Search, Settings, Sparkles, Users, UsersRound } from "lucide-svelte";
   import {
     Card,
     CardDescription,
@@ -20,6 +20,7 @@
     { href: "/security/locales", label: "Locales & URL routing", desc: "Languages + URL strategies; AI proposals queued for Owner approval", icon: Globe },
     { href: "/security/glossary", label: "Glossary", desc: "Per-locale canonical translations; injected into AI Mode 1/2 prompts", icon: Database },
     { href: "/security/style-guide", label: "Style guide", desc: "Per-locale tone/voice; shapes AI translations", icon: Bot },
+    { href: "/security/skills", label: "Skills", desc: "AI skill bodies + auto-engagement + AI-proposed skills queue", icon: Sparkles },
     { href: "/security/ai", label: "AI provider", desc: "Anthropic configuration + active provider", icon: Bot },
     { href: "/security/deployments", label: "Deployments", desc: "Ops view — dev / staging / production + promote", icon: Rocket },
     { href: "/security/costs", label: "AI cost controls", desc: "Token + spend dashboard", icon: Coins },

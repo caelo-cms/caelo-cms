@@ -30,7 +30,15 @@
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
 import { execute } from "@caelo/query-api";
-import type { ChatSendMessageInput, ExecutionContext } from "@caelo/shared";
+import {
+  type CandidateSkill,
+  type ChatEngagement,
+  type ChatSendMessageInput,
+  type ExecutionContext,
+  matchSkills,
+  resolveEngagements,
+  skillAutoEngagementHints,
+} from "@caelo/shared";
 
 import type { AIProvider, ChatMessageInput } from "./provider.js";
 import { composeSystemPromptChunks } from "./system-prompt.js";
@@ -488,9 +496,106 @@ export async function* runChatTurn(
     }
   }
 
+  // P10A — load active skills + the user's pinned defaults + the
+  // chat's manual overrides; resolve the engaged set; compose a
+  // `## Engaged skills` system-prompt chunk + intersect tool
+  // catalogue against the union of engaged skills' allowlists.
+  let skillsBlock: string | undefined;
+  let allowedToolNames: Set<string> | null = null;
+  let engagedSkills: ChatEngagement[] = [];
+  const skillsListResult = await execute(registry, adapter, humanCtx, "skills.list", {
+    status: "active",
+  });
+  if (skillsListResult.ok) {
+    const activeSkills = (
+      skillsListResult.value as {
+        skills: {
+          id: string;
+          slug: string;
+          displayName: string;
+          body: string;
+          allowlistedTools: string[];
+          hints: unknown;
+        }[];
+      }
+    ).skills;
+    const candidates: CandidateSkill[] = activeSkills.map((s) => {
+      const parsed = skillAutoEngagementHints.safeParse(s.hints);
+      return {
+        id: s.id,
+        slug: s.slug,
+        displayName: s.displayName,
+        hints: parsed.success ? parsed.data : { keywords: [], chipTrigger: false, alwaysOn: false },
+      };
+    });
+    const autoMatches = matchSkills({
+      userMessage: input.content,
+      chipCount: input.chips.length,
+      skills: candidates,
+    });
+    const pinnedR = await execute(registry, adapter, humanCtx, "skills.list_pin_defaults", {});
+    const pinned = pinnedR.ok
+      ? (
+          pinnedR.value as {
+            pinDefaults: { skillId: string; slug: string; displayName: string }[];
+          }
+        ).pinDefaults
+      : [];
+    // Manual overrides on the chat session row. NULL or {} → no overrides yet.
+    const sessRows = (await adapter.rawAdmin().begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL caelo.actor_kind = 'system'`);
+      return await tx`SELECT engaged_skills FROM chat_sessions
+        WHERE id = ${input.chatSessionId}::uuid LIMIT 1`;
+    })) as unknown as { engaged_skills: unknown }[];
+    const stored = sessRows[0]?.engaged_skills;
+    const manualOverrides: Array<{
+      skillId: string;
+      slug: string;
+      displayName: string;
+      intent: "engage" | "disengage";
+    }> | null = Array.isArray(stored)
+      ? (stored as {
+          skillId: string;
+          slug: string;
+          displayName: string;
+          intent: "engage" | "disengage";
+        }[])
+      : null;
+    engagedSkills = resolveEngagements({
+      autoMatches,
+      manualOverrides,
+      pinnedSkills: pinned,
+    });
+
+    if (engagedSkills.length > 0) {
+      // Concatenate skill bodies, tagged with the slug + source so the
+      // AI knows which guidance is which.
+      const bodyById = new Map(activeSkills.map((s) => [s.id, s.body]));
+      const lines = engagedSkills.map((e) => {
+        const body = bodyById.get(e.skillId) ?? "";
+        return `## Skill: ${e.slug} (${e.source}${e.rationale ? ` — ${e.rationale}` : ""})\n${body}`;
+      });
+      skillsBlock = ["# Engaged skills", ...lines].join("\n\n");
+
+      // Allowlist intersection: when ANY engaged skill defines an
+      // allowlist, the AI's tool catalogue narrows to the UNION of
+      // those allowlists. When none do, the full catalogue stays.
+      const allowlists = engagedSkills
+        .map((e) => activeSkills.find((s) => s.id === e.skillId)?.allowlistedTools ?? [])
+        .filter((arr) => arr.length > 0);
+      if (allowlists.length > 0) {
+        allowedToolNames = new Set(allowlists.flat());
+      }
+    }
+  }
+
+  const filteredTools = allowedToolNames
+    ? tools.catalogue().filter((t) => allowedToolNames?.has(t.name))
+    : tools.catalogue();
+
   const systemChunks = composeSystemPromptChunks(
     memory,
-    tools.catalogue().map((t) => ({ name: t.name, description: t.description })),
+    filteredTools.map((t) => ({ name: t.name, description: t.description })),
     {
       chipsBlock,
       pageContextBlock,
@@ -502,6 +607,7 @@ export async function* runChatTurn(
       mediaBlock,
       redirectsBlock,
       localesBlock,
+      skillsBlock,
     },
   );
 

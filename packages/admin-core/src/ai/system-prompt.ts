@@ -61,7 +61,6 @@ const BASE_SYSTEM = [
  */
 export interface VolatileContext {
   readonly chipsBlock?: string;
-  readonly skillsBlock?: string;
   readonly pageContextBlock?: string;
   /** P6.7.5 — full site page list, so AI can pick real link targets. */
   readonly allPagesBlock?: string;
@@ -79,6 +78,8 @@ export interface VolatileContext {
   readonly redirectsBlock?: string;
   /** P9 — locales registry + AI's own pending locale-change proposals. */
   readonly localesBlock?: string;
+  /** P10A — engaged skills' bodies, tagged with slug + source. */
+  readonly skillsBlock?: string;
 }
 
 export function composeSystemPromptChunks(

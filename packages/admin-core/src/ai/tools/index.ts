@@ -22,6 +22,7 @@ import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeAddLocaleTool } from "./propose-add-locale.js";
 import { proposeRemoveLocaleTool } from "./propose-remove-locale.js";
 import { proposeSetDefaultLocaleTool } from "./propose-set-default-locale.js";
+import { proposeSkillTool } from "./propose-skill.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
@@ -89,6 +90,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // P10 — AI translation surface.
   registry.register(translatePageTool);
   registry.register(startTranslationJobTool);
+  // P10A — AI proposes a new skill body for Owner review.
+  registry.register(proposeSkillTool);
   return registry;
 }
 

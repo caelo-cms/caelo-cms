@@ -684,3 +684,35 @@ export const startTranslationJobToolInput = z
   })
   .strict();
 export type StartTranslationJobToolInput = z.infer<typeof startTranslationJobToolInput>;
+
+/**
+ * P10A — `propose_skill`. AI drafts a new skill body (or revision) and
+ * queues it for Owner review. Per CLAUDE.md §2: skills augment the AI's
+ * own system prompt, so site-wide activation requires explicit Owner
+ * confirmation. The proposal lands in skill_proposals; Owner accepts
+ * (creates `skills` row at status='awaiting_activation') and then
+ * activates separately.
+ */
+export const proposeSkillToolInput = z
+  .object({
+    slug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z0-9-]+$/, "lowercase letters/digits/hyphens"),
+    displayName: z.string().min(1).max(200),
+    description: z.string().max(1000).default(""),
+    body: z.string().min(1).max(20000),
+    rationale: z.string().min(1).max(1000),
+    allowlistedTools: z.array(z.string().min(1).max(120)).default([]),
+    hints: z
+      .object({
+        keywords: z.array(z.string().min(1).max(80)).default([]),
+        chipTrigger: z.boolean().default(false),
+        alwaysOn: z.boolean().default(false),
+      })
+      .strict()
+      .default({ keywords: [], chipTrigger: false, alwaysOn: false }),
+  })
+  .strict();
+export type ProposeSkillToolInput = z.infer<typeof proposeSkillToolInput>;

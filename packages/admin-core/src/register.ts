@@ -132,6 +132,17 @@ import {
 } from "./ops/seo.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp } from "./ops/site_defaults.js";
 import { getSiteSettingsOp, setSiteSettingsOp } from "./ops/site_settings.js";
+import {
+  listPinDefaultsOp,
+  setEngagedSkillsOp,
+  setPinDefaultsOp,
+} from "./ops/skills/engagement.js";
+import {
+  listSkillProposalsOp,
+  proposeSkillOp,
+  reviewSkillProposalOp,
+} from "./ops/skills/proposals.js";
+import { archiveSkillOp, getSkillOp, listSkillsOp, setSkillOp } from "./ops/skills/skills.js";
 import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
 import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
 import { moduleImpactOp } from "./ops/snapshots/impact.js";
@@ -345,4 +356,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(updateTranslationJobCapOp);
   registry.register(revertTranslationJobOp);
   registry.register(publishCompletedTranslationJobOp);
+  // P10A — skills system.
+  registry.register(listSkillsOp);
+  registry.register(getSkillOp);
+  registry.register(setSkillOp);
+  registry.register(archiveSkillOp);
+  registry.register(proposeSkillOp);
+  registry.register(listSkillProposalsOp);
+  registry.register(reviewSkillProposalOp);
+  registry.register(listPinDefaultsOp);
+  registry.register(setPinDefaultsOp);
+  registry.register(setEngagedSkillsOp);
 }
