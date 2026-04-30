@@ -29,6 +29,8 @@ export type SpawnChildChatTurn = (input: {
   readonly aiCtx: ExecutionContext;
   readonly humanCtx: ExecutionContext;
   readonly excludedToolNames: ReadonlySet<string>;
+  /** P10.5 #3 — per-spawn cost cap propagated to runChatTurn. */
+  readonly costCapMicrocents?: number;
   readonly abortSignal?: AbortSignal;
 }) => AsyncIterable<unknown>;
 
@@ -51,6 +53,15 @@ export interface ToolContext {
   readonly humanCtx?: ExecutionContext;
   /** Hands off to runChatTurn; closure created by the parent's runner. */
   readonly spawnChildChatTurn?: SpawnChildChatTurn;
+  /**
+   * P10.5 #1 — async-event sink installed by the parent's chat-runner
+   * around each tool dispatch. The spawn_subagent handler pushes the
+   * child's events here as they arrive; the parent's generator drains
+   * the queue between provider events so the user sees subagent
+   * progress LIVE instead of a frozen wait. Tool handlers that don't
+   * push (every other tool) just leave it untouched.
+   */
+  readonly pushClientEvent?: (event: unknown) => void;
 }
 
 export interface ToolResult {

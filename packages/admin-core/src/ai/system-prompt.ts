@@ -80,6 +80,8 @@ export interface VolatileContext {
   readonly localesBlock?: string;
   /** P10A — engaged skills' bodies, tagged with slug + source. */
   readonly skillsBlock?: string;
+  /** P10.5 #5 — hint that spawn_subagent / spawn_subagents exist + when to use them. */
+  readonly subagentsBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -116,6 +118,9 @@ export function composeSystemPromptChunks(
   // Volatile chunks go last so the cache prefix above stays byte-stable.
   if (volatile.skillsBlock && volatile.skillsBlock.trim().length > 0) {
     chunks.push({ body: volatile.skillsBlock, cacheable: false, label: "skills" });
+  }
+  if (volatile.subagentsBlock && volatile.subagentsBlock.trim().length > 0) {
+    chunks.push({ body: volatile.subagentsBlock, cacheable: false, label: "subagents" });
   }
   if (volatile.themeBlock && volatile.themeBlock.trim().length > 0) {
     chunks.push({ body: volatile.themeBlock, cacheable: false, label: "theme" });

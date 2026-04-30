@@ -227,6 +227,50 @@ export const getSubagentRunOp = defineOperation({
   },
 });
 
+/**
+ * P10.5 #4 — GC ephemeral subagent chat sessions older than a
+ * threshold. CASCADE on chat_messages reclaims the transcript bytes;
+ * the subagent_chat_session_id FK on subagent_runs has ON DELETE
+ * CASCADE, so the metadata row goes with it. For long-term audit
+ * retention, raise retentionDays.
+ *
+ * Owner runs this manually or via a cron later. Default retention 30 days.
+ */
+export const gcSubagentSessionsOp = defineOperation({
+  name: "subagent_runs.gc_old_sessions",
+  // Why human-only: hard delete of audit-adjacent data. Owner gate.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      retentionDays: z.number().int().min(1).max(3650).default(30),
+    })
+    .strict(),
+  output: z.object({ sessionsDeleted: z.number().int().nonnegative() }),
+  handler: async (ctx, input, tx) => {
+    const days = input.retentionDays;
+    const rows = (await tx.execute(sql`
+      DELETE FROM chat_sessions
+      WHERE subagent_role IS NOT NULL
+        AND id IN (
+          SELECT subagent_chat_session_id FROM subagent_runs
+          WHERE finished_at IS NOT NULL
+            AND finished_at < now() - (${days} || ' days')::interval
+        )
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const sessionsDeleted = rows.length;
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "subagent_runs.gc_old_sessions",
+      input,
+      succeeded: true,
+      resultSummary: `deleted=${sessionsDeleted} retentionDays=${days}`,
+    });
+    return ok({ sessionsDeleted });
+  },
+});
+
 export const aggregateAiCallsForSessionOp = defineOperation({
   name: "ai_calls.aggregate_for_session",
   actorScope: ["human", "ai", "system"],

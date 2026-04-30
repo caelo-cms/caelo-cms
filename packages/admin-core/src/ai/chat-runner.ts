@@ -53,7 +53,20 @@ export type ClientEvent =
   | { kind: "interrupted"; messageId: string | null }
   | { kind: "usage"; inputTokens: number; outputTokens: number; cachedTokens: number; cost: number }
   | { kind: "done" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  /**
+   * P10.5 #1 — wraps a child chat-runner's event when emitted from
+   * inside a spawn_subagent / spawn_subagents tool dispatch. The UI
+   * renders one collapsible card per role so the user sees the
+   * subagent's progress live instead of a 5-30s frozen wait.
+   */
+  | {
+      kind: "subagent-event";
+      batchId: string;
+      role: string;
+      subagentChatSessionId: string;
+      inner: Exclude<ClientEvent, { kind: "subagent-event" }>;
+    };
 
 export interface ChatRunnerOptions {
   readonly adapter: DatabaseAdapter;
@@ -79,6 +92,15 @@ export interface ChatRunnerOptions {
    * filters its catalogue.
    */
   readonly excludedToolNames?: ReadonlySet<string>;
+  /**
+   * P10.5 #3 — soft cost cap per turn (microcents). After each
+   * provider call's `usage` event, the loop checks accumulated cost;
+   * if it exceeds this cap, the loop aborts with stopReason='error'
+   * and emits an error event. spawn_subagent passes its spec's
+   * maxCostMicrocents through here so the cap fires BEFORE the next
+   * provider call instead of post-hoc.
+   */
+  readonly costCapMicrocents?: number;
 }
 
 const DEFAULT_INPUT_COST_PER_M = 15; // Opus 4.7 input rate, USD per 1M tokens
@@ -609,6 +631,46 @@ export async function* runChatTurn(
     return true;
   });
 
+  // P10.5 #5 — subagents hint chunk. Emitted when (a) spawn tools are
+  // visible in this turn's catalogue (so we never tell the AI to use
+  // a tool it can't see — subagents themselves don't get the hint
+  // because their own catalogue strips spawn_subagent) AND (b) the
+  // user's message contains parallel-work cues OR an engaged skill
+  // body mentions spawn_subagent. Pure text guidance; the AI decides
+  // whether to act.
+  let subagentsBlock: string | undefined;
+  const spawnVisible =
+    !excluded?.has("spawn_subagent") &&
+    !excluded?.has("spawn_subagents") &&
+    filteredTools.some((t) => t.name === "spawn_subagent" || t.name === "spawn_subagents");
+  if (spawnVisible) {
+    const lowered = input.content.toLowerCase();
+    const cuewords = [
+      "audit",
+      "review",
+      "in parallel",
+      "fan out",
+      "qa",
+      "categorize",
+      "categorise",
+      "restructure",
+      "draft an article",
+      "write an article",
+    ];
+    const matched = cuewords.some((w) => lowered.includes(w));
+    const skillMentionsSubagents =
+      skillsBlock !== undefined && skillsBlock.toLowerCase().includes("spawn_subagent");
+    if (matched || skillMentionsSubagents) {
+      subagentsBlock = [
+        "# Subagents",
+        "You can fan out parallel reasoning angles via `spawn_subagent` (single) or `spawn_subagents` (parallel batch). Each child is its own chat-runner turn with its own auto-engaged skill — its task wording drives which skill engages (e.g. role='qa', task='QA the article' → engages qa-check; role='menu-auditor' → engages menu-auditor).",
+        "Use when the work has multiple distinct perspectives that benefit from isolated context (audit + propose, QA + legal + brand-voice, US-perspective + EU-perspective).",
+        "DO NOT use for one-line edits or quick lookups — those are regular tool calls. Subagents earn their cost when each angle is multi-step.",
+        "Each subagent returns a parsed verdict (or tree, or freeform). Ingest the results, then decide your next move.",
+      ].join("\n");
+    }
+  }
+
   const systemChunks = composeSystemPromptChunks(
     memory,
     filteredTools.map((t) => ({ name: t.name, description: t.description })),
@@ -624,6 +686,7 @@ export async function* runChatTurn(
       redirectsBlock,
       localesBlock,
       skillsBlock,
+      subagentsBlock,
     },
   );
 
@@ -666,6 +729,21 @@ export async function* runChatTurn(
         totalIn += ev.inputTokens;
         totalOut += ev.outputTokens;
         totalCached += ev.cachedTokens;
+        // P10.5 #3 — soft cost cap. spawn_subagent passes the spec's
+        // maxCostMicrocents through; runner aborts before the next
+        // provider call instead of letting the budget overrun.
+        if (options.costCapMicrocents !== undefined) {
+          const usdSoFar =
+            ((totalIn - totalCached) / 1_000_000) * inputCost + (totalOut / 1_000_000) * outputCost;
+          if (microcents(usdSoFar) > options.costCapMicrocents) {
+            providerErr = true;
+            succeeded = false;
+            yield {
+              kind: "error",
+              message: `cost cap reached: spent ~${microcents(usdSoFar)} µ¢ / cap ${options.costCapMicrocents} µ¢`,
+            };
+          }
+        }
       } else if (ev.kind === "done") {
         loopStop = ev.stopReason;
       } else if (ev.kind === "error") {
@@ -738,7 +816,23 @@ export async function* runChatTurn(
         };
         yield { kind: "tool-result-cached", toolCallId: call.id };
       } else {
-        result = await tools.dispatch(call.name, call.arguments, aiCtxWithBranch, {
+        // P10.5 #1 — buffer + waker so the spawn handler can stream
+        // child events to the parent's generator while its dispatch is
+        // still in flight. Tool handlers that don't push events leave
+        // the queue empty and the loop is a no-op.
+        const eventBuffer: ClientEvent[] = [];
+        let resolveWaker: (() => void) | null = null;
+        const wakeReader = (): void => {
+          const r = resolveWaker;
+          resolveWaker = null;
+          r?.();
+        };
+        const pushClientEvent = (event: unknown): void => {
+          eventBuffer.push(event as ClientEvent);
+          wakeReader();
+        };
+
+        const dispatchPromise = tools.dispatch(call.name, call.arguments, aiCtxWithBranch, {
           adapter,
           registry,
           chatSessionId: input.chatSessionId,
@@ -752,11 +846,13 @@ export async function* runChatTurn(
           provider,
           tools,
           humanCtx,
+          pushClientEvent,
           spawnChildChatTurn: ({
             chatInput,
             aiCtx: childAiCtx,
             humanCtx: childHumanCtx,
             excludedToolNames,
+            costCapMicrocents,
             abortSignal: childAbort,
           }) =>
             runChatTurn(
@@ -771,11 +867,41 @@ export async function* runChatTurn(
                 outputCostPerMTok: options.outputCostPerMTok,
                 maxToolLoops: options.maxToolLoops,
                 excludedToolNames,
+                costCapMicrocents,
                 abortSignal: childAbort,
               },
               chatInput,
             ),
         });
+        let dispatchDone = false;
+        const finalDispatch = dispatchPromise.then(
+          (r) => {
+            dispatchDone = true;
+            wakeReader();
+            return { ok: true as const, value: r };
+          },
+          (e: unknown) => {
+            dispatchDone = true;
+            wakeReader();
+            return { ok: false as const, error: e };
+          },
+        );
+
+        // Drain the event buffer concurrently with the dispatch.
+        while (!dispatchDone || eventBuffer.length > 0) {
+          while (eventBuffer.length > 0) {
+            const ev = eventBuffer.shift();
+            if (ev) yield ev;
+          }
+          if (!dispatchDone) {
+            await new Promise<void>((resolve) => {
+              resolveWaker = resolve;
+            });
+          }
+        }
+        const settled = await finalDispatch;
+        if (!settled.ok) throw settled.error;
+        result = settled.value;
         await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
           chatSessionId: input.chatSessionId,
           toolCallId: call.id,

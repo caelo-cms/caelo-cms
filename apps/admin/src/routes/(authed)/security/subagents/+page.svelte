@@ -97,7 +97,7 @@
               </TableRow>
               {#if r.errorMessage || r.resultJson}
                 <TableRow>
-                  <TableCell colspan="6" class="text-xs">
+                  <TableCell class="text-xs" {...{ colspan: 6 }}>
                     <details>
                       <summary class="cursor-pointer text-muted-foreground">
                         {r.errorMessage ? `error: ${r.errorMessage}` : "result"}

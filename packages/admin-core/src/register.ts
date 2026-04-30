@@ -161,6 +161,7 @@ import {
   aggregateAiCallsForSessionOp,
   createPendingSubagentRunOp,
   finishSubagentRunOp,
+  gcSubagentSessionsOp,
   getSubagentRunOp,
   listSubagentRunsOp,
 } from "./ops/subagents/runs.js";
@@ -380,4 +381,5 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listSubagentRunsOp);
   registry.register(getSubagentRunOp);
   registry.register(aggregateAiCallsForSessionOp);
+  registry.register(gcSubagentSessionsOp);
 }

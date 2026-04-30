@@ -39,6 +39,47 @@ const SUBAGENT_BATCH_CAP_MICROCENTS = Number(
   process.env["SUBAGENT_BATCH_CAP_MICROCENTS"] ?? "200000000", // $2.00 default
 );
 const SUBAGENT_MAX_PARALLEL = Number(process.env["SUBAGENT_MAX_PARALLEL"] ?? "8");
+/**
+ * P10.5 #2 — bounded concurrency. With 8 parallel subagents each
+ * making 5 provider calls, naive `Promise.all` floods Anthropic's tier
+ * limits and gets 429-thrashed. The semaphore caps simultaneous
+ * SUBAGENT INVOCATIONS (each subagent's own provider calls run
+ * sequentially inside its chat-runner loop). Defaults to 4; configurable.
+ */
+const SUBAGENT_PARALLEL_API_LIMIT = Number(process.env["SUBAGENT_PARALLEL_API_LIMIT"] ?? "4");
+
+/**
+ * Tiny p-limit-style semaphore. Avoids a dependency for ~20 LOC.
+ */
+function createSemaphore(max: number): (fn: () => Promise<unknown>) => Promise<unknown> {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const acquire = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const tryAcquire = (): void => {
+        if (active < max) {
+          active += 1;
+          resolve();
+        } else {
+          queue.push(tryAcquire);
+        }
+      };
+      tryAcquire();
+    });
+  const release = (): void => {
+    active -= 1;
+    const next = queue.shift();
+    next?.();
+  };
+  return async (fn) => {
+    await acquire();
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  };
+}
 
 interface SubagentInvocationResult {
   role: string;
@@ -141,18 +182,31 @@ async function runOneSubagent(
       aiCtx: childAiCtx,
       humanCtx: childHumanCtx,
       excludedToolNames: EXCLUDED_FOR_CHILD,
+      // P10.5 #3 — pre-emptive cap inside the child's chat-runner.
+      costCapMicrocents: spec.maxCostMicrocents,
       abortSignal: controller.signal,
     });
-    // Drain the AsyncIterable to completion. We don't care about
-    // intermediate events here — the spawn handler's job is to wait
-    // for the run to finish; the parent stream surfaces a single
-    // verdicts event after Promise.all resolves.
+    // P10.5 #1 — drain the AsyncIterable + forward each child event
+    // through the parent's pushClientEvent sink wrapped as a
+    // `subagent-event`. The user's chat UI sees the child's progress
+    // (text deltas, tool calls, tool results) live instead of a
+    // frozen wait. We never re-emit nested subagent-event payloads
+    // (depth-1 cap on observability for now).
     for await (const ev of stream as AsyncIterable<{ kind: string }>) {
       if (controller.signal.aborted) {
         timedOut = true;
         break;
       }
-      void ev;
+      const inner = ev as { kind: string };
+      if (inner.kind !== "subagent-event" && toolCtx.pushClientEvent) {
+        toolCtx.pushClientEvent({
+          kind: "subagent-event",
+          batchId,
+          role: spec.role,
+          subagentChatSessionId,
+          inner,
+        });
+      }
     }
   } catch (e) {
     clearTimeout(timer);
@@ -371,9 +425,13 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
       };
     }
     const batchId = crypto.randomUUID();
-    const results = await Promise.all(
-      input.subagents.map((spec) => runOneSubagent(spec, ctx, toolCtx, batchId, null)),
-    );
+    // P10.5 #2 — bounded concurrency. SUBAGENT_PARALLEL_API_LIMIT caps
+    // simultaneous in-flight subagents. Specs queue past it; queue
+    // drains as earlier ones complete.
+    const limit = createSemaphore(SUBAGENT_PARALLEL_API_LIMIT);
+    const results = (await Promise.all(
+      input.subagents.map((spec) => limit(() => runOneSubagent(spec, ctx, toolCtx, batchId, null))),
+    )) as SubagentInvocationResult[];
     const totalCost = results.reduce((sum, r) => sum + r.costMicrocents, 0);
     if (totalCost > SUBAGENT_BATCH_CAP_MICROCENTS) {
       return {
