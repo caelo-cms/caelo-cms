@@ -31,4 +31,13 @@ export interface ExecutionContext {
    * fold consecutive AI actions into one entry.
    */
   readonly chatTaskId?: string;
+  /**
+   * P10.5: parent attribution for subagent invocations. When the
+   * `spawn_subagent` tool calls runChatTurn for the child, it carries
+   * these fields so the existing ai_calls + audit_events writers
+   * persist them to the new schema columns. Same code paths; just
+   * more attribution data threaded through.
+   */
+  readonly parentChatSessionId?: string;
+  readonly parentAiCallId?: string;
 }

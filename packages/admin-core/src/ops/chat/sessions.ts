@@ -92,7 +92,9 @@ export const listChatSessionsOp = defineOperation({
              page_id::text     AS page_id,
              template_id::text AS template_id
       FROM chat_sessions
-      WHERE created_by = ${ctx.actorId}::uuid ${archivedFilter} ${pageFilter} ${templateFilter} ${queryFilter}
+      WHERE created_by = ${ctx.actorId}::uuid
+        AND subagent_role IS NULL
+        ${archivedFilter} ${pageFilter} ${templateFilter} ${queryFilter}
       ORDER BY last_active_at DESC
       LIMIT 100
     `)) as unknown as {
@@ -143,14 +145,16 @@ export const createChatSessionOp = defineOperation({
     const title = input.title?.trim() || "New chat";
     const pageId = input.pageId ?? null;
     const templateId = input.templateId ?? null;
+    const subagentRole = input.subagentRole ?? null;
     const rows = (await tx.execute(sql`
-      INSERT INTO chat_sessions (title, created_by, chat_branch_id, page_id, template_id)
+      INSERT INTO chat_sessions (title, created_by, chat_branch_id, page_id, template_id, subagent_role)
       VALUES (
         ${title},
         ${ctx.actorId}::uuid,
         gen_random_uuid(),
         ${pageId ? sql`${pageId}::uuid` : sql`NULL`},
-        ${templateId ? sql`${templateId}::uuid` : sql`NULL`}
+        ${templateId ? sql`${templateId}::uuid` : sql`NULL`},
+        ${subagentRole}
       )
       RETURNING id::text AS id, chat_branch_id::text AS chat_branch_id
     `)) as unknown as { id: string; chat_branch_id: string }[];

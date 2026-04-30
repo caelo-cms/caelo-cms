@@ -36,6 +36,7 @@ import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
+import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
 import { startTranslationJobTool } from "./start-translation-job.js";
 import { translatePageTool } from "./translate-page.js";
 import { updateThemeTool } from "./update-theme.js";
@@ -92,6 +93,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(startTranslationJobTool);
   // P10A — AI proposes a new skill body for Owner review.
   registry.register(proposeSkillTool);
+  // P10.5 — AI spawns subagents (single + plural) for parallel
+  // reasoning. Same chat-runner code path; child runs with
+  // excludedToolNames stripping these two so depth is capped at 1.
+  registry.register(spawnSubagentTool);
+  registry.register(spawnSubagentsTool);
   return registry;
 }
 

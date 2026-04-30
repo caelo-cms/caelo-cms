@@ -158,6 +158,9 @@ export const recordAiCallOp = defineOperation({
       costEstimateMicrocents: z.number().int().nonnegative().default(0),
       durationMs: z.number().int().nonnegative().default(0),
       succeeded: z.boolean().default(true),
+      /** P10.5 — parent attribution for subagent invocations. */
+      parentChatSessionId: z.string().uuid().nullable().optional(),
+      parentAiCallId: z.string().uuid().nullable().optional(),
     })
     .strict(),
   output: z.object({ aiCallId: z.string() }),
@@ -166,7 +169,8 @@ export const recordAiCallOp = defineOperation({
       INSERT INTO ai_calls (
         chat_session_id, actor_id, provider, model,
         input_tokens, output_tokens, cached_tokens,
-        cost_estimate_microcents, duration_ms, succeeded
+        cost_estimate_microcents, duration_ms, succeeded,
+        parent_chat_session_id, parent_ai_call_id
       ) VALUES (
         ${input.chatSessionId ?? null},
         ${ctx.actorId}::uuid,
@@ -177,7 +181,9 @@ export const recordAiCallOp = defineOperation({
         ${input.cachedTokens},
         ${input.costEstimateMicrocents}::bigint,
         ${input.durationMs},
-        ${input.succeeded}
+        ${input.succeeded},
+        ${input.parentChatSessionId ?? null},
+        ${input.parentAiCallId ?? null}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];

@@ -15,4 +15,5 @@ export * from "./seo.js";
 export * from "./skills.js";
 export * from "./snapshots.js";
 export * from "./structured-sets.js";
+export * from "./subagents.js";
 export * from "./translation.js";

@@ -12,8 +12,25 @@
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
-import type { ExecutionContext } from "@caelo/shared";
+import type { ChatSendMessageInput, ExecutionContext } from "@caelo/shared";
 import type { z } from "zod";
+
+import type { AIProvider } from "../provider.js";
+
+/**
+ * P10.5 — the spawn_subagent tool handler invokes the SAME runChatTurn
+ * that handled the parent. Rather than coupling the tool-dispatcher to
+ * the chat-runner's full signature, the parent's chat-runner instance
+ * puts this factory on the ToolContext so the handler can spawn a
+ * child turn without a circular import.
+ */
+export type SpawnChildChatTurn = (input: {
+  readonly chatInput: ChatSendMessageInput;
+  readonly aiCtx: ExecutionContext;
+  readonly humanCtx: ExecutionContext;
+  readonly excludedToolNames: ReadonlySet<string>;
+  readonly abortSignal?: AbortSignal;
+}) => AsyncIterable<unknown>;
 
 export interface ToolContext {
   readonly adapter: DatabaseAdapter;
@@ -22,6 +39,18 @@ export interface ToolContext {
    * snapshot emission so the AI's writes land on the chat's branch. */
   readonly chatSessionId?: string;
   readonly chatBranchId?: string;
+  /**
+   * P10.5 — provider + tools + humanCtx the parent's chat-runner is
+   * currently using. The spawn handler reuses them when invoking
+   * runChatTurn for the child. Optional: tool dispatch from outside
+   * a chat-runner (tests) leaves them undefined; spawn tools fail
+   * cleanly when called outside a chat-runner context.
+   */
+  readonly provider?: AIProvider;
+  readonly tools?: ToolRegistry;
+  readonly humanCtx?: ExecutionContext;
+  /** Hands off to runChatTurn; closure created by the parent's runner. */
+  readonly spawnChildChatTurn?: SpawnChildChatTurn;
 }
 
 export interface ToolResult {

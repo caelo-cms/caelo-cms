@@ -21,6 +21,7 @@
     { href: "/security/glossary", label: "Glossary", desc: "Per-locale canonical translations; injected into AI Mode 1/2 prompts", icon: Database },
     { href: "/security/style-guide", label: "Style guide", desc: "Per-locale tone/voice; shapes AI translations", icon: Bot },
     { href: "/security/skills", label: "Skills", desc: "AI skill bodies + auto-engagement + AI-proposed skills queue", icon: Sparkles },
+    { href: "/security/subagents", label: "Subagent runs", desc: "Spawned subagents with role, status, cost, duration", icon: Sparkles },
     { href: "/security/ai", label: "AI provider", desc: "Anthropic configuration + active provider", icon: Bot },
     { href: "/security/deployments", label: "Deployments", desc: "Ops view — dev / staging / production + promote", icon: Rocket },
     { href: "/security/costs", label: "AI cost controls", desc: "Token + spend dashboard", icon: Coins },

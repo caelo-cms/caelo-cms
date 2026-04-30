@@ -158,6 +158,13 @@ import {
   setStructuredSetOp,
 } from "./ops/structured_sets.js";
 import {
+  aggregateAiCallsForSessionOp,
+  createPendingSubagentRunOp,
+  finishSubagentRunOp,
+  getSubagentRunOp,
+  listSubagentRunsOp,
+} from "./ops/subagents/runs.js";
+import {
   deleteGlossaryEntryOp,
   listGlossaryOp,
   setGlossaryEntryOp,
@@ -367,4 +374,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPinDefaultsOp);
   registry.register(setPinDefaultsOp);
   registry.register(setEngagedSkillsOp);
+  // P10.5 — subagent runs metadata + cost aggregation.
+  registry.register(createPendingSubagentRunOp);
+  registry.register(finishSubagentRunOp);
+  registry.register(listSubagentRunsOp);
+  registry.register(getSubagentRunOp);
+  registry.register(aggregateAiCallsForSessionOp);
 }

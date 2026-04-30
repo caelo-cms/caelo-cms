@@ -70,6 +70,15 @@ export interface ChatRunnerOptions {
   readonly maxToolLoops?: number;
   /** P5.2 #2 — propagated to the provider; aborts halt the loop cleanly. */
   readonly abortSignal?: AbortSignal;
+  /**
+   * P10.5 — names of tools to STRIP from the tool catalogue for THIS
+   * invocation. The `spawn_subagent` tool handler passes
+   * `{spawn_subagent, spawn_subagents}` when invoking runChatTurn for
+   * the child — that's the depth cap, expressed as plain config. The
+   * runner itself doesn't branch on "is this a subagent"; it just
+   * filters its catalogue.
+   */
+  readonly excludedToolNames?: ReadonlySet<string>;
 }
 
 const DEFAULT_INPUT_COST_PER_M = 15; // Opus 4.7 input rate, USD per 1M tokens
@@ -589,9 +598,16 @@ export async function* runChatTurn(
     }
   }
 
-  const filteredTools = allowedToolNames
-    ? tools.catalogue().filter((t) => allowedToolNames?.has(t.name))
-    : tools.catalogue();
+  // P10A skill allowlist intersection ∪ P10.5 subagent exclusion. The
+  // exclusion list is how the spawn handler enforces the depth cap (it
+  // passes {spawn_subagent, spawn_subagents}); chat-runner itself
+  // doesn't branch on "is this a subagent."
+  const excluded = options.excludedToolNames;
+  const filteredTools = tools.catalogue().filter((t) => {
+    if (allowedToolNames && !allowedToolNames.has(t.name)) return false;
+    if (excluded && excluded.has(t.name)) return false;
+    return true;
+  });
 
   const systemChunks = composeSystemPromptChunks(
     memory,
@@ -637,7 +653,7 @@ export async function* runChatTurn(
     for await (const ev of provider.generate({
       systemPrompt: systemChunks,
       messages,
-      tools: tools.catalogue(),
+      tools: filteredTools,
       abortSignal,
     })) {
       if (aborted()) break;
@@ -727,6 +743,38 @@ export async function* runChatTurn(
           registry,
           chatSessionId: input.chatSessionId,
           chatBranchId: session.session.chatBranchId,
+          // P10.5 — expose provider + tools + humanCtx + a child-turn
+          // factory so the spawn_subagent handler can invoke runChatTurn
+          // recursively for the child without a circular import. The
+          // factory always passes excludedToolNames including the spawn
+          // tools, so the depth cap is enforced by configuration, not a
+          // runtime branch.
+          provider,
+          tools,
+          humanCtx,
+          spawnChildChatTurn: ({
+            chatInput,
+            aiCtx: childAiCtx,
+            humanCtx: childHumanCtx,
+            excludedToolNames,
+            abortSignal: childAbort,
+          }) =>
+            runChatTurn(
+              {
+                adapter,
+                registry,
+                provider,
+                tools,
+                aiCtx: childAiCtx,
+                humanCtx: childHumanCtx,
+                inputCostPerMTok: options.inputCostPerMTok,
+                outputCostPerMTok: options.outputCostPerMTok,
+                maxToolLoops: options.maxToolLoops,
+                excludedToolNames,
+                abortSignal: childAbort,
+              },
+              chatInput,
+            ),
         });
         await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
           chatSessionId: input.chatSessionId,
@@ -778,6 +826,11 @@ export async function* runChatTurn(
     costEstimateMicrocents: microcents(usdCost),
     durationMs: Date.now() - startedAt,
     succeeded: succeeded && stopReason !== "error" && !aborted(),
+    // P10.5 — when this turn is a subagent invocation, the spawn
+    // handler put the parent attribution on the aiCtx. Existing
+    // ai_calls writer already takes them as input.
+    parentChatSessionId: aiCtx.parentChatSessionId,
+    parentAiCallId: aiCtx.parentAiCallId,
   });
 
   if (aborted()) {

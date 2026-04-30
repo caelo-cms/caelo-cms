@@ -109,6 +109,10 @@ export const chatCreateSessionInput = z
     pageId: z.string().uuid().optional(),
     /** P6.7.4 — bind the new chat to one template (template editor). */
     templateId: z.string().uuid().optional(),
+    /** P10.5 — when set, this is an ephemeral subagent session; sidebar filters it out. */
+    subagentRole: z.string().min(1).max(120).optional(),
+    /** P10.5 — parent chat session id for subagent attribution (audit trail). */
+    parentChatSessionId: z.string().uuid().nullable().optional(),
   })
   .strict();
 
