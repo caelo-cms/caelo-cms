@@ -35,8 +35,11 @@ const matrixRow = z.object({
   locale: z.string(),
   /** Synthesised status: `not_started` when no row exists for this (slug, locale). */
   status: statusEnum,
-  /** Page id when a real row exists; null for synthesised `not_started` entries. */
+  /** Page id of the variant when it exists; null for synthesised `not_started` entries. */
   pageId: z.string().nullable(),
+  /** Source page id — always populated. Used by translation dispatchers
+   * since Mode 1 / Mode 2 take the SOURCE page id as their input. */
+  sourcePageId: z.string(),
   /** Display name from the locales registry — convenience for UI. */
   localeDisplayName: z.string(),
   /** True when this is the source locale row (status === 'source'). */
@@ -64,18 +67,19 @@ export const translationStatusMatrixOp = defineOperation({
     // JOIN to a live page row in that locale; synthesise not_started
     // when the join misses.
     const rows = (await tx.execute(sql`
-      WITH source_slugs AS (
-        SELECT DISTINCT slug FROM pages
+      WITH sources AS (
+        SELECT id::text AS source_id, slug FROM pages
         WHERE translation_status = 'source' AND deleted_at IS NULL
       )
       SELECT
         p.slug AS slug,
+        p.source_id AS source_id,
         l.code AS locale,
         l.display_name AS locale_display_name,
         l.is_default AS is_default,
         COALESCE(pv.translation_status, 'not_started') AS status,
         pv.id::text AS page_id
-      FROM source_slugs p
+      FROM sources p
       CROSS JOIN locales l
       LEFT JOIN pages pv
         ON pv.slug = p.slug AND pv.locale = l.code AND pv.deleted_at IS NULL
@@ -83,6 +87,7 @@ export const translationStatusMatrixOp = defineOperation({
       ORDER BY p.slug ASC, l.is_default DESC, l.code ASC
     `)) as unknown as {
       slug: string;
+      source_id: string;
       locale: string;
       locale_display_name: string;
       is_default: boolean;
@@ -96,6 +101,7 @@ export const translationStatusMatrixOp = defineOperation({
         localeDisplayName: r.locale_display_name,
         status: r.status,
         pageId: r.page_id,
+        sourcePageId: r.source_id,
         isSource: r.status === "source",
       })),
     });

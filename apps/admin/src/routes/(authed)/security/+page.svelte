@@ -18,6 +18,8 @@
     { href: "/security/seo", label: "SEO", desc: "Site base URL, sitemap toggle, organization JSON, stale-SEO queue", icon: Search },
     { href: "/security/redirects", label: "Redirects", desc: "301/302 path mappings; auto-emitted to per-provider redirect files", icon: ArrowRightLeft },
     { href: "/security/locales", label: "Locales & URL routing", desc: "Languages + URL strategies; AI proposals queued for Owner approval", icon: Globe },
+    { href: "/security/glossary", label: "Glossary", desc: "Per-locale canonical translations; injected into AI Mode 1/2 prompts", icon: Database },
+    { href: "/security/style-guide", label: "Style guide", desc: "Per-locale tone/voice; shapes AI translations", icon: Bot },
     { href: "/security/ai", label: "AI provider", desc: "Anthropic configuration + active provider", icon: Bot },
     { href: "/security/deployments", label: "Deployments", desc: "Ops view — dev / staging / production + promote", icon: Rocket },
     { href: "/security/costs", label: "AI cost controls", desc: "Token + spend dashboard", icon: Coins },

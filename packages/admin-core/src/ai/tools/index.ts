@@ -35,6 +35,8 @@ import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
+import { startTranslationJobTool } from "./start-translation-job.js";
+import { translatePageTool } from "./translate-page.js";
 import { updateThemeTool } from "./update-theme.js";
 
 /**
@@ -84,6 +86,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeRemoveLocaleTool);
   registry.register(proposeSetDefaultLocaleTool);
   registry.register(proposeUpdateLocaleStrategyTool);
+  // P10 — AI translation surface.
+  registry.register(translatePageTool);
+  registry.register(startTranslationJobTool);
   return registry;
 }
 

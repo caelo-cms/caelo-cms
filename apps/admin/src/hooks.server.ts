@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import {
+  makeProvider,
+  resetStuckTranslationUnits,
+  setMode2Provider,
+  setTranslationProvider,
+  startTranslationWorker,
+} from "@caelo/admin-core";
 import { execute } from "@caelo/query-api";
 import type { ExecutionContext } from "@caelo/shared";
 import type { Handle } from "@sveltejs/kit";
@@ -12,12 +19,38 @@ const SYSTEM_CTX: ExecutionContext = {
   requestId: "hooks",
 };
 
+// P10 — one-time translation worker bootstrap. Runs at module load
+// (i.e. once when SvelteKit boots). The worker polls for queued
+// translation_job_units and dispatches Mode 1 / Mode 2 sequentially.
+// Provider is the configured Anthropic adapter; if no key, the
+// worker still runs but units fail with a clear "provider not
+// configured" message (the dashboard surfaces it).
+let translationBootstrapped = false;
+async function bootstrapTranslationWorker(): Promise<void> {
+  if (translationBootstrapped) return;
+  translationBootstrapped = true;
+  const apiKey = process.env["ANTHROPIC_API_KEY"];
+  if (apiKey) {
+    const provider = makeProvider({
+      name: "anthropic",
+      apiKey,
+      model: "claude-opus-4-7",
+    });
+    setTranslationProvider({ provider });
+    setMode2Provider({ provider });
+  }
+  const { adapter, registry } = getQueryContext();
+  await resetStuckTranslationUnits({ adapter, registry, systemCtx: SYSTEM_CTX });
+  startTranslationWorker({ adapter, registry, systemCtx: SYSTEM_CTX });
+}
+
 /**
  * Per-request middleware: resolve session cookie → populate `locals.user` +
  * `locals.ctx`. The `csrfSecret` field is the long-lived per-session secret —
  * forms use a derived per-render token via `signCsrfToken`.
  */
 export const handle: Handle = async ({ event, resolve }) => {
+  void bootstrapTranslationWorker();
   const { adapter, registry } = getQueryContext();
   const token = event.cookies.get(SESSION_COOKIE);
   let user: App.Locals["user"] = null;

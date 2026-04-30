@@ -650,3 +650,37 @@ export const proposeUpdateLocaleStrategyToolInput = z
 export type ProposeUpdateLocaleStrategyToolInput = z.infer<
   typeof proposeUpdateLocaleStrategyToolInput
 >;
+
+/**
+ * P10 — translation tool inputs. `translate_page` auto-dispatches
+ * Mode 1 / Mode 2 based on the variant's existing status — the AI
+ * sees one verb regardless of state. `start_translation_job` queues
+ * a bulk run.
+ */
+export const translatePageToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    targetLocale: localeCodeToolSchema,
+  })
+  .strict();
+export type TranslatePageToolInput = z.infer<typeof translatePageToolInput>;
+
+const translationJobScopeTool = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("all-stale") }).strict(),
+  z.object({ kind: z.literal("page"), pageId: z.string().uuid() }).strict(),
+  z.object({ kind: z.literal("locale"), code: localeCodeToolSchema }).strict(),
+  z
+    .object({
+      kind: z.literal("pages"),
+      pageIds: z.array(z.string().uuid()).min(1).max(500),
+    })
+    .strict(),
+]);
+
+export const startTranslationJobToolInput = z
+  .object({
+    scope: translationJobScopeTool,
+    capMicrocents: z.number().int().nonnegative().nullable().optional(),
+  })
+  .strict();
+export type StartTranslationJobToolInput = z.infer<typeof startTranslationJobToolInput>;

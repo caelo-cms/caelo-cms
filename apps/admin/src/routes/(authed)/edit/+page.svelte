@@ -326,6 +326,46 @@
     {/if}
   </header>
 
+  <!-- P10 — translation banner. Shown when the active page is a
+       non-source variant. Provides a one-click "Bring up to date"
+       Mode 2 dispatch when status === 'needs_update'. -->
+  {#if data.translationBanner}
+    {@const tb = data.translationBanner}
+    <div
+      class="flex items-center justify-between gap-3 border-b bg-amber-50 px-4 py-2 text-sm dark:bg-amber-950/40"
+      data-testid="translation-banner"
+    >
+      <span>
+        {#if tb.status === "needs_update"}
+          ⚠ This <code class="font-mono">{tb.targetLocale}</code> translation is out of date. The
+          source page changed since this variant was last translated.
+        {:else if tb.status === "up_to_date"}
+          ✓ This <code class="font-mono">{tb.targetLocale}</code> translation is up to date.
+        {:else}
+          ○ This <code class="font-mono">{tb.targetLocale}</code> variant has not been translated yet.
+        {/if}
+      </span>
+      {#if tb.status === "needs_update" || tb.status === "not_started"}
+        <form method="post" action="/content/translations?/translateOne">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <input type="hidden" name="pageId" value={tb.sourcePageId} />
+          <input type="hidden" name="targetLocale" value={tb.targetLocale} />
+          <input
+            type="hidden"
+            name="mode"
+            value={tb.status === "needs_update" ? "mode_2" : "mode_1"}
+          />
+          <button
+            type="submit"
+            class="rounded bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700"
+          >
+            {tb.status === "needs_update" ? "Bring up to date" : "Translate"}
+          </button>
+        </form>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Full-bleed iframe -->
   <div class="flex-1">
     {#if previewSrc}

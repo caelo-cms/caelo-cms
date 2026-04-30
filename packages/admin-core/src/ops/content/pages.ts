@@ -35,6 +35,8 @@ const pageRowSchema = z.object({
   title: z.string(),
   templateId: z.string(),
   status: z.enum(["draft", "published"]),
+  /** P9 — populated for source rows; tracks variant freshness. */
+  translationStatus: z.enum(["source", "up_to_date", "needs_update", "not_started"]),
   version: z.number().int().nonnegative(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -74,6 +76,7 @@ type RawPageRow = {
   title: string;
   template_id: string;
   status: "draft" | "published";
+  translation_status: "source" | "up_to_date" | "needs_update" | "not_started";
   version: number | string;
   created_at: string | Date;
   updated_at: string | Date;
@@ -101,6 +104,7 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
     title: r.title,
     templateId: r.template_id,
     status: r.status,
+    translationStatus: r.translation_status,
     version,
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
@@ -125,7 +129,7 @@ export const listPagesOp = defineOperation({
     if (input.locale !== undefined) filters.push(sql`locale = ${input.locale}`);
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
-             status, version, created_at, updated_at, deleted_at
+             status, translation_status, version, created_at, updated_at, deleted_at
       FROM pages
       ${buildWhere(filters)}
       ORDER BY created_at ASC
@@ -144,7 +148,7 @@ export const getPageOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
-             status, version, created_at, updated_at, deleted_at
+             status, translation_status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
     `)) as unknown as RawPageRow[];
     const row = rows[0];
@@ -171,7 +175,7 @@ export const getPageWithModulesOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
-             status, version, created_at, updated_at, deleted_at
+             status, translation_status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
     `)) as unknown as RawPageRow[];
     const pageRow = pageRows[0];
