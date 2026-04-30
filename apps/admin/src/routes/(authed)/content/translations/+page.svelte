@@ -93,6 +93,27 @@
     </CardContent>
   </Card>
 
+  {#if data.recentCompletedJob && !data.activeJob}
+    <Card>
+      <CardHeader>
+        <CardTitle class="text-base">Recent batch ready</CardTitle>
+        <CardDescription>
+          {data.recentCompletedJob.completedUnits} translation{data.recentCompletedJob
+            .completedUnits === 1
+            ? ""
+            : "s"} completed. Each variant landed as DRAFT — review and publish them in one go.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form method="post" action="?/publishCompleted">
+          <input type="hidden" name="_csrf" value={csrfToken} />
+          <input type="hidden" name="jobId" value={data.recentCompletedJob.id} />
+          <Button type="submit">Publish all {data.recentCompletedJob.completedUnits} completed</Button>
+        </form>
+      </CardContent>
+    </Card>
+  {/if}
+
   {#if data.activeJob}
     <Card>
       <CardHeader>

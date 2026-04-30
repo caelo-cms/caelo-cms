@@ -156,6 +156,8 @@ import {
   createTranslationJobOp,
   getTranslationJobOp,
   listTranslationJobsOp,
+  publishCompletedTranslationJobOp,
+  revertTranslationJobOp,
   updateTranslationJobCapOp,
 } from "./ops/translation/jobs.js";
 import { translationModeOneOp } from "./ops/translation/mode_1.js";
@@ -341,4 +343,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getTranslationJobOp);
   registry.register(cancelTranslationJobOp);
   registry.register(updateTranslationJobCapOp);
+  registry.register(revertTranslationJobOp);
+  registry.register(publishCompletedTranslationJobOp);
 }

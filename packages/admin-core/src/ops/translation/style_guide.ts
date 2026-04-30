@@ -62,9 +62,11 @@ export const getStyleGuideOp = defineOperation({
 
 export const setStyleGuideOp = defineOperation({
   name: "style_guide.set",
-  // Why human-only: tone / voice are editorial decisions; the AI
-  // shouldn't update its own guidance.
-  actorScope: ["human", "system"],
+  // CMS_REQUIREMENTS §7.9: "AI can manage the site glossary and style
+  // guide." Editor pushes a tone correction → AI offers to persist it
+  // here so the next translation prompt picks it up. Audit captures
+  // every write.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -93,7 +95,8 @@ export const setStyleGuideOp = defineOperation({
 
 export const deleteStyleGuideOp = defineOperation({
   name: "style_guide.delete",
-  actorScope: ["human", "system"],
+  // §7.9 — AI can manage style guide; same audit guarantees as `set`.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ locale: z.string().min(2).max(10) }).strict(),
   output: z.object({}),

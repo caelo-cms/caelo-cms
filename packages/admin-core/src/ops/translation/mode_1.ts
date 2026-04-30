@@ -14,7 +14,7 @@
  */
 
 import type { TransactionRunner } from "@caelo/query-api";
-import { defineOperation, execute as executeOp } from "@caelo/query-api";
+import { defineOperation } from "@caelo/query-api";
 import {
   buildModeOnePrompt,
   err,
@@ -27,7 +27,12 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { AIProvider } from "../../ai/provider.js";
 import { recordAudit } from "../../audit.js";
-import { emitSnapshot, loadPageLayoutState, loadPageState } from "../../snapshots/index.js";
+import {
+  emitSnapshot,
+  loadModuleState,
+  loadPageLayoutState,
+  loadPageState,
+} from "../../snapshots/index.js";
 import { recomputePageContentHash } from "../content/content_hash.js";
 
 interface TranslationProviderHandle {
@@ -197,6 +202,7 @@ export const translationModeOneOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const handle = requireProvider();
+    const startedAt = Date.now();
 
     // Load source page + verify the target locale exists.
     const sourceRows = (await tx.execute(sql`
@@ -339,6 +345,7 @@ export const translationModeOneOp = defineOperation({
     // through page_modules but leaves the cloned modules — Mode 2
     // updates them in place; if the variant is fully deleted, the
     // orphans are cleaned by the existing modules cleanup pass.
+    const newModuleIds: string[] = [];
     for (const s of sourceModules) {
       const t = translatedByKey.get(`${s.blockName}|${s.position}`);
       if (!t) continue;
@@ -359,10 +366,26 @@ export const translationModeOneOp = defineOperation({
           message: `failed to clone source module ${s.moduleId}`,
         });
       }
+      newModuleIds.push(newModuleId);
       await tx.execute(sql`
         INSERT INTO page_modules (page_id, block_name, position, module_id)
         VALUES (${variantPageId}::uuid, ${s.blockName}, ${s.position}, ${newModuleId}::uuid)
       `);
+    }
+
+    // Snapshot each cloned module so a later Mode 2 revert can restore
+    // the Mode 1 baseline translation. Without these the revert path
+    // can flip the layout but not the module HTML.
+    for (const newModuleId of newModuleIds) {
+      const moduleState = await loadModuleState(tx, newModuleId);
+      if (moduleState) {
+        await emitSnapshot(tx, {
+          actorId: ctx.actorId,
+          opKind: "modules.create",
+          description: `translation.mode_1 ${source.slug} → ${input.targetLocale} module`,
+          entities: [{ kind: "module", entityId: newModuleId, state: moduleState }],
+        });
+      }
     }
 
     // Snapshot the variant: pages.create + pages.set_modules so the
@@ -394,6 +417,27 @@ export const translationModeOneOp = defineOperation({
       1_000_000;
     const costMicrocents = microcents(Math.max(0, costUsd));
 
+    // P10 review pass — write to ai_calls so the cost dashboard (P16)
+    // attributes translation spend alongside chat. chat_session_id is
+    // null for translation calls (they're not part of a chat).
+    await tx.execute(sql`
+      INSERT INTO ai_calls (chat_session_id, actor_id, provider, model,
+                            input_tokens, output_tokens, cached_tokens,
+                            cost_estimate_microcents, duration_ms, succeeded)
+      VALUES (
+        NULL,
+        ${ctx.actorId}::uuid,
+        ${handle.provider.name},
+        ${handle.provider.model},
+        ${run.inputTokens},
+        ${run.outputTokens},
+        ${run.cachedTokens},
+        ${costMicrocents},
+        ${Date.now() - startedAt},
+        true
+      )
+    `);
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       operation: "translation.mode_1",
@@ -412,11 +456,7 @@ export const translationModeOneOp = defineOperation({
 });
 
 export type { TranslationProviderHandle };
-// Re-exports so the worker (jobs.ts) can call it from inside an op
-// handler without going through the registry — same pattern as
-// `recomputePageContentHash`. Avoids a registry round-trip.
+// Re-exports so Mode 2 reuses the provider runner + JSON-fence
+// stripper without duplicating them. Same pattern as
+// `recomputePageContentHash`.
 export { runProvider as runTranslationProvider, stripJsonFence };
-
-// Avoid unused warning for executeOp import (keeps the import for
-// consistency with sibling ops; not used in this file directly).
-void executeOp;

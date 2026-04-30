@@ -68,10 +68,13 @@ export const listGlossaryOp = defineOperation({
 
 export const setGlossaryEntryOp = defineOperation({
   name: "glossary.set",
-  // Why human-only: terminology decisions are an Owner / editor call,
-  // not an AI judgment — the glossary is the human anchor that keeps
-  // AI translations consistent across pages.
-  actorScope: ["human", "system"],
+  // CMS_REQUIREMENTS §7.9: "AI can manage the site glossary and style
+  // guide." The AI uses this to learn from corrections — when an editor
+  // overrides a translation, the AI can persist the override as a
+  // glossary entry so the same term renders consistently next time.
+  // Audit + recordAudit means every AI write is traceable; the Owner UI
+  // at /security/glossary remains the human-curation surface.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -110,7 +113,8 @@ export const setGlossaryEntryOp = defineOperation({
 
 export const deleteGlossaryEntryOp = defineOperation({
   name: "glossary.delete",
-  actorScope: ["human", "system"],
+  // §7.9 — AI can manage glossary; same audit guarantees as `set`.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ id: z.string().uuid() }).strict(),
   output: z.object({}),

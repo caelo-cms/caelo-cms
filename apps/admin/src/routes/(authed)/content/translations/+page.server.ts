@@ -61,8 +61,20 @@ export const load: PageServerLoad = async ({ locals }) => {
     (r) => r.status === "not_started" || r.status === "needs_update",
   ).length;
   const activeJob = jobs.find((j) => j.status === "running" || j.status === "pending");
+  // Most recent completed job — surface a "Publish all completed"
+  // button so the editor can promote a fresh batch of drafts in one
+  // click after review.
+  const recentCompletedJob = jobs.find((j) => j.status === "completed" && j.completedUnits > 0);
 
-  return { slugs, locales: localesUnique, cellsByKey, jobs, staleCount, activeJob };
+  return {
+    slugs,
+    locales: localesUnique,
+    cellsByKey,
+    jobs,
+    staleCount,
+    activeJob,
+    recentCompletedJob,
+  };
 };
 
 export const actions: Actions = {
@@ -128,5 +140,28 @@ export const actions: Actions = {
     });
     if (!r.ok) return fail(400, { error: "cancel failed" });
     return { ok: true, message: "Job cancelled." };
+  },
+
+  publishCompleted: async ({ request, locals }) => {
+    requirePermission(locals, "deploy.trigger");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const jobId = String(form.get("jobId") ?? "");
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "translation_jobs.publish_completed", {
+      jobId,
+    });
+    if (!r.ok) {
+      const m =
+        typeof r.error === "object" && r.error && "message" in r.error
+          ? String((r.error as { message: unknown }).message)
+          : "publish failed";
+      return fail(400, { error: m });
+    }
+    const v = r.value as { publishedCount: number };
+    return {
+      ok: true,
+      message: `Published ${v.publishedCount} translation${v.publishedCount === 1 ? "" : "s"}.`,
+    };
   },
 };

@@ -33,7 +33,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { emitSnapshot, loadPageLayoutState } from "../../snapshots/index.js";
+import { emitSnapshot, loadModuleState, loadPageLayoutState } from "../../snapshots/index.js";
 import { recomputePageContentHash } from "../content/content_hash.js";
 import {
   runTranslationProvider,
@@ -123,6 +123,7 @@ export const translationModeTwoOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const handle = requireProvider();
+    const startedAt = Date.now();
 
     // Source page (the row passed in is the source — it carries the
     // canonical content_hash; the variant is found by (slug, target)).
@@ -254,17 +255,33 @@ export const translationModeTwoOp = defineOperation({
     }
 
     // Apply translations to the variant's modules (UPDATE in place;
-    // module rows are already cloned per-locale by Mode 1).
+    // module rows are already cloned per-locale by Mode 1). Each
+    // UPDATE emits a `modules.update` snapshot so revert can restore
+    // the prior translation HTML — without this, reverting the
+    // layout snapshot alone leaves the module HTML at the new
+    // translation (the join doesn't capture content).
     let actuallyChanged = 0;
     for (const r of responses) {
       const variantSlot = variantModules.find(
         (v) => v.blockName === r.blockName && v.position === r.position,
       );
       if (!variantSlot) continue;
+      const beforeState = await loadModuleState(tx, variantSlot.moduleId);
       await tx.execute(sql`
         UPDATE modules SET html = ${r.html}, updated_at = now()
         WHERE id = ${variantSlot.moduleId}::uuid
       `);
+      if (beforeState) {
+        const afterState = await loadModuleState(tx, variantSlot.moduleId);
+        if (afterState) {
+          await emitSnapshot(tx, {
+            actorId: ctx.actorId,
+            opKind: "modules.update",
+            description: `translation.mode_2 ${source.slug} → ${input.targetLocale} block=${r.blockName} pos=${r.position}`,
+            entities: [{ kind: "module", entityId: variantSlot.moduleId, state: afterState }],
+          });
+        }
+      }
       actuallyChanged += 1;
     }
 
@@ -293,6 +310,26 @@ export const translationModeTwoOp = defineOperation({
       ((run.inputTokens - run.cachedTokens) * inputCost + run.outputTokens * outputCost) /
       1_000_000;
     const costMicrocents = microcents(Math.max(0, costUsd));
+
+    // P10 review pass — write to ai_calls so the cost dashboard sees
+    // translation spend. Same shape as mode_1.
+    await tx.execute(sql`
+      INSERT INTO ai_calls (chat_session_id, actor_id, provider, model,
+                            input_tokens, output_tokens, cached_tokens,
+                            cost_estimate_microcents, duration_ms, succeeded)
+      VALUES (
+        NULL,
+        ${ctx.actorId}::uuid,
+        ${handle.provider.name},
+        ${handle.provider.model},
+        ${run.inputTokens},
+        ${run.outputTokens},
+        ${run.cachedTokens},
+        ${costMicrocents},
+        ${Date.now() - startedAt},
+        true
+      )
+    `);
 
     await recordAudit(tx, {
       actorId: ctx.actorId,

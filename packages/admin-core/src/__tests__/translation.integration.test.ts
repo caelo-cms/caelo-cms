@@ -74,8 +74,10 @@ async function wipe(): Promise<void> {
           OR initiated_by = ${systemCtx.actorId}::uuid
       )`;
       await tx`DELETE FROM translation_jobs WHERE initiated_by = ${systemCtx.actorId}::uuid`;
-      await tx`DELETE FROM site_glossary WHERE source_term LIKE 'TR-%'`;
-      await tx`DELETE FROM site_style_guide WHERE locale IN ('xx', 'yy')`;
+      // FK-safe order: glossary + style_guide reference locales.
+      await tx`DELETE FROM site_glossary WHERE source_term LIKE 'TR-%' OR source_term = 'Caelo'`;
+      await tx`DELETE FROM site_glossary WHERE locale IN ('xx', 'yy', 'tr')`;
+      await tx`DELETE FROM site_style_guide WHERE locale IN ('xx', 'yy', 'tr')`;
       // Pages + their cloned modules.
       await tx`DELETE FROM page_modules WHERE page_id IN (
         SELECT id FROM pages WHERE slug LIKE ${TEST_SLUG_PREFIX + "%"}
@@ -385,6 +387,218 @@ describe("translation Mode 2", () => {
       const message = "message" in m2.error ? m2.error.message : "";
       expect(message).toMatch(/structural lock/);
     }
+  });
+});
+
+describe("translation glossary + style guide", () => {
+  it("AI can write glossary entries (§7.9)", async () => {
+    const aiCtx: ExecutionContext = { ...systemCtx, actorKind: "ai" };
+    await addLocale("xx", "Test XX");
+    const r = await execute(registry, adapter, aiCtx, "glossary.set", {
+      sourceTerm: "TR-AI",
+      locale: "xx",
+      translation: "TR-AI-XX",
+      context: "AI-curated test entry",
+    });
+    expect(r.ok).toBe(true);
+    const list = await execute(registry, adapter, aiCtx, "glossary.list", {
+      locale: "xx",
+    });
+    if (!list.ok) return;
+    const entries = (list.value as { entries: { sourceTerm: string }[] }).entries;
+    expect(entries.find((e) => e.sourceTerm === "TR-AI")).toBeTruthy();
+  });
+
+  it("AI can write style_guide entries (§7.9)", async () => {
+    const aiCtx: ExecutionContext = { ...systemCtx, actorKind: "ai" };
+    await addLocale("xx", "Test XX");
+    const r = await execute(registry, adapter, aiCtx, "style_guide.set", {
+      locale: "xx",
+      body: "Test style guide written by the AI.",
+    });
+    expect(r.ok).toBe(true);
+    const get = await execute(registry, adapter, systemCtx, "style_guide.get", {
+      locale: "xx",
+    });
+    if (!get.ok) return;
+    const guide = (get.value as { guide: { body: string } | null }).guide;
+    expect(guide?.body).toBe("Test style guide written by the AI.");
+  });
+
+  it("Mode 1 prompt includes glossary entries when defined (§7.6)", async () => {
+    // Verifies the prompt builder surfaces glossary entries through to
+    // the AI call. Indirect test — we record what the provider receives.
+    await addLocale("xx", "Test XX");
+    await execute(registry, adapter, systemCtx, "glossary.set", {
+      sourceTerm: "Caelo",
+      locale: "xx",
+      translation: "Caelo",
+      context: "brand name — never translate",
+    });
+
+    let capturedSystem = "";
+    class CapturingProvider implements AIProvider {
+      readonly name = "anthropic" as const;
+      readonly model = "fixture";
+      async *generate(input: { systemPrompt: unknown }): AsyncIterable<ProviderEvent> {
+        const sys = input.systemPrompt;
+        capturedSystem =
+          typeof sys === "string" ? sys : (sys as { body: string }[]).map((c) => c.body).join("\n");
+        yield {
+          kind: "text-delta",
+          text: JSON.stringify({
+            modules: [
+              {
+                blockName: "content",
+                position: 0,
+                html: "<h1>Welcome to Caelo</h1>",
+                altText: null,
+              },
+            ],
+          }),
+        };
+        yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
+        yield { kind: "done", stopReason: "end_turn" };
+      }
+    }
+    setTranslationProvider({ provider: new CapturingProvider() });
+
+    const { pageId } = await seedSourcePage(`${TEST_SLUG_PREFIX}gloss`, [
+      { slug: `${TEST_SLUG_PREFIX}only`, html: "<h1>Welcome to Caelo</h1>" },
+    ]);
+    const r = await execute(registry, adapter, systemCtx, "translation.mode_1", {
+      pageId,
+      targetLocale: "xx",
+    });
+    expect(r.ok).toBe(true);
+    expect(capturedSystem).toContain("Caelo");
+    expect(capturedSystem).toContain("brand name — never translate");
+
+    // Restore the default provider for subsequent tests.
+    setTranslationProvider({ provider });
+  });
+});
+
+describe("translation Mode 2 snapshot revert", () => {
+  it("revert restores the prior translation after Mode 2 overwrites", async () => {
+    await addLocale("yy", "Test YY");
+    const { pageId } = await seedSourcePage(`${TEST_SLUG_PREFIX}revert`, [
+      { slug: `${TEST_SLUG_PREFIX}rev`, html: "<h1>Welcome</h1>" },
+    ]);
+    // Mode 1 to create a baseline variant.
+    provider.responseText = JSON.stringify({
+      modules: [{ blockName: "content", position: 0, html: "<h1>Willkommen</h1>", altText: null }],
+    });
+    const m1 = await execute(registry, adapter, systemCtx, "translation.mode_1", {
+      pageId,
+      targetLocale: "yy",
+    });
+    if (!m1.ok) throw new Error("mode_1 setup failed");
+    const variantPageId = (m1.value as { variantPageId: string }).variantPageId;
+
+    // Edit source so Mode 2 has work to do.
+    const sql0 = new SQL(ADMIN_URL);
+    try {
+      await sql0.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`UPDATE modules SET html = '<h1>Welcome - updated</h1>'
+                 WHERE slug = ${`${TEST_SLUG_PREFIX}rev`}`;
+      });
+    } finally {
+      await sql0.end();
+    }
+    const getM = await execute(registry, adapter, systemCtx, "pages.get_with_modules", { pageId });
+    if (!getM.ok) throw new Error("get failed");
+    const mids =
+      (
+        getM.value as { page: { blocks: { modules: { moduleId: string }[] }[] } }
+      ).page.blocks[0]?.modules.map((m) => m.moduleId) ?? [];
+    await execute(registry, adapter, systemCtx, "pages.set_modules", {
+      pageId,
+      blocks: [{ blockName: "content", moduleIds: mids }],
+    });
+
+    // Mode 2 — overwrite the variant module.
+    provider.responseText = JSON.stringify({
+      modules: [
+        {
+          blockName: "content",
+          position: 0,
+          html: "<h1>Willkommen aktualisiert</h1>",
+          altText: null,
+        },
+      ],
+    });
+    const m2 = await execute(registry, adapter, systemCtx, "translation.mode_2", {
+      pageId,
+      targetLocale: "yy",
+    });
+    expect(m2.ok).toBe(true);
+
+    // Confirm new state.
+    const after = await execute(registry, adapter, systemCtx, "pages.get_with_modules", {
+      pageId: variantPageId,
+    });
+    if (!after.ok) return;
+    const afterHtml =
+      (after.value as { page: { blocks: { modules: { html: string }[] }[] } }).page.blocks[0]
+        ?.modules[0]?.html ?? "";
+    expect(afterHtml).toContain("aktualisiert");
+
+    // Find the Mode 1 baseline snapshot for the variant module and
+    // revert through it. snapshots.list returns site-snapshot rows;
+    // we filter to module-kind snapshots whose description tags this
+    // test's slug, then pick the OLDEST (Mode 1 baseline) — that's
+    // the one to revert to.
+    const variantModuleId =
+      (
+        await execute(registry, adapter, systemCtx, "pages.get_with_modules", {
+          pageId: variantPageId,
+        })
+      ).ok &&
+      (
+        (
+          await execute(registry, adapter, systemCtx, "pages.get_with_modules", {
+            pageId: variantPageId,
+          })
+        ).value as { page: { blocks: { modules: { moduleId: string }[] }[] } }
+      ).page.blocks[0]?.modules[0]?.moduleId;
+    expect(variantModuleId).toBeTruthy();
+    if (!variantModuleId) return;
+    const snaps = await execute(registry, adapter, systemCtx, "snapshots.list", {
+      limit: 50,
+    });
+    if (!snaps.ok) return;
+    const list = (
+      snaps.value as {
+        snapshots: { id: string; opKind: string; description: string; createdAt: string }[];
+      }
+    ).snapshots;
+    const moduleSnaps = list
+      .filter(
+        (s) =>
+          (s.opKind === "modules.create" || s.opKind === "modules.update") &&
+          s.description.includes(`${TEST_SLUG_PREFIX}revert`),
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // Oldest is the Mode 1 baseline.
+    const baseline = moduleSnaps[0];
+    expect(baseline).toBeTruthy();
+    if (!baseline) return;
+    const revert = await execute(registry, adapter, systemCtx, "snapshots.revert_module", {
+      moduleId: variantModuleId,
+      snapshotId: baseline.id,
+    });
+    expect(revert.ok).toBe(true);
+
+    const restored = await execute(registry, adapter, systemCtx, "pages.get_with_modules", {
+      pageId: variantPageId,
+    });
+    if (!restored.ok) return;
+    const restoredHtml =
+      (restored.value as { page: { blocks: { modules: { html: string }[] }[] } }).page.blocks[0]
+        ?.modules[0]?.html ?? "";
+    expect(restoredHtml).toBe("<h1>Willkommen</h1>");
   });
 });
 

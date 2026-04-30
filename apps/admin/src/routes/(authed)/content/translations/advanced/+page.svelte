@@ -109,12 +109,21 @@
                 id={`cap-${j.id}`}
                 type="number"
                 step="0.01"
-                min="0"
+                min={0}
                 name="capUsd"
                 placeholder="leave blank for no cap"
                 class="h-7 w-32 text-xs"
               />
               <Button type="submit" size="sm" variant="outline">Update</Button>
+            </form>
+          {/if}
+          {#if j.status === "completed" && j.completedUnits > 0}
+            <form method="post" action="?/revertJob" class="mt-2">
+              <input type="hidden" name="_csrf" value={csrfToken} />
+              <input type="hidden" name="jobId" value={j.id} />
+              <Button type="submit" size="sm" variant="ghost" class="text-red-600">
+                Revert this job
+              </Button>
             </form>
           {/if}
         </div>

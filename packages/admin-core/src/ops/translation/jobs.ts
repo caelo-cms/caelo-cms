@@ -450,6 +450,108 @@ export const updateTranslationJobCapOp = defineOperation({
 });
 
 // ---------------------------------------------------------------------
+// Job-level revert + publish-completed
+// ---------------------------------------------------------------------
+
+export const revertTranslationJobOp = defineOperation({
+  name: "translation_jobs.revert",
+  // Why human-only: deleting variants the AI just produced is the
+  // cancel-button-of-last-resort; Owner-only matches the cancel +
+  // update_cap ops.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ jobId: z.string().uuid() }).strict(),
+  output: z.object({
+    /** Mode 1 units whose variant pages were soft-deleted. */
+    deletedVariants: z.number().int().nonnegative(),
+    /** Mode 2 units that produced changes — they need per-page revert from the History drawer. */
+    needManualRevert: z.number().int().nonnegative(),
+  }),
+  handler: async (ctx, input, tx) => {
+    const units = (await tx.execute(sql`
+      SELECT id::text AS id, mode, variant_page_id::text AS variant_page_id
+      FROM translation_job_units
+      WHERE job_id = ${input.jobId}::uuid AND status = 'completed'
+    `)) as unknown as {
+      id: string;
+      mode: "mode_1" | "mode_2";
+      variant_page_id: string | null;
+    }[];
+    let deletedVariants = 0;
+    let needManualRevert = 0;
+    for (const u of units) {
+      if (u.mode === "mode_1" && u.variant_page_id) {
+        // Soft-delete the freshly-created variant. Source page is
+        // untouched; translation_status flips back to source.
+        await tx.execute(sql`
+          UPDATE pages SET deleted_at = now()
+          WHERE id = ${u.variant_page_id}::uuid AND deleted_at IS NULL
+        `);
+        deletedVariants += 1;
+      } else if (u.mode === "mode_2") {
+        // Mode 2 overwrote module HTML in place. The per-page snapshot
+        // emitted by translation.mode_2 captures the prior state — the
+        // user can revert it through the Advanced History drawer.
+        // We don't auto-revert here because the snapshot id isn't
+        // stored on the unit; the Owner makes the per-page call.
+        needManualRevert += 1;
+      }
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "translation_jobs.revert",
+      input,
+      succeeded: true,
+      entityId: input.jobId,
+      resultSummary: `deleted=${deletedVariants} need_manual=${needManualRevert}`,
+    });
+    return ok({ deletedVariants, needManualRevert });
+  },
+});
+
+export const publishCompletedTranslationJobOp = defineOperation({
+  name: "translation_jobs.publish_completed",
+  // Why human-only: publishing translations is an Owner / editor act
+  // (CMS_REQUIREMENTS §7.6 + §17). The variants land as draft via
+  // Mode 1/2; this op walks them and flips to published in one go.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ jobId: z.string().uuid() }).strict(),
+  output: z.object({
+    publishedCount: z.number().int().nonnegative(),
+  }),
+  handler: async (ctx, input, tx) => {
+    const units = (await tx.execute(sql`
+      SELECT variant_page_id::text AS variant_page_id
+      FROM translation_job_units
+      WHERE job_id = ${input.jobId}::uuid
+        AND status = 'completed'
+        AND variant_page_id IS NOT NULL
+    `)) as unknown as { variant_page_id: string }[];
+    let publishedCount = 0;
+    for (const u of units) {
+      const r = (await tx.execute(sql`
+        UPDATE pages SET status = 'published'
+        WHERE id = ${u.variant_page_id}::uuid
+          AND status = 'draft'
+          AND deleted_at IS NULL
+        RETURNING id
+      `)) as unknown as { id: string }[];
+      if (r.length > 0) publishedCount += 1;
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      operation: "translation_jobs.publish_completed",
+      input,
+      succeeded: true,
+      entityId: input.jobId,
+      resultSummary: `published=${publishedCount}`,
+    });
+    return ok({ publishedCount });
+  },
+});
+
+// ---------------------------------------------------------------------
 // In-process worker
 // ---------------------------------------------------------------------
 
@@ -576,11 +678,14 @@ async function claimNextUnit(deps: WorkerDeps): Promise<ClaimedUnit | null> {
     const r = rows[0];
     if (!r) return null;
 
-    // Cap check: rough estimate of next-unit cost is unknown until the
-    // run completes, so we use a conservative heuristic — pause if
-    // ANY budget remains less than 5% of the cap; raise the cap to
-    // continue. This keeps the contract simple ("paused when cap
-    // approached") without retroactive accounting per unit.
+    // Cap check: hard line — pause the job when accumulated spend has
+    // already reached or exceeded the cap. Next-unit cost is unknown
+    // until it runs, so we'd rather over-deliver one unit and pause
+    // than refuse work below the cap. Raising the cap via
+    // translation_jobs.update_cap flips the row back to pending so
+    // the worker re-picks it up. This is "stop on overage" not
+    // "stop before overage" — simpler contract, no retroactive
+    // accounting per unit.
     const cap =
       r.cap_microcents === null
         ? null
