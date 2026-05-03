@@ -261,6 +261,7 @@ export const createTranslationJobOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "translation_jobs.create",
       input,
       succeeded: true,
@@ -269,6 +270,34 @@ export const createTranslationJobOp = defineOperation({
     });
 
     return ok({ jobId, totalUnits: candidates.length });
+  },
+});
+
+// ---------------------------------------------------------------------
+// aggregate_active — read-only summary of in-flight work. Used by the
+// translation plugin's promptContext renderer (P11.5 audit fix #4).
+// ---------------------------------------------------------------------
+
+export const aggregateActiveTranslationJobsOp = defineOperation({
+  name: "translation_jobs.aggregate_active",
+  actorScope: ["human", "ai", "plugin", "system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({
+    runningJobs: z.number().int().nonnegative(),
+    pendingUnits: z.number().int().nonnegative(),
+  }),
+  handler: async (_ctx, _input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT
+        (SELECT COUNT(*)::int FROM translation_jobs WHERE status = 'running') AS running_jobs,
+        (SELECT COUNT(*)::int FROM translation_job_units WHERE status = 'pending') AS pending_units
+    `)) as unknown as { running_jobs: number; pending_units: number }[];
+    const r = rows[0];
+    return ok({
+      runningJobs: r?.running_jobs ?? 0,
+      pendingUnits: r?.pending_units ?? 0,
+    });
   },
 });
 
@@ -405,6 +434,7 @@ export const cancelTranslationJobOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "translation_jobs.cancel",
       input,
       succeeded: true,
@@ -439,6 +469,7 @@ export const updateTranslationJobCapOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "translation_jobs.update_cap",
       input,
       succeeded: true,
@@ -499,6 +530,7 @@ export const revertTranslationJobOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "translation_jobs.revert",
       input,
       succeeded: true,
@@ -541,6 +573,7 @@ export const publishCompletedTranslationJobOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "translation_jobs.publish_completed",
       input,
       succeeded: true,

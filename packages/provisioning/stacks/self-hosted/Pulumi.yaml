@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo self-hosted Pulumi project. Wraps cms-provision's compose +
+# Caddyfile generators behind a real Pulumi resource graph so operators
+# get state tracking, drift detection, and `pulumi up` / `pulumi destroy`
+# semantics. The actual orchestration is `docker compose up -d` —
+# Pulumi just owns the lifecycle of the generated files + the up
+# command, which makes parallel cloud variants in P15 (GCP / AWS / Azure)
+# slot in cleanly under the same project umbrella.
+name: caelo-self-hosted
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+    packagemanager: bun
+description: Caelo self-hosted Docker Compose stack (Postgres + Caddy + MinIO + admin/gateway).
+config:
+  caelo-self-hosted:domain:
+    type: string
+    description: Primary domain (e.g. example.com). Admin + production public both bind here; staging gets staging.<domain>.
+  caelo-self-hosted:ownerEmail:
+    type: string
+    description: Operator email used for ACME registration with Let's Encrypt.
+  caelo-self-hosted:caeloDir:
+    type: string
+    default: ./.caelo
+    description: Where the generated docker-compose.yml + Caddyfile + secrets live.

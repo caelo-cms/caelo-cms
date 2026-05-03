@@ -19,7 +19,7 @@ export const loginOp = defineOperation({
     csrfToken: z.string(),
     expiresAt: z.string(),
   }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     // Soft-deleted users cannot log in.
     const rows = (await tx.execute(sql`
       SELECT u.id::text AS id, u.password_hash AS password_hash
@@ -34,6 +34,7 @@ export const loginOp = defineOperation({
     if (!user || !passwordOk) {
       await recordAudit(tx, {
         actorId: SYSTEM_ACTOR_ID,
+        requestId: ctx.requestId,
         operation: "auth.login",
         input,
         succeeded: false,
@@ -62,6 +63,7 @@ export const loginOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: user.id,
+      requestId: ctx.requestId,
       operation: "auth.login",
       input,
       succeeded: true,
@@ -86,6 +88,7 @@ export const logoutOp = defineOperation({
     await tx.execute(sql`DELETE FROM sessions WHERE token = ${input.token}`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "auth.logout",
       input,
       succeeded: true,

@@ -143,6 +143,7 @@ export const proposeSkillOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "skills.propose",
       input,
       succeeded: true,
@@ -285,6 +286,7 @@ export const reviewSkillProposalOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "skills.review_proposal",
       input,
       succeeded: true,

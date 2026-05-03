@@ -75,6 +75,7 @@ export const setSiteSettingsOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "site_settings.set",
       input,
       succeeded: true,

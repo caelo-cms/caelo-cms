@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo Azure provider stack. Provisions Azure DB for PostgreSQL flexible
+# server (zone-redundant) + Storage Account (Blob) + Front Door + Container
+# Apps (admin/gateway/orchestrator/runner + edge-router) + Key Vault +
+# Log Analytics → A/B assignment log sink. Implements the shared
+# CloudAdapterInputs / CloudAdapterOutputs contract from
+# packages/provisioning/src/adapter.ts.
+name: caelo-azure
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+    packagemanager: bun
+description: Caelo Azure stack — Azure DB flexible + Blob + Front Door + Container Apps + Key Vault.
+config:
+  caelo-azure:domain:
+    type: string
+    description: Primary domain (e.g. example.com).
+  caelo-azure:ownerEmail:
+    type: string
+    description: Operator email for Pulumi notifications.
+  caelo-azure:subscription:
+    type: string
+    description: Azure subscription id.
+  caelo-azure:resourceGroup:
+    type: string
+    default: caelo-rg
+    description: Resource group name. Created by the stack if it doesn't exist.
+  caelo-azure:location:
+    type: string
+    default: westeurope
+    description: Azure region. Container Apps regional availability is checked at preview.
+  caelo-azure:flexibleServerSku:
+    type: string
+    default: Standard_B2s
+    description: Postgres flexible-server SKU. B2s = burstable; bump to GP_Standard_D2s_v3 for production.

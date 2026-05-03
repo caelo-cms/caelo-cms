@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "noEmit": false
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../shared" },
+    { "path": "../query-api" },
+    { "path": "../plugin-sdk" },
+    { "path": "../plugin-sandbox" }
+  ],
+  "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]
+}

@@ -281,6 +281,7 @@ export const createPageOp = defineOperation({
     if (tplExists.length === 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "pages.create",
         input,
         succeeded: false,
@@ -299,6 +300,7 @@ export const createPageOp = defineOperation({
     if (dup.length > 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "pages.create",
         input,
         succeeded: false,
@@ -328,6 +330,7 @@ export const createPageOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages.create",
       input,
       succeeded: true,
@@ -379,6 +382,7 @@ export const updatePageOp = defineOperation({
     if (input.expectedVersion !== undefined && input.expectedVersion !== currentVersion) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "pages.update",
         input,
         succeeded: false,
@@ -440,6 +444,7 @@ export const updatePageOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages.update",
       input,
       succeeded: true,
@@ -492,6 +497,7 @@ export const setPageModulesOp = defineOperation({
     if (input.expectedVersion !== undefined && input.expectedVersion !== currentVersion) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "pages.set_modules",
         input,
         succeeded: false,
@@ -514,6 +520,7 @@ export const setPageModulesOp = defineOperation({
     if (unknownBlocks.length > 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "pages.set_modules",
         input,
         succeeded: false,
@@ -542,6 +549,7 @@ export const setPageModulesOp = defineOperation({
       if (missing.length > 0) {
         await recordAudit(tx, {
           actorId: ctx.actorId,
+          requestId: ctx.requestId,
           operation: "pages.set_modules",
           input,
           succeeded: false,
@@ -573,6 +581,7 @@ export const setPageModulesOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages.set_modules",
       input,
       succeeded: true,
@@ -618,6 +627,7 @@ export const deletePageOp = defineOperation({
     if (target.deleted_at !== null) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "pages.delete",
         input,
         succeeded: true,
@@ -629,6 +639,7 @@ export const deletePageOp = defineOperation({
     await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${input.pageId}::uuid`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages.delete",
       input,
       succeeded: true,
@@ -797,6 +808,7 @@ export const duplicatePageOp = defineOperation({
     const droppedDeleted = totalSource - liveSource;
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages.duplicate",
       input,
       succeeded: true,
@@ -953,6 +965,7 @@ export const changeTemplateOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages.change_template",
       input,
       succeeded: true,

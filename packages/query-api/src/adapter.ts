@@ -181,6 +181,55 @@ export class DatabaseAdapter {
     return this.#publicRaw;
   }
 
+  /**
+   * Provision a plugin's cms_public schema by running emitted DDL
+   * (CREATE SCHEMA / CREATE TABLE / RLS) inside one transaction. The
+   * SQL is produced by `@caelo/plugin-sandbox/schema.schemaFromSpec`,
+   * which is itself fed from the plugin's validated manifest.
+   *
+   * Runs as `system` actor so RLS doesn't gate DDL grants. Idempotent
+   * (every CREATE uses IF NOT EXISTS); safe to retry on partial failure.
+   * Used by the activate path: provision FIRST, then commit the
+   * cms_admin status flip in the activate op. If provisioning fails,
+   * the activate path returns the error before any cms_admin mutation.
+   */
+  async provisionPluginPublicSchema(opts: { pluginId: string; sql: string }): Promise<void> {
+    if (!this.#skipVerify) await this.verifyRoles();
+    await this.#public.transaction(async (tx) => {
+      await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
+      await tx.execute(sql.raw(`SELECT set_config('caelo.plugin_id', '${opts.pluginId}', true)`));
+      // The emitted SQL is constructed entirely from validated identifiers
+      // (slug regex `^[a-z][a-z0-9-]*$`, table names regex `^[a-z_][a-z0-9_]*$`)
+      // and the plugin id is a UUID column from cms_admin.plugins, never user-provided
+      // text. `quoteIdent` in plugin-sandbox/src/schema.ts throws on any
+      // identifier that doesn't match the safe pattern.
+      await tx.execute(sql.raw(opts.sql));
+    });
+  }
+
+  /**
+   * Roll back a previously provisioned plugin schema. Called by the
+   * activate orchestration when the cms_admin commit fails AFTER
+   * cms_public DDL succeeded — without this, the cms_public side
+   * would leak (`plugin_<slug>` schema exists with no owning row).
+   *
+   * Validates the schemaName against the same regex schemaFromSpec
+   * uses — accepts only `plugin_<slug>` shapes (lowercase + underscores)
+   * to keep the DROP boundary watertight.
+   */
+  async dropPluginPublicSchema(opts: { schemaName: string }): Promise<void> {
+    if (!this.#skipVerify) await this.verifyRoles();
+    if (!/^plugin_[a-z][a-z0-9_]*$/.test(opts.schemaName)) {
+      throw new Error(
+        `dropPluginPublicSchema: refusing to drop schema "${opts.schemaName}" — name doesn't match plugin_<slug> pattern`,
+      );
+    }
+    await this.#public.transaction(async (tx) => {
+      await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
+      await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS "${opts.schemaName}" CASCADE`));
+    });
+  }
+
   get admin(): BunSQLDatabase {
     return this.#admin;
   }

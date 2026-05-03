@@ -114,6 +114,7 @@ export const setSiteDefaultsOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "site_defaults.set",
       input,
       succeeded: true,

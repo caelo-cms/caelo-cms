@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MPL-2.0
 CREATE TABLE "actors" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"kind" text NOT NULL,

@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo GCP provider stack. Provisions Cloud SQL HA + GCS (media + static
+# output) + Cloud CDN + Cloud Run (admin/gateway/orchestrator/runner +
+# edge-router) + Secret Manager + Cloud Logging → BigQuery sink for
+# A/B assignment logs. Implements the shared CloudAdapterInputs /
+# CloudAdapterOutputs contract from packages/provisioning/src/adapter.ts.
+name: caelo-gcp
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+    packagemanager: bun
+description: Caelo GCP stack — Cloud SQL HA + GCS + Cloud CDN + Cloud Run + Secret Manager.
+config:
+  caelo-gcp:domain:
+    type: string
+    description: Primary domain (e.g. example.com).
+  caelo-gcp:ownerEmail:
+    type: string
+    description: Operator email for Pulumi notifications.
+  caelo-gcp:project:
+    type: string
+    description: GCP project id (Pulumi requires this even when it can read it from gcloud).
+  caelo-gcp:region:
+    type: string
+    default: us-central1
+    description: Primary GCP region (Cloud SQL, Cloud Run, GCS).
+  caelo-gcp:cloudSqlTier:
+    type: string
+    default: db-custom-1-3840
+    description: Cloud SQL machine tier. Default = 1 vCPU, 3.75 GB. Bump for production traffic.
+  caelo-gcp:cloudRunMinInstances:
+    type: string
+    default: "0"
+    description: Min instances per service. Set to 1 in production to avoid cold-start latency (~$30/mo per service).

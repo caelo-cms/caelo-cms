@@ -11,6 +11,7 @@ import { defineOperation } from "@caelo/query-api";
 import { err, ok } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { lookupPricing } from "../../ai/pricing-cache.js";
 
 const messageRow = z.object({ messageId: z.string() });
 
@@ -161,16 +162,54 @@ export const recordAiCallOp = defineOperation({
       /** P10.5 — parent attribution for subagent invocations. */
       parentChatSessionId: z.string().uuid().nullable().optional(),
       parentAiCallId: z.string().uuid().nullable().optional(),
+      /** P11.6 — plugin attribution for ctx.ai.complete dispatches. */
+      pluginId: z.string().uuid().nullable().optional(),
+      /** P16 — image vs text op kind. Default 'text' so existing
+       *  callers (chat-runner) don't need to set it. */
+      operationType: z.enum(["text", "image"]).default("text"),
+      /** P16 — number of images generated (only meaningful when
+       *  operationType='image'; ignored otherwise). */
+      imageCount: z.number().int().nonnegative().default(0),
+      /** P16 — correlates with structured-log entries + audit_events. */
+      requestId: z.string().max(64).nullable().optional(),
     })
     .strict(),
   output: z.object({ aiCallId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // P16 — when caller doesn't pre-compute cost, look it up from the
+    // ai_pricing table. Centralizing here means callers (chat-runner,
+    // generate_image, future ctx.ai.complete) don't need to know rates.
+    // Caller-supplied non-zero costs win (allows out-of-band overrides;
+    // also keeps existing tests with explicit costs untouched).
+    let costMicrocents = input.costEstimateMicrocents;
+    if (costMicrocents === 0) {
+      // P16 hardening — pricing-table lookup goes through the in-process
+      // LRU (60s TTL, LISTEN/NOTIFY-invalidated). Same fallback logic:
+      // exact (provider, model) wins over provider-wildcard `*`.
+      const p = await lookupPricing(tx, input.provider, input.model, input.operationType);
+      if (p) {
+        if (input.operationType === "image") {
+          costMicrocents = p.inputMicrocents * input.imageCount;
+        } else {
+          const inRate = p.inputMicrocents;
+          const outRate = p.outputMicrocents ?? 0;
+          const cacheRate = p.cachedMicrocents ?? inRate;
+          const billedInput = Math.max(0, input.inputTokens - input.cachedTokens);
+          costMicrocents = Math.round(
+            (billedInput * inRate) / 1000 +
+              (input.cachedTokens * cacheRate) / 1000 +
+              (input.outputTokens * outRate) / 1000,
+          );
+        }
+      }
+    }
     const rows = (await tx.execute(sql`
       INSERT INTO ai_calls (
         chat_session_id, actor_id, provider, model,
         input_tokens, output_tokens, cached_tokens,
         cost_estimate_microcents, duration_ms, succeeded,
-        parent_chat_session_id, parent_ai_call_id
+        parent_chat_session_id, parent_ai_call_id,
+        plugin_id, operation_type, image_count, request_id
       ) VALUES (
         ${input.chatSessionId ?? null},
         ${ctx.actorId}::uuid,
@@ -179,11 +218,15 @@ export const recordAiCallOp = defineOperation({
         ${input.inputTokens},
         ${input.outputTokens},
         ${input.cachedTokens},
-        ${input.costEstimateMicrocents}::bigint,
+        ${costMicrocents}::bigint,
         ${input.durationMs},
         ${input.succeeded},
         ${input.parentChatSessionId ?? null},
-        ${input.parentAiCallId ?? null}
+        ${input.parentAiCallId ?? null},
+        ${input.pluginId ?? null},
+        ${input.operationType},
+        ${input.imageCount},
+        ${input.requestId ?? null}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];

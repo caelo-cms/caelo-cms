@@ -84,6 +84,7 @@ export const setStyleGuideOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "style_guide.set",
       input,
       succeeded: true,
@@ -104,6 +105,7 @@ export const deleteStyleGuideOp = defineOperation({
     await tx.execute(sql`DELETE FROM site_style_guide WHERE locale = ${input.locale}`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "style_guide.delete",
       input,
       succeeded: true,

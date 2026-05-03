@@ -1,0 +1,19 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "noEmit": false
+  },
+  "include": ["src/**/*"],
+  "references": [
+    {
+      "path": "../../plugin-sdk"
+    },
+    {
+      "path": "../../plugin-component-kit"
+    }
+  ],
+  "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]
+}

@@ -141,6 +141,7 @@ export const createModuleOp = defineOperation({
     if (dup.length > 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "modules.create",
         input,
         succeeded: false,
@@ -170,6 +171,7 @@ export const createModuleOp = defineOperation({
     await applyMediaUsageDelta(tx, "", input.html);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "modules.create",
       input,
       succeeded: true,
@@ -227,6 +229,7 @@ export const updateModuleOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "modules.update",
       input,
       succeeded: true,
@@ -278,6 +281,7 @@ export const deleteModuleOp = defineOperation({
     if (target.deleted_at !== null) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "modules.delete",
         input,
         succeeded: true,
@@ -293,6 +297,7 @@ export const deleteModuleOp = defineOperation({
     await applyMediaUsageDelta(tx, target.html, "");
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "modules.delete",
       input,
       succeeded: true,
@@ -366,6 +371,7 @@ export const deleteModulesManyOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "modules.delete_many",
       input,
       succeeded: true,

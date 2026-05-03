@@ -17,11 +17,13 @@ import { duplicatePageTool } from "./duplicate-page.js";
 import { editModuleTool } from "./edit-module.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
+import { generateImageTool } from "./generate-image.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeAddLocaleTool } from "./propose-add-locale.js";
 import { proposeRemoveLocaleTool } from "./propose-remove-locale.js";
 import { proposeSetDefaultLocaleTool } from "./propose-set-default-locale.js";
+import { proposeSiteImportTool } from "./propose-site-import.js";
 import { proposeSkillTool } from "./propose-skill.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
@@ -37,8 +39,11 @@ import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
-import { startTranslationJobTool } from "./start-translation-job.js";
-import { translatePageTool } from "./translate-page.js";
+import { submitPluginTool } from "./submit-plugin.js";
+// P11.5 — translate_page + start_translation_job moved to the translation
+// Tier-1 plugin (`packages/plugins/translation/`). The chat-runner discovers
+// them via @caelo/plugin-host's pluginToolsRegistry on each turn.
+import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateThemeTool } from "./update-theme.js";
 
 /**
@@ -74,6 +79,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // P7 — media library.
   registry.register(findMediaTool);
   registry.register(setMediaAltTool);
+  // P16 — AI image generation via the active provider's image endpoint.
+  registry.register(generateImageTool);
   // P8 — SEO sidecar tools.
   registry.register(setPageSeoTool);
   registry.register(autofillPageSeoTool);
@@ -88,9 +95,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeRemoveLocaleTool);
   registry.register(proposeSetDefaultLocaleTool);
   registry.register(proposeUpdateLocaleStrategyTool);
-  // P10 — AI translation surface.
-  registry.register(translatePageTool);
-  registry.register(startTranslationJobTool);
+  // P10 — AI translation surface MOVED to the translation Tier-1 plugin
+  // (P11.5 commit 2). The plugin's `tools[]` declaration registers
+  // `translate_page` + `start_translation_job` into pluginToolsRegistry at
+  // bootstrap; chat-runner folds them into its catalogue per turn.
   // P10A — AI proposes a new skill body for Owner review.
   registry.register(proposeSkillTool);
   // P10.5 — AI spawns subagents (single + plural) for parallel
@@ -98,6 +106,13 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // excludedToolNames stripping these two so depth is capped at 1.
   registry.register(spawnSubagentTool);
   registry.register(spawnSubagentsTool);
+  // P11 — AI submits a Tier 2 plugin for Owner approval. Activation
+  // is human-only (CLAUDE.md §2). Tier 1 plugins ship via human PR.
+  registry.register(submitPluginTool);
+  // P13 — AI proposes a per-(plugin, op) rate-limit override (§11.A).
+  registry.register(tuneRateLimitTool);
+  // P14 — AI proposes a Site Import crawl (§11.A).
+  registry.register(proposeSiteImportTool);
   return registry;
 }
 

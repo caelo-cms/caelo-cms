@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MPL-2.0
 CREATE TABLE "permissions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"name" text NOT NULL,

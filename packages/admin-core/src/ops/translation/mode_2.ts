@@ -185,6 +185,7 @@ export const translationModeTwoOp = defineOperation({
       `);
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "translation.mode_2",
         input,
         succeeded: true,
@@ -333,6 +334,7 @@ export const translationModeTwoOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "translation.mode_2",
       input,
       succeeded: true,

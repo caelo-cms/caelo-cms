@@ -168,6 +168,7 @@ export const createChatSessionOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "chat.create_session",
       input,
       succeeded: true,
@@ -299,6 +300,7 @@ export const renameChatSessionOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "chat.rename_session",
       input,
       succeeded: true,
@@ -349,6 +351,7 @@ export const archiveChatSessionOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "chat.archive_session",
       input,
       succeeded: true,

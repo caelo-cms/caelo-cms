@@ -197,6 +197,7 @@ export const createLayoutOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "layouts.create",
       input,
       succeeded: true,
@@ -257,6 +258,7 @@ export const updateLayoutOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "layouts.update",
       input,
       succeeded: true,
@@ -300,6 +302,7 @@ export const deleteLayoutOp = defineOperation({
     await tx.execute(sql`UPDATE layouts SET deleted_at = now() WHERE id = ${input.layoutId}::uuid`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "layouts.delete",
       input,
       succeeded: true,
@@ -413,6 +416,7 @@ export const setLayoutModulesOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "layout_modules.set",
       input,
       succeeded: true,
@@ -519,6 +523,7 @@ export const setLayoutBlocksOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "layout_blocks.set",
       input,
       succeeded: true,

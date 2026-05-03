@@ -10,6 +10,9 @@
   "references": [
     { "path": "../shared" },
     { "path": "../query-api" },
+    { "path": "../plugin-sandbox" },
+    { "path": "../plugin-sdk" },
+    { "path": "../plugin-host" },
     { "path": "../../apps/static-generator" }
   ],
   "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]

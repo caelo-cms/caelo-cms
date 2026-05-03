@@ -69,6 +69,7 @@ export const createRoleOp = defineOperation({
     if (input.name === "owner" || input.name === "editor" || input.name === "reviewer") {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "roles.create",
         input,
         succeeded: false,
@@ -99,6 +100,7 @@ export const createRoleOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "roles.create",
       input,
       succeeded: true,
@@ -127,6 +129,7 @@ export const deleteRoleOp = defineOperation({
     if (target.is_builtin) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "roles.delete",
         input,
         succeeded: false,
@@ -142,6 +145,7 @@ export const deleteRoleOp = defineOperation({
     await tx.execute(sql`DELETE FROM roles WHERE id = ${input.roleId}::uuid`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "roles.delete",
       input,
       succeeded: true,
@@ -171,6 +175,7 @@ export const updateRolePermissionsOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "roles.update_permissions",
       input,
       succeeded: true,

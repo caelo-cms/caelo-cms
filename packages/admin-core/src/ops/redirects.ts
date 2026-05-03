@@ -71,6 +71,7 @@ export const createRedirectOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "redirects.create",
       input,
       succeeded: true,
@@ -194,6 +195,7 @@ export const deleteRedirectOp = defineOperation({
     await tx.execute(sql`DELETE FROM redirects WHERE id = ${input.redirectId}::uuid`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "redirects.delete",
       input,
       succeeded: true,
@@ -277,6 +279,7 @@ export const createRedirectsManyOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "redirects.create_many",
       input: { count: input.redirects.length, upsert: input.upsert },
       succeeded: true,
@@ -329,6 +332,7 @@ export const deleteRedirectsManyOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "redirects.delete_many",
       input,
       succeeded: true,

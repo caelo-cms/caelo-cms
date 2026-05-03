@@ -1,24 +1,26 @@
 {
   "name": "caelo-cms",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "AI-first, open-source CMS (MPL 2.0).",
   "license": "MPL-2.0",
   "packageManager": "bun@1.3.13",
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "packages/plugins/*"
   ],
   "scripts": {
     "typecheck": "tsc -b && bun run --filter=@caelo/admin typecheck",
     "typecheck:clean": "tsc -b --clean",
     "test": "bun test",
-    "lint": "biome check .",
+    "lint": "biome check . && bun run --filter=@caelo/admin-core lint:audit && bun run --filter=@caelo/admin-core lint:spdx",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "license:check": "license-checker-rseidelsohn --production --onlyAllow 'MPL-2.0;Apache-2.0;MIT;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0' --excludePackages 'caelo-cms'",
     "db:generate": "bun run --filter=@caelo/migrations generate:admin && bun run --filter=@caelo/migrations generate:public",
-    "db:migrate": "bun run packages/migrations/src/migrate.ts admin && bun run packages/migrations/src/migrate.ts public"
+    "db:migrate": "bun run packages/migrations/src/migrate.ts admin && bun run packages/migrations/src/migrate.ts public",
+    "plugins:sign": "bun run apps/admin/scripts/sign-tier1-manifest.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.13",

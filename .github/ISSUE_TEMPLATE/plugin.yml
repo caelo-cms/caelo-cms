@@ -1,0 +1,59 @@
+name: Plugin proposal
+description: Propose a new Tier 1 (core) or Tier 2 (sandboxed) plugin
+labels: ["plugin"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        See `CONTRIBUTING.md` § "New Tier 1 plugins" / "New Tier 2 plugins" before filing.
+        Most plugins should be Tier 2 (sandboxed, AI-authorable). Tier 1 surface is
+        intentionally small.
+  - type: input
+    id: slug
+    attributes:
+      label: Proposed slug
+      description: kebab-case, used as the schema name + URL prefix.
+      placeholder: "e.g. event-rsvp, contact-honeypot"
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Tier
+      options:
+        - Tier 2 (sandboxed, AI-authored or Owner-installed)
+        - Tier 1 (core, signed, in-process — needs strong justification)
+    validations:
+      required: true
+  - type: textarea
+    id: purpose
+    attributes:
+      label: What the plugin does
+      description: One-paragraph description of the visitor-facing + admin-facing behaviour.
+    validations:
+      required: true
+  - type: textarea
+    id: schema
+    attributes:
+      label: Data shape
+      description: Brief outline of the tables this plugin needs in `cms_public.<slug>.*`. Remember any table with `page_id` MUST also include `locale`.
+    validations:
+      required: true
+  - type: textarea
+    id: capabilities
+    attributes:
+      label: Tier 1 only — requested capabilities
+      description: |
+        For Tier 1 only — list every capability you need + WHY:
+          - cms_admin (cross-cms_admin reads/writes)
+          - ai_provider (uses the host's AI provider for generation)
+          - snapshots (emits snapshot rows)
+          - chat_runner_tools (registers AI tools)
+          - background_workers (cron-style scheduled work)
+          - email (outbound email)
+        Tier 2 plugins skip this section.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Why not as a Tier 2 plugin?
+      description: For Tier 1 proposals only — explain why this needs cross-cms_admin access / signed code / etc., and not the locked Tier 2 SDK surface.

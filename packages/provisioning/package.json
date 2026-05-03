@@ -1,11 +1,14 @@
 {
   "name": "@caelo/provisioning",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "bin": {
+    "cms-provision": "./src/cli.ts"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
@@ -13,6 +16,12 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@caelo/shared": "workspace:*"
+    "@caelo/shared": "workspace:*",
+    "@pulumi/aws": "^7",
+    "@pulumi/awsx": "^3",
+    "@pulumi/azure-native": "^3",
+    "@pulumi/command": "^1",
+    "@pulumi/gcp": "^9",
+    "@pulumi/pulumi": "^3"
   }
 }

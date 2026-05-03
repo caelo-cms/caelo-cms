@@ -720,3 +720,32 @@ export const proposeSkillToolInput = z
   })
   .strict();
 export type ProposeSkillToolInput = z.infer<typeof proposeSkillToolInput>;
+
+/**
+ * P11 — `submit_plugin`. AI submits a Tier 2 plugin for validation +
+ * Owner approval. CLAUDE.md §2 invariant: AI submits, human Owner
+ * activates. Tier 1 plugins ship via human PR + signed release; the AI
+ * tool surface cannot promote — the manifest field `tier` is forced
+ * to 2 by the handler.
+ */
+export const submitPluginToolInput = z
+  .object({
+    slug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z][a-z0-9-]*$/, "lowercase, dash-separated"),
+    version: z
+      .string()
+      .min(1)
+      .max(40)
+      .regex(/^\d+\.\d+\.\d+(-[a-z0-9.]+)?$/, "semver"),
+    /** Manifest object as written by the plugin author. Tier-1 fields
+     *  (`requestedCapabilities`, `workers`, `tools`) and `tier: 1`
+     *  are rejected by the validator. */
+    manifest: z.record(z.string(), z.unknown()),
+    /** Full source code of the plugin's compiled JS module. */
+    source: z.string().min(1).max(200_000),
+  })
+  .strict();
+export type SubmitPluginToolInput = z.infer<typeof submitPluginToolInput>;

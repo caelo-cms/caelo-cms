@@ -75,6 +75,7 @@ export const setAiProvidersOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "ai_providers.set",
       input,
       succeeded: true,

@@ -28,6 +28,7 @@ import type { TransactionRunner } from "@caelo/query-api";
 import { ComposeError, composePageWithLayout, resolveLocaleUrl } from "@caelo/shared";
 import { sql } from "drizzle-orm";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
+import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { buildRobotsTxtWithSitemap, readSeoSettings, runSeoPass } from "./seo-pass.js";
 
 export interface DeployTarget {
@@ -151,6 +152,15 @@ export async function generateSite(args: {
   repoRoot?: string;
   /** Optional progress callback fired after each page is written. */
   onProgress?: ProgressCallback;
+  /** P13 — adapter handle so the plugin render pass can read +
+   *  upsert `static_bakes` outside the page-build transaction. When
+   *  omitted the pass no-ops (e.g. dev preview). */
+  adapter?: import("@caelo/query-api").DatabaseAdapter;
+  /** P13 ideas-pass — incremental rebuild whitelist. When non-empty,
+   *  only re-bake the listed page ids; the rest are left alone in
+   *  the build dir. Auto-redeploy passes the audit_events tail's
+   *  touched page ids; manual triggers omit it for full rebuild. */
+  changedPageIds?: ReadonlyArray<string>;
 }): Promise<GenerateResult> {
   const start = Date.now();
   const { tx, target, runId } = args;
@@ -162,9 +172,16 @@ export async function generateSite(args: {
 
   await mkdir(buildDir, { recursive: true });
 
+  // P13 ideas-pass — incremental whitelist filter when caller supplied
+  // changedPageIds. Empty list / undefined = full-site build.
+  const incrementalFilter =
+    args.changedPageIds && args.changedPageIds.length > 0
+      ? sql` AND p.id = ANY(${[...args.changedPageIds]}::uuid[])`
+      : sql.raw("");
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id,
            p.slug, p.locale, p.title, p.status,
+           p.content_hash AS content_hash,
            t.html AS template_html,
            t.css  AS template_css,
            l.id::text AS layout_id,
@@ -178,8 +195,9 @@ export async function generateSite(args: {
       AND t.deleted_at IS NULL
       AND l.deleted_at IS NULL
       AND p.status = 'published'
+      ${incrementalFilter}
     ORDER BY p.slug ASC
-  `)) as unknown as PageRow[];
+  `)) as unknown as Array<PageRow & { content_hash: string | null }>;
 
   // P9 review pass — load the locale registry so the emitter can shape
   // file paths per (slug, locale) instead of slug alone. Otherwise two
@@ -306,6 +324,8 @@ export async function generateSite(args: {
     pageTitle: string;
     relPath: string;
   }[] = [];
+  // P13 — per-(slug, locale) bake target for the plugin render pass.
+  const bakeTargets = new Map<string, BakeTarget>();
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
     if (!page) continue;
@@ -401,6 +421,13 @@ export async function generateSite(args: {
       pageTitle: page.title,
       relPath: pageOutputPath(page.slug, pageLocaleCfg),
     });
+    // P13 — record per-page bake target for the plugin render pass.
+    bakeTargets.set(`${page.slug}:${page.locale}`, {
+      pageId: page.page_id,
+      slug: page.slug,
+      locale: page.locale,
+      contentHash: page.content_hash ?? "",
+    });
 
     // A/B variant emission hook: when modules carry experiment_id +
     // variant_label (P4 schema columns, P12A populates), the generator
@@ -458,11 +485,86 @@ export async function generateSite(args: {
   });
   if (seoResult.sitemapEmitted) fileCount += 1;
 
+  // P13 — plugin render pass: per (page, locale) call each active
+  // Tier-1 plugin's `staticRender(...)`, splice into the page body at
+  // the matching `<div data-caelo-plugin="<slug>" ...>` placeholder.
+  // Cache hits via static_bakes.cache_key skip the render entirely.
+  // Skipped when no adapter is supplied (dev preview path).
+  if (args.adapter) {
+    await runPluginRenderPass({
+      adapter: args.adapter,
+      pages: composedPages,
+      bakeTargets,
+    });
+  }
+
   for (const p of composedPages) {
     const filePath = join(buildDir, p.relPath);
     await mkdir(join(filePath, ".."), { recursive: true });
     await writeFile(filePath, p.html, "utf8");
     fileCount += 1;
+  }
+
+  // P13 audit fix #1 — variant file emission for active experiments.
+  // The /api/variant.js script fetches `/_variants/<exp>__<variant><page>`
+  // and replaces <main>. Without this loop those URLs 404 in real use.
+  // For P13 the per-variant body is the same composed page (placeholder
+  // for per-variant module overrides — those land with the typed-content
+  // / kits work in P12A). The file existing means the script's swap
+  // succeeds + analytics impressions accumulate.
+  const experimentRows = (await tx.execute(sql`
+    SELECT id::text AS id, slug, page_id::text AS page_id, variants
+    FROM experiments
+    WHERE status = 'active'
+  `)) as unknown as Array<{
+    id: string;
+    slug: string;
+    page_id: string;
+    variants: Array<{
+      label: string;
+      weight: number;
+      // P13 ideas-pass — optional per-variant string substitutions
+      // applied to the composed page HTML before emission. Empty/absent
+      // = identical body (just file existence for routing).
+      htmlPatches?: Array<{ find: string; replace: string }>;
+    }>;
+  }>;
+  if (experimentRows.length > 0) {
+    // Build a lookup: page_id → composed page (the source of variant HTML).
+    const pageById = new Map<string, (typeof composedPages)[number]>();
+    for (const cp of composedPages) {
+      const t = bakeTargets.get(`${cp.pageSlug}:${cp.pageLocale}`);
+      if (t) pageById.set(t.pageId, cp);
+    }
+    for (const e of experimentRows) {
+      const cp = pageById.get(e.page_id);
+      if (!cp) continue;
+      // P13 audit re-pass — for subdomain/domain locales the relPath
+      // begins with `_hosts/<host>/...`. Emit the variant UNDER the
+      // host root so the client-side `/_variants/...` fetch resolves
+      // against the visitor's host (the script doesn't know about
+      // _hosts/). For no-prefix / subdirectory locales, drop straight
+      // under buildDir/_variants/.
+      const HOSTS_PREFIX = /^_hosts\/([^/]+)\/(.*)$/;
+      const m = HOSTS_PREFIX.exec(cp.relPath);
+      const variantBaseDir = m ? `_hosts/${m[1]}/_variants` : "_variants";
+      const pageRelToHost = m ? (m[2] ?? "") : cp.relPath;
+      for (const v of e.variants) {
+        const variantPath = `${variantBaseDir}/${e.slug}__${v.label}/${pageRelToHost}`;
+        const fullPath = join(buildDir, variantPath);
+        await mkdir(join(fullPath, ".."), { recursive: true });
+        // P13 ideas-pass — apply htmlPatches if present so variants
+        // actually differ in content. Each patch is a literal string
+        // replace (no regex; no escaping needed). Order matters when
+        // patches overlap; we apply in array order.
+        let variantHtml = cp.html;
+        for (const p of v.htmlPatches ?? []) {
+          variantHtml = variantHtml.split(p.find).join(p.replace);
+        }
+        await writeFile(fullPath, variantHtml, "utf8");
+        fileCount += 1;
+      }
+    }
   }
 
   await writeFile(
@@ -492,6 +594,57 @@ export async function generateSite(args: {
   await writeFile(
     join(buildDir, "routing-manifest.json"),
     JSON.stringify(manifest, null, 2),
+    "utf8",
+  );
+  fileCount += 1;
+
+  // P15 hot-fix #1 — emit a SEPARATE A/B routing manifest for the edge
+  // routers. Filename intentionally distinct from `routing-manifest.json`
+  // (the deploy manifest above) because the two have different shapes
+  // and audiences:
+  //   - routing-manifest.json: deploy provenance (target/env/runId/pages)
+  //     consumed by the deploy ops + admin UI to verify what shipped.
+  //   - ab-routing.json: per-page experiment routing consumed by the
+  //     edge routers (P15 GCP/AWS/Azure stacks + P13 self-hosted Caddy
+  //     gateway). Shape matches @caelo/edge-router's RoutingManifest.
+  // Variants reference the SAME file paths the static-gen wrote above
+  // (the `_variants/<exp-slug>__<label>/<page>` shape) so the edge
+  // routers' rewrite targets actually resolve.
+  const pageSlugById = new Map<string, string>();
+  for (const cp of composedPages) {
+    const t = bakeTargets.get(`${cp.pageSlug}:${cp.pageLocale}`);
+    if (t) pageSlugById.set(t.pageId, cp.pageSlug);
+  }
+  const abExperiments: Array<{
+    pageSlug: string;
+    experimentId: string;
+    variants: Array<{ label: string; weight: number; path: string }>;
+  }> = [];
+  for (const e of experimentRows) {
+    const slug = pageSlugById.get(e.page_id);
+    if (!slug) continue;
+    abExperiments.push({
+      pageSlug: `/${slug}`,
+      experimentId: e.id,
+      variants: e.variants.map((v) => ({
+        label: v.label,
+        weight: v.weight,
+        // Control variant (first one) keeps the original path; non-control
+        // variants point at the per-experiment file the loop above wrote
+        // under `<buildDir>/_variants/<exp-slug>__<label>/<slug>/index.html`.
+        path: v === e.variants[0] ? `/${slug}` : `/_variants/${e.slug}__${v.label}/${slug}`,
+      })),
+    });
+  }
+  const abRoutingManifest = {
+    // Use runId as manifestVersion — bumps every deploy so a fresh
+    // bucketing rolls out atomically when operators want to re-randomize.
+    manifestVersion: runId,
+    experiments: abExperiments,
+  };
+  await writeFile(
+    join(buildDir, "ab-routing.json"),
+    JSON.stringify(abRoutingManifest, null, 2),
     "utf8",
   );
   fileCount += 1;

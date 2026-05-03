@@ -14,7 +14,7 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import { bindZodForm } from "$lib/forms/zod-bind.svelte.js";
 
-  let { form } = $props();
+  let { data, form } = $props();
 
   // P6.6 closing pass — same schema the `users.create_first_owner`
   // op enforces server-side, mirrored client-side for per-field live
@@ -40,6 +40,23 @@
       </Alert>
     {/if}
     <form method="post" class="space-y-4">
+      {#if data.tokenRequired}
+        <div class="space-y-2">
+          <Label for="token">Bootstrap token</Label>
+          <Input
+            id="token"
+            name="token"
+            type="text"
+            required
+            value={data.tokenFromQuery}
+            placeholder="64-character hex token from `cms-provision init` output"
+          />
+          <p class="text-xs text-muted-foreground">
+            This installation requires a one-time token. Open the URL printed by `cms-provision
+            init` (the token is in the query string), or paste it here.
+          </p>
+        </div>
+      {/if}
       <div class="space-y-2">
         <Label for="displayName">Display name</Label>
         <Input

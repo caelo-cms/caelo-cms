@@ -82,6 +82,15 @@ export interface VolatileContext {
   readonly skillsBlock?: string;
   /** P10.5 #5 — hint that spawn_subagent / spawn_subagents exist + when to use them. */
   readonly subagentsBlock?: string;
+  /** P11 opt 4 — AI's own pending or rejected plugin submissions, so it
+   *  doesn't re-propose what's already in the queue and reads the
+   *  Owner's rejection reasons before resubmitting. */
+  readonly pluginsBlock?: string;
+  /** P11.5 audit fix #1 — Tier-1 plugin-emitted system-prompt blocks.
+   *  Plugins declare `promptContext: [{label, render}]` arrays; chat-runner
+   *  calls renderAll() per turn and folds non-empty results here. Disabled
+   *  plugins are skipped at the registry level. */
+  readonly pluginContextBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -121,6 +130,16 @@ export function composeSystemPromptChunks(
   }
   if (volatile.subagentsBlock && volatile.subagentsBlock.trim().length > 0) {
     chunks.push({ body: volatile.subagentsBlock, cacheable: false, label: "subagents" });
+  }
+  if (volatile.pluginsBlock && volatile.pluginsBlock.trim().length > 0) {
+    chunks.push({ body: volatile.pluginsBlock, cacheable: false, label: "plugins" });
+  }
+  if (volatile.pluginContextBlock && volatile.pluginContextBlock.trim().length > 0) {
+    chunks.push({
+      body: volatile.pluginContextBlock,
+      cacheable: false,
+      label: "plugin-context",
+    });
   }
   if (volatile.themeBlock && volatile.themeBlock.trim().length > 0) {
     chunks.push({ body: volatile.themeBlock, cacheable: false, label: "theme" });

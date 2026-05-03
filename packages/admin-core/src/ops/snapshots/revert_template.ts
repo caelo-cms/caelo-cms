@@ -79,6 +79,7 @@ export const revertTemplateOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "snapshots.revert_template",
       input,
       succeeded: true,

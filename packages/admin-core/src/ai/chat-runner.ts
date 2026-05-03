@@ -28,6 +28,11 @@
  *    the cached prefix so changing them doesn't bust the cache.
  */
 
+import {
+  pluginPromptContextRegistry,
+  pluginToolsRegistry,
+  runPluginOperation,
+} from "@caelo/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
 import { execute } from "@caelo/query-api";
 import {
@@ -625,11 +630,29 @@ export async function* runChatTurn(
   // passes {spawn_subagent, spawn_subagents}); chat-runner itself
   // doesn't branch on "is this a subagent."
   const excluded = options.excludedToolNames;
-  const filteredTools = tools.catalogue().filter((t) => {
+  const builtinTools = tools.catalogue().filter((t) => {
     if (allowedToolNames && !allowedToolNames.has(t.name)) return false;
     if (excluded && excluded.has(t.name)) return false;
     return true;
   });
+  // P11.5 commit 2 — fold Tier-1 plugin-registered tools into the catalogue.
+  // Plugins declare their tools in `manifest.tools[]`; the host loader
+  // registers them into `pluginToolsRegistry` at activation. The chat-runner
+  // discovers them per turn so disabling a plugin removes its tools from
+  // the AI's catalogue on the next call.
+  const pluginTools = pluginToolsRegistry.list().filter(({ spec }) => {
+    if (allowedToolNames && !allowedToolNames.has(spec.name)) return false;
+    if (excluded && excluded.has(spec.name)) return false;
+    return true;
+  });
+  const filteredTools = [
+    ...builtinTools,
+    ...pluginTools.map(({ spec }) => ({
+      name: spec.name,
+      description: spec.description,
+      inputSchema: spec.inputJsonSchema,
+    })),
+  ];
 
   // P10.5 #5 — subagents hint chunk. Emitted when (a) spawn tools are
   // visible in this turn's catalogue (so we never tell the AI to use
@@ -671,6 +694,60 @@ export async function* runChatTurn(
     }
   }
 
+  // P11 opt 4 — surface AI's own pending + rejected plugin submissions
+  // so it doesn't re-propose what's already in the queue and reads
+  // the Owner's rejection reason before resubmitting. Renders only
+  // when at least one pending/rejected row exists.
+  let pluginsBlock: string | undefined;
+  try {
+    const pendingResult = await execute(registry, adapter, aiCtx, "plugins.list_pending", {
+      submittedBy: aiCtx.actorId,
+    });
+    if (pendingResult.ok) {
+      const rows = (
+        pendingResult.value as {
+          plugins: Array<{
+            slug: string;
+            version: string;
+            status: string;
+            validationErrorCount: number;
+            rejectionReason: string | null;
+          }>;
+        }
+      ).plugins;
+      if (rows.length > 0) {
+        const lines = rows.map((p) => {
+          if (p.status === "rejected") {
+            return `- ${p.slug} v${p.version} — REJECTED${p.rejectionReason ? ` (reason: ${p.rejectionReason})` : ""}. Read the reason, revise, and submit a new version.`;
+          }
+          if (p.status === "draft") {
+            return `- ${p.slug} v${p.version} — validation failed (${p.validationErrorCount} error${p.validationErrorCount === 1 ? "" : "s"}). Fix per the structured hints and resubmit.`;
+          }
+          return `- ${p.slug} v${p.version} — awaiting Owner approval at /security/plugins. DO NOT re-submit.`;
+        });
+        pluginsBlock = [
+          "# Your pending plugin submissions",
+          "These plugins you previously submitted are still in the queue. Do NOT re-submit duplicates; read the status before issuing a new submit_plugin call.",
+          ...lines,
+        ].join("\n");
+      }
+    }
+  } catch {
+    // Best-effort context block; never block the turn on a context-fetch failure.
+  }
+
+  // P11.5 audit fix #1 — render Tier-1 plugin promptContext blocks. Each
+  // active plugin's `promptContext: [{label, render}]` array contributes
+  // a slice; non-empty slices are concatenated into the system prompt.
+  // Disabled plugins are filtered at the registry level.
+  let pluginContextBlock: string | undefined;
+  try {
+    const blocks = await pluginPromptContextRegistry.renderAll();
+    if (blocks.length > 0) pluginContextBlock = blocks.join("\n\n");
+  } catch {
+    // Best-effort: never block the turn on a renderer error.
+  }
+
   const systemChunks = composeSystemPromptChunks(
     memory,
     filteredTools.map((t) => ({ name: t.name, description: t.description })),
@@ -687,6 +764,8 @@ export async function* runChatTurn(
       localesBlock,
       skillsBlock,
       subagentsBlock,
+      pluginsBlock,
+      pluginContextBlock,
     },
   );
 
@@ -832,47 +911,60 @@ export async function* runChatTurn(
           wakeReader();
         };
 
-        const dispatchPromise = tools.dispatch(call.name, call.arguments, aiCtxWithBranch, {
-          adapter,
-          registry,
-          chatSessionId: input.chatSessionId,
-          chatBranchId: session.session.chatBranchId,
-          // P10.5 — expose provider + tools + humanCtx + a child-turn
-          // factory so the spawn_subagent handler can invoke runChatTurn
-          // recursively for the child without a circular import. The
-          // factory always passes excludedToolNames including the spawn
-          // tools, so the depth cap is enforced by configuration, not a
-          // runtime branch.
-          provider,
-          tools,
-          humanCtx,
-          pushClientEvent,
-          spawnChildChatTurn: ({
-            chatInput,
-            aiCtx: childAiCtx,
-            humanCtx: childHumanCtx,
-            excludedToolNames,
-            costCapMicrocents,
-            abortSignal: childAbort,
-          }) =>
-            runChatTurn(
-              {
-                adapter,
-                registry,
-                provider,
-                tools,
+        // P11.5 commit 2 — Tier-1 plugin tools route through plugin-host's
+        // runPluginOperation. Built-in tools fall through to tools.dispatch.
+        const pluginTool = pluginToolsRegistry.resolve(call.name);
+        const dispatchPromise: Promise<{ ok: boolean; content: string }> = pluginTool
+          ? runPluginOperation({
+              pluginSlug: pluginTool.pluginSlug,
+              operationName: pluginTool.spec.operationName,
+              args: call.arguments,
+            }).then((r) =>
+              r.ok
+                ? { ok: true, content: JSON.stringify(r.value) }
+                : { ok: false, content: `${r.error.kind}: ${r.error.message}` },
+            )
+          : tools.dispatch(call.name, call.arguments, aiCtxWithBranch, {
+              adapter,
+              registry,
+              chatSessionId: input.chatSessionId,
+              chatBranchId: session.session.chatBranchId,
+              // P10.5 — expose provider + tools + humanCtx + a child-turn
+              // factory so the spawn_subagent handler can invoke runChatTurn
+              // recursively for the child without a circular import. The
+              // factory always passes excludedToolNames including the spawn
+              // tools, so the depth cap is enforced by configuration, not a
+              // runtime branch.
+              provider,
+              tools,
+              humanCtx,
+              pushClientEvent,
+              spawnChildChatTurn: ({
+                chatInput,
                 aiCtx: childAiCtx,
                 humanCtx: childHumanCtx,
-                inputCostPerMTok: options.inputCostPerMTok,
-                outputCostPerMTok: options.outputCostPerMTok,
-                maxToolLoops: options.maxToolLoops,
                 excludedToolNames,
                 costCapMicrocents,
                 abortSignal: childAbort,
-              },
-              chatInput,
-            ),
-        });
+              }) =>
+                runChatTurn(
+                  {
+                    adapter,
+                    registry,
+                    provider,
+                    tools,
+                    aiCtx: childAiCtx,
+                    humanCtx: childHumanCtx,
+                    inputCostPerMTok: options.inputCostPerMTok,
+                    outputCostPerMTok: options.outputCostPerMTok,
+                    maxToolLoops: options.maxToolLoops,
+                    excludedToolNames,
+                    costCapMicrocents,
+                    abortSignal: childAbort,
+                  },
+                  chatInput,
+                ),
+            });
         let dispatchDone = false;
         const finalDispatch = dispatchPromise.then(
           (r) => {
@@ -949,7 +1041,11 @@ export async function* runChatTurn(
     inputTokens: totalIn,
     outputTokens: totalOut,
     cachedTokens: totalCached,
-    costEstimateMicrocents: microcents(usdCost),
+    // P16 — cost lookup happens inside the op via ai_pricing table.
+    // Chat-runner's `microcents(usdCost)` is kept only for the
+    // streaming `usage` event above + soft cap pre-flight; the DB row
+    // gets the canonical price from the pricing table so a mid-month
+    // rate update doesn't silently mis-cost active chats.
     durationMs: Date.now() - startedAt,
     succeeded: succeeded && stopReason !== "error" && !aborted(),
     // P10.5 — when this turn is a subagent invocation, the spawn
@@ -957,6 +1053,8 @@ export async function* runChatTurn(
     // ai_calls writer already takes them as input.
     parentChatSessionId: aiCtx.parentChatSessionId,
     parentAiCallId: aiCtx.parentAiCallId,
+    // P16 — request_id flows through aiCtx if hooks.server.ts threaded it.
+    requestId: aiCtx.requestId ?? null,
   });
 
   if (aborted()) {

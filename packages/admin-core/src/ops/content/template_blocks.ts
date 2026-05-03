@@ -40,6 +40,7 @@ export const setTemplateBlocksOp = defineOperation({
       if (seen.has(b.name)) {
         await recordAudit(tx, {
           actorId: ctx.actorId,
+          requestId: ctx.requestId,
           operation: "template_blocks.set",
           input,
           succeeded: false,
@@ -66,6 +67,7 @@ export const setTemplateBlocksOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "template_blocks.set",
       input,
       succeeded: true,

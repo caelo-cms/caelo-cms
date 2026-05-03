@@ -1,14 +1,24 @@
 {
   "name": "@caelo/api-gateway",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
+  "exports": {
+    "./server": "./src/server.ts"
+  },
   "scripts": {
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "dev": "bun run --hot src/server.ts"
   },
   "dependencies": {
+    "@caelo/plugin-host": "workspace:*",
     "@caelo/query-api": "workspace:*",
     "@caelo/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@caelo/plugin-sandbox": "workspace:*",
+    "@caelo/plugin-sdk": "workspace:*",
+    "drizzle-orm": "0.45.2"
   }
 }

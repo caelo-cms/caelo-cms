@@ -36,6 +36,9 @@ interface CliInput {
   target: DeployTarget;
   runId: string;
   repoRoot: string;
+  /** P13 ideas-pass — incremental rebuild whitelist (page ids).
+   *  Empty/missing = full-site rebuild. */
+  changedPageIds?: string[];
 }
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
@@ -61,6 +64,7 @@ async function main(): Promise<void> {
           target: input.target,
           runId: input.runId,
           repoRoot: input.repoRoot,
+          changedPageIds: input.changedPageIds,
           onProgress: (p) => emit({ kind: "progress", ...p }),
         }),
     );

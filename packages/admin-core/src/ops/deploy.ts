@@ -234,6 +234,10 @@ async function runGenerator(
     runId: string;
     target: DeployTarget;
     repoRoot: string;
+    /** P13 ideas-pass — incremental deploy. When non-empty the
+     *  static-generator filters its page query to these ids only,
+     *  re-baking just the changed pages. */
+    changedPageIds?: ReadonlyArray<string>;
   },
 ): Promise<{ ok: true; result: SubprocessDone } | { ok: false; message: string; stderr: string }> {
   const adminUrl = process.env["ADMIN_DATABASE_URL"];
@@ -257,6 +261,9 @@ async function runGenerator(
         target: args.target,
         runId: args.runId,
         repoRoot: args.repoRoot,
+        ...(args.changedPageIds && args.changedPageIds.length > 0
+          ? { changedPageIds: [...args.changedPageIds] }
+          : {}),
       }),
     );
     child.stdin.end();
@@ -340,6 +347,11 @@ export const triggerDeployOp = defineOperation({
   input: z.object({
     targetName: z.string().optional(),
     repoRoot: z.string().optional(),
+    /** P13 ideas-pass — when supplied, the static-generator
+     *  re-bakes only these pages. Other pages keep their cached HTML.
+     *  Auto-redeploy passes this from the audit_events tail; manual
+     *  triggers omit it for full-site rebuild. */
+    changedPageIds: z.array(z.string().uuid()).optional(),
   }),
   output: z.object({
     runId: z.string(),
@@ -409,6 +421,7 @@ export const triggerDeployOp = defineOperation({
       runId,
       target: rowToTarget(target),
       repoRoot,
+      changedPageIds: input.changedPageIds,
     });
     if (!subprocess.ok) {
       const tail = subprocess.stderr ? `\n${subprocess.stderr.slice(-500)}` : "";

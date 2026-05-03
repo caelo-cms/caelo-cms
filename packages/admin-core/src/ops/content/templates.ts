@@ -159,6 +159,7 @@ export const createTemplateOp = defineOperation({
     if (dup.length > 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "templates.create",
         input,
         succeeded: false,
@@ -212,6 +213,7 @@ export const createTemplateOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "templates.create",
       input,
       succeeded: true,
@@ -273,6 +275,7 @@ export const updateTemplateOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "templates.update",
       input,
       succeeded: true,
@@ -335,6 +338,7 @@ export const setTemplateLayoutOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "templates.set_layout",
       input,
       succeeded: true,
@@ -368,6 +372,7 @@ export const deleteTemplateOp = defineOperation({
     if (inUse.length > 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "templates.delete",
         input,
         succeeded: false,
@@ -394,6 +399,7 @@ export const deleteTemplateOp = defineOperation({
     if (target.deleted_at !== null) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "templates.delete",
         input,
         succeeded: true,
@@ -407,6 +413,7 @@ export const deleteTemplateOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "templates.delete",
       input,
       succeeded: true,

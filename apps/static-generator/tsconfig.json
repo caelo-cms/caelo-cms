@@ -13,6 +13,9 @@
     },
     {
       "path": "../../packages/query-api"
+    },
+    {
+      "path": "../../packages/plugin-host"
     }
   ],
   "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]

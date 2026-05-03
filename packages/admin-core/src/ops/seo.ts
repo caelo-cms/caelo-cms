@@ -144,6 +144,7 @@ export const pagesSeoSetOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages_seo.set",
       input,
       succeeded: true,
@@ -202,6 +203,7 @@ export const pagesSeoAutofillOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages_seo.autofill",
       input: { pageId: input.pageId, descLen: input.metaDescription.length },
       succeeded: true,
@@ -247,6 +249,7 @@ export const pagesSeoOptimizeOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages_seo.optimize",
       input: {
         pageId: input.pageId,
@@ -337,6 +340,7 @@ export const siteDefaultsSetSeoOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "site_defaults.set_seo",
       input,
       succeeded: true,
@@ -469,6 +473,7 @@ export const rewriteModuleLinksOp = defineOperation({
     if (rewritten.length > 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "pages.rewrite_module_links",
         input,
         succeeded: true,
@@ -533,6 +538,7 @@ export const pagesSeoOptimizeManyOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "pages_seo.optimize_many",
       input: {
         count: input.updates.length,

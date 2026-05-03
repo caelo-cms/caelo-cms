@@ -115,6 +115,7 @@ export const revertPageOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "snapshots.revert_page",
       input,
       succeeded: true,

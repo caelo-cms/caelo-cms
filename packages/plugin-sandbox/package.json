@@ -1,0 +1,21 @@
+{
+  "name": "@caelo/plugin-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MPL-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@caelo/plugin-sdk": "workspace:*",
+    "@caelo/shared": "workspace:*",
+    "oxc-parser": "0.128.0",
+    "zod": "4.3.6"
+  }
+}

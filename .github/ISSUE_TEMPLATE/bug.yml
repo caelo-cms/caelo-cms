@@ -1,0 +1,68 @@
+name: Bug report
+description: Something in Caelo isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Before you submit, please check that:
+        - You're on the latest release (or note your version below).
+        - The issue isn't a security vulnerability — those go through [Private Vulnerability Reporting](https://github.com/caelo-cms/caelo-cms/security/advisories/new).
+  - type: input
+    id: caelo-version
+    attributes:
+      label: Caelo version
+      description: Output of `git rev-parse HEAD` for self-hosted, or your release tag.
+      placeholder: "e.g. v0.1.0 or commit sha"
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provisioning target
+      options:
+        - self-hosted (Docker Compose)
+        - GCP
+        - AWS
+        - Azure
+        - other / not relevant
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the actual behaviour.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Numbered steps from a fresh `bunx cms-provision --provider self-hosted` install if possible.
+      placeholder: |
+        1. Log in as Owner
+        2. Navigate to /content/pages
+        3. Click "..."
+        4. See error
+    validations:
+      required: true
+  - type: input
+    id: request-id
+    attributes:
+      label: X-Caelo-Request-Id
+      description: If the bug surfaces in the admin, copy the `X-Caelo-Request-Id` header from the failing request — operators can grep it across logs / audit_events / ai_calls.
+      placeholder: "e.g. 7f4e2b3a-..."
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Structured log lines from `journalctl` / Cloud Run logs / `docker compose logs`. Redact secrets.
+      render: shell

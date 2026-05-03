@@ -83,6 +83,7 @@ export const setPinDefaultsOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "skills.set_pin_defaults",
       input,
       succeeded: true,
@@ -131,6 +132,7 @@ export const setEngagedSkillsOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "chat.set_engaged_skills",
       input,
       succeeded: true,

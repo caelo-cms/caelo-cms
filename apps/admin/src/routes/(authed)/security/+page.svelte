@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { ArrowRightLeft, Bot, Coins, Database, Globe, Image as ImageIcon, Layout, Rocket, Search, Settings, Sparkles, Users, UsersRound } from "lucide-svelte";
+  import { Activity, ArrowRightLeft, Bot, Coins, Database, Download, FlaskConical, Globe, Image as ImageIcon, Inbox, Key, Layout, Lock, Mail, MessageSquare, Puzzle, Rocket, Search, Settings, Shield, Sparkles, Star, Users, UsersRound } from "lucide-svelte";
   import {
     Card,
     CardDescription,
@@ -22,8 +22,24 @@
     { href: "/security/style-guide", label: "Style guide", desc: "Per-locale tone/voice; shapes AI translations", icon: Bot },
     { href: "/security/skills", label: "Skills", desc: "AI skill bodies + auto-engagement + AI-proposed skills queue", icon: Sparkles },
     { href: "/security/subagents", label: "Subagent runs", desc: "Spawned subagents with role, status, cost, duration", icon: Sparkles },
+    { href: "/security/plugins", label: "Plugins", desc: "Tier 1 (core, signed) + Tier 2 (AI-authored, sandboxed) — approve / disable", icon: Puzzle },
+    { href: "/security/plugins/forms", label: "Form submissions", desc: "Visitor form inbox — mark read, archive, view payloads", icon: Inbox },
+    { href: "/security/plugins/comments", label: "Comments queue", desc: "Pending visitor comments + AI moderation", icon: MessageSquare },
+    { href: "/security/plugins/newsletter", label: "Newsletter", desc: "Draft AI campaigns + queue sends", icon: Mail },
+    { href: "/security/plugins/ratings", label: "Ratings", desc: "Per-page rating aggregates + manual refresh", icon: Star },
+    { href: "/security/email", label: "Email transport", desc: "Resend / SMTP / SES selection for plugin email sends", icon: Mail },
+    { href: "/security/gateway", label: "Gateway", desc: "Public-write hardening: rate-limits, captcha, body cap, request log", icon: Shield },
+    { href: "/security/gateway/live", label: "Gateway live", desc: "Real-time rolling analytics — p95, errors, throttled, top ops", icon: Activity },
+    { href: "/security/experiments", label: "A/B experiments", desc: "Variant routing per page; client-side stable hash; impressions log", icon: FlaskConical },
+    { href: "/security/import", label: "Site import", desc: "Crawl an existing site; stage as draft pages; Owner reviews per page", icon: Download },
+    { href: "/security/import/pending", label: "Import proposals", desc: "AI-proposed crawls awaiting Owner approval", icon: Inbox },
+    { href: "/security/gateway/pending", label: "Rate-limit proposals", desc: "AI-proposed per-(plugin, op) rate-limit changes — Owner approves", icon: Inbox },
+    { href: "/security/auth", label: "Visitor auth", desc: "Signup policy, password length, OAuth providers (P15)", icon: Lock },
+    { href: "/security/auth/pending", label: "Auth proposals (queue)", desc: "AI-proposed auth_config changes — Owner approves or rejects", icon: Inbox },
     { href: "/security/ai", label: "AI provider", desc: "Anthropic configuration + active provider", icon: Bot },
+    { href: "/security/mcp", label: "MCP tokens", desc: "Bearer tokens for `bunx @caelo/mcp-server` — drive your install from Claude Code / IDE", icon: Key },
     { href: "/security/deployments", label: "Deployments", desc: "Ops view — dev / staging / production + promote", icon: Rocket },
+    { href: "/security/dns", label: "DNS records", desc: "Per-(provider, env) DNS records the active stack expects + live resolver checks", icon: Globe },
     { href: "/security/costs", label: "AI cost controls", desc: "Token + spend dashboard", icon: Coins },
   ];
 </script>

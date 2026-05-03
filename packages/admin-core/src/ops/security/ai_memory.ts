@@ -70,6 +70,7 @@ export const setAiMemoryOp = defineOperation({
       await tx.execute(sql`DELETE FROM site_ai_memory WHERE slot = ${input.slot}`);
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "ai_memory.set",
         input,
         succeeded: true,
@@ -87,6 +88,7 @@ export const setAiMemoryOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "ai_memory.set",
       input,
       succeeded: true,
@@ -133,6 +135,7 @@ export const proposeAiMemoryOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "ai_memory.propose",
       input,
       succeeded: true,
@@ -253,6 +256,7 @@ export const reviewAiMemoryOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "ai_memory.review",
       input,
       succeeded: true,

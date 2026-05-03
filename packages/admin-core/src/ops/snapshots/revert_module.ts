@@ -69,6 +69,7 @@ export const revertModuleOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "snapshots.revert_module",
       input,
       succeeded: true,

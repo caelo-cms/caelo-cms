@@ -146,6 +146,7 @@ export const mediaUploadOp = defineOperation({
       // no new row landed in media_assets.
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "media.upload",
         input: { sha256: input.sha256, mime: input.mime, originalName: input.originalName },
         succeeded: true,
@@ -206,6 +207,7 @@ export const mediaUploadOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "media.upload",
       input: { sha256: input.sha256, mime: input.mime, originalName: input.originalName },
       succeeded: true,
@@ -365,6 +367,7 @@ export const mediaUpdateAltOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "media.update_alt",
       input,
       succeeded: true,
@@ -433,6 +436,7 @@ export const mediaDeleteOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "media.delete",
       input,
       succeeded: true,
@@ -618,6 +622,7 @@ export const setMediaCdnOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "site_defaults.set_media_cdn",
       input,
       succeeded: true,
@@ -667,6 +672,7 @@ export const setFocalPointOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "media.set_focal_point",
       input,
       succeeded: true,
@@ -714,6 +720,7 @@ export const addCropOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "media.add_crop",
       input,
       succeeded: true,
@@ -744,6 +751,7 @@ export const deleteCropOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "media.delete_crop",
       input,
       succeeded: true,
@@ -865,6 +873,7 @@ export const proposeAltOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "media.propose_alt",
       input: { assetId: input.assetId, proposedAltLen: input.proposedAlt.length },
       succeeded: true,
@@ -989,6 +998,7 @@ export const reviewAltProposalOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "media.review_alt_proposal",
       input,
       succeeded: true,
@@ -1055,6 +1065,7 @@ export const mediaDeleteManyOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "media.delete_many",
       input: { count: input.assetIds.length, force: input.force },
       succeeded: true,

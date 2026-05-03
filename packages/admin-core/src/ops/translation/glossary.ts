@@ -101,6 +101,7 @@ export const setGlossaryEntryOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "glossary.set",
       input,
       succeeded: true,
@@ -122,6 +123,7 @@ export const deleteGlossaryEntryOp = defineOperation({
     await tx.execute(sql`DELETE FROM site_glossary WHERE id = ${input.id}::uuid`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "glossary.delete",
       input,
       succeeded: true,

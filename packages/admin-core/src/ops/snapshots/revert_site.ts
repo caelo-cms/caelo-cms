@@ -160,6 +160,7 @@ export const revertSiteOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "snapshots.revert_site",
       input,
       succeeded: true,

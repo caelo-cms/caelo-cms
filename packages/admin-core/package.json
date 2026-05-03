@@ -1,6 +1,6 @@
 {
   "name": "@caelo/admin-core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
@@ -10,9 +10,13 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "lint:audit": "bun run scripts/check-audit-callsites.ts",
+    "lint:spdx": "bun run scripts/check-spdx-headers.ts"
   },
   "dependencies": {
+    "@caelo/plugin-host": "workspace:*",
+    "@caelo/plugin-sandbox": "workspace:*",
     "@caelo/query-api": "workspace:*",
     "@caelo/shared": "workspace:*",
     "@caelo/static-generator": "workspace:*",
@@ -21,5 +25,15 @@
     "htmlparser2": "^12.0.0",
     "sharp": "^0.34",
     "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@caelo/api-gateway": "workspace:*",
+    "@caelo/plugin-auth": "workspace:*",
+    "@caelo/plugin-comments": "workspace:*",
+    "@caelo/plugin-forms": "workspace:*",
+    "@caelo/plugin-newsletter": "workspace:*",
+    "@caelo/plugin-ratings": "workspace:*",
+    "@caelo/plugin-sdk": "workspace:*",
+    "@caelo/plugin-translation": "workspace:*"
   }
 }

@@ -17,7 +17,7 @@ export const createFirstOwnerOp = defineOperation({
     displayName: z.string().min(1).max(128),
   }),
   output: z.object({ userId: z.string() }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(736578)`);
 
     const existing = (await tx.execute(
@@ -26,6 +26,7 @@ export const createFirstOwnerOp = defineOperation({
     if (existing.length > 0) {
       await recordAudit(tx, {
         actorId: SYSTEM_ACTOR_ID,
+        requestId: ctx.requestId,
         operation: "users.create_first_owner",
         input,
         succeeded: false,
@@ -63,6 +64,7 @@ export const createFirstOwnerOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: SYSTEM_ACTOR_ID,
+      requestId: ctx.requestId,
       operation: "users.create_first_owner",
       input,
       succeeded: true,
@@ -181,6 +183,7 @@ export const createUserOp = defineOperation({
     if (dup.length > 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "users.create",
         input,
         succeeded: false,
@@ -217,6 +220,7 @@ export const createUserOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "users.create",
       input,
       succeeded: true,
@@ -248,6 +252,7 @@ export const setUserRolesOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "users.set_roles",
       input,
       succeeded: true,
@@ -281,6 +286,7 @@ export const deleteUserOp = defineOperation({
     if (target.is_first_owner) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "users.delete",
         input,
         succeeded: false,
@@ -297,6 +303,7 @@ export const deleteUserOp = defineOperation({
       // Already soft-deleted; idempotent — succeed without touching the row.
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "users.delete",
         input,
         succeeded: true,
@@ -310,6 +317,7 @@ export const deleteUserOp = defineOperation({
     await tx.execute(sql`DELETE FROM sessions WHERE user_id = ${input.userId}::uuid`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "users.delete",
       input,
       succeeded: true,
@@ -341,6 +349,7 @@ export const completeOnboardingOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "users.complete_onboarding",
       input: {},
       succeeded: true,

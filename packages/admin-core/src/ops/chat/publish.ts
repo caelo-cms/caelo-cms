@@ -164,6 +164,7 @@ export const publishChatSessionOp = defineOperation({
       `);
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "chat.publish",
         input,
         succeeded: true,
@@ -254,6 +255,7 @@ export const publishChatSessionOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "chat.publish",
       input,
       succeeded: true,

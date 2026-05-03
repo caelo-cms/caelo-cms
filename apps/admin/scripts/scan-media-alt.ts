@@ -53,7 +53,14 @@ const SYSTEM_CTX: ExecutionContext = {
 };
 
 async function main(): Promise<void> {
-  const sql = new SQL(ADMIN_URL!);
+  // ADMIN_URL + PUBLIC_URL are non-null past the env guards above. The
+  // local consts narrow the type so we can drop the `!` assertions.
+  const adminUrl = ADMIN_URL;
+  const publicUrl = PUBLIC_URL;
+  if (!adminUrl || !publicUrl) {
+    process.exit(1);
+  }
+  const sql = new SQL(adminUrl);
   const targets: { id: string; original_name: string; mime: string }[] = [];
   try {
     await sql.begin(async (tx) => {
@@ -89,8 +96,8 @@ async function main(): Promise<void> {
   }
 
   const adapter = new DatabaseAdapter({
-    adminDatabaseUrl: ADMIN_URL!,
-    publicDatabaseUrl: PUBLIC_URL!,
+    adminDatabaseUrl: adminUrl,
+    publicDatabaseUrl: publicUrl,
   });
   const registry = new OperationRegistry();
   registerAdminOps(registry);

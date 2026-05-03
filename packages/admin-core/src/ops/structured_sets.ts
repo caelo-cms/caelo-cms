@@ -82,6 +82,7 @@ export const setStructuredSetOp = defineOperation({
       if (e instanceof ZodError) {
         await recordAudit(tx, {
           actorId: ctx.actorId,
+          requestId: ctx.requestId,
           operation: "structured_sets.set",
           input,
           succeeded: false,
@@ -123,6 +124,7 @@ export const setStructuredSetOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "structured_sets.set",
       input,
       succeeded: true,
@@ -212,6 +214,7 @@ export const deleteStructuredSetOp = defineOperation({
     await tx.execute(sql`DELETE FROM structured_sets WHERE id = ${input.setId}::uuid`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "structured_sets.delete",
       input,
       succeeded: true,

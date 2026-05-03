@@ -254,6 +254,7 @@ export const proposeCreateLocaleOp = defineOperation({
     if (dup.length > 0) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
+        requestId: ctx.requestId,
         operation: "locales.propose_create",
         input,
         succeeded: false,
@@ -281,6 +282,7 @@ export const proposeCreateLocaleOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "locales.propose_create",
       input,
       succeeded: true,
@@ -334,6 +336,7 @@ export const proposeDeleteLocaleOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "locales.propose_delete",
       input,
       succeeded: true,
@@ -387,6 +390,7 @@ export const proposeSetDefaultLocaleOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "locales.propose_set_default",
       input,
       succeeded: true,
@@ -449,6 +453,7 @@ export const proposeUpdateStrategyOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "locales.propose_update_strategy",
       input,
       succeeded: true,
@@ -763,6 +768,7 @@ export const executeLocaleProposalOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "locales.execute_proposal",
       input,
       succeeded: true,
@@ -819,6 +825,7 @@ export const rejectLocaleProposalOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "locales.reject_proposal",
       input,
       succeeded: true,

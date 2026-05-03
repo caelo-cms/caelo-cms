@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo AWS provider stack. Provisions RDS Postgres + S3 (media + static
+# output) + CloudFront + Lambda@Edge (A/B split + redirects) + ECS
+# Fargate (admin / gateway / orchestrator / runner) + Secrets Manager.
+# Implements the shared CloudAdapterInputs/CloudAdapterOutputs contract
+# from packages/provisioning/src/adapter.ts so the cms-provision CLI's
+# pulumi-output-sync subcommand can consume the outputs uniformly with
+# the GCP + Azure stacks.
+name: caelo-aws
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+    packagemanager: bun
+description: Caelo AWS stack — RDS Multi-AZ + S3 + CloudFront + Lambda@Edge + ECS Fargate.
+config:
+  caelo-aws:domain:
+    type: string
+    description: Primary domain (e.g. example.com). Admin + production public both bind here.
+  caelo-aws:ownerEmail:
+    type: string
+    description: Operator email used for ACM cert validation + Pulumi notifications.
+  caelo-aws:region:
+    type: string
+    default: us-east-1
+    description: Primary AWS region (RDS, S3, ECS). Lambda@Edge always pinned to us-east-1 regardless.
+  caelo-aws:rdsInstanceClass:
+    type: string
+    default: db.t4g.small
+    description: RDS instance class. db.t4g.small is the cheapest Multi-AZ-capable Graviton class.
+  caelo-aws:fargateCpu:
+    type: string
+    default: "512"
+    description: vCPU units per Fargate task (512 = 0.5 vCPU). Bump for production.
+  caelo-aws:fargateMemoryMb:
+    type: string
+    default: "1024"
+    description: Memory MB per Fargate task. Bump alongside CPU.

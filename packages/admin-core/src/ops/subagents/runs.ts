@@ -150,6 +150,7 @@ export const finishSubagentRunOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "subagent_runs.finish",
       input,
       succeeded: input.status === "completed",
@@ -262,6 +263,7 @@ export const gcSubagentSessionsOp = defineOperation({
     const sessionsDeleted = rows.length;
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "subagent_runs.gc_old_sessions",
       input,
       succeeded: true,

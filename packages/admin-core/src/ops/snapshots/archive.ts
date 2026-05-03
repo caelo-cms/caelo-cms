@@ -49,6 +49,7 @@ export const archiveOlderThanOp = defineOperation({
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "snapshots.archive_older_than",
       input,
       succeeded: true,

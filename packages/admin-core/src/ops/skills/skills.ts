@@ -179,6 +179,7 @@ export const setSkillOp = defineOperation({
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "skills.set",
       input,
       succeeded: true,
@@ -205,6 +206,7 @@ export const archiveSkillOp = defineOperation({
     `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
+      requestId: ctx.requestId,
       operation: "skills.archive",
       input,
       succeeded: true,
