@@ -1,27 +1,43 @@
 {
   "name": "@caelo-cms/provisioning",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.1",
+  "private": false,
   "license": "MPL-2.0",
+  "description": "Pulumi-driven provisioning for Caelo CMS — `bunx @caelo-cms/provisioning --provider <self-hosted|gcp|aws|azure>` brings up a TLS-served install with Postgres + storage + secrets manager + the admin + the API gateway.",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "cms-provision": "./src/cli.ts"
+    "cms-provision": "./dist/cli.js"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
+  "files": [
+    "dist/",
+    "stacks/",
+    "caddy/",
+    "README.md",
+    "package.json"
+  ],
   "scripts": {
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "build": "tsc -b --force",
+    "prepublishOnly": "tsc -b --force"
   },
   "dependencies": {
-    "@caelo-cms/shared": "workspace:*",
     "@pulumi/aws": "^7",
     "@pulumi/awsx": "^3",
     "@pulumi/azure-native": "^3",
     "@pulumi/command": "^1",
     "@pulumi/gcp": "^9",
     "@pulumi/pulumi": "^3"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

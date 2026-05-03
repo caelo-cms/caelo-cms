@@ -225,7 +225,6 @@
         "cms-provision": "./src/cli.ts",
       },
       "dependencies": {
-        "@caelo-cms/shared": "workspace:*",
         "@pulumi/aws": "^7",
         "@pulumi/awsx": "^3",
         "@pulumi/azure-native": "^3",

@@ -1,23 +1,37 @@
 {
   "name": "@caelo-cms/mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "license": "MPL-2.0",
   "description": "MCP server exposing the Caelo CMS chat-runner as a `caelo_chat` tool. Lets Claude Code (or any MCP-aware client) drive a Caelo install from outside the browser.",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "caelo-mcp-server": "./src/index.ts"
+    "caelo-mcp-server": "./dist/index.js"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "package.json"
+  ],
   "scripts": {
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "build": "tsc -b --force",
+    "prepublishOnly": "tsc -b --force"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "zod": "4.3.6"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
