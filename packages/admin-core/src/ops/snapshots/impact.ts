@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { defineOperation } from "@caelo/query-api";
-import { err, moduleImpactInput, ok } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, moduleImpactInput, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { classifySeverity, defaultTemplateBlockIsHeader } from "../../snapshots/index.js";

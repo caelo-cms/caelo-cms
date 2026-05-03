@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/mcp-server — entrypoint.
+ * @caelo-cms/mcp-server — entrypoint.
  *
  * Reads `CAELO_ADMIN_URL` + `CAELO_MCP_TOKEN` from env, builds an MCP
  * server exposing exactly one tool (`caelo_chat`), and listens over

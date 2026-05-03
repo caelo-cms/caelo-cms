@@ -6,12 +6,12 @@
  * Owners review the queue at /security/ai/memory-proposals.
  */
 
-import { execute } from "@caelo/query-api";
-import { siteMemoryProposeToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { siteMemoryProposeToolInput } from "@caelo-cms/shared";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const siteMemoryProposeTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").SiteMemoryProposeToolInput
+  import("@caelo-cms/shared").SiteMemoryProposeToolInput
 > = {
   // P6.7.2 — Anthropic's tool-name validator rejects dots
   // (`^[a-zA-Z0-9_-]{1,128}$`). Keep this as snake_case so the live

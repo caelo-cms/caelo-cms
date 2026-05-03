@@ -8,13 +8,13 @@
  * Publish-pill confirm.
  */
 
-import { execute } from "@caelo/query-api";
-import { optimizePageSeoToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { optimizePageSeoToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const optimizePageSeoTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").OptimizePageSeoToolInput
+  import("@caelo-cms/shared").OptimizePageSeoToolInput
 > = {
   name: "optimize_page_seo",
   description:

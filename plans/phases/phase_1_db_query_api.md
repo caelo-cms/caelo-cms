@@ -85,7 +85,7 @@ GRANT CONNECT ON DATABASE cms_public TO public_role;
 packages/migrations/
 ├── drizzle.config.cms-admin.ts
 ├── drizzle.config.cms-public.ts
-├── package.json                             # @caelo/migrations, scripts: db:bootstrap, migrate:admin, migrate:public
+├── package.json                             # @caelo-cms/migrations, scripts: db:bootstrap, migrate:admin, migrate:public
 ├── src/
 │   ├── bootstrap.sh                          # roles + DBs; idempotent; shell (not SQL) so env-var substitution works at initdb time
 │   ├── rls.ts                                # policy-template generator
@@ -123,7 +123,7 @@ packages/query-api/src/
 Environment / compose changes (additive — no P0 rework):
 
 - `.env.example` gains: `ADMIN_DATABASE_URL`, `PUBLIC_DATABASE_URL`, `ADMIN_ROLE_PASSWORD`, `PUBLIC_ROLE_PASSWORD`.
-- `docker-compose.yml` gains `volumes: - ./packages/migrations/src/bootstrap.sql:/docker-entrypoint-initdb.d/01-bootstrap.sql:ro` so fresh containers boot with roles + DBs ready; migrations run via `bun run --filter=@caelo/migrations migrate:admin && migrate:public` on local dev and in CI.
+- `docker-compose.yml` gains `volumes: - ./packages/migrations/src/bootstrap.sql:/docker-entrypoint-initdb.d/01-bootstrap.sql:ro` so fresh containers boot with roles + DBs ready; migrations run via `bun run --filter=@caelo-cms/migrations migrate:admin && migrate:public` on local dev and in CI.
 - CI workflow gains a `Bootstrap databases` step + a `Run migrations` step between `Install` and `Test`.
 
 ## Test plan (three tiers per CLAUDE.md §6)
@@ -150,9 +150,9 @@ Environment / compose changes (additive — no P0 rework):
 ```bash
 bun install
 docker compose up -d
-bun run --filter=@caelo/migrations db:bootstrap
-bun run --filter=@caelo/migrations migrate:admin
-bun run --filter=@caelo/migrations migrate:public
+bun run --filter=@caelo-cms/migrations db:bootstrap
+bun run --filter=@caelo-cms/migrations migrate:admin
+bun run --filter=@caelo-cms/migrations migrate:public
 bun run lint
 bun run typecheck
 bun test
@@ -165,8 +165,8 @@ All green = P1 done. A failing `rls.integration.test.ts` means RLS is not `FORCE
 
 | Package | Version | License | Workspace |
 |---|---|---|---|
-| drizzle-orm | 0.45.2 | Apache-2.0 | `@caelo/migrations`, `@caelo/query-api` |
-| drizzle-kit | 0.31.10 | MIT | `@caelo/migrations` (dev) |
+| drizzle-orm | 0.45.2 | Apache-2.0 | `@caelo-cms/migrations`, `@caelo-cms/query-api` |
+| drizzle-kit | 0.31.10 | MIT | `@caelo-cms/migrations` (dev) |
 
 No `postgres` / `pg` / `node-postgres` — Bun.sql used directly via `drizzle-orm/bun-sql`.
 
@@ -196,6 +196,6 @@ Two surprises caught during the implementation pass; both are recorded in the ma
 1. **RLS `WITH CHECK` needs the same system-kind bypass as `USING`.** Without it, even `system` callers (seed, bootstrap, P2 actor creation) cannot INSERT rows whose `id != current_setting('caelo.actor_id')`. Fixed by extending the bypass clause in `packages/migrations/src/rls.ts` `buildRlsSql`.
 2. **Drizzle wraps driver errors in `DrizzleQueryError`.** The inner Postgres `errno: '42501'` is only reachable via the `.cause` chain. `isRlsDenial` now walks up to 5 levels of `.cause` and checks both `.errno` (Bun.SQL) and `.code` (pg-style drivers).
 
-Migration runs are invoked from the repo root (`bun run db:migrate`) so Bun auto-loads `.env`. The per-workspace scripts in `@caelo/migrations` still work for direct invocation but require env vars to be in the current shell.
+Migration runs are invoked from the repo root (`bun run db:migrate`) so Bun auto-loads `.env`. The per-workspace scripts in `@caelo-cms/migrations` still work for direct invocation but require env vars to be in the current shell.
 
 CI bootstrap runs each DDL statement as a separate `psql -c` because `CREATE DATABASE cannot run inside a transaction block` and `psql -c "stmt1; stmt2;"` wraps in one implicit txn. Do not refactor back into a single heredoc.

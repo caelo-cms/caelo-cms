@@ -10,8 +10,8 @@
  * Slugs are accepted (not ids) so the AI can pass natural names.
  */
 
-import { execute } from "@caelo/query-api";
-import { setSiteDefaultsToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { setSiteDefaultsToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -26,7 +26,7 @@ interface TemplateDetail {
 }
 
 export const setSiteDefaultsTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").SetSiteDefaultsToolInput
+  import("@caelo-cms/shared").SetSiteDefaultsToolInput
 > = {
   name: "set_site_defaults",
   description:

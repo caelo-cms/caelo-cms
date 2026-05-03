@@ -25,7 +25,7 @@ The `--provider azure` adapter mirrors the GCP / AWS shape on Azure-equivalent s
 ## Quickstart
 
 ```bash
-bunx @caelo/provisioning --provider azure \
+bunx @caelo-cms/provisioning --provider azure \
   --subscription <id> \
   --resource-group caelo-prod \
   --location westeurope \

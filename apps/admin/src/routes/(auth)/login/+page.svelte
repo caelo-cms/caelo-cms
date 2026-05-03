@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { loginFormSchema } from "@caelo/shared";
+  import { loginFormSchema } from "@caelo-cms/shared";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {

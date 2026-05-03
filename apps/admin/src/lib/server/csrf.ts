@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { verifyCsrfToken } from "@caelo/admin-core";
+import { verifyCsrfToken } from "@caelo-cms/admin-core";
 import { error } from "@sveltejs/kit";
 
 /**

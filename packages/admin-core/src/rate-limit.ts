@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { DatabaseAdapter } from "@caelo/query-api";
+import type { DatabaseAdapter } from "@caelo-cms/query-api";
 
 /**
  * Postgres-backed sliding-window rate limiter. Buckets live in the

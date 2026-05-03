@@ -5,7 +5,7 @@
  * (future) Reject actions, and a Cleanup button.
  */
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { error, fail } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";

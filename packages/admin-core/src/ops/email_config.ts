@@ -10,8 +10,8 @@
  * transport).
  */
 
-import { defineOperation } from "@caelo/query-api";
-import { err, ok } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";

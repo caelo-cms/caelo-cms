@@ -13,9 +13,9 @@
  * typed in the browser chat.
  */
 
-import { defineOperation, execute, type OperationRegistry } from "@caelo/query-api";
-import type { DatabaseAdapter } from "@caelo/query-api";
-import { err, ok, type Result } from "@caelo/shared";
+import { defineOperation, execute, type OperationRegistry } from "@caelo-cms/query-api";
+import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import { err, ok, type Result } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { AIProvider } from "../../ai/provider.js";

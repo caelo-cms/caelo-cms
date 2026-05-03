@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-sandbox/schema — schema-from-spec SQL emitter.
+ * @caelo-cms/plugin-sandbox/schema — schema-from-spec SQL emitter.
  *
  * Translates a plugin's declared `schema` map into CREATE TABLE
  * statements scoped to a slug-prefixed schema in cms_public:
@@ -28,7 +28,7 @@
  * but the constraint is defense-in-depth).
  */
 
-import type { PluginSchemaMap } from "@caelo/plugin-sdk";
+import type { PluginSchemaMap } from "@caelo-cms/plugin-sdk";
 
 export interface EmittedSchema {
   /** The cms_public sub-schema name (e.g. "plugin_comments"). */

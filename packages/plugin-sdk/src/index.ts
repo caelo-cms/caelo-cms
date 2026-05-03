@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-sdk — Phase 11.
+ * @caelo-cms/plugin-sdk — Phase 11.
  *
  * The SDK is the contract between Caelo's plugin host and any plugin,
  * Tier 1 or Tier 2. Both tiers import from this single package; the
@@ -15,7 +15,7 @@
  *                    --no-net. Receives `PluginContext` only — the locked
  *                    base shape limited to its own cms_public schema.
  *
- * The validator (in @caelo/plugin-sandbox) walks plugin source and
+ * The validator (in @caelo-cms/plugin-sandbox) walks plugin source and
  * rejects forbidden patterns BEFORE the runtime ever loads the plugin.
  * For Tier 2 the validator gates activation; for Tier 1 it runs at
  * startup as defense-in-depth (signed manifest + validator + Deno

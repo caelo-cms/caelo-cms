@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-newsletter — Tier-1 plugin: subscriber list + campaign sends.
+ * @caelo-cms/plugin-newsletter — Tier-1 plugin: subscriber list + campaign sends.
  *
  * P12 PR2.4 — first real ctx.email user. Worker drains the sends queue every
  * minute. Owner drafts a campaign via AI; visitor double-opt-in confirms;
@@ -20,8 +20,8 @@ import {
   KIT_CSS,
   postPluginJson,
   setStatus,
-} from "@caelo/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo/plugin-sdk";
+} from "@caelo-cms/plugin-component-kit";
+import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 
 function hashEmail(email: string): string {
   // Deterministic non-cryptographic hash for de-dupe + analytics. Email lookups

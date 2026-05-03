@@ -1,5 +1,5 @@
 {
-  "name": "@caelo/plugin-forms",
+  "name": "@caelo-cms/plugin-forms",
   "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
@@ -13,7 +13,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@caelo/plugin-component-kit": "workspace:*",
-    "@caelo/plugin-sdk": "workspace:*"
+    "@caelo-cms/plugin-component-kit": "workspace:*",
+    "@caelo-cms/plugin-sdk": "workspace:*"
   }
 }

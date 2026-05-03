@@ -8,7 +8,7 @@
 // auth plugin core logic is locked from AI regeneration.
 
 /**
- * @caelo/plugin-auth — Tier-1 plugin: visitor authentication.
+ * @caelo-cms/plugin-auth — Tier-1 plugin: visitor authentication.
  *
  * P12 PR2.6 — visitor signup / login / logout / sessions / password reset.
  * OAuth2 (Google + GitHub) via Arctic lands as a follow-up; v1 ships
@@ -27,8 +27,8 @@ import {
   KIT_CSS,
   postPluginJson,
   setStatus,
-} from "@caelo/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo/plugin-sdk";
+} from "@caelo-cms/plugin-component-kit";
+import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 
 const SESSION_DURATION_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 const PASSWORD_RESET_DURATION_MS = 1000 * 60 * 60; // 1 hour

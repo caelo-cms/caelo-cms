@@ -9,13 +9,13 @@
  * per CLAUDE.md §11.
  */
 
-import { execute } from "@caelo/query-api";
-import { bulkOptimizeSeoToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { bulkOptimizeSeoToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").BulkOptimizeSeoToolInput
+  import("@caelo-cms/shared").BulkOptimizeSeoToolInput
 > = {
   name: "bulk_optimize_seo",
   description:

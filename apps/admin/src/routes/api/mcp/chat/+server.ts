@@ -3,7 +3,7 @@
 /**
  * P17 PR4 — MCP server bridge endpoint.
  *
- * Inbound: `bunx @caelo/mcp-server` POSTs here with the bearer in
+ * Inbound: `bunx @caelo-cms/mcp-server` POSTs here with the bearer in
  * `x-caelo-mcp-token` and the chat input in the JSON body. We dispatch
  * `mcp.send_chat` (system-only op) which resolves the bearer to a
  * Caelo actor and drives `runChatTurn`. Auth lives entirely inside
@@ -14,8 +14,8 @@
  * as structured JSON, not as redirects.
  */
 
-import { execute } from "@caelo/query-api";
-import type { ExecutionContext } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { error, json } from "@sveltejs/kit";
 import { getQueryContext } from "$lib/server/query.js";
 import type { RequestHandler } from "./$types";

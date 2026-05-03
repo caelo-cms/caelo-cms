@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 /**
  * Best-effort .env loader. Playwright runs under Node and does not auto-load
- * the workspace .env; we read it ourselves so `bun run --filter @caelo/admin
+ * the workspace .env; we read it ourselves so `bun run --filter @caelo-cms/admin
  * e2e` works without a separate `bun --env-file` wrapper.
  */
 function loadEnvFile(): void {
@@ -54,7 +54,7 @@ function runBun(script: string, extraEnv: Record<string, string> = {}): void {
 
 const SETUP_SCRIPT = `
   import { SQL } from "bun";
-  import { hashPassword } from "@caelo/admin-core";
+  import { hashPassword } from "@caelo-cms/admin-core";
 
   const email = "dev-owner@example.com";
   const password = "dev owner password";

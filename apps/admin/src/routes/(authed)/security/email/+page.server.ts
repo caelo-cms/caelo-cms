@@ -7,8 +7,8 @@
  * SES are placeholders today; resend + none are fully wired.
  */
 
-import { buildEmailTransport, type EmailConfigRow } from "@caelo/admin-core";
-import { execute } from "@caelo/query-api";
+import { buildEmailTransport, type EmailConfigRow } from "@caelo-cms/admin-core";
+import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";

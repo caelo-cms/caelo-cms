@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { ActorKind, ExecutionContext, Result } from "@caelo/shared";
+import type { ActorKind, ExecutionContext, Result } from "@caelo-cms/shared";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type { z } from "zod";
 import type { QueryError } from "./errors.js";

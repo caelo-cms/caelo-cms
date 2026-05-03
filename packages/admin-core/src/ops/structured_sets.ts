@@ -4,7 +4,7 @@
  * P6.7.5 — generic named-list primitive. One table holds N kinds of
  * structured data (nav-menus, taxonomies, theme tokens, tag lists,
  * link blocks). The `kind` discriminator drives a per-kind Zod
- * validator from `@caelo/shared/structured-sets` and a per-kind
+ * validator from `@caelo-cms/shared/structured-sets` and a per-kind
  * renderer at preview / deploy time.
  *
  * Why a single table: every named-list editor surface ends up
@@ -14,9 +14,9 @@
  * + taxonomies + future kinds.
  */
 
-import type { TransactionRunner } from "@caelo/query-api";
-import { defineOperation } from "@caelo/query-api";
-import { err, ok, structuredSetKind, validateStructuredSetItems } from "@caelo/shared";
+import type { TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok, structuredSetKind, validateStructuredSetItems } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { ZodError, z } from "zod";
 import { recordAudit } from "../audit.js";

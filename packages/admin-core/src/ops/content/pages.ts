@@ -7,7 +7,7 @@
  * "no raw HTML on pages" invariant in code.
  */
 
-import { defineOperation } from "@caelo/query-api";
+import { defineOperation } from "@caelo-cms/query-api";
 import {
   err,
   extractMediaRefs,
@@ -17,7 +17,7 @@ import {
   pageSetModulesSchema,
   pageUpdateSchema,
   slugSchema,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

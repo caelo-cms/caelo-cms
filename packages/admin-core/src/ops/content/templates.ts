@@ -5,8 +5,8 @@
  * skeleton; pages compose into them via `template_blocks` slots.
  */
 
-import { defineOperation } from "@caelo/query-api";
-import { err, ok, templateCreateSchema, templateUpdateSchema } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok, templateCreateSchema, templateUpdateSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

@@ -14,7 +14,7 @@
  * audit trail.
  */
 
-import type { TransactionRunner } from "@caelo/query-api";
+import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import type { ModuleState, PageLayoutState, PageState, TemplateState } from "./state.js";
 

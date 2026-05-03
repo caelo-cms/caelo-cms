@@ -22,9 +22,9 @@
  * ActorScopeRejected → the AI surfaces "click Approve at /security/locales/pending".
  */
 
-import type { TransactionRunner } from "@caelo/query-api";
-import { defineOperation } from "@caelo/query-api";
-import { err, type LocaleConfig, ok, resolveLocaleUrl } from "@caelo/shared";
+import type { TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, type LocaleConfig, ok, resolveLocaleUrl } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";

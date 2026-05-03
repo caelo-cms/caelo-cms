@@ -86,8 +86,8 @@ test("autofill is fill-once; second call leaves SEO untouched", async ({ page })
     [
       "-e",
       `
-      import { DatabaseAdapter, OperationRegistry, execute } from "@caelo/query-api";
-      import { registerAdminOps } from "@caelo/admin-core";
+      import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
+      import { registerAdminOps } from "@caelo-cms/admin-core";
       const adapter = new DatabaseAdapter({
         adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
         publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_DATABASE_URL,
@@ -120,8 +120,8 @@ test("autofill is fill-once; second call leaves SEO untouched", async ({ page })
     [
       "-e",
       `
-      import { DatabaseAdapter, OperationRegistry, execute } from "@caelo/query-api";
-      import { registerAdminOps } from "@caelo/admin-core";
+      import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
+      import { registerAdminOps } from "@caelo-cms/admin-core";
       const adapter = new DatabaseAdapter({
         adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
         publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_DATABASE_URL,

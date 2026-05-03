@@ -19,7 +19,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { TransactionRunner } from "@caelo/query-api";
+import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   injectSeoIntoHead,
   type LocaleConfig,
@@ -27,7 +27,7 @@ import {
   resolveCanonicalUrl,
   resolveLocaleUrl,
   type SiteSeoSettings,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 interface PageSeoBundle {

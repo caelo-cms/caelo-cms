@@ -16,8 +16,8 @@
  * sliding window AND the burst tokens — one round-trip per request.
  */
 
-import type { LoadedPlugin } from "@caelo/plugin-host";
-import type { DatabaseAdapter } from "@caelo/query-api";
+import type { LoadedPlugin } from "@caelo-cms/plugin-host";
+import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
 export interface RateLimitSpec {

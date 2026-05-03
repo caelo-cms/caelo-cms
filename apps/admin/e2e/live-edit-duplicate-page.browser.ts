@@ -158,8 +158,8 @@ test("duplicate filters out soft-deleted modules — only live rows clone over",
       "-e",
       `
       import { SQL } from "bun";
-      import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
-      import { registerAdminOps } from "@caelo/admin-core";
+      import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+      import { registerAdminOps } from "@caelo-cms/admin-core";
 
       const c = new SQL(process.env.ADMIN_DATABASE_URL);
       let sourcePageId = "";

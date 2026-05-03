@@ -4,7 +4,7 @@
  * P13 — AI-proposed rate-limit changes (§11.A queue).
  */
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";

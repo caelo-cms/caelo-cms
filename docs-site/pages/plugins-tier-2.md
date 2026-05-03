@@ -90,7 +90,7 @@ The validator (`packages/plugin-sandbox/src/validate.ts`, oxc-parser-based) walk
 | `import x from 'node:fs'` | Filesystem access | (no equivalent — plugins don't need files) |
 | `fetch(...)` / `XMLHttpRequest` | Network egress | (none — plugins are server-internal) |
 | `Deno.readFile`, `Deno.env.get`, etc. | Bypass sandbox flags | (none) |
-| Dynamic `import()` | Runtime code injection | Static `import` from `@caelo/plugin-sdk` |
+| Dynamic `import()` | Runtime code injection | Static `import` from `@caelo-cms/plugin-sdk` |
 | Template literals matching SQL keywords | Raw SQL | `ctx.query.insert/list/update/delete` |
 | `eval`, `Function`, `new Function` | Runtime code injection | (none) |
 | Top-level `globalThis` writes | Escape vector | Module-scoped consts only |
@@ -151,4 +151,4 @@ A Tier 2 row's `tier` column is immutable after insert. To "graduate" a communit
 
 - [Build a plugin →](/plugins-build) (the Tier 1 path is here)
 - [Architecture →](/architecture)
-- The [`@caelo/plugin-sandbox` source](https://github.com/caelo-cms/caelo-cms/tree/main/packages/plugin-sandbox)
+- The [`@caelo-cms/plugin-sandbox` source](https://github.com/caelo-cms/caelo-cms/tree/main/packages/plugin-sandbox)

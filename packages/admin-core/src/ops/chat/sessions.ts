@@ -10,8 +10,8 @@
  *   chat.archive_session  — soft-archive (sets archived_at).
  */
 
-import { defineOperation } from "@caelo/query-api";
-import { chatCreateSessionInput, chatRenameSessionInput, err, ok } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { chatCreateSessionInput, chatRenameSessionInput, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

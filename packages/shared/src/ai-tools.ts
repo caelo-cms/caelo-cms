@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Zod schemas for the AI tools shipped in P5. Lives in @caelo/shared so
+ * Zod schemas for the AI tools shipped in P5. Lives in @caelo-cms/shared so
  * the provider abstraction (which streams tool-call args from the LLM)
  * and the tool dispatcher (which validates + invokes the handler)
  * import from a single source.
@@ -413,7 +413,7 @@ export const reorderModuleToolInput = z
  * kind specifically. Users say "edit the menu", not "set the
  * structured set kind=nav-menu" — this maps natural language to the
  * right tool. Items shape matches `navMenuItem` from
- * @caelo/shared/structured-sets.
+ * @caelo-cms/shared/structured-sets.
  */
 export const setNavMenuToolInput = z
   .object({

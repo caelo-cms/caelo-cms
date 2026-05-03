@@ -9,8 +9,8 @@
  * if not.
  */
 
-import { execute } from "@caelo/query-api";
-import { moveModuleToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { moveModuleToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -20,7 +20,7 @@ interface PageWithModules {
 }
 
 export const moveModuleTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").MoveModuleToolInput
+  import("@caelo-cms/shared").MoveModuleToolInput
 > = {
   name: "move_module",
   description:

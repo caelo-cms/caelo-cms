@@ -16,14 +16,14 @@
  * `/content/media/[id]` on success.
  */
 
-import { getMediaStorage, getMediaStorageProvider, runMediaPipeline } from "@caelo/admin-core";
-import { execute } from "@caelo/query-api";
+import { getMediaStorage, getMediaStorageProvider, runMediaPipeline } from "@caelo-cms/admin-core";
+import { execute } from "@caelo-cms/query-api";
 import {
   MEDIA_ALLOWED_MIMES,
   MEDIA_HARD_LIMIT_BYTES,
   MEDIA_SIZE_CAPS,
   type MediaMime,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 import { error, json } from "@sveltejs/kit";
 import { fileTypeFromBuffer } from "file-type";
 import { requirePermission } from "$lib/server/guards.js";

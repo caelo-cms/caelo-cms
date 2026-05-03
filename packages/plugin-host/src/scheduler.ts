@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host/scheduler — cron-style worker dispatch for Tier-1 plugins.
+ * @caelo-cms/plugin-host/scheduler — cron-style worker dispatch for Tier-1 plugins.
  *
  * Plugins declare cron-style background jobs in `manifest.workers[]`:
  *
@@ -23,7 +23,7 @@
  * error log surface (Owner UI in P12 review pass).
  */
 
-import type { PluginWorkerSpec } from "@caelo/plugin-sdk";
+import type { PluginWorkerSpec } from "@caelo-cms/plugin-sdk";
 import { Cron } from "croner";
 import type { runPluginOperation } from "./dispatch.js";
 

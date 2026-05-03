@@ -15,7 +15,7 @@
  * is not configured on the active provider".
  */
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { runMediaPipeline } from "../../media/pipeline.js";
 import { getMediaStorage, getMediaStorageProvider } from "../../media/storage.js";

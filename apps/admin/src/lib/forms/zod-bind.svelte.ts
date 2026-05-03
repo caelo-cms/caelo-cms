@@ -2,7 +2,7 @@
 
 /**
  * P6.6a — client-side validation helper. Pass the same Zod schema the
- * server uses (e.g. `pageCreateSchema` from @caelo/shared) and the
+ * server uses (e.g. `pageCreateSchema` from @caelo-cms/shared) and the
  * helper returns a reactive `{ errors, valid }` proxy you read in the
  * template. Fire `update(field, value)` on every input event; the
  * helper runs `safeParse` and exposes per-path error messages.

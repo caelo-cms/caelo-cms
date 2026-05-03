@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host/tools-registry — in-memory registry of AI tools
+ * @caelo-cms/plugin-host/tools-registry — in-memory registry of AI tools
  * registered by Tier-1 plugins at activation time.
  *
  * P11 statically registered tools in `packages/admin-core/src/ai/tools/index.ts`.
@@ -13,7 +13,7 @@
  * Disable / re-enable a plugin = remove / re-add its tools from this registry.
  */
 
-import type { PluginToolSpec } from "@caelo/plugin-sdk";
+import type { PluginToolSpec } from "@caelo-cms/plugin-sdk";
 import { isPluginDisabled } from "./dispatch.js";
 
 export interface RegisteredPluginTool {

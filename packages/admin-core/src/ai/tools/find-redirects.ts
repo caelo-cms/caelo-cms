@@ -7,13 +7,13 @@
  * → AI calls find first to confirm the count, then bulk-deletes).
  */
 
-import { execute } from "@caelo/query-api";
-import { findRedirectsToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { findRedirectsToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const findRedirectsTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").FindRedirectsToolInput
+  import("@caelo-cms/shared").FindRedirectsToolInput
 > = {
   name: "find_redirects",
   description:

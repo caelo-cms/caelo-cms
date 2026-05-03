@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-comments — Tier-1 plugin: moderated comments with locale awareness.
+ * @caelo-cms/plugin-comments — Tier-1 plugin: moderated comments with locale awareness.
  *
  * P12 PR2.5 — first AI-moderation user. Visitor submits → status='pending' →
  * AI classifies → Owner/AI flips to approved/rejected/spam. Static-render at
@@ -21,8 +21,8 @@ import {
   postPluginJson,
   readBakeTimestamp,
   setStatus,
-} from "@caelo/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo/plugin-sdk";
+} from "@caelo-cms/plugin-component-kit";
+import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 
 const MAX_THREAD_DEPTH = 3;
 

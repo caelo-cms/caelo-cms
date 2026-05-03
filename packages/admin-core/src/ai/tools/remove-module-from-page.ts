@@ -11,8 +11,8 @@
  * module entirely, the user should use the /content/modules surface.
  */
 
-import { execute } from "@caelo/query-api";
-import { removeModuleFromPageToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { removeModuleFromPageToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -22,7 +22,7 @@ interface PageWithModules {
 }
 
 export const removeModuleFromPageTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").RemoveModuleFromPageToolInput
+  import("@caelo-cms/shared").RemoveModuleFromPageToolInput
 > = {
   name: "remove_module_from_page",
   description:

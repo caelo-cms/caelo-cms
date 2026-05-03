@@ -37,7 +37,7 @@ The `--provider gcp` adapter spins up a managed stack that mirrors the self-host
 ## Run the provisioner
 
 ```bash
-bunx @caelo/provisioning --provider gcp \
+bunx @caelo-cms/provisioning --provider gcp \
   --project caelo-prod \
   --region europe-west1 \
   --domain caelo.example.com \
@@ -69,7 +69,7 @@ If you delegated the entire zone via `gcloud dns managed-zones create` to the in
 
 ## Three environments
 
-`bunx @caelo/provisioning --provider gcp --env staging` brings up a parallel staging stack: separate Cloud Run service, separate Cloud SQL instance (or Cloud SQL Smaller-tier — configurable), separate `staging.caelo.example.com` host, `X-Robots-Tag: noindex` header.
+`bunx @caelo-cms/provisioning --provider gcp --env staging` brings up a parallel staging stack: separate Cloud Run service, separate Cloud SQL instance (or Cloud SQL Smaller-tier — configurable), separate `staging.caelo.example.com` host, `X-Robots-Tag: noindex` header.
 
 Production promotion goes through the **Ops** view in the admin (`/security/deployments` → "Promote staging → production"), not via Pulumi.
 
@@ -88,7 +88,7 @@ Heavier installs scale Cloud Run + Cloud SQL tier; the admin's `/security/costs`
 
 | Task | How |
 |---|---|
-| Apply migrations on a new release | `bunx @caelo/provisioning upgrade` |
+| Apply migrations on a new release | `bunx @caelo-cms/provisioning upgrade` |
 | Read logs | Cloud Logging — filter by `resource.labels.service_name="caelo-admin-prod"` |
 | Restore from PITR | `gcloud sql backups restore` — see [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate the Anthropic key | Secret Manager → version add → admin Cloud Run service redeploys |

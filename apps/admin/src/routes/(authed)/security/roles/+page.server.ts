@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { PERMISSIONS } from "@caelo/admin-core";
-import { execute } from "@caelo/query-api";
+import { PERMISSIONS } from "@caelo-cms/admin-core";
+import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";

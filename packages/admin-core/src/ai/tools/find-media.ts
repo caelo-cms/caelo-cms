@@ -11,14 +11,14 @@
  * it" case where the asset isn't in that slice.
  */
 
-import { execute } from "@caelo/query-api";
-import { buildMediaUrl, findMediaToolInput, type MediaVariantTag } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { buildMediaUrl, findMediaToolInput, type MediaVariantTag } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const RASTER_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
 
-export const findMediaTool: ToolDefinitionWithHandler<import("@caelo/shared").FindMediaToolInput> =
+export const findMediaTool: ToolDefinitionWithHandler<import("@caelo-cms/shared").FindMediaToolInput> =
   {
     name: "find_media",
     description:

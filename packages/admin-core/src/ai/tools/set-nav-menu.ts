@@ -7,7 +7,7 @@
  * AI was picking the right tool but the friendlier name avoids
  * misfires when the user references a menu by display name.
  *
- * Items shape (per `navMenuItem` in @caelo/shared/structured-sets):
+ * Items shape (per `navMenuItem` in @caelo-cms/shared/structured-sets):
  *   { label, href, target?: '_self'|'_blank', children?: NavItem[],
  *     adSlotId? }
  *
@@ -15,13 +15,13 @@
  * tool just forwards the items array.
  */
 
-import { execute } from "@caelo/query-api";
-import { setNavMenuToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { setNavMenuToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setNavMenuTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").SetNavMenuToolInput
+  import("@caelo-cms/shared").SetNavMenuToolInput
 > = {
   name: "set_nav_menu",
   description:

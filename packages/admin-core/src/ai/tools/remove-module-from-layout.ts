@@ -7,8 +7,8 @@
  * removes the layout-level attachments.
  */
 
-import { execute } from "@caelo/query-api";
-import { removeModuleFromLayoutToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { removeModuleFromLayoutToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -19,7 +19,7 @@ interface LayoutDetail {
 }
 
 export const removeModuleFromLayoutTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").RemoveModuleFromLayoutToolInput
+  import("@caelo-cms/shared").RemoveModuleFromLayoutToolInput
 > = {
   name: "remove_module_from_layout",
   description:

@@ -80,7 +80,7 @@ Branch-aware writes via chat sessions: each chat operates on its own preview bra
 
 ## Provisioning
 
-`bunx @caelo/provisioning --provider <self-hosted|gcp|aws|azure>` runs Pulumi to spin up the platform-appropriate stack. Three environments per stack (dev / staging / production). Staging is `noindex` by default. The CMS doesn't manage its own DNS — `/security/dns` surfaces the records you need to create at your registrar.
+`bunx @caelo-cms/provisioning --provider <self-hosted|gcp|aws|azure>` runs Pulumi to spin up the platform-appropriate stack. Three environments per stack (dev / staging / production). Staging is `noindex` by default. The CMS doesn't manage its own DNS — `/security/dns` surfaces the records you need to create at your registrar.
 
 ## What's NOT in here
 

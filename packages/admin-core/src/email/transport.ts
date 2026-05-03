@@ -3,7 +3,7 @@
 /**
  * P12 review pass — email transport factory.
  *
- * Constructs an `EmailTransport` (the shape consumed by @caelo/plugin-host's
+ * Constructs an `EmailTransport` (the shape consumed by @caelo-cms/plugin-host's
  * `ctx.email.send`) from the singleton `email_config` row. Each transport
  * is a thin pass-through; we deliberately ship two:
  *   - `resend` — single fetch call to api.resend.com; zero deps.
@@ -15,7 +15,7 @@
  * cloud adapters where the dep is justified by the provisioning pipeline.
  */
 
-import type { EmailTransport } from "@caelo/plugin-host";
+import type { EmailTransport } from "@caelo-cms/plugin-host";
 
 export interface EmailConfigRow {
   readonly transport: "none" | "smtp" | "resend" | "ses";

@@ -16,8 +16,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
-import type { ExecutionContext } from "@caelo/shared";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 // We import runMediaPass via dynamic require so this test stays in
 // admin-core without a circular workspace dep on static-generator.

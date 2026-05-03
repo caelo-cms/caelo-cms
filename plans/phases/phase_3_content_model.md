@@ -30,7 +30,7 @@ Every step has a Playwright script under `apps/admin/e2e/`.
 - **Live module references, never inlined HTML.** Page-level rendering joins `pages → page_modules → modules` at preview time. Module updates show on the next preview refresh; no caching at this layer (P6 will deal with build-time freezing).
 - **No snapshot table writes here.** Mutations go straight to the live tables. P4 introduces the trigger/handler pattern that turns each write into a snapshot row; until then, history is `git log` of the data, which is fine for the manual-only P3 surface.
 - **Site-wide content, not per-actor RLS.** Modules/templates/pages are shared site content — every authenticated actor (`human`, `ai`, `system`) sees the same rows. RLS still ENABLE+FORCEd, but the policy is `NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL` (i.e. any session that called `set_config('caelo.actor_kind', ...)`). Anonymous DB connections see nothing. Per-actor scoping returns in P11 plugin tables.
-- **Two layers of access enforcement, mirroring the existing pattern.** Routes in `apps/admin/src/routes/content/**` call `requirePermission(locals, 'content.read')` / `'content.write'` from `$lib/server/guards.ts` — same shape as P2's `/security/users` routes. Ops in `packages/admin-core/src/ops/content/**` enforce **`actorScope`**, not permissions: `["human", "system"]` for every op in P3 (AI is intentionally excluded — P5 widens scopes when the AI surface lands). `actorScope` is already enforced by `execute()` in `@caelo/query-api` at line 51. **Ops do not call `requirePermission`** — the route is the Validator boundary for permissions, the op is the Validator boundary for actor kind.
+- **Two layers of access enforcement, mirroring the existing pattern.** Routes in `apps/admin/src/routes/content/**` call `requirePermission(locals, 'content.read')` / `'content.write'` from `$lib/server/guards.ts` — same shape as P2's `/security/users` routes. Ops in `packages/admin-core/src/ops/content/**` enforce **`actorScope`**, not permissions: `["human", "system"]` for every op in P3 (AI is intentionally excluded — P5 widens scopes when the AI surface lands). `actorScope` is already enforced by `execute()` in `@caelo-cms/query-api` at line 51. **Ops do not call `requirePermission`** — the route is the Validator boundary for permissions, the op is the Validator boundary for actor kind.
 - **Preview rendering is server-side, sandboxed in an iframe.** The admin page hosts the preview inside an `<iframe sandbox="allow-scripts" srcdoc>` so module CSS cannot leak into the admin shell and module JS cannot reach into `parent`. Same isolation principle that P11 will give plugins via Shadow DOM, applied here without needing the Web Component machinery.
 
 ## Schema additions
@@ -125,7 +125,7 @@ ops/content/preview.ts        → pages.render_preview (read-only, returns compo
 
 Shared rules:
 
-- Every op declares `actorScope: ["human", "system"]`. AI is deliberately not in scope — P5 will introduce ops that accept the `"ai"` scope, or widen these. The Validator (`execute()` in `@caelo/query-api`) rejects out-of-scope callers before the handler runs, so an AI tool call that tries `modules.update` in P3 fails with `Err('ActorOutOfScope')`.
+- Every op declares `actorScope: ["human", "system"]`. AI is deliberately not in scope — P5 will introduce ops that accept the `"ai"` scope, or widen these. The Validator (`execute()` in `@caelo-cms/query-api`) rejects out-of-scope callers before the handler runs, so an AI tool call that tries `modules.update` in P3 fails with `Err('ActorOutOfScope')`.
 - Permissions are enforced **at the route layer** via `requirePermission(locals, 'content.read'|'content.write')` from `apps/admin/src/lib/server/guards.ts` — same pattern P2 uses for `/security/users`. Ops do not check permissions; they trust their caller (the route already gated).
 - Every mutation calls `recordAudit(tx, { actorId, operation, input, succeeded, entityId, resultSummary })` from P2.2 — `entity_id` is the affected module/template/page id; `result_summary` is e.g. `slug=hero`, `position=0..3`. Sensitive keys never appear in `input` here (no passwords/tokens in content payloads), so the existing redaction helper passes through unchanged.
 - Read ops (`*.list`, `*.get`, `*.get_with_modules`, `pages.render_preview`) do not write audit rows — same convention as `users.list` today.
@@ -271,11 +271,11 @@ CI block: every E2E flow named in the verification table must have a correspondi
 ## Implementation order
 
 1. Hand-written `0005_p3_content_model.sql` + appended RLS in `9999_rls_policies.sql` + drizzle schema files. Run `bun run db:migrate` against the dev DB; drift check should pass.
-2. Zod schemas in `@caelo/shared` (colocated `content.test.ts` for unit coverage). Unit tests green.
+2. Zod schemas in `@caelo-cms/shared` (colocated `content.test.ts` for unit coverage). Unit tests green.
 3. Query API ops in `packages/admin-core/src/ops/content/*.ts`, registered in `registerAdminOps`. Each op declares `actorScope: ["human", "system"]` and writes audit rows on mutation. Integration tests green against real Postgres.
 4. Preview composer (`scanner.ts` + `compose.ts`) under `packages/admin-core/src/preview/`. Unit + integration tests green.
 5. Admin routes + composer UI under `apps/admin/src/routes/content/**`. Each `+page.server.ts` calls `requirePermission(locals, ...)` and `assertCsrfToken` on POSTs. `bun run typecheck` clean.
-6. Playwright flows (`*.browser.ts`) using the dev-owner seed (`bun run --filter @caelo/admin seed:dev`). `bun run --filter @caelo/admin e2e` green locally.
+6. Playwright flows (`*.browser.ts`) using the dev-owner seed (`bun run --filter @caelo-cms/admin seed:dev`). `bun run --filter @caelo-cms/admin e2e` green locally.
 7. CLAUDE.md update only if a new invariant emerged (none expected — the no-raw-HTML and structured-block invariants are pre-existing in §2).
 
 ## Out of scope (explicit)

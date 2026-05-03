@@ -1,5 +1,5 @@
 {
-  "name": "@caelo/admin-core",
+  "name": "@caelo-cms/admin-core",
   "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
@@ -15,11 +15,11 @@
     "lint:spdx": "bun run scripts/check-spdx-headers.ts"
   },
   "dependencies": {
-    "@caelo/plugin-host": "workspace:*",
-    "@caelo/plugin-sandbox": "workspace:*",
-    "@caelo/query-api": "workspace:*",
-    "@caelo/shared": "workspace:*",
-    "@caelo/static-generator": "workspace:*",
+    "@caelo-cms/plugin-host": "workspace:*",
+    "@caelo-cms/plugin-sandbox": "workspace:*",
+    "@caelo-cms/query-api": "workspace:*",
+    "@caelo-cms/shared": "workspace:*",
+    "@caelo-cms/static-generator": "workspace:*",
     "drizzle-orm": "0.45.2",
     "file-type": "^19",
     "htmlparser2": "^12.0.0",
@@ -27,13 +27,13 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@caelo/api-gateway": "workspace:*",
-    "@caelo/plugin-auth": "workspace:*",
-    "@caelo/plugin-comments": "workspace:*",
-    "@caelo/plugin-forms": "workspace:*",
-    "@caelo/plugin-newsletter": "workspace:*",
-    "@caelo/plugin-ratings": "workspace:*",
-    "@caelo/plugin-sdk": "workspace:*",
-    "@caelo/plugin-translation": "workspace:*"
+    "@caelo-cms/api-gateway": "workspace:*",
+    "@caelo-cms/plugin-auth": "workspace:*",
+    "@caelo-cms/plugin-comments": "workspace:*",
+    "@caelo-cms/plugin-forms": "workspace:*",
+    "@caelo-cms/plugin-newsletter": "workspace:*",
+    "@caelo-cms/plugin-ratings": "workspace:*",
+    "@caelo-cms/plugin-sdk": "workspace:*",
+    "@caelo-cms/plugin-translation": "workspace:*"
   }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@caelo/redeploy-orchestrator",
+  "name": "@caelo-cms/redeploy-orchestrator",
   "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
@@ -13,8 +13,8 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@caelo/query-api": "workspace:*",
-    "@caelo/site-importer": "workspace:*",
+    "@caelo-cms/query-api": "workspace:*",
+    "@caelo-cms/site-importer": "workspace:*",
     "drizzle-orm": "0.45.2"
   }
 }

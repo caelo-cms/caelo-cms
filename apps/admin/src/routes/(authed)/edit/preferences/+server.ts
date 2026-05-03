@@ -7,8 +7,8 @@
  * `x-csrf-token` header (P5 convention; body is JSON, not form data).
  */
 
-import { verifyCsrfToken } from "@caelo/admin-core";
-import { execute } from "@caelo/query-api";
+import { verifyCsrfToken } from "@caelo-cms/admin-core";
+import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";

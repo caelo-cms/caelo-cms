@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host/types — minimal shape we accept for the AI provider so
- * we don't have to circularly import @caelo/admin-core. The host is a leaf
+ * @caelo-cms/plugin-host/types — minimal shape we accept for the AI provider so
+ * we don't have to circularly import @caelo-cms/admin-core. The host is a leaf
  * dependency of admin-core; admin-core exposes its provider implementation,
  * the host just calls it through this structural type.
  */

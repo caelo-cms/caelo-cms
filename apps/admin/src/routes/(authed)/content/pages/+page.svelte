@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { enhance } from "$app/forms";
-  import { pageCreateSchema } from "@caelo/shared";
+  import { pageCreateSchema } from "@caelo-cms/shared";
   import { FileText } from "lucide-svelte";
   import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
   import { bindZodForm } from "$lib/forms/zod-bind.svelte.js";

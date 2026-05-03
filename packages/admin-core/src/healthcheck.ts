@@ -8,7 +8,7 @@
  *   bun run packages/admin-core/src/healthcheck.ts
  */
 
-import { DatabaseAdapter } from "@caelo/query-api";
+import { DatabaseAdapter } from "@caelo-cms/query-api";
 
 async function main(): Promise<number> {
   const adminUrl = process.env["ADMIN_DATABASE_URL"];

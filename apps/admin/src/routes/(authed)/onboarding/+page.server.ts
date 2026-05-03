@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { getQueryContext } from "$lib/server/query.js";

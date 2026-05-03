@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { DatabaseAdapter } from "@caelo/query-api";
+import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { PostgresRateLimiter } from "../rate-limit.js";
 
 const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];

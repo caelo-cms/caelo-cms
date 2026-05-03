@@ -11,8 +11,8 @@
  * they flow back to the model so it can correct course.
  */
 
-import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
-import type { ChatSendMessageInput, ExecutionContext } from "@caelo/shared";
+import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 import type { z } from "zod";
 
 import type { AIProvider } from "../provider.js";

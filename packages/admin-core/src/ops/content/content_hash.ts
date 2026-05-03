@@ -15,8 +15,8 @@
  * a translation stale.
  */
 
-import type { TransactionRunner } from "@caelo/query-api";
-import { computeContentHash } from "@caelo/shared";
+import type { TransactionRunner } from "@caelo-cms/query-api";
+import { computeContentHash } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 interface PageRow {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-component-kit — shared Web Component helpers.
+ * @caelo-cms/plugin-component-kit — shared Web Component helpers.
  *
  * Every Caelo plugin's Web Component (forms, comments, newsletter,
  * ratings, auth) ships an inline form / honeypot / status pattern.

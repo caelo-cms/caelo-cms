@@ -8,7 +8,7 @@
  * staged Caelo page, then feed both PNG buffers into a pixel-diff to
  * populate `import_pages.diff_status` + `diff_pct`.
  *
- * Playwright is intentionally NOT a hard dependency of @caelo/site-importer
+ * Playwright is intentionally NOT a hard dependency of @caelo-cms/site-importer
  * — it ships in the admin app's devDeps already (apps/admin/package.json)
  * and the orchestrator runs in the same process tree as the admin in
  * self-hosted Compose, so the binary is reachable. For Tier 2 / cloud

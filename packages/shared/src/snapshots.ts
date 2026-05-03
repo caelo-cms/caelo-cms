@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Zod input schemas for the P4 snapshot ops. Lives in @caelo/shared so that
+ * Zod input schemas for the P4 snapshot ops. Lives in @caelo-cms/shared so that
  * route actions and the ops themselves import from a single source — same
  * pattern as packages/shared/src/content.ts for P3.
  *

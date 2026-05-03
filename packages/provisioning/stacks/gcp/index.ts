@@ -17,7 +17,7 @@
  *  4. Cloud Run services for admin, gateway, orchestrator, runner. Image
  *     tags read from Pulumi config; pushed by operator via `gcloud builds
  *     submit` for v1 (CI integration is P15 review-pass).
- *  5. Edge-router Cloud Run service that wraps @caelo/edge-router's
+ *  5. Edge-router Cloud Run service that wraps @caelo-cms/edge-router's
  *     routeRequest. Receives Cloud CDN's "passthrough" requests (URL
  *     map matches /* → edge-router → static origin), assigns variants,
  *     sets the caelo_visitor_id cookie, returns the appropriate static
@@ -361,7 +361,7 @@ const orchestratorSvc = cloudRunService({ serviceName: "orchestrator" });
 const runnerSvc = cloudRunService({ serviceName: "runner" });
 
 // Edge-router Cloud Run service. Ingresses public traffic (ALL), runs
-// @caelo/edge-router, returns a redirect to the variant's static path.
+// @caelo-cms/edge-router, returns a redirect to the variant's static path.
 // Cloud CDN is configured to NOT cache edge-router responses (it's a
 // per-visitor-cookie-keyed routing decision); only the static-bucket
 // response is cached.

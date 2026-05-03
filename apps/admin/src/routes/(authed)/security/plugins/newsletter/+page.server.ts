@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { runPluginOperation } from "@caelo/plugin-host";
+import { runPluginOperation } from "@caelo-cms/plugin-host";
 import { fail } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
 import type { Actions, PageServerLoad } from "./$types";

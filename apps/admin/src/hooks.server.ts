@@ -13,21 +13,21 @@ import {
   setMode2Provider,
   setTranslationProvider,
   startTranslationWorker,
-} from "@caelo/admin-core";
-import authPluginDefinition from "@caelo/plugin-auth";
-import commentsPluginDefinition from "@caelo/plugin-comments";
-import formsPluginDefinition from "@caelo/plugin-forms";
+} from "@caelo-cms/admin-core";
+import authPluginDefinition from "@caelo-cms/plugin-auth";
+import commentsPluginDefinition from "@caelo-cms/plugin-comments";
+import formsPluginDefinition from "@caelo-cms/plugin-forms";
 import {
   bootstrap as bootstrapPluginHost,
   type AIProvider as PluginHostAIProvider,
   type SnapshotEmitter,
-} from "@caelo/plugin-host";
-import newsletterPluginDefinition from "@caelo/plugin-newsletter";
-import ratingsPluginDefinition from "@caelo/plugin-ratings";
-import translationPluginDefinition from "@caelo/plugin-translation";
-import { execute } from "@caelo/query-api";
-import { startRedeployOrchestrator } from "@caelo/redeploy-orchestrator";
-import type { ExecutionContext } from "@caelo/shared";
+} from "@caelo-cms/plugin-host";
+import newsletterPluginDefinition from "@caelo-cms/plugin-newsletter";
+import ratingsPluginDefinition from "@caelo-cms/plugin-ratings";
+import translationPluginDefinition from "@caelo-cms/plugin-translation";
+import { execute } from "@caelo-cms/query-api";
+import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import type { Handle } from "@sveltejs/kit";
 import { SESSION_COOKIE } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
@@ -231,7 +231,7 @@ function bootstrapRedeploy(): void {
 }
 
 // P17 PR4 — wire the MCP bridge to the live AIProvider so external
-// `bunx @caelo/mcp-server` callers can drive the chat-runner. Without
+// `bunx @caelo-cms/mcp-server` callers can drive the chat-runner. Without
 // the API key the bridge stays unconfigured; mcp.send_chat returns a
 // structured error pointing at /security/ai.
 let mcpBridgeBootstrapped = false;

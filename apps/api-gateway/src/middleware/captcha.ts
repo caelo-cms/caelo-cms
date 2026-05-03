@@ -20,7 +20,7 @@
  *           (the redeploy-orchestrator's GC step in PR2).
  */
 
-import type { DatabaseAdapter } from "@caelo/query-api";
+import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
 const TEXT_ENCODER = new TextEncoder();

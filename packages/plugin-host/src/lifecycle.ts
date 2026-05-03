@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host/lifecycle — admin-core's plugins.disable / activate
+ * @caelo-cms/plugin-host/lifecycle — admin-core's plugins.disable / activate
  * ops call this after the DB write to keep the live host's registries in
  * sync. Without it, disable just flips a status row and leaves tools +
  * workers running until process restart.

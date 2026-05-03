@@ -12,8 +12,8 @@
  * have the tool do the rest. Reduces tool-call confusion in practice.
  */
 
-import { execute } from "@caelo/query-api";
-import { updateThemeToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { updateThemeToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -38,7 +38,7 @@ function camelToKebab(s: string): string {
 }
 
 export const updateThemeTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").UpdateThemeToolInput
+  import("@caelo-cms/shared").UpdateThemeToolInput
 > = {
   name: "update_theme",
   description:

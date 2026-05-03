@@ -12,8 +12,8 @@
  *                         the memory body via ai_memory.set semantics.
  */
 
-import { defineOperation } from "@caelo/query-api";
-import { aiMemoryReviewInput, aiMemorySetInput, err, ok } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { aiMemoryReviewInput, aiMemorySetInput, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

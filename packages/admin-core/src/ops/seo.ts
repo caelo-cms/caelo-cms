@@ -16,7 +16,7 @@
  * Zod-validated field. Per CLAUDE.md §2.
  */
 
-import { defineOperation } from "@caelo/query-api";
+import { defineOperation } from "@caelo-cms/query-api";
 import {
   err,
   ok,
@@ -24,7 +24,7 @@ import {
   seoOptimizeInputSchema,
   seoSetInputSchema,
   siteDefaultsSetSeoInputSchema,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";

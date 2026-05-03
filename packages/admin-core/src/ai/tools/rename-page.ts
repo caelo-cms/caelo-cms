@@ -8,13 +8,13 @@
  * requests to ask the user before touching the URL.
  */
 
-import { execute } from "@caelo/query-api";
-import { renamePageToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { renamePageToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const renamePageTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").RenamePageToolInput
+  import("@caelo-cms/shared").RenamePageToolInput
 > = {
   name: "rename_page",
   description:

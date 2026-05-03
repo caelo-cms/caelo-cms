@@ -21,7 +21,7 @@ const PAGE_SLUG = `e2e-page-${ts}`;
 const MODULE_TEXT = `HELLO_${ts}`;
 
 test("compose a page from a module and preview it", async ({ page, request }) => {
-  // Sign in as the dev owner (seeded by `bun run --filter @caelo/admin seed:dev`).
+  // Sign in as the dev owner (seeded by `bun run --filter @caelo-cms/admin seed:dev`).
   await page.goto("/login");
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");

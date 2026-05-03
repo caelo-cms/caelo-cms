@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { PageServerLoad } from "./$types";

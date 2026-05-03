@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 /**
  * Playwright runs under Node — we cannot import `bun` here directly. This
  * helper spawns a small Bun subprocess so test fixtures can use Bun's native
- * SQL driver (and any `@caelo/admin-core` helpers it pulls in).
+ * SQL driver (and any `@caelo-cms/admin-core` helpers it pulls in).
  */
 /**
  * Runs a Bun-runtime script with optional extra env vars. Pass user-supplied

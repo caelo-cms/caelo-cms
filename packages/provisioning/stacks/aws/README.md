@@ -69,7 +69,7 @@ L@E versions are immutable; each `pulumi up` after a manifest change creates a n
 
 ## Edge-router byte-identity
 
-This stack imports `routeRequest` from `@caelo/edge-router` — the same function the P13 self-hosted Caddy gateway, the GCP Cloud Run handler (P15), and the Azure Front Door rules engine (P15) use. The byte-identity test in `packages/edge-router/src/index.test.ts` asserts that a fixed corpus of (visitorId, manifestVersion, experimentId) tuples produces identical variant labels across every runtime — a visitor sees the same variant whether they hit the self-hosted Caddy in dev or the AWS CloudFront in production.
+This stack imports `routeRequest` from `@caelo-cms/edge-router` — the same function the P13 self-hosted Caddy gateway, the GCP Cloud Run handler (P15), and the Azure Front Door rules engine (P15) use. The byte-identity test in `packages/edge-router/src/index.test.ts` asserts that a fixed corpus of (visitorId, manifestVersion, experimentId) tuples produces identical variant labels across every runtime — a visitor sees the same variant whether they hit the self-hosted Caddy in dev or the AWS CloudFront in production.
 
 ## Destroy
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/redeploy-orchestrator — debounced auto-redeploy.
+ * @caelo-cms/redeploy-orchestrator — debounced auto-redeploy.
  *
  * Polls the `audit_events` tail every `pollIntervalMs` (default 1500ms)
  * and watches for "publishable" op kinds (configurable via
@@ -21,15 +21,15 @@
  *   - DELETE FROM pow_challenges WHERE expires_at < now() - '1 hour'.
  */
 
-import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
-import { execute } from "@caelo/query-api";
+import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { execute } from "@caelo-cms/query-api";
 import {
   computeDiffStatus,
   computePixelDiff,
   crawlSite,
   createPlaywrightScreenshotter,
   type Screenshotter,
-} from "@caelo/site-importer";
+} from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
 
 const SYSTEM_CTX = {

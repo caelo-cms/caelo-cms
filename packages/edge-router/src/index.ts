@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/edge-router — P15.
+ * @caelo-cms/edge-router — P15.
  *
  * Provider-agnostic edge-routing logic for A/B experiments. The same
  * hash → same variant → same rewrite path holds across self-hosted

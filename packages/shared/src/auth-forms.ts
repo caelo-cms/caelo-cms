@@ -2,7 +2,7 @@
 
 /**
  * P6.6 closing pass — Zod schemas for the auth-side forms (setup,
- * login). Lives in @caelo/shared so the SvelteKit route's inline
+ * login). Lives in @caelo-cms/shared so the SvelteKit route's inline
  * client-side validation helper (`bindZodForm`) and the server-side
  * `users.create_first_owner` / `auth.login` handlers can both
  * consume the same source-of-truth.

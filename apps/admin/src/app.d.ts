@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { ExecutionContext } from "@caelo/shared";
+import type { ExecutionContext } from "@caelo-cms/shared";
 
 declare global {
   namespace App {

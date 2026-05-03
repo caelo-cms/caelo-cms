@@ -6,8 +6,8 @@
  * to apply. AI calls to the execute path hit ActorScopeRejected.
  */
 
-import { execute } from "@caelo/query-api";
-import { type ProposeAddLocaleToolInput, proposeAddLocaleToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { type ProposeAddLocaleToolInput, proposeAddLocaleToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 

@@ -8,15 +8,15 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import authPlugin from "@caelo/plugin-auth";
-import formsPlugin from "@caelo/plugin-forms";
+import authPlugin from "@caelo-cms/plugin-auth";
+import formsPlugin from "@caelo-cms/plugin-forms";
 import {
   bootstrap as bootstrapPluginHost,
   resetPluginHost,
   runPluginOperation,
-} from "@caelo/plugin-host";
-import { schemaFromSpec } from "@caelo/plugin-sandbox";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
+} from "@caelo-cms/plugin-host";
+import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { registerAdminOps } from "../register.js";

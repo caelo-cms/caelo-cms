@@ -7,8 +7,8 @@
  * a permission round-trip.
  */
 
-import { defineOperation } from "@caelo/query-api";
-import { err, ok, skillAutoEngagementHints } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok, skillAutoEngagementHints } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

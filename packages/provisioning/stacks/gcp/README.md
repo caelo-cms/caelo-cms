@@ -9,7 +9,7 @@ Pulumi stack provisioning Caelo on GCP managed services. Implements the shared `
 | Managed Postgres | Cloud SQL Postgres 16 (REGIONAL HA in production, ZONAL elsewhere) + automated backups + PITR + private IP only |
 | Blob storage | Two GCS buckets (`<project>-caelo-<env>-media`, `<project>-caelo-<env>-static`) with uniform bucket-level access |
 | CDN | Cloud CDN backend bucket (operator wires the URL map + load balancer for v1; full LB in P15 review-pass) |
-| Edge compute (A/B + redirects) | Cloud Run service `<env>-edge-router` running `edge-handler.ts` with `@caelo/edge-router` |
+| Edge compute (A/B + redirects) | Cloud Run service `<env>-edge-router` running `edge-handler.ts` with `@caelo-cms/edge-router` |
 | Container runtime | Four Cloud Run services (admin / gateway / orchestrator / runner) |
 | Secret store | Secret Manager (postgres-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key) |
 | Edge-log sink | Cloud Logging project sink → BigQuery dataset `<env>_edge_logs` (queryable by P12A analytics plugin) |
@@ -51,7 +51,7 @@ Open after the operator has wired the GCP HTTPS load balancer to the edge-router
 
 ## Edge-router behaviour
 
-This stack's `edge-handler.ts` imports `routeRequest` from `@caelo/edge-router` — same function the AWS Lambda@Edge function and the P13 self-hosted Caddy gateway use. Differences from AWS L@E:
+This stack's `edge-handler.ts` imports `routeRequest` from `@caelo-cms/edge-router` — same function the AWS Lambda@Edge function and the P13 self-hosted Caddy gateway use. Differences from AWS L@E:
 
 - **Manifest lives in GCS, not bundled in the binary.** The handler fetches `gs://<static-bucket>/routing-manifest.json` on a 30s TTL cache. A new manifest takes effect within 30s without a Cloud Run redeploy.
 - **Returns 307 redirects** (instead of L@E's request-mutation rewrite) so the browser hits the variant URL directly + the static origin's cache respects the variant cache key.

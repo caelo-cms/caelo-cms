@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Zod schemas for the Phase 3 content layer. Lives in @caelo/shared so the
+ * Zod schemas for the Phase 3 content layer. Lives in @caelo-cms/shared so the
  * Validator (Query API ops) and the SvelteKit form actions can both import
  * from a single source.
  *

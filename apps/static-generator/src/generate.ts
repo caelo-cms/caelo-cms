@@ -24,8 +24,8 @@
 
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { TransactionRunner } from "@caelo/query-api";
-import { ComposeError, composePageWithLayout, resolveLocaleUrl } from "@caelo/shared";
+import type { TransactionRunner } from "@caelo-cms/query-api";
+import { ComposeError, composePageWithLayout, resolveLocaleUrl } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
@@ -155,7 +155,7 @@ export async function generateSite(args: {
   /** P13 — adapter handle so the plugin render pass can read +
    *  upsert `static_bakes` outside the page-build transaction. When
    *  omitted the pass no-ops (e.g. dev preview). */
-  adapter?: import("@caelo/query-api").DatabaseAdapter;
+  adapter?: import("@caelo-cms/query-api").DatabaseAdapter;
   /** P13 ideas-pass — incremental rebuild whitelist. When non-empty,
    *  only re-bake the listed page ids; the rest are left alone in
    *  the build dir. Auto-redeploy passes the audit_events tail's
@@ -606,7 +606,7 @@ export async function generateSite(args: {
   //     consumed by the deploy ops + admin UI to verify what shipped.
   //   - ab-routing.json: per-page experiment routing consumed by the
   //     edge routers (P15 GCP/AWS/Azure stacks + P13 self-hosted Caddy
-  //     gateway). Shape matches @caelo/edge-router's RoutingManifest.
+  //     gateway). Shape matches @caelo-cms/edge-router's RoutingManifest.
   // Variants reference the SAME file paths the static-gen wrote above
   // (the `_variants/<exp-slug>__<label>/<page>` shape) so the edge
   // routers' rewrite targets actually resolve.

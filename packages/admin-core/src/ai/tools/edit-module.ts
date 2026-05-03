@@ -11,12 +11,12 @@
  * those branch snapshots as main snapshots.
  */
 
-import { execute } from "@caelo/query-api";
-import { editModuleToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { editModuleToolInput } from "@caelo-cms/shared";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const editModuleTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").EditModuleToolInput
+  import("@caelo-cms/shared").EditModuleToolInput
 > = {
   name: "edit_module",
   description:

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { defineOperation } from "@caelo/query-api";
-import { err, ok, snapshotGetInput } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok, snapshotGetInput } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseSnapshotState } from "../../snapshots/index.js";

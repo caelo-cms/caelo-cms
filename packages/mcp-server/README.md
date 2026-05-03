@@ -1,4 +1,4 @@
-# `@caelo/mcp-server`
+# `@caelo-cms/mcp-server`
 
 MCP server exposing your Caelo CMS install's chat-runner as a single
 `caelo_chat` tool. Lets Claude Code (or any MCP-aware client) drive
@@ -23,7 +23,7 @@ Manual setup if your client isn't Claude Code:
 
 ```bash
 # stdio server invoked by your MCP-aware client
-bunx @caelo/mcp-server
+bunx @caelo-cms/mcp-server
 ```
 
 with these env vars set:

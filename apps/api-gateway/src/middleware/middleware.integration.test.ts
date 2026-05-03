@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { DatabaseAdapter } from "@caelo/query-api";
+import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { readBodyWithCap } from "./body-cap.js";
 import { hashVisitorId, issuePowChallenge, verifyPowProof } from "./captcha.js";

@@ -30,7 +30,7 @@ const FIXTURE_SCRIPT = `
   const password = process.env.E2E_PASSWORD;
   const sql = new SQL(process.env.ADMIN_DATABASE_URL);
   if (op === "seed") {
-    const { hashPassword } = await import("@caelo/admin-core");
+    const { hashPassword } = await import("@caelo-cms/admin-core");
     const pwd = await hashPassword(password);
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * `MediaStorageAdapter` interface lives in `@caelo/shared` so the
+ * `MediaStorageAdapter` interface lives in `@caelo-cms/shared` so the
  * static generator + browser-side admin can read the URL convention.
  * The filesystem-bound implementation lives here because it imports
  * `node:fs/promises` (Bun-side only).
@@ -16,7 +16,7 @@
 
 import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import type { MediaStorageAdapter } from "@caelo/shared";
+import type { MediaStorageAdapter } from "@caelo-cms/shared";
 import { Glob } from "bun";
 
 export class LocalVolumeAdapter implements MediaStorageAdapter {

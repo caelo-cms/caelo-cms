@@ -3,7 +3,7 @@
 
 /**
  * P6.2 #5 — runnable Bun CLI entry point. The deploy ops in
- * @caelo/admin-core spawn this binary as a subprocess instead of
+ * @caelo-cms/admin-core spawn this binary as a subprocess instead of
  * importing `generateSite` in-process. Two reasons:
  *
  *  - **Process isolation.** A generator OOM / panic doesn't take down
@@ -27,7 +27,7 @@
  * Exit: 0 on done, 1 on error.
  */
 
-import { DatabaseAdapter } from "@caelo/query-api";
+import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { type DeployTarget, generateSite } from "./generate.js";
 
 interface CliInput {

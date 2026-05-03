@@ -15,9 +15,9 @@
  * output, never this endpoint.
  */
 
-import { getMediaStorage } from "@caelo/admin-core";
-import { execute } from "@caelo/query-api";
-import { MEDIA_VARIANT_TAGS, type MediaVariantTag } from "@caelo/shared";
+import { getMediaStorage } from "@caelo-cms/admin-core";
+import { execute } from "@caelo-cms/query-api";
+import { MEDIA_VARIANT_TAGS, type MediaVariantTag } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { requireUser } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";

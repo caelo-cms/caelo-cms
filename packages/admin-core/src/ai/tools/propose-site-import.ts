@@ -7,7 +7,7 @@
  * cannot start an unauthenticated headless crawl on its own.
  */
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";

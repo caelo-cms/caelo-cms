@@ -1,5 +1,5 @@
 {
-  "name": "@caelo/static-generator",
+  "name": "@caelo-cms/static-generator",
   "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
@@ -17,12 +17,12 @@
     "generate": "bun run src/cli.ts"
   },
   "dependencies": {
-    "@caelo/plugin-host": "workspace:*",
-    "@caelo/query-api": "workspace:*",
-    "@caelo/shared": "workspace:*",
+    "@caelo-cms/plugin-host": "workspace:*",
+    "@caelo-cms/query-api": "workspace:*",
+    "@caelo-cms/shared": "workspace:*",
     "drizzle-orm": "0.45.2"
   },
   "devDependencies": {
-    "@caelo/admin-core": "workspace:*"
+    "@caelo-cms/admin-core": "workspace:*"
   }
 }

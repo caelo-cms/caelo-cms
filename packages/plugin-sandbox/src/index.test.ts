@@ -34,7 +34,7 @@ const helloWorldManifest = {
 };
 
 const helloWorldSource = `
-import { definePlugin, defineComponent } from "@caelo/plugin-sdk";
+import { definePlugin, defineComponent } from "@caelo-cms/plugin-sdk";
 
 export default definePlugin({
   slug: "hello-world",
@@ -102,7 +102,7 @@ describe("validateSource", () => {
 
   it("rejects fetch() calls", () => {
     const src = `
-      import { definePlugin } from "@caelo/plugin-sdk";
+      import { definePlugin } from "@caelo-cms/plugin-sdk";
       export default definePlugin({
         slug: "x", version: "1.0.0", tier: 2,
         schema: {}, operations: {
@@ -116,7 +116,7 @@ describe("validateSource", () => {
 
   it("rejects globalThis.fetch calls", () => {
     const src = `
-      import { definePlugin } from "@caelo/plugin-sdk";
+      import { definePlugin } from "@caelo-cms/plugin-sdk";
       const r = await globalThis.fetch("/x");
     `;
     const failures = validateSource({ filename: "x.ts", source: src });
@@ -125,7 +125,7 @@ describe("validateSource", () => {
 
   it("rejects Deno.* references", () => {
     const src = `
-      import { definePlugin } from "@caelo/plugin-sdk";
+      import { definePlugin } from "@caelo-cms/plugin-sdk";
       const x = Deno.readTextFile("/etc/passwd");
     `;
     const failures = validateSource({ filename: "x.ts", source: src });
@@ -134,7 +134,7 @@ describe("validateSource", () => {
 
   it("rejects dynamic import()", () => {
     const src = `
-      import { definePlugin } from "@caelo/plugin-sdk";
+      import { definePlugin } from "@caelo-cms/plugin-sdk";
       const m = await import("./other.js");
     `;
     const failures = validateSource({ filename: "x.ts", source: src });
@@ -144,7 +144,7 @@ describe("validateSource", () => {
   it("rejects imports from non-allowlisted modules", () => {
     const src = `
       import fs from "node:fs";
-      import { definePlugin } from "@caelo/plugin-sdk";
+      import { definePlugin } from "@caelo-cms/plugin-sdk";
     `;
     const failures = validateSource({ filename: "x.ts", source: src });
     expect(failures.some((f) => f.kind === "forbidden-import" && f.snippet === "node:fs")).toBe(
@@ -154,7 +154,7 @@ describe("validateSource", () => {
 
   it("rejects raw SQL in template literals", () => {
     const src = `
-      import { definePlugin } from "@caelo/plugin-sdk";
+      import { definePlugin } from "@caelo-cms/plugin-sdk";
       const q = \`SELECT * FROM users WHERE id = 1\`;
     `;
     const failures = validateSource({ filename: "x.ts", source: src });
@@ -163,7 +163,7 @@ describe("validateSource", () => {
 
   it("rejects eval()", () => {
     const src = `
-      import { definePlugin } from "@caelo/plugin-sdk";
+      import { definePlugin } from "@caelo-cms/plugin-sdk";
       eval("1+1");
     `;
     const failures = validateSource({ filename: "x.ts", source: src });
@@ -172,7 +172,7 @@ describe("validateSource", () => {
 
   it("rejects new Function()", () => {
     const src = `
-      import { definePlugin } from "@caelo/plugin-sdk";
+      import { definePlugin } from "@caelo-cms/plugin-sdk";
       const f = new Function("return 1");
     `;
     const failures = validateSource({ filename: "x.ts", source: src });
@@ -181,7 +181,7 @@ describe("validateSource", () => {
 
   it("rejects globalThis.x = ... assignments", () => {
     const src = `
-      import { definePlugin } from "@caelo/plugin-sdk";
+      import { definePlugin } from "@caelo-cms/plugin-sdk";
       globalThis.x = 1;
     `;
     const failures = validateSource({ filename: "x.ts", source: src });

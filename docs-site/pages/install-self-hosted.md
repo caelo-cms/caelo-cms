@@ -24,7 +24,7 @@ For local development without a public domain, Caddy uses an internal CA + self-
 ## Run the provisioner
 
 ```bash
-bunx @caelo/provisioning --provider self-hosted \
+bunx @caelo-cms/provisioning --provider self-hosted \
   --domain caelo.example.com \
   --owner-email you@example.com \
   --anthropic-key sk-ant-...
@@ -53,7 +53,7 @@ What happens:
 |---|---|
 | Restart the stack | `cd ~/.caelo/<install-id> && docker compose restart` |
 | Tail logs | `docker compose logs -f admin gateway caddy` |
-| Apply DB migrations on a new release | `bunx @caelo/provisioning migrate` |
+| Apply DB migrations on a new release | `bunx @caelo-cms/provisioning migrate` |
 | Take a manual base backup | `docker compose exec postgres pgbackrest --stanza=main backup` |
 | Restore from backup | See [`docs/incident-response.md`](https://github.com/caelo-cms/caelo-cms/blob/main/docs/incident-response.md) §F |
 | Rotate any secret | `/security/<area>` in the admin OR see incident-response §G |
@@ -61,7 +61,7 @@ What happens:
 ## Upgrading
 
 ```bash
-bunx @caelo/provisioning upgrade
+bunx @caelo-cms/provisioning upgrade
 ```
 
 Pulls the latest image tags, runs migrations transactionally, restarts services. Failed migrations roll back; staging-first is recommended for any release that touches schema.

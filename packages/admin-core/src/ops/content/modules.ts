@@ -6,8 +6,8 @@
  * scope here — `actorScope: ["human", "system"]` until P5 widens it.
  */
 
-import { defineOperation } from "@caelo/query-api";
-import { err, extractMediaRefs, moduleCreateSchema, moduleUpdateSchema, ok } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, extractMediaRefs, moduleCreateSchema, moduleUpdateSchema, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

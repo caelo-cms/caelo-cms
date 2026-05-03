@@ -10,13 +10,13 @@
  * the permission gate, rather than silently picking the wrong tool.
  */
 
-import { execute } from "@caelo/query-api";
-import { createLayoutToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { createLayoutToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const createLayoutTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").CreateLayoutToolInput
+  import("@caelo-cms/shared").CreateLayoutToolInput
 > = {
   name: "create_layout",
   description:

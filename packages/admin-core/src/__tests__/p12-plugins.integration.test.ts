@@ -14,17 +14,17 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import authPlugin from "@caelo/plugin-auth";
-import commentsPlugin from "@caelo/plugin-comments";
+import authPlugin from "@caelo-cms/plugin-auth";
+import commentsPlugin from "@caelo-cms/plugin-comments";
 import {
   bootstrap as bootstrapPluginHost,
   resetPluginHost,
   runPluginOperation,
-} from "@caelo/plugin-host";
-import newsletterPlugin from "@caelo/plugin-newsletter";
-import ratingsPlugin from "@caelo/plugin-ratings";
-import { schemaFromSpec } from "@caelo/plugin-sandbox";
-import { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
+} from "@caelo-cms/plugin-host";
+import newsletterPlugin from "@caelo-cms/plugin-newsletter";
+import ratingsPlugin from "@caelo-cms/plugin-ratings";
+import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 

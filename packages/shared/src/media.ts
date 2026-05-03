@@ -4,7 +4,7 @@
  * Media library — shared primitives.
  *
  * Browser-safe: Zod schemas, MIME allowlist, size caps, the variant
- * convention. Sharp + filesystem adapters live in `@caelo/admin-core`
+ * convention. Sharp + filesystem adapters live in `@caelo-cms/admin-core`
  * (server-only). The storage-key shape is stable here so the static
  * generator's URL rewriter and the admin's iframe resolver agree on
  * the canonical form `<sha>/<variant>.<ext>`.

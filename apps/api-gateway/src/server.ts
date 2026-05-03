@@ -28,8 +28,8 @@ import {
   bootstrap as bootstrapPluginHost,
   loadedPlugins,
   runPluginOperation,
-} from "@caelo/plugin-host";
-import { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
+} from "@caelo-cms/plugin-host";
+import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { handleVariantAssign, VARIANT_SCRIPT } from "./ab-router.js";

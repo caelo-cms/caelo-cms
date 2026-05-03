@@ -61,7 +61,7 @@ Claude-style skills in `cms_admin.skills`. Two-level activation: site-wide (Owne
 `spawn_subagent` + `spawn_subagents` AI tools. Each subagent runs its own `runChatTurn` invocation (same chat-runner, no special runtime) with parent attribution + cost cap + timeout. Depth cap of 1, read-only by default, no-publish defence by actor scope. `subagent_runs` table for observability.
 
 ### P11 — Two-tier plugin host
-`@caelo/plugin-sdk` + `@caelo/plugin-sandbox` (oxc-parser validator + Ed25519 manifest verifier + Deno subprocess wrapper) + `@caelo/plugin-host` (Tier 1 in-process loader + capability factory). Tier 1 = core plugins, signed, in-process, full SDK; Tier 2 = AI-authored / Owner-installed at runtime, Deno-sandboxed, locked SDK (only `cms_public.<slug>` schema, no AI provider, no chat-runner tool registration). Activation: Tier 1 auto on signature verify; Tier 2 Owner-click per `active` transition.
+`@caelo-cms/plugin-sdk` + `@caelo-cms/plugin-sandbox` (oxc-parser validator + Ed25519 manifest verifier + Deno subprocess wrapper) + `@caelo-cms/plugin-host` (Tier 1 in-process loader + capability factory). Tier 1 = core plugins, signed, in-process, full SDK; Tier 2 = AI-authored / Owner-installed at runtime, Deno-sandboxed, locked SDK (only `cms_public.<slug>` schema, no AI provider, no chat-runner tool registration). Activation: Tier 1 auto on signature verify; Tier 2 Owner-click per `active` transition.
 
 ### P11.5 — Translation port + plugin-host runtime
 Plugin host bootstrap + capability runtime (cms / ai / snapshots / tools / workers). Croner-backed worker scheduler. Dynamic AI-tool registry. Translation ops moved to a Tier 1 plugin (`packages/plugins/translation/`) as the SDK proof-of-concept.

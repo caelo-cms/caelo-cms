@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { error, fail, redirect } from "@sveltejs/kit";
 import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
 import { assertCsrfToken } from "$lib/server/csrf.js";

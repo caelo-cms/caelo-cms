@@ -1,5 +1,5 @@
 {
-  "name": "@caelo/query-api",
+  "name": "@caelo-cms/query-api",
   "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
@@ -13,7 +13,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@caelo/shared": "workspace:*",
+    "@caelo-cms/shared": "workspace:*",
     "drizzle-orm": "0.45.2",
     "zod": "4.3.6"
   }

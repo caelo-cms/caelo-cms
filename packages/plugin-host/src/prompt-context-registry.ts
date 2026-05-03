@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host/prompt-context-registry — plugin-registered system-prompt
+ * @caelo-cms/plugin-host/prompt-context-registry — plugin-registered system-prompt
  * blocks. The chat-runner queries this on every turn and folds non-empty
  * renderer outputs into the volatile chunk array.
  *

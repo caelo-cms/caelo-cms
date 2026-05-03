@@ -44,8 +44,8 @@ test("delete on site-default is blocked while templates reference it", async ({ 
     [
       "-e",
       `
-      import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
-      import { registerAdminOps } from "@caelo/admin-core";
+      import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+      import { registerAdminOps } from "@caelo-cms/admin-core";
       const registry = new OperationRegistry();
       registerAdminOps(registry);
       const adapter = new DatabaseAdapter({

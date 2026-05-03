@@ -507,7 +507,7 @@ Shipped with the Caelo release. Audited. Live in `packages/plugins/<slug>/`. Exa
 AI-authored at runtime, or Owner-installed from a vetted repo. Examples: a custom `comments-pro` that adds reactions; a site-specific `event-rsvp`; anything the Owner asks the AI to build.
 
 - **Activation:** lifecycle `draft` → `validated` → `awaiting_activation` → `active` / `disabled`. **Owner click required** for every transition into `active`. No auto-activation, ever.
-- **Runtime:** **Deno subprocess** with `--no-read --no-write --no-net --no-env --no-prompt --no-npm --no-remote`. Per-invocation cold start. The SDK + plugin source written to tmp files; import map points `@caelo/plugin-sdk` at the SDK module.
+- **Runtime:** **Deno subprocess** with `--no-read --no-write --no-net --no-env --no-prompt --no-npm --no-remote`. Per-invocation cold start. The SDK + plugin source written to tmp files; import map points `@caelo-cms/plugin-sdk` at the SDK module.
 - **SDK capabilities (locked):**
   - **Reads + writes ONLY against the plugin's own `cms_public.<slug>` schema.** No `cms_admin` access of any kind.
   - **No snapshot emission** (plugins write to `cms_public`; that surface has no snapshot model).
@@ -640,7 +640,7 @@ Each ships with a companion skill for natural-language invocation (`translate-pa
 
 Tier 1 plugins live under `packages/plugins/<slug>/` with the same workspace shape as any other internal package. Each ships:
 
-- `package.json` — `name: "@caelo/plugin-<slug>"`, MPL-2.0, depends on `@caelo/plugin-sdk`.
+- `package.json` — `name: "@caelo-cms/plugin-<slug>"`, MPL-2.0, depends on `@caelo-cms/plugin-sdk`.
 - `src/index.ts` — default export of `definePlugin({...})` calling.
 - `manifest.json` — slug + version + signature.
 - `migrations/` (optional) — `cms_public` schema migrations applied at the plugin host's first-run for that plugin version.

@@ -7,8 +7,8 @@ import {
   registerAdminOps,
   setDeployBridge,
   setMediaStorage,
-} from "@caelo/admin-core";
-import { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
+} from "@caelo-cms/admin-core";
+import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 
 /**
  * Explicit, lazy query context. Server modules call `getQueryContext()` and
@@ -59,7 +59,7 @@ export function getQueryContext(): QueryContext {
   // P7 — media storage. Local volume adapter with rootDir from env
   // by default; plugins / cloud adapters override via the
   // MEDIA_STORAGE_PROVIDER env + a registered factory (see
-  // registerMediaStorageFactory in @caelo/admin-core/media/storage).
+  // registerMediaStorageFactory in @caelo-cms/admin-core/media/storage).
   const providerName = process.env["MEDIA_STORAGE_PROVIDER"] ?? "local";
   if (providerName === "local") {
     const mediaRoot = process.env["MEDIA_ROOT_DIR"] ?? "data/media";

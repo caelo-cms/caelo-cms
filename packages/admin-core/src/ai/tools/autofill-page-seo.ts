@@ -6,13 +6,13 @@
  * this on the first-publish path.
  */
 
-import { execute } from "@caelo/query-api";
-import { autofillPageSeoToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { autofillPageSeoToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const autofillPageSeoTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").AutofillPageSeoToolInput
+  import("@caelo-cms/shared").AutofillPageSeoToolInput
 > = {
   name: "autofill_page_seo",
   description:

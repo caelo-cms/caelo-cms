@@ -8,13 +8,13 @@
  * page lists its template); we don't auto-pick a default.
  */
 
-import { execute } from "@caelo/query-api";
-import { createPageToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { createPageToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const createPageTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").CreatePageToolInput
+  import("@caelo-cms/shared").CreatePageToolInput
 > = {
   name: "create_page",
   description:

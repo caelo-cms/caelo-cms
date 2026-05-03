@@ -4,7 +4,7 @@
 /**
  * P17 PR2A — sync `docs-site/` content into a fresh cms_admin install.
  *
- * Run after `bunx @caelo/provisioning` brings up your install:
+ * Run after `bunx @caelo-cms/provisioning` brings up your install:
  *   ADMIN_DATABASE_URL=... PUBLIC_ADMIN_DATABASE_URL=... \
  *     bun run apps/admin/scripts/sync-docs-site.ts
  *
@@ -33,9 +33,9 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
-import { registerAdminOps } from "@caelo/admin-core";
-import type { ExecutionContext } from "@caelo/shared";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import { registerAdminOps } from "@caelo-cms/admin-core";
+import type { ExecutionContext } from "@caelo-cms/shared";
 
 const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
 const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];

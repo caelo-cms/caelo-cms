@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/provisioning — P14.
+ * @caelo-cms/provisioning — P14.
  *
  * Pulumi-driven self-hosted stack + cms-provision CLI helpers.
  *

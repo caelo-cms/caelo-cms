@@ -18,14 +18,14 @@
  *   host startup → load packages/plugins/<slug>/ → verify signature
  *               → run validator (defense-in-depth) → upsert plugins row
  *                 with tier=1, status='active'.
- *   This file does NOT do the Tier 1 startup load (that's @caelo/plugin-host
+ *   This file does NOT do the Tier 1 startup load (that's @caelo-cms/plugin-host
  *   in P11.5+); it only ships the ops that read + mutate the registry.
  */
 
-import { applyPluginLifecycle } from "@caelo/plugin-host";
-import { type EmittedSchema, schemaFromSpec, validatePlugin } from "@caelo/plugin-sandbox";
-import { defineOperation } from "@caelo/query-api";
-import { err, ok } from "@caelo/shared";
+import { applyPluginLifecycle } from "@caelo-cms/plugin-host";
+import { type EmittedSchema, schemaFromSpec, validatePlugin } from "@caelo-cms/plugin-sandbox";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

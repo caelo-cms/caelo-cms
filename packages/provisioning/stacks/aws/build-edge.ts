@@ -31,7 +31,7 @@ function arg(name: string): string | undefined {
 // P15 hot-fix #1 — bundle the edge-router-shaped `ab-routing.json`,
 // not the deploy manifest `routing-manifest.json`. The two live
 // alongside each other in the static-output bucket; only the AB one
-// matches @caelo/edge-router's RoutingManifest shape.
+// matches @caelo-cms/edge-router's RoutingManifest shape.
 const manifestPath =
   arg("manifest") ??
   resolve(import.meta.dir, "../../../..", "apps/static-generator/dist/ab-routing.json");

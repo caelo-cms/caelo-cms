@@ -6,13 +6,13 @@
  * (internal label) and `change_page_slug` (URL). No redirect.
  */
 
-import { execute } from "@caelo/query-api";
-import { setPageTitleToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { setPageTitleToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setPageTitleTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").SetPageTitleToolInput
+  import("@caelo-cms/shared").SetPageTitleToolInput
 > = {
   name: "set_page_title",
   description:

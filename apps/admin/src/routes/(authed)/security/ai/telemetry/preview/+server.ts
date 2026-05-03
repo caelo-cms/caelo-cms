@@ -13,7 +13,7 @@
  * and out of the client hydration cache.
  */
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";

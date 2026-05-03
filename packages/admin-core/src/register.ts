@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { OperationRegistry } from "@caelo/query-api";
+import type { OperationRegistry } from "@caelo-cms/query-api";
 import { loginOp, logoutOp, resolveSessionOp } from "./ops/auth.js";
 import {
   appendChatMessageOp,

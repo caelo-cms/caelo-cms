@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host/dispatch — invoke a Tier-1 plugin operation.
+ * @caelo-cms/plugin-host/dispatch — invoke a Tier-1 plugin operation.
  *
  * The route handler / API gateway / chat-runner / scheduler all funnel through
  * `runPluginOperation`. It looks up the plugin's frozen spec, validates that
@@ -13,8 +13,8 @@
  * operation handler).
  */
 
-import type { PluginContext, PluginContextTier1, PluginDefinition } from "@caelo/plugin-sdk";
-import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
+import type { PluginContext, PluginContextTier1, PluginDefinition } from "@caelo-cms/plugin-sdk";
+import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { AIProvider } from "./types.js";
 
 /** Runtime registry of loaded Tier-1 plugins. Loader writes here at startup;
@@ -90,7 +90,7 @@ export function resetDisabledSet(): void {
 
 /** Bag of host machinery passed to the capability factory. Bootstrap
  *  injects these from the host process (apps/admin) so plugin-host stays
- *  free of upward circular imports on @caelo/admin-core. */
+ *  free of upward circular imports on @caelo-cms/admin-core. */
 export interface PluginHostInfra {
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;

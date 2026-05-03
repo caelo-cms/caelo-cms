@@ -10,7 +10,7 @@
  * LISTEN/NOTIFY (channel name `caelo_ai_pricing`). Per-process — tests
  * stay deterministic by clearing on cold start.
  */
-import type { TransactionRunner } from "@caelo/query-api";
+import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
 export interface PricingRow {

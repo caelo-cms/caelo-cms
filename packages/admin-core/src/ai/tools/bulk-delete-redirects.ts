@@ -6,13 +6,13 @@
  * pattern. Exactly one of the three. Single tx.
  */
 
-import { execute } from "@caelo/query-api";
-import { bulkDeleteRedirectsToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { bulkDeleteRedirectsToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").BulkDeleteRedirectsToolInput
+  import("@caelo-cms/shared").BulkDeleteRedirectsToolInput
 > = {
   name: "bulk_delete_redirects",
   description:

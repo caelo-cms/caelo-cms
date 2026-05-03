@@ -3,7 +3,7 @@
 /**
  * Caelo GCP edge-router — Cloud Run HTTP handler.
  *
- * Imports the SAME `routeRequest` from `@caelo/edge-router` that the
+ * Imports the SAME `routeRequest` from `@caelo-cms/edge-router` that the
  * P13 self-hosted Caddy gateway, the AWS Lambda@Edge function, and the
  * future Azure Front Door rules engine use. The byte-identity test in
  * packages/edge-router/src/index.test.ts asserts a fixed corpus of
@@ -25,7 +25,7 @@
  * review-pass.
  */
 
-import { EMPTY_MANIFEST, type RoutingManifest, routeRequest } from "@caelo/edge-router";
+import { EMPTY_MANIFEST, type RoutingManifest, routeRequest } from "@caelo-cms/edge-router";
 
 const STATIC_BUCKET = process.env.STATIC_BUCKET ?? "";
 // P15 hot-fix #1 — distinct filename from the deploy manifest. The

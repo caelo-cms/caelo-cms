@@ -9,7 +9,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { type ExecutionContext, ok } from "@caelo/shared";
+import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { z } from "zod";

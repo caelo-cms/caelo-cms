@@ -16,8 +16,8 @@
  *   2. The configured Anthropic adapter with ANTHROPIC_API_KEY.
  */
 
-import { resolveTestProvider, runChatTurn } from "@caelo/admin-core";
-import { execute } from "@caelo/query-api";
+import { resolveTestProvider, runChatTurn } from "@caelo-cms/admin-core";
+import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
@@ -34,7 +34,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   // form-encoded, so the existing assertCsrfToken helper doesn't apply).
   const csrf = request.headers.get("x-csrf-token") ?? "";
   if (!locals.user) throw error(401, "Not authenticated");
-  const { verifyCsrfToken } = await import("@caelo/admin-core");
+  const { verifyCsrfToken } = await import("@caelo-cms/admin-core");
   if (!(await verifyCsrfToken(locals.user.csrfSecret, csrf))) {
     throw error(403, "CSRF token mismatch");
   }
@@ -46,7 +46,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   };
   const { adapter, registry } = getQueryContext();
 
-  let aiProvider: import("@caelo/admin-core").AIProvider | null = null;
+  let aiProvider: import("@caelo-cms/admin-core").AIProvider | null = null;
   const testProviderName = request.headers.get(TEST_PROVIDER_HEADER);
   if (testProviderName) {
     aiProvider = resolveTestProvider(testProviderName);
@@ -79,10 +79,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         ? (provider.config["model"] as string)
         : null) ?? "claude-opus-4-7";
 
-    const { makeProvider } = await import("@caelo/admin-core");
+    const { makeProvider } = await import("@caelo-cms/admin-core");
     aiProvider = makeProvider({ name: "anthropic", apiKey, model });
   }
-  const { createDefaultToolRegistry } = await import("@caelo/admin-core");
+  const { createDefaultToolRegistry } = await import("@caelo-cms/admin-core");
   const tools = createDefaultToolRegistry();
 
   const aiCtx = {

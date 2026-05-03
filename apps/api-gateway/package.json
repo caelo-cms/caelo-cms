@@ -1,5 +1,5 @@
 {
-  "name": "@caelo/api-gateway",
+  "name": "@caelo-cms/api-gateway",
   "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
@@ -12,13 +12,13 @@
     "dev": "bun run --hot src/server.ts"
   },
   "dependencies": {
-    "@caelo/plugin-host": "workspace:*",
-    "@caelo/query-api": "workspace:*",
-    "@caelo/shared": "workspace:*"
+    "@caelo-cms/plugin-host": "workspace:*",
+    "@caelo-cms/query-api": "workspace:*",
+    "@caelo-cms/shared": "workspace:*"
   },
   "devDependencies": {
-    "@caelo/plugin-sandbox": "workspace:*",
-    "@caelo/plugin-sdk": "workspace:*",
+    "@caelo-cms/plugin-sandbox": "workspace:*",
+    "@caelo-cms/plugin-sdk": "workspace:*",
     "drizzle-orm": "0.45.2"
   }
 }

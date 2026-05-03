@@ -16,7 +16,7 @@
  * Read-only + content.write-gated. CSRF not needed (GET-only).
  */
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
 import { INJECT_SCRIPT } from "$lib/components/edit/inject-script.js";
 import { requirePermission } from "$lib/server/guards.js";

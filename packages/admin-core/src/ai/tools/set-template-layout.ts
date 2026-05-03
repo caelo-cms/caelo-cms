@@ -7,8 +7,8 @@
  * (the template snapshot via templates.update is the audit anchor).
  */
 
-import { execute } from "@caelo/query-api";
-import { setTemplateLayoutToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { setTemplateLayoutToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -18,7 +18,7 @@ interface LayoutDetail {
 }
 
 export const setTemplateLayoutTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").SetTemplateLayoutToolInput
+  import("@caelo-cms/shared").SetTemplateLayoutToolInput
 > = {
   name: "set_template_layout",
   description:

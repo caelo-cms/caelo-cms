@@ -1,5 +1,5 @@
 {
-  "name": "@caelo/plugin-sdk",
+  "name": "@caelo-cms/plugin-sdk",
   "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
@@ -13,7 +13,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@caelo/shared": "workspace:*",
+    "@caelo-cms/shared": "workspace:*",
     "zod": "4.3.6"
   }
 }

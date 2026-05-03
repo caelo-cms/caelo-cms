@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-sandbox — Phase 11 plugin safety surface.
+ * @caelo-cms/plugin-sandbox — Phase 11 plugin safety surface.
  *
  * Three independent layers per CMS_REQUIREMENTS §14.5:
  *  1. validate.ts  — oxc-parser walk; rejects forbidden patterns.

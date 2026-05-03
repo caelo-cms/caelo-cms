@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { Permission } from "@caelo/admin-core";
+import type { Permission } from "@caelo-cms/admin-core";
 import { error, redirect } from "@sveltejs/kit";
 
 /**

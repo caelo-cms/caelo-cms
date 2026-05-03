@@ -6,13 +6,13 @@
  * touched; the rest of `media_assets` is human-only.
  */
 
-import { execute } from "@caelo/query-api";
-import { setMediaAltToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { setMediaAltToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setMediaAltTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").SetMediaAltToolInput
+  import("@caelo-cms/shared").SetMediaAltToolInput
 > = {
   name: "set_media_alt",
   description:

@@ -46,7 +46,7 @@ Tiles:
 - **Budgets** — `/security/ai/budgets` — six caps (3 scopes × 2 op-types) with status badges
 - **Telemetry** — `/security/ai/telemetry` — opt-in toggles + payload preview
 - **Costs** — `/security/costs` — five-panel dashboard (totals + budget status + per-day + per-attribution + roll-up)
-- **MCP tokens** — `/security/mcp` — bearer tokens for `bunx @caelo/mcp-server`
+- **MCP tokens** — `/security/mcp` — bearer tokens for `bunx @caelo-cms/mcp-server`
 - **Plugins** — `/security/plugins` — Tier 1 + Tier 2 management, awaiting-activation queue
 - **Locales** — `/security/locales` — language registry + URL strategies (admin-only; AI rejected)
 - **Email** — `/security/email` — Resend / SMTP / SES selection

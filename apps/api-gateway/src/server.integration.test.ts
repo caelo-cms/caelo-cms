@@ -14,10 +14,10 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { applyPluginLifecycle, bootstrap, resetPluginHost } from "@caelo/plugin-host";
-import { schemaFromSpec } from "@caelo/plugin-sandbox";
-import { definePlugin } from "@caelo/plugin-sdk";
-import { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
+import { applyPluginLifecycle, bootstrap, resetPluginHost } from "@caelo-cms/plugin-host";
+import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { definePlugin } from "@caelo-cms/plugin-sdk";
+import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import {
   handleRequest,

@@ -21,7 +21,7 @@ Behind that loop sits a small, opinionated kernel: two isolated Postgres roles w
 ## Install in one line
 
 ```bash
-bunx @caelo/provisioning --provider self-hosted
+bunx @caelo-cms/provisioning --provider self-hosted
 ```
 
 That stands up Postgres + pgBackRest + Caddy (with auto-SSL) + the admin app + the API gateway as a Docker Compose stack. It works on any Linux box with Docker + Bun.
@@ -29,7 +29,7 @@ That stands up Postgres + pgBackRest + Caddy (with auto-SSL) + the admin app + t
 For cloud:
 
 ```bash
-bunx @caelo/provisioning --provider gcp     # or aws, or azure
+bunx @caelo-cms/provisioning --provider gcp     # or aws, or azure
 ```
 
 Cloud paths use Pulumi to spin up Cloud SQL HA + managed object storage + the platform's CDN + Secret Manager + Cloud Run / Lambda / Container Apps. You get staging + production as separate stacks; staging is `noindex` by default.
@@ -37,7 +37,7 @@ Cloud paths use Pulumi to spin up Cloud SQL HA + managed object storage + the pl
 Talk to your install from your IDE (Claude Code, etc.) without opening the browser:
 
 ```bash
-claude mcp add caelo --command "bunx @caelo/mcp-server" \
+claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=$(your minted bearer)
 ```
@@ -85,8 +85,8 @@ cp .env.example .env                  # then add ANTHROPIC_API_KEY
 bun install
 docker compose up -d                  # postgres + caddy
 bun run db:migrate                    # both cms_admin + cms_public migrations
-bun run --filter @caelo/admin seed:dev
-bun run --filter @caelo/admin dev     # admin at http://localhost:5173
+bun run --filter @caelo-cms/admin seed:dev
+bun run --filter @caelo-cms/admin dev     # admin at http://localhost:5173
 ```
 
 Verify before opening a PR:

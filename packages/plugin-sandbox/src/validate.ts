@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-sandbox/validate — Phase 11 plugin static analysis.
+ * @caelo-cms/plugin-sandbox/validate — Phase 11 plugin static analysis.
  *
  * Walks plugin source code and rejects forbidden patterns before the
  * runtime ever loads the plugin. Three independent safety layers per
@@ -13,7 +13,7 @@
  * to load + a clear error surfaces in /security/plugins).
  *
  * Forbidden patterns (rejected):
- *   - ImportDeclaration of any module other than @caelo/plugin-sdk.
+ *   - ImportDeclaration of any module other than @caelo-cms/plugin-sdk.
  *   - CallExpression of fetch / XMLHttpRequest / WebSocket / globalThis.fetch.
  *   - Reference to Deno.* (any property access).
  *   - Dynamic import() calls.
@@ -31,7 +31,7 @@
  * Returns structured failures the AI can read + auto-fix from.
  */
 
-import { type PluginManifest, pluginManifest as pluginManifestSchema } from "@caelo/plugin-sdk";
+import { type PluginManifest, pluginManifest as pluginManifestSchema } from "@caelo-cms/plugin-sdk";
 import { parseSync } from "oxc-parser";
 
 // ---------------------------------------------------------------------------
@@ -136,7 +136,7 @@ export function validateManifest(rawManifest: unknown): {
 const SQL_KEYWORD_RE = /\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\b/i;
 
 /** Allowed import sources. Plugins may ONLY import from this list. */
-const ALLOWED_IMPORTS = new Set<string>(["@caelo/plugin-sdk"]);
+const ALLOWED_IMPORTS = new Set<string>(["@caelo-cms/plugin-sdk"]);
 
 /**
  * Walk the AST and collect failures. Called for both Tier 1 (defense
@@ -163,7 +163,7 @@ export function validateSource(opts: { filename: string; source: string }): Vali
     const type = (node as { type?: string }).type;
     if (!type) return;
 
-    // ImportDeclaration — only @caelo/plugin-sdk allowed.
+    // ImportDeclaration — only @caelo-cms/plugin-sdk allowed.
     if (type === "ImportDeclaration") {
       const sourceVal = (node as { source?: { value?: unknown } }).source?.value;
       if (typeof sourceVal !== "string" || !ALLOWED_IMPORTS.has(sourceVal)) {
@@ -172,7 +172,7 @@ export function validateSource(opts: { filename: string; source: string }): Vali
           nodeType: type,
           snippet: typeof sourceVal === "string" ? sourceVal : "<unknown>",
           location: locOf(node),
-          hint: `import "${sourceVal ?? "<unknown>"}" is not allowed. Plugins may import only from "@caelo/plugin-sdk".`,
+          hint: `import "${sourceVal ?? "<unknown>"}" is not allowed. Plugins may import only from "@caelo-cms/plugin-sdk".`,
         });
       }
       return;
@@ -184,7 +184,7 @@ export function validateSource(opts: { filename: string; source: string }): Vali
         kind: "forbidden-dynamic-import",
         nodeType: type,
         location: locOf(node),
-        hint: "Dynamic import() is not allowed. Use static `import` from @caelo/plugin-sdk.",
+        hint: "Dynamic import() is not allowed. Use static `import` from @caelo-cms/plugin-sdk.",
       });
       return;
     }

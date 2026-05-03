@@ -7,8 +7,8 @@
  * move_module but constrained to the source block.
  */
 
-import { execute } from "@caelo/query-api";
-import { reorderModuleToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { reorderModuleToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -18,7 +18,7 @@ interface PageWithModules {
 }
 
 export const reorderModuleTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").ReorderModuleToolInput
+  import("@caelo-cms/shared").ReorderModuleToolInput
 > = {
   name: "reorder_module",
   description:

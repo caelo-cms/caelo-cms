@@ -18,8 +18,8 @@
  * provider-specific edge rules that bypass the client-side hop.
  */
 
-import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
-import { execute } from "@caelo/query-api";
+import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { execute } from "@caelo-cms/query-api";
 
 const SYSTEM_CTX = {
   actorId: "00000000-0000-0000-0000-00000000ffff",

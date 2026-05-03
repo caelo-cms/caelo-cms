@@ -19,13 +19,13 @@
  *   bun run apps/admin/scripts/scan-media-alt.ts [--limit=20] [--dry-run]
  */
 
-import { registerAdminOps } from "@caelo/admin-core";
+import { registerAdminOps } from "@caelo-cms/admin-core";
 import {
   DatabaseAdapter,
   type ExecutionContext,
   execute,
   OperationRegistry,
-} from "@caelo/query-api";
+} from "@caelo-cms/query-api";
 import { SQL } from "bun";
 
 const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];

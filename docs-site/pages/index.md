@@ -29,7 +29,7 @@ talk → preview → publish.
 ### Install in one line
 
 ```bash
-bunx @caelo/provisioning --provider self-hosted
+bunx @caelo-cms/provisioning --provider self-hosted
 ```
 
 Self-hosted = Docker Compose with Postgres + pgBackRest + Caddy (auto-SSL) + the admin + the API gateway. Cloud = `--provider gcp` / `aws` / `azure` — Pulumi spins up Cloud SQL HA + managed object storage + the platform's CDN + Secret Manager.
@@ -37,7 +37,7 @@ Self-hosted = Docker Compose with Postgres + pgBackRest + Caddy (auto-SSL) + the
 ### Drive your install from your IDE
 
 ```bash
-claude mcp add caelo --command "bunx @caelo/mcp-server" \
+claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=$(your bearer)
 ```

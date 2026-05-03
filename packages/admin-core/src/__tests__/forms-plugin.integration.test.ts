@@ -19,16 +19,16 @@ import {
   handleRequest,
   invalidateGatewaySettings,
   setGatewayAdapter,
-} from "@caelo/api-gateway/server";
-import formsPlugin from "@caelo/plugin-forms";
+} from "@caelo-cms/api-gateway/server";
+import formsPlugin from "@caelo-cms/plugin-forms";
 import {
   bootstrap as bootstrapPluginHost,
   resetPluginHost,
   runPluginOperation,
-} from "@caelo/plugin-host";
-import { schemaFromSpec } from "@caelo/plugin-sandbox";
-import { definePlugin } from "@caelo/plugin-sdk";
-import { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
+} from "@caelo-cms/plugin-host";
+import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { definePlugin } from "@caelo-cms/plugin-sdk";
+import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 

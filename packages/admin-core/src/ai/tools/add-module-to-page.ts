@@ -15,8 +15,8 @@
  * the new moduleId so the AI can refer to it in follow-up turns.
  */
 
-import { execute } from "@caelo/query-api";
-import { addModuleToPageToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { addModuleToPageToolInput } from "@caelo-cms/shared";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
@@ -53,7 +53,7 @@ function slugify(displayName: string): string {
 }
 
 export const addModuleToPageTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").AddModuleToPageToolInput
+  import("@caelo-cms/shared").AddModuleToPageToolInput
 > = {
   name: "add_module_to_page",
   description:

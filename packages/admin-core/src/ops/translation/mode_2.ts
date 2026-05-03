@@ -18,8 +18,8 @@
  * realign.
  */
 
-import type { TransactionRunner } from "@caelo/query-api";
-import { defineOperation } from "@caelo/query-api";
+import type { TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation } from "@caelo-cms/query-api";
 import {
   type BlockDiffOp,
   buildModeTwoPrompt,
@@ -29,7 +29,7 @@ import {
   type ModuleBlockSlot,
   ok,
   translationResultPayload,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

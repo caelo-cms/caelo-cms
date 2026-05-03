@@ -63,8 +63,8 @@ test("reorder_module up: module B moves from position 1 to 0", () => {
     [
       "-e",
       `
-      import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
-      import { registerAdminOps, createDefaultToolRegistry } from "@caelo/admin-core";
+      import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+      import { registerAdminOps, createDefaultToolRegistry } from "@caelo-cms/admin-core";
       const registry = new OperationRegistry();
       registerAdminOps(registry);
       const adapter = new DatabaseAdapter({

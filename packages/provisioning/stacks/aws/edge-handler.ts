@@ -3,7 +3,7 @@
 /**
  * Caelo AWS Lambda@Edge handler — viewer-request event.
  *
- * Imports the SAME `routeRequest` from `@caelo/edge-router` that the
+ * Imports the SAME `routeRequest` from `@caelo-cms/edge-router` that the
  * P13 self-hosted Caddy gateway uses, so the assignment hash is
  * byte-identical across all four runtimes (P13 Caddy + GCP + AWS + Azure).
  * The byte-identity test in packages/edge-router/src/index.test.ts
@@ -16,8 +16,8 @@
  * a fresh bundle is built + deployed on every routing-manifest bump.
  */
 
-import type { RoutingManifest } from "@caelo/edge-router";
-import { routeRequest } from "@caelo/edge-router";
+import type { RoutingManifest } from "@caelo-cms/edge-router";
+import { routeRequest } from "@caelo-cms/edge-router";
 
 // Bundled at build time. The build script reads the latest
 // routing-manifest.json from the static-output bucket and inlines it.

@@ -10,7 +10,7 @@ seo:
 
 # Talk to Caelo from your IDE — MCP server
 
-The MCP server (`@caelo/mcp-server`) exposes your Caelo install's chat-runner as a single tool: **`caelo_chat`**. Lets Claude Code (or any [Model Context Protocol](https://modelcontextprotocol.io)–aware client) drive your install — read pages, propose edits, queue Owner-approval proposals, summarise plugin data — without opening the browser.
+The MCP server (`@caelo-cms/mcp-server`) exposes your Caelo install's chat-runner as a single tool: **`caelo_chat`**. Lets Claude Code (or any [Model Context Protocol](https://modelcontextprotocol.io)–aware client) drive your install — read pages, propose edits, queue Owner-approval proposals, summarise plugin data — without opening the browser.
 
 ## Why it exists
 
@@ -43,7 +43,7 @@ In your Caelo install:
 Manual setup:
 
 ```bash
-claude mcp add caelo --command "bunx @caelo/mcp-server" \
+claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
   --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex>
 ```
@@ -111,5 +111,5 @@ Tokens TTL out at **90 days** by default. Mint a new one, paste the new `claude 
 
 ## Further reading
 
-- The [`@caelo/mcp-server` README](https://github.com/caelo-cms/caelo-cms/tree/main/packages/mcp-server) — the source of truth for the SDK shape
+- The [`@caelo-cms/mcp-server` README](https://github.com/caelo-cms/caelo-cms/tree/main/packages/mcp-server) — the source of truth for the SDK shape
 - [Architecture →](/architecture)

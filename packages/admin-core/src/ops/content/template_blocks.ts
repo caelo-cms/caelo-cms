@@ -6,8 +6,8 @@
  * changed and the existing pages can keep referencing the previous slot set.
  */
 
-import { defineOperation } from "@caelo/query-api";
-import { err, ok, templateBlocksSetSchema } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok, templateBlocksSetSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

@@ -43,8 +43,8 @@ test("pages.create with no templateId resolves from site_defaults", () => {
       "-e",
       `
       import { SQL } from "bun";
-      import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
-      import { registerAdminOps } from "@caelo/admin-core";
+      import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+      import { registerAdminOps } from "@caelo-cms/admin-core";
 
       const registry = new OperationRegistry();
       registerAdminOps(registry);

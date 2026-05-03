@@ -16,7 +16,7 @@
  */
 
 import { beforeAll, describe, expect, it } from "bun:test";
-import { type ExecutionContext, ok } from "@caelo/shared";
+import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {

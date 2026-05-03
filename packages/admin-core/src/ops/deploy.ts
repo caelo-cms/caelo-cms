@@ -34,9 +34,9 @@ import {
   defineOperation,
   execute,
   type OperationRegistry,
-} from "@caelo/query-api";
-import { type ExecutionContext, err, ok } from "@caelo/shared";
-import type { DeployTarget } from "@caelo/static-generator";
+} from "@caelo-cms/query-api";
+import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
+import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 
@@ -552,7 +552,7 @@ export const promoteDeployOp = defineOperation({
       const overlayBuildId = `${buildId}-${to.name}`;
       const overlayDir = join(toBuildsDir, overlayBuildId);
       await mkdir(overlayDir, { recursive: true });
-      const { buildRobotsTxt } = await import("@caelo/static-generator");
+      const { buildRobotsTxt } = await import("@caelo-cms/static-generator");
       // Copy the source build's files (excluding the per-target ones)
       // into the overlay. Use file-by-file copy to avoid the bind-mount
       // tree-recreate issue when overwriting.

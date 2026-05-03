@@ -6,8 +6,8 @@
  * widens. The active provider is the one the chat runtime instantiates.
  */
 
-import { defineOperation } from "@caelo/query-api";
-import { aiProvidersSetInput, ok } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { aiProvidersSetInput, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

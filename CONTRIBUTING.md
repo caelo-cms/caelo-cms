@@ -24,8 +24,8 @@ cp .env.example .env                  # then add ANTHROPIC_API_KEY
 bun install
 docker compose up -d                  # postgres + caddy
 bun run db:migrate                    # apply both cms_admin + cms_public migrations
-bun run --filter @caelo/admin seed:dev  # owner + sample pages
-bun run --filter @caelo/admin dev     # admin at http://localhost:5173
+bun run --filter @caelo-cms/admin seed:dev  # owner + sample pages
+bun run --filter @caelo-cms/admin dev     # admin at http://localhost:5173
 ```
 
 Verify everything passes locally before opening a PR:

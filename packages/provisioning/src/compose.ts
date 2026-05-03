@@ -84,7 +84,7 @@ services:
     working_dir: /app
     volumes:
       - ../..:/app
-    command: bun run --filter @caelo/admin start
+    command: bun run --filter @caelo-cms/admin start
     environment:
       ADMIN_DATABASE_URL: "postgres://caelo:${escape(spec.postgresPassword)}@postgres:5432/cms_admin"
       PUBLIC_ADMIN_DATABASE_URL: "postgres://caelo:${escape(spec.postgresPassword)}@postgres:5432/cms_public"

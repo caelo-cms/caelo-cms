@@ -15,9 +15,9 @@
  * needs progress + cancel + cost tracking.
  */
 
-import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
-import { defineOperation, execute } from "@caelo/query-api";
-import { type ExecutionContext, err, ok } from "@caelo/shared";
+import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { defineOperation, execute } from "@caelo-cms/query-api";
+import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";

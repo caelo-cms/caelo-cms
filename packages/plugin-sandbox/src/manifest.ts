@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-sandbox/manifest — manifest signature shape + verifier.
+ * @caelo-cms/plugin-sandbox/manifest — manifest signature shape + verifier.
  *
  * Tier 1 plugins ship with an Ed25519 signature over the canonical JSON
  * of their manifest. The Caelo public key is embedded in this module
@@ -17,7 +17,7 @@
  * production public key during release builds.
  */
 
-import type { PluginManifest } from "@caelo/plugin-sdk";
+import type { PluginManifest } from "@caelo-cms/plugin-sdk";
 
 /**
  * Canonical JSON of a manifest. Stable byte order so signing +

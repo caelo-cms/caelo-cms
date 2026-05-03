@@ -13,8 +13,8 @@
  * pushes 'auto' as the default and asks before 'skip'.
  */
 
-import { execute } from "@caelo/query-api";
-import { changePageSlugToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { changePageSlugToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -29,7 +29,7 @@ function pathFor(slug: string, locale: string): string {
 }
 
 export const changePageSlugTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").ChangePageSlugToolInput
+  import("@caelo-cms/shared").ChangePageSlugToolInput
 > = {
   name: "change_page_slug",
   description:

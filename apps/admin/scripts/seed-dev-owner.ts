@@ -23,7 +23,7 @@
  * longer block manual login.
  */
 
-import { hashPassword } from "@caelo/admin-core";
+import { hashPassword } from "@caelo-cms/admin-core";
 import { SQL } from "bun";
 
 const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];

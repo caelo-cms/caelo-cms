@@ -16,13 +16,13 @@
  * footer modules so most sessions skip step 2.
  */
 
-import { execute } from "@caelo/query-api";
-import { setStructuredSetToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { setStructuredSetToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setStructuredSetTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").SetStructuredSetToolInput
+  import("@caelo-cms/shared").SetStructuredSetToolInput
 > = {
   name: "set_structured_set",
   description:

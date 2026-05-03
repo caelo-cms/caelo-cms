@@ -9,7 +9,7 @@ Pulumi stack provisioning Caelo on Azure managed services. Implements the shared
 | Managed Postgres | Azure DB for PostgreSQL flexible server (zone-redundant in production) + automated backups (geo-redundant in production) |
 | Blob storage | Storage Account + two containers (`media` private, `$web` static-website-enabled) |
 | CDN / Edge | Azure Container Apps `edge-router` instance (Front Door + custom-domain bindings land in P15.4 review-pass) |
-| Edge compute (A/B + redirects) | Container App `edge-router` running `edge-handler.ts` with `@caelo/edge-router` |
+| Edge compute (A/B + redirects) | Container App `edge-router` running `edge-handler.ts` with `@caelo-cms/edge-router` |
 | Container runtime | Five Container Apps (admin / gateway / orchestrator / runner / edge-router) in one managed environment |
 | Secret store | Key Vault (postgres-password, csrf-secret, cookie-secret, anthropic-api-key, resend-api-key) |
 | Edge-log sink | Log Analytics workspace receives Container Apps logs (queryable by P12A analytics plugin via Azure Monitor) |

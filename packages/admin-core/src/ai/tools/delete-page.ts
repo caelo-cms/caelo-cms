@@ -12,8 +12,8 @@
  * dead URLs.
  */
 
-import { execute } from "@caelo/query-api";
-import { deletePageToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { deletePageToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -28,7 +28,7 @@ function pathFor(slug: string, locale: string): string {
 }
 
 export const deletePageTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").DeletePageToolInput
+  import("@caelo-cms/shared").DeletePageToolInput
 > = {
   name: "delete_page",
   description:

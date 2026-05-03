@@ -22,10 +22,10 @@ import {
   pluginWorkerScheduler,
   resetPluginHost,
   runPluginOperation,
-} from "@caelo/plugin-host";
-import translationPlugin from "@caelo/plugin-translation";
-import { DatabaseAdapter, defineOperation, OperationRegistry } from "@caelo/query-api";
-import { type ExecutionContext, ok } from "@caelo/shared";
+} from "@caelo-cms/plugin-host";
+import translationPlugin from "@caelo-cms/plugin-translation";
+import { DatabaseAdapter, defineOperation, OperationRegistry } from "@caelo-cms/query-api";
+import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;

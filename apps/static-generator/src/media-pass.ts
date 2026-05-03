@@ -24,8 +24,8 @@
 
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { TransactionRunner } from "@caelo/query-api";
-import { extractMediaRefs } from "@caelo/shared";
+import type { TransactionRunner } from "@caelo-cms/query-api";
+import { extractMediaRefs } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 interface VariantRow {

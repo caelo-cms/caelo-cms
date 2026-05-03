@@ -21,8 +21,8 @@
  * (needs_update → up_to_date).
  */
 
-import { defineOperation } from "@caelo/query-api";
-import { ok } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 

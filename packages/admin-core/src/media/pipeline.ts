@@ -20,7 +20,7 @@ import {
   MEDIA_VARIANT_WIDTHS,
   type MediaMime,
   type MediaVariantTag,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 import sharp from "sharp";
 
 export interface PipelineOutputVariant {

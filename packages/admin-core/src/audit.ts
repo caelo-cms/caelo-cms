@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { TransactionRunner } from "@caelo/query-api";
-import type { ExecutionContext } from "@caelo/shared";
+import type { TransactionRunner } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 const SENSITIVE_KEYS = new Set(["password", "token", "csrfToken", "passwordHash"]);

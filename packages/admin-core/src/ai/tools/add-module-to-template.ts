@@ -27,8 +27,8 @@
  * others. Callers can re-run the tool to retry skipped pages.
  */
 
-import { execute } from "@caelo/query-api";
-import { addModuleToTemplateToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { addModuleToTemplateToolInput } from "@caelo-cms/shared";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageRow {
@@ -72,7 +72,7 @@ function slugify(displayName: string): string {
 }
 
 export const addModuleToTemplateTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").AddModuleToTemplateToolInput
+  import("@caelo-cms/shared").AddModuleToTemplateToolInput
 > = {
   name: "add_module_to_template",
   description:

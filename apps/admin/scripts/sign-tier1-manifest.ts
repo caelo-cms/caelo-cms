@@ -24,8 +24,8 @@
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { generateManifestKeyPair, signManifest } from "@caelo/plugin-sandbox";
-import { type PluginDefinition, pluginManifest } from "@caelo/plugin-sdk";
+import { generateManifestKeyPair, signManifest } from "@caelo-cms/plugin-sandbox";
+import { type PluginDefinition, pluginManifest } from "@caelo-cms/plugin-sdk";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const PLUGINS_ROOT = resolve(REPO_ROOT, "packages/plugins");

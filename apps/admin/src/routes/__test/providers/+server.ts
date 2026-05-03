@@ -17,7 +17,7 @@ import {
   clearTestProvider,
   isTestRegistryEnabled,
   registerTestProvider,
-} from "@caelo/admin-core";
+} from "@caelo-cms/admin-core";
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 

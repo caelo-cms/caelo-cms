@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-forms — Tier-1 plugin: contact + generic form submissions.
+ * @caelo-cms/plugin-forms — Tier-1 plugin: contact + generic form submissions.
  *
  * P12 PR2.1 — first visitor-facing plugin built on the SDK that P11/P11.5/P12
  * pioneered. Validates ctx.query (cms_public RLS-scoped writes), ctx.visitor
@@ -33,8 +33,8 @@ import {
   KIT_CSS,
   postPluginJson,
   setStatus,
-} from "@caelo/plugin-component-kit";
-import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo/plugin-sdk";
+} from "@caelo-cms/plugin-component-kit";
+import { defineComponent, definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 
 const SLUG = "forms";
 

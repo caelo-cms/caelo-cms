@@ -25,7 +25,7 @@ The `--provider aws` adapter mirrors the GCP shape on AWS-equivalent services.
 ## Quickstart
 
 ```bash
-bunx @caelo/provisioning --provider aws \
+bunx @caelo-cms/provisioning --provider aws \
   --account 123456789012 \
   --region eu-central-1 \
   --domain caelo.example.com \
@@ -40,7 +40,7 @@ Required: AWS credentials with the IAM permissions the adapter declares (visible
 - **Cold-start sensitivity** — Lambda is cheaper than Fargate but cold-starts are 1–2s for the admin's first request after idle. For low-traffic installs this is fine; busy installs should switch to Fargate via `--compute fargate`.
 - **CloudFront cache behaviour** — the static-generated pages cache aggressively (24h default); the admin + gateway routes are pass-through with `Cache-Control: no-store`. The provisioner configures both.
 - **A/B edge split** — the gateway uses a Lambda@Edge function to compute the FNV-1a hash and route to the right variant; assignment logs land in CloudWatch and feed the analytics plugin.
-- **Secrets rotation** — the admin reads Secrets Manager via env vars at boot; rotating a secret requires a Lambda redeploy (~30s). The provisioner handles this for you on `bunx @caelo/provisioning rotate-secret <name>`.
+- **Secrets rotation** — the admin reads Secrets Manager via env vars at boot; rotating a secret requires a Lambda redeploy (~30s). The provisioner handles this for you on `bunx @caelo-cms/provisioning rotate-secret <name>`.
 
 ## Cost (rough)
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host integration tests.
+ * @caelo-cms/plugin-host integration tests.
  *
  * Uses the `testPlugins` mode of `bootstrap(...)` to register Tier-1
  * fixtures directly (skipping on-disk filesystem walk + signature verify).
@@ -18,10 +18,10 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { registerAdminOps } from "@caelo/admin-core";
-import { definePlugin } from "@caelo/plugin-sdk";
-import { DatabaseAdapter, defineOperation, execute, OperationRegistry } from "@caelo/query-api";
-import { type ExecutionContext, ok } from "@caelo/shared";
+import { registerAdminOps } from "@caelo-cms/admin-core";
+import { definePlugin } from "@caelo-cms/plugin-sdk";
+import { DatabaseAdapter, defineOperation, execute, OperationRegistry } from "@caelo-cms/query-api";
+import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { z } from "zod";
 import {

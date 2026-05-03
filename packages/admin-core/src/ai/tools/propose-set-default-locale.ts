@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import {
   type ProposeSetDefaultLocaleToolInput,
   proposeSetDefaultLocaleToolInput,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 

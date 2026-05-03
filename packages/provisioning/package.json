@@ -1,5 +1,5 @@
 {
-  "name": "@caelo/provisioning",
+  "name": "@caelo-cms/provisioning",
   "version": "0.1.0",
   "private": true,
   "license": "MPL-2.0",
@@ -16,7 +16,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@caelo/shared": "workspace:*",
+    "@caelo-cms/shared": "workspace:*",
     "@pulumi/aws": "^7",
     "@pulumi/awsx": "^3",
     "@pulumi/azure-native": "^3",

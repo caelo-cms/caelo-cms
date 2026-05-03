@@ -40,7 +40,7 @@
 
   const claudeMcpAddSnippet = $derived(
     form?.ok && form?.plaintextToken
-      ? `claude mcp add caelo --command "bunx @caelo/mcp-server" \\
+      ? `claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \\
   --env CAELO_ADMIN_URL=${data.adminUrl} \\
   --env CAELO_MCP_TOKEN=${form.plaintextToken}`
       : null,

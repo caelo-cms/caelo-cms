@@ -12,7 +12,7 @@
  *  3. S3 buckets: caelo-media + caelo-static (per env).
  *  4. CloudFront distribution with two origins (S3 static + ALB-fronted ECS).
  *  5. Lambda@Edge function (us-east-1 pinned; viewer-request event) that
- *     reads `routing-manifest.json`, runs the @caelo/edge-router stable-hash
+ *     reads `routing-manifest.json`, runs the @caelo-cms/edge-router stable-hash
  *     assignment, sets the `caelo_visitor_id` cookie, rewrites the URL.
  *  6. ECS Fargate cluster + four services (admin, gateway, orchestrator, runner).
  *  7. Secrets Manager entries (postgres-password, anthropic-api-key, ...).
@@ -196,7 +196,7 @@ const cert = new aws.acm.Certificate(
 
 // === 6. Lambda@Edge for A/B split + redirects ===
 //
-// Bundles @caelo/edge-router's pure assignment helper. Real deployments
+// Bundles @caelo-cms/edge-router's pure assignment helper. Real deployments
 // build this via a separate `bun build --target=node --bundle` step
 // then upload the zip; for v1 we inline a small handler that imports
 // the route logic from a sibling module.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { ok } from "@caelo/shared";
+import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 import { defineOperation } from "../index.js";
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { signCsrfToken } from "@caelo/admin-core";
+import { signCsrfToken } from "@caelo-cms/admin-core";
 import type { LayoutServerLoad } from "./$types";
 
 /**

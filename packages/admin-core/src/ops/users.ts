@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { defineOperation } from "@caelo/query-api";
-import { err, ok } from "@caelo/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../audit.js";

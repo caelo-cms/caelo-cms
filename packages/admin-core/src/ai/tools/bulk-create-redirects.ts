@@ -6,13 +6,13 @@
  * does it in one tool call. Single tx, all-or-nothing.
  */
 
-import { execute } from "@caelo/query-api";
-import { bulkCreateRedirectsToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { bulkCreateRedirectsToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").BulkCreateRedirectsToolInput
+  import("@caelo-cms/shared").BulkCreateRedirectsToolInput
 > = {
   name: "bulk_create_redirects",
   description:

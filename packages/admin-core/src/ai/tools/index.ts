@@ -42,7 +42,7 @@ import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
 import { submitPluginTool } from "./submit-plugin.js";
 // P11.5 — translate_page + start_translation_job moved to the translation
 // Tier-1 plugin (`packages/plugins/translation/`). The chat-runner discovers
-// them via @caelo/plugin-host's pluginToolsRegistry on each turn.
+// them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateThemeTool } from "./update-theme.js";
 

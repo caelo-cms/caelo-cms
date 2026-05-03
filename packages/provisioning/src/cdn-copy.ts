@@ -17,7 +17,7 @@
  *
  * Each provider's stack publishes a `CdnCopyAdapter` instance via its
  * Pulumi outputs (the actual implementation is dynamically imported by
- * the orchestrator at runtime so `@caelo/provisioning` doesn't pull in
+ * the orchestrator at runtime so `@caelo-cms/provisioning` doesn't pull in
  * `@aws-sdk/...`/`@google-cloud/...`/`@azure/...` as static deps). The
  * interface defined here is the only thing both sides agree on.
  */

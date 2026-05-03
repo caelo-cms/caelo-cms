@@ -32,9 +32,9 @@ import {
   pluginPromptContextRegistry,
   pluginToolsRegistry,
   runPluginOperation,
-} from "@caelo/plugin-host";
-import type { DatabaseAdapter, OperationRegistry } from "@caelo/query-api";
-import { execute } from "@caelo/query-api";
+} from "@caelo-cms/plugin-host";
+import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { execute } from "@caelo-cms/query-api";
 import {
   type CandidateSkill,
   type ChatEngagement,
@@ -43,7 +43,7 @@ import {
   matchSkills,
   resolveEngagements,
   skillAutoEngagementHints,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 
 import type { AIProvider, ChatMessageInput } from "./provider.js";
 import { composeSystemPromptChunks } from "./system-prompt.js";

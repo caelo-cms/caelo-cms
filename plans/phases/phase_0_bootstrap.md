@@ -52,7 +52,7 @@ Initialise the Bun monorepo with TypeScript (strict), Biome, Zod, Vitest, a root
     └── shared/                       # Zod/shared types + placeholder test
 ```
 
-Every workspace has: `package.json` (name `@caelo/<slug>`, `license: MPL-2.0`, `type: module`, `typecheck` script), `tsconfig.json` extending the base with `composite: true` + appropriate `references`, and an `src/index.ts` placeholder carrying the SPDX header.
+Every workspace has: `package.json` (name `@caelo-cms/<slug>`, `license: MPL-2.0`, `type: module`, `typecheck` script), `tsconfig.json` extending the base with `composite: true` + appropriate `references`, and an `src/index.ts` placeholder carrying the SPDX header.
 
 `packages/shared/src/index.test.ts` is the seed test that makes `bun test` meaningful on the empty scaffold.
 

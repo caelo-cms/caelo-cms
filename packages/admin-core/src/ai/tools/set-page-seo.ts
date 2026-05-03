@@ -8,13 +8,13 @@
  * `optimize_page_seo`.
  */
 
-import { execute } from "@caelo/query-api";
-import { setPageSeoToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { setPageSeoToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setPageSeoTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").SetPageSeoToolInput
+  import("@caelo-cms/shared").SetPageSeoToolInput
 > = {
   name: "set_page_seo",
   description:

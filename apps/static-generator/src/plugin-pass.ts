@@ -23,8 +23,8 @@ import {
   runPluginMetaSignature,
   runPluginMetaSignatureBatch,
   runPluginStaticRender,
-} from "@caelo/plugin-host";
-import type { DatabaseAdapter } from "@caelo/query-api";
+} from "@caelo-cms/plugin-host";
+import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
 const SYSTEM_CTX = {

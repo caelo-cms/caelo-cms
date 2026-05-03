@@ -13,7 +13,7 @@
  * inside the overlay still carries `x-csrf-token`).
  */
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
 import { INJECT_SCRIPT } from "$lib/components/edit/inject-script.js";
 import { requirePermission } from "$lib/server/guards.js";

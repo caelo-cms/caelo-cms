@@ -15,13 +15,13 @@
  * (via pages.get_with_modules) and quote them back.
  */
 
-import { execute } from "@caelo/query-api";
-import { changeTemplateToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { changeTemplateToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const changeTemplateTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").ChangeTemplateToolInput
+  import("@caelo-cms/shared").ChangeTemplateToolInput
 > = {
   name: "change_template",
   description:

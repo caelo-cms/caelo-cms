@@ -23,14 +23,14 @@
  * scores highest against.
  */
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import {
   parseSubagentResult,
   type SpawnSubagentsToolInput,
   type SpawnSubagentToolInput,
   spawnSubagentsToolInput,
   spawnSubagentToolInput,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/site-importer — P14.
+ * @caelo-cms/site-importer — P14.
  *
  * Crawl an existing public site at a URL, extract per-page modules
  * (heuristic: header / N x sections / footer), pull theme tokens

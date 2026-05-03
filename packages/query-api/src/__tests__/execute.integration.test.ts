@@ -7,7 +7,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { type ExecutionContext, err, ok } from "@caelo/shared";
+import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { DatabaseAdapter, defineOperation, execute, OperationRegistry } from "../index.js";

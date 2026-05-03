@@ -15,9 +15,9 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerAdminOps } from "@caelo/admin-core";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
-import type { ExecutionContext } from "@caelo/shared";
+import { registerAdminOps } from "@caelo-cms/admin-core";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { runMediaPass } from "./media-pass.js";
 

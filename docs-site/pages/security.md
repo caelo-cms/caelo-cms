@@ -21,7 +21,7 @@ Use [GitHub Private Vulnerability Reporting](https://github.com/caelo-cms/caelo-
 If you can't use the GitHub form (no GitHub account, etc.), email **security@caelo-cms.com** with:
 
 - A description of the vulnerability + the affected component
-- Steps to reproduce against a fresh `bunx @caelo/provisioning --provider self-hosted` install
+- Steps to reproduce against a fresh `bunx @caelo-cms/provisioning --provider self-hosted` install
 - Any proof-of-concept code (private gist link is fine)
 - Your preferred disclosure timeline (default: 90 days from acknowledgement)
 - Whether you'd like credit in the fix's release notes
@@ -37,7 +37,7 @@ In scope:
 - The plugin host + sandbox (oxc-parser validator + Deno subprocess + RLS scoping)
 - Any of the five core Tier 1 plugins (forms, comments, newsletter, ratings, auth) when run as shipped
 - The provisioning surface — secret handling, IAM scope, network isolation
-- The MCP server (`@caelo/mcp-server`)
+- The MCP server (`@caelo-cms/mcp-server`)
 - The static-generator output
 - The API gateway
 
@@ -61,7 +61,7 @@ Out of scope (please report upstream):
 Three places. Issues with any of them are critical-severity:
 
 - **Tier 1 plugin manifest signatures** — Ed25519 over the manifest JSON. Public key embedded in the host build; rotated on major version bumps.
-- **Internal API tokens + cookie/CSRF/HMAC secrets** — minted at install via `bunx @caelo/provisioning`; stored in the platform's secrets manager.
+- **Internal API tokens + cookie/CSRF/HMAC secrets** — minted at install via `bunx @caelo-cms/provisioning`; stored in the platform's secrets manager.
 - **MCP token bearer hashes** — sha256 at rest; the plaintext bearer is shown ONCE at mint time on `/security/mcp`.
 
 Implementation: `packages/plugin-sandbox/src/manifest.ts`, `apps/admin/src/lib/server/csrf.ts`, `packages/admin-core/src/ops/security/mcp_tokens.ts`.

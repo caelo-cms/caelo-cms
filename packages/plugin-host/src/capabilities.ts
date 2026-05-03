@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host/capabilities — per-plugin context factory.
+ * @caelo-cms/plugin-host/capabilities — per-plugin context factory.
  *
  * Builds a fresh `PluginContext` (Tier 2) or `PluginContextTier1` for each
  * operation invocation. The handles are CLOSURES over the host infra + the
@@ -27,9 +27,9 @@ import type {
   PluginSnapshots,
   PluginTheme,
   PluginVisitor,
-} from "@caelo/plugin-sdk";
-import { execute } from "@caelo/query-api";
-import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo/shared";
+} from "@caelo-cms/plugin-sdk";
+import { execute } from "@caelo-cms/query-api";
+import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 

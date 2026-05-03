@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-translation — Tier-1 plugin packaging for Caelo's
+ * @caelo-cms/plugin-translation — Tier-1 plugin packaging for Caelo's
  * translation (Mode 1 + Mode 2) feature.
  *
  * P11.5 commit 2 — proof-of-concept port. The actual translation
@@ -21,7 +21,7 @@
  * surface won't change.
  */
 
-import { definePlugin, type PluginContextTier1 } from "@caelo/plugin-sdk";
+import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 
 const SLUG = "translation";
 

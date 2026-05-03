@@ -3,7 +3,7 @@
 /**
  * Caelo Azure edge-router — Azure Container App HTTP handler.
  *
- * Imports the SAME `routeRequest` from `@caelo/edge-router` that the
+ * Imports the SAME `routeRequest` from `@caelo-cms/edge-router` that the
  * P13 self-hosted Caddy gateway, the AWS Lambda@Edge function, and the
  * GCP Cloud Run handler use. The byte-identity test in
  * packages/edge-router/src/index.test.ts asserts identical variant
@@ -20,7 +20,7 @@
  * pushing to ACR) lands in P17.0 release engineering.
  */
 
-import { EMPTY_MANIFEST, type RoutingManifest, routeRequest } from "@caelo/edge-router";
+import { EMPTY_MANIFEST, type RoutingManifest, routeRequest } from "@caelo-cms/edge-router";
 
 const STATIC_BUCKET_URL = process.env.STATIC_BUCKET_URL ?? "";
 const MANIFEST_OBJECT = process.env.MANIFEST_OBJECT ?? "ab-routing.json";

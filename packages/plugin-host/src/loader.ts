@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host/loader — startup-time Tier-1 plugin loader.
+ * @caelo-cms/plugin-host/loader — startup-time Tier-1 plugin loader.
  *
  * Bootstrap walks `packages/plugins/<slug>/` directories, verifies each
  * manifest's Ed25519 signature, runs the validator over the plugin's source,
@@ -20,14 +20,14 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { validateManifest, validateSource, verifyManifestSignature } from "@caelo/plugin-sandbox";
+import { validateManifest, validateSource, verifyManifestSignature } from "@caelo-cms/plugin-sandbox";
 import {
   type PluginContext,
   type PluginContextTier1,
   type PluginDefinition,
   pluginManifest,
-} from "@caelo/plugin-sdk";
-import { execute } from "@caelo/query-api";
+} from "@caelo-cms/plugin-sdk";
+import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { makePluginContext } from "./capabilities.js";
 import {

@@ -6,7 +6,7 @@
  * client can poll without rendering a route.
  */
 
-import { execute } from "@caelo/query-api";
+import { execute } from "@caelo-cms/query-api";
 import { json } from "@sveltejs/kit";
 import { getQueryContext } from "$lib/server/query.js";
 import type { RequestHandler } from "./$types";

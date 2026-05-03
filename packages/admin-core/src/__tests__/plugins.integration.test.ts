@@ -14,9 +14,9 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { schemaFromSpec } from "@caelo/plugin-sandbox";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
-import type { ExecutionContext } from "@caelo/shared";
+import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { registerAdminOps } from "../register.js";
@@ -55,7 +55,7 @@ const helloManifest = {
 };
 
 const helloSource = `
-import { definePlugin, defineComponent } from "@caelo/plugin-sdk";
+import { definePlugin, defineComponent } from "@caelo-cms/plugin-sdk";
 export default definePlugin({
   slug: "${HELLO_SLUG}",
   version: "0.0.1",

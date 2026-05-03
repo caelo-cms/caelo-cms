@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { Result } from "@caelo/shared";
-import { err, ok } from "@caelo/shared";
+import type { Result } from "@caelo-cms/shared";
+import { err, ok } from "@caelo-cms/shared";
 import type { QueryError } from "./errors.js";
 import type { OperationDefinition } from "./operation.js";
 

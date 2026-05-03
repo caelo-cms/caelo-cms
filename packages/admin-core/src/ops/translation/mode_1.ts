@@ -13,8 +13,8 @@
  * standard publish flow.
  */
 
-import type { TransactionRunner } from "@caelo/query-api";
-import { defineOperation } from "@caelo/query-api";
+import type { TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildModeOnePrompt,
   err,
@@ -22,7 +22,7 @@ import {
   type ModuleBlockSlot,
   ok,
   translationResultPayload,
-} from "@caelo/shared";
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { AIProvider } from "../../ai/provider.js";

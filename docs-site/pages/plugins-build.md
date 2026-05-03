@@ -83,7 +83,7 @@ Same flow, but you write the source directly in the `/security/plugins/new` form
 
 The validator (`packages/plugin-sandbox/src/validate.ts`, oxc-parser-based) rejects:
 
-- Imports of any module other than `@caelo/plugin-sdk`
+- Imports of any module other than `@caelo-cms/plugin-sdk`
 - `CallExpression` of `fetch`, `XMLHttpRequest`, `WebSocket`, `globalThis.fetch`
 - Any reference to `Deno.*` (Tier 2 wouldn't get filesystem access anyway, but defense-in-depth)
 - Dynamic `import()` calls
@@ -98,7 +98,7 @@ Plus a schema rule: any table declaring a `page_id` column **must** also declare
 Both tiers' frontend code is a Web Component, mounted in **Shadow DOM (open mode default)** so plugin CSS doesn't leak into the host page and vice-versa. Theme tokens are injected as CSS custom properties on the shadow root automatically.
 
 ```ts
-import { defineComponent } from "@caelo/plugin-sdk";
+import { defineComponent } from "@caelo-cms/plugin-sdk";
 
 export const component = defineComponent({
   tag: "caelo-event-rsvp",
@@ -131,4 +131,4 @@ Full surface in [`packages/plugin-sdk/src/`](https://github.com/caelo-cms/caelo-
 
 - [Tier 2 deep dive →](/plugins-tier-2)
 - [Architecture →](/architecture)
-- The [`@caelo/plugin-sdk` source](https://github.com/caelo-cms/caelo-cms/tree/main/packages/plugin-sdk)
+- The [`@caelo-cms/plugin-sdk` source](https://github.com/caelo-cms/caelo-cms/tree/main/packages/plugin-sdk)

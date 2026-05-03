@@ -16,8 +16,8 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo/query-api";
-import type { ExecutionContext } from "@caelo/shared";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 

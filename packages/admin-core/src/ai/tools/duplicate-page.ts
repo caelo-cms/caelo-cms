@@ -10,13 +10,13 @@
  * follow-up `change_template` to migrate orphans).
  */
 
-import { execute } from "@caelo/query-api";
-import { duplicatePageToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { duplicatePageToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const duplicatePageTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").DuplicatePageToolInput
+  import("@caelo-cms/shared").DuplicatePageToolInput
 > = {
   name: "duplicate_page",
   description:

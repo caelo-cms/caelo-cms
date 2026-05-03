@@ -15,8 +15,8 @@
  *   4. layout_modules.set    → splice + persist.
  */
 
-import { execute } from "@caelo/query-api";
-import { addModuleToLayoutToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { addModuleToLayoutToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -37,7 +37,7 @@ function slugify(displayName: string): string {
 }
 
 export const addModuleToLayoutTool: ToolDefinitionWithHandler<
-  import("@caelo/shared").AddModuleToLayoutToolInput
+  import("@caelo-cms/shared").AddModuleToLayoutToolInput
 > = {
   name: "add_module_to_layout",
   description:

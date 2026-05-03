@@ -7,8 +7,8 @@
  * ship via human PR + signed release.
  */
 
-import { execute } from "@caelo/query-api";
-import { type SubmitPluginToolInput, submitPluginToolInput } from "@caelo/shared";
+import { execute } from "@caelo-cms/query-api";
+import { type SubmitPluginToolInput, submitPluginToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -17,7 +17,7 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
   description:
     "Submit a Tier 2 plugin for validation + Owner approval. " +
     "TWO-STEP: this only validates and queues — an Owner must click Approve at /security/plugins to activate. DO NOT claim the plugin is active. " +
-    "Tier 2 plugins are sandboxed (Deno --no-read --no-write --no-net); source must use ONLY @caelo/plugin-sdk imports (no fetch / Deno / dynamic imports / raw SQL). " +
+    "Tier 2 plugins are sandboxed (Deno --no-read --no-write --no-net); source must use ONLY @caelo-cms/plugin-sdk imports (no fetch / Deno / dynamic imports / raw SQL). " +
     "Manifests must declare `tier: 2`; do NOT include `requestedCapabilities`, `workers`, or `tools` (those are Tier 1 / core only — submitting them gets rejected). " +
     "Schema invariant: any table with `page_id` MUST also declare `locale`. " +
     "Inputs: slug (lowercase-with-hyphens, unique site-wide), version (semver), manifest (JSON object: slug, version, tier=2, schema, operations, optional component, hasStaticRender), source (full JS module string). " +
@@ -67,7 +67,7 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
       content:
         `Submitted plugin ${input.slug} v${input.version} (id=${pluginId}). Status: draft (validation failed).\n\n` +
         `Validator returned ${validationErrors.length} structured error${validationErrors.length === 1 ? "" : "s"}:\n${errorList}\n\n` +
-        `Fix the source per each hint and resubmit. Plugins may import ONLY from "@caelo/plugin-sdk".`,
+        `Fix the source per each hint and resubmit. Plugins may import ONLY from "@caelo-cms/plugin-sdk".`,
     };
   },
 };

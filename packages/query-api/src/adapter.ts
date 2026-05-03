@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { ExecutionContext, Result } from "@caelo/shared";
-import { err } from "@caelo/shared";
+import type { ExecutionContext, Result } from "@caelo-cms/shared";
+import { err } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
@@ -184,7 +184,7 @@ export class DatabaseAdapter {
   /**
    * Provision a plugin's cms_public schema by running emitted DDL
    * (CREATE SCHEMA / CREATE TABLE / RLS) inside one transaction. The
-   * SQL is produced by `@caelo/plugin-sandbox/schema.schemaFromSpec`,
+   * SQL is produced by `@caelo-cms/plugin-sandbox/schema.schemaFromSpec`,
    * which is itself fed from the plugin's validated manifest.
    *
    * Runs as `system` actor so RLS doesn't gate DDL grants. Idempotent

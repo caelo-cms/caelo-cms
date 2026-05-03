@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo/plugin-host — P11.5 Tier-1 plugin runtime.
+ * @caelo-cms/plugin-host — P11.5 Tier-1 plugin runtime.
  *
  * Bootstrap walks `packages/plugins/<slug>/`, verifies signatures, runs the
  * validator, and registers each Tier-1 plugin's tools + workers + prompt-
