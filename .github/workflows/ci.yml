@@ -89,7 +89,7 @@ jobs:
           packages/migrations/src/bootstrap.sh
 
       - name: Sync SvelteKit types (generates .svelte-kit/types for the admin app)
-        run: bun run --filter=@caelo/admin sync
+        run: bun run --filter=@caelo-cms/admin sync
 
       - name: Lint
         run: bun run lint
