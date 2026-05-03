@@ -1,0 +1,31 @@
+{
+  "kind": "nav-menu",
+  "slug": "header-main",
+  "displayName": "Header navigation",
+  "items": [
+    { "label": "Quickstart", "href": "/quickstart" },
+    { "label": "Architecture", "href": "/architecture" },
+    {
+      "label": "Install",
+      "href": "/install-self-hosted",
+      "children": [
+        { "label": "Self-hosted", "href": "/install-self-hosted" },
+        { "label": "GCP", "href": "/install-gcp" },
+        { "label": "AWS", "href": "/install-aws" },
+        { "label": "Azure", "href": "/install-azure" }
+      ]
+    },
+    {
+      "label": "Plugins",
+      "href": "/plugins-build",
+      "children": [
+        { "label": "Build a plugin", "href": "/plugins-build" },
+        { "label": "Tier 2 (sandboxed)", "href": "/plugins-tier-2" }
+      ]
+    },
+    { "label": "MCP", "href": "/mcp" },
+    { "label": "Security", "href": "/security" },
+    { "label": "Changelog", "href": "/changelog" },
+    { "label": "GitHub", "href": "https://github.com/caelo-cms/caelo-cms", "target": "_blank" }
+  ]
+}

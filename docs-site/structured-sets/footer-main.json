@@ -1,0 +1,15 @@
+{
+  "kind": "nav-menu",
+  "slug": "footer-main",
+  "displayName": "Footer navigation",
+  "items": [
+    { "label": "Quickstart", "href": "/quickstart" },
+    { "label": "Architecture", "href": "/architecture" },
+    { "label": "Plugins", "href": "/plugins-build" },
+    { "label": "MCP", "href": "/mcp" },
+    { "label": "Security", "href": "/security" },
+    { "label": "Changelog", "href": "/changelog" },
+    { "label": "GitHub", "href": "https://github.com/caelo-cms/caelo-cms", "target": "_blank" },
+    { "label": "License (MPL 2.0)", "href": "https://github.com/caelo-cms/caelo-cms/blob/main/LICENSE", "target": "_blank" }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "kind": "tags",
+  "slug": "blog",
+  "displayName": "Blog tags",
+  "items": [
+    { "slug": "release", "displayName": "Release", "color": "#0d9488" },
+    { "slug": "design", "displayName": "Design notes", "color": "#7c3aed" },
+    { "slug": "postmortem", "displayName": "Postmortem", "color": "#dc2626" }
+  ]
+}
