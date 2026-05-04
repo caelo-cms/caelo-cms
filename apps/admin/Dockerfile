@@ -58,23 +58,21 @@ RUN bun install
 #   in an isolated /tmp dir (so npm doesn't see workspace:* protocol),
 #   then copy each into apps/admin/node_modules/.
 # Bun's transitive optionalDependencies gap (oven-sh/bun#14918) skips
-# the per-platform native bindings. Install the linux-x64-gnu copy of
-# each native-shipping package via npm in /tmp (so npm doesn't see the
-# workspace:* protocol) and copy each into apps/admin/node_modules.
-# Hardcoded list because the bun.lock-scan version produced surprising
-# shell-splitting behaviour on debian sh; explicit list is cleanly
-# auditable (re-add a binding here whenever a new native-shipping dep
-# lands in the admin's transitive closure).
+# the per-platform native bindings. Scan bun.lock for every package
+# whose resolved spec contains "linux-x64" (matches both -linux-x64-gnu
+# Rollup-style and bare -linux-x64 sharp-style) and install all of them
+# via npm in /tmp (so npm doesn't see the workspace:* protocol). Then
+# copy each into apps/admin/node_modules. xargs avoids the shell variable
+# expansion fragility that bit a previous iteration.
 RUN set -e && \
     mkdir -p /tmp/native-bin && cd /tmp/native-bin && \
-    npm install --no-save --no-package-lock \
-      @oxc-parser/binding-linux-x64-gnu@0.128.0 \
-      @rolldown/binding-linux-x64-gnu@1.0.0-rc.17 \
-      @rollup/rollup-linux-x64-gnu@4.60.2 \
-      @tailwindcss/oxide-linux-x64-gnu@4.2.4 \
-      lightningcss-linux-x64-gnu@1.32.0 && \
+    grep -oE '"[a-zA-Z0-9@/_.-]+-linux-x64(-gnu|-musl)?@[^"]+' /repo/bun.lock \
+      | sed 's/^"//' | sort -u > /tmp/native-list && \
+    test -s /tmp/native-list || (echo "no linux-x64 native deps found" && exit 1) && \
+    echo "Installing native bindings:" && cat /tmp/native-list && \
+    xargs -a /tmp/native-list npm install --no-save --no-package-lock && \
     cd /tmp/native-bin/node_modules && \
-    for ENTRY in $(find . -maxdepth 2 -name "*-linux-x64-gnu" -type d); do \
+    for ENTRY in $(find . -maxdepth 2 \( -name "*-linux-x64" -o -name "*-linux-x64-gnu" -o -name "*-linux-x64-musl" \) -type d); do \
       DEST="/repo/apps/admin/node_modules/${ENTRY#./}"; \
       mkdir -p "$(dirname "${DEST}")"; \
       rm -rf "${DEST}"; \
