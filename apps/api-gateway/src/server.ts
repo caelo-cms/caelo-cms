@@ -58,7 +58,10 @@ import {
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_DATABASE_URL ?? process.env.PUBLIC_ADMIN_DATABASE_URL;
 const SYSTEM_ACTOR_ID = process.env.CAELO_SYSTEM_ACTOR_ID ?? "00000000-0000-0000-0000-00000000ffff";
-const PORT = Number.parseInt(process.env.GATEWAY_PORT ?? "8090", 10);
+// Cloud Run sets PORT=8080 on every container; read that first so a
+// platform deploy needs no extra config. GATEWAY_PORT is the historical
+// name retained for self-hosted Compose installs.
+const PORT = Number.parseInt(process.env.PORT ?? process.env.GATEWAY_PORT ?? "8090", 10);
 const PLUGINS_ROOT = resolve(import.meta.dir, "../../../packages/plugins");
 
 const VISITOR_COOKIE = "caelo_visitor_id";

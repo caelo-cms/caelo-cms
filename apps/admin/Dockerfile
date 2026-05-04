@@ -109,16 +109,33 @@ RUN cd apps/admin && bun x vite build
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.3-slim AS runtime
 
+# Reproduce the workspace layout under /app so node_modules resolution
+# works the same way it did at build time (Bun nests admin-specific
+# deps in apps/admin/node_modules; the SSR bundle's runtime requires
+# walk up from /app/apps/admin/build/server/chunks/...).
 WORKDIR /app
 
-COPY --from=builder /repo/apps/admin/build ./build
-COPY --from=builder /repo/apps/admin/package.json ./package.json
+# Workspace metadata (root + every package) so Bun knows about the
+# workspace topology when the runtime resolves nested symlinks.
+COPY --from=builder /repo/package.json ./package.json
+COPY --from=builder /repo/bun.lock ./bun.lock
+
+# Repo-root node_modules (.bun/ cache + hoisted shared packages).
 COPY --from=builder /repo/node_modules ./node_modules
-COPY --from=builder /repo/packages/migrations ./packages/migrations
-COPY --from=builder /repo/packages/plugins ./packages/plugins
+
+# Workspace source the runtime needs (the bundled SSR output references
+# packages/* + plugin manifests at runtime).
+COPY --from=builder /repo/packages ./packages
+
+# The pre-built SvelteKit admin output + its package.json + nested
+# node_modules (admin-specific deps like clsx, bits-ui, etc.).
+COPY --from=builder /repo/apps/admin/package.json ./apps/admin/package.json
+COPY --from=builder /repo/apps/admin/build ./apps/admin/build
+COPY --from=builder /repo/apps/admin/node_modules ./apps/admin/node_modules
 
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000
 
+WORKDIR /app/apps/admin
 CMD ["bun", "--bun", "build/index.js"]

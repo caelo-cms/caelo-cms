@@ -51,15 +51,19 @@ FROM oven/bun:1.3-slim AS runtime
 
 WORKDIR /app
 
-COPY --from=builder /repo/node_modules ./node_modules
-COPY --from=builder /repo/apps/api-gateway ./apps/api-gateway
-COPY --from=builder /repo/packages ./packages
+# Reproduce the workspace layout so Bun's nested-node_modules resolution
+# matches build time (gateway-specific deps live under
+# apps/api-gateway/node_modules; root only has hoisted shared deps).
 COPY --from=builder /repo/package.json ./package.json
 COPY --from=builder /repo/bun.lock ./bun.lock
+COPY --from=builder /repo/node_modules ./node_modules
+COPY --from=builder /repo/packages ./packages
+COPY --from=builder /repo/apps/api-gateway ./apps/api-gateway
 
 ENV NODE_ENV=production
-ENV PORT=8090
-EXPOSE 8090
+# Cloud Run defaults to PORT=8080 (platform-injected); local Compose
+# can override via GATEWAY_PORT. Server reads either.
+EXPOSE 8080
 
 # Run the TS source directly — Bun's runtime handles .ts natively, no
 # transpile step. The gateway is small + the cold-start savings vs a
