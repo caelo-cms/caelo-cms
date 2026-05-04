@@ -207,6 +207,144 @@ Failure surface: when the AI tries `<domain>.execute_proposal` directly, it gets
 
 ---
 
+## 11.B. Deployment architecture per provider
+
+Every cloud provider adapter (`packages/provisioning/stacks/<provider>/`) implements the **same three-tier shape** so security + cost + scaling behaviour is identical regardless of where Caelo runs. A new adapter that diverges from this shape needs an explicit comment justifying *why* and gets extra reviewer scrutiny.
+
+The three tiers + their primitives:
+
+### Tier 1 — Static site (public, edge-cached)
+
+The static-generator emits files. Serve them as files. No compute on the request path.
+
+- **Primitive:** managed object storage + edge CDN + managed TLS cert.
+  - GCP: `BackendBucket` over GCS + Cloud CDN, `ManagedSslCertificate`.
+  - AWS: S3 + CloudFront + ACM.
+  - Azure: Blob Storage + Front Door + managed cert.
+  - Self-hosted: Caddy serving from disk + auto-Let's Encrypt.
+- **Public:** yes (read-only, served by the CDN — origin is private).
+- **Cost:** flat ~$18/mo (LB + cert) + GB-egress at ~$0.02/GB.
+- **Why not Cloud Run / App Service for static:** compute on every request, cold starts, no edge cache, costs ~10× more for the same traffic.
+
+### Tier 2 — Admin app (private, IAP-gated)
+
+The admin app must **never be reachable from the public internet without authenticating against the cloud provider's identity layer FIRST**. Caelo's own session-cookie auth is the *second* line; the cloud-native identity gate is the first.
+
+- **Primitive:** managed serverless container behind cloud-native identity proxy, with operator allowlist.
+  - GCP: Cloud Run + Identity-Aware Proxy (IAP), allowlist via `iap.httpsResourceAccessor` IAM binding.
+  - AWS: Lambda / Fargate behind ALB + Cognito user pool, allowlist via Cognito group.
+  - Azure: Container Apps + Easy Auth (App Service Authentication), allowlist via Microsoft Entra ID group.
+  - Self-hosted: Caddy with `forward_auth` to Authelia / Authentik (operator picks; documented per-install).
+- **Public:** no — the identity proxy returns 403 for unauthenticated/unallowlisted requests before the admin container ever sees the request. Defense in depth: even if the admin app has an unpatched 0day, attackers can't reach it.
+- **Allowlist defaults to single Owner; configurable** as a comma-list of emails / cloud-IDP groups.
+- **Cost:** ~$0/mo idle (scale-to-zero); ~$2-15/mo with light editorial use depending on `adminMinInstances`.
+- **Why not "just rely on Caelo's session cookie":** when (not if) a 0day lands in the admin's request path, the identity proxy IS the only thing between the attacker and the database. CMS spec calls this out implicitly via §17.4 ("admin-only" surfaces); §11.B makes the GCP/AWS/Azure mechanism explicit.
+
+### Tier 3 — API gateway (public visitor writes, WAF-gated)
+
+The gateway accepts public POSTs (form submissions, comments, ratings, newsletter signups, MCP `caelo_chat` calls). It is the only piece that handles untrusted traffic.
+
+- **Primitive:** managed serverless container behind a cloud-native WAF (rate limiting + OWASP rule pack + bot detection), routed via the Tier-1 LB's URL map (`/api/*` path prefix → gateway backend).
+  - GCP: Cloud Run + Cloud Armor SecurityPolicy attached to the gateway BackendService.
+  - AWS: Lambda / Fargate behind the ALB + AWS WAF.
+  - Azure: Container Apps behind the Front Door + Front Door WAF.
+  - Self-hosted: Caddy with `rate_limit` + `crowdsec` middleware (P13 ships the equivalents in-process).
+- **Public:** yes, but every request hits rate limit + WAF before the gateway runs.
+- **Cost:** ~$0 idle, ~$3-5/mo light traffic. WAF basic rules free; ML-based bot mitigation +$5/mo (`cloudArmorAdaptive` knob).
+- **Same LB as Tier 1** — the LB cost is already paid for the static path; adding the API path-prefix route is free.
+
+### Tier 4 — Database (private VPC IP only)
+
+Postgres MUST live on a private network IP that the public internet cannot reach. Cloud Run / Lambda / Container Apps connect via the cloud's serverless-VPC connector.
+
+- **Primitive:** managed Postgres on private IP only.
+  - GCP: Cloud SQL Postgres + private services connection (VPC peering).
+  - AWS: RDS Postgres in a private subnet, Lambda VPC config to access.
+  - Azure: Azure DB for PostgreSQL flexible-server with private endpoint.
+  - Self-hosted: Postgres in Docker, only reachable on the compose network (no host port published).
+- **Public:** no, ever. A managed Postgres with a public endpoint is a documented misconfiguration; provisioner refuses.
+- **HA defaults to OFF** for new installs (`cloudSqlHa: false`). Operators flip to `true` for production traffic. Cost delta: HA roughly doubles the SQL line item.
+
+### Tier 5 — Background workers
+
+Background workers (translation, redeploy orchestrator, runner) **share the admin's Cloud Run / Lambda** — they're already long-running async loops inside the admin process. Spinning up separate compute for them adds idle cost without adding capability.
+
+- Don't provision separate `orchestrator` / `runner` Cloud Run services.
+- The admin's `apps/admin/src/hooks.server.ts` bootstraps these inline (`bootstrapTranslationWorker`, `bootstrapRedeploy`, `bootstrapMcpBridge`, `bootstrapPlugins`).
+
+### Cross-cutting standards
+
+| Standard | Applies to | Notes |
+|---|---|---|
+| **Scale-to-zero default** | Tier 2, Tier 3 | `min_instances: 0`. Operators bump to `1` to eliminate cold starts. |
+| **Single LB / Front Door / ALB** | Tier 1, Tier 3 | One TLS cert, one IP, one URL map covering both. Don't provision separate LBs per tier. |
+| **Secrets in cloud-native secret manager** | All tiers | Never env-var literal. Cloud Run reads via `secret_environment_variables` mounts; equivalents on AWS/Azure. |
+| **Logs to a single sink** | All tiers | Cloud Logging / CloudWatch / Log Analytics. The analytics plugin queries the sink for edge-event analytics; one sink keeps that query simple. |
+| **DNS records output, not provisioned by default** | Tier 1 | Stack outputs the records to create at the operator's registrar. Cloud-DNS-managed mode is opt-in (`useCloudDns: true`) for operators who want the registrar to delegate the zone. |
+
+### The 8 config knobs every adapter exposes
+
+| Key | Default | Operator-tunable to | Cost delta |
+|---|---|---|---|
+| `cloudSqlHa` | `false` | `true` | +~$20/mo (HA failover) |
+| `cloudSqlTier` | `db-f1-micro` | larger tiers | +$10-30/mo per step |
+| `adminMinInstances` | `0` | `1` (or higher) | +$15/mo per instance |
+| `gatewayMinInstances` | `0` | `1` (or higher) | +$15/mo per instance |
+| `iapAllowlist` | `[<owner-email>]` | comma-list of emails / IDP groups | $0 |
+| `wafAdaptiveProtection` | `false` | `true` | +$5/mo (ML-based bot mitigation) |
+| `staticCdnRegion` | `global` | `eu-only` / `us-only` / etc. | $0 (routing scope) |
+| `backupRetentionDays` | `7` | up to `90` | +$5-15/mo |
+
+Adapters MUST surface every knob via `pulumi config set caelo-<provider>:<key> <value>`. The names are identical across providers so operators can switch providers without re-learning config; the defaults match the "minimal-viable, scale-up later" goal.
+
+---
+
+## 11.C. Provisioning UX — the "one command" contract
+
+Caelo's provisioner is the user's first impression of the project. Every architecture decision in §11.B is a means to one end: **`bunx @caelo-cms/provisioning --provider <name>` brings up a complete, working install with a single command, end-to-end, in under 20 minutes, on the user's own cloud account.**
+
+This is the load-bearing UX commitment. Every contributor PR that touches provisioning is reviewed against it.
+
+### Non-negotiables
+
+- **Pre-built container images on a public registry.** Users do not build images. Caelo's CI publishes signed multi-arch images to `ghcr.io/caelo-cms/<service>:<version>` on every release tag; the CLI pulls them. A PR that requires the user to run `docker build` is a regression.
+- **No manual `gcloud` / `aws` / `az` blocks in user-facing docs.** The CLI runs all bootstrap commands. If a step needs the user's interactive auth (e.g. `gcloud auth login`), the CLI detects state + prompts inline. If a step needs to run as the user's identity rather than a service account (project create, billing link), the CLI shells out, capturing output and handling errors.
+- **No long-lived service-account keys downloaded to disk on user machines.** GCP: Workload Identity Federation. AWS: IAM Roles for Service Accounts (IRSA) when on EKS, otherwise short-lived OIDC tokens. Azure: Federated Identity Credentials. Long-lived keys land only on operator-controlled CI runners, never on a contributor laptop.
+- **No raw Pulumi exposure to end users.** The CLI wraps `pulumi init / config / up / refresh / destroy`. Operators never set `PULUMI_CONFIG_PASSPHRASE_FILE` themselves; the CLI generates + persists the passphrase under `~/.caelo-<install-id>/`.
+- **DNS records land automatically when the registrar API is supported** (Cloudflare, Route53, Azure DNS, GCP Cloud Domains). Otherwise the CLI prints the records, polls DNS, and continues only when resolution succeeds.
+- **Cost estimate shown before any billable resource is created.** The CLI prints a per-resource cost table, gets a single y/N confirmation, then proceeds. Surprise bills are a launch-killer.
+- **Idempotent re-runs.** If the user Ctrl-Cs, runs the command again, or hits a transient failure, the next invocation picks up where it left off. Pulumi state handles infra; the CLI persists progress markers (`~/.caelo-<install-id>/progress.json`).
+- **Every install gets a `caelo-cms` CLI binary with first-class lifecycle commands**: `upgrade`, `backup`, `restore`, `rotate-secret`, `status`, `destroy`. These are the operations operators do regularly; they shouldn't drop into provider tools for any of them.
+
+### The CLI's one-screen wizard
+
+The wizard runs in any terminal, requires zero prior knowledge of the cloud provider, and succeeds even when the user makes mistakes:
+
+1. **Auto-detect** — gcloud / aws / az auth state, billing accounts, regions, organizations
+2. **Prompt** — domain, owner email, Anthropic API key (input-hidden); detect-then-confirm everything else
+3. **Bootstrap** — project create, billing link, APIs enable, SA + IAM, Workload Identity Federation
+4. **Plan** — print the cost table + the resource list, get the y/N
+5. **Provision** — `pulumi up` wrapped in a friendly progress UI; surface errors inline with suggested fixes
+6. **DNS** — auto-create records via registrar API OR print + wait-poll
+7. **Cert + IAP enable** — wait for managed cert, run the post-up `gcloud run services update --iap`, verify
+8. **Owner setup URL** — open the bootstrap URL in the user's browser via `open`/`xdg-open`
+9. **Final state** — print summary (URLs, lifecycle commands, secrets-file location, monthly cost reminder)
+
+### What a contributor MUST do for any provisioning-related change
+
+- **Test on a fresh install.** No GCP project exists; no `gcloud` config set. Run the CLI from scratch. If it fails or asks the user to do something manual, the PR is rejected.
+- **Update all 4 provider adapters when changing shared shape.** Adding a new knob to GCP without adding it to AWS + Azure + self-hosted is a regression — operators expect provider-portable behaviour.
+- **Add cost estimate entries** for any new billable resource. The CLI's pre-flight table must reflect reality.
+- **Add a troubleshooting entry** for any failure mode hit during dogfooding. The docs site's `install/<provider>` page surfaces the entries.
+
+### Distinguishing dogfood deploys from end-user deploys
+
+When provisioning the official Caelo docs site (`caelo-cms.com`), the maintainer follows the SAME end-user flow — no shortcut, no internal tooling. A dogfood deploy that diverges from the public flow is a missed opportunity to find the rough edges.
+
+If the maintainer hits a manual step the CLI doesn't handle, the FIRST commit of the dogfood session is "the CLI now handles X automatically", not "I'll work around X this time". The dogfood loop's only purpose is to harden the CLI.
+
+---
+
 ## 12. When in doubt
 
 - Read the relevant section of `CMS_REQUIREMENTS.md` first — most architectural questions have already been decided.

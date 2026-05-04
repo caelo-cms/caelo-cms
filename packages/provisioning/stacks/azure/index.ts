@@ -38,8 +38,8 @@
 
 import * as azure from "@pulumi/azure-native";
 import * as pulumi from "@pulumi/pulumi";
-import type { CloudAdapterOutputs, DnsRecord } from "../../src/adapter.js";
-import { generateBootstrapToken } from "../../src/bootstrap-token.js";
+import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
+import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");

@@ -23,9 +23,9 @@
 import { resolve } from "node:path";
 import { local } from "@pulumi/command";
 import * as pulumi from "@pulumi/pulumi";
-import { generateBootstrapToken } from "../../src/bootstrap-token.js";
-import { generateCaddyfile } from "../../src/caddy.js";
-import { generateDockerCompose } from "../../src/compose.js";
+import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
+import { generateCaddyfile } from "../../dist/caddy.js";
+import { generateDockerCompose } from "../../dist/compose.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");

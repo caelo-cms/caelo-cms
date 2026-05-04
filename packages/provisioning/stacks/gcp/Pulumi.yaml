@@ -11,26 +11,63 @@ runtime:
   options:
     typescript: true
     packagemanager: bun
+main: ./index.ts
 description: Caelo GCP stack — Cloud SQL HA + GCS + Cloud CDN + Cloud Run + Secret Manager.
 config:
+  # Required
   caelo-gcp:domain:
     type: string
     description: Primary domain (e.g. example.com).
   caelo-gcp:ownerEmail:
     type: string
-    description: Operator email for Pulumi notifications.
+    description: Operator email for Pulumi notifications + the default IAP allowlist.
   caelo-gcp:project:
     type: string
-    description: GCP project id (Pulumi requires this even when it can read it from gcloud).
+    description: GCP project id.
+  caelo-gcp:anthropicApiKey:
+    type: string
+    secret: true
+    description: Anthropic API key. Set via `cat key | pulumi config set --secret`.
+  # The 8 cross-provider knobs (CLAUDE.md §11.B)
   caelo-gcp:region:
     type: string
     default: us-central1
     description: Primary GCP region (Cloud SQL, Cloud Run, GCS).
   caelo-gcp:cloudSqlTier:
     type: string
-    default: db-custom-1-3840
-    description: Cloud SQL machine tier. Default = 1 vCPU, 3.75 GB. Bump for production traffic.
-  caelo-gcp:cloudRunMinInstances:
+    default: db-f1-micro
+    description: Cloud SQL machine tier. Default = ~$10/mo (ENTERPRISE edition). Bump for production traffic. ENTERPRISE_PLUS edition requires `db-perf-optimized-N-*` tiers.
+  caelo-gcp:cloudSqlEdition:
+    type: string
+    default: ENTERPRISE
+    description: Cloud SQL edition. ENTERPRISE = legacy shared-core tiers (db-f1-micro etc., cheapest). ENTERPRISE_PLUS = sub-second failover + higher IOPS, requires db-perf-optimized-N-* tiers (+~$40/mo floor).
+  caelo-gcp:cloudSqlHa:
+    type: boolean
+    default: false
+    description: HA failover (REGIONAL availabilityType). +~$20/mo. Off by default.
+  caelo-gcp:adminMinInstances:
     type: string
     default: "0"
-    description: Min instances per service. Set to 1 in production to avoid cold-start latency (~$30/mo per service).
+    description: Admin Cloud Run min instances. 0 = scale to zero. 1 = no cold start (+~$15/mo).
+  caelo-gcp:gatewayMinInstances:
+    type: string
+    default: "0"
+    description: Gateway Cloud Run min instances. 0 = scale to zero. 1 = no cold start (+~$15/mo).
+  caelo-gcp:iapAllowlist:
+    type: string
+    default: ""
+    description: Comma-list of IAP principals (e.g. "user:owner@example.com,group:editors@example.com"). Empty = falls back to "user:<ownerEmail>" at runtime.
+  caelo-gcp:wafAdaptiveProtection:
+    type: boolean
+    default: false
+    description: Cloud Armor adaptive protection (ML-based bot mitigation). +~$5/mo.
+  caelo-gcp:backupRetentionDays:
+    type: string
+    default: "7"
+    description: Cloud SQL backup retention in days. Up to 90.
+# Optional config NOT declared above:
+#   caelo-gcp:resendApiKey  (secret) — Resend API key for newsletter / auth
+#     plugin email transport. Set via `cat key | pulumi config set --secret`.
+#     Omit to ship without email transport (plugins log to stderr until wired).
+#   caelo-gcp:image-admin / image-gateway — image tags for Cloud Run services.
+#     Default `<region>-docker.pkg.dev/<project>/caelo/<service>:latest`.
