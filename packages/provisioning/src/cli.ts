@@ -653,21 +653,51 @@ async function version(): Promise<void> {
 }
 
 const handlers: Record<string, () => Promise<void>> = {
+  // Self-hosted P14 sub-commands (Docker Compose path)
   init,
   up,
   "regenerate-caddy": regenerateCaddy,
-  status,
-  backup,
+  // §11.C lifecycle dispatchers route by provider via install metadata.
+  // Self-hosted bodies remain reachable as `<command>-self-hosted` for
+  // back-compat scripts that bypassed the dispatcher.
+  status: lifecycleStatus,
+  "status-self-hosted": status,
+  backup: lifecycleBackup,
+  "backup-self-hosted": backup,
   restore,
+  upgrade: lifecycleUpgrade,
+  "rotate-secret": lifecycleRotateSecret,
+  destroy: lifecycleDestroy,
+  // Misc
   "pulumi-output-sync": pulumiOutputSync,
   version,
   "--version": version,
   "-v": version,
   // §11.C wizard — explicit invocation. Default routing (no cmd) also
-  // lands here unless `--no-wizard` is passed (for back-compat scripts
-  // that expect the bare CLI to print Usage and exit).
+  // lands here unless `--no-wizard` is passed.
   wizard: wizardCommand,
 };
+
+async function lifecycleStatus(): Promise<void> {
+  const { statusCommand } = await import("./lifecycle.js");
+  await statusCommand();
+}
+async function lifecycleUpgrade(): Promise<void> {
+  const { upgradeCommand } = await import("./lifecycle.js");
+  await upgradeCommand();
+}
+async function lifecycleBackup(): Promise<void> {
+  const { backupCommand } = await import("./lifecycle.js");
+  await backupCommand();
+}
+async function lifecycleRotateSecret(): Promise<void> {
+  const { rotateSecretCommand } = await import("./lifecycle.js");
+  await rotateSecretCommand(process.argv[3]);
+}
+async function lifecycleDestroy(): Promise<void> {
+  const { destroyCommand } = await import("./lifecycle.js");
+  await destroyCommand();
+}
 
 /**
  * §11.C — interactive wizard. Loaded lazily so the bare-CLI startup
@@ -695,7 +725,7 @@ if (!handler) {
     await wizardCommand();
   } else {
     console.log(
-      "Usage: cms-provision [wizard] | <init|up|regenerate-caddy|status|backup|restore|pulumi-output-sync|version> [options]\n" +
+      "Usage: cms-provision [wizard] | <init|up|status|upgrade|backup|restore|rotate-secret|destroy|regenerate-caddy|pulumi-output-sync|version> [options]\n" +
         "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
     );
     process.exit(cmd ? 2 : 0);
