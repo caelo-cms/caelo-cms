@@ -168,6 +168,12 @@ const PROVISIONER_ROLES: readonly string[] = [
   "roles/iam.serviceAccountAdmin",
   "roles/bigquery.admin",
   "roles/iap.admin",
+  // compute.admin includes RegionNetworkEndpointGroups + URL maps +
+  // BackendService variants the LB needs. compute.networkAdmin alone
+  // doesn't cover NEG create.
+  "roles/compute.admin",
+  // logging.configWriter creates ProjectSink (BigQuery edge logs).
+  "roles/logging.configWriter",
 ];
 
 /**
