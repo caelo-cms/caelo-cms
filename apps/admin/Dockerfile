@@ -61,10 +61,8 @@ RUN set -e && \
     mkdir -p /tmp/native-bin && cd /tmp/native-bin && \
     BINDINGS=$(grep -oE '"[a-zA-Z0-9@/_.-]*-linux-x64-gnu@[0-9.]+' /repo/bun.lock | sed 's/^"//' | sort -u) && \
     test -n "${BINDINGS}" || (echo "no linux-x64-gnu bindings found in bun.lock" && exit 1) && \
-    for SPEC in ${BINDINGS}; do \
-      echo "Installing native binding: ${SPEC}"; \
-      npm install --no-save --no-package-lock "${SPEC}"; \
-    done && \
+    echo "Installing native bindings: ${BINDINGS}" && \
+    npm install --no-save --no-package-lock ${BINDINGS} && \
     cd /tmp/native-bin/node_modules && \
     for ENTRY in $(find . -maxdepth 2 -name "*-linux-x64-gnu" -type d); do \
       DEST="/repo/apps/admin/node_modules/${ENTRY#./}"; \
