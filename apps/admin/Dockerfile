@@ -41,12 +41,15 @@ COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/
 COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
 
-# Drop --frozen-lockfile so per-arch builds (linux/amd64 + linux/arm64
-# under buildx QEMU) pick the right Rollup native binary. Without this,
-# the lockfile-pinned binary mismatches the build platform and Vite
-# fails with "Cannot find native binding". Gateway image is unaffected
+# Bun has a documented gap resolving transitive optionalDependencies
+# (https://github.com/oven-sh/bun/issues/14918). Vite/Rollup ships
+# native bindings as optionalDependencies; on Linux x64 build platforms
+# Bun fails to install @rollup/rollup-linux-x64-gnu, and the build
+# crashes with "Cannot find native binding". Workaround: explicitly add
+# the binary after the workspace install. Gateway image is unaffected
 # (no Vite/Rollup).
 RUN bun install
+RUN cd apps/admin && bun add --no-save @rollup/rollup-linux-x64-gnu@^4
 
 # Now the source. Subsequent rebuilds with code-only changes hit the
 # cached install layer and skip ~800 npm installs.
