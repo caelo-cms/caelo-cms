@@ -13,6 +13,10 @@
 
 FROM oven/bun:1.3 AS builder
 
+# curl is needed to fetch the Rollup native binding tarball below.
+# oven/bun:1.3 is debian-slim and doesn't include curl by default.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /repo
 
 # Copy lockfile + every workspace package.json first so `bun install`
