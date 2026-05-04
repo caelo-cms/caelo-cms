@@ -13,9 +13,11 @@
 
 FROM oven/bun:1.3 AS builder
 
-# curl is needed to fetch the Rollup native binding tarball below.
-# oven/bun:1.3 is debian-slim and doesn't include curl by default.
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+# npm is needed to work around Bun's transitive optionalDependencies gap
+# (oven-sh/bun#14918). Bun fails to install Rollup's per-platform native
+# binding even when listed; npm handles it correctly. We use npm only to
+# fix up the rollup install — Bun stays the workspace package manager.
+RUN apt-get update && apt-get install -y --no-install-recommends npm && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /repo
 
@@ -47,23 +49,14 @@ COPY packages/plugins/auth/package.json packages/plugins/auth/
 
 RUN bun install
 
-# Bun has a documented gap with transitive optionalDependencies
-# (oven-sh/bun#14918): Vite declares Rollup as a non-optional dep, but
-# Rollup's per-platform binary ships as one of Rollup's OWN
-# optionalDependencies — Bun doesn't install those transitively. Local
-# dev never hits this because `vite dev` uses esbuild, not Rollup. The
-# `vite build` path needs the binary. Workaround: pin to the version
-# resolved in bun.lock and fetch the tgz directly into the apps/admin
-# nested node_modules where Bun installs Vite.
-RUN ROLLUP_VERSION=$(grep '@rollup/rollup-linux-x64-gnu@' bun.lock | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && \
-    test -n "${ROLLUP_VERSION}" || (echo "could not parse rollup version from bun.lock" && exit 1) && \
-    echo "Resolving Rollup native binding @${ROLLUP_VERSION}" && \
-    BIN_PKG=@rollup/rollup-linux-x64-gnu && \
-    BIN_DIR=apps/admin/node_modules/${BIN_PKG} && \
-    mkdir -p "${BIN_DIR}" && \
-    curl -sSL "https://registry.npmjs.org/${BIN_PKG}/-/rollup-linux-x64-gnu-${ROLLUP_VERSION}.tgz" \
-      | tar -xz --strip-components=1 -C "${BIN_DIR}" && \
-    cd apps/admin && bun add --no-save rollup@${ROLLUP_VERSION}
+# Patch up the missing Rollup native binding via npm. npm correctly
+# installs transitive optionalDependencies (Bun's gap, oven-sh/bun#14918).
+# `--prefix .` keeps the install scoped to the workspace root; --no-save
+# avoids touching package.json; --legacy-peer-deps avoids the workspace
+# protocol confusing npm.
+RUN cd apps/admin && \
+    npm install --no-save --no-package-lock --legacy-peer-deps \
+      @rollup/rollup-linux-x64-gnu
 
 # Now the source.
 COPY . .
