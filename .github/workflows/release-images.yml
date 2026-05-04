@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo CMS — release-image workflow.
+#
+# Builds + publishes the two runtime container images to GHCR on every
+# push to main + every tagged release. Signs both images with cosign
+# (keyless / OIDC). Multi-arch (linux/amd64 + linux/arm64) so the same
+# images work on x86 cloud runtimes (GCP Cloud Run, AWS Fargate, Azure
+# Container Apps) and ARM hosts (Hetzner CAX, Apple Silicon dev boxes).
+#
+# CLAUDE.md §11.C: end-users never build these images. They consume
+# `ghcr.io/caelo-cms/admin:<tag>` + `ghcr.io/caelo-cms/gateway:<tag>`
+# directly via the provisioning CLI.
+
+name: release-images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Required for cosign keyless signing via OIDC.
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: caelo-cms
+
+jobs:
+  build:
+    name: build + push (${{ matrix.service }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: admin
+            dockerfile: apps/admin/Dockerfile
+          - service: gateway
+            dockerfile: apps/api-gateway/Dockerfile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up QEMU (for multi-arch builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}
+          tags: |
+            # tag-builds → semver tags (v0.1.2 → 0.1.2 + 0.1 + latest)
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=latest
+            # main-branch builds → :main + :main-<sha7>
+            type=ref,event=branch
+            type=sha,format=short,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://caelo-cms.com
+            org.opencontainers.image.licenses=MPL-2.0
+            org.opencontainers.image.title=Caelo CMS — ${{ matrix.service }}
+            org.opencontainers.image.description=AI-first, open-source CMS — ${{ matrix.service }} runtime image
+
+      - name: Build + push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+          provenance: true
+          sbom: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with cosign (keyless / OIDC)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Sign each tag's image digest. Cosign uses GitHub OIDC →
+          # Sigstore Fulcio; verifiers check that the cert was issued
+          # to this exact GitHub workflow + repo.
+          for tag in $(echo "${TAGS}" | tr ',' ' '); do
+            cosign sign --yes "${tag}@${DIGEST}"
+          done
+
+      - name: Verify the signed image (sanity check)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}
+        run: |
+          cosign verify "${IMAGE}@${DIGEST}" \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/release-images.yml@.*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"

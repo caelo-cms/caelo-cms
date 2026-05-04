@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# What NOT to send to the Docker daemon when building Caelo images.
+# Docker COPY honours this; smaller build context = faster builds +
+# fewer cache invalidations.
+
+# Build artefacts — rebuilt inside the container
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+.svelte-kit/
+**/.svelte-kit/
+.astro/
+**/.astro/
+.next/
+**/.next/
+.tsbuildinfo
+**/*.tsbuildinfo
+
+# Local-only state
+.env
+.env.*
+!.env.example
+.git/
+.github/  # workflows + templates ship to the registry, not into images
+.idea/
+.vscode/
+*.log
+
+# Test + dev outputs
+coverage/
+**/coverage/
+.vitest-cache/
+test-results/
+**/test-results/
+playwright-report/
+**/playwright-report/
+.playwright/
+**/.playwright/
+
+# Static-generator outputs (rebuilt per deploy)
+output/
+**/output/
+
+# Local Pulumi state + secrets (per-install, never in the image)
+.caelo/
+.pulumi/
+**/Pulumi.*.yaml.bak
+
+# Editor / OS noise
+.DS_Store
+**/.DS_Store
+*.swp
+*.bak
+*.tmp
+
+# Docs site source — not part of the runtime image
+docs-site/
+plans/
+
+# CLAUDE.md + CMS_REQUIREMENTS.md + ARCHITECTURE.md — repo-only docs
+CLAUDE.md
+CMS_REQUIREMENTS.md
+ARCHITECTURE.md
+CHANGELOG.md
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+SECURITY.md
+README.md
+LICENSE
+
+# IDE-specific
+.zed/
+.cursor/
