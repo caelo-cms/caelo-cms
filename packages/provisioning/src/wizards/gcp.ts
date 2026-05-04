@@ -114,6 +114,12 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   const region = "europe-west1";
   if (meta) writeMetadata(installId, { ...meta, projectId, region });
 
+  // === 7.5 Domain ownership pre-flight ===
+  // Cloud Run DomainMapping requires the domain to be verified in
+  // Search Console first. Catch missing verification BEFORE pulumi up
+  // (5+ min wasted otherwise).
+  await stepDomainVerification(domain, opts.nonInteractive);
+
   // === 8. Cost-estimate pre-flight ===
   const costInputs = {
     cloudSqlTier: "db-f1-micro",
@@ -412,6 +418,83 @@ async function stepMintKey(
   s.stop(green(`SA key minted (mode 600)`));
   markStepDone(installId, stepName, { path: keyPath });
   return keyPath;
+}
+
+/**
+ * Cloud Run DomainMapping requires the operator to have verified
+ * domain ownership in Search Console (https://search.google.com/search-console).
+ * GCP rejects DomainMapping creation with HTTP 403 if the verification
+ * is missing — and that error only surfaces 5+ min into the pulumi up.
+ * Catch it here with a quick `gcloud domains list-user-verified` call.
+ */
+async function stepDomainVerification(domain: string, nonInteractive: boolean): Promise<void> {
+  const sCheck = spinner();
+  sCheck.start(`Checking GCP domain verification for ${bold(domain)}...`);
+  const r = await gcloud(["domains", "list-user-verified", "--format=value(id)"]);
+  if (r.ok) {
+    const verified = r.stdout
+      .split(/\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    // Cloud Run accepts any verified parent domain; e.g. caelo-cms.com
+    // verified covers admin.caelo-cms.com.
+    const matches = verified.some((v) => domain === v || domain.endsWith(`.${v}`));
+    if (matches) {
+      sCheck.stop(green(`Domain ${domain} is verified (parent match in Search Console)`));
+      return;
+    }
+  }
+  sCheck.stop(yellow(`${domain} is not yet verified for the active gcloud account`));
+
+  note(
+    [
+      bold("Verify domain ownership before continuing"),
+      "",
+      `Cloud Run requires you to prove you control ${bold(domain)} via Search Console`,
+      "before it will create a domain mapping. One-time setup:",
+      "",
+      `  1. Open ${cyan("https://search.google.com/search-console")} (use the same google account you ran gcloud auth login with)`,
+      `  2. Add a new property — choose ${bold("Domain")} (not URL prefix)`,
+      `  3. Enter ${bold(domain.split(".").slice(-2).join("."))} (the registrable parent — covers all subdomains)`,
+      `  4. Search Console gives you a TXT record; add it at your DNS registrar`,
+      `  5. Wait for DNS propagation (usually < 5 min) then click Verify`,
+      "",
+      "Once verified, re-run this wizard — it'll resume from this step.",
+    ].join("\n"),
+    "Domain verification required",
+  );
+
+  if (nonInteractive) {
+    cancel("Aborted: domain not verified.");
+    process.exit(1);
+  }
+
+  const ready = await confirm({
+    message: `Have you completed Search Console verification for ${bold(domain)}?`,
+    initialValue: false,
+  });
+  if (isCancel(ready) || !ready) {
+    cancel(`Re-run the wizard once Search Console verification is complete.`);
+    process.exit(0);
+  }
+  // Re-check.
+  const r2 = await gcloud(["domains", "list-user-verified", "--format=value(id)"]);
+  if (!r2.ok) {
+    log.error(red("gcloud domains list-user-verified failed; cannot confirm verification."));
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  const verified2 = r2.stdout
+    .split(/\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const matches2 = verified2.some((v) => domain === v || domain.endsWith(`.${v}`));
+  if (!matches2) {
+    log.error(red(`Still not verified. Search Console may take a few minutes after Verify-click.`));
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  log.success(green(`Domain ${domain} verification confirmed`));
 }
 
 async function stepAnthropicKey(installId: string, nonInteractive: boolean): Promise<string> {

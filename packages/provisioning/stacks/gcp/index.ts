@@ -451,17 +451,20 @@ const adminDomainMapping = new gcp.cloudrun.DomainMapping(
 );
 
 // Direct Cloud Run + IAP integration (no LB needed). Grant
-// iap.httpsResourceAccessor on the admin Cloud Run service to each
-// allowlist principal. Operator enables IAP on the service post-up
-// via `gcloud run services update <admin> --iap` (one-time CLI step
-// since gcp.iap.Settings doesn't yet support cloudrunv2 directly —
-// surfaces in the post-up DNS-records output as a TODO).
+// iap.httpsResourceAccessor on the project-scoped IAP web resource
+// (Cloud Run V2 doesn't accept this role on the service itself —
+// GCP API rejects with 400). Project scope is right anyway: this
+// install only has one IAP-protected resource (the admin Cloud Run),
+// so "any IAP web resource in this project" == admin.
+//
+// Operator enables IAP on the Cloud Run service post-up via
+// `gcloud beta run services update <admin> --iap` — handled in the
+// wizard's stepIapEnable.
 for (const principal of iapAllowlist) {
-  new gcp.cloudrunv2.ServiceIamMember(
+  new gcp.iap.WebIamMember(
     `${namePrefix}-admin-iap-allow-${principal.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`,
     {
-      location: region,
-      name: adminSvc.name,
+      project,
       role: "roles/iap.httpsResourceAccessor",
       member: principal,
     },
