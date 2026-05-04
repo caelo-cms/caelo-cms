@@ -425,11 +425,7 @@ async function stepMintKey(
  * the wizard handles the copy out-of-band to keep §11.C's one-command
  * UX intact.
  */
-async function stepCopyImages(
-  installId: string,
-  projectId: string,
-  region: string,
-): Promise<void> {
+async function stepCopyImages(installId: string, projectId: string, region: string): Promise<void> {
   const stepName = `copy-images-${projectId}`;
   if (isStepDone(installId, stepName)) {
     log.success(`Images copied to AR ${dim("(checkpointed)")}`);
@@ -476,12 +472,7 @@ async function stepCopyImages(
   // Configure docker to authenticate against the AR host. Idempotent.
   const sAuth = spinner();
   sAuth.start(`Configuring docker auth for ${region}-docker.pkg.dev...`);
-  const auth = await gcloud([
-    "auth",
-    "configure-docker",
-    `${region}-docker.pkg.dev`,
-    "--quiet",
-  ]);
+  const auth = await gcloud(["auth", "configure-docker", `${region}-docker.pkg.dev`, "--quiet"]);
   if (!auth.ok) {
     sAuth.stop(red(`docker auth config failed: ${auth.stderr.trim()}`));
     cancel("Aborted.");
