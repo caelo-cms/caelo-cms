@@ -14,8 +14,8 @@
  *  10. Generates Pulumi passphrase if absent → secrets/pulumi-passphrase
  *  11. Pre-flight cost-estimate table; single y/N confirm
  *  12. Pulumi up via the Automation SDK; streams progress
- *  13. Post-up: enables IAP on the admin Cloud Run service
- *  14. Prints DNS records + bootstrap URL
+ *  13. Prints DNS records + bootstrap URL (IAP runs on the LB
+ *      BackendService; no post-up gcloud step needed)
  */
 
 import { randomBytes } from "node:crypto";
@@ -42,7 +42,6 @@ import {
   createServiceAccount,
   createServiceAccountKey,
   enableApis,
-  gcloud,
   grantProvisionerRoles,
   linkBilling,
   listBillingAccounts,
@@ -114,12 +113,6 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   const region = "europe-west1";
   if (meta) writeMetadata(installId, { ...meta, projectId, region });
 
-  // === 7.5 Domain ownership pre-flight ===
-  // Cloud Run DomainMapping requires the domain to be verified in
-  // Search Console first. Catch missing verification BEFORE pulumi up
-  // (5+ min wasted otherwise).
-  await stepDomainVerification(domain, opts.nonInteractive);
-
   // === 8. Cost-estimate pre-flight ===
   const costInputs = {
     cloudSqlTier: "db-f1-micro",
@@ -176,13 +169,13 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     iapAllowlist: [`user:${ownerEmail}`],
   });
 
-  // === 10. IAP enable post-up ===
-  await stepIapEnable(installId, projectId, region);
-
-  // === 11. DNS records + bootstrap URL ===
+  // === 10. DNS records + bootstrap URL ===
+  // IAP is enabled directly on the LB BackendService (Pulumi-managed);
+  // no post-up gcloud step needed.
   await stepFinalize(installId);
 
   // Reference unused params to silence the linter.
+  void region;
   void domain;
   void ownerEmail;
 }
@@ -420,83 +413,6 @@ async function stepMintKey(
   return keyPath;
 }
 
-/**
- * Cloud Run DomainMapping requires the operator to have verified
- * domain ownership in Search Console (https://search.google.com/search-console).
- * GCP rejects DomainMapping creation with HTTP 403 if the verification
- * is missing — and that error only surfaces 5+ min into the pulumi up.
- * Catch it here with a quick `gcloud domains list-user-verified` call.
- */
-async function stepDomainVerification(domain: string, nonInteractive: boolean): Promise<void> {
-  const sCheck = spinner();
-  sCheck.start(`Checking GCP domain verification for ${bold(domain)}...`);
-  const r = await gcloud(["domains", "list-user-verified", "--format=value(id)"]);
-  if (r.ok) {
-    const verified = r.stdout
-      .split(/\s+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    // Cloud Run accepts any verified parent domain; e.g. caelo-cms.com
-    // verified covers admin.caelo-cms.com.
-    const matches = verified.some((v) => domain === v || domain.endsWith(`.${v}`));
-    if (matches) {
-      sCheck.stop(green(`Domain ${domain} is verified (parent match in Search Console)`));
-      return;
-    }
-  }
-  sCheck.stop(yellow(`${domain} is not yet verified for the active gcloud account`));
-
-  note(
-    [
-      bold("Verify domain ownership before continuing"),
-      "",
-      `Cloud Run requires you to prove you control ${bold(domain)} via Search Console`,
-      "before it will create a domain mapping. One-time setup:",
-      "",
-      `  1. Open ${cyan("https://search.google.com/search-console")} (use the same google account you ran gcloud auth login with)`,
-      `  2. Add a new property — choose ${bold("Domain")} (not URL prefix)`,
-      `  3. Enter ${bold(domain.split(".").slice(-2).join("."))} (the registrable parent — covers all subdomains)`,
-      `  4. Search Console gives you a TXT record; add it at your DNS registrar`,
-      `  5. Wait for DNS propagation (usually < 5 min) then click Verify`,
-      "",
-      "Once verified, re-run this wizard — it'll resume from this step.",
-    ].join("\n"),
-    "Domain verification required",
-  );
-
-  if (nonInteractive) {
-    cancel("Aborted: domain not verified.");
-    process.exit(1);
-  }
-
-  const ready = await confirm({
-    message: `Have you completed Search Console verification for ${bold(domain)}?`,
-    initialValue: false,
-  });
-  if (isCancel(ready) || !ready) {
-    cancel(`Re-run the wizard once Search Console verification is complete.`);
-    process.exit(0);
-  }
-  // Re-check.
-  const r2 = await gcloud(["domains", "list-user-verified", "--format=value(id)"]);
-  if (!r2.ok) {
-    log.error(red("gcloud domains list-user-verified failed; cannot confirm verification."));
-    cancel("Aborted.");
-    process.exit(1);
-  }
-  const verified2 = r2.stdout
-    .split(/\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const matches2 = verified2.some((v) => domain === v || domain.endsWith(`.${v}`));
-  if (!matches2) {
-    log.error(red(`Still not verified. Search Console may take a few minutes after Verify-click.`));
-    cancel("Aborted.");
-    process.exit(1);
-  }
-  log.success(green(`Domain ${domain} verification confirmed`));
-}
-
 async function stepAnthropicKey(installId: string, nonInteractive: boolean): Promise<string> {
   const existing = readSecret(installId, "anthropic-api-key");
   if (existing) {
@@ -597,38 +513,6 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
     ),
   );
   markStepDone(installId, stepName, { outputs: result.outputs });
-}
-
-async function stepIapEnable(installId: string, projectId: string, region: string): Promise<void> {
-  const stepName = `iap-enable-${projectId}`;
-  if (isStepDone(installId, stepName)) {
-    log.success(`IAP enabled on admin Cloud Run ${dim("(checkpointed)")}`);
-    return;
-  }
-  const s = spinner();
-  s.start("Enabling Identity-Aware Proxy on the admin Cloud Run...");
-  const r = await gcloud([
-    "beta",
-    "run",
-    "services",
-    "update",
-    "caelo-production-admin",
-    "--region",
-    region,
-    "--project",
-    projectId,
-    "--iap",
-    "--quiet",
-  ]);
-  if (!r.ok) {
-    s.stop(red(`Failed: ${r.stderr.trim()}`));
-    log.warn(
-      `Continue manually: ${bold(`gcloud beta run services update caelo-production-admin --region=${region} --project=${projectId} --iap`)}.`,
-    );
-    return;
-  }
-  s.stop(green("IAP enabled — admin reachable only via your IAP allowlist"));
-  markStepDone(installId, stepName, {});
 }
 
 async function stepFinalize(installId: string): Promise<void> {

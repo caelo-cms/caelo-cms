@@ -429,57 +429,22 @@ const gatewaySvc = cloudRunService({
 });
 
 // =========================================================================
-// Tier 2 gate — Identity-Aware Proxy on the admin Cloud Run
+// Tier 1 + Tier 2 + Tier 3 LB — single HTTPS LB serves three backends
 // =========================================================================
 //
-// Cloud Run + IAP works via Cloud Run domain mapping + IAP enabled at the
-// Cloud Run service level. Anyone in iapAllowlist gets through; everyone
-// else gets a 403 from IAP before the admin app sees the request.
+// One global IP, one URL map, one managed cert covering caelo-cms.com +
+// admin.caelo-cms.com. Three backends routed by Host header / path:
+//   - host=caelo-cms.com, default          → static bucket (Cloud CDN)
+//   - host=caelo-cms.com, path=/api/*      → gateway Cloud Run (Cloud Armor)
+//   - host=admin.caelo-cms.com, default    → admin Cloud Run (IAP-gated)
 //
-// Domain mapping for admin.<domain> → admin Cloud Run service. Operator
-// pastes the CNAME (output of this stack) at their registrar.
-
-const adminDomainMapping = new gcp.cloudrun.DomainMapping(
-  `${namePrefix}-admin-domain`,
-  {
-    location: region,
-    name: adminDomain,
-    metadata: { namespace: project },
-    spec: { routeName: adminSvc.name },
-  },
-  opts,
-);
-
-// Direct Cloud Run + IAP integration (no LB needed). Grant
-// iap.httpsResourceAccessor on the project-scoped IAP web resource
-// (Cloud Run V2 doesn't accept this role on the service itself —
-// GCP API rejects with 400). Project scope is right anyway: this
-// install only has one IAP-protected resource (the admin Cloud Run),
-// so "any IAP web resource in this project" == admin.
-//
-// Operator enables IAP on the Cloud Run service post-up via
-// `gcloud beta run services update <admin> --iap` — handled in the
-// wizard's stepIapEnable.
-for (const principal of iapAllowlist) {
-  new gcp.iap.WebIamMember(
-    `${namePrefix}-admin-iap-allow-${principal.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`,
-    {
-      project,
-      role: "roles/iap.httpsResourceAccessor",
-      member: principal,
-    },
-    opts,
-  );
-}
-
-// =========================================================================
-// Tier 1 + Tier 3 LB — single HTTPS LB serves static (default) + gateway (/api/*)
-// =========================================================================
-//
-// One global IP, one URL map, one managed cert covering caelo-cms.com.
-// Two backends:
-//   - default → static bucket (Cloud CDN enabled)
-//   - /api/*  → gateway Cloud Run (Cloud Armor attached)
+// CLAUDE.md §11.B Tier 2: admin behind cloud-native identity proxy. IAP
+// attaches to the admin BackendService directly (iap.enabled=true on the
+// BackendService spec) — no DomainMapping (avoids GCP's Search Console
+// verification gate that bites every operator), no post-up
+// `gcloud run services update --iap` step. Operator just adds an A
+// record for admin.<domain> pointing at the LB IP and the IAP allowlist
+// gates access.
 
 const lbIp = new gcp.compute.GlobalAddress(
   `${namePrefix}-lb-ip`,
@@ -576,27 +541,100 @@ const gatewayBackendService = new gcp.compute.BackendService(
   opts,
 );
 
-// URL map: default → static, /api/* → gateway
+// Tier 2 backend — admin Cloud Run via serverless NEG, IAP-gated.
+const adminNeg = new gcp.compute.RegionNetworkEndpointGroup(
+  `${namePrefix}-admin-neg`,
+  {
+    region,
+    networkEndpointType: "SERVERLESS",
+    cloudRun: { service: adminSvc.name },
+  },
+  opts,
+);
+
+// IAP needs an OAuth client. Use the GCP-managed brand + autocreated
+// OAuth client; operators don't have to configure anything in the
+// OAuth consent screen for internal-org / single-user installs.
+const iapBrand = new gcp.iap.Brand(
+  `${namePrefix}-iap-brand`,
+  {
+    project,
+    supportEmail: ownerEmail,
+    applicationTitle: `Caelo CMS — ${domain}`,
+  },
+  opts,
+);
+
+const iapClient = new gcp.iap.Client(
+  `${namePrefix}-iap-client`,
+  {
+    displayName: `Caelo CMS admin — ${domain}`,
+    brand: iapBrand.name,
+  },
+  opts,
+);
+
+const adminBackendService = new gcp.compute.BackendService(
+  `${namePrefix}-admin-backend`,
+  {
+    protocol: "HTTPS",
+    backends: [{ group: adminNeg.id }],
+    loadBalancingScheme: "EXTERNAL_MANAGED",
+    iap: {
+      enabled: true,
+      oauth2ClientId: iapClient.clientId,
+      oauth2ClientSecret: iapClient.secret,
+    },
+  },
+  opts,
+);
+
+// IAP allowlist — bind iap.httpsResourceAccessor on the admin
+// BackendService directly (resource-scoped, narrower than project-wide).
+for (const principal of iapAllowlist) {
+  new gcp.iap.WebBackendServiceIamMember(
+    `${namePrefix}-admin-iap-allow-${principal.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`,
+    {
+      project,
+      webBackendService: adminBackendService.name,
+      role: "roles/iap.httpsResourceAccessor",
+      member: principal,
+    },
+    opts,
+  );
+}
+
+// URL map: routes by host header.
+//   admin.<domain>  → admin backend (IAP-gated)
+//   <domain>        → default static bucket; /api/* → gateway
 const urlMap = new gcp.compute.URLMap(
   `${namePrefix}-url-map`,
   {
     defaultService: staticBackendBucket.id,
-    hostRules: [{ hosts: [domain], pathMatcher: "main" }],
+    hostRules: [
+      { hosts: [domain], pathMatcher: "public" },
+      { hosts: [adminDomain], pathMatcher: "admin" },
+    ],
     pathMatchers: [
       {
-        name: "main",
+        name: "public",
         defaultService: staticBackendBucket.id,
         pathRules: [{ paths: ["/api/*"], service: gatewayBackendService.id }],
+      },
+      {
+        name: "admin",
+        defaultService: adminBackendService.id,
       },
     ],
   },
   opts,
 );
 
-// Managed TLS cert for caelo-cms.com (single cert, single LB).
+// Managed TLS cert covering both hostnames. Single cert resource;
+// the certificate's SAN list grows by one entry vs the prior version.
 const managedCert = new gcp.compute.ManagedSslCertificate(
   `${namePrefix}-cert`,
-  { managed: { domains: [domain] } },
+  { managed: { domains: [domain, adminDomain] } },
   opts,
 );
 
@@ -659,25 +697,20 @@ new gcp.bigquery.DatasetIamMember(
 
 const tokenInfo = generateBootstrapToken();
 
-const dnsRecordsRequired: pulumi.Output<DnsRecord[]> = pulumi
-  .all([lbIp.address, adminDomainMapping.statuses])
-  .apply(([ip, statuses]) => {
-    const adminCnameTarget = statuses?.[0]?.resourceRecords?.[0]?.rrdata ?? "ghs.googlehosted.com.";
-    return [
-      {
-        hostname: domain,
-        type: "A",
-        value: ip,
-        purpose: "Public docs site → static GCS via Cloud CDN (Tier 1 + Tier 3 LB)",
-      },
-      {
-        hostname: adminDomain,
-        type: "CNAME",
-        value: adminCnameTarget,
-        purpose: "Admin app → Cloud Run domain mapping (gated by IAP allowlist)",
-      },
-    ];
-  });
+const dnsRecordsRequired: pulumi.Output<DnsRecord[]> = lbIp.address.apply((ip) => [
+  {
+    hostname: domain,
+    type: "A",
+    value: ip,
+    purpose: "Public docs site → static GCS via Cloud CDN (Tier 1 LB backend)",
+  },
+  {
+    hostname: adminDomain,
+    type: "A",
+    value: ip,
+    purpose: "Admin app → Cloud Run via LB (Tier 2, IAP-gated by allowlist)",
+  },
+]);
 
 const out: CloudAdapterOutputs = {
   adminDatabaseUrl: adminDatabaseUrl as unknown as string,
