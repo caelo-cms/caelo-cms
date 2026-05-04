@@ -330,9 +330,14 @@ new gcp.storage.BucketIAMMember(
 // =========================================================================
 
 function imageTag(service: string): string {
-  return (
-    cfg.get(`image-${service}`) ?? `${region}-docker.pkg.dev/${project}/caelo/${service}:latest`
-  );
+  // §11.C: pre-built signed images on a public registry are the
+  // contract. Default to ghcr.io/caelo-cms/<service>:main for the
+  // v0.1 dogfood; tagged releases (v0.1.x) ship the same images at
+  // :<version> + :latest. Operators override per-stack via
+  // `pulumi config set caelo-gcp:image-<service> <tag>` to pin a
+  // specific revision, or to point at an Artifact Registry copy
+  // if they don't want to consume from the public GHCR.
+  return cfg.get(`image-${service}`) ?? `ghcr.io/caelo-cms/${service}:main`;
 }
 
 interface CloudRunArgs {
