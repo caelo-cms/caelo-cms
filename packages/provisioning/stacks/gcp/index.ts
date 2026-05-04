@@ -17,7 +17,6 @@
  * Defaults: minimal-cost (~$30/mo). Operators bump knobs to scale up.
  */
 
-import * as command from "@pulumi/command";
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
@@ -333,61 +332,29 @@ new gcp.storage.BucketIAMMember(
 // Tier 2 + Tier 3 — Cloud Run services (admin + gateway only; workers share admin)
 // =========================================================================
 
-// Artifact Registry standard repository — operator-owned image cache.
-// Cloud Run only accepts images from gcr.io, *.docker.pkg.dev, or
-// docker.io. AR remote-repo proxies always require upstream credentials
-// even for public GHCR images (GCP constraint), which violates §11.C's
-// one-command contract. Instead, the wizard copies the public GHCR
-// images into THIS standard repo via `gcloud artifacts docker images
-// copy` (no auth needed for the public source) at provision time, and
-// Cloud Run pulls from here. Same pattern works on AWS (ECR) + Azure
-// (ACR) — every cloud's adapter copies the canonical public images
-// into the operator's own registry once during provisioning.
-const imagesRepo = new gcp.artifactregistry.Repository(
-  `${namePrefix}-images`,
-  {
-    location: region,
-    repositoryId: `${namePrefix}-images`,
-    format: "DOCKER",
-    mode: "STANDARD_REPOSITORY",
-    description: "Caelo CMS — operator-owned cache of admin + gateway images",
-  },
-  opts,
-);
+// Artifact Registry repo for admin + gateway images. The repo + the
+// image copy from public GHCR are handled by the WIZARD (gcloud-based)
+// before this stack runs, because (a) Cloud Run requires images to
+// exist at create time and (b) AR remote-repo proxies always need
+// upstream creds even for public GHCR (GCP constraint) which violates
+// §11.C. The IAM binding + the image URL still live here so Pulumi
+// owns the run-side wiring.
+//
+// Repo name is fixed (`<namePrefix>-images`) — the wizard's
+// stepCreateImagesRepo creates it with the same name.
+const imagesRepoId = `${namePrefix}-images`;
+const imageTagSource = cfg.get("image-tag") ?? "main";
 
-// Cloud Run service account needs read access to pull from AR.
 new gcp.artifactregistry.RepositoryIamMember(
   `${namePrefix}-images-puller`,
   {
     location: region,
-    repository: imagesRepo.repositoryId,
+    repository: imagesRepoId,
     role: "roles/artifactregistry.reader",
     member: pulumi.interpolate`serviceAccount:${runSa.email}`,
   },
   opts,
 );
-
-// Copy admin + gateway images from public GHCR into the operator's AR
-// repo. Runs locally on the wizard machine (which has gcloud auth).
-// `triggers` includes the source tag so re-runs with a different tag
-// re-execute the copy. Cloud Run services depend on these so they wait
-// for the images to land before trying to deploy.
-const imageTagSource = cfg.get("image-tag") ?? "main";
-
-function copyImage(service: string): command.local.Command {
-  const dest = pulumi.interpolate`${region}-docker.pkg.dev/${project}/${imagesRepo.repositoryId}/${service}:${imageTagSource}`;
-  return new command.local.Command(
-    `${namePrefix}-copy-${service}`,
-    {
-      create: pulumi.interpolate`gcloud artifacts docker images copy ghcr.io/caelo-cms/${service}:${imageTagSource} ${dest} --quiet --project=${project}`,
-      triggers: [pulumi.output(imageTagSource), imagesRepo.id],
-    },
-    { ...opts, dependsOn: [imagesRepo] },
-  );
-}
-
-const adminImageCopy = copyImage("admin");
-const gatewayImageCopy = copyImage("gateway");
 
 function imageTag(service: string): pulumi.Output<string> {
   // §11.C: pre-built signed images on a public registry are the
@@ -398,7 +365,9 @@ function imageTag(service: string): pulumi.Output<string> {
   // different image source entirely.
   const override = cfg.get(`image-${service}`);
   if (override) return pulumi.output(override);
-  return pulumi.interpolate`${region}-docker.pkg.dev/${project}/${imagesRepo.repositoryId}/${service}:${imageTagSource}`;
+  return pulumi.output(
+    `${region}-docker.pkg.dev/${project}/${imagesRepoId}/${service}:${imageTagSource}`,
+  );
 }
 
 interface CloudRunArgs {
@@ -410,9 +379,6 @@ interface CloudRunArgs {
 }
 
 function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
-  // Wait for the matching image to be copied into AR before Cloud Run
-  // tries to pull it (otherwise we hit "image not found").
-  const imageCopy = args.serviceName === "admin" ? adminImageCopy : gatewayImageCopy;
   return new gcp.cloudrunv2.Service(
     `${namePrefix}-${args.serviceName}`,
     {
@@ -457,10 +423,7 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         },
       },
     },
-    {
-      ...opts,
-      dependsOn: [pgAdminUser, cmsAdminDb, cmsPublicDb, pgSecret.version, imageCopy],
-    },
+    { ...opts, dependsOn: [pgAdminUser, cmsAdminDb, cmsPublicDb, pgSecret.version] },
   );
 }
 

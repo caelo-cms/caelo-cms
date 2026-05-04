@@ -149,7 +149,14 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     }
   }
 
-  // === 9. Pulumi up via Automation SDK ===
+  // === 9. Create Artifact Registry repo + copy public GHCR images ===
+  // Cloud Run can't pull from ghcr.io directly, and AR's remote-repo
+  // proxy needs upstream creds even for public images (GCP constraint).
+  // Wizard handles the image-copy out-of-band so the Pulumi stack only
+  // declares the IAM binding + the image URLs.
+  await stepCopyImages(installId, projectId, region);
+
+  // === 10. Pulumi up via Automation SDK ===
   await stepPulumiUp(installId, {
     projectId,
     domain,
@@ -408,6 +415,87 @@ async function stepMintKey(
   s.stop(green(`SA key minted (mode 600)`));
   markStepDone(installId, stepName, { path: keyPath });
   return keyPath;
+}
+
+/**
+ * Create an Artifact Registry repo (if missing) + copy the public
+ * ghcr.io/caelo-cms/{admin,gateway} images into it. Cloud Run requires
+ * images at `gcr.io|*.docker.pkg.dev|docker.io`; AR remote-repo proxies
+ * always need upstream credentials even for public GHCR (per GCP), so
+ * the wizard handles the copy out-of-band to keep §11.C's one-command
+ * UX intact.
+ */
+async function stepCopyImages(
+  installId: string,
+  projectId: string,
+  region: string,
+): Promise<void> {
+  const stepName = `copy-images-${projectId}`;
+  if (isStepDone(installId, stepName)) {
+    log.success(`Images copied to AR ${dim("(checkpointed)")}`);
+    return;
+  }
+  const repoId = "caelo-production-images";
+  const tag = "main";
+  const services = ["admin", "gateway"];
+
+  const sCheck = spinner();
+  sCheck.start(`Ensuring Artifact Registry repo ${bold(repoId)} exists...`);
+  const desc = await gcloud([
+    "artifacts",
+    "repositories",
+    "describe",
+    repoId,
+    "--location",
+    region,
+    "--project",
+    projectId,
+  ]);
+  if (!desc.ok) {
+    const create = await gcloud([
+      "artifacts",
+      "repositories",
+      "create",
+      repoId,
+      "--location",
+      region,
+      "--repository-format=docker",
+      "--project",
+      projectId,
+      "--description",
+      "Caelo CMS — operator-owned image cache",
+    ]);
+    if (!create.ok) {
+      sCheck.stop(red(`AR repo create failed: ${create.stderr.trim()}`));
+      cancel("Aborted.");
+      process.exit(1);
+    }
+  }
+  sCheck.stop(green(`AR repo ready: ${region}/${repoId}`));
+
+  for (const service of services) {
+    const dest = `${region}-docker.pkg.dev/${projectId}/${repoId}/${service}:${tag}`;
+    const sCopy = spinner();
+    sCopy.start(`Copying ghcr.io/caelo-cms/${service}:${tag} → ${dim(dest)}`);
+    const r = await gcloud([
+      "artifacts",
+      "docker",
+      "images",
+      "copy",
+      `ghcr.io/caelo-cms/${service}:${tag}`,
+      dest,
+      "--quiet",
+      "--project",
+      projectId,
+    ]);
+    if (!r.ok) {
+      sCopy.stop(red(`Image copy failed: ${r.stderr.trim()}`));
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    sCopy.stop(green(`Copied ${service}`));
+  }
+  markStepDone(installId, stepName, { repoId, services });
 }
 
 async function stepAnthropicKey(installId: string, nonInteractive: boolean): Promise<string> {
