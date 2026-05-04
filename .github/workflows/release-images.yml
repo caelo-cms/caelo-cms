@@ -61,14 +61,22 @@ jobs:
         if: matrix.service == 'admin'
         run: |
           # The SvelteKit admin's Vite build uses Rollup native bindings.
-          # Building inside Docker hits two issues: (1) Bun's transitive
-          # optionalDependencies gap means @rollup/rollup-linux-x64-gnu
-          # doesn't get installed, (2) `bun --bun vite build` JIT-emits
-          # instructions the runner CPU rejects under buildx. Solution:
-          # build natively on the runner, then COPY the pre-built output
-          # into the runtime image. Gateway has no Vite step so it builds
-          # in-Docker normally.
+          # Bun has a documented gap installing transitive optional deps
+          # (oven-sh/bun#14918) — even with the binary explicitly listed in
+          # apps/admin/package.json optionalDependencies, Bun's installer
+          # doesn't drop it into node_modules. Since the binary is just a
+          # tgz from npm, we fetch it directly and extract to the path
+          # Rollup looks at. Reliable + CI-runner-agnostic.
           bun install --frozen-lockfile
+          ROLLUP_VERSION=$(node -p "require('./node_modules/rollup/package.json').version")
+          BIN_PKG=@rollup/rollup-linux-x64-gnu
+          BIN_DIR=node_modules/${BIN_PKG}
+          if [ ! -f "${BIN_DIR}/rollup.linux-x64-gnu.node" ]; then
+            mkdir -p "${BIN_DIR}"
+            curl -sSL "https://registry.npmjs.org/${BIN_PKG}/-/rollup-linux-x64-gnu-${ROLLUP_VERSION}.tgz" \
+              | tar -xz --strip-components=1 -C "${BIN_DIR}"
+            echo "Manually installed ${BIN_PKG}@${ROLLUP_VERSION} → ${BIN_DIR}"
+          fi
           bun run --filter=@caelo-cms/admin build
 
       - name: Set up Docker Buildx
