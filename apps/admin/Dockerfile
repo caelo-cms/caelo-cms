@@ -41,7 +41,12 @@ COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/
 COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
 
-RUN bun install --frozen-lockfile
+# Drop --frozen-lockfile so per-arch builds (linux/amd64 + linux/arm64
+# under buildx QEMU) pick the right Rollup native binary. Without this,
+# the lockfile-pinned binary mismatches the build platform and Vite
+# fails with "Cannot find native binding". Gateway image is unaffected
+# (no Vite/Rollup).
+RUN bun install
 
 # Now the source. Subsequent rebuilds with code-only changes hit the
 # cached install layer and skip ~800 npm installs.
