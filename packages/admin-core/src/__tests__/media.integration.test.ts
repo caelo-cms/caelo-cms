@@ -19,8 +19,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 let adapter: DatabaseAdapter;
@@ -37,7 +37,7 @@ const systemCtx: ExecutionContext = {
 const TEST_PREFIX = "deadbeef";
 const SHA1 = `${TEST_PREFIX}${"a".repeat(56)}`;
 const SHA2 = `${TEST_PREFIX}${"b".repeat(56)}`;
-const SHA3 = `${TEST_PREFIX}${"c".repeat(56)}`;
+const _SHA3 = `${TEST_PREFIX}${"c".repeat(56)}`;
 const MOD_SLUG_A = "p7-media-test-a";
 const MOD_SLUG_B = "p7-media-test-b";
 

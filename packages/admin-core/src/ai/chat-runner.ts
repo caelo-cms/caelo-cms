@@ -632,7 +632,7 @@ export async function* runChatTurn(
   const excluded = options.excludedToolNames;
   const builtinTools = tools.catalogue().filter((t) => {
     if (allowedToolNames && !allowedToolNames.has(t.name)) return false;
-    if (excluded && excluded.has(t.name)) return false;
+    if (excluded?.has(t.name)) return false;
     return true;
   });
   // P11.5 commit 2 — fold Tier-1 plugin-registered tools into the catalogue.
@@ -642,7 +642,7 @@ export async function* runChatTurn(
   // the AI's catalogue on the next call.
   const pluginTools = pluginToolsRegistry.list().filter(({ spec }) => {
     if (allowedToolNames && !allowedToolNames.has(spec.name)) return false;
-    if (excluded && excluded.has(spec.name)) return false;
+    if (excluded?.has(spec.name)) return false;
     return true;
   });
   const filteredTools = [
@@ -681,8 +681,7 @@ export async function* runChatTurn(
       "write an article",
     ];
     const matched = cuewords.some((w) => lowered.includes(w));
-    const skillMentionsSubagents =
-      skillsBlock !== undefined && skillsBlock.toLowerCase().includes("spawn_subagent");
+    const skillMentionsSubagents = skillsBlock?.toLowerCase().includes("spawn_subagent");
     if (matched || skillMentionsSubagents) {
       subagentsBlock = [
         "# Subagents",

@@ -31,14 +31,14 @@
  *     `pages_seo.set` calls one-at-a-time; bulk variant is a follow-up)
  */
 
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { registerAdminOps } from "@caelo-cms/admin-core";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) {
   console.error("ADMIN_DATABASE_URL and PUBLIC_ADMIN_DATABASE_URL must be set");
   process.exit(2);
@@ -334,7 +334,10 @@ function parseScalar(value: string): unknown {
   if (value === "null") return null;
   if (/^-?\d+$/.test(value)) return Number.parseInt(value, 10);
   // Strip surrounding quotes if present.
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
     return value.slice(1, -1);
   }
   return value;
@@ -463,7 +466,11 @@ function renderMarkdown(md: string): string {
       continue;
     }
     // Tables (very basic: header row + separator + body rows).
-    if (line.includes("|") && (lines[i + 1] ?? "").includes("|") && /^\s*\|?[\s\-:|]+\|?\s*$/.test(lines[i + 1] ?? "")) {
+    if (
+      line.includes("|") &&
+      (lines[i + 1] ?? "").includes("|") &&
+      /^\s*\|?[\s\-:|]+\|?\s*$/.test(lines[i + 1] ?? "")
+    ) {
       const headerCells = splitTableRow(line);
       const bodyRows: string[][] = [];
       i += 2;
@@ -479,7 +486,11 @@ function renderMarkdown(md: string): string {
     // Paragraph — accumulate consecutive non-blank lines.
     const para: string[] = [line];
     i++;
-    while (i < lines.length && (lines[i] ?? "").trim() !== "" && !looksLikeBlockStart(lines[i] ?? "")) {
+    while (
+      i < lines.length &&
+      (lines[i] ?? "").trim() !== "" &&
+      !looksLikeBlockStart(lines[i] ?? "")
+    ) {
       para.push(lines[i] ?? "");
       i++;
     }
@@ -518,10 +529,7 @@ function renderInline(text: string): string {
 }
 
 function esc(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 await main();

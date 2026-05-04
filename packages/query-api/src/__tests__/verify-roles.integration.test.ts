@@ -13,9 +13,9 @@
 import { describe, expect, it } from "bun:test";
 import { DatabaseAdapter } from "../index.js";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_ROLE_URL = process.env["PUBLIC_DATABASE_URL"];
-const PUBLIC_ADMIN_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_ROLE_URL = process.env.PUBLIC_DATABASE_URL;
+const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_ROLE_URL || !PUBLIC_ADMIN_URL) {
   throw new Error("all three DB URLs required for verify-roles tests");
 }

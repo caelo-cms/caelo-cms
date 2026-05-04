@@ -84,11 +84,7 @@ export async function lookupPricing(
 
 function toN(v: bigint | string | number | null): number | null {
   if (v === null) return null;
-  return typeof v === "bigint"
-    ? Number(v)
-    : typeof v === "string"
-      ? Number.parseInt(v, 10)
-      : v;
+  return typeof v === "bigint" ? Number(v) : typeof v === "string" ? Number.parseInt(v, 10) : v;
 }
 
 /** Drop one entry. Called by the LISTEN handler on a single-row update. */

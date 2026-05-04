@@ -11,8 +11,8 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { SQL } from "bun";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_DATABASE_URL"]; // public_role connecting to cms_public
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_DATABASE_URL; // public_role connecting to cms_public
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("ADMIN_DATABASE_URL + PUBLIC_DATABASE_URL required");
 
 // We also need a public_role-scoped connection *to cms_admin* to try the leak.

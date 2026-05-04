@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 // SPDX-License-Identifier: MPL-2.0
 
 /**
@@ -11,8 +12,8 @@
  * Exits non-zero on hits.
  */
 
-import { Glob } from "bun";
 import { resolve } from "node:path";
+import { Glob } from "bun";
 
 const root = resolve(import.meta.dir, "../../..");
 const patterns = ["**/*.ts", "**/*.svelte", "**/*.sql"];
@@ -51,9 +52,7 @@ for (const pattern of patterns) {
 }
 
 if (flagged > 0) {
-  console.error(
-    `\n[check-spdx-headers] ${flagged}/${total} source files missing SPDX header.\n`,
-  );
+  console.error(`\n[check-spdx-headers] ${flagged}/${total} source files missing SPDX header.\n`);
   for (const h of hits.slice(0, 30)) console.error(`  ${h}`);
   if (hits.length > 30) console.error(`  …and ${hits.length - 30} more.`);
   console.error(

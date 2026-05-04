@@ -184,7 +184,7 @@ export const listDeployRunsOp = defineOperation({
  * tmpdir as `repoRoot` (the tmpdir doesn't contain the workspace).
  */
 function resolveGeneratorCli(): string {
-  const override = process.env["CAELO_GENERATOR_CLI"];
+  const override = process.env.CAELO_GENERATOR_CLI;
   if (override) return override;
   // Walk up from cwd until we find apps/static-generator/src/cli.ts.
   // This survives `cd` into a subdir (the test runner's cwd) without
@@ -240,8 +240,8 @@ async function runGenerator(
     changedPageIds?: ReadonlyArray<string>;
   },
 ): Promise<{ ok: true; result: SubprocessDone } | { ok: false; message: string; stderr: string }> {
-  const adminUrl = process.env["ADMIN_DATABASE_URL"];
-  const publicUrl = process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? process.env["PUBLIC_DATABASE_URL"];
+  const adminUrl = process.env.ADMIN_DATABASE_URL;
+  const publicUrl = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_DATABASE_URL;
   if (!adminUrl || !publicUrl) {
     return { ok: false, message: "ADMIN_DATABASE_URL / PUBLIC_DATABASE_URL not set", stderr: "" };
   }
@@ -563,8 +563,8 @@ export const promoteDeployOp = defineOperation({
         .catch(() => "{}");
       try {
         const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
-        manifest["target"] = to.name;
-        manifest["env"] = to.env;
+        manifest.target = to.name;
+        manifest.env = to.env;
         await writeFile(
           join(overlayDir, "routing-manifest.json"),
           JSON.stringify(manifest, null, 2),

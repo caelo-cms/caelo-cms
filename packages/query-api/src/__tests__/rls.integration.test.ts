@@ -18,8 +18,8 @@ import { DatabaseAdapter, defineOperation, execute, OperationRegistry } from "..
 import { deleteActors, seedActors } from "./_seed.js";
 import { rlsAdversarialMatrix } from "./rls-matrix.js";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB urls required");
 
 let adapter: DatabaseAdapter;

@@ -30,6 +30,24 @@
       "recommended": true
     }
   },
+  "overrides": [
+    {
+      "includes": [
+        "**/*.test.ts",
+        "**/__tests__/**",
+        "**/scripts/**",
+        "**/playwright.config.ts",
+        "**/e2e/**"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",

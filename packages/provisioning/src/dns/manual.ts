@@ -29,8 +29,7 @@ export function makeManualAdapter(opts: { domain: string }): DnsAdapter {
           bold("Paste these DNS records at your registrar:"),
           "",
           ...records.map(
-            (r) =>
-              `  ${dim(r.type.padEnd(6))} ${r.hostname.padEnd(35)} → ${bold(r.value)}`,
+            (r) => `  ${dim(r.type.padEnd(6))} ${r.hostname.padEnd(35)} → ${bold(r.value)}`,
           ),
           "",
           dim("After pasting, press Enter to verify resolution."),

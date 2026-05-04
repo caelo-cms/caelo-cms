@@ -23,7 +23,7 @@ export default defineConfig({
   // so specs no longer share filesystem state and parallel workers are
   // safe again.
   fullyParallel: true,
-  forbidOnly: !!process.env["CI"],
+  forbidOnly: !!process.env.CI,
   retries: 0,
   reporter: [["list"]],
   use: {
@@ -41,14 +41,14 @@ export default defineConfig({
     // the public URL; for the smoke server it's the loopback baseURL.
     command: "bun run build && PORT=4173 ORIGIN=http://localhost:4173 bun run build/index.js",
     url: "http://localhost:4173",
-    reuseExistingServer: !process.env["CI"],
+    reuseExistingServer: !process.env.CI,
     // Cold builds on first run can take longer than 120s when node_modules has
     // just been installed. Bump to 240s — local subsequent runs reuse.
     timeout: 240_000,
     env: {
-      ADMIN_DATABASE_URL: process.env["ADMIN_DATABASE_URL"] ?? "",
-      PUBLIC_ADMIN_DATABASE_URL: process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? "",
-      PUBLIC_DATABASE_URL: process.env["PUBLIC_DATABASE_URL"] ?? "",
+      ADMIN_DATABASE_URL: process.env.ADMIN_DATABASE_URL ?? "",
+      PUBLIC_ADMIN_DATABASE_URL: process.env.PUBLIC_ADMIN_DATABASE_URL ?? "",
+      PUBLIC_DATABASE_URL: process.env.PUBLIC_DATABASE_URL ?? "",
       ORIGIN: "http://localhost:4173",
       // NODE_ENV must be unset / non-production for the test-provider
       // registry (`/__test/providers`) to accept registrations. The

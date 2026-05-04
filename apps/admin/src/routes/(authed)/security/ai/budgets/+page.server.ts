@@ -62,10 +62,7 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const scope = String(form.get("scope") ?? "") as
-      | "session"
-      | "day-global"
-      | "day-per-actor";
+    const scope = String(form.get("scope") ?? "") as "session" | "day-global" | "day-per-actor";
     const operationType = String(form.get("operationType") ?? "text") as "text" | "image";
     const capRaw = String(form.get("capMicrocents") ?? "");
     const warnRaw = String(form.get("warnAtPct") ?? "0.8");

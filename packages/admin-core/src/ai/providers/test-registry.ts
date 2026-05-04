@@ -25,7 +25,7 @@ import { FixtureProvider, MultiFixtureProvider } from "./anthropic.js";
 const registry = new Map<string, AIProvider>();
 
 export function isTestRegistryEnabled(): boolean {
-  return process.env["NODE_ENV"] !== "production";
+  return process.env.NODE_ENV !== "production";
 }
 
 export function registerTestProvider(

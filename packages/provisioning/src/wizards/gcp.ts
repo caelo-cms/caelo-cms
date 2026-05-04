@@ -18,12 +18,23 @@
  *  14. Prints DNS records + bootstrap URL
  */
 
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { cancel, confirm, isCancel, log, note, password, select, spinner, text } from "@clack/prompts";
+import {
+  cancel,
+  confirm,
+  isCancel,
+  log,
+  note,
+  password,
+  select,
+  spinner,
+  text,
+} from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
+import { pickDnsAdapter } from "../dns/index.js";
 import {
   activeAccount,
   type BillingAccount,
@@ -51,7 +62,6 @@ import {
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
-import { pickDnsAdapter } from "../dns/index.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { pulumiUpGcp } from "./gcp-pulumi.js";
 
@@ -115,7 +125,9 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   const estimate = estimateGcpCost(costInputs);
   note(
     [
-      bold("Estimated monthly cost (resource floor — actual usage adds AI calls + egress + storage growth)"),
+      bold(
+        "Estimated monthly cost (resource floor — actual usage adds AI calls + egress + storage growth)",
+      ),
       "",
       ...estimate.lines.map(
         (l) =>
@@ -353,7 +365,9 @@ async function stepGrantRoles(
 ): Promise<void> {
   const stepName = `grant-roles-${projectId}`;
   if (isStepDone(installId, stepName)) {
-    log.success(`IAM roles granted ${dim(`(${PROVISIONER_ROLE_LIST.length} roles, checkpointed)`)}`);
+    log.success(
+      `IAM roles granted ${dim(`(${PROVISIONER_ROLE_LIST.length} roles, checkpointed)`)}`,
+    );
     return;
   }
   const s = spinner();
@@ -498,11 +512,7 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
   markStepDone(installId, stepName, { outputs: result.outputs });
 }
 
-async function stepIapEnable(
-  installId: string,
-  projectId: string,
-  region: string,
-): Promise<void> {
+async function stepIapEnable(installId: string, projectId: string, region: string): Promise<void> {
   const stepName = `iap-enable-${projectId}`;
   if (isStepDone(installId, stepName)) {
     log.success(`IAP enabled on admin Cloud Run ${dim("(checkpointed)")}`);
@@ -544,9 +554,9 @@ async function stepFinalize(installId: string): Promise<void> {
     outputs: Record<string, unknown>;
   }>(installId, upStep);
   const outputs = upPayload?.outputs ?? {};
-  const lbIp = String(outputs["lbIpOut"] ?? "");
-  const bootstrapUrl = outputs["bootstrapUrlOut"] ?? "<unknown>";
-  const adminDomainOut = String(outputs["adminDomainOut"] ?? `admin.${meta.domain}`);
+  const lbIp = String(outputs.lbIpOut ?? "");
+  const bootstrapUrl = outputs.bootstrapUrlOut ?? "<unknown>";
+  const adminDomainOut = String(outputs.adminDomainOut ?? `admin.${meta.domain}`);
 
   // Auto-create DNS via Cloudflare if CLOUDFLARE_API_TOKEN is set;
   // otherwise the manual adapter prints + verify-polls.

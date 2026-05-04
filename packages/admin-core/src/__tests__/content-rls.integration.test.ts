@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { SQL } from "bun";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 if (!ADMIN_URL) throw new Error("ADMIN_DATABASE_URL required");
 
 const TPL_SLUG = "p3-rls-tpl";

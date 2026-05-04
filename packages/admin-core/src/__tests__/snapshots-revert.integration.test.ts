@@ -17,8 +17,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 let adapter: DatabaseAdapter;
@@ -248,8 +248,8 @@ describe("snapshots.list", () => {
     ).snapshots;
     expect(rows.length).toBeGreaterThan(0);
     for (let i = 1; i < rows.length; i++) {
-      expect(new Date(rows[i - 1]!.createdAt).getTime()).toBeGreaterThanOrEqual(
-        new Date(rows[i]!.createdAt).getTime(),
+      expect(new Date(rows[i - 1]?.createdAt).getTime()).toBeGreaterThanOrEqual(
+        new Date(rows[i]?.createdAt).getTime(),
       );
     }
   });

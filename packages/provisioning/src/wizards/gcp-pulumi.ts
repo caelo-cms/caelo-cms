@@ -10,9 +10,8 @@
  * surface inline with provider errors.
  */
 
-import { resolve as resolvePath } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import * as pulumi from "@pulumi/pulumi/automation";
-import { join } from "node:path";
 
 export interface PulumiUpInputs {
   installId: string;

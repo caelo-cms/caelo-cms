@@ -16,9 +16,9 @@
  * is best-effort; the wizard always prompts to confirm.
  */
 
-import type { DnsAdapter } from "./types.js";
 import { detectCloudflareAuth, makeCloudflareAdapter } from "./cloudflare.js";
 import { makeManualAdapter } from "./manual.js";
+import type { DnsAdapter } from "./types.js";
 
 export type { DnsAdapter, DnsRecord } from "./types.js";
 

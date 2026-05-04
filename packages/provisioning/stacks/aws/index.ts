@@ -29,18 +29,17 @@
 import { resolve } from "node:path";
 import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
-import { local } from "@pulumi/command";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
-const ownerEmail = cfg.require("ownerEmail");
-const region = cfg.get("region") ?? "us-east-1";
+const _ownerEmail = cfg.require("ownerEmail");
+const _region = cfg.get("region") ?? "us-east-1";
 const rdsInstanceClass = cfg.get("rdsInstanceClass") ?? "db.t4g.small";
-const fargateCpu = cfg.get("fargateCpu") ?? "512";
-const fargateMemoryMb = cfg.get("fargateMemoryMb") ?? "1024";
+const _fargateCpu = cfg.get("fargateCpu") ?? "512";
+const _fargateMemoryMb = cfg.get("fargateMemoryMb") ?? "1024";
 
 // Pulumi stack name doubles as the environment label so a single
 // project supports `pulumi stack init dev|staging|production`.

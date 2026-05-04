@@ -23,7 +23,7 @@ import type { DnsAdapter, DnsRecord } from "./types.js";
 const CF_API = "https://api.cloudflare.com/client/v4";
 
 export async function detectCloudflareAuth(): Promise<{ token: string | null }> {
-  const token = process.env["CLOUDFLARE_API_TOKEN"] ?? null;
+  const token = process.env.CLOUDFLARE_API_TOKEN ?? null;
   if (!token) return { token: null };
   // Verify the token resolves (cheap HEAD-style call).
   try {
@@ -80,11 +80,7 @@ async function existingRecord(
   return body.result?.[0] ?? null;
 }
 
-async function upsertRecord(
-  token: string,
-  zoneId: string,
-  record: DnsRecord,
-): Promise<void> {
+async function upsertRecord(token: string, zoneId: string, record: DnsRecord): Promise<void> {
   const existing = await existingRecord(token, zoneId, record.hostname, record.type);
   const body = {
     type: record.type,
@@ -111,10 +107,7 @@ async function upsertRecord(
   if (!r.ok) throw new Error(`Cloudflare POST ${record.hostname}: ${r.status} ${await r.text()}`);
 }
 
-export function makeCloudflareAdapter(opts: {
-  domain: string;
-  apiToken: string;
-}): DnsAdapter {
+export function makeCloudflareAdapter(opts: { domain: string; apiToken: string }): DnsAdapter {
   return {
     name: `Cloudflare (zero-touch via API)`,
     async applyRecords(records: DnsRecord[]): Promise<void> {

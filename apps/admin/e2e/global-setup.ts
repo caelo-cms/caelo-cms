@@ -100,7 +100,7 @@ const SETUP_SCRIPT = `
 
 export default async function globalSetup(): Promise<void> {
   loadEnvFile();
-  if (!process.env["ADMIN_DATABASE_URL"]) {
+  if (!process.env.ADMIN_DATABASE_URL) {
     throw new Error("ADMIN_DATABASE_URL must be set for Playwright e2e");
   }
   runBun(SETUP_SCRIPT);

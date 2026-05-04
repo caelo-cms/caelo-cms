@@ -20,7 +20,11 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { validateManifest, validateSource, verifyManifestSignature } from "@caelo-cms/plugin-sandbox";
+import {
+  validateManifest,
+  validateSource,
+  verifyManifestSignature,
+} from "@caelo-cms/plugin-sandbox";
 import {
   type PluginContext,
   type PluginContextTier1,

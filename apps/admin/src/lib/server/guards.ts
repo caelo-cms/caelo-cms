@@ -31,5 +31,5 @@ export const SESSION_COOKIE_OPTIONS = {
   httpOnly: true,
   sameSite: "lax" as const,
   // `secure` only in production; dev serves over http.
-  secure: process.env["NODE_ENV"] === "production",
+  secure: process.env.NODE_ENV === "production",
 };

@@ -15,9 +15,9 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { DatabaseAdapter, defineOperation, execute, OperationRegistry } from "../index.js";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_ROLE_URL = process.env["PUBLIC_DATABASE_URL"]; // public_role -> cms_public
-const PUBLIC_ADMIN_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"]; // admin_role -> cms_public (cleanup only)
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_ROLE_URL = process.env.PUBLIC_DATABASE_URL; // public_role -> cms_public
+const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL; // admin_role -> cms_public (cleanup only)
 if (!ADMIN_URL || !PUBLIC_ROLE_URL || !PUBLIC_ADMIN_URL) {
   throw new Error("ADMIN_DATABASE_URL + PUBLIC_DATABASE_URL + PUBLIC_ADMIN_DATABASE_URL required");
 }

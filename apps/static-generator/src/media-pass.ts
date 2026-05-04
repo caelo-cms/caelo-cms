@@ -300,12 +300,12 @@ function rewriteImgTagsForResponsive(
 /** Extract `webp-800` → 800; `square-400` → 400; `orig` → null. */
 function parseVariantWidth(variant: string): number | null {
   const m = variant.match(/-(\d+)$/);
-  return m && m[1] ? Number.parseInt(m[1], 10) : null;
+  return m?.[1] ? Number.parseInt(m[1], 10) : null;
 }
 /** `webp-800` → 'webp'; `square-800` → 'square'; `orig` → 'orig'. */
 function variantFamily(variant: string): string {
   const m = variant.match(/^([a-z][a-z0-9-]*?)-\d+$/);
-  return m && m[1] ? m[1] : variant;
+  return m?.[1] ? m[1] : variant;
 }
 
 /**

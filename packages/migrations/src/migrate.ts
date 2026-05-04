@@ -23,7 +23,7 @@ if (target !== "admin" && target !== "public") {
 }
 
 const url =
-  target === "admin" ? process.env["ADMIN_DATABASE_URL"] : process.env["PUBLIC_ADMIN_DATABASE_URL"];
+  target === "admin" ? process.env.ADMIN_DATABASE_URL : process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!url) {
   console.error(
     `missing env var: ${target === "admin" ? "ADMIN_DATABASE_URL" : "PUBLIC_ADMIN_DATABASE_URL"}`,

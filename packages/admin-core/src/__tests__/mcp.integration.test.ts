@@ -17,8 +17,8 @@ import { SQL } from "bun";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 let adapter: DatabaseAdapter;
@@ -111,7 +111,9 @@ describe("mcp_tokens lifecycle", () => {
     const r = await execute(registry, adapter, ownerCtx, "mcp_tokens.list", {});
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const v = r.value as { tokens: Array<{ id: string; displayName: string; revokedAt: string | null }> };
+    const v = r.value as {
+      tokens: Array<{ id: string; displayName: string; revokedAt: string | null }>;
+    };
     const row = v.tokens.find((t) => t.id === createdId);
     expect(row).toBeDefined();
     expect(row?.displayName).toBe("test-laptop");

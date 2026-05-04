@@ -43,7 +43,7 @@ import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
-const ownerEmail = cfg.require("ownerEmail");
+const _ownerEmail = cfg.require("ownerEmail");
 const subscription = cfg.require("subscription");
 const rgName = cfg.get("resourceGroup") ?? "caelo-rg";
 const location = cfg.get("location") ?? "westeurope";
@@ -93,7 +93,7 @@ function keyVaultSecret(shortName: string, value: pulumi.Output<string>): azure.
   });
 }
 
-const pgSecret = keyVaultSecret("pg-password", postgresPassword);
+const _pgSecret = keyVaultSecret("pg-password", postgresPassword);
 keyVaultSecret("csrf-secret", csrfSecret);
 keyVaultSecret("cookie-secret", cookieSecret);
 keyVaultSecret("anthropic-api-key", anthropicApiKey);
@@ -120,13 +120,13 @@ const pgServer = new azure.dbforpostgresql.Server(`${namePrefix}-pg`, {
   network: { publicNetworkAccess: "Disabled" },
 });
 
-const pgAdmin = new azure.dbforpostgresql.Database(`${namePrefix}-cms-admin-db`, {
+const _pgAdmin = new azure.dbforpostgresql.Database(`${namePrefix}-cms-admin-db`, {
   resourceGroupName: rg.name,
   serverName: pgServer.name,
   databaseName: "cms_admin",
   charset: "UTF8",
 });
-const pgPublic = new azure.dbforpostgresql.Database(`${namePrefix}-cms-public-db`, {
+const _pgPublic = new azure.dbforpostgresql.Database(`${namePrefix}-cms-public-db`, {
   resourceGroupName: rg.name,
   serverName: pgServer.name,
   databaseName: "cms_public",
@@ -151,14 +151,14 @@ const storage = new azure.storage.StorageAccount(`${namePrefix}-st`, {
   minimumTlsVersion: "TLS1_2",
 });
 
-const mediaContainer = new azure.storage.BlobContainer(`${namePrefix}-media`, {
+const _mediaContainer = new azure.storage.BlobContainer(`${namePrefix}-media`, {
   resourceGroupName: rg.name,
   accountName: storage.name,
   containerName: "media",
   publicAccess: "None",
 });
 
-const staticContainer = new azure.storage.BlobContainer(`${namePrefix}-static`, {
+const _staticContainer = new azure.storage.BlobContainer(`${namePrefix}-static`, {
   resourceGroupName: rg.name,
   accountName: storage.name,
   containerName: "$web",
@@ -244,9 +244,9 @@ function containerApp(args: ContainerAppArgs): azure.app.ContainerApp {
 }
 
 const adminApp = containerApp({ serviceName: "admin" });
-const gatewayApp = containerApp({ serviceName: "gateway" });
-const orchestratorApp = containerApp({ serviceName: "orchestrator" });
-const runnerApp = containerApp({ serviceName: "runner" });
+const _gatewayApp = containerApp({ serviceName: "gateway" });
+const _orchestratorApp = containerApp({ serviceName: "orchestrator" });
+const _runnerApp = containerApp({ serviceName: "runner" });
 const edgeRouterApp = containerApp({
   serviceName: "edge-router",
   extraEnv: [

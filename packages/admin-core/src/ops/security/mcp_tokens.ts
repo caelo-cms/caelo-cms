@@ -13,13 +13,13 @@
  * typed in the browser chat.
  */
 
-import { defineOperation, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import { defineOperation, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import { err, ok, type Result } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import type { AIProvider } from "../../ai/provider.js";
 import { runChatTurn } from "../../ai/chat-runner.js";
+import type { AIProvider } from "../../ai/provider.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 
@@ -256,9 +256,7 @@ export const mcpSendChatOp = defineOperation({
     chatSessionId: z.string(),
     requestId: z.string(),
     assistant: z.string(),
-    toolCalls: z.array(
-      z.object({ name: z.string(), summary: z.string(), succeeded: z.boolean() }),
-    ),
+    toolCalls: z.array(z.object({ name: z.string(), summary: z.string(), succeeded: z.boolean() })),
     pendingProposals: z.number().int().nonnegative(),
     costMicrocents: z.number().int().nonnegative(),
   }),

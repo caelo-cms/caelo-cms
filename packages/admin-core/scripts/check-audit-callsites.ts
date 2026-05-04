@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 // SPDX-License-Identifier: MPL-2.0
 
 /**
@@ -14,8 +15,8 @@
  * Exit non-zero on hits.
  */
 
-import { Glob } from "bun";
 import { resolve } from "node:path";
+import { Glob } from "bun";
 
 const root = resolve(import.meta.dir, "..");
 const glob = new Glob("src/**/*.ts");

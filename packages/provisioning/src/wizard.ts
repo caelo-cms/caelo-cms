@@ -21,7 +21,6 @@
 
 import { cancel, confirm, intro, isCancel, outro, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim } from "kleur/colors";
-import { runGcpWizard } from "./wizards/gcp.js";
 import {
   deriveInstallId,
   ensureInstallDir,
@@ -29,6 +28,7 @@ import {
   readMetadata,
   writeMetadata,
 } from "./install-state.js";
+import { runGcpWizard } from "./wizards/gcp.js";
 
 export interface WizardOptions {
   /** Skip prompts; require all inputs via flags. CI-friendly. */
@@ -157,7 +157,9 @@ async function promptDomain(): Promise<string> {
     placeholder: "mysite.com",
     validate: (v) => {
       if (!v || v.length === 0) return "Domain is required";
-      if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(v)) {
+      if (
+        !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(v)
+      ) {
         return "Looks like an invalid domain (e.g. mysite.com)";
       }
       return undefined;

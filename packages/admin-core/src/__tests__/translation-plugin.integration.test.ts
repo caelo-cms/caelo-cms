@@ -33,7 +33,7 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
-const systemCtx: ExecutionContext = {
+const _systemCtx: ExecutionContext = {
   actorId: SYSTEM_ACTOR_ID,
   actorKind: "system",
   requestId: "translation-plugin-test",

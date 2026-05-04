@@ -10,6 +10,10 @@
     { "label": "Security", "href": "/security" },
     { "label": "Changelog", "href": "/changelog" },
     { "label": "GitHub", "href": "https://github.com/caelo-cms/caelo-cms", "target": "_blank" },
-    { "label": "License (MPL 2.0)", "href": "https://github.com/caelo-cms/caelo-cms/blob/main/LICENSE", "target": "_blank" }
+    {
+      "label": "License (MPL 2.0)",
+      "href": "https://github.com/caelo-cms/caelo-cms/blob/main/LICENSE",
+      "target": "_blank"
+    }
   ]
 }

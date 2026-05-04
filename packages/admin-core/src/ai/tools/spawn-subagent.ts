@@ -36,9 +36,9 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const EXCLUDED_FOR_CHILD = new Set(["spawn_subagent", "spawn_subagents"]);
 const SUBAGENT_BATCH_CAP_MICROCENTS = Number(
-  process.env["SUBAGENT_BATCH_CAP_MICROCENTS"] ?? "200000000", // $2.00 default
+  process.env.SUBAGENT_BATCH_CAP_MICROCENTS ?? "200000000", // $2.00 default
 );
-const SUBAGENT_MAX_PARALLEL = Number(process.env["SUBAGENT_MAX_PARALLEL"] ?? "8");
+const SUBAGENT_MAX_PARALLEL = Number(process.env.SUBAGENT_MAX_PARALLEL ?? "8");
 /**
  * P10.5 #2 — bounded concurrency. With 8 parallel subagents each
  * making 5 provider calls, naive `Promise.all` floods Anthropic's tier
@@ -46,7 +46,7 @@ const SUBAGENT_MAX_PARALLEL = Number(process.env["SUBAGENT_MAX_PARALLEL"] ?? "8"
  * SUBAGENT INVOCATIONS (each subagent's own provider calls run
  * sequentially inside its chat-runner loop). Defaults to 4; configurable.
  */
-const SUBAGENT_PARALLEL_API_LIMIT = Number(process.env["SUBAGENT_PARALLEL_API_LIMIT"] ?? "4");
+const SUBAGENT_PARALLEL_API_LIMIT = Number(process.env.SUBAGENT_PARALLEL_API_LIMIT ?? "4");
 
 /**
  * Tiny p-limit-style semaphore. Avoids a dependency for ~20 LOC.

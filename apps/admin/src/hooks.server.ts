@@ -48,7 +48,7 @@ let translationBootstrapped = false;
 async function bootstrapTranslationWorker(): Promise<void> {
   if (translationBootstrapped) return;
   translationBootstrapped = true;
-  const apiKey = process.env["ANTHROPIC_API_KEY"];
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (apiKey) {
     const provider = makeProvider({
       name: "anthropic",
@@ -238,7 +238,7 @@ let mcpBridgeBootstrapped = false;
 function bootstrapMcpBridge(): void {
   if (mcpBridgeBootstrapped) return;
   mcpBridgeBootstrapped = true;
-  const apiKey = process.env["ANTHROPIC_API_KEY"];
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return;
   const { adapter, registry } = getQueryContext();
   const provider = makeProvider({

@@ -7,7 +7,7 @@ export default defineConfig({
   out: "./migrations/cms_public",
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? "",
+    url: process.env.PUBLIC_ADMIN_DATABASE_URL ?? "",
   },
   strict: true,
   verbose: true,

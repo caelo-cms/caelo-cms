@@ -25,8 +25,7 @@ describe("subagentSpec", () => {
 
 describe("parseSubagentResult — verdict", () => {
   it("extracts JSON from a code fence", () => {
-    const text =
-      "```json\n" + JSON.stringify({ pass: true, issues: [], suggestions: ["add CTA"] }) + "\n```";
+    const text = `\`\`\`json\n${JSON.stringify({ pass: true, issues: [], suggestions: ["add CTA"] })}\n\`\`\``;
     const r = parseSubagentResult(text, "verdict");
     expect(r.ok).toBe(true);
     if (!r.ok) return;

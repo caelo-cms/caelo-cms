@@ -12,10 +12,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { sendChat } from "./chat-bridge.js";
 
@@ -77,18 +74,14 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
     if (req.params.name !== "caelo_chat") {
       return {
         isError: true,
-        content: [
-          { type: "text", text: `unknown tool: ${req.params.name}` },
-        ],
+        content: [{ type: "text", text: `unknown tool: ${req.params.name}` }],
       };
     }
     const parsed = caeloChatInputSchema.safeParse(req.params.arguments ?? {});
     if (!parsed.success) {
       return {
         isError: true,
-        content: [
-          { type: "text", text: `invalid arguments: ${parsed.error.message}` },
-        ],
+        content: [{ type: "text", text: `invalid arguments: ${parsed.error.message}` }],
       };
     }
     try {

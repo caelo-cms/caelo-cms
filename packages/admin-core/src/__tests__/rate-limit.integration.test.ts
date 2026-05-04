@@ -4,8 +4,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test"
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { PostgresRateLimiter } from "../rate-limit.js";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 let adapter: DatabaseAdapter;
@@ -16,7 +16,7 @@ const TEST_KEY_PREFIX = "test-pgrl-";
 async function wipeTestBuckets(): Promise<void> {
   await adapter.rawAdmin().begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-    await tx`DELETE FROM rate_limit_buckets WHERE key LIKE ${TEST_KEY_PREFIX + "%"}`;
+    await tx`DELETE FROM rate_limit_buckets WHERE key LIKE ${`${TEST_KEY_PREFIX}%`}`;
   });
 }
 

@@ -26,14 +26,14 @@
 import { hashPassword } from "@caelo-cms/admin-core";
 import { SQL } from "bun";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 if (!ADMIN_URL) {
   console.error("ADMIN_DATABASE_URL is required");
   process.exit(1);
 }
 
-const EMAIL = process.env["DEV_OWNER_EMAIL"] ?? "dev-owner@example.com";
-const PASSWORD = process.env["DEV_OWNER_PASSWORD"] ?? "dev owner password";
+const EMAIL = process.env.DEV_OWNER_EMAIL ?? "dev-owner@example.com";
+const PASSWORD = process.env.DEV_OWNER_PASSWORD ?? "dev owner password";
 
 const passwordHash = await hashPassword(PASSWORD);
 const sql = new SQL(ADMIN_URL);

@@ -96,8 +96,8 @@ function buildRequestBody(input: GenerateInput, model: string): Record<string, u
     messages,
     stream: true,
   };
-  if (tools.length > 0) body["tools"] = tools;
-  if (input.temperature !== undefined) body["temperature"] = input.temperature;
+  if (tools.length > 0) body.tools = tools;
+  if (input.temperature !== undefined) body.temperature = input.temperature;
   return body;
 }
 
@@ -143,26 +143,26 @@ async function* translate(events: AsyncIterable<unknown>): AsyncIterable<Provide
   for await (const ev of events) {
     if (!ev || typeof ev !== "object") continue;
     const e = ev as Record<string, unknown>;
-    const type = e["type"];
+    const type = e.type;
 
     if (type === "message_start") {
-      const usageRaw = (e["message"] as { usage?: Record<string, number> } | undefined)?.usage;
+      const usageRaw = (e.message as { usage?: Record<string, number> } | undefined)?.usage;
       if (usageRaw) {
         usage = {
-          inputTokens: usageRaw["input_tokens"] ?? 0,
-          outputTokens: usageRaw["output_tokens"] ?? 0,
-          cachedTokens: usageRaw["cache_read_input_tokens"] ?? 0,
+          inputTokens: usageRaw.input_tokens ?? 0,
+          outputTokens: usageRaw.output_tokens ?? 0,
+          cachedTokens: usageRaw.cache_read_input_tokens ?? 0,
         };
       }
     } else if (type === "content_block_start") {
-      const idx = e["index"] as number;
-      const block = e["content_block"] as { type?: string; id?: string; name?: string };
+      const idx = e.index as number;
+      const block = e.content_block as { type?: string; id?: string; name?: string };
       if (block?.type === "tool_use") {
         toolCallBuf.set(idx, { id: block.id ?? "", name: block.name ?? "", argText: "" });
       }
     } else if (type === "content_block_delta") {
-      const idx = e["index"] as number;
-      const delta = e["delta"] as { type?: string; text?: string; partial_json?: string };
+      const idx = e.index as number;
+      const delta = e.delta as { type?: string; text?: string; partial_json?: string };
       if (delta?.type === "text_delta") {
         if (typeof delta.text === "string") yield { kind: "text-delta", text: delta.text };
       } else if (delta?.type === "input_json_delta") {
@@ -170,7 +170,7 @@ async function* translate(events: AsyncIterable<unknown>): AsyncIterable<Provide
         if (buf && typeof delta.partial_json === "string") buf.argText += delta.partial_json;
       }
     } else if (type === "content_block_stop") {
-      const idx = e["index"] as number;
+      const idx = e.index as number;
       const buf = toolCallBuf.get(idx);
       if (buf) {
         let parsed: unknown = {};
@@ -183,15 +183,15 @@ async function* translate(events: AsyncIterable<unknown>): AsyncIterable<Provide
         toolCallBuf.delete(idx);
       }
     } else if (type === "message_delta") {
-      const usageRaw = e["usage"] as Record<string, number> | undefined;
+      const usageRaw = e.usage as Record<string, number> | undefined;
       if (usageRaw) {
         usage = {
-          inputTokens: usage.inputTokens || (usageRaw["input_tokens"] ?? 0),
-          outputTokens: usageRaw["output_tokens"] ?? usage.outputTokens,
-          cachedTokens: usage.cachedTokens || (usageRaw["cache_read_input_tokens"] ?? 0),
+          inputTokens: usage.inputTokens || (usageRaw.input_tokens ?? 0),
+          outputTokens: usageRaw.output_tokens ?? usage.outputTokens,
+          cachedTokens: usage.cachedTokens || (usageRaw.cache_read_input_tokens ?? 0),
         };
       }
-      const stopReason = (e["delta"] as { stop_reason?: string } | undefined)?.stop_reason;
+      const stopReason = (e.delta as { stop_reason?: string } | undefined)?.stop_reason;
       yield { kind: "usage", ...usage };
       if (stopReason) {
         yield {
@@ -207,7 +207,7 @@ async function* translate(events: AsyncIterable<unknown>): AsyncIterable<Provide
         };
       }
     } else if (type === "error") {
-      const msg = (e["error"] as { message?: string } | undefined)?.message ?? "provider error";
+      const msg = (e.error as { message?: string } | undefined)?.message ?? "provider error";
       yield { kind: "error", message: msg };
       yield { kind: "done", stopReason: "error" };
     }

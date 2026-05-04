@@ -71,7 +71,11 @@ export async function listBillingAccounts(): Promise<BillingAccount[]> {
   const r = await gcloud(["billing", "accounts", "list", "--format=json"]);
   if (!r.ok) return [];
   try {
-    const rows = JSON.parse(r.stdout) as Array<{ name: string; displayName: string; open: boolean }>;
+    const rows = JSON.parse(r.stdout) as Array<{
+      name: string;
+      displayName: string;
+      open: boolean;
+    }>;
     return rows.map((row) => ({
       id: row.name.replace(/^billingAccounts\//, ""),
       displayName: row.displayName,
@@ -91,15 +95,11 @@ export async function createProject(projectId: string, displayName: string): Pro
   return gcloud(["projects", "create", projectId, "--name", displayName]);
 }
 
-export async function linkBilling(projectId: string, billingAccountId: string): Promise<GcloudResult> {
-  return gcloud([
-    "billing",
-    "projects",
-    "link",
-    projectId,
-    "--billing-account",
-    billingAccountId,
-  ]);
+export async function linkBilling(
+  projectId: string,
+  billingAccountId: string,
+): Promise<GcloudResult> {
+  return gcloud(["billing", "projects", "link", projectId, "--billing-account", billingAccountId]);
 }
 
 const REQUIRED_APIS: readonly string[] = [
@@ -122,10 +122,7 @@ export async function enableApis(projectId: string): Promise<GcloudResult> {
   return gcloud(["services", "enable", ...REQUIRED_APIS, "--project", projectId]);
 }
 
-export async function serviceAccountExists(
-  projectId: string,
-  saEmail: string,
-): Promise<boolean> {
+export async function serviceAccountExists(projectId: string, saEmail: string): Promise<boolean> {
   const r = await gcloud([
     "iam",
     "service-accounts",

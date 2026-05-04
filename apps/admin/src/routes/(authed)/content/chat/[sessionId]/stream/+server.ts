@@ -75,8 +75,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         ).providers.find((p) => p.name === "anthropic")
       : undefined;
     const model =
-      (provider?.config && typeof provider.config["model"] === "string"
-        ? (provider.config["model"] as string)
+      (provider?.config && typeof provider.config.model === "string"
+        ? (provider.config.model as string)
         : null) ?? "claude-opus-4-7";
 
     const { makeProvider } = await import("@caelo-cms/admin-core");

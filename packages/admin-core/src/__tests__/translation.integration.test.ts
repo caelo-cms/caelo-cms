@@ -27,8 +27,8 @@ import {
 } from "../index.js";
 import { registerAdminOps } from "../register.js";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 let adapter: DatabaseAdapter;
@@ -80,10 +80,10 @@ async function wipe(): Promise<void> {
       await tx`DELETE FROM site_style_guide WHERE locale IN ('xx', 'yy', 'tr')`;
       // Pages + their cloned modules.
       await tx`DELETE FROM page_modules WHERE page_id IN (
-        SELECT id FROM pages WHERE slug LIKE ${TEST_SLUG_PREFIX + "%"}
+        SELECT id FROM pages WHERE slug LIKE ${`${TEST_SLUG_PREFIX}%`}
       )`;
-      await tx`DELETE FROM pages WHERE slug LIKE ${TEST_SLUG_PREFIX + "%"}`;
-      await tx`DELETE FROM modules WHERE slug LIKE ${TEST_SLUG_PREFIX + "%"}`;
+      await tx`DELETE FROM pages WHERE slug LIKE ${`${TEST_SLUG_PREFIX}%`}`;
+      await tx`DELETE FROM modules WHERE slug LIKE ${`${TEST_SLUG_PREFIX}%`}`;
       await tx`UPDATE locales SET is_default = false WHERE code IN ('xx', 'yy', 'tr')`;
       await tx`DELETE FROM locales WHERE code IN ('xx', 'yy', 'tr')`;
       await tx`UPDATE locales SET is_default = true WHERE code = 'en'`;

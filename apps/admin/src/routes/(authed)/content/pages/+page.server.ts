@@ -96,7 +96,7 @@ export const actions: Actions = {
       buildId: string;
     };
 
-    const stagingBaseUrl = process.env["CAELO_STAGING_BASE_URL"] ?? "http://localhost:8081";
+    const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
     return {
       staged: {
         pageId,

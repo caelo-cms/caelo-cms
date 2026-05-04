@@ -733,7 +733,7 @@ async function claimNextUnit(deps: WorkerDeps): Promise<ClaimedUnit | null> {
       await tx`
         UPDATE translation_jobs
         SET status = 'paused',
-            error_summary = ${"cost cap reached: spent " + spent + " / cap " + cap + " (raise cap to continue)"}
+            error_summary = ${`cost cap reached: spent ${spent} / cap ${cap} (raise cap to continue)`}
         WHERE id = ${r.job_id}::uuid AND status IN ('pending', 'running')
       `;
       return null;

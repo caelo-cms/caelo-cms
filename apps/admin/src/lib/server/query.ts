@@ -32,8 +32,8 @@ let _verifyPromise: Promise<void> | null = null;
 export function getQueryContext(): QueryContext {
   if (_ctx) return _ctx;
 
-  const adminUrl = process.env["ADMIN_DATABASE_URL"];
-  const publicUrl = process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? process.env["PUBLIC_DATABASE_URL"];
+  const adminUrl = process.env.ADMIN_DATABASE_URL;
+  const publicUrl = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_DATABASE_URL;
   if (!adminUrl) throw new Error("ADMIN_DATABASE_URL is required");
   if (!publicUrl) {
     throw new Error("PUBLIC_ADMIN_DATABASE_URL or PUBLIC_DATABASE_URL is required");
@@ -60,9 +60,9 @@ export function getQueryContext(): QueryContext {
   // by default; plugins / cloud adapters override via the
   // MEDIA_STORAGE_PROVIDER env + a registered factory (see
   // registerMediaStorageFactory in @caelo-cms/admin-core/media/storage).
-  const providerName = process.env["MEDIA_STORAGE_PROVIDER"] ?? "local";
+  const providerName = process.env.MEDIA_STORAGE_PROVIDER ?? "local";
   if (providerName === "local") {
-    const mediaRoot = process.env["MEDIA_ROOT_DIR"] ?? "data/media";
+    const mediaRoot = process.env.MEDIA_ROOT_DIR ?? "data/media";
     setMediaStorage(new LocalVolumeAdapter(mediaRoot), "local");
   } else {
     const factory = getMediaStorageFactory(providerName);

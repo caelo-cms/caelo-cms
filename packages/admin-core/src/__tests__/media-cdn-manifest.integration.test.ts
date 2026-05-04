@@ -22,8 +22,8 @@ import { SQL } from "bun";
 import { runMediaPass } from "../../../../apps/static-generator/src/media-pass.js";
 import { registerAdminOps } from "../register.js";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 const TEST_PREFIX = "cdba9002";

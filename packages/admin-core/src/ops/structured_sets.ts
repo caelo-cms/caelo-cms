@@ -279,14 +279,14 @@ function rewriteHrefsInArray(
     if (!it || typeof it !== "object") return it;
     const obj = it as Record<string, unknown>;
     const out: Record<string, unknown> = { ...obj };
-    if (typeof obj["href"] === "string" && obj["href"] === oldPath) {
-      out["href"] = newPath;
+    if (typeof obj.href === "string" && obj.href === oldPath) {
+      out.href = newPath;
       changed = true;
     }
-    if (Array.isArray(obj["children"])) {
-      const child = rewriteHrefsInArray(obj["children"] as unknown[], oldPath, newPath);
+    if (Array.isArray(obj.children)) {
+      const child = rewriteHrefsInArray(obj.children as unknown[], oldPath, newPath);
       if (child.changed) {
-        out["children"] = child.items;
+        out.children = child.items;
         changed = true;
       }
     }

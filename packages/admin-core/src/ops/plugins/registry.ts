@@ -665,7 +665,7 @@ async function upsertPluginActor(
 ): Promise<string> {
   const rows = (await tx.execute(sql`
     INSERT INTO actors (kind, display_name, plugin_id)
-    VALUES ('plugin', ${"Plugin: " + slug}, ${pluginId}::uuid)
+    VALUES ('plugin', ${`Plugin: ${slug}`}, ${pluginId}::uuid)
     ON CONFLICT (plugin_id) WHERE plugin_id IS NOT NULL DO UPDATE
       SET display_name = EXCLUDED.display_name
     RETURNING id::text AS id

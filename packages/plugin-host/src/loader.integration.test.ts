@@ -26,7 +26,6 @@ import { SQL } from "bun";
 import { z } from "zod";
 import {
   bootstrap,
-  type LoadedPlugin,
   loadedPlugins,
   type PluginHostInfra,
   pluginPromptContextRegistry,

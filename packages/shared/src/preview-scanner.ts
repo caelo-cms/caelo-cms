@@ -38,7 +38,7 @@ export function listSlotNames(html: string): readonly string[] {
     {
       onopentag(name, attrs) {
         if (name !== SLOT_TAG) return;
-        names.push(attrs["name"] ?? "");
+        names.push(attrs.name ?? "");
       },
     },
     { lowerCaseTags: true, recognizeSelfClosing: false },
@@ -73,7 +73,7 @@ export function extractInnerOfTopLevelContentSlot(html: string): string | null {
       onopentag(name, attrs) {
         if (depth === 0) {
           topLevelOpens += 1;
-          if (name === SLOT_TAG && attrs["name"] === "content" && topLevelOpens === 1) {
+          if (name === SLOT_TAG && attrs.name === "content" && topLevelOpens === 1) {
             foundContentSlot = true;
             contentSlotInnerStart = parser.endIndex + 1;
           }
@@ -150,7 +150,7 @@ export function applySlotReplacements(
         if (openName !== null) {
           throw new Error(`nested <caelo-slot> not allowed (at offset ${parser.startIndex})`);
         }
-        openName = attrs["name"] ?? "";
+        openName = attrs.name ?? "";
         // `endIndex` of the opening tag points at the closing `>`; the inner
         // HTML therefore starts one byte later.
         openOpenStart = parser.startIndex;

@@ -32,19 +32,103 @@
     "structured-sets/blog-tags.json"
   ],
   "pages": [
-    { "source": "pages/index.md", "slug": "home", "template": "landing", "name": "Home", "title": "Caelo CMS — AI-first, open-source CMS" },
-    { "source": "pages/quickstart.md", "slug": "quickstart", "template": "doc-page", "name": "Quickstart", "title": "Quickstart" },
-    { "source": "pages/architecture.md", "slug": "architecture", "template": "doc-page", "name": "Architecture", "title": "Architecture overview" },
-    { "source": "pages/install-self-hosted.md", "slug": "install-self-hosted", "template": "doc-page", "name": "Install — self-hosted", "title": "Install — self-hosted" },
-    { "source": "pages/install-gcp.md", "slug": "install-gcp", "template": "doc-page", "name": "Install — GCP", "title": "Install — Google Cloud" },
-    { "source": "pages/install-aws.md", "slug": "install-aws", "template": "doc-page", "name": "Install — AWS", "title": "Install — Amazon Web Services" },
-    { "source": "pages/install-azure.md", "slug": "install-azure", "template": "doc-page", "name": "Install — Azure", "title": "Install — Microsoft Azure" },
-    { "source": "pages/admin-walkthrough.md", "slug": "admin", "template": "doc-page", "name": "Admin walkthrough", "title": "Using the admin" },
-    { "source": "pages/live-edit.md", "slug": "admin-live-edit", "template": "doc-page", "name": "Live-edit overlay", "title": "The live-edit overlay" },
-    { "source": "pages/plugins-build.md", "slug": "plugins-build", "template": "doc-page", "name": "Build a plugin", "title": "Authoring plugins (Tier 1 + Tier 2)" },
-    { "source": "pages/plugins-tier-2.md", "slug": "plugins-tier-2", "template": "doc-page", "name": "Tier 2 plugins", "title": "Tier 2 plugins (sandboxed)" },
-    { "source": "pages/mcp.md", "slug": "mcp", "template": "doc-page", "name": "MCP integration", "title": "Talk to Caelo from your IDE — MCP server" },
-    { "source": "pages/security.md", "slug": "security", "template": "doc-page", "name": "Security", "title": "Security policy + disclosure" },
-    { "source": "pages/changelog.md", "slug": "changelog", "template": "doc-page", "name": "Changelog", "title": "Changelog" }
+    {
+      "source": "pages/index.md",
+      "slug": "home",
+      "template": "landing",
+      "name": "Home",
+      "title": "Caelo CMS — AI-first, open-source CMS"
+    },
+    {
+      "source": "pages/quickstart.md",
+      "slug": "quickstart",
+      "template": "doc-page",
+      "name": "Quickstart",
+      "title": "Quickstart"
+    },
+    {
+      "source": "pages/architecture.md",
+      "slug": "architecture",
+      "template": "doc-page",
+      "name": "Architecture",
+      "title": "Architecture overview"
+    },
+    {
+      "source": "pages/install-self-hosted.md",
+      "slug": "install-self-hosted",
+      "template": "doc-page",
+      "name": "Install — self-hosted",
+      "title": "Install — self-hosted"
+    },
+    {
+      "source": "pages/install-gcp.md",
+      "slug": "install-gcp",
+      "template": "doc-page",
+      "name": "Install — GCP",
+      "title": "Install — Google Cloud"
+    },
+    {
+      "source": "pages/install-aws.md",
+      "slug": "install-aws",
+      "template": "doc-page",
+      "name": "Install — AWS",
+      "title": "Install — Amazon Web Services"
+    },
+    {
+      "source": "pages/install-azure.md",
+      "slug": "install-azure",
+      "template": "doc-page",
+      "name": "Install — Azure",
+      "title": "Install — Microsoft Azure"
+    },
+    {
+      "source": "pages/admin-walkthrough.md",
+      "slug": "admin",
+      "template": "doc-page",
+      "name": "Admin walkthrough",
+      "title": "Using the admin"
+    },
+    {
+      "source": "pages/live-edit.md",
+      "slug": "admin-live-edit",
+      "template": "doc-page",
+      "name": "Live-edit overlay",
+      "title": "The live-edit overlay"
+    },
+    {
+      "source": "pages/plugins-build.md",
+      "slug": "plugins-build",
+      "template": "doc-page",
+      "name": "Build a plugin",
+      "title": "Authoring plugins (Tier 1 + Tier 2)"
+    },
+    {
+      "source": "pages/plugins-tier-2.md",
+      "slug": "plugins-tier-2",
+      "template": "doc-page",
+      "name": "Tier 2 plugins",
+      "title": "Tier 2 plugins (sandboxed)"
+    },
+    {
+      "source": "pages/mcp.md",
+      "slug": "mcp",
+      "template": "doc-page",
+      "name": "MCP integration",
+      "title": "Talk to Caelo from your IDE — MCP server"
+    },
+    {
+      "source": "pages/security.md",
+      "slug": "security",
+      "template": "doc-page",
+      "name": "Security",
+      "title": "Security policy + disclosure"
+    },
+    {
+      "source": "pages/changelog.md",
+      "slug": "changelog",
+      "template": "doc-page",
+      "name": "Changelog",
+      "title": "Changelog"
+    }
   ]
 }

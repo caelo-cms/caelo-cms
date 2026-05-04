@@ -18,11 +18,13 @@
 
 import { startMcpServer } from "./server.js";
 
-const adminUrl = process.env["CAELO_ADMIN_URL"];
-const token = process.env["CAELO_MCP_TOKEN"];
+const adminUrl = process.env.CAELO_ADMIN_URL;
+const token = process.env.CAELO_MCP_TOKEN;
 
 if (!adminUrl) {
-  console.error("CAELO_ADMIN_URL not set — point me at your admin install (e.g. https://admin.example.com)");
+  console.error(
+    "CAELO_ADMIN_URL not set — point me at your admin install (e.g. https://admin.example.com)",
+  );
   process.exit(2);
 }
 if (!token) {

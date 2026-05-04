@@ -20,12 +20,7 @@ import { homedir } from "node:os";
 import { cancel, confirm, isCancel, log, note, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { gcloud } from "./gcloud.js";
-import {
-  installRoot,
-  type InstallMetadata,
-  readMetadata,
-  readSecret,
-} from "./install-state.js";
+import { type InstallMetadata, installRoot, readMetadata, readSecret } from "./install-state.js";
 
 /** Find the single install on this machine — or warn if 0/multiple. */
 function findActiveInstall(): { installId: string; meta: InstallMetadata } | null {
@@ -178,7 +173,9 @@ export async function backupCommand(): Promise<void> {
     s.stop(red(`Failed: ${r.stderr.trim()}`));
     return;
   }
-  s.stop(green("Backup created. List with `gcloud sql backups list --instance=caelo-production-pg`."));
+  s.stop(
+    green("Backup created. List with `gcloud sql backups list --instance=caelo-production-pg`."),
+  );
 }
 
 // =========================================================================
@@ -188,7 +185,9 @@ export async function backupCommand(): Promise<void> {
 export async function rotateSecretCommand(name: string | undefined): Promise<void> {
   if (!name) {
     log.error(red("Usage: caelo-cms rotate-secret <name>"));
-    log.warn(`Names: ${["postgres-password", "csrf-secret", "cookie-secret", "anthropic-api-key"].join(", ")}`);
+    log.warn(
+      `Names: ${["postgres-password", "csrf-secret", "cookie-secret", "anthropic-api-key"].join(", ")}`,
+    );
     process.exit(2);
   }
   const { meta } = requireInstall();

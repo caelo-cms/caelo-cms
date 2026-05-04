@@ -290,7 +290,7 @@ export const translationModeOneOp = defineOperation({
         operation: "translation.mode_1",
         message: `provider returned invalid shape: ${validated.error.issues
           .slice(0, 3)
-          .map((i) => i.path.join(".") + ": " + i.message)
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
           .join("; ")}`,
       });
     }

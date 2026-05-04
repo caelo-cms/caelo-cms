@@ -178,7 +178,8 @@ export const aggregateAiCallsOp = defineOperation({
     }>;
 
     const toUsd = (v: bigint | string | number): number => {
-      const n = typeof v === "bigint" ? Number(v) : typeof v === "string" ? Number.parseInt(v, 10) : v;
+      const n =
+        typeof v === "bigint" ? Number(v) : typeof v === "string" ? Number.parseInt(v, 10) : v;
       return n / 1e8;
     };
 
@@ -240,7 +241,12 @@ async function buildAttribution(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   since: string,
 ): Promise<
-  Array<{ kind: "plugin" | "user" | "subagent" | "system"; label: string; calls: number; costUsd: number }>
+  Array<{
+    kind: "plugin" | "user" | "subagent" | "system";
+    label: string;
+    calls: number;
+    costUsd: number;
+  }>
 > {
   const rows = (await tx.execute(sql`
     SELECT
@@ -268,7 +274,8 @@ async function buildAttribution(
     cost_microcents: bigint | string | number;
   }>;
   const toUsd = (v: bigint | string | number): number => {
-    const n = typeof v === "bigint" ? Number(v) : typeof v === "string" ? Number.parseInt(v, 10) : v;
+    const n =
+      typeof v === "bigint" ? Number(v) : typeof v === "string" ? Number.parseInt(v, 10) : v;
     return n / 1e8;
   };
   return rows.map((r) => ({

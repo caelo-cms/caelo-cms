@@ -197,11 +197,7 @@ import {
   mcpSendChatOp,
   revokeMcpTokenOp,
 } from "./ops/security/mcp_tokens.js";
-import {
-  getTelemetryOp,
-  setTelemetryOp,
-  testSendTelemetryOp,
-} from "./ops/security/telemetry.js";
+import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/security/telemetry.js";
 import {
   lookupLinksInModulesOp,
   pagesSeoAutofillOp,

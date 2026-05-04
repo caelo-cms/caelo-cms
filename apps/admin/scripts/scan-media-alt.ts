@@ -28,8 +28,8 @@ import {
 } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 
-const ADMIN_URL = process.env["ADMIN_DATABASE_URL"];
-const PUBLIC_URL = process.env["PUBLIC_ADMIN_DATABASE_URL"] ?? process.env["PUBLIC_DATABASE_URL"];
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_DATABASE_URL;
 if (!ADMIN_URL) {
   console.error("ADMIN_DATABASE_URL is required");
   process.exit(1);

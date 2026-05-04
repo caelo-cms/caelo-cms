@@ -50,7 +50,10 @@ const backupRetentionDays = Number.parseInt(cfg.get("backupRetentionDays") ?? "7
 const iapAllowlistRaw = cfg.get("iapAllowlist");
 const iapAllowlist =
   iapAllowlistRaw && iapAllowlistRaw.trim().length > 0
-    ? iapAllowlistRaw.split(",").map((s) => s.trim()).filter(Boolean)
+    ? iapAllowlistRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
     : [`user:${ownerEmail}`];
 
 const env = pulumi.getStack() as "dev" | "staging" | "production";
@@ -641,8 +644,7 @@ const tokenInfo = generateBootstrapToken();
 const dnsRecordsRequired: pulumi.Output<DnsRecord[]> = pulumi
   .all([lbIp.address, adminDomainMapping.statuses])
   .apply(([ip, statuses]) => {
-    const adminCnameTarget =
-      statuses?.[0]?.resourceRecords?.[0]?.rrdata ?? "ghs.googlehosted.com.";
+    const adminCnameTarget = statuses?.[0]?.resourceRecords?.[0]?.rrdata ?? "ghs.googlehosted.com.";
     return [
       {
         hostname: domain,

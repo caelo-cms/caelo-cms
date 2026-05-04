@@ -49,7 +49,7 @@ function parseBlocks(form: FormData): BlockSubmission[] {
   const out: BlockSubmission[] = [];
   for (const [key, value] of form.entries()) {
     const m = /^blocks\[(.+)\]$/.exec(key);
-    if (!m || !m[1]) continue;
+    if (!m?.[1]) continue;
     const moduleIds = String(value)
       .split(",")
       .map((s) => s.trim())

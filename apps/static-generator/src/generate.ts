@@ -459,7 +459,7 @@ export async function generateSite(args: {
   // manifest (always, even when CDN copy is off — manifest is empty
   // then). No-op when the build references no media at all.
   const mediaSettings = await readMediaSettings(tx);
-  const mediaRoot = resolve(root, process.env["MEDIA_ROOT_DIR"] ?? "data/media");
+  const mediaRoot = resolve(root, process.env.MEDIA_ROOT_DIR ?? "data/media");
   await runMediaPass({
     tx,
     buildDir,

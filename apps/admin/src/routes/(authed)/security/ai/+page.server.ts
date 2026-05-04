@@ -50,11 +50,10 @@ export const load: PageServerLoad = async ({ locals }) => {
       apiKeySet: envKey ? Boolean(process.env[envKey]) : false,
       keyEnv: envKey ?? null,
       model:
-        (typeof row?.config["model"] === "string" ? (row.config["model"] as string) : null) ??
+        (typeof row?.config.model === "string" ? (row.config.model as string) : null) ??
         DEFAULT_MODEL[name] ??
         "",
-      baseUrl:
-        typeof row?.config["baseUrl"] === "string" ? (row.config["baseUrl"] as string) : null,
+      baseUrl: typeof row?.config.baseUrl === "string" ? (row.config.baseUrl as string) : null,
     };
   });
 
@@ -95,7 +94,7 @@ export const actions: Actions = {
     const baseUrl = String(form.get("baseUrl") ?? "").trim();
     const isActive = form.get("isActive") === "1";
     const config: Record<string, unknown> = { model };
-    if (baseUrl) config["baseUrl"] = baseUrl;
+    if (baseUrl) config.baseUrl = baseUrl;
 
     const result = await execute(registry, adapter, locals.ctx, "ai_providers.set", {
       name,
