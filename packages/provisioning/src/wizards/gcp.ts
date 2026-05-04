@@ -51,6 +51,7 @@ import {
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
+import { pickDnsAdapter } from "../dns/index.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { pulumiUpGcp } from "./gcp-pulumi.js";
 
@@ -543,16 +544,39 @@ async function stepFinalize(installId: string): Promise<void> {
     outputs: Record<string, unknown>;
   }>(installId, upStep);
   const outputs = upPayload?.outputs ?? {};
-  const lbIp = outputs["lbIpOut"] ?? "<unknown — check pulumi outputs>";
+  const lbIp = String(outputs["lbIpOut"] ?? "");
   const bootstrapUrl = outputs["bootstrapUrlOut"] ?? "<unknown>";
-  const adminDomain = outputs["adminDomainOut"] ?? `admin.${meta.domain}`;
+  const adminDomainOut = String(outputs["adminDomainOut"] ?? `admin.${meta.domain}`);
+
+  // Auto-create DNS via Cloudflare if CLOUDFLARE_API_TOKEN is set;
+  // otherwise the manual adapter prints + verify-polls.
+  if (lbIp.length > 0 && lbIp !== "<unknown>") {
+    const stepName = `dns-${meta.projectId}`;
+    if (!isStepDone(installId, stepName)) {
+      const adapter = await pickDnsAdapter({ domain: meta.domain });
+      log.info(`DNS adapter: ${bold(adapter.name)}`);
+      try {
+        await adapter.applyRecords([
+          { hostname: meta.domain, type: "A", value: lbIp },
+          { hostname: adminDomainOut, type: "CNAME", value: "ghs.googlehosted.com." },
+        ]);
+        markStepDone(installId, stepName, { adapter: adapter.name });
+      } catch (e) {
+        log.warn(
+          yellow(
+            `DNS auto-create did not fully succeed: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        );
+        log.warn(
+          `Verify your DNS records manually + re-run ${bold("bunx @caelo-cms/provisioning")} to resume.`,
+        );
+      }
+    }
+  }
+
   note(
     [
       green(`✓ ${meta.domain} provisioned.`),
-      "",
-      bold("DNS records to paste at your registrar:"),
-      `  ${dim("A    ")} ${meta.domain.padEnd(30)} → ${bold(String(lbIp))}`,
-      `  ${dim("CNAME")} ${String(adminDomain).padEnd(30)} → ${bold("ghs.googlehosted.com.")}`,
       "",
       bold("Owner setup (open in your browser):"),
       `  ${cyan(String(bootstrapUrl))}`,
