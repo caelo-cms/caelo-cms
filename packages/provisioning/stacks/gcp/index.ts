@@ -17,6 +17,7 @@
  * Defaults: minimal-cost (~$30/mo). Operators bump knobs to scale up.
  */
 
+import * as command from "@pulumi/command";
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
@@ -332,51 +333,72 @@ new gcp.storage.BucketIAMMember(
 // Tier 2 + Tier 3 — Cloud Run services (admin + gateway only; workers share admin)
 // =========================================================================
 
-// Artifact Registry remote repository proxying ghcr.io/caelo-cms.
+// Artifact Registry standard repository — operator-owned image cache.
 // Cloud Run only accepts images from gcr.io, *.docker.pkg.dev, or
-// docker.io — direct ghcr.io URLs are rejected (HTTP 400). The remote
-// repo lazily mirrors public GHCR images on first pull, so operators
-// don't have to bake their own copies.
-const ghcrProxy = new gcp.artifactregistry.Repository(
-  `${namePrefix}-ghcr-proxy`,
+// docker.io. AR remote-repo proxies always require upstream credentials
+// even for public GHCR images (GCP constraint), which violates §11.C's
+// one-command contract. Instead, the wizard copies the public GHCR
+// images into THIS standard repo via `gcloud artifacts docker images
+// copy` (no auth needed for the public source) at provision time, and
+// Cloud Run pulls from here. Same pattern works on AWS (ECR) + Azure
+// (ACR) — every cloud's adapter copies the canonical public images
+// into the operator's own registry once during provisioning.
+const imagesRepo = new gcp.artifactregistry.Repository(
+  `${namePrefix}-images`,
   {
     location: region,
-    repositoryId: `${namePrefix}-ghcr-proxy`,
+    repositoryId: `${namePrefix}-images`,
     format: "DOCKER",
-    mode: "REMOTE_REPOSITORY",
-    description: "Caelo CMS — read-through proxy for ghcr.io/caelo-cms images",
-    remoteRepositoryConfig: {
-      description: "ghcr.io/caelo-cms public mirror",
-      dockerRepository: {
-        customRepository: { uri: "https://ghcr.io" },
-      },
-    },
+    mode: "STANDARD_REPOSITORY",
+    description: "Caelo CMS — operator-owned cache of admin + gateway images",
   },
   opts,
 );
 
 // Cloud Run service account needs read access to pull from AR.
 new gcp.artifactregistry.RepositoryIamMember(
-  `${namePrefix}-ghcr-proxy-puller`,
+  `${namePrefix}-images-puller`,
   {
     location: region,
-    repository: ghcrProxy.repositoryId,
+    repository: imagesRepo.repositoryId,
     role: "roles/artifactregistry.reader",
     member: pulumi.interpolate`serviceAccount:${runSa.email}`,
   },
   opts,
 );
 
+// Copy admin + gateway images from public GHCR into the operator's AR
+// repo. Runs locally on the wizard machine (which has gcloud auth).
+// `triggers` includes the source tag so re-runs with a different tag
+// re-execute the copy. Cloud Run services depend on these so they wait
+// for the images to land before trying to deploy.
+const imageTagSource = cfg.get("image-tag") ?? "main";
+
+function copyImage(service: string): command.local.Command {
+  const dest = pulumi.interpolate`${region}-docker.pkg.dev/${project}/${imagesRepo.repositoryId}/${service}:${imageTagSource}`;
+  return new command.local.Command(
+    `${namePrefix}-copy-${service}`,
+    {
+      create: pulumi.interpolate`gcloud artifacts docker images copy ghcr.io/caelo-cms/${service}:${imageTagSource} ${dest} --quiet --project=${project}`,
+      triggers: [pulumi.output(imageTagSource), imagesRepo.id],
+    },
+    { ...opts, dependsOn: [imagesRepo] },
+  );
+}
+
+const adminImageCopy = copyImage("admin");
+const gatewayImageCopy = copyImage("gateway");
+
 function imageTag(service: string): pulumi.Output<string> {
   // §11.C: pre-built signed images on a public registry are the
-  // contract. The remote repo above proxies ghcr.io/caelo-cms; Cloud
-  // Run pulls via <region>-docker.pkg.dev/<project>/<repo>/caelo-cms/<service>:main.
+  // contract; the wizard copies them into the operator's own AR. Cloud
+  // Run pulls from <region>-docker.pkg.dev/<project>/<repo>/<service>:<tag>.
   // Operators override per-stack via
   // `pulumi config set caelo-gcp:image-<service> <full-tag>` to pin a
-  // specific revision or point at a different registry.
+  // different image source entirely.
   const override = cfg.get(`image-${service}`);
   if (override) return pulumi.output(override);
-  return pulumi.interpolate`${region}-docker.pkg.dev/${project}/${ghcrProxy.repositoryId}/caelo-cms/${service}:main`;
+  return pulumi.interpolate`${region}-docker.pkg.dev/${project}/${imagesRepo.repositoryId}/${service}:${imageTagSource}`;
 }
 
 interface CloudRunArgs {
@@ -388,6 +410,9 @@ interface CloudRunArgs {
 }
 
 function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
+  // Wait for the matching image to be copied into AR before Cloud Run
+  // tries to pull it (otherwise we hit "image not found").
+  const imageCopy = args.serviceName === "admin" ? adminImageCopy : gatewayImageCopy;
   return new gcp.cloudrunv2.Service(
     `${namePrefix}-${args.serviceName}`,
     {
@@ -432,7 +457,10 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         },
       },
     },
-    { ...opts, dependsOn: [pgAdminUser, cmsAdminDb, cmsPublicDb, pgSecret.version] },
+    {
+      ...opts,
+      dependsOn: [pgAdminUser, cmsAdminDb, cmsPublicDb, pgSecret.version, imageCopy],
+    },
   );
 }
 
