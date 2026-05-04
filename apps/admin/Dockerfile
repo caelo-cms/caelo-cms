@@ -69,7 +69,7 @@ RUN set -e && \
     mkdir -p /tmp/native-bin && cd /tmp/native-bin && \
     npm install --no-save --no-package-lock \
       @oxc-parser/binding-linux-x64-gnu@0.128.0 \
-      @rolldown/binding-linux-x64-gnu@1.0.0 \
+      @rolldown/binding-linux-x64-gnu@1.0.0-rc.17 \
       @rollup/rollup-linux-x64-gnu@4.60.2 \
       @tailwindcss/oxide-linux-x64-gnu@4.2.4 \
       lightningcss-linux-x64-gnu@1.32.0 && \
