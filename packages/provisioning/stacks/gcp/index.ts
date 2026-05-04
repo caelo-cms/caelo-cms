@@ -332,41 +332,29 @@ new gcp.storage.BucketIAMMember(
 // Tier 2 + Tier 3 — Cloud Run services (admin + gateway only; workers share admin)
 // =========================================================================
 
-// Artifact Registry repo for admin + gateway images. The repo + the
-// image copy from public GHCR are handled by the WIZARD (gcloud-based)
-// before this stack runs, because (a) Cloud Run requires images to
-// exist at create time and (b) AR remote-repo proxies always need
-// upstream creds even for public GHCR (GCP constraint) which violates
-// §11.C. The IAM binding + the image URL still live here so Pulumi
-// owns the run-side wiring.
+// §11.C: pre-built signed images on a public registry are the contract.
+// The Caelo team publishes admin + gateway images to a public-pull AR
+// repo at `europe-west1-docker.pkg.dev/<CAELO_PUBLIC_REGISTRY_PROJECT>
+// /caelo-cms-images/<service>:<tag>`. Cloud Run reads it directly with
+// no operator-side IAM binding (the repo's allUsers role grants
+// anonymous pull). No per-install image copy, no operator-owned AR
+// repo, no wizard step. Same shape per provider — AWS reads
+// `public.ecr.aws/caelo-cms/...`, Azure reads the team-controlled ACR.
 //
-// Repo name is fixed (`<namePrefix>-images`) — the wizard's
-// stepCreateImagesRepo creates it with the same name.
-const imagesRepoId = `${namePrefix}-images`;
+// Default points at the Caelo-team-managed registry. Operators who want
+// to pull from their own copy override per-stack via
+// `pulumi config set caelo-gcp:image-<service> <full-tag>` or
+// `pulumi config set caelo-gcp:public-registry-project <other-project>`.
+const publicRegistryProject = cfg.get("public-registry-project") ?? "caelo-website";
+const publicRegistryRegion = cfg.get("public-registry-region") ?? "europe-west1";
+const publicRegistryRepo = cfg.get("public-registry-repo") ?? "caelo-cms-images";
 const imageTagSource = cfg.get("image-tag") ?? "main";
 
-new gcp.artifactregistry.RepositoryIamMember(
-  `${namePrefix}-images-puller`,
-  {
-    location: region,
-    repository: imagesRepoId,
-    role: "roles/artifactregistry.reader",
-    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
-  },
-  opts,
-);
-
 function imageTag(service: string): pulumi.Output<string> {
-  // §11.C: pre-built signed images on a public registry are the
-  // contract; the wizard copies them into the operator's own AR. Cloud
-  // Run pulls from <region>-docker.pkg.dev/<project>/<repo>/<service>:<tag>.
-  // Operators override per-stack via
-  // `pulumi config set caelo-gcp:image-<service> <full-tag>` to pin a
-  // different image source entirely.
   const override = cfg.get(`image-${service}`);
   if (override) return pulumi.output(override);
   return pulumi.output(
-    `${region}-docker.pkg.dev/${project}/${imagesRepoId}/${service}:${imageTagSource}`,
+    `${publicRegistryRegion}-docker.pkg.dev/${publicRegistryProject}/${publicRegistryRepo}/${service}:${imageTagSource}`,
   );
 }
 

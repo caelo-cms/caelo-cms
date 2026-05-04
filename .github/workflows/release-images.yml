@@ -12,8 +12,13 @@
 # upstream (https://github.com/oven-sh/bun/issues/15044).
 #
 # CLAUDE.md §11.C: end-users never build these images. They consume
-# `ghcr.io/caelo-cms/admin:<tag>` + `ghcr.io/caelo-cms/gateway:<tag>`
-# directly via the provisioning CLI.
+# pre-built mirrors per provider:
+#   - GHCR (ghcr.io/caelo-cms/<service>) — canonical, used by Compose.
+#   - GCP public AR (europe-west1-docker.pkg.dev/caelo-website/
+#     caelo-cms-images/<service>) — Cloud Run rejects ghcr.io directly.
+#   - AWS public ECR + Azure ACR will land alongside the P15 cloud
+#     adapters; same pattern (workflow pushes once per release; stack
+#     references the public URL).
 
 name: release-images
 
@@ -119,3 +124,38 @@ jobs:
           cosign verify "${IMAGE}@${DIGEST}" \
             --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/release-images.yml@.*" \
             --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+
+      # ──────────────────────────────────────────────────────────────
+      # GCP public AR mirror — Cloud Run accepts *.docker.pkg.dev only.
+      # Skipped if no WIF credential is configured (forks / first-run
+      # before Caelo team sets up the mirror project).
+      # ──────────────────────────────────────────────────────────────
+      - name: Authenticate to GCP via Workload Identity Federation
+        if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PUBLIC_REGISTRY_SA_EMAIL }}
+
+      - name: Configure docker for GCP AR push
+        if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        run: gcloud auth configure-docker ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}-docker.pkg.dev --quiet
+
+      - name: Mirror image to GCP public AR
+        if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          GHCR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}
+          AR_REGION: ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}
+          AR_PROJECT: ${{ vars.GCP_PUBLIC_REGISTRY_PROJECT || 'caelo-website' }}
+          AR_REPO: ${{ vars.GCP_PUBLIC_REGISTRY_REPO || 'caelo-cms-images' }}
+        run: |
+          # Push the same tags the GHCR image carries to the AR mirror.
+          # Both registries serve identical bytes (same digest).
+          AR_BASE="${AR_REGION}-docker.pkg.dev/${AR_PROJECT}/${AR_REPO}/${{ matrix.service }}"
+          for tag in $(echo "${{ steps.meta.outputs.tags }}" | tr ',' ' '); do
+            short_tag="${tag##*:}"
+            docker pull "${GHCR_IMAGE}@${DIGEST}"
+            docker tag  "${GHCR_IMAGE}@${DIGEST}" "${AR_BASE}:${short_tag}"
+            docker push "${AR_BASE}:${short_tag}"
+          done
