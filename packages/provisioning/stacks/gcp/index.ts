@@ -332,15 +332,51 @@ new gcp.storage.BucketIAMMember(
 // Tier 2 + Tier 3 — Cloud Run services (admin + gateway only; workers share admin)
 // =========================================================================
 
-function imageTag(service: string): string {
+// Artifact Registry remote repository proxying ghcr.io/caelo-cms.
+// Cloud Run only accepts images from gcr.io, *.docker.pkg.dev, or
+// docker.io — direct ghcr.io URLs are rejected (HTTP 400). The remote
+// repo lazily mirrors public GHCR images on first pull, so operators
+// don't have to bake their own copies.
+const ghcrProxy = new gcp.artifactregistry.Repository(
+  `${namePrefix}-ghcr-proxy`,
+  {
+    location: region,
+    repositoryId: `${namePrefix}-ghcr-proxy`,
+    format: "DOCKER",
+    mode: "REMOTE_REPOSITORY",
+    description: "Caelo CMS — read-through proxy for ghcr.io/caelo-cms images",
+    remoteRepositoryConfig: {
+      description: "ghcr.io/caelo-cms public mirror",
+      dockerRepository: {
+        customRepository: { uri: "https://ghcr.io" },
+      },
+    },
+  },
+  opts,
+);
+
+// Cloud Run service account needs read access to pull from AR.
+new gcp.artifactregistry.RepositoryIamMember(
+  `${namePrefix}-ghcr-proxy-puller`,
+  {
+    location: region,
+    repository: ghcrProxy.repositoryId,
+    role: "roles/artifactregistry.reader",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+
+function imageTag(service: string): pulumi.Output<string> {
   // §11.C: pre-built signed images on a public registry are the
-  // contract. Default to ghcr.io/caelo-cms/<service>:main for the
-  // v0.1 dogfood; tagged releases (v0.1.x) ship the same images at
-  // :<version> + :latest. Operators override per-stack via
-  // `pulumi config set caelo-gcp:image-<service> <tag>` to pin a
-  // specific revision, or to point at an Artifact Registry copy
-  // if they don't want to consume from the public GHCR.
-  return cfg.get(`image-${service}`) ?? `ghcr.io/caelo-cms/${service}:main`;
+  // contract. The remote repo above proxies ghcr.io/caelo-cms; Cloud
+  // Run pulls via <region>-docker.pkg.dev/<project>/<repo>/caelo-cms/<service>:main.
+  // Operators override per-stack via
+  // `pulumi config set caelo-gcp:image-<service> <full-tag>` to pin a
+  // specific revision or point at a different registry.
+  const override = cfg.get(`image-${service}`);
+  if (override) return pulumi.output(override);
+  return pulumi.interpolate`${region}-docker.pkg.dev/${project}/${ghcrProxy.repositoryId}/caelo-cms/${service}:main`;
 }
 
 interface CloudRunArgs {

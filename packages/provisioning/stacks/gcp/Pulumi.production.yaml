@@ -1,0 +1,14 @@
+encryptionsalt: v1:mEv+SGjVDdU=:v1:1Tmd1g2Yh0KXxhp5:fGsA3LiAPntjAGUMORKO+B1gxQgIEg==
+config:
+  caelo-gcp:adminMinInstances: "0"
+  caelo-gcp:anthropicApiKey:
+    secure: v1:jvXWb48m/OlI+L+f:oPSxzgJDUFXRFx1M1DH1qFxX4dactR//mCqzdCp1Za1msEuYuMVxt9XfqAGMjNy4/Z69RY6mnhI2sPmrK7RDIVdqMNs4TWf8aiMAKfFBqGcKxwyMGXsF4A4mmuurola0u99WgGk/FNBqzBiW6ymHdHM3yCeUAvwYnYYz3w==
+  caelo-gcp:cloudSqlHa: "false"
+  caelo-gcp:cloudSqlTier: db-f1-micro
+  caelo-gcp:domain: caelo-cms.com
+  caelo-gcp:gatewayMinInstances: "0"
+  caelo-gcp:iapAllowlist: user:michael@searchviu.com
+  caelo-gcp:ownerEmail: michael@searchviu.com
+  caelo-gcp:project: caelo-website
+  caelo-gcp:region: europe-west1
+  caelo-gcp:wafAdaptiveProtection: "false"
