@@ -32,7 +32,10 @@ export interface RedirectRow {
  * defend their own contract.
  */
 function assertPathClean(label: "fromPath" | "toPath", path: string): void {
-  if (/[\s\x00-\x1f]/.test(path)) {
+  // \p{Cc} matches the Unicode control category (U+0000–U+001F + U+007F–U+009F);
+  // the linter rejects literal \x00-\x1f ranges in regex, but the intent — defending
+  // emitter contracts against control chars — is the explicit reason for this check.
+  if (/[\s\p{Cc}]/u.test(path)) {
     throw new Error(
       `redirects-emit: ${label}=${JSON.stringify(path)} contains whitespace or control chars; reject upstream`,
     );

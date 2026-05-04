@@ -111,7 +111,7 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
       model: cfg.imageModel,
       baseUrl: cfg.baseUrl,
     });
-    let result;
+    let result: Awaited<ReturnType<typeof provider.generate>>;
     try {
       result = await provider.generate({
         prompt: input.prompt,

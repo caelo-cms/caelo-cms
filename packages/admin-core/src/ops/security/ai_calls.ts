@@ -99,7 +99,13 @@ export const aggregateAiCallsOp = defineOperation({
       cached_tokens: number;
       cost_microcents: number | string | bigint;
     }[];
-    const t = totalsRows[0]!;
+    const t = totalsRows[0] ?? {
+      calls: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cached_tokens: 0,
+      cost_microcents: 0,
+    };
     const totalsCostMicrocents =
       typeof t.cost_microcents === "bigint"
         ? Number(t.cost_microcents)

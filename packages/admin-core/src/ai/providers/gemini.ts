@@ -33,6 +33,27 @@ interface GeminiProviderOptions {
   readonly fetchImpl?: typeof fetch;
 }
 
+interface GeminiPart {
+  text?: string;
+  functionCall?: { name: string; args?: Record<string, unknown> };
+}
+
+interface GeminiCandidate {
+  content?: { parts?: GeminiPart[] };
+  finishReason?: string;
+}
+
+interface GeminiUsageMetadata {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  cachedContentTokenCount?: number;
+}
+
+interface GeminiStreamChunk {
+  candidates?: GeminiCandidate[];
+  usageMetadata?: GeminiUsageMetadata;
+}
+
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 
 export class GeminiProvider implements AIProvider {
@@ -113,9 +134,9 @@ export class GeminiProvider implements AIProvider {
         if (!line.startsWith("data: ")) continue;
         const data = line.slice(6).trim();
         if (!data) continue;
-        let parsed: any;
+        let parsed: GeminiStreamChunk;
         try {
-          parsed = JSON.parse(data);
+          parsed = JSON.parse(data) as GeminiStreamChunk;
         } catch {
           continue;
         }

@@ -32,11 +32,14 @@ export const actions: Actions = {
     const blockDisplayNames = form.getAll("blockDisplayName").map((v) => String(v).trim());
     const blockPositions = form.getAll("blockPosition").map((v) => Number.parseInt(String(v), 10));
 
-    const blocks = blockNames.map((name, i) => ({
-      name,
-      displayName: blockDisplayNames[i] || name,
-      position: Number.isFinite(blockPositions[i]) ? blockPositions[i]! : i,
-    }));
+    const blocks = blockNames.map((name, i) => {
+      const pos = blockPositions[i];
+      return {
+        name,
+        displayName: blockDisplayNames[i] || name,
+        position: typeof pos === "number" && Number.isFinite(pos) ? pos : i,
+      };
+    });
 
     if (blocks.length === 0) {
       return fail(400, {

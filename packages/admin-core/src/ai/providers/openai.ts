@@ -39,6 +39,27 @@ interface OpenAiProviderOptions {
   readonly trustAuth?: boolean;
 }
 
+interface OpenAiStreamChoice {
+  delta?: {
+    content?: string;
+    tool_calls?: Array<{
+      index: number;
+      id?: string;
+      function?: { name?: string; arguments?: string };
+    }>;
+  };
+  finish_reason?: string;
+}
+
+interface OpenAiStreamChunk {
+  choices?: OpenAiStreamChoice[];
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
+}
+
 const DEFAULT_BASE_URL = "https://api.openai.com";
 
 export class OpenAiProvider implements AIProvider {
@@ -114,22 +135,18 @@ export class OpenAiProvider implements AIProvider {
         if (!line.startsWith("data: ")) continue;
         const data = line.slice(6).trim();
         if (data === "[DONE]") continue;
-        let parsed: any;
+        let parsed: OpenAiStreamChunk;
         try {
-          parsed = JSON.parse(data);
+          parsed = JSON.parse(data) as OpenAiStreamChunk;
         } catch {
           continue;
         }
         const choice = parsed.choices?.[0];
         if (choice?.delta?.content) {
-          yield { kind: "text-delta", text: choice.delta.content as string };
+          yield { kind: "text-delta", text: choice.delta.content };
         }
         if (choice?.delta?.tool_calls) {
-          for (const tc of choice.delta.tool_calls as Array<{
-            index: number;
-            id?: string;
-            function?: { name?: string; arguments?: string };
-          }>) {
+          for (const tc of choice.delta.tool_calls) {
             const slot = toolCallAccum.get(tc.index) ?? { id: "", name: "", argsJson: "" };
             if (tc.id) slot.id = tc.id;
             if (tc.function?.name) slot.name = tc.function.name;

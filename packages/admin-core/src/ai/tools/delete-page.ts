@@ -68,9 +68,16 @@ export const deletePageTool: ToolDefinitionWithHandler<
           content: "page deleted but old path could not be resolved — redirect not created",
         };
       }
+      const redirectTo = input.redirectTo;
+      if (!redirectTo) {
+        return {
+          ok: false,
+          content: "redirect disposition requires `redirectTo` — page deleted, no redirect created",
+        };
+      }
       const red = await execute(toolCtx.registry, toolCtx.adapter, ctx, "redirects.create", {
         fromPath: oldPath,
-        toPath: input.redirectTo!,
+        toPath: redirectTo,
         statusCode: 301,
       });
       if (!red.ok)
@@ -80,7 +87,7 @@ export const deletePageTool: ToolDefinitionWithHandler<
         };
       return {
         ok: true,
-        content: `page ${input.pageId} deleted; 301 ${oldPath} → ${input.redirectTo}`,
+        content: `page ${input.pageId} deleted; 301 ${oldPath} → ${redirectTo}`,
       };
     }
     return {

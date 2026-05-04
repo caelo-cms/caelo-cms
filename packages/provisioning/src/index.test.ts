@@ -31,10 +31,11 @@ describe("Caddyfile generator", () => {
     expect(out).toContain("staging.example.com {");
     expect(out).toContain("admin.example.com {");
     // Staging gets noindex.
-    const stagingBlock = out.match(/staging\.example\.com \{[^]*?\n\}/)?.[0] ?? "";
+    const stagingBlock = out.match(/staging\.example\.com \{[\s\S]*?\n\}/)?.[0] ?? "";
     expect(stagingBlock).toContain('X-Robots-Tag "noindex"');
     // Production does NOT get noindex.
-    const productionBlock = out.match(/(?<!staging\.|admin\.)example\.com \{[^]*?\n\}/)?.[0] ?? "";
+    const productionBlock =
+      out.match(/(?<!staging\.|admin\.)example\.com \{[\s\S]*?\n\}/)?.[0] ?? "";
     expect(productionBlock).not.toContain('X-Robots-Tag "noindex"');
   });
 
