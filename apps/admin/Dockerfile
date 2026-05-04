@@ -46,18 +46,21 @@ COPY packages/plugins/auth/package.json packages/plugins/auth/
 # native bindings as optionalDependencies; on Linux x64 build platforms
 # Bun fails to install @rollup/rollup-linux-x64-gnu, and the build
 # crashes with "Cannot find native binding". Workaround: explicitly add
-# the binary after the workspace install. Gateway image is unaffected
+# the binary at the repo root (where Vite/Rollup are hoisted by the
+# workspace install) after the main install. Gateway image is unaffected
 # (no Vite/Rollup).
 RUN bun install
-RUN cd apps/admin && bun add --no-save @rollup/rollup-linux-x64-gnu@^4
+RUN bun add --no-save @rollup/rollup-linux-x64-gnu@^4
 
 # Now the source. Subsequent rebuilds with code-only changes hit the
 # cached install layer and skip ~800 npm installs.
 COPY . .
 
-# Build the SvelteKit admin via the Bun adapter. Output lands at
-# apps/admin/build/index.js + assets.
-RUN bun run --filter=@caelo-cms/admin build
+# Build the SvelteKit admin. Run vite directly (not via `bun --bun`)
+# so Bun's JIT doesn't emit instructions that GitHub Actions runner
+# CPUs reject with SIGILL. Output lands at apps/admin/build/index.js +
+# assets via svelte-adapter-bun.
+RUN cd apps/admin && bun x svelte-kit sync && bun x vite build
 
 # ---------------------------------------------------------------------------
 # Runtime stage — minimal Bun base + only what the admin needs at runtime.
