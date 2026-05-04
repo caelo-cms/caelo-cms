@@ -50,13 +50,20 @@ COPY packages/plugins/auth/package.json packages/plugins/auth/
 RUN bun install
 
 # Patch up the missing Rollup native binding via npm. npm correctly
-# installs transitive optionalDependencies (Bun's gap, oven-sh/bun#14918).
-# `--prefix .` keeps the install scoped to the workspace root; --no-save
-# avoids touching package.json; --legacy-peer-deps avoids the workspace
-# protocol confusing npm.
-RUN cd apps/admin && \
-    npm install --no-save --no-package-lock --legacy-peer-deps \
-      @rollup/rollup-linux-x64-gnu
+# installs the binary; Bun's transitive-optionalDependencies gap
+# (oven-sh/bun#14918) drops it. We run npm in an isolated /tmp dir so
+# it doesn't see the workspace's `workspace:*` protocol (which npm
+# rejects), then copy the resulting @rollup/<binding> into the place
+# Vite/Rollup look (apps/admin/node_modules/@rollup/).
+RUN ROLLUP_VERSION=$(grep '@rollup/rollup-linux-x64-gnu@' bun.lock | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && \
+    test -n "${ROLLUP_VERSION}" && \
+    mkdir -p /tmp/rollup-bin && \
+    cd /tmp/rollup-bin && \
+    npm install --no-save --no-package-lock @rollup/rollup-linux-x64-gnu@${ROLLUP_VERSION} && \
+    mkdir -p /repo/apps/admin/node_modules/@rollup && \
+    cp -r /tmp/rollup-bin/node_modules/@rollup/rollup-linux-x64-gnu /repo/apps/admin/node_modules/@rollup/ && \
+    echo "Installed @rollup/rollup-linux-x64-gnu@${ROLLUP_VERSION}" && \
+    ls /repo/apps/admin/node_modules/@rollup/rollup-linux-x64-gnu/
 
 # Now the source.
 COPY . .
