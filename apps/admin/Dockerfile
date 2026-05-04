@@ -51,7 +51,9 @@ RUN bun install
 # `vite build` path needs the binary. Workaround: pin to the version
 # resolved in bun.lock and fetch the tgz directly into the apps/admin
 # nested node_modules where Bun installs Vite.
-RUN ROLLUP_VERSION=$(grep -m 1 '"@rollup/rollup-linux-x64-gnu":' bun.lock | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && \
+RUN ROLLUP_VERSION=$(grep '@rollup/rollup-linux-x64-gnu@' bun.lock | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && \
+    test -n "${ROLLUP_VERSION}" || (echo "could not parse rollup version from bun.lock" && exit 1) && \
+    echo "Resolving Rollup native binding @${ROLLUP_VERSION}" && \
     BIN_PKG=@rollup/rollup-linux-x64-gnu && \
     BIN_DIR=apps/admin/node_modules/${BIN_PKG} && \
     mkdir -p "${BIN_DIR}" && \
