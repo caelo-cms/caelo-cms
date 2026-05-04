@@ -69,10 +69,26 @@ RUN ROLLUP_VERSION=$(grep '@rollup/rollup-linux-x64-gnu@' bun.lock | grep -oE '[
 # Now the source.
 COPY . .
 
-# Build under Bun's runtime (`bun --bun`) so the `bun` virtual import
-# resolves at SSR build time. We're inside oven/bun:1.3 on linux/amd64,
-# so the SIGILL we saw on GitHub Actions runners doesn't apply here.
-RUN cd apps/admin && bun --bun vite build
+# Several runtime packages (query-api/adapter.ts, admin-core/media/storage.ts)
+# import from Bun's virtual `bun` module (SQL, Glob). At runtime under Bun
+# this resolves natively. At build time, when svelte-adapter-bun spawns a
+# Worker to inspect the SSR chunks under Node, those bare `import "bun"`
+# statements crash the Worker. Drop a no-op stub in node_modules/bun so
+# Node's resolver finds something; Bun's runtime ignores node_modules/bun
+# in favour of its built-in virtual module, so production behaviour is
+# unchanged.
+RUN mkdir -p /repo/node_modules/bun && \
+    printf '{"name":"bun","version":"0.0.0-stub","type":"module","main":"index.js"}\n' \
+      > /repo/node_modules/bun/package.json && \
+    printf 'const stub = () => { throw new Error("bun stub: should never be called outside Bun runtime"); };\nexport const SQL = stub;\nexport const Glob = stub;\nexport default {};\n' \
+      > /repo/node_modules/bun/index.js
+
+# Build with `bun x vite build` (Node-style invocation, no Bun JIT).
+# Bun's JIT under Docker amd64 here SIGILLs the same way it does on
+# GitHub Actions runners — same Bun binary, same CPU baseline. Going
+# through `bun x` runs vite as a normal subprocess that interprets its
+# JS via Node-compatible execution.
+RUN cd apps/admin && bun x vite build
 
 # ---------------------------------------------------------------------------
 # Runtime stage
