@@ -473,29 +473,80 @@ async function stepCopyImages(
   }
   sCheck.stop(green(`AR repo ready: ${region}/${repoId}`));
 
+  // Configure docker to authenticate against the AR host. Idempotent.
+  const sAuth = spinner();
+  sAuth.start(`Configuring docker auth for ${region}-docker.pkg.dev...`);
+  const auth = await gcloud([
+    "auth",
+    "configure-docker",
+    `${region}-docker.pkg.dev`,
+    "--quiet",
+  ]);
+  if (!auth.ok) {
+    sAuth.stop(red(`docker auth config failed: ${auth.stderr.trim()}`));
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  sAuth.stop(green(`docker auth configured`));
+
+  // Pull from public GHCR + retag + push to AR. We do this with local
+  // docker because `gcloud artifacts docker images copy` was removed
+  // from gcloud SDK in late 2025 (it now lives in the `crane` Go tool
+  // GCP doesn't ship). Local docker is universally available; the OSS
+  // installer doc lists Docker Desktop as a prereq for non-Compose
+  // installs.
   for (const service of services) {
+    const src = `ghcr.io/caelo-cms/${service}:${tag}`;
     const dest = `${region}-docker.pkg.dev/${projectId}/${repoId}/${service}:${tag}`;
     const sCopy = spinner();
-    sCopy.start(`Copying ghcr.io/caelo-cms/${service}:${tag} → ${dim(dest)}`);
-    const r = await gcloud([
-      "artifacts",
-      "docker",
-      "images",
-      "copy",
-      `ghcr.io/caelo-cms/${service}:${tag}`,
-      dest,
-      "--quiet",
-      "--project",
-      projectId,
-    ]);
-    if (!r.ok) {
-      sCopy.stop(red(`Image copy failed: ${r.stderr.trim()}`));
+    sCopy.start(`Pulling ${src}...`);
+    const pull = await runShell("docker", ["pull", "--platform", "linux/amd64", src]);
+    if (!pull.ok) {
+      sCopy.stop(red(`docker pull failed: ${pull.stderr.trim()}`));
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    sCopy.message(`Tagging → ${dim(dest)}`);
+    const tagR = await runShell("docker", ["tag", src, dest]);
+    if (!tagR.ok) {
+      sCopy.stop(red(`docker tag failed: ${tagR.stderr.trim()}`));
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    sCopy.message(`Pushing ${service} → AR...`);
+    const push = await runShell("docker", ["push", dest]);
+    if (!push.ok) {
+      sCopy.stop(red(`docker push failed: ${push.stderr.trim()}`));
       cancel("Aborted.");
       process.exit(1);
     }
     sCopy.stop(green(`Copied ${service}`));
   }
   markStepDone(installId, stepName, { repoId, services });
+}
+
+async function runShell(
+  cmd: string,
+  args: string[],
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const { spawn } = await import("node:child_process");
+  return await new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => {
+      stdout += d.toString();
+    });
+    child.stderr.on("data", (d) => {
+      stderr += d.toString();
+    });
+    child.on("error", (err) => {
+      resolve({ ok: false, stdout, stderr: err.message });
+    });
+    child.on("close", (code) => {
+      resolve({ ok: code === 0, stdout, stderr });
+    });
+  });
 }
 
 async function stepAnthropicKey(installId: string, nonInteractive: boolean): Promise<string> {
