@@ -552,39 +552,18 @@ const adminNeg = new gcp.compute.RegionNetworkEndpointGroup(
   opts,
 );
 
-// IAP needs an OAuth client. Use the GCP-managed brand + autocreated
-// OAuth client; operators don't have to configure anything in the
-// OAuth consent screen for internal-org / single-user installs.
-const iapBrand = new gcp.iap.Brand(
-  `${namePrefix}-iap-brand`,
-  {
-    project,
-    supportEmail: ownerEmail,
-    applicationTitle: `Caelo CMS — ${domain}`,
-  },
-  opts,
-);
-
-const iapClient = new gcp.iap.Client(
-  `${namePrefix}-iap-client`,
-  {
-    displayName: `Caelo CMS admin — ${domain}`,
-    brand: iapBrand.name,
-  },
-  opts,
-);
-
+// Google-managed IAP: enabled=true with no OAuth client/secret means
+// IAP auto-provisions and manages the OAuth credentials internally.
+// The classic gcp.iap.Brand + Client resources are deprecated (the IAP
+// OAuth Admin API shuts down March 19, 2026); Google-managed IAP is
+// the documented replacement and Just Works for new projects.
 const adminBackendService = new gcp.compute.BackendService(
   `${namePrefix}-admin-backend`,
   {
     protocol: "HTTPS",
     backends: [{ group: adminNeg.id }],
     loadBalancingScheme: "EXTERNAL_MANAGED",
-    iap: {
-      enabled: true,
-      oauth2ClientId: iapClient.clientId,
-      oauth2ClientSecret: iapClient.secret,
-    },
+    iap: { enabled: true },
   },
   opts,
 );
