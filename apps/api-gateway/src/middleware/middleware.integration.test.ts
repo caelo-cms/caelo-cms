@@ -211,7 +211,15 @@ describe("captcha (PoW)", () => {
   });
 
   it("rejects a wrong nonce", async () => {
-    const challenge = await issuePowChallenge(adapter, { config, visitorIdHash });
+    // Use a strict 6-char target prefix so the chance of a random
+    // nonce accidentally satisfying it is ~1/16M. The trivial "0"
+    // prefix from the surrounding suite would otherwise let a fixed
+    // wrong nonce pass roughly 6% of CI runs.
+    const strictConfig = { provider: "pow" as const, powTargetPrefix: "abcdef" };
+    const challenge = await issuePowChallenge(adapter, {
+      config: strictConfig,
+      visitorIdHash,
+    });
     const r = await verifyPowProof(adapter, {
       challenge: challenge.challenge,
       nonce: "definitely-wrong-zz",
