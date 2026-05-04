@@ -36,6 +36,11 @@ const cloudSqlHa = cfg.getBoolean("cloudSqlHa") ?? false;
 // installs ENTERPRISE is the right call; production-traffic operators can
 // flip to PLUS for the IOPS + sub-second failover.
 const cloudSqlEdition = cfg.get("cloudSqlEdition") ?? "ENTERPRISE";
+// CLAUDE.md §11.C: defaults are minimal-cost + easy-to-tear-down.
+// Operators flip deletionProtection ON for production deploys; the
+// opt-in shape is safer than the opt-out (a fresh-install user who
+// wants to `caelo-cms destroy` shouldn't hit a wall).
+const deletionProtection = cfg.getBoolean("deletionProtection") ?? false;
 const adminMinInstances = Number.parseInt(cfg.get("adminMinInstances") ?? "0", 10);
 const gatewayMinInstances = Number.parseInt(cfg.get("gatewayMinInstances") ?? "0", 10);
 const wafAdaptiveProtection = cfg.getBoolean("wafAdaptiveProtection") ?? false;
@@ -177,9 +182,9 @@ const sqlInstance = new gcp.sql.DatabaseInstance(
         ipv4Enabled: false,
         privateNetwork: network.id,
       },
-      deletionProtectionEnabled: env === "production",
+      deletionProtectionEnabled: deletionProtection,
     },
-    deletionProtection: env === "production",
+    deletionProtection,
   },
   { ...opts, dependsOn: [sqlPeering] },
 );
@@ -351,6 +356,12 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         args.serviceName === "admin"
           ? "INGRESS_TRAFFIC_ALL"
           : "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER",
+      // Cloud Run defaults deletionProtection=true, which blocks
+      // `pulumi destroy` until the field is flipped + a separate up
+      // applies the change. We default to false (operator-friendly
+      // teardown); production deploys flip the `deletionProtection`
+      // config knob to true.
+      deletionProtection,
       template: {
         serviceAccount: runSa.email,
         scaling: {

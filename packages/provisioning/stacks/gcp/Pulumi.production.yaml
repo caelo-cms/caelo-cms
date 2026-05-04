@@ -1,8 +1,0 @@
-encryptionsalt: v1:OSib1xwMvUI=:v1:w9m84cyCwi6wX5FI:MVTngP3muj5T5JL+P5plzWF+9ICeKw==
-config:
-  caelo-gcp:project: caelo-cms-docs
-  caelo-gcp:domain: caelo-cms.com
-  caelo-gcp:ownerEmail: michael@searchviu.com
-  caelo-gcp:region: europe-west1
-  caelo-gcp:anthropicApiKey:
-    secure: v1:/h9UmMrP1A1RffW7:OsZvjBKIY5/Nmn6NQYnm/h5ArKXA36gEq0x14OmzVjMY1zXLbpT19R+7UMz8N7Omr4OessQznvI3i8vGscCDc7zNOLeobvEeLSFKThm22GTRwiAunWffHmoRtkzrZsNkd8vXjcRb92wpRernhcYq5eJzaJvj3t1pFjkWig==

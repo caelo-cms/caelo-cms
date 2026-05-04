@@ -65,6 +65,10 @@ config:
     type: string
     default: "7"
     description: Cloud SQL backup retention in days. Up to 90.
+  caelo-gcp:deletionProtection:
+    type: boolean
+    default: false
+    description: Block `pulumi destroy` on Cloud SQL + Cloud Run. Defaults off for operator-friendly teardown; flip true for production deploys you never want to accidentally destroy.
 # Optional config NOT declared above:
 #   caelo-gcp:resendApiKey  (secret) — Resend API key for newsletter / auth
 #     plugin email transport. Set via `cat key | pulumi config set --secret`.

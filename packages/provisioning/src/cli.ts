@@ -663,12 +663,43 @@ const handlers: Record<string, () => Promise<void>> = {
   version,
   "--version": version,
   "-v": version,
+  // §11.C wizard — explicit invocation. Default routing (no cmd) also
+  // lands here unless `--no-wizard` is passed (for back-compat scripts
+  // that expect the bare CLI to print Usage and exit).
+  wizard: wizardCommand,
 };
+
+/**
+ * §11.C — interactive wizard. Loaded lazily so the bare-CLI startup
+ * cost stays small (clack + kleur are pulled in only when needed).
+ * Reads `--provider`, `--domain`, `--owner-email`, `--project-id`, and
+ * `--non-interactive` from argv when supplied.
+ */
+async function wizardCommand(): Promise<void> {
+  const { runWizard } = await import("./wizard.js");
+  await runWizard({
+    nonInteractive: process.argv.includes("--non-interactive"),
+    provider: arg("provider") as "self-hosted" | "gcp" | "aws" | "azure" | undefined,
+    domain: arg("domain"),
+    ownerEmail: arg("owner-email"),
+    projectId: arg("project-id"),
+  });
+}
+
 const handler = cmd ? handlers[cmd] : undefined;
 if (!handler) {
-  console.log(
-    "Usage: cms-provision <init|up|regenerate-caddy|status|backup|restore|pulumi-output-sync> [options]",
-  );
-  process.exit(cmd ? 2 : 0);
+  // §11.C — bare `cms-provision` (no sub-command) drops into the
+  // wizard. The legacy "print usage" behaviour is preserved via
+  // `--no-wizard` for scripts that depended on the old shape.
+  if (cmd === undefined && !process.argv.includes("--no-wizard")) {
+    await wizardCommand();
+  } else {
+    console.log(
+      "Usage: cms-provision [wizard] | <init|up|regenerate-caddy|status|backup|restore|pulumi-output-sync|version> [options]\n" +
+        "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
+    );
+    process.exit(cmd ? 2 : 0);
+  }
+} else {
+  await handler();
 }
-await handler();
