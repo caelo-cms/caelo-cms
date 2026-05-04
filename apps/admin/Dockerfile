@@ -61,6 +61,7 @@ RUN ROLLUP_VERSION=$(grep '@rollup/rollup-linux-x64-gnu@' bun.lock | grep -oE '[
     cd /tmp/rollup-bin && \
     npm install --no-save --no-package-lock @rollup/rollup-linux-x64-gnu@${ROLLUP_VERSION} && \
     mkdir -p /repo/apps/admin/node_modules/@rollup && \
+    rm -rf /repo/apps/admin/node_modules/@rollup/rollup-linux-x64-gnu && \
     cp -r /tmp/rollup-bin/node_modules/@rollup/rollup-linux-x64-gnu /repo/apps/admin/node_modules/@rollup/ && \
     echo "Installed @rollup/rollup-linux-x64-gnu@${ROLLUP_VERSION}" && \
     ls /repo/apps/admin/node_modules/@rollup/rollup-linux-x64-gnu/
