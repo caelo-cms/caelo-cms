@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * GCP provider wizard — automates the gcloud bootstrap (project +
- * billing + APIs + SA + 15 IAM roles + key) end-to-end.
- *
- * Per §11.C: the user runs `bunx @caelo-cms/provisioning --provider gcp`
- * and never touches `gcloud` themselves. The wizard:
+ * GCP provider wizard — end-to-end automation per §11.C:
  *   1. Detects active gcloud account; prompts `gcloud auth login` if none
  *   2. Lists billing accounts; user picks
  *   3. Captures GCP project id (default suggested from domain)
@@ -14,18 +10,19 @@
  *   6. Enables 13 APIs in one call
  *   7. Creates the provisioner SA + grants 15 IAM roles
  *   8. Mints a JSON SA key into `~/.caelo-<install-id>/secrets/sa-key.json`
- *
- * Each step is checkpointed via install-state.markStepDone so re-runs
- * skip what's already done. Failures print the underlying gcloud
- * error + a "fix this then re-run" suggestion (per §11.C "fail loudly,
- * surface actionable next steps").
- *
- * Pulumi up + DNS + IAP enable land in commit 3 of the §11.C plan.
+ *   9. Captures Anthropic API key (input-hidden) → secrets/anthropic-api-key
+ *  10. Generates Pulumi passphrase if absent → secrets/pulumi-passphrase
+ *  11. Pre-flight cost-estimate table; single y/N confirm
+ *  12. Pulumi up via the Automation SDK; streams progress
+ *  13. Post-up: enables IAP on the admin Cloud Run service
+ *  14. Prints DNS records + bootstrap URL
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { cancel, isCancel, log, note, select, spinner, text } from "@clack/prompts";
+import { cancel, confirm, isCancel, log, note, password, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import {
   activeAccount,
@@ -34,6 +31,7 @@ import {
   createServiceAccount,
   createServiceAccountKey,
   enableApis,
+  gcloud,
   grantProvisionerRoles,
   linkBilling,
   listBillingAccounts,
@@ -49,8 +47,12 @@ import {
   isStepDone,
   markStepDone,
   readMetadata,
+  readSecret,
   writeMetadata,
+  writeSecret,
 } from "../install-state.js";
+import { estimateGcpCost } from "./gcp-cost.js";
+import { pulumiUpGcp } from "./gcp-pulumi.js";
 
 const SA_ACCOUNT_ID = "caelo-provisioner";
 
@@ -94,32 +96,68 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   await stepGrantRoles(installId, projectId, saEmail);
   const keyPath = await stepMintKey(installId, projectId, saEmail, secretsDir);
 
-  // === Done ===
+  // === 7. Anthropic API key + Pulumi passphrase ===
+  const anthropicKey = await stepAnthropicKey(installId, opts.nonInteractive);
+  const pulumiPassphrase = stepPulumiPassphrase(installId);
+
+  const region = "europe-west1";
+  if (meta) writeMetadata(installId, { ...meta, projectId, region });
+
+  // === 8. Cost-estimate pre-flight ===
+  const costInputs = {
+    cloudSqlTier: "db-f1-micro",
+    cloudSqlHa: false,
+    adminMinInstances: 0,
+    gatewayMinInstances: 0,
+    wafAdaptiveProtection: false,
+  };
+  const estimate = estimateGcpCost(costInputs);
   note(
     [
-      green("✓ GCP project bootstrapped."),
+      bold("Estimated monthly cost (resource floor — actual usage adds AI calls + egress + storage growth)"),
       "",
-      `${dim("project")}        ${bold(projectId)}`,
-      `${dim("region")}         ${bold("europe-west1")} ${dim("(default; change via --region)")}`,
-      `${dim("provisioner SA")} ${bold(saEmail)}`,
-      `${dim("SA key")}         ${bold(keyPath)} ${dim("(mode 600)")}`,
-      `${dim("install dir")}    ${bold(installRoot(installId))}`,
-      "",
-      cyan(
-        "Next: cost-estimate pre-flight + Pulumi up + DNS + IAP enable. Lands in §11.C commit 3.",
+      ...estimate.lines.map(
+        (l) =>
+          `  ${dim(l.name.padEnd(40))} ${green(`$${l.monthlyUsd}`.padStart(5))}/mo  ${dim(l.notes ?? "")}`,
       ),
+      "",
+      `  ${bold("TOTAL".padEnd(40))} ${bold(`$${estimate.totalUsd}`.padStart(5))}/mo`,
     ].join("\n"),
-    "Bootstrap complete",
+    "Pre-flight",
   );
-
-  log.info(
-    `Until commit 3 ships: re-run ${bold("bunx @caelo-cms/provisioning")} once that commit lands and the wizard resumes from this checkpoint.`,
-  );
-
-  // Update install metadata with the region for now (default).
-  if (meta) {
-    writeMetadata(installId, { ...meta, projectId, region: "europe-west1" });
+  if (!opts.nonInteractive) {
+    const proceed = await confirm({
+      message: `Provision ~${estimate.totalUsd} USD/mo on GCP project ${bold(projectId)}?`,
+      initialValue: true,
+    });
+    if (isCancel(proceed) || !proceed) {
+      cancel("Cancelled at cost confirmation.");
+      process.exit(0);
+    }
   }
+
+  // === 9. Pulumi up via Automation SDK ===
+  await stepPulumiUp(installId, {
+    projectId,
+    domain,
+    ownerEmail,
+    region,
+    saKeyPath: keyPath,
+    pulumiPassphrase,
+    anthropicApiKey: anthropicKey,
+    cloudSqlTier: costInputs.cloudSqlTier,
+    cloudSqlHa: costInputs.cloudSqlHa,
+    adminMinInstances: costInputs.adminMinInstances,
+    gatewayMinInstances: costInputs.gatewayMinInstances,
+    wafAdaptiveProtection: costInputs.wafAdaptiveProtection,
+    iapAllowlist: [`user:${ownerEmail}`],
+  });
+
+  // === 10. IAP enable post-up ===
+  await stepIapEnable(installId, projectId, region);
+
+  // === 11. DNS records + bootstrap URL ===
+  await stepFinalize(installId);
 
   // Reference unused params to silence the linter.
   void domain;
@@ -355,6 +393,179 @@ async function stepMintKey(
   s.stop(green(`SA key minted (mode 600)`));
   markStepDone(installId, stepName, { path: keyPath });
   return keyPath;
+}
+
+async function stepAnthropicKey(installId: string, nonInteractive: boolean): Promise<string> {
+  const existing = readSecret(installId, "anthropic-api-key");
+  if (existing) {
+    log.success(`Anthropic API key ${dim("(reused from secrets/, not re-prompted)")}`);
+    return existing;
+  }
+  if (nonInteractive) {
+    log.error(red("Missing Anthropic API key + --non-interactive — cannot proceed."));
+    log.warn(
+      `Write the key to ${bold(`~/.caelo-${installId}/secrets/anthropic-api-key`)} (mode 600) then re-run.`,
+    );
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  const value = await password({
+    message: "Anthropic API key (input hidden; saved to secrets/anthropic-api-key)",
+    validate: (v) => {
+      if (!v || v.length < 20) return "Looks too short — Anthropic keys start with sk-ant-";
+      if (!v.startsWith("sk-")) return "Should start with sk-";
+      return undefined;
+    },
+  });
+  if (isCancel(value)) {
+    cancel("Cancelled.");
+    process.exit(0);
+  }
+  const key = (value as string).trim();
+  writeSecret(installId, "anthropic-api-key", key);
+  log.success(`Anthropic key saved → ${dim(`~/.caelo-${installId}/secrets/anthropic-api-key`)}`);
+  return key;
+}
+
+function stepPulumiPassphrase(installId: string): string {
+  const existing = readSecret(installId, "pulumi-passphrase");
+  if (existing) {
+    log.success(`Pulumi passphrase ${dim("(reused from secrets/, not regenerated)")}`);
+    return existing;
+  }
+  const passphrase = randomBytes(32).toString("hex");
+  writeSecret(installId, "pulumi-passphrase", passphrase);
+  log.success(
+    `Pulumi passphrase generated → ${dim(`~/.caelo-${installId}/secrets/pulumi-passphrase`)}`,
+  );
+  return passphrase;
+}
+
+interface PulumiUpOpts {
+  projectId: string;
+  domain: string;
+  ownerEmail: string;
+  region: string;
+  saKeyPath: string;
+  pulumiPassphrase: string;
+  anthropicApiKey: string;
+  cloudSqlTier: string;
+  cloudSqlHa: boolean;
+  adminMinInstances: number;
+  gatewayMinInstances: number;
+  wafAdaptiveProtection: boolean;
+  iapAllowlist: string[];
+}
+
+async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void> {
+  const stepName = `pulumi-up-${opts.projectId}`;
+  if (isStepDone(installId, stepName)) {
+    log.success(`Pulumi up ${dim("(checkpointed — re-running for drift refresh)")}`);
+  }
+  const { secretsDir } = ensureInstallDir(installId);
+  const root = installRoot(installId);
+  log.info(`Pulumi up — wall-clock 8–15 min (Cloud SQL is the long pole). Streaming progress...`);
+
+  let resourceCount = 0;
+  const result = await pulumiUpGcp(
+    {
+      installId,
+      installRoot: root,
+      secretsDir,
+      ...opts,
+    },
+    (kind, message) => {
+      if (kind === "resource") {
+        resourceCount++;
+        if (resourceCount % 5 === 0) {
+          process.stdout.write(`\r${dim(`  ${resourceCount} resources updated`)}`);
+        }
+      } else if (kind === "error") {
+        process.stdout.write("\n");
+        log.error(red(message));
+      }
+      // logs: silent — too noisy for a live progress UI; pulumi
+      // diagnostics will print on failure via the SDK's onOutput.
+    },
+  );
+  process.stdout.write("\n");
+  log.success(
+    green(
+      `Pulumi up complete — ${result.resourceCount.created} created, ${result.resourceCount.updated} updated, ${result.resourceCount.deleted} deleted`,
+    ),
+  );
+  markStepDone(installId, stepName, { outputs: result.outputs });
+}
+
+async function stepIapEnable(
+  installId: string,
+  projectId: string,
+  region: string,
+): Promise<void> {
+  const stepName = `iap-enable-${projectId}`;
+  if (isStepDone(installId, stepName)) {
+    log.success(`IAP enabled on admin Cloud Run ${dim("(checkpointed)")}`);
+    return;
+  }
+  const s = spinner();
+  s.start("Enabling Identity-Aware Proxy on the admin Cloud Run...");
+  const r = await gcloud([
+    "beta",
+    "run",
+    "services",
+    "update",
+    "caelo-production-admin",
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--iap",
+    "--quiet",
+  ]);
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.stderr.trim()}`));
+    log.warn(
+      `Continue manually: ${bold(`gcloud beta run services update caelo-production-admin --region=${region} --project=${projectId} --iap`)}.`,
+    );
+    return;
+  }
+  s.stop(green("IAP enabled — admin reachable only via your IAP allowlist"));
+  markStepDone(installId, stepName, {});
+}
+
+async function stepFinalize(installId: string): Promise<void> {
+  const meta = readMetadata(installId);
+  const progress = readSecret(installId, "pulumi-passphrase"); // touch to verify state still present
+  void progress;
+  if (!meta) return;
+  const upStep = `pulumi-up-${meta.projectId}`;
+  const upPayload = (await import("../install-state.js")).getStepPayload<{
+    outputs: Record<string, unknown>;
+  }>(installId, upStep);
+  const outputs = upPayload?.outputs ?? {};
+  const lbIp = outputs["lbIpOut"] ?? "<unknown — check pulumi outputs>";
+  const bootstrapUrl = outputs["bootstrapUrlOut"] ?? "<unknown>";
+  const adminDomain = outputs["adminDomainOut"] ?? `admin.${meta.domain}`;
+  note(
+    [
+      green(`✓ ${meta.domain} provisioned.`),
+      "",
+      bold("DNS records to paste at your registrar:"),
+      `  ${dim("A    ")} ${meta.domain.padEnd(30)} → ${bold(String(lbIp))}`,
+      `  ${dim("CNAME")} ${String(adminDomain).padEnd(30)} → ${bold("ghs.googlehosted.com.")}`,
+      "",
+      bold("Owner setup (open in your browser):"),
+      `  ${cyan(String(bootstrapUrl))}`,
+      "",
+      bold("Lifecycle commands:"),
+      `  ${dim("bunx @caelo-cms/provisioning status")}     — health check + monthly cost`,
+      `  ${dim("bunx @caelo-cms/provisioning upgrade")}    — pull latest images + roll Cloud Run`,
+      `  ${dim("bunx @caelo-cms/provisioning destroy")}    — tear everything down (irreversible)`,
+    ].join("\n"),
+    "Done",
+  );
+  void homedir; // unused-import guard
+  void readFileSync;
 }
 
 // kleur unused-import guard for the yellow color helper kept for future warnings.
