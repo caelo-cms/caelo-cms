@@ -1,26 +1,22 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Caelo CMS — admin app runtime image.
+# Caelo CMS — admin app.
 #
-# The SvelteKit admin's `apps/admin/build/` output is built natively on
-# the GitHub Actions runner before this Dockerfile runs (see the
-# release-images workflow's "Pre-build admin" step). Building Vite +
-# Rollup native bindings inside Docker buildx + Bun runs into two
-# upstream gaps (Bun's transitive optionalDependencies + `bun --bun`
-# JIT instructions the runner CPU rejects), so we side-step both by
-# building outside the container and only carrying the artifacts in.
+# Multi-stage build. Builder stage installs the workspace, manually
+# fetches the Rollup native binding (Bun's transitive optional-deps
+# gap, oven-sh/bun#14918), and runs the SvelteKit build under Bun's
+# own runtime so the `bun` virtual import resolves. Runtime stage
+# carries only the production closure.
 #
 # CLAUDE.md §11.C: this image is published to ghcr.io/caelo-cms/admin
-# by .github/workflows/release-images.yml on every release. End-users
-# never build it themselves.
+# by .github/workflows/release-images.yml. End-users never build it.
 
-FROM oven/bun:1.3-slim AS runtime
+FROM oven/bun:1.3 AS builder
 
-WORKDIR /app
+WORKDIR /repo
 
-# Install only the runtime dependency closure. The Bun adapter emits
-# bundled output but the workspace + the Postgres driver + the plugin
-# host all import packages at runtime that aren't inlined.
+# Copy lockfile + every workspace package.json first so `bun install`
+# is layer-cached against actual dependency changes, not source edits.
 COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
 COPY apps/admin/package.json apps/admin/
 COPY apps/api-gateway/package.json apps/api-gateway/
@@ -45,28 +41,47 @@ COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/
 COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
 
-# --production drops devDependencies (Vite, TypeScript, etc.) — none
-# needed at runtime since the bundle is pre-built.
-RUN bun install --production --frozen-lockfile
+RUN bun install
 
-# Pre-built SvelteKit output from the runner-native build step.
-COPY apps/admin/build ./apps/admin/build
+# Bun has a documented gap with transitive optionalDependencies
+# (oven-sh/bun#14918): Vite declares Rollup as a non-optional dep, but
+# Rollup's per-platform binary ships as one of Rollup's OWN
+# optionalDependencies — Bun doesn't install those transitively. Local
+# dev never hits this because `vite dev` uses esbuild, not Rollup. The
+# `vite build` path needs the binary. Workaround: pin to the version
+# resolved in bun.lock and fetch the tgz directly into the apps/admin
+# nested node_modules where Bun installs Vite.
+RUN ROLLUP_VERSION=$(grep -m 1 '"@rollup/rollup-linux-x64-gnu":' bun.lock | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && \
+    BIN_PKG=@rollup/rollup-linux-x64-gnu && \
+    BIN_DIR=apps/admin/node_modules/${BIN_PKG} && \
+    mkdir -p "${BIN_DIR}" && \
+    curl -sSL "https://registry.npmjs.org/${BIN_PKG}/-/rollup-linux-x64-gnu-${ROLLUP_VERSION}.tgz" \
+      | tar -xz --strip-components=1 -C "${BIN_DIR}" && \
+    cd apps/admin && bun add --no-save rollup@${ROLLUP_VERSION}
 
-# Workspace source the runtime needs (Tier-1 plugin manifests, the
-# migrations directory the admin runs at boot, shared TS files the
-# adapter resolves at runtime).
-COPY packages/migrations packages/migrations
-COPY packages/plugins packages/plugins
-COPY packages/admin-core packages/admin-core
-COPY packages/shared packages/shared
-COPY packages/query-api packages/query-api
-COPY packages/plugin-host packages/plugin-host
-COPY packages/plugin-sandbox packages/plugin-sandbox
-COPY packages/plugin-sdk packages/plugin-sdk
+# Now the source.
+COPY . .
+
+# Build under Bun's runtime (`bun --bun`) so the `bun` virtual import
+# resolves at SSR build time. We're inside oven/bun:1.3 on linux/amd64,
+# so the SIGILL we saw on GitHub Actions runners doesn't apply here.
+RUN cd apps/admin && bun --bun vite build
+
+# ---------------------------------------------------------------------------
+# Runtime stage
+# ---------------------------------------------------------------------------
+FROM oven/bun:1.3-slim AS runtime
+
+WORKDIR /app
+
+COPY --from=builder /repo/apps/admin/build ./build
+COPY --from=builder /repo/apps/admin/package.json ./package.json
+COPY --from=builder /repo/node_modules ./node_modules
+COPY --from=builder /repo/packages/migrations ./packages/migrations
+COPY --from=builder /repo/packages/plugins ./packages/plugins
 
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000
 
-WORKDIR /app/apps/admin
 CMD ["bun", "--bun", "build/index.js"]

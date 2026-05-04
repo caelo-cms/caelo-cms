@@ -51,49 +51,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up Bun
-        if: matrix.service == 'admin'
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3
-
-      - name: Pre-build admin (native, outside Docker)
-        if: matrix.service == 'admin'
-        working-directory: apps/admin
-        run: |
-          # The SvelteKit admin's Vite build uses Rollup native bindings.
-          # Bun has a documented gap installing transitive optional deps
-          # (oven-sh/bun#14918) — Vite declares Rollup as a non-optional
-          # dep but Rollup's per-platform binary is shipped as one of
-          # Rollup's OWN optionalDependencies, which Bun doesn't install
-          # transitively. Local dev never hits this (vite dev = esbuild,
-          # not rollup); only `vite build` exercises the path.
-          #
-          # Workaround: install rollup + its linux-x64 native binary
-          # directly into apps/admin/node_modules (where Bun nests admin
-          # deps), then run the build.
-          cd ../..
-          bun install --frozen-lockfile
-          cd apps/admin
-          ROLLUP_VERSION=$(node -p "require('vite/package.json').dependencies.rollup.replace(/[^0-9.]/g,'')" || echo "4.60.2")
-          # Pin to the version Bun's lockfile already resolved.
-          if [ -f "../../bun.lock" ]; then
-            LOCKED=$(grep -m 1 '"@rollup/rollup-linux-x64-gnu":' ../../bun.lock | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
-            if [ -n "$LOCKED" ]; then ROLLUP_VERSION="$LOCKED"; fi
-          fi
-          BIN_PKG=@rollup/rollup-linux-x64-gnu
-          BIN_DIR=node_modules/${BIN_PKG}
-          mkdir -p "${BIN_DIR}"
-          curl -sSL "https://registry.npmjs.org/${BIN_PKG}/-/rollup-linux-x64-gnu-${ROLLUP_VERSION}.tgz" \
-            | tar -xz --strip-components=1 -C "${BIN_DIR}"
-          echo "Installed ${BIN_PKG}@${ROLLUP_VERSION}"
-          ls "${BIN_DIR}/" | head
-          # Also install the rollup package itself (Vite resolves it via
-          # apps/admin/node_modules/rollup; if Bun nested it elsewhere,
-          # this is a safe re-install).
-          bun add --no-save rollup@${ROLLUP_VERSION}
-          bun run build
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

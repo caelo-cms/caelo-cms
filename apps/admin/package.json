@@ -8,7 +8,7 @@
     "sync": "svelte-kit sync",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig tsconfig.json && tsc --noEmit",
     "dev": "svelte-kit sync && bun --bun vite dev",
-    "build": "svelte-kit sync && vite build",
+    "build": "svelte-kit sync && bun --bun vite build",
     "preview": "bun --bun vite preview",
     "seed:dev": "bun --env-file=../../.env run scripts/seed-dev-owner.ts",
     "e2e": "playwright test"
