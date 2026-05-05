@@ -634,6 +634,39 @@ new gcp.compute.GlobalForwardingRule(
   opts,
 );
 
+// HTTP → HTTPS redirect: a tiny URLMap with no backend, just a 301
+// redirect rule. Same LB IP, port 80, returns to the request's host
+// over HTTPS preserving the path. Without this, http:// requests get
+// ERR_EMPTY_RESPONSE.
+const httpRedirectMap = new gcp.compute.URLMap(
+  `${namePrefix}-http-redirect`,
+  {
+    defaultUrlRedirect: {
+      httpsRedirect: true,
+      redirectResponseCode: "MOVED_PERMANENTLY_DEFAULT",
+      stripQuery: false,
+    },
+  },
+  opts,
+);
+
+const httpProxy = new gcp.compute.TargetHttpProxy(
+  `${namePrefix}-http-proxy`,
+  { urlMap: httpRedirectMap.id },
+  opts,
+);
+
+new gcp.compute.GlobalForwardingRule(
+  `${namePrefix}-http-fwd`,
+  {
+    target: httpProxy.id,
+    portRange: "80",
+    ipAddress: lbIp.address,
+    loadBalancingScheme: "EXTERNAL_MANAGED",
+  },
+  opts,
+);
+
 // =========================================================================
 // Cloud Logging sink → BigQuery for the analytics plugin
 // =========================================================================
