@@ -157,6 +157,16 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // pulls the freshest published image.
   const imageDigests = await resolveImageDigests(["admin", "gateway"]);
 
+  // === 9.5. Drain the legacy `caelo_admin` SQL user before pulumi-up ===
+  // The 3a81c37 rename (caelo_admin → admin_role) leaves the old role
+  // in pg_roles owning N objects (sequences/grants survive ALTER TABLE
+  // OWNER). Pulumi's User-resource delete fails with "role cannot be
+  // dropped because some objects depend on it" (Postgres 400). REASSIGN
+  // OWNED + DROP OWNED clears the dependencies first; the DO block
+  // is a no-op when caelo_admin already doesn't exist (fresh installs +
+  // post-cleanup re-runs both pass through cleanly).
+  await stepDrainLegacyCaeloAdminUser(projectId, region);
+
   // === 10. Pulumi up via Automation SDK ===
   // Pre-built signed images live at the Caelo-team public AR repo
   // (caelo-website/caelo-cms-images by default). Cloud Run reads them
@@ -667,6 +677,186 @@ async function stepWaitForCertActive(projectId: string): Promise<void> {
       "  - The LB's HTTP port-80 listener isn't reachable from the public internet",
     ].join("\n"),
   );
+}
+
+/**
+ * Run REASSIGN OWNED BY caelo_admin TO admin_role + DROP OWNED BY
+ * caelo_admin in both cms_admin + cms_public, via a one-shot Cloud Run
+ * Job. Idempotent: the SQL is wrapped in DO IF EXISTS so fresh installs
+ * (no caelo_admin) + post-cleanup re-runs both pass through cleanly.
+ *
+ * Why this exists: the SQL-user rename in commit 3a81c37 left
+ * `caelo_admin` in pg_roles owning N sequences/grants the prior
+ * ALTER TABLE OWNER fix didn't reach. Pulumi's User-delete subsequently
+ * fails with "role cannot be dropped because some objects depend on
+ * it." REASSIGN/DROP OWNED clears them first.
+ *
+ * Skipped silently when no admin Cloud Run service exists (fresh
+ * installs that haven't booted the admin yet).
+ */
+async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string): Promise<void> {
+  const s = spinner();
+  s.start("Draining legacy caelo_admin postgres user (idempotent)...");
+
+  // Resolve current admin image; skip if missing (fresh install).
+  const adminDescr = await gcloud([
+    "run",
+    "services",
+    "describe",
+    "caelo-production-admin-3efcfea",
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--format=json",
+  ]);
+  if (!adminDescr.ok) {
+    s.stop(green("No admin service yet — nothing to drain (fresh install)"));
+    return;
+  }
+  let adminImg = "";
+  let networkRef = "";
+  let subnetRef = "";
+  try {
+    const d = JSON.parse(adminDescr.stdout) as {
+      spec: {
+        template: {
+          spec: {
+            containers: { image?: string }[];
+            vpcAccess?: { networkInterfaces?: { network?: string; subnetwork?: string }[] };
+          };
+        };
+      };
+    };
+    adminImg = d.spec.template.spec.containers[0]?.image ?? "";
+    const ni = d.spec.template.spec.vpcAccess?.networkInterfaces?.[0];
+    networkRef = ni?.network ?? "";
+    subnetRef = ni?.subnetwork ?? "";
+  } catch {
+    s.stop(yellow("Could not parse admin service describe — skipping drain"));
+    return;
+  }
+  if (!adminImg) {
+    s.stop(green("No admin image to spawn drain job — skipping"));
+    return;
+  }
+  if (!networkRef) networkRef = "caelo-production-vpc";
+  if (!subnetRef) subnetRef = "caelo-production-subnet";
+
+  // Read postgres superuser password from Secret Manager.
+  const secretFetch = await gcloud([
+    "secrets",
+    "versions",
+    "access",
+    "latest",
+    "--secret",
+    "caelo-production-postgres-password",
+    "--project",
+    projectId,
+  ]);
+  if (!secretFetch.ok) {
+    s.stop(yellow("Could not read postgres-password secret — skipping drain"));
+    return;
+  }
+  const pgPass = secretFetch.stdout.trim();
+
+  // Sync the SQL `postgres` user's password to the Secret Manager value
+  // (Pulumi may have rotated the secret without applying to the user yet).
+  await gcloud([
+    "sql",
+    "users",
+    "set-password",
+    "postgres",
+    "--instance",
+    "caelo-production-pg-1d65811",
+    "--project",
+    projectId,
+    "--password",
+    pgPass,
+  ]);
+
+  // Resolve the SQL instance's private IP from gcloud (avoids reading
+  // Pulumi outputs from inside the wizard).
+  const sqlDescr = await gcloud([
+    "sql",
+    "instances",
+    "describe",
+    "caelo-production-pg-1d65811",
+    "--project",
+    projectId,
+    "--format=value(ipAddresses[0].ipAddress)",
+  ]);
+  const pgHost = (sqlDescr.stdout || "").trim();
+  if (!pgHost) {
+    s.stop(yellow("Could not resolve Cloud SQL private IP — skipping drain"));
+    return;
+  }
+
+  const adminPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_admin`;
+  const publicPg = `postgres://postgres:${pgPass}@${pgHost}:5432/cms_public`;
+
+  // The cleanup script — uses bun's globalThis.Bun.SQL (already proven
+  // pattern in hooks.server.ts + the migration runner). DO block makes
+  // it safe to re-run.
+  const script = `const SQL = globalThis.Bun.SQL; async function fix(u){ const s = new SQL(u); await s.unsafe(\`DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='caelo_admin') THEN EXECUTE 'REASSIGN OWNED BY caelo_admin TO admin_role'; EXECUTE 'DROP OWNED BY caelo_admin'; END IF; END $$;\`); await s.end(); } await fix(process.env.ADMIN_PG); await fix(process.env.PUBLIC_PG); console.log('drained');`;
+
+  // Delete-then-create so we always run with the freshest config.
+  await gcloud([
+    "run",
+    "jobs",
+    "delete",
+    "caelo-drain-legacy-user",
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--quiet",
+  ]);
+  const create = await gcloud([
+    "run",
+    "jobs",
+    "create",
+    "caelo-drain-legacy-user",
+    `--image=${adminImg}`,
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--service-account",
+    `caelo-production-run-sa@${projectId}.iam.gserviceaccount.com`,
+    "--network",
+    networkRef.split("/").pop() ?? networkRef,
+    "--subnet",
+    subnetRef.split("/").pop() ?? subnetRef,
+    "--vpc-egress=private-ranges-only",
+    "--command=bun",
+    // ^|^ delimiter form — JS contains commas so we can't use the default.
+    `--args=^|^--bun|-e|eval(process.env.SCRIPT)`,
+    `--set-env-vars=^|^SCRIPT=${script}|ADMIN_PG=${adminPg}|PUBLIC_PG=${publicPg}`,
+    "--max-retries=0",
+    "--task-timeout=2m",
+    "--quiet",
+  ]);
+  if (!create.ok) {
+    s.stop(yellow(`Drain job create failed: ${create.stderr.trim()} — continuing`));
+    return;
+  }
+  const exec = await gcloud([
+    "run",
+    "jobs",
+    "execute",
+    "caelo-drain-legacy-user",
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--wait",
+  ]);
+  if (!exec.ok) {
+    s.stop(yellow(`Drain job failed: ${exec.stderr.trim()} — continuing (may already be clean)`));
+    return;
+  }
+  s.stop(green("Legacy caelo_admin user drained"));
 }
 
 /**
