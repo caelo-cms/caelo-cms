@@ -219,21 +219,27 @@ async function resolveImageDigests(services: string[]): Promise<Record<string, s
   for (const service of services) {
     const s = spinner();
     s.start(`Resolving ${service}:main → digest...`);
+    // gcloud's --filter='tag=main' is in a transitional state (warns + matches
+    // nothing) and 'tag:main' substring-matches main-<sha> too. List all tags
+    // and grep for the exact-match row in JS.
     const r = await gcloud([
       "artifacts",
       "docker",
       "tags",
       "list",
       `${region}-docker.pkg.dev/${project}/${repo}/${service}`,
-      "--filter=tag=main",
-      "--format=value(version)",
+      "--format=value(tag,version)",
     ]);
-    if (!r.ok || !r.stdout.trim()) {
-      s.stop(red(`Could not resolve ${service}:main digest: ${r.stderr.trim() || "no tag"}`));
+    if (!r.ok) {
+      s.stop(red(`Could not list ${service} tags: ${r.stderr.trim() || "(no output)"}`));
       cancel("Aborted.");
       process.exit(1);
     }
-    const digest = r.stdout.trim().split(/\s+/)[0] ?? "";
+    const exact = r.stdout
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .find(([tag]) => tag === "main");
+    const digest = exact?.[1] ?? "";
     if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
       s.stop(red(`Unexpected digest format for ${service}: ${digest}`));
       cancel("Aborted.");
