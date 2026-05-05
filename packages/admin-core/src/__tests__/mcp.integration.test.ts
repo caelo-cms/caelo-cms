@@ -75,15 +75,19 @@ beforeAll(async () => {
   // job). The configure call exists so the not_found / revoked /
   // expired error paths return their auth-error shape instead of the
   // bridge-not-configured error.
+  // P18 — bridge now takes a resolveProvider closure so production can
+  // pull the latest DB-stored key per turn. Tests inject a fixed stub
+  // by returning the same value on every call.
+  const stubProvider = {
+    name: "stub",
+    generate: async function* () {
+      yield { kind: "done", stopReason: "end_turn" } as never;
+    },
+  } as never;
   configureMcpBridge({
     adapter,
     registry,
-    provider: {
-      name: "stub",
-      generate: async function* () {
-        yield { kind: "done", stopReason: "end_turn" } as never;
-      },
-    } as never,
+    resolveProvider: async () => stubProvider,
   });
 });
 
