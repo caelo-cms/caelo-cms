@@ -552,6 +552,32 @@ const adminNeg = new gcp.compute.RegionNetworkEndpointGroup(
   opts,
 );
 
+// Google-managed IAP requires a GCP-managed service identity in the
+// project. Pulumi's iap.enabled=true on a BackendService doesn't
+// trigger this auto-provision (only the gcloud CLI does). Without it,
+// IAP gets through OAuth but then errors with "The IAP service account
+// is not provisioned" when forwarding to Cloud Run. ServiceIdentity
+// creates `service-<project-number>@gcp-sa-iap.iam.gserviceaccount.com`
+// idempotently.
+const iapServiceIdentity = new gcp.projects.ServiceIdentity(
+  `${namePrefix}-iap-sa`,
+  { project, service: "iap.googleapis.com" },
+  opts,
+);
+
+// IAP forwards authenticated requests to Cloud Run via this SA, which
+// needs run.invoker on the admin service.
+new gcp.cloudrunv2.ServiceIamMember(
+  `${namePrefix}-iap-invoke-admin`,
+  {
+    location: region,
+    name: adminSvc.name,
+    role: "roles/run.invoker",
+    member: pulumi.interpolate`serviceAccount:${iapServiceIdentity.email}`,
+  },
+  opts,
+);
+
 // Google-managed IAP: enabled=true with no OAuth client/secret means
 // IAP auto-provisions and manages the OAuth credentials internally.
 // The classic gcp.iap.Brand + Client resources are deprecated (the IAP
@@ -565,7 +591,7 @@ const adminBackendService = new gcp.compute.BackendService(
     loadBalancingScheme: "EXTERNAL_MANAGED",
     iap: { enabled: true },
   },
-  opts,
+  { ...opts, dependsOn: [iapServiceIdentity] },
 );
 
 // IAP allowlist — bind iap.httpsResourceAccessor on the admin

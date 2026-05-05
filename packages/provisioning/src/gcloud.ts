@@ -116,6 +116,9 @@ const REQUIRED_APIS: readonly string[] = [
   "artifactregistry.googleapis.com",
   "bigquery.googleapis.com",
   "iap.googleapis.com",
+  // Used by gcp.projects.ServiceIdentity to provision the IAP-managed
+  // service account that forwards authenticated requests to Cloud Run.
+  "serviceusage.googleapis.com",
 ];
 
 export async function enableApis(projectId: string): Promise<GcloudResult> {
@@ -174,6 +177,9 @@ const PROVISIONER_ROLES: readonly string[] = [
   "roles/compute.admin",
   // logging.configWriter creates ProjectSink (BigQuery edge logs).
   "roles/logging.configWriter",
+  // serviceusage.serviceUsageAdmin lets us trigger the IAP managed
+  // service identity (gcp.projects.ServiceIdentity).
+  "roles/serviceusage.serviceUsageAdmin",
 ];
 
 /**
