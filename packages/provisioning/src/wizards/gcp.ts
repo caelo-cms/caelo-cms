@@ -149,11 +149,18 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     }
   }
 
-  // === 9. Pulumi up via Automation SDK ===
+  // === 9. Resolve image digests so each pulumi up rolls Cloud Run ===
+  // Cloud Run keys revisions by image reference; if the reference is
+  // a floating tag like ":main", a fresh image push doesn't trigger a
+  // new revision because the reference text is unchanged. Resolve the
+  // floating tag to its current sha256 digest so each provisioning run
+  // pulls the freshest published image.
+  const imageDigests = await resolveImageDigests(["admin", "gateway"]);
+
+  // === 10. Pulumi up via Automation SDK ===
   // Pre-built signed images live at the Caelo-team public AR repo
   // (caelo-website/caelo-cms-images by default). Cloud Run reads them
   // directly with no operator-side IAM binding — anonymous public pull.
-  // No image-copy step needed.
   await stepPulumiUp(installId, {
     projectId,
     domain,
@@ -168,6 +175,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     gatewayMinInstances: costInputs.gatewayMinInstances,
     wafAdaptiveProtection: costInputs.wafAdaptiveProtection,
     iapAllowlist: [`user:${ownerEmail}`],
+    imageDigests,
   });
 
   // === 10. Wait for managed cert to flip from PROVISIONING → ACTIVE ===
@@ -194,6 +202,47 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   void region;
   void domain;
   void ownerEmail;
+}
+
+/**
+ * Resolve the floating `:main` tag on each service's public AR image
+ * to its current sha256 digest, so the Pulumi stack can pin Cloud Run
+ * to the exact image rather than the mutable tag. Without this, a
+ * fresh release-images push doesn't trigger a new Cloud Run revision
+ * because the image reference in the stack (":main") is unchanged.
+ */
+async function resolveImageDigests(services: string[]): Promise<Record<string, string>> {
+  const project = "caelo-website";
+  const region = "europe-west1";
+  const repo = "caelo-cms-images";
+  const out: Record<string, string> = {};
+  for (const service of services) {
+    const s = spinner();
+    s.start(`Resolving ${service}:main → digest...`);
+    const r = await gcloud([
+      "artifacts",
+      "docker",
+      "tags",
+      "list",
+      `${region}-docker.pkg.dev/${project}/${repo}/${service}`,
+      "--filter=tag=main",
+      "--format=value(version)",
+    ]);
+    if (!r.ok || !r.stdout.trim()) {
+      s.stop(red(`Could not resolve ${service}:main digest: ${r.stderr.trim() || "no tag"}`));
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    const digest = r.stdout.trim().split(/\s+/)[0] ?? "";
+    if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
+      s.stop(red(`Unexpected digest format for ${service}: ${digest}`));
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    s.stop(green(`${service}: ${dim(digest.slice(0, 19) + "...")}`));
+    out[service] = digest;
+  }
+  return out;
 }
 
 // =========================================================================
@@ -489,6 +538,7 @@ interface PulumiUpOpts {
   gatewayMinInstances: number;
   wafAdaptiveProtection: boolean;
   iapAllowlist: string[];
+  imageDigests: Record<string, string>;
 }
 
 async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void> {

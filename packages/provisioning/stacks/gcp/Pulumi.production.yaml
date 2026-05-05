@@ -2,7 +2,7 @@ encryptionsalt: v1:mEv+SGjVDdU=:v1:1Tmd1g2Yh0KXxhp5:fGsA3LiAPntjAGUMORKO+B1gxQgI
 config:
   caelo-gcp:adminMinInstances: "0"
   caelo-gcp:anthropicApiKey:
-    secure: v1:guII2gVBSzOSDiny:VVKaIVOin2t6UeFMsD7c632lNx7Bjs88/BAM6k4D5MZhKZHXAcmvPHXObdMdnQOy9vB8nCgUpEoaOvVbFAEA/jf/yF6MwJ49B8tI7gPAFTbQm/4u0/y2pbcEZCyjiu2Coi0cYVyVEgc0cvg/bdvMwK7ZonzdNX2Yl5iB9g==
+    secure: v1:EWcimLpPDpRswAbz:AnlHMCNK6zXClLpLnIK2bmSFjQAzkTU0AfLzE772GkMiBfRh3zgTrEKTX9lScRFxxhI0aMPUPjUyev9D9BlsOHQdAAKEGeg99xAGTZU+YpB5TK3V9FbtTuWJCX/nvijF13ABiaU7VT74C8DYzdtgtFa9q6FvzI+SUkccQQ==
   caelo-gcp:cloudSqlHa: "false"
   caelo-gcp:cloudSqlTier: db-f1-micro
   caelo-gcp:domain: caelo-cms.com

@@ -351,11 +351,17 @@ const publicRegistryRepo = cfg.get("public-registry-repo") ?? "caelo-cms-images"
 const imageTagSource = cfg.get("image-tag") ?? "main";
 
 function imageTag(service: string): pulumi.Output<string> {
+  // Per-service digest pin (`image-digest-<service>`): operator can pin
+  // an exact sha256 digest. The wizard resolves this at provision time
+  // (resolves :main → digest via `gcloud artifacts docker images list`)
+  // so each pulumi up rolls Cloud Run to the freshest published image
+  // even though the `:main` tag is mutable. Without this Cloud Run
+  // would silently keep running an old image after a release.
   const override = cfg.get(`image-${service}`);
   if (override) return pulumi.output(override);
-  return pulumi.output(
-    `${publicRegistryRegion}-docker.pkg.dev/${publicRegistryProject}/${publicRegistryRepo}/${service}:${imageTagSource}`,
-  );
+  const digest = cfg.get(`image-digest-${service}`);
+  const base = `${publicRegistryRegion}-docker.pkg.dev/${publicRegistryProject}/${publicRegistryRepo}/${service}`;
+  return pulumi.output(digest ? `${base}@${digest}` : `${base}:${imageTagSource}`);
 }
 
 interface CloudRunArgs {

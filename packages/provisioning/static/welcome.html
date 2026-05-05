@@ -146,15 +146,9 @@
   <main>
     <div class="brand"><span class="dot"></span>Caelo&nbsp;CMS</div>
     <h1>Your install is up. One more step.</h1>
-    <p>This is the placeholder Caelo serves on a fresh deploy. Open the admin to finish setup, then publish your first page — this page disappears the moment your real site goes live.</p>
-    <a class="cta" href="{{ADMIN_URL}}">
-      Open admin setup
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-      </svg>
-    </a>
+    <p>This is the placeholder Caelo serves on a fresh deploy. The operator who provisioned this install has a one-time bootstrap link in their terminal output — opening it walks through Owner-account setup. After publish, this page disappears.</p>
     <div class="hint">
-      Bookmark the admin URL above. The bootstrap token in your wizard output is one-time; future logins use the email + password you set during setup. Need to talk to the AI? Run <code>caelo-cms status</code> in your terminal.
+      Bootstrap link expires in 24h and rotates per <code>bunx @caelo-cms/provisioning</code> run. After Owner setup, the admin lives at <code>{{ADMIN_URL}}</code> behind <code>Sign in with Google</code> (IAP allowlist).
     </div>
   </main>
 </body>

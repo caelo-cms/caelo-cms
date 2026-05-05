@@ -30,6 +30,10 @@ export interface PulumiUpInputs {
   gatewayMinInstances: number;
   wafAdaptiveProtection: boolean;
   iapAllowlist: string[];
+  /** Resolved sha256 digests per service (admin, gateway). The wizard
+   *  pre-resolves the floating `:main` tag to a fixed digest so each
+   *  pulumi up rolls Cloud Run to the freshest published image. */
+  imageDigests: Record<string, string>;
 }
 
 export interface PulumiUpResult {
@@ -97,6 +101,12 @@ export async function pulumiUpGcp(
     "caelo-gcp:wafAdaptiveProtection": { value: String(inputs.wafAdaptiveProtection) },
     "caelo-gcp:iapAllowlist": { value: inputs.iapAllowlist.join(",") },
     "caelo-gcp:anthropicApiKey": { value: inputs.anthropicApiKey, secret: true },
+    ...Object.fromEntries(
+      Object.entries(inputs.imageDigests).map(([service, digest]) => [
+        `caelo-gcp:image-digest-${service}`,
+        { value: digest },
+      ]),
+    ),
   });
 
   // Refresh state first to detect drift from any out-of-band changes.
