@@ -192,9 +192,20 @@ const sqlInstance = new gcp.sql.DatabaseInstance(
   { ...opts, dependsOn: [sqlPeering] },
 );
 
+// Caelo's DatabaseAdapter.verifyRoles() asserts that the connecting
+// user IS named admin_role or public_role per CMS_REQUIREMENTS §12.3
+// (matches the bootstrap.sh self-hosted setup). Cloud SQL uses
+// CREATE USER which is just CREATE ROLE WITH LOGIN, so the role names
+// passed here become the auth user names — no rename needed.
 const pgAdminUser = new gcp.sql.User(
   `${namePrefix}-pg-admin`,
-  { instance: sqlInstance.name, name: "caelo_admin", password: postgresPassword },
+  { instance: sqlInstance.name, name: "admin_role", password: postgresPassword },
+  opts,
+);
+
+const pgPublicUser = new gcp.sql.User(
+  `${namePrefix}-pg-public`,
+  { instance: sqlInstance.name, name: "public_role", password: postgresPassword },
   opts,
 );
 
@@ -211,10 +222,14 @@ const cmsPublicDb = new gcp.sql.Database(
 
 const adminDatabaseUrl = pulumi
   .all([sqlInstance.privateIpAddress, postgresPassword])
-  .apply(([host, pw]) => `postgresql://caelo_admin:${pw}@${host}:5432/cms_admin?sslmode=require`);
+  .apply(([host, pw]) => `postgresql://admin_role:${pw}@${host}:5432/cms_admin?sslmode=require`);
 const publicDatabaseUrl = pulumi
   .all([sqlInstance.privateIpAddress, postgresPassword])
-  .apply(([host, pw]) => `postgresql://caelo_public:${pw}@${host}:5432/cms_public?sslmode=require`);
+  .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?sslmode=require`);
+
+// Reference pgPublicUser so Pulumi knows it's part of the dependency
+// graph (Cloud Run env-var deps don't see this directly).
+void pgPublicUser;
 
 // =========================================================================
 // GCS buckets — static (Tier 1 origin, public-read) + media (private, signed-URL only)
