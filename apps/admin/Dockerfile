@@ -123,6 +123,14 @@ COPY --from=builder /repo/bun.lock ./bun.lock
 # Repo-root node_modules (.bun/ cache + hoisted shared packages).
 COPY --from=builder /repo/node_modules ./node_modules
 
+# Drop the build-time `bun` stub. It exists only to satisfy
+# svelte-adapter-bun's Worker step at build time (see comment in the
+# builder stage). At runtime under Bun, the bare `import "bun"` must
+# resolve to Bun's virtual built-in (SQL, Glob etc.), not our stub.
+# If the stub remains, `new SQL(...)` blows up with "function is not
+# a constructor" because it's just our throwing arrow function.
+RUN rm -rf node_modules/bun
+
 # Workspace source the runtime needs (the bundled SSR output references
 # packages/* + plugin manifests at runtime).
 COPY --from=builder /repo/packages ./packages
