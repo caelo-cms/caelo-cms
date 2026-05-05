@@ -21,6 +21,7 @@
     "dist/",
     "stacks/",
     "caddy/",
+    "static/",
     "README.md",
     "package.json"
   ],

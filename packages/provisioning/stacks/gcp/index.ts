@@ -781,5 +781,6 @@ export const lbIpOut = lbIp.address;
 export const adminDomainOut = adminDomain;
 export const bootstrapTokenExpiresAtOut = tokenInfo.expiresAt;
 export const staticPublisherSaEmailOut = staticPublisherSa.email;
+export const staticBucketNameOut = staticBucket.name;
 // P15 self-hosted CDN-copy adapter ABI — kept for cross-stack compat.
 export const selfHostedCdnCopy = { pin: {}, unpin: {} };

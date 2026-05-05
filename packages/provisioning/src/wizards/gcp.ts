@@ -178,7 +178,14 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // "you're done" while HTTPS still ERR_CONNECTION_CLOSEDs.
   await stepWaitForCertActive(projectId);
 
-  // === 11. DNS records + bootstrap URL ===
+  // === 11. Upload the fresh-install placeholder to the static bucket ===
+  // Without this, https://<domain>/ returns the raw GCS NoSuchKey XML
+  // until the operator publishes their first deploy. Idempotent: skips
+  // if any object already exists at the bucket root (i.e. the static
+  // generator has already published).
+  await stepUploadStaticPlaceholder(installId, projectId, domain);
+
+  // === 12. DNS records + bootstrap URL ===
   // IAP is enabled directly on the LB BackendService (Pulumi-managed);
   // no post-up gcloud step needed.
   await stepFinalize(installId);
@@ -596,6 +603,110 @@ async function stepWaitForCertActive(projectId: string): Promise<void> {
       "  - The LB's HTTP port-80 listener isn't reachable from the public internet",
     ].join("\n"),
   );
+}
+
+/**
+ * Upload the static placeholder so https://<domain>/ shows a friendly
+ * "Coming soon" landing instead of GCS's raw NoSuchKey XML. Skipped
+ * if anything is already in the bucket root (the static-generator's
+ * first publish replaces this transparently).
+ */
+async function stepUploadStaticPlaceholder(
+  installId: string,
+  projectId: string,
+  domain: string,
+): Promise<void> {
+  const stepName = `static-placeholder-${projectId}`;
+  if (isStepDone(installId, stepName)) {
+    log.success(`Static placeholder uploaded ${dim("(checkpointed)")}`);
+    return;
+  }
+  // Resolve bucket name from Pulumi outputs.
+  const lsRoot = await gcloud([
+    "storage",
+    "buckets",
+    "list",
+    "--project",
+    projectId,
+    "--filter",
+    "name~caelo-production-static",
+    "--format=value(name)",
+  ]);
+  const bucketName = (lsRoot.stdout || "").trim().split(/\s+/)[0];
+  if (!bucketName) {
+    log.warn(yellow("Static bucket not found; skipping placeholder upload."));
+    return;
+  }
+  // Idempotency: skip if anything is in the bucket root already.
+  const existing = await gcloud([
+    "storage",
+    "ls",
+    `gs://${bucketName}/index.html`,
+    "--project",
+    projectId,
+  ]);
+  if (existing.ok) {
+    log.success(`Static bucket already populated ${dim("(skipping placeholder)")}`);
+    markStepDone(installId, stepName, { skipped: "exists" });
+    return;
+  }
+
+  // Resolve the placeholder asset relative to this file (works in dev
+  // from src/ and in the published tarball from dist/).
+  const here = new URL(import.meta.url).pathname;
+  const candidates = [
+    join(here, "..", "..", "..", "static", "welcome.html"),
+    join(here, "..", "..", "..", "..", "static", "welcome.html"),
+  ];
+  let html = "";
+  for (const path of candidates) {
+    if (existsSync(path)) {
+      html = readFileSync(path, "utf8");
+      break;
+    }
+  }
+  if (!html) {
+    log.warn(yellow("welcome.html template not found; skipping placeholder upload."));
+    return;
+  }
+  // Substitute the admin URL.
+  html = html.replaceAll("{{ADMIN_URL}}", `https://admin.${domain}`);
+
+  const s = spinner();
+  s.start(`Uploading welcome page → gs://${bucketName}/index.html`);
+  // Pipe via stdin so we don't write a temp file.
+  const { spawn } = await import("node:child_process");
+  const upload = await new Promise<{ ok: boolean; stderr: string }>((resolve) => {
+    const child = spawn(
+      "gcloud",
+      [
+        "storage",
+        "cp",
+        "--content-type",
+        "text/html; charset=utf-8",
+        "--cache-control",
+        "no-cache, max-age=60",
+        "-",
+        `gs://${bucketName}/index.html`,
+        "--project",
+        projectId,
+      ],
+      { stdio: ["pipe", "inherit", "pipe"] },
+    );
+    let stderr = "";
+    child.stderr.on("data", (d) => {
+      stderr += d.toString();
+    });
+    child.on("close", (code) => resolve({ ok: code === 0, stderr }));
+    child.stdin.write(html);
+    child.stdin.end();
+  });
+  if (!upload.ok) {
+    s.stop(red(`Upload failed: ${upload.stderr.trim()}`));
+    return;
+  }
+  s.stop(green(`Welcome page live at https://${domain}/`));
+  markStepDone(installId, stepName, { bucket: bucketName });
 }
 
 async function stepFinalize(installId: string): Promise<void> {
