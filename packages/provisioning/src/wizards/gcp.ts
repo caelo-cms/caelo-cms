@@ -797,8 +797,12 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
 
   // The cleanup script — uses bun's globalThis.Bun.SQL (already proven
   // pattern in hooks.server.ts + the migration runner). DO block makes
-  // it safe to re-run.
-  const script = `const SQL = globalThis.Bun.SQL; async function fix(u){ const s = new SQL(u); await s.unsafe(\`DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='caelo_admin') THEN EXECUTE 'REASSIGN OWNED BY caelo_admin TO admin_role'; EXECUTE 'DROP OWNED BY caelo_admin'; END IF; END $$;\`); await s.end(); } await fix(process.env.ADMIN_PG); await fix(process.env.PUBLIC_PG); console.log('drained');`;
+  // it safe to re-run. The two GRANTs are required because Cloud SQL's
+  // `postgres` user is `cloudsqlsuperuser` (not a true superuser);
+  // REASSIGN OWNED needs membership in both source + target roles.
+  // Logs before/after counts so the operator can see whether the
+  // reassignment actually moved anything.
+  const script = `const SQL = globalThis.Bun.SQL; async function fix(name, u){ const s = new SQL(u); console.log(\`[\${name}] connected\`); const before = await s.unsafe(\`SELECT count(*)::int AS n FROM pg_class c JOIN pg_roles r ON c.relowner = r.oid WHERE r.rolname = 'caelo_admin';\`); console.log(\`[\${name}] caelo_admin owns\`, before); await s.unsafe(\`DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='caelo_admin') THEN EXECUTE 'GRANT caelo_admin TO CURRENT_USER'; EXECUTE 'GRANT admin_role TO CURRENT_USER'; EXECUTE 'REASSIGN OWNED BY caelo_admin TO admin_role'; EXECUTE 'DROP OWNED BY caelo_admin'; END IF; END $$;\`); const after = await s.unsafe(\`SELECT count(*)::int AS n FROM pg_class c JOIN pg_roles r ON c.relowner = r.oid WHERE r.rolname = 'caelo_admin';\`); console.log(\`[\${name}] after\`, after); await s.end(); } await fix('cms_admin', process.env.ADMIN_PG); await fix('cms_public', process.env.PUBLIC_PG); console.log('drained');`;
 
   // Delete-then-create so we always run with the freshest config.
   await gcloud([
@@ -853,8 +857,16 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
     "--wait",
   ]);
   if (!exec.ok) {
-    s.stop(yellow(`Drain job failed: ${exec.stderr.trim()} — continuing (may already be clean)`));
-    return;
+    s.stop(red(`Drain job failed: ${exec.stderr.trim()}`));
+    cancel(
+      "Could not drain legacy caelo_admin user. Inspect the Cloud Run Job logs " +
+        "(`gcloud logging read 'resource.type=cloud_run_job AND " +
+        "resource.labels.job_name=caelo-drain-legacy-user' --project=" +
+        projectId +
+        "`) and re-run the wizard. Aborting before pulumi-up to avoid the " +
+        "predictable pg user-delete failure downstream.",
+    );
+    process.exit(1);
   }
   s.stop(green("Legacy caelo_admin user drained"));
 }
