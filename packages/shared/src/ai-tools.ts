@@ -193,6 +193,26 @@ export const aiProvidersSetInput = z
     displayName: z.string().min(1).max(100),
     config: z.record(z.string(), z.unknown()).default({}),
     isActive: z.boolean().default(true),
+    /**
+     * Optional plaintext API key. When present the op encrypts it with the
+     * project KEK and persists ciphertext + IV + KEK fingerprint. When
+     * absent the existing stored key (if any) is preserved untouched —
+     * lets the Owner edit displayName / model / baseUrl without re-pasting.
+     * Audit logs `apiKeyChanged: boolean`, never the value.
+     */
+    apiKey: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+
+/**
+ * Input for `ai_providers.clear_key` — Owner-only NULLs the encrypted
+ * triplet so the resolver falls back to the env-var path for that
+ * provider (or returns null if no env is set, which surfaces the
+ * "configure AI provider" UI banner).
+ */
+export const aiProvidersClearKeyInput = z
+  .object({
+    name: z.enum(["anthropic", "openai", "google", "local-openai-compat"]),
   })
   .strict();
 
@@ -605,6 +625,7 @@ export type ChatPublishInput = z.infer<typeof chatPublishInput>;
 export type AiMemorySetInput = z.infer<typeof aiMemorySetInput>;
 export type AiMemoryReviewInput = z.infer<typeof aiMemoryReviewInput>;
 export type AiProvidersSetInput = z.infer<typeof aiProvidersSetInput>;
+export type AiProvidersClearKeyInput = z.infer<typeof aiProvidersClearKeyInput>;
 export type AddModuleToLayoutToolInput = z.infer<typeof addModuleToLayoutToolInput>;
 export type RemoveModuleFromLayoutToolInput = z.infer<typeof removeModuleFromLayoutToolInput>;
 export type SetTemplateLayoutToolInput = z.infer<typeof setTemplateLayoutToolInput>;

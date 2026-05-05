@@ -189,7 +189,12 @@ import {
   setAiMemoryOp,
 } from "./ops/security/ai_memory.js";
 import { listAiPricingOp, setAiPricingOp } from "./ops/security/ai_pricing.js";
-import { listAiProvidersOp, setAiProvidersOp } from "./ops/security/ai_providers.js";
+import {
+  anyAiProviderConfiguredOp,
+  clearAiProviderKeyOp,
+  listAiProvidersOp,
+  setAiProvidersOp,
+} from "./ops/security/ai_providers.js";
 import { auditByRequestIdOp } from "./ops/security/audit_by_request.js";
 import {
   createMcpTokenOp,
@@ -352,6 +357,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(reviewAiMemoryOp);
   registry.register(listAiProvidersOp);
   registry.register(setAiProvidersOp);
+  registry.register(clearAiProviderKeyOp);
+  registry.register(anyAiProviderConfiguredOp);
   registry.register(aggregateAiCallsOp);
   registry.register(aggregatePluginAiSpendOp);
   registry.register(setPluginAiCostCapOp);
