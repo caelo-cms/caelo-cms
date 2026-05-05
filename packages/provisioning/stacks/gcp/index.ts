@@ -159,18 +159,18 @@ function makeSecret(name: string, value: pulumi.Output<string> | null): MadeSecr
 }
 
 const pgSecret = makeSecret("postgres-password", postgresPassword);
-makeSecret("csrf-secret", csrfSecret);
-makeSecret("cookie-secret", cookieSecret);
+const csrfSecretRes = makeSecret("csrf-secret", csrfSecret);
+const cookieSecretRes = makeSecret("cookie-secret", cookieSecret);
 const kekSecret = makeSecret("secret-kek", caeloSecretKek);
 // Anthropic key is optional now — operators configure providers via
 // /security/ai after first login. Skip the v1 when no key is in config;
 // the Secret resource still exists for backwards-compat env-var path.
-makeSecret("anthropic-api-key", anthropicApiKeyConfig ?? null);
+const anthropicSecretRes = makeSecret("anthropic-api-key", anthropicApiKeyConfig ?? null);
 // Resend: skip the v1 when no key is configured (cfg.getSecret returns
 // undefined when the key is unset in Pulumi.yaml + not overridden in the
 // stack config). The Secret resource still exists; operators add a v1
 // later via `gcloud secrets versions add` or `pulumi config set --secret`.
-makeSecret("resend-api-key", resendApiKeyConfig ?? null);
+const resendSecretRes = makeSecret("resend-api-key", resendApiKeyConfig ?? null);
 
 // =========================================================================
 // Tier 4 — Cloud SQL Postgres (private IP only; HA + retention configurable)
@@ -307,22 +307,27 @@ const runSa = new gcp.serviceaccount.Account(
   opts,
 );
 
-for (const sn of [
-  "postgres-password",
-  "csrf-secret",
-  "cookie-secret",
-  "secret-kek",
-  "anthropic-api-key",
-  "resend-api-key",
+// Pass the Secret RESOURCE (not a hardcoded id) so Pulumi infers the
+// dependency edge — otherwise the IamMember create races the Secret
+// create on first apply and 404s. Same `dependsOn` for belt-and-braces.
+for (const made of [
+  { name: "postgres-password", made: pgSecret },
+  { name: "csrf-secret", made: csrfSecretRes },
+  { name: "cookie-secret", made: cookieSecretRes },
+  { name: "secret-kek", made: kekSecret },
+  { name: "anthropic-api-key", made: anthropicSecretRes },
+  { name: "resend-api-key", made: resendSecretRes },
 ]) {
   new gcp.secretmanager.SecretIamMember(
-    `${namePrefix}-${sn}-binding`,
+    `${namePrefix}-${made.name}-binding`,
     {
-      secretId: `${namePrefix}-${sn}`,
+      // .secretId from the resource is an Output<string> — Pulumi
+      // tracks the read-after-create edge automatically.
+      secretId: made.made.resource.secretId,
       role: "roles/secretmanager.secretAccessor",
       member: pulumi.interpolate`serviceAccount:${runSa.email}`,
     },
-    opts,
+    { ...opts, dependsOn: [made.made.resource] },
   );
 }
 
