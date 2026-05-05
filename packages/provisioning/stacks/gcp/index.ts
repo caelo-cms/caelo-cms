@@ -236,9 +236,18 @@ const cmsPublicDb = new gcp.sql.Database(
   opts,
 );
 
+// admin_role on cms_admin — admin app's primary DB.
 const adminDatabaseUrl = pulumi
   .all([sqlInstance.privateIpAddress, postgresPassword])
   .apply(([host, pw]) => `postgresql://admin_role:${pw}@${host}:5432/cms_admin?sslmode=require`);
+// admin_role on cms_public — admin's second pool: cross-DB reads of
+// plugin data + DDL for plugin schemas + migration runs. Wired to the
+// admin (and migration job) via PUBLIC_ADMIN_DATABASE_URL.
+const publicAdminDatabaseUrl = pulumi
+  .all([sqlInstance.privateIpAddress, postgresPassword])
+  .apply(([host, pw]) => `postgresql://admin_role:${pw}@${host}:5432/cms_public?sslmode=require`);
+// public_role on cms_public — write-limited gateway role. Wired to the
+// gateway via PUBLIC_DATABASE_URL.
 const publicDatabaseUrl = pulumi
   .all([sqlInstance.privateIpAddress, postgresPassword])
   .apply(([host, pw]) => `postgresql://public_role:${pw}@${host}:5432/cms_public?sslmode=require`);
@@ -441,7 +450,6 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
               { name: "CAELO_PROVIDER", value: "gcp" },
               { name: "CAELO_ENV", value: env },
               { name: "ADMIN_DATABASE_URL", value: adminDatabaseUrl },
-              { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicDatabaseUrl },
               { name: "MEDIA_STORAGE_URL", value: pulumi.interpolate`gs://${mediaBucket.name}` },
               // P18 — project KEK is mounted from Secret Manager so AI
               // provider keys (and any future at-rest secrets) can be
@@ -484,12 +492,18 @@ const adminSvc = cloudRunService({
   minInstances: adminMinInstances,
   maxInstances: 10,
   memory: "1Gi",
+  // Admin's second pool: admin_role on cms_public for cross-DB reads
+  // + DDL + migrations. NOT public_role (write-limited).
+  extraEnv: [{ name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl }],
 });
 const gatewaySvc = cloudRunService({
   serviceName: "gateway",
   minInstances: gatewayMinInstances,
   maxInstances: 100,
   memory: "512Mi",
+  // Gateway's only DB pool: public_role on cms_public, write-limited
+  // per CLAUDE.md (gateway must NEVER hold admin_role creds).
+  extraEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
 });
 
 // =========================================================================
