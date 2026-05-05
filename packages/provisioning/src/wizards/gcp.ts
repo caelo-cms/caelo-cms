@@ -817,12 +817,23 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
 
   // The cleanup script — uses bun's globalThis.Bun.SQL (already proven
   // pattern in hooks.server.ts + the migration runner). DO block makes
-  // it safe to re-run. The two GRANTs are required because Cloud SQL's
-  // `postgres` user is `cloudsqlsuperuser` (not a true superuser);
-  // REASSIGN OWNED needs membership in both source + target roles.
-  // Logs before/after counts so the operator can see whether the
-  // reassignment actually moved anything.
-  const script = `const SQL = globalThis.Bun.SQL; async function fix(name, u){ const s = new SQL(u); console.log(\`[\${name}] connected\`); const before = await s.unsafe(\`SELECT count(*)::int AS n FROM pg_class c JOIN pg_roles r ON c.relowner = r.oid WHERE r.rolname = 'caelo_admin';\`); console.log(\`[\${name}] caelo_admin owns\`, before); await s.unsafe(\`DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='caelo_admin') THEN EXECUTE 'GRANT caelo_admin TO CURRENT_USER'; EXECUTE 'GRANT admin_role TO CURRENT_USER'; EXECUTE 'REASSIGN OWNED BY caelo_admin TO admin_role'; EXECUTE 'DROP OWNED BY caelo_admin'; END IF; END $$;\`); const after = await s.unsafe(\`SELECT count(*)::int AS n FROM pg_class c JOIN pg_roles r ON c.relowner = r.oid WHERE r.rolname = 'caelo_admin';\`); console.log(\`[\${name}] after\`, after); await s.end(); } await fix('cms_admin', process.env.ADMIN_PG); await fix('cms_public', process.env.PUBLIC_PG); console.log('drained');`;
+  // it safe to re-run.
+  //
+  // Per-step rationale (validated against caelo-website production):
+  //   - WITH INHERIT TRUE on both grants: PG 16 default is NOINHERIT,
+  //     so plain "GRANT caelo_admin TO postgres" makes postgres a member
+  //     but doesn't give it caelo_admin's privileges. REASSIGN OWNED
+  //     fails with "Only roles with privileges of role caelo_admin may
+  //     reassign objects owned by it." WITH INHERIT TRUE fixes it.
+  //   - ALTER SCHEMA public OWNER TO admin_role: in PG 16 the default
+  //     `public` schema is owned by cloudsqladmin (Cloud SQL) /
+  //     pg_database_owner (vanilla). The REASSIGN's per-function ACL
+  //     check ("permission denied for schema public") fails until
+  //     admin_role owns it.
+  //   - We count pg_proc (not pg_class): the legacy caelo_admin role
+  //     left behind owned FUNCTIONS, not tables. The before count was
+  //     31 on the caelo-website install; after was 0.
+  const script = `const SQL = globalThis.Bun.SQL; async function fix(name, u){ const s = new SQL(u); console.log(\`[\${name}] connected\`); const before = await s.unsafe(\`SELECT count(*)::int AS n FROM pg_proc p JOIN pg_roles r ON p.proowner=r.oid WHERE r.rolname = 'caelo_admin';\`); console.log(\`[\${name}] caelo_admin functions=\`, before); await s.unsafe(\`DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='caelo_admin') THEN EXECUTE 'GRANT caelo_admin TO CURRENT_USER WITH INHERIT TRUE'; EXECUTE 'GRANT admin_role TO CURRENT_USER WITH INHERIT TRUE'; EXECUTE 'ALTER SCHEMA public OWNER TO admin_role'; EXECUTE 'REASSIGN OWNED BY caelo_admin TO admin_role'; EXECUTE 'DROP OWNED BY caelo_admin'; END IF; END $$;\`); const after = await s.unsafe(\`SELECT count(*)::int AS n FROM pg_proc p JOIN pg_roles r ON p.proowner=r.oid WHERE r.rolname = 'caelo_admin';\`); console.log(\`[\${name}] after functions=\`, after); await s.end(); } await fix('cms_admin', process.env.ADMIN_PG); await fix('cms_public', process.env.PUBLIC_PG); console.log('drained');`;
 
   // Delete-then-create so we always run with the freshest config.
   await gcloud([
@@ -855,7 +866,10 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
     "--vpc-egress=private-ranges-only",
     "--command=bun",
     // ^|^ delimiter form — JS contains commas so we can't use the default.
-    `--args=^|^--bun|-e|eval(process.env.SCRIPT)`,
+    // Wrap in async IIFE so top-level `await` in SCRIPT works (sync eval()
+    // doesn't support TLA; new Function('return (async () => { ... })()')
+    // does, and avoids needing to write SCRIPT to disk).
+    `--args=^|^--bun|-e|(new Function('return (async () => { ' + process.env.SCRIPT + ' })()'))()`,
     `--set-env-vars=^|^SCRIPT=${script}|ADMIN_PG=${adminPg}|PUBLIC_PG=${publicPg}`,
     "--max-retries=0",
     "--task-timeout=2m",
