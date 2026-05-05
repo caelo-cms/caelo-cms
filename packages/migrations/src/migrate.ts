@@ -12,7 +12,17 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SQL } from "bun";
+// Read SQL via globalThis.Bun (Bun's runtime sets it natively). The
+// type-only import is erased at compile time so the bundler never sees
+// a value-import of "bun" — avoids the SvelteKit/Vite chain inlining
+// a stub package when admin transitively imports this module.
+import type { SQL as SQLType } from "bun";
+
+type SQL = SQLType;
+const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
+  ?.SQL as unknown as new (
+  url: string,
+) => SQLType;
 
 type Target = "admin" | "public";
 
@@ -78,7 +88,7 @@ async function runMigrations(sql: SQL, dir: string): Promise<void> {
     // so seed INSERTs can write to RLS-`FORCE`d tables (actors, audit_events, etc.).
     // CREATE DATABASE isn't in migrations — those are handled by bootstrap.sh — so
     // it's safe to wrap everything in BEGIN/COMMIT here.
-    await sql.begin(async (tx) => {
+    await sql.begin(async (tx: SQL) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       for (const stmt of statements) {
         await tx.unsafe(stmt);

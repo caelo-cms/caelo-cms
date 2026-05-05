@@ -30,8 +30,18 @@ import {
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { SQL } from "bun";
+// Read SQL via globalThis.Bun rather than a value-import of "bun".
+// The type-only import is erased at compile; the runtime constructor
+// comes from Bun's globals. Keeps this file bundler-safe for any
+// downstream packager that doesn't resolve the bun built-in.
+import type { SQL as SQLType } from "bun";
 import { sql } from "drizzle-orm";
+
+const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
+  ?.SQL as unknown as new (
+  url: string,
+) => SQLType;
+
 import { handleVariantAssign, VARIANT_SCRIPT } from "./ab-router.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
 import {
