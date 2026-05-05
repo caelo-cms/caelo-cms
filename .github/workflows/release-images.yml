@@ -36,6 +36,10 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
+  # Opt every JavaScript-based action into the Node 24 runtime now,
+  # ahead of GitHub's June-2026 deadline. Silences the Node-20-deprecation
+  # warning the docker/* + google-github-actions/auth@v2 actions print.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   IMAGE_NAMESPACE: caelo-cms
 
 jobs:
