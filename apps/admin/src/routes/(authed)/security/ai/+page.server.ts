@@ -7,48 +7,44 @@ import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
-const PROVIDER_KEY_ENV: Record<string, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  google: "GOOGLE_API_KEY",
-  "local-openai-compat": "LOCAL_OPENAI_BASE_URL",
-};
+const KNOWN_PROVIDERS = ["anthropic", "openai", "google", "local-openai-compat"] as const;
+type KnownProvider = (typeof KNOWN_PROVIDERS)[number];
 
-const DEFAULT_MODEL: Record<string, string> = {
+const DEFAULT_MODEL: Record<KnownProvider, string> = {
   anthropic: "claude-opus-4-7",
   openai: "gpt-4o",
   google: "gemini-1.5-pro",
   "local-openai-compat": "qwen2.5",
 };
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, url }) => {
   requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "ai_providers.list", {});
   type Row = {
     id: string;
-    name: "anthropic" | "openai" | "google" | "local-openai-compat";
+    name: KnownProvider;
     displayName: string;
     config: Record<string, unknown>;
     isActive: boolean;
+    apiKeySource: "db" | "env" | null;
+    apiKeySetAt: string | null;
   };
   const rows = r.ok ? ((r.value as { providers: Row[] }).providers ?? []) : [];
 
   // Surface every supported provider, even if unconfigured — Owner needs
-  // the row to flip activate. `keyEnv` is the secret-source the runtime
-  // reads at boot; absence means the provider can't actually be used.
-  const KNOWN: Array<Row["name"]> = ["anthropic", "openai", "google", "local-openai-compat"];
+  // the row to flip activate. `apiKeySource` is computed by the op so
+  // there's one source of truth.
   const byName = new Map(rows.map((r) => [r.name, r]));
-  const providers = KNOWN.map((name) => {
+  const providers = KNOWN_PROVIDERS.map((name) => {
     const row = byName.get(name);
-    const envKey = PROVIDER_KEY_ENV[name];
     return {
       name,
       displayName: row?.displayName ?? prettyName(name),
       isActive: row?.isActive ?? false,
       configured: Boolean(row),
-      apiKeySet: envKey ? Boolean(process.env[envKey]) : false,
-      keyEnv: envKey ?? null,
+      apiKeySource: (row?.apiKeySource ?? null) as "db" | "env" | null,
+      apiKeySetAt: row?.apiKeySetAt ?? null,
       model:
         (typeof row?.config.model === "string" ? (row.config.model as string) : null) ??
         DEFAULT_MODEL[name] ??
@@ -57,7 +53,10 @@ export const load: PageServerLoad = async ({ locals }) => {
     };
   });
 
-  return { providers };
+  // First-run banner trigger from the +layout.server.ts redirect.
+  const firstRun = url.searchParams.get("firstRun") === "1";
+
+  return { providers, firstRun };
 };
 
 function prettyName(n: string): string {
@@ -82,16 +81,17 @@ export const actions: Actions = {
     const form = await request.formData();
     await assertCsrfToken(form, locals);
 
-    const name = String(form.get("name") ?? "").trim() as
-      | "anthropic"
-      | "openai"
-      | "google"
-      | "local-openai-compat";
-    if (!["anthropic", "openai", "google", "local-openai-compat"].includes(name)) {
+    const name = String(form.get("name") ?? "").trim() as KnownProvider;
+    if (!KNOWN_PROVIDERS.includes(name)) {
       return fail(400, { error: "unknown provider" });
     }
     const model = String(form.get("model") ?? "").trim();
     const baseUrl = String(form.get("baseUrl") ?? "").trim();
+    const apiKeyRaw = String(form.get("apiKey") ?? "");
+    // Empty input means "leave existing key untouched" — Owner edits
+    // model / baseUrl without re-pasting the key. Trimmed-empty also
+    // counts as no-change.
+    const apiKey = apiKeyRaw.trim().length > 0 ? apiKeyRaw : undefined;
     const isActive = form.get("isActive") === "1";
     const config: Record<string, unknown> = { model };
     if (baseUrl) config.baseUrl = baseUrl;
@@ -101,8 +101,25 @@ export const actions: Actions = {
       displayName: prettyName(name),
       config,
       isActive,
+      ...(apiKey !== undefined ? { apiKey } : {}),
     });
     if (!result.ok) return fail(400, { error: "Could not save provider config." });
-    return { ok: true, providerName: name };
+    const apiKeyChanged = (result.value as { apiKeyChanged: boolean }).apiKeyChanged;
+    return { ok: true, providerName: name, apiKeyChanged };
+  },
+
+  clear_key: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+
+    const name = String(form.get("name") ?? "").trim() as KnownProvider;
+    if (!KNOWN_PROVIDERS.includes(name)) {
+      return fail(400, { error: "unknown provider" });
+    }
+    const result = await execute(registry, adapter, locals.ctx, "ai_providers.clear_key", { name });
+    if (!result.ok) return fail(400, { error: "Could not clear key." });
+    return { ok: true, providerName: name, cleared: true };
   },
 };
