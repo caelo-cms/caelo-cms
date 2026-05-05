@@ -42,6 +42,7 @@ import {
   createServiceAccount,
   createServiceAccountKey,
   enableApis,
+  gcloud,
   grantProvisionerRoles,
   linkBilling,
   listBillingAccounts,
@@ -169,7 +170,15 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     iapAllowlist: [`user:${ownerEmail}`],
   });
 
-  // === 10. DNS records + bootstrap URL ===
+  // === 10. Wait for managed cert to flip from PROVISIONING → ACTIVE ===
+  // Pulumi reports the cert "created" the moment GCP queues it; the
+  // actual issuance + DNS validation takes 5-30 min depending on
+  // load + DNS propagation. The bootstrap URL is meaningless until
+  // ACTIVE — without this step the wizard would tell the operator
+  // "you're done" while HTTPS still ERR_CONNECTION_CLOSEDs.
+  await stepWaitForCertActive(projectId);
+
+  // === 11. DNS records + bootstrap URL ===
   // IAP is enabled directly on the LB BackendService (Pulumi-managed);
   // no post-up gcloud step needed.
   await stepFinalize(installId);
@@ -513,6 +522,80 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
     ),
   );
   markStepDone(installId, stepName, { outputs: result.outputs });
+}
+
+/**
+ * Poll the LB managed SSL cert until both domains report ACTIVE.
+ * Pulumi reports the cert "created" the moment GCP queues it; the actual
+ * ACME-style validation against the LB takes 5-30 min. Without this
+ * step the wizard would tell the operator "Done. Welcome to Caelo CMS"
+ * while HTTPS still ERR_CONNECTION_CLOSEDs and the bootstrap URL is
+ * useless. Times out after 35 min with a clear escalation note.
+ */
+async function stepWaitForCertActive(projectId: string): Promise<void> {
+  const s = spinner();
+  s.start("Waiting for managed TLS cert to validate (typically 5-15 min)...");
+  const deadline = Date.now() + 35 * 60 * 1000;
+  let lastStatus = "";
+  while (Date.now() < deadline) {
+    const r = await gcloud([
+      "compute",
+      "target-https-proxies",
+      "list",
+      "--project",
+      projectId,
+      "--format=value(sslCertificates)",
+    ]);
+    if (!r.ok) {
+      s.stop(red(`gcloud target-https-proxies list failed: ${r.stderr.trim()}`));
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    const certUrl = r.stdout.trim().split(/\s+/)[0] ?? "";
+    const certName = certUrl.split("/").pop() ?? "";
+    if (!certName) {
+      s.stop(red("Could not resolve managed cert name from HTTPS proxy."));
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    const desc = await gcloud([
+      "compute",
+      "ssl-certificates",
+      "describe",
+      certName,
+      "--global",
+      "--project",
+      projectId,
+      "--format=value(managed.status,managed.domainStatus)",
+    ]);
+    const text = (desc.stdout || "").trim();
+    if (text !== lastStatus) {
+      s.message(`Cert ${certName}: ${text || "(no status yet)"}`);
+      lastStatus = text;
+    }
+    // Status format: "ACTIVE\t{'caelo-cms.com': 'ACTIVE', 'admin.caelo-cms.com': 'ACTIVE'}"
+    if (/^ACTIVE\b/.test(text) && !/FAILED/.test(text) && !/PROVISIONING/.test(text)) {
+      s.stop(green(`Managed TLS cert is ACTIVE for all domains`));
+      return;
+    }
+    if (/FAILED_NOT_VISIBLE/.test(text)) {
+      s.message(
+        `${cyan(certName)} validation can't reach the LB yet — check DNS A records resolve to LB IP. Will keep polling.`,
+      );
+    }
+    await new Promise((res) => setTimeout(res, 30 * 1000));
+  }
+  s.stop(yellow("Cert still not ACTIVE after 35 min."));
+  log.warn(
+    [
+      "The cert may still finish on its own — Google Managed Cert validation can take up to 60 min.",
+      "Check status anytime:",
+      `  ${bold(`gcloud compute ssl-certificates list --global --project=${projectId}`)}`,
+      "Common causes if it never flips ACTIVE:",
+      "  - DNS A records don't resolve to the LB IP yet (check `dig +short caelo-cms.com`)",
+      "  - The LB's HTTP port-80 listener isn't reachable from the public internet",
+    ].join("\n"),
+  );
 }
 
 async function stepFinalize(installId: string): Promise<void> {
