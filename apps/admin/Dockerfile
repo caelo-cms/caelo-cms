@@ -83,11 +83,22 @@ RUN set -e && \
 # Now the source.
 COPY . .
 
-# Source no longer does `import { SQL } from "bun"` — runtime now
-# reads SQL/Glob from globalThis.Bun (see query-api/adapter.ts +
-# admin-core/media/storage.ts). The build no longer needs a stub
-# node_modules/bun package; SvelteKit's adapter Worker step succeeds
-# without it, and the bundle never tries to resolve "bun".
+# Build-time `bun` shim. Caelo source no longer value-imports "bun"
+# (uses globalThis.Bun directly), but vendor code does — drizzle-orm's
+# bun-sql/driver.js does `import { SQL } from "bun"` and we can't edit
+# it. SvelteKit's vite/rollup bundles drizzle and tries to resolve
+# "bun" at build time. Provide a shim that re-exports the runtime
+# globalThis.Bun built-ins:
+#   - At BUILD time: SvelteKit's adapter Worker loads the SSR chunks
+#     under Node, finds the shim package, exports are undefined →
+#     accessed lazily by drizzle, no errors at module-load time.
+#   - At RUNTIME under Bun: globalThis.Bun is the real built-in, so
+#     drizzle's `new SQL(url)` calls Bun's real constructor.
+RUN mkdir -p /repo/node_modules/bun && \
+    printf '{"name":"bun","version":"0.0.0-shim","type":"module","main":"index.js"}\n' \
+      > /repo/node_modules/bun/package.json && \
+    printf 'const G = globalThis;\nexport const SQL = G.Bun?.SQL;\nexport const Glob = G.Bun?.Glob;\nexport default G.Bun ?? {};\n' \
+      > /repo/node_modules/bun/index.js
 
 # Build with `bun x vite build` (Node-style invocation, no Bun JIT).
 # Bun's JIT under Docker amd64 here SIGILLs the same way it does on
