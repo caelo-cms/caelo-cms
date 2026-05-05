@@ -118,7 +118,19 @@ function randomHex(bytes: number): string {
 const postgresPassword = pulumi.secret(randomHex(32));
 const csrfSecret = pulumi.secret(randomHex(32));
 const cookieSecret = pulumi.secret(randomHex(32));
-const anthropicApiKey = pulumi.secret(cfg.requireSecret("anthropicApiKey"));
+// P18 — project KEK (32 bytes hex) encrypts AI provider API keys + future
+// at-rest secrets in cms_admin. Auto-generated per stack so the operator
+// never types it; Cloud Run binds it as CAELO_SECRET_KEK env via
+// `valueSource.secretKeyRef` below. Rotating it requires a re-encrypt
+// CLI (deferred — the api_key_kek_fp column lets a future tool find rows
+// under the old KEK and refuse to silently return garbage).
+const caeloSecretKek = pulumi.secret(randomHex(32));
+// anthropicApiKey is now OPTIONAL — operators configure the key via
+// /security/ai (encrypted into ai_providers) after first login. Setting
+// it via Pulumi config is supported as a backwards-compat path for
+// installs that already wired it before P18; the Secret resource still
+// exists in either case so a future v1 can be added without redeploying.
+const anthropicApiKeyConfig = cfg.getSecret("anthropicApiKey");
 // resendApiKey is OPTIONAL — empty config means "skip the SecretVersion"
 // so GCP doesn't reject `payload: ""`. The Secret resource itself still
 // exists; operators add a v1 later via `gcloud secrets versions add`.
@@ -149,7 +161,11 @@ function makeSecret(name: string, value: pulumi.Output<string> | null): MadeSecr
 const pgSecret = makeSecret("postgres-password", postgresPassword);
 makeSecret("csrf-secret", csrfSecret);
 makeSecret("cookie-secret", cookieSecret);
-makeSecret("anthropic-api-key", anthropicApiKey);
+const kekSecret = makeSecret("secret-kek", caeloSecretKek);
+// Anthropic key is optional now — operators configure providers via
+// /security/ai after first login. Skip the v1 when no key is in config;
+// the Secret resource still exists for backwards-compat env-var path.
+makeSecret("anthropic-api-key", anthropicApiKeyConfig ?? null);
 // Resend: skip the v1 when no key is configured (cfg.getSecret returns
 // undefined when the key is unset in Pulumi.yaml + not overridden in the
 // stack config). The Secret resource still exists; operators add a v1
@@ -295,6 +311,7 @@ for (const sn of [
   "postgres-password",
   "csrf-secret",
   "cookie-secret",
+  "secret-kek",
   "anthropic-api-key",
   "resend-api-key",
 ]) {
@@ -421,6 +438,17 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
               { name: "ADMIN_DATABASE_URL", value: adminDatabaseUrl },
               { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicDatabaseUrl },
               { name: "MEDIA_STORAGE_URL", value: pulumi.interpolate`gs://${mediaBucket.name}` },
+              // P18 — project KEK is mounted from Secret Manager so AI
+              // provider keys (and any future at-rest secrets) can be
+              // decrypted at runtime. Failing to bind would surface as
+              // "CAELO_SECRET_KEK is not set" the moment the resolver
+              // tries to decrypt — clear, loud failure.
+              {
+                name: "CAELO_SECRET_KEK",
+                valueSource: {
+                  secretKeyRef: { secret: kekSecret.resource.secretId, version: "latest" },
+                },
+              },
               ...(args.extraEnv ?? []),
             ],
             resources: { limits: { cpu: "1", memory: args.memory } },
@@ -432,7 +460,17 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         },
       },
     },
-    { ...opts, dependsOn: [pgAdminUser, cmsAdminDb, cmsPublicDb, pgSecret.version] },
+    {
+      ...opts,
+      dependsOn: [
+        pgAdminUser,
+        cmsAdminDb,
+        cmsPublicDb,
+        ...(pgSecret.version ? [pgSecret.version] : []),
+        // KEK must exist before Cloud Run can mount it via secretKeyRef.
+        ...(kekSecret.version ? [kekSecret.version] : []),
+      ],
+    },
   );
 }
 

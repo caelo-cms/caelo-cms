@@ -34,6 +34,14 @@ interface CaeloConfig {
   postgresPassword: string;
   minioRootUser: string;
   minioRootPassword: string;
+  /**
+   * P18 — project KEK (32 hex bytes). Auto-generated on `cms-provision init`,
+   * persisted in `.caelo/config.json`, mounted into the admin + gateway
+   * containers as CAELO_SECRET_KEK so the AES-GCM secret-box can decrypt
+   * stored AI provider keys. Optional in the type so config.json files
+   * generated before P18 still load — emitConfig() back-fills if missing.
+   */
+  caeloSecretKek?: string;
   anthropicApiKey?: string;
   resendApiKey?: string;
 }
@@ -109,12 +117,20 @@ function arg(name: string): string | undefined {
 }
 
 function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): void {
+  // Back-fill caeloSecretKek for installs created before P18. Persists
+  // immediately so the next emitConfig run sees the same value (existing
+  // encrypted ai_providers rows would otherwise become un-decryptable).
+  if (!cfg.caeloSecretKek) {
+    cfg.caeloSecretKek = randomSecret(32);
+    saveConfig(cfg);
+  }
   // Generate compose + Caddyfile from the canonical config.
   const compose = generateDockerCompose({
     domain: cfg.domain,
     postgresPassword: cfg.postgresPassword,
     minioRootUser: cfg.minioRootUser,
     minioRootPassword: cfg.minioRootPassword,
+    caeloSecretKek: cfg.caeloSecretKek,
     anthropicApiKey: cfg.anthropicApiKey,
     resendApiKey: cfg.resendApiKey,
     diskSize: "20Gi",
@@ -190,6 +206,7 @@ async function init(): Promise<void> {
     postgresPassword: randomSecret(32),
     minioRootUser: "caelo",
     minioRootPassword: randomSecret(32),
+    caeloSecretKek: randomSecret(32),
     anthropicApiKey: process.env.ANTHROPIC_API_KEY,
     resendApiKey: process.env.RESEND_API_KEY,
   };

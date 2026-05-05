@@ -74,6 +74,7 @@ describe("docker-compose generator", () => {
       postgresPassword: "supersecret",
       minioRootUser: "caelo",
       minioRootPassword: "miniopass",
+      caeloSecretKek: "0".repeat(64),
       anthropicApiKey: "sk-ant-…",
       diskSize: "20Gi",
     });
@@ -84,6 +85,7 @@ describe("docker-compose generator", () => {
     expect(out).toContain("supersecret");
     expect(out).toContain("miniopass");
     expect(out).toContain("ANTHROPIC_API_KEY");
+    expect(out).toContain("CAELO_SECRET_KEK");
   });
 
   it("escapes secrets containing quotes safely", () => {
@@ -92,6 +94,7 @@ describe("docker-compose generator", () => {
       postgresPassword: 'pa"ss',
       minioRootUser: "caelo",
       minioRootPassword: "x",
+      caeloSecretKek: "0".repeat(64),
       diskSize: "1Gi",
     });
     expect(out).toContain('pa\\"ss');

@@ -27,7 +27,12 @@ config:
   caelo-gcp:anthropicApiKey:
     type: string
     secret: true
-    description: Anthropic API key. Set via `cat key | pulumi config set --secret`.
+    default: ""
+    description: |
+      OPTIONAL backwards-compat. Operators configure AI provider keys via
+      /security/ai after first login (encrypted into ai_providers via the
+      project KEK). Leave empty for fresh installs; set this only if you
+      need the legacy ANTHROPIC_API_KEY env-var path on Cloud Run.
   # The 8 cross-provider knobs (CLAUDE.md §11.B)
   caelo-gcp:region:
     type: string
