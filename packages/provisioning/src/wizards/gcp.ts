@@ -721,6 +721,7 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
     const d = JSON.parse(adminDescr.stdout) as {
       spec: {
         template: {
+          metadata?: { annotations?: Record<string, string> };
           spec: {
             containers: { image?: string }[];
             vpcAccess?: { networkInterfaces?: { network?: string; subnetwork?: string }[] };
@@ -729,9 +730,26 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
       };
     };
     adminImg = d.spec.template.spec.containers[0]?.image ?? "";
-    const ni = d.spec.template.spec.vpcAccess?.networkInterfaces?.[0];
-    networkRef = ni?.network ?? "";
-    subnetRef = ni?.subnetwork ?? "";
+    // Cloud Run v2 with Direct VPC stores network refs in the
+    // `run.googleapis.com/network-interfaces` annotation (JSON-encoded
+    // array), NOT in spec.template.spec.vpcAccess. Read both — newer
+    // installs use the annotation; older ones use vpcAccess.
+    const annotations = d.spec.template.metadata?.annotations ?? {};
+    const niAnnotation = annotations["run.googleapis.com/network-interfaces"];
+    if (niAnnotation) {
+      try {
+        const parsed = JSON.parse(niAnnotation) as { network?: string; subnetwork?: string }[];
+        networkRef = parsed[0]?.network ?? "";
+        subnetRef = parsed[0]?.subnetwork ?? "";
+      } catch {
+        // fall through to vpcAccess path
+      }
+    }
+    if (!networkRef || !subnetRef) {
+      const ni = d.spec.template.spec.vpcAccess?.networkInterfaces?.[0];
+      networkRef ||= ni?.network ?? "";
+      subnetRef ||= ni?.subnetwork ?? "";
+    }
   } catch {
     s.stop(yellow("Could not parse admin service describe — skipping drain"));
     return;
@@ -740,8 +758,10 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
     s.stop(green("No admin image to spawn drain job — skipping"));
     return;
   }
-  if (!networkRef) networkRef = "caelo-production-vpc";
-  if (!subnetRef) subnetRef = "caelo-production-subnet";
+  if (!networkRef || !subnetRef) {
+    s.stop(yellow("Could not resolve VPC network from admin service — skipping drain"));
+    return;
+  }
 
   // Read postgres superuser password from Secret Manager.
   const secretFetch = await gcloud([
@@ -907,6 +927,7 @@ async function stepRunMigrations(projectId: string, region: string): Promise<voi
     const d = JSON.parse(adminDescr.stdout) as {
       spec: {
         template: {
+          metadata?: { annotations?: Record<string, string> };
           spec: {
             containers: { image?: string; env?: { name: string; value?: string }[] }[];
             vpcAccess?: { networkInterfaces?: { network?: string; subnetwork?: string }[] };
@@ -920,9 +941,24 @@ async function stepRunMigrations(projectId: string, region: string): Promise<voi
       if (e.name === "ADMIN_DATABASE_URL") adminUrl = e.value ?? "";
       if (e.name === "PUBLIC_ADMIN_DATABASE_URL") publicUrl = e.value ?? "";
     }
-    const ni = d.spec.template.spec.vpcAccess?.networkInterfaces?.[0];
-    networkRef = ni?.network ?? "";
-    subnetRef = ni?.subnetwork ?? "";
+    // Cloud Run v2 with Direct VPC: network refs live in the
+    // `run.googleapis.com/network-interfaces` annotation (JSON-encoded
+    // array). Older installs use spec.template.spec.vpcAccess. Read both.
+    const niAnnotation = d.spec.template.metadata?.annotations?.["run.googleapis.com/network-interfaces"];
+    if (niAnnotation) {
+      try {
+        const parsed = JSON.parse(niAnnotation) as { network?: string; subnetwork?: string }[];
+        networkRef = parsed[0]?.network ?? "";
+        subnetRef = parsed[0]?.subnetwork ?? "";
+      } catch {
+        // fall through
+      }
+    }
+    if (!networkRef || !subnetRef) {
+      const ni = d.spec.template.spec.vpcAccess?.networkInterfaces?.[0];
+      networkRef ||= ni?.network ?? "";
+      subnetRef ||= ni?.subnetwork ?? "";
+    }
   } catch (e) {
     sAdmin.stop(red(`Could not parse admin describe JSON: ${(e as Error).message}`));
     return;
@@ -931,10 +967,10 @@ async function stepRunMigrations(projectId: string, region: string): Promise<voi
     sAdmin.stop(red("Admin describe missing image / DB URLs — skipping migrations."));
     return;
   }
-  // VPC connector / network may be in the v2 spec rather than v1; fall back
-  // to the canonical names this stack provisions.
-  if (!networkRef) networkRef = `caelo-production-vpc`;
-  if (!subnetRef) subnetRef = `caelo-production-subnet`;
+  if (!networkRef || !subnetRef) {
+    sAdmin.stop(red("Could not resolve VPC network from admin service — skipping migrations."));
+    return;
+  }
   sAdmin.stop(green(`Admin config resolved (${imageRef.slice(-19)})`));
 
   for (const target of ["admin", "public"] as const) {
