@@ -6,10 +6,11 @@ import {
   type AIProvider as AdminAIProvider,
   buildEmailTransport,
   configureMcpBridge,
+  configureProviderResolver,
   type EmailConfigRow,
   emitSnapshot,
   generateKekHex,
-  makeProvider,
+  getActiveProvider,
   resetStuckTranslationUnits,
   setMode2Provider,
   setTranslationProvider,
@@ -60,39 +61,50 @@ const SYSTEM_CTX: ExecutionContext = {
   requestId: "hooks",
 };
 
-// P10 — one-time translation worker bootstrap. Runs at module load
-// (i.e. once when SvelteKit boots). The worker polls for queued
-// translation_job_units and dispatches Mode 1 / Mode 2 sequentially.
-// Provider is the configured Anthropic adapter; if no key, the
-// worker still runs but units fail with a clear "provider not
-// configured" message (the dashboard surfaces it).
+// P10 / P18 — one-time translation worker bootstrap. Runs at module
+// load (i.e. once when SvelteKit boots). The worker polls for queued
+// translation_job_units and dispatches Mode 1 / Mode 2 sequentially,
+// resolving the AIProvider per unit via the ProviderResolver so a
+// freshly-saved key picks up without a restart. When no provider is
+// configured anywhere (DB or env), individual units fail with
+// "AI provider not configured — visit /security/ai" — the dashboard
+// surfaces it; the worker stays running.
 let translationBootstrapped = false;
 async function bootstrapTranslationWorker(): Promise<void> {
   if (translationBootstrapped) return;
   translationBootstrapped = true;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (apiKey) {
-    const provider = makeProvider({
-      name: "anthropic",
-      apiKey,
-      model: "claude-opus-4-7",
-    });
-    setTranslationProvider({ provider });
-    setMode2Provider({ provider });
-  }
+  // Resolver returns null → setTranslationProvider's resolver wrapper
+  // throws "AI provider not configured" inside the unit handler.
+  const resolveProvider = async (): Promise<{ provider: AdminAIProvider } | null> => {
+    const r = await getActiveProvider();
+    return r ? { provider: r.provider } : null;
+  };
+  setTranslationProvider({ resolveProvider });
+  setMode2Provider({ resolveProvider });
   const { adapter, registry } = getQueryContext();
   await resetStuckTranslationUnits({ adapter, registry, systemCtx: SYSTEM_CTX });
   startTranslationWorker({ adapter, registry, systemCtx: SYSTEM_CTX });
 }
 
-// P11.5 audit fix #3 — adapter from admin-core's event-streaming
+// P11.5 audit fix #3 + P18 — adapter from admin-core's event-streaming
 // AIProvider to plugin-host's single-shot complete() shape. Drains the
 // stream, accumulates text + usage, returns a flat result. Costs of
 // plugin AI calls flow through the standard ai_calls accounting via
 // the plugin's actor row (caelo.actor_id) in upstream call sites.
-function makePluginHostAiProvider(provider: AdminAIProvider): PluginHostAIProvider {
+//
+// Resolves the provider per-call via getActiveProvider() so plugins
+// pick up a freshly-saved key without a restart. When no provider is
+// configured, complete() throws — plugin host surfaces this in the
+// plugin's error log (the plugin author can choose to surface it
+// further or fail soft).
+function makePluginHostAiProvider(): PluginHostAIProvider {
   return {
     complete: async (opts) => {
+      const resolved = await getActiveProvider();
+      if (!resolved) {
+        throw new Error("AI provider not configured — Owner must visit /security/ai");
+      }
+      const provider = resolved.provider;
       let text = "";
       let inputTokens = 0;
       let outputTokens = 0;
@@ -134,12 +146,10 @@ async function bootstrapPlugins(): Promise<void> {
   // declare those capabilities get working handles. Plugin's
   // requestedCapabilities still gates which handles are actually attached
   // per-call; this just supplies the implementations.
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  const aiProvider = apiKey
-    ? makePluginHostAiProvider(
-        makeProvider({ name: "anthropic", apiKey, model: "claude-opus-4-7" }),
-      )
-    : undefined;
+  // P18 — provider is resolved per-call via getActiveProvider(); the
+  // wrapper below throws when nothing is configured so plugin authors
+  // can decide whether to surface or fail soft.
+  const aiProvider: PluginHostAIProvider | undefined = makePluginHostAiProvider();
   // The plugin-host's SnapshotEmitter type is a structural subset of
   // admin-core's `SnapshotInput`. Both expect the same fields; the cast
   // makes the structural compat explicit (TS doesn't relate the two
@@ -252,23 +262,24 @@ function bootstrapRedeploy(): void {
   startRedeployOrchestrator({ adapter, registry });
 }
 
-// P17 PR4 — wire the MCP bridge to the live AIProvider so external
-// `bunx @caelo-cms/mcp-server` callers can drive the chat-runner. Without
-// the API key the bridge stays unconfigured; mcp.send_chat returns a
-// structured error pointing at /security/ai.
+// P17 PR4 + P18 — wire the MCP bridge to the ProviderResolver so
+// external `bunx @caelo-cms/mcp-server` callers can drive the
+// chat-runner. resolveProvider returns null when no key is wired
+// anywhere; mcp.send_chat surfaces a structured error pointing at
+// /security/ai instead of crashing.
 let mcpBridgeBootstrapped = false;
 function bootstrapMcpBridge(): void {
   if (mcpBridgeBootstrapped) return;
   mcpBridgeBootstrapped = true;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return;
   const { adapter, registry } = getQueryContext();
-  const provider = makeProvider({
-    name: "anthropic",
-    apiKey,
-    model: "claude-opus-4-7",
+  configureMcpBridge({
+    adapter,
+    registry,
+    resolveProvider: async () => {
+      const r = await getActiveProvider();
+      return r ? r.provider : null;
+    },
   });
-  configureMcpBridge({ adapter, registry, provider });
 }
 
 /**
@@ -276,7 +287,19 @@ function bootstrapMcpBridge(): void {
  * `locals.ctx`. The `csrfSecret` field is the long-lived per-session secret —
  * forms use a derived per-render token via `signCsrfToken`.
  */
+// P18 — wire ProviderResolver before any other bootstrap step that
+// might call getActiveProvider(). Idempotent: configureProviderResolver
+// just resets cache + dep slot.
+let providerResolverConfigured = false;
+function ensureProviderResolverConfigured(): void {
+  if (providerResolverConfigured) return;
+  providerResolverConfigured = true;
+  const { adapter, registry } = getQueryContext();
+  configureProviderResolver({ adapter, registry });
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
+  ensureProviderResolverConfigured();
   void bootstrapTranslationWorker();
   bootstrapRedeploy();
   bootstrapMcpBridge();

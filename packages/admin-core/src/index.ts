@@ -3,6 +3,13 @@
 export * from "./ai/chat-runner.js";
 export * from "./ai/pricing-cache.js";
 export * from "./ai/provider.js";
+export {
+  configureProviderResolver,
+  getActiveProvider,
+  getProviderByName,
+  invalidateProviderCache,
+  knownProviderNames,
+} from "./ai/provider-resolver.js";
 export * from "./ai/providers/index.js";
 export * from "./ai/system-prompt.js";
 export * from "./ai/tools/index.js";

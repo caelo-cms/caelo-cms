@@ -41,15 +41,42 @@ import {
   type TranslationProviderHandle,
 } from "./mode_1.js";
 
-let injectedProvider: TranslationProviderHandle | null = null;
-export function setMode2Provider(handle: TranslationProviderHandle | null): void {
-  injectedProvider = handle;
+type Mode2ProviderSource =
+  | { readonly kind: "fixed"; readonly handle: TranslationProviderHandle }
+  | {
+      readonly kind: "resolver";
+      readonly resolve: () => Promise<TranslationProviderHandle | null>;
+    };
+
+let injectedSource: Mode2ProviderSource | null = null;
+
+export function setMode2Provider(
+  handle:
+    | TranslationProviderHandle
+    | { readonly resolveProvider: () => Promise<TranslationProviderHandle | null> }
+    | null,
+): void {
+  if (handle === null) {
+    injectedSource = null;
+    return;
+  }
+  if ("resolveProvider" in handle) {
+    injectedSource = { kind: "resolver", resolve: handle.resolveProvider };
+  } else {
+    injectedSource = { kind: "fixed", handle };
+  }
 }
-function requireProvider(): TranslationProviderHandle {
-  if (!injectedProvider) {
+
+async function requireProvider(): Promise<TranslationProviderHandle> {
+  if (!injectedSource) {
     throw new Error("translation provider not configured — call setTranslationProvider");
   }
-  return injectedProvider;
+  if (injectedSource.kind === "fixed") return injectedSource.handle;
+  const resolved = await injectedSource.resolve();
+  if (!resolved) {
+    throw new Error("AI provider not configured — visit /security/ai");
+  }
+  return resolved;
 }
 
 const DEFAULT_INPUT_COST_PER_M = 15;
@@ -122,7 +149,7 @@ export const translationModeTwoOp = defineOperation({
     costMicrocents: z.number().int().nonnegative(),
   }),
   handler: async (ctx, input, tx) => {
-    const handle = requireProvider();
+    const handle = await requireProvider();
     const startedAt = Date.now();
 
     // Source page (the row passed in is the source — it carries the

@@ -226,7 +226,12 @@ async function resolveMcpToken(
 export interface SendChatBridgeOpts {
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
-  readonly provider: AIProvider;
+  /**
+   * Resolves an AIProvider on each MCP turn. Returns null when no
+   * provider is configured — the handler surfaces a structured error
+   * pointing the operator at /security/ai.
+   */
+  readonly resolveProvider: () => Promise<AIProvider | null>;
 }
 let bridgeOpts: SendChatBridgeOpts | null = null;
 export function configureMcpBridge(opts: SendChatBridgeOpts): void {
@@ -268,7 +273,16 @@ export const mcpSendChatOp = defineOperation({
         message: "MCP bridge not configured — admin bootstrap forgot to call configureMcpBridge",
       });
     }
-    const { adapter, registry, provider } = bridgeOpts;
+    const { adapter, registry, resolveProvider } = bridgeOpts;
+    const provider = await resolveProvider();
+    if (!provider) {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.send_chat",
+        message:
+          "AI provider not configured — visit /security/ai to set up an API key, then retry.",
+      });
+    }
     const resolved = await resolveMcpToken(adapter, input.plaintextToken);
     if (!resolved.ok) {
       return err({

@@ -41,21 +41,56 @@ interface TranslationProviderHandle {
   readonly outputCostPerMTok?: number;
 }
 
-let injectedProvider: TranslationProviderHandle | null = null;
+/**
+ * Either a fixed handle (tests inject this directly) or a resolver
+ * function the worker calls per-unit (production wires the
+ * ProviderResolver — see ai/provider-resolver.ts). The resolver may
+ * return null when no AI provider is configured; the worker surfaces
+ * that as a per-unit HandlerError so the dashboard tells the Owner
+ * "configure AI provider" instead of crashing the whole worker.
+ */
+type TranslationProviderSource =
+  | { readonly kind: "fixed"; readonly handle: TranslationProviderHandle }
+  | {
+      readonly kind: "resolver";
+      readonly resolve: () => Promise<TranslationProviderHandle | null>;
+    };
+
+let injectedSource: TranslationProviderSource | null = null;
+
 /**
  * Injected by the SvelteKit hooks layer (single instance per process).
- * Tests override this directly. The op operates against whatever
- * provider the host wires up — same shape as the chat-runner uses.
+ * Tests typically pass `{provider}` directly; production passes
+ * `{resolveProvider}` so each translation unit picks up the latest
+ * DB-stored key without a process restart.
  */
-export function setTranslationProvider(handle: TranslationProviderHandle | null): void {
-  injectedProvider = handle;
+export function setTranslationProvider(
+  handle:
+    | TranslationProviderHandle
+    | { readonly resolveProvider: () => Promise<TranslationProviderHandle | null> }
+    | null,
+): void {
+  if (handle === null) {
+    injectedSource = null;
+    return;
+  }
+  if ("resolveProvider" in handle) {
+    injectedSource = { kind: "resolver", resolve: handle.resolveProvider };
+  } else {
+    injectedSource = { kind: "fixed", handle };
+  }
 }
 
-function requireProvider(): TranslationProviderHandle {
-  if (!injectedProvider) {
+async function requireProvider(): Promise<TranslationProviderHandle> {
+  if (!injectedSource) {
     throw new Error("translation provider not configured — call setTranslationProvider(...)");
   }
-  return injectedProvider;
+  if (injectedSource.kind === "fixed") return injectedSource.handle;
+  const resolved = await injectedSource.resolve();
+  if (!resolved) {
+    throw new Error("AI provider not configured — visit /security/ai");
+  }
+  return resolved;
 }
 
 const DEFAULT_INPUT_COST_PER_M = 15; // Opus 4.7 input rate, USD per 1M tokens
@@ -201,7 +236,7 @@ export const translationModeOneOp = defineOperation({
     costMicrocents: z.number().int().nonnegative(),
   }),
   handler: async (ctx, input, tx) => {
-    const handle = requireProvider();
+    const handle = await requireProvider();
     const startedAt = Date.now();
 
     // Load source page + verify the target locale exists.

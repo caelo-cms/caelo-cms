@@ -13,18 +13,19 @@
  *      the in-memory test registry (Playwright). The registry is
  *      hard-disabled when NODE_ENV='production', so a deployed instance
  *      cannot be coerced into using a fake AI by setting the header.
- *   2. The configured Anthropic adapter with ANTHROPIC_API_KEY.
+ *   2. ProviderResolver (`getActiveProvider()`) — reads the active row
+ *      in `ai_providers`, decrypts the stored key, falls back to the
+ *      legacy `process.env[envNameFor(name)]` when no DB key is set.
+ *   3. null → emits SSE error pointing the Owner at /security/ai.
  */
 
-import { resolveTestProvider, runChatTurn } from "@caelo-cms/admin-core";
-import { execute } from "@caelo-cms/query-api";
+import { getActiveProvider, resolveTestProvider, runChatTurn } from "@caelo-cms/admin-core";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 const AI_ACTOR_ID = "00000000-0000-0000-0000-000000000a1a";
-const ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY";
 const TEST_PROVIDER_HEADER = "x-caelo-test-provider";
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
@@ -56,31 +57,17 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   }
 
   if (!aiProvider) {
-    const apiKey = process.env[ANTHROPIC_API_KEY_ENV];
-    if (!apiKey) {
+    const resolved = await getActiveProvider();
+    if (!resolved) {
       return new Response(
         `data: ${JSON.stringify({
           kind: "error",
-          message: `${ANTHROPIC_API_KEY_ENV} not set`,
+          message: "AI provider not configured — visit /security/ai to set up an API key.",
         })}\n\ndata: ${JSON.stringify({ kind: "done" })}\n\n`,
         { headers: { "content-type": "text/event-stream" } },
       );
     }
-    const providersResult = await execute(registry, adapter, locals.ctx, "ai_providers.list", {});
-    const provider = providersResult.ok
-      ? (
-          providersResult.value as {
-            providers: { name: string; config: Record<string, unknown> }[];
-          }
-        ).providers.find((p) => p.name === "anthropic")
-      : undefined;
-    const model =
-      (provider?.config && typeof provider.config.model === "string"
-        ? (provider.config.model as string)
-        : null) ?? "claude-opus-4-7";
-
-    const { makeProvider } = await import("@caelo-cms/admin-core");
-    aiProvider = makeProvider({ name: "anthropic", apiKey, model });
+    aiProvider = resolved.provider;
   }
   const { createDefaultToolRegistry } = await import("@caelo-cms/admin-core");
   const tools = createDefaultToolRegistry();
