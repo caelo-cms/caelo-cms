@@ -29,6 +29,14 @@ export * from "./password.js";
 export * from "./permissions.js";
 export * from "./rate-limit.js";
 export * from "./register.js";
+// P12+ at-rest secret encryption (project KEK + AES-GCM).
+export {
+  decryptSecret,
+  type EncryptedSecret,
+  encryptSecret,
+  generateKekHex,
+  kekFingerprint,
+} from "./security/secret-box.js";
 // P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
 export { emitSnapshot } from "./snapshots/emit.js";
 export * from "./tokens.js";

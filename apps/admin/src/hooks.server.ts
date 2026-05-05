@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
   type AIProvider as AdminAIProvider,
@@ -8,6 +8,7 @@ import {
   configureMcpBridge,
   type EmailConfigRow,
   emitSnapshot,
+  generateKekHex,
   makeProvider,
   resetStuckTranslationUnits,
   setMode2Provider,
@@ -31,6 +32,27 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import type { Handle } from "@sveltejs/kit";
 import { SESSION_COOKIE } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
+
+// Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
+// (only at first encrypt/decrypt), so populating it before any DB
+// op is enough. Production installs receive it from Secret Manager /
+// Compose `.env` and skip the auto-gen. Dev installs persist a
+// generated KEK to `.caelo/dev-kek` (gitignored, mode 600) so it
+// stays stable across `bun run dev` restarts — important so existing
+// encrypted rows in the dev DB stay decryptable.
+if (!process.env.CAELO_SECRET_KEK && process.env.NODE_ENV !== "production") {
+  const devDir = resolvePath(process.cwd(), ".caelo");
+  const devFile = resolvePath(devDir, "dev-kek");
+  if (existsSync(devFile)) {
+    process.env.CAELO_SECRET_KEK = readFileSync(devFile, "utf8").trim();
+  } else {
+    const hex = generateKekHex();
+    mkdirSync(devDir, { recursive: true });
+    writeFileSync(devFile, hex, { mode: 0o600 });
+    process.env.CAELO_SECRET_KEK = hex;
+    console.log(`[hooks] generated dev KEK → ${devFile}`);
+  }
+}
 
 const SYSTEM_CTX: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
