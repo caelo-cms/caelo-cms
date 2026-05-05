@@ -36,9 +36,12 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  # Opt every JavaScript-based action into the Node 24 runtime now,
-  # ahead of GitHub's June-2026 deadline. Silences the Node-20-deprecation
-  # warning the docker/* + google-github-actions/auth@v2 actions print.
+  # Opt every JavaScript-based action into the Node 24 runtime ahead
+  # of GitHub's June-2026 cutover. The actions already work fine; a
+  # follow-up advisory ("targets Node 20 but being forced to run on
+  # Node 24") will keep printing until docker/* + google-github-actions/
+  # auth ship action.yml updates with `runs.using: node24`. Bump those
+  # pins when their next majors land — the warning vanishes then.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   IMAGE_NAMESPACE: caelo-cms
 

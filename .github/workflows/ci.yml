@@ -7,8 +7,11 @@ on:
     branches: [main]
 
 env:
-  # Opt JavaScript-based actions into Node 24 ahead of GitHub's
-  # June-2026 deadline. Silences the deprecation warning.
+  # Opt every JavaScript-based action into Node 24 ahead of GitHub's
+  # June-2026 cutover. Action authors haven't yet bumped action.yml
+  # `runs.using` to `node24`, so the "being forced to run on Node 24"
+  # advisory keeps printing. Bump action pins when the next majors
+  # ship with native Node 24 support.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
