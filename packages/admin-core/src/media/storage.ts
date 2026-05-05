@@ -17,7 +17,14 @@
 import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { MediaStorageAdapter } from "@caelo-cms/shared";
-import { Glob } from "bun";
+// `import type` is compile-time only — never bundled. Real Glob
+// constructor at runtime comes from globalThis.Bun (defined under Bun).
+import type { Glob as GlobType } from "bun";
+
+const Glob = (globalThis as { Bun?: { Glob: new (pattern: string) => GlobType } }).Bun
+  ?.Glob as unknown as new (
+  pattern: string,
+) => GlobType;
 
 export class LocalVolumeAdapter implements MediaStorageAdapter {
   readonly #rootDir: string;

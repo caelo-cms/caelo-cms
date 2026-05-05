@@ -83,19 +83,11 @@ RUN set -e && \
 # Now the source.
 COPY . .
 
-# Several runtime packages (query-api/adapter.ts, admin-core/media/storage.ts)
-# import from Bun's virtual `bun` module (SQL, Glob). At runtime under Bun
-# this resolves natively. At build time, when svelte-adapter-bun spawns a
-# Worker to inspect the SSR chunks under Node, those bare `import "bun"`
-# statements crash the Worker. Drop a no-op stub in node_modules/bun so
-# Node's resolver finds something; Bun's runtime ignores node_modules/bun
-# in favour of its built-in virtual module, so production behaviour is
-# unchanged.
-RUN mkdir -p /repo/node_modules/bun && \
-    printf '{"name":"bun","version":"0.0.0-stub","type":"module","main":"index.js"}\n' \
-      > /repo/node_modules/bun/package.json && \
-    printf 'const stub = () => { throw new Error("bun stub: should never be called outside Bun runtime"); };\nexport const SQL = stub;\nexport const Glob = stub;\nexport default {};\n' \
-      > /repo/node_modules/bun/index.js
+# Source no longer does `import { SQL } from "bun"` — runtime now
+# reads SQL/Glob from globalThis.Bun (see query-api/adapter.ts +
+# admin-core/media/storage.ts). The build no longer needs a stub
+# node_modules/bun package; SvelteKit's adapter Worker step succeeds
+# without it, and the bundle never tries to resolve "bun".
 
 # Build with `bun x vite build` (Node-style invocation, no Bun JIT).
 # Bun's JIT under Docker amd64 here SIGILLs the same way it does on
@@ -122,14 +114,6 @@ COPY --from=builder /repo/bun.lock ./bun.lock
 
 # Repo-root node_modules (.bun/ cache + hoisted shared packages).
 COPY --from=builder /repo/node_modules ./node_modules
-
-# Drop the build-time `bun` stub. It exists only to satisfy
-# svelte-adapter-bun's Worker step at build time (see comment in the
-# builder stage). At runtime under Bun, the bare `import "bun"` must
-# resolve to Bun's virtual built-in (SQL, Glob etc.), not our stub.
-# If the stub remains, `new SQL(...)` blows up with "function is not
-# a constructor" because it's just our throwing arrow function.
-RUN rm -rf node_modules/bun
 
 # Workspace source the runtime needs (the bundled SSR output references
 # packages/* + plugin manifests at runtime).

@@ -2,7 +2,20 @@
 
 import type { ExecutionContext, Result } from "@caelo-cms/shared";
 import { err } from "@caelo-cms/shared";
-import { SQL } from "bun";
+// `import type` is erased at compile time — never hits the bundler, so
+// no stub package needed in node_modules/bun. The runtime constructor
+// comes from globalThis.Bun (defined under Bun's runtime). SvelteKit's
+// vite/rollup chain previously inlined a build-time stub from
+// node_modules/bun, which crashed at runtime; reading from globalThis
+// sidesteps the entire bundling-vs-externalize fight.
+import type { SQL as SQLType } from "bun";
+
+type SQL = SQLType;
+const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
+  ?.SQL as unknown as new (
+  url: string,
+) => SQLType;
+
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
 import { isRlsDenial, type QueryError } from "./errors.js";
