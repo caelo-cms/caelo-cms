@@ -83,9 +83,15 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Bootstrap databases
+        # bootstrap.sh requires POSTGRES_USER + POSTGRES_DB (passed
+        # through to `psql --username --dbname`). PGHOST/PGPORT/PGPASSWORD
+        # via libpq env. Match ci.yml's pattern exactly.
         env:
           PGHOST: localhost
+          PGPORT: 5432
           PGPASSWORD: caelo_dev
+          POSTGRES_USER: caelo
+          POSTGRES_DB: postgres
           ADMIN_ROLE_PASSWORD: caelo_admin_dev
           PUBLIC_ROLE_PASSWORD: caelo_public_dev
         run: |
