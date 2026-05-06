@@ -67,6 +67,13 @@ import {
 import { renderPagePreviewOp } from "./ops/content/preview.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
 import {
+  executeTemplateProposalOp,
+  listPendingTemplateProposalsOp,
+  proposeTemplateDeleteOp,
+  proposeTemplateUpdateOp,
+  rejectTemplateProposalOp,
+} from "./ops/content/template_pending.js";
+import {
   createTemplateOp,
   deleteTemplateOp,
   getTemplateOp,
@@ -161,6 +168,13 @@ import {
   rejectLocaleProposalOp,
 } from "./ops/locales.js";
 import {
+  executeMcpTokenProposalOp,
+  listPendingMcpTokenProposalsOp,
+  proposeMcpTokenCreateOp,
+  proposeMcpTokenRevokeOp,
+  rejectMcpTokenProposalOp,
+} from "./ops/mcp_token_pending.js";
+import {
   addCropOp,
   deleteCropOp,
   getProcessingStatusOp,
@@ -245,13 +259,6 @@ import {
   setAiProvidersOp,
 } from "./ops/security/ai_providers.js";
 import { auditByRequestIdOp } from "./ops/security/audit_by_request.js";
-import {
-  executeMcpTokenProposalOp,
-  listPendingMcpTokenProposalsOp,
-  proposeMcpTokenCreateOp,
-  proposeMcpTokenRevokeOp,
-  rejectMcpTokenProposalOp,
-} from "./ops/mcp_token_pending.js";
 import {
   createMcpTokenOp,
   listMcpTokensOp,
@@ -414,6 +421,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setTemplateLayoutOp);
   registry.register(deleteTemplateOp);
   registry.register(setTemplateBlocksOp);
+  // v0.2.28 — templates propose/execute pairs (update / delete).
+  // create + set_layout are already AI-direct; this gate covers the
+  // higher-blast-radius update (re-renders all bound pages) and
+  // delete (orphans them) paths via /security/templates/pending.
+  registry.register(proposeTemplateUpdateOp);
+  registry.register(proposeTemplateDeleteOp);
+  registry.register(executeTemplateProposalOp);
+  registry.register(rejectTemplateProposalOp);
+  registry.register(listPendingTemplateProposalsOp);
   registry.register(listPagesOp);
   registry.register(getPageOp);
   registry.register(getPageWithModulesOp);
