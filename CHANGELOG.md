@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.6
+
+### Fixes
+- e42311d install Bun in verify-published so cms-provision --version runs
+
 ## v0.2.5
 
 ### Other
