@@ -46,6 +46,14 @@ RUN bun install --frozen-lockfile
 COPY apps/api-gateway apps/api-gateway/
 COPY packages packages/
 
+# Build @caelo-cms/shared. Mirrors the admin Dockerfile's same step.
+# `shared` ships to npm so its `main` points at `./dist/index.js`; the
+# gateway runs the workspace's TS source directly, but the runtime
+# resolver still reads `packages/shared/package.json#main` and 404s
+# without the dist/ artifacts. Build the package once so the symlink
+# target carries a real `dist/` directory.
+RUN bun run --filter @caelo-cms/shared build
+
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.3-slim AS runtime
 
