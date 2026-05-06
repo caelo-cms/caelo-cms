@@ -37,8 +37,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const tagFlagIndex = process.argv.indexOf("--tag");
-const distTag =
-  tagFlagIndex >= 0 ? process.argv[tagFlagIndex + 1] : "latest";
+const distTag = tagFlagIndex >= 0 ? process.argv[tagFlagIndex + 1] : "latest";
 
 if (!distTag) {
   console.error("npm-publish-idempotent: missing --tag <dist-tag>");
@@ -51,20 +50,16 @@ const pkgJson = JSON.parse(readFileSync("package.json", "utf8")) as {
 };
 const { name, version } = pkgJson;
 
-console.log(
-  `npm-publish-idempotent: publishing ${name}@${version} with --tag ${distTag}`,
-);
+console.log(`npm-publish-idempotent: publishing ${name}@${version} with --tag ${distTag}`);
 
 /**
  * Returns true iff the registry has a record for ${name}@${version}.
  * Doesn't care about shasum — just existence.
  */
 function versionExistsOnRegistry(): boolean {
-  const result = spawnSync(
-    "npm",
-    ["view", `${name}@${version}`, "version", "--json"],
-    { encoding: "utf8" },
-  );
+  const result = spawnSync("npm", ["view", `${name}@${version}`, "version", "--json"], {
+    encoding: "utf8",
+  });
   if (result.status !== 0) {
     // `npm view` exits non-zero for "no such version" — that's our
     // "doesn't exist" signal. Other errors (network, auth) also
@@ -88,9 +83,7 @@ function versionExistsOnRegistry(): boolean {
 }
 
 const existedBefore = versionExistsOnRegistry();
-console.log(
-  `npm-publish-idempotent: version exists on registry BEFORE publish: ${existedBefore}`,
-);
+console.log(`npm-publish-idempotent: version exists on registry BEFORE publish: ${existedBefore}`);
 
 // Run the real publish. Inherit stdio so users see live npm output in
 // the CI log as before; we don't need to capture it to detect the
@@ -111,9 +104,7 @@ console.log(
 );
 
 const existsAfter = versionExistsOnRegistry();
-console.log(
-  `npm-publish-idempotent: version exists on registry AFTER publish: ${existsAfter}`,
-);
+console.log(`npm-publish-idempotent: version exists on registry AFTER publish: ${existsAfter}`);
 
 if (existsAfter && !existedBefore) {
   console.log(
