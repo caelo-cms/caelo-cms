@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.18
+
+### Features
+- cd67933 comments drain to cms_admin archive (Fix D)
+
 ## v0.2.17
 
 ### Other
