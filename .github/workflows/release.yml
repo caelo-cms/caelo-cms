@@ -274,6 +274,11 @@ jobs:
           REF="${{ github.event.inputs.tag || github.ref_name }}"
           echo "version=${REF#v}" >> "${GITHUB_OUTPUT}"
 
+      - name: Setup Bun (cms-provision binary's shebang is #!/usr/bin/env bun)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
       - name: Verify GHCR images are pullable
         run: |
           for service in admin gateway; do
