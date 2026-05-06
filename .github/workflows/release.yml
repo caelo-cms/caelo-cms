@@ -156,6 +156,7 @@ jobs:
       # files at job start. Hardcoded keeps the job idempotent.)
       matrix:
         package:
+          - shared
           - mcp-server
           - provisioning
 
@@ -186,6 +187,34 @@ jobs:
 
       - name: Show npm version (must be 11.5.1+ for Trusted Publishing)
         run: npm --version
+
+      - name: Rewrite workspace deps to lockstep semver
+        # Bun's `workspace:*` ref doesn't resolve when consumed via
+        # `bunx`/npm — the package manager looks for the dep on the
+        # registry, not in a sibling workspace. Lockstep versioning
+        # means every workspace package is at the same version, so
+        # we rewrite `workspace:*` → `^X.Y.Z` (the current version)
+        # in the SHIPPED package.json. The repo copy stays
+        # `workspace:*` for local dev.
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          VERSION=$(jq -r .version package.json)
+          jq --arg ver "^${VERSION}" '
+            (.dependencies // {})    |= with_entries(
+              if .value == "workspace:*" then .value = $ver else . end
+            )
+            |
+            (.devDependencies // {}) |= with_entries(
+              if .value == "workspace:*" then .value = $ver else . end
+            )
+            |
+            (.peerDependencies // {})|= with_entries(
+              if .value == "workspace:*" then .value = $ver else . end
+            )
+          ' package.json > package.json.tmp
+          mv package.json.tmp package.json
+          echo "After rewrite:"
+          jq '{name, version, dependencies}' package.json
 
       - name: Determine npm dist-tag
         id: disttag
@@ -245,7 +274,7 @@ jobs:
 
       - name: Verify npm packages are installable
         run: |
-          for pkg in mcp-server provisioning; do
+          for pkg in shared mcp-server provisioning; do
             INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
             echo "Inspecting ${INSTALL}..."
             npm view "${INSTALL}" version || { echo "::error::npm view ${INSTALL} failed"; exit 1; }
