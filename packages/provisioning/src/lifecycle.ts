@@ -192,9 +192,8 @@ async function gcpStatus(meta: InstallMetadata): Promise<void> {
   s.stop(green("Health check complete"));
 
   // P20 — show running version vs latest available release. Pulled
-  // from the local package.json (kept in lockstep by scripts/release.ts)
-  // so the npm-installed CLI doesn't depend on @caelo-cms/shared.
-  const { CAELO_VERSION } = await import("./version.js");
+  // from @caelo-cms/shared (kept in lockstep by scripts/release.ts).
+  const { CAELO_VERSION } = await import("@caelo-cms/shared");
   const latestTag = await getLatestReleaseTag();
   const latestStable = latestTag?.replace(/^v/, "") ?? null;
   const upgradeHint =

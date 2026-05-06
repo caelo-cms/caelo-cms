@@ -156,6 +156,13 @@ jobs:
       # files at job start. Hardcoded keeps the job idempotent.)
       matrix:
         package:
+          # `shared` ships first so `provisioning`'s runtime dep
+          # resolves on the registry by the time `bunx
+          # @caelo-cms/provisioning` fetches it. Matrix jobs run
+          # in parallel by default, but the sequence here is
+          # documentation — registry-side ordering is
+          # eventually-consistent within a single workflow run.
+          - shared
           - mcp-server
           - provisioning
 
@@ -273,11 +280,40 @@ jobs:
 
       - name: Verify npm packages are installable
         run: |
-          for pkg in mcp-server provisioning; do
+          for pkg in shared mcp-server provisioning; do
             INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
             echo "Inspecting ${INSTALL}..."
             npm view "${INSTALL}" version || { echo "::error::npm view ${INSTALL} failed"; exit 1; }
           done
+
+      - name: Smoke-install + smoke-require published packages
+        # Catches what `npm view` can't: broken workspace:* refs,
+        # missing dist files, bad bin script paths, ESM/CJS errors
+        # at module load. Runs in a clean tmpdir outside the
+        # monorepo so workspace resolution can't mask anything.
+        run: |
+          TMPDIR=$(mktemp -d)
+          cd "$TMPDIR"
+          npm init -y >/dev/null
+          for pkg in shared mcp-server provisioning; do
+            INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
+            echo "::group::install ${INSTALL}"
+            npm install --no-save "${INSTALL}" \
+              || { echo "::error::smoke install of ${INSTALL} failed"; exit 1; }
+            echo "::endgroup::"
+          done
+          echo "::group::require @caelo-cms/shared"
+          node --input-type=module -e "
+            import('@caelo-cms/shared').then(m => {
+              if (!m.CAELO_VERSION) throw new Error('CAELO_VERSION missing');
+              console.log('shared loaded ok, CAELO_VERSION=' + m.CAELO_VERSION);
+            }).catch(e => { console.error(e); process.exit(1); });
+          "
+          echo "::endgroup::"
+          echo "::group::cms-provision --version"
+          npx --no-install cms-provision --version \
+            || { echo "::error::cms-provision --version failed"; exit 1; }
+          echo "::endgroup::"
 
   # ──────────────────────────────────────────────────────────────────
   # Create the GitHub Release with the changelog stanza so operators
