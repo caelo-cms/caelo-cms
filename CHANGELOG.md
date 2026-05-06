@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.9
+
+### Features
+- cb4e13e offer to brew-install cosign when missing on macOS
+
 ## v0.2.8
 
 ### Fixes
