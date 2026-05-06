@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.25
+
+### Features
+- 45eb5a5 propose/execute pair + Owner-supplies-secret pattern
+
 ## v0.2.24
 
 ### Features
