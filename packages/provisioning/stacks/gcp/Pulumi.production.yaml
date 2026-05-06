@@ -2,7 +2,7 @@ encryptionsalt: v1:mEv+SGjVDdU=:v1:1Tmd1g2Yh0KXxhp5:fGsA3LiAPntjAGUMORKO+B1gxQgI
 config:
   caelo-gcp:adminMinInstances: "0"
   caelo-gcp:anthropicApiKey:
-    secure: v1:P2z8/ILhbWFIWDq6:MFEMJiYmP4RlZZGzl+hwogzR0kXDUeGnb5JUT4hGBSRCLrV+uDRxqMrznUxw9YDNnnrOs6Sr+Jr9Igv6NwcKddI7VMpjGqBKfxzFpgnvp7grhwjxkTuv4aveqy9e14aEgu5AVTLJWIjvo4/F/KBZmFcUUyDbv9xGgKv9zQ==
+    secure: v1:ph6Zq48OzILq6xjh:jsEB22xYWF6SNL7e1GADWVljfl6Kd2Iqv4TYdoMABkYgOovvp5lPnFtTTZ61tEjDplnEcxjx5kWXHsYixMHpJzcIIxscT1zcneY44zJDUbvN7fSdsLehbJHMVsHj/o1oLiNqjgn5BXk/jI1mIIOIZjEQNsq9THYsWIDdAA==
   caelo-gcp:cloudSqlHa: "false"
   caelo-gcp:cloudSqlTier: db-f1-micro
   caelo-gcp:domain: caelo-cms.com
@@ -12,5 +12,5 @@ config:
   caelo-gcp:project: caelo-website
   caelo-gcp:region: europe-west1
   caelo-gcp:wafAdaptiveProtection: "false"
-  caelo-gcp:image-digest-admin: sha256:ad1508a48ccbf25b7b84b6af6c3ff5351769005e978a2b8fed432e94fc40b779
-  caelo-gcp:image-digest-gateway: sha256:a636dd07dce70f5b556b73f16b59691522b3c25dd17b92f1dd42a662791f58e7
+  caelo-gcp:image-digest-admin: sha256:4ba672e8445900d8d2525f8a36a3446a6d0282b32690c989fb7a09ffbc2e3b6e
+  caelo-gcp:image-digest-gateway: sha256:3cad91141f4224af50f251c176aeca13cce32708f7a3fdc82336fd1a3587615b

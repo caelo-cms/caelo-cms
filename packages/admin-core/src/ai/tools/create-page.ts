@@ -3,9 +3,10 @@
 /**
  * AI tool: create_page. Creates a new page row with three distinct
  * identifiers — `name` (internal label), `title` (HTML <title>), and
- * `slug` (URL path). Wraps `pages.create`. The AI must pick a
- * template from the system prompt's All-pages block (each existing
- * page lists its template); we don't auto-pick a default.
+ * `slug` (URL path). Wraps `pages.create`. P18: `templateId` is
+ * OPTIONAL — when omitted, the underlying op resolves to
+ * `site_defaults.default_template_id`, so the AI can create a "homepage
+ * on the default template" with one tool call.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -19,12 +20,14 @@ export const createPageTool: ToolDefinitionWithHandler<
   name: "create_page",
   description:
     "Create a new page. Three identifiers — `name` (internal editor label), `title` (HTML <title> tag), `slug` (URL path). " +
-    "If the user only mentions one (e.g. 'create About Us'), default `title` and `name` to the same value and slugify for the URL.",
+    "Slug must match `[a-z0-9][a-z0-9-]*` — for the homepage use `home` (NOT `/` or empty). For 'About Us' use `about`. " +
+    "If the user only mentions one identifier (e.g. 'create About Us'), default `title` and `name` to that value and slugify for the URL. " +
+    "`templateId` is OPTIONAL: omit it to use the site default template (see `## Site defaults` for the slug, `## Templates → layouts` for UUIDs of non-default templates).",
   schema: createPageToolInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["name", "title", "slug", "templateId"],
+    required: ["name", "title", "slug"],
     properties: {
       name: { type: "string", minLength: 1, maxLength: 256 },
       title: { type: "string", minLength: 1, maxLength: 256 },

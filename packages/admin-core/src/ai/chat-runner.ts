@@ -383,9 +383,14 @@ export async function* runChatTurn(
       layoutsBlock = [
         "# Layouts on this site (site-wide chrome)",
         "Layouts wrap every page on every template bound to them. The `content` block always holds the rendered template; other blocks (header, footer, nav) are filled by `add_module_to_layout`.",
+        // P18 — include each layout's UUID so the AI can pass `layoutId`
+        // to `create_template` / `set_template_layout` without a
+        // `layouts.list` round-trip. (`create_template.layoutId` is
+        // optional + falls back to site_defaults; this surfaces the
+        // non-default options.)
         ...layouts.map(
           (l) =>
-            `- ${l.slug} ("${l.displayName}") — blocks: ${l.blocks.map((b) => b.name).join(", ")}`,
+            `- ${l.slug} (id=${l.id}) "${l.displayName}" — blocks: ${l.blocks.map((b) => b.name).join(", ")}`,
         ),
         "",
         "Three add-module surfaces — pick by intent:",
@@ -414,8 +419,14 @@ export async function* runChatTurn(
         layoutBySlug.set(l.id, l.slug);
       }
     }
+    // P18 — include each template's UUID so the AI can pass it as
+    // `templateId` to `create_page` / `change_template` without a
+    // separate `templates.list` round-trip. Same for the layout it
+    // binds to. (`create_page.templateId` is optional and resolves to
+    // site_defaults; this is for the "use a non-default template" path.)
     const templateLines = tpls.map(
-      (t) => `- ${t.slug} → ${layoutBySlug.get(t.layoutId) ?? "(unknown layout)"}`,
+      (t) =>
+        `- ${t.slug} (id=${t.id}) → ${layoutBySlug.get(t.layoutId) ?? "(unknown layout)"} (id=${t.layoutId})`,
     );
     siteDefaultsBlock = [
       "# Site defaults (used when caller omits a layout/template)",

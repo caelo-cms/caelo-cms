@@ -232,8 +232,30 @@ export const createPageToolInput = z
     title: z.string().min(1).max(256),
     slug: slugInputSchema,
     locale: z.string().min(2).max(10).default("en"),
-    templateId: z.string().uuid(),
+    /**
+     * Optional. When omitted, the underlying `pages.create` op resolves
+     * to `site_defaults.default_template_id` (P6.7.6). The AI should pass
+     * a UUID from `## Site defaults` / `## Templates → layouts` only when
+     * the user asks for a non-default template.
+     */
+    templateId: z.string().uuid().optional(),
     status: z.enum(["draft", "published"]).default("draft"),
+  })
+  .strict();
+
+/**
+ * P18 AI-completeness — `create_template` AI tool input. Wraps
+ * `templates.create` (widened to AI in this pass per CLAUDE.md §11
+ * default-AI-allowed scope). `layoutId` is optional; the op resolves to
+ * `site_defaults.default_layout_id` when omitted.
+ */
+export const createTemplateToolInput = z
+  .object({
+    slug: slugInputSchema,
+    displayName: z.string().min(1).max(256),
+    html: z.string().min(1).max(2_000_000),
+    css: z.string().max(2_000_000).default(""),
+    layoutId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -611,6 +633,7 @@ export type BulkOptimizeSeoToolInput = z.infer<typeof bulkOptimizeSeoToolInput>;
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
+export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
 export type RenamePageToolInput = z.infer<typeof renamePageToolInput>;
 export type SetPageTitleToolInput = z.infer<typeof setPageTitleToolInput>;
 export type ChangePageSlugToolInput = z.infer<typeof changePageSlugToolInput>;

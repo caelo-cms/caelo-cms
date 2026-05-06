@@ -11,6 +11,7 @@ import { changePageSlugTool } from "./change-page-slug.js";
 import { changeTemplateTool } from "./change-template.js";
 import { createLayoutTool } from "./create-layout.js";
 import { createPageTool } from "./create-page.js";
+import { createTemplateTool } from "./create-template.js";
 import { deletePageTool } from "./delete-page.js";
 import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
@@ -57,6 +58,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);
   registry.register(createPageTool);
+  registry.register(createTemplateTool);
   registry.register(renamePageTool);
   registry.register(setPageTitleTool);
   registry.register(changePageSlugTool);

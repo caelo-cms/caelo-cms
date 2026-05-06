@@ -147,8 +147,13 @@ export const getTemplateOp = defineOperation({
 
 export const createTemplateOp = defineOperation({
   name: "templates.create",
-  // Why human-only: Owner-only per CMS_REQUIREMENTS §3.1 — page-type definitions affect every page that binds to them.
-  actorScope: ["human", "system"],
+  // P18 AI-completeness — widened to default scope per CLAUDE.md §11.
+  // Creating a NEW template doesn't affect existing pages (they bind by
+  // id, not slug); the user just gets a new page-type to compose against.
+  // Owner gating still applies to `templates.update` (HTML/CSS rewrites
+  // ARE hard-to-revert and cascade across bound pages — that op stays
+  // human-only until a §11.A propose/execute gate ships for templates).
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: templateCreateSchema,
   output: z.object({ templateId: z.string() }),

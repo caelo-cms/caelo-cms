@@ -958,7 +958,8 @@ async function stepRunMigrations(projectId: string, region: string): Promise<voi
     // Cloud Run v2 with Direct VPC: network refs live in the
     // `run.googleapis.com/network-interfaces` annotation (JSON-encoded
     // array). Older installs use spec.template.spec.vpcAccess. Read both.
-    const niAnnotation = d.spec.template.metadata?.annotations?.["run.googleapis.com/network-interfaces"];
+    const niAnnotation =
+      d.spec.template.metadata?.annotations?.["run.googleapis.com/network-interfaces"];
     if (niAnnotation) {
       try {
         const parsed = JSON.parse(niAnnotation) as { network?: string; subnetwork?: string }[];
