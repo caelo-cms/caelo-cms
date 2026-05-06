@@ -125,7 +125,10 @@ export const setTelemetryOp = defineOperation({
  */
 export const testSendTelemetryOp = defineOperation({
   name: "telemetry.test_send",
-  actorScope: ["human", "system"],
+  // v0.2.19 — pure preview op (no outbound HTTP, returns the payload
+  // that WOULD be sent so the Owner can audit). Safe for AI to call
+  // when the operator asks "what does telemetry actually send".
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
   output: z.object({

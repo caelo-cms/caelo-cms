@@ -288,8 +288,9 @@ export const getChatSessionOp = defineOperation({
 
 export const renameChatSessionOp = defineOperation({
   name: "chat.rename_session",
-  // Why human-only: UI affordance bound to a specific human user.
-  actorScope: ["human", "system"],
+  // v0.2.19 — title is just metadata; AI-renaming a chat to a more
+  // descriptive label after a few turns is a useful affordance.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: chatRenameSessionInput,
   output: z.object({}),

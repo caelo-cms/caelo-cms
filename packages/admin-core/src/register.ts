@@ -68,6 +68,13 @@ import {
   updateDeployProgressOp,
 } from "./ops/deploy.js";
 import {
+  executeDeployProposalOp,
+  listPendingDeployProposalsOp,
+  proposeDeployPromoteOp,
+  proposeDeployRollbackOp,
+  rejectDeployProposalOp,
+} from "./ops/deploy_pending.js";
+import {
   addDomainOp,
   listDomainsOp,
   removeDomainOp,
@@ -391,6 +398,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);
+  // v0.2.19 — propose/execute pair for promote + rollback. AI proposes
+  // (human + ai + system); Owner approves at /security/deployments/pending
+  // which calls execute_proposal (human + system) → runs the underlying op.
+  registry.register(proposeDeployPromoteOp);
+  registry.register(proposeDeployRollbackOp);
+  registry.register(executeDeployProposalOp);
+  registry.register(rejectDeployProposalOp);
+  registry.register(listPendingDeployProposalsOp);
   // P6.7 — live-edit overlay
   registry.register(getUserPreferenceOp);
   registry.register(setUserPreferenceOp);

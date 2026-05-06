@@ -28,9 +28,10 @@ const pinDefaultRow = z.object({
 
 export const listPinDefaultsOp = defineOperation({
   name: "skills.list_pin_defaults",
-  // Per-user view. The chat-runner needs this to seed engagements; AI
-  // doesn't need it directly.
-  actorScope: ["human", "system"],
+  // v0.2.19 — read-only per-user list. AI may want to surface "your
+  // pinned skills are X, Y" in chat without bouncing through a
+  // separate human round-trip.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -60,9 +61,11 @@ export const listPinDefaultsOp = defineOperation({
 
 export const setPinDefaultsOp = defineOperation({
   name: "skills.set_pin_defaults",
-  // Why human-only: pin defaults are a user preference, not an AI
-  // judgement. Editor curates their own engagement starting set.
-  actorScope: ["human", "system"],
+  // v0.2.19 — per-user editorial preference; reverting is a one-call
+  // re-pin, no blast radius beyond this user. AI-callable so the
+  // operator can ask "always pin scoped-edit when I open a chat" and
+  // the AI handles the persistence.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({

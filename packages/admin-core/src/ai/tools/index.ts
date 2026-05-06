@@ -24,6 +24,7 @@ import { generateImageTool } from "./generate-image.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeAddLocaleTool } from "./propose-add-locale.js";
+import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
 import { proposeRemoveLocaleTool } from "./propose-remove-locale.js";
 import { proposeSetDefaultLocaleTool } from "./propose-set-default-locale.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
@@ -122,6 +123,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(tuneRateLimitTool);
   // P14 — AI proposes a Site Import crawl (§11.A).
   registry.register(proposeSiteImportTool);
+  // v0.2.19 — first deploy gate via §11.A. AI proposes a promote /
+  // rollback; Owner clicks Approve at /security/deployments/pending.
+  // The execute side stays human-only.
+  registry.register(proposeDeployPromoteTool);
+  registry.register(proposeDeployRollbackTool);
   return registry;
 }
 
