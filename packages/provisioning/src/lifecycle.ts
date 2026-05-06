@@ -583,14 +583,22 @@ async function verifyCosignAll(
   registryProject: string,
   registryRepo: string,
 ): Promise<boolean> {
-  // First check cosign is on PATH. The Bun.spawnSync API surfaces
-  // ENOENT as a non-zero exit; we surface the actionable hint
-  // separately from a real verify failure.
-  const cosignProbe = Bun.spawnSync(["cosign", "version"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (cosignProbe.exitCode !== 0) {
+  // First check cosign is on PATH. Bun.spawnSync THROWS ENOENT when
+  // the binary is missing (rather than returning a non-zero exit), so
+  // we have to try/catch — relying on `exitCode !== 0` would surface
+  // a confusing stack trace to the operator instead of the actionable
+  // "install cosign" hint.
+  let cosignProbeOk = false;
+  try {
+    const cosignProbe = Bun.spawnSync(["cosign", "version"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    cosignProbeOk = cosignProbe.exitCode === 0;
+  } catch {
+    cosignProbeOk = false;
+  }
+  if (!cosignProbeOk) {
     log.error(red("cosign not found on PATH — required for image-signature verification."));
     log.warn(
       "Install cosign:\n" +
