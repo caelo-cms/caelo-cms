@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.26
+
+### Features
+- e1ac279 propose/execute pairs for set/clear_key
+
 ## v0.2.25
 
 ### Features
