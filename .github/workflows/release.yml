@@ -201,26 +201,19 @@ jobs:
         # means every workspace package is at the same version, so
         # we rewrite `workspace:*` → `^X.Y.Z` (the current version)
         # in the SHIPPED package.json. The repo copy stays
-        # `workspace:*` for local dev.
+        # `workspace:*` for local dev. Uses `walk` so the rewrite
+        # works regardless of which dependency blocks exist (some
+        # packages have no peerDependencies/devDependencies; the
+        # earlier per-block expression failed on those).
         working-directory: packages/${{ matrix.package }}
         run: |
           VERSION=$(jq -r .version package.json)
           jq --arg ver "^${VERSION}" '
-            (.dependencies // {})    |= with_entries(
-              if .value == "workspace:*" then .value = $ver else . end
-            )
-            |
-            (.devDependencies // {}) |= with_entries(
-              if .value == "workspace:*" then .value = $ver else . end
-            )
-            |
-            (.peerDependencies // {})|= with_entries(
-              if .value == "workspace:*" then .value = $ver else . end
-            )
+            walk(if type == "string" and . == "workspace:*" then $ver else . end)
           ' package.json > package.json.tmp
           mv package.json.tmp package.json
           echo "After rewrite:"
-          jq '{name, version, dependencies}' package.json
+          jq '{name, version, dependencies, devDependencies, peerDependencies}' package.json
 
       - name: Determine npm dist-tag
         id: disttag
