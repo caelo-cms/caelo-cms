@@ -202,7 +202,17 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // (which carries packages/migrations) to apply admin + public schema.
   // Idempotent — drizzle's __drizzle_migrations table tracks applied
   // versions, so re-runs only apply NEW migrations on subsequent ups.
-  await stepRunMigrations(projectId, region);
+  // P21 ship 3 — shared with `cms-provision upgrade`. Aborts the
+  // wizard with a clear error if migrations fail (vs. silently
+  // continuing with a half-migrated DB).
+  {
+    const { runMigrationsViaCloudRunJob } = await import("../migration-runner.js");
+    const r = await runMigrationsViaCloudRunJob({ projectId, region });
+    if (!r.ok) {
+      cancel(`Migrations failed: ${r.error}. Inspect the Cloud Run Job logs and re-run.`);
+      process.exit(1);
+    }
+  }
 
   // === 12. Upload the fresh-install placeholder to the static bucket ===
   // Without this, https://<domain>/ returns the raw GCS NoSuchKey XML
@@ -903,155 +913,6 @@ async function stepDrainLegacyCaeloAdminUser(projectId: string, region: string):
     process.exit(1);
   }
   s.stop(green("Legacy caelo_admin user drained"));
-}
-
-/**
- * Apply Drizzle migrations against the operator's Cloud SQL via a
- * one-shot Cloud Run Job. The admin image carries packages/migrations,
- * so we reuse it. The Job runs inside the same VPC + with the same
- * service account as the admin Cloud Run, so it can reach the
- * private-IP Cloud SQL with the existing DB credentials.
- */
-async function stepRunMigrations(projectId: string, region: string): Promise<void> {
-  // Resolve the running admin's image digest + DB URLs (single source
-  // of truth — no risk of skew with the wizard's separate config).
-  const sAdmin = spinner();
-  sAdmin.start("Reading admin Cloud Run config...");
-  const adminDescr = await gcloud([
-    "run",
-    "services",
-    "describe",
-    `caelo-production-admin-3efcfea`,
-    "--region",
-    region,
-    "--project",
-    projectId,
-    "--format=json",
-  ]);
-  if (!adminDescr.ok) {
-    sAdmin.stop(red(`Couldn't read admin service: ${adminDescr.stderr.trim()}`));
-    return;
-  }
-  let imageRef = "";
-  let adminUrl = "";
-  let publicUrl = "";
-  let networkRef = "";
-  let subnetRef = "";
-  try {
-    const d = JSON.parse(adminDescr.stdout) as {
-      spec: {
-        template: {
-          metadata?: { annotations?: Record<string, string> };
-          spec: {
-            containers: { image?: string; env?: { name: string; value?: string }[] }[];
-            vpcAccess?: { networkInterfaces?: { network?: string; subnetwork?: string }[] };
-          };
-        };
-      };
-    };
-    const c = d.spec.template.spec.containers[0];
-    imageRef = c?.image ?? "";
-    for (const e of c?.env ?? []) {
-      if (e.name === "ADMIN_DATABASE_URL") adminUrl = e.value ?? "";
-      if (e.name === "PUBLIC_ADMIN_DATABASE_URL") publicUrl = e.value ?? "";
-    }
-    // Cloud Run v2 with Direct VPC: network refs live in the
-    // `run.googleapis.com/network-interfaces` annotation (JSON-encoded
-    // array). Older installs use spec.template.spec.vpcAccess. Read both.
-    const niAnnotation =
-      d.spec.template.metadata?.annotations?.["run.googleapis.com/network-interfaces"];
-    if (niAnnotation) {
-      try {
-        const parsed = JSON.parse(niAnnotation) as { network?: string; subnetwork?: string }[];
-        networkRef = parsed[0]?.network ?? "";
-        subnetRef = parsed[0]?.subnetwork ?? "";
-      } catch {
-        // fall through
-      }
-    }
-    if (!networkRef || !subnetRef) {
-      const ni = d.spec.template.spec.vpcAccess?.networkInterfaces?.[0];
-      networkRef ||= ni?.network ?? "";
-      subnetRef ||= ni?.subnetwork ?? "";
-    }
-  } catch (e) {
-    sAdmin.stop(red(`Could not parse admin describe JSON: ${(e as Error).message}`));
-    return;
-  }
-  if (!imageRef || !adminUrl || !publicUrl) {
-    sAdmin.stop(red("Admin describe missing image / DB URLs — skipping migrations."));
-    return;
-  }
-  if (!networkRef || !subnetRef) {
-    sAdmin.stop(red("Could not resolve VPC network from admin service — skipping migrations."));
-    return;
-  }
-  sAdmin.stop(green(`Admin config resolved (${imageRef.slice(-19)})`));
-
-  for (const target of ["admin", "public"] as const) {
-    const s = spinner();
-    s.start(`Applying ${target} migrations via one-shot Cloud Run Job...`);
-    // Delete-then-create ensures we always run with the freshest image
-    // + freshest env on every wizard run.
-    await gcloud([
-      "run",
-      "jobs",
-      "delete",
-      `caelo-migrate-${target}`,
-      "--region",
-      region,
-      "--project",
-      projectId,
-      "--quiet",
-    ]);
-    const create = await gcloud([
-      "run",
-      "jobs",
-      "create",
-      `caelo-migrate-${target}`,
-      `--image=${imageRef}`,
-      "--region",
-      region,
-      "--project",
-      projectId,
-      "--service-account",
-      `caelo-production-run-sa@${projectId}.iam.gserviceaccount.com`,
-      "--network",
-      networkRef.split("/").pop() ?? networkRef,
-      "--subnet",
-      subnetRef.split("/").pop() ?? subnetRef,
-      "--vpc-egress=private-ranges-only",
-      "--command=bun",
-      `--args=--bun,/app/packages/migrations/src/migrate.ts,${target}`,
-      "--set-env-vars",
-      `ADMIN_DATABASE_URL=${adminUrl},PUBLIC_ADMIN_DATABASE_URL=${publicUrl}`,
-      "--max-retries=0",
-      "--task-timeout=10m",
-      "--quiet",
-    ]);
-    if (!create.ok) {
-      s.stop(red(`Job create failed: ${create.stderr.trim()}`));
-      cancel("Aborted.");
-      process.exit(1);
-    }
-    const exec = await gcloud([
-      "run",
-      "jobs",
-      "execute",
-      `caelo-migrate-${target}`,
-      "--region",
-      region,
-      "--project",
-      projectId,
-      "--wait",
-    ]);
-    if (!exec.ok) {
-      s.stop(red(`Migrations (${target}) failed: ${exec.stderr.trim()}`));
-      cancel("Aborted.");
-      process.exit(1);
-    }
-    s.stop(green(`${target} migrations applied`));
-  }
 }
 
 /**

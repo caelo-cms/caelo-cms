@@ -405,6 +405,28 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   sPre.stop(green(`Pre-flight ok — ${plans.length} services planned`));
 
   // ────────────────────────────────────────────────────────────────
+  // P21 ship 3 — DB migrations BEFORE traffic shifts. Idempotent
+  // (drizzle bookkeeping table); a failure here aborts the upgrade
+  // before the new image touches traffic, so the admin keeps
+  // serving the old version against the existing schema.
+  // ────────────────────────────────────────────────────────────────
+  const sMig = spinner();
+  sMig.start("Applying DB migrations (idempotent)...");
+  const { runMigrationsViaCloudRunJob } = await import("./migration-runner.js");
+  const mig = await runMigrationsViaCloudRunJob({ projectId: meta.projectId, region });
+  if (!mig.ok) {
+    sMig.stop(red(`Migrations failed (${mig.error ?? "unknown"}). Aborting upgrade.`));
+    log.warn(
+      "No traffic was shifted. Inspect the Cloud Run Job logs:\n" +
+        "  gcloud logging read 'resource.type=cloud_run_job AND " +
+        'resource.labels.job_name=~"caelo-migrate-.*"\' ' +
+        `--project=${meta.projectId} --limit=50`,
+    );
+    return;
+  }
+  sMig.stop(green("Migrations applied"));
+
+  // ────────────────────────────────────────────────────────────────
   // Phase 2: roll each service, probe health, auto-rollback on fail.
   // If admin succeeds but gateway fails, also roll admin back so the
   // operator never ends up on a mismatched-version pair.
