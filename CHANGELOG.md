@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.8
+
+### Fixes
+- a4128be catch cosign-not-installed ENOENT throw with clean hint
+
 ## v0.2.7
 
 ### Fixes
