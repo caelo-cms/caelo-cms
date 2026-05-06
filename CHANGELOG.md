@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.2
+
+### Fixes
+- 9b050e7 publish @caelo-cms/shared + rewrite workspace deps in CI
+
 ## v0.2.1
 
 ### Features
