@@ -4,6 +4,13 @@
   "private": false,
   "license": "MPL-2.0",
   "description": "MCP server exposing the Caelo CMS chat-runner as a `caelo_chat` tool. Lets Claude Code (or any MCP-aware client) drive a Caelo install from outside the browser.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caelo-cms/caelo-cms.git",
+    "directory": "packages/mcp-server"
+  },
+  "homepage": "https://github.com/caelo-cms/caelo-cms#readme",
+  "bugs": "https://github.com/caelo-cms/caelo-cms/issues",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
