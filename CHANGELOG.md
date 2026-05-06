@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.14
+
+### Fixes
+- f3992ad site-defaults visibility, AI-set-defaults, /edit chat picker
+
 ## v0.2.13
 
 ### Fixes
