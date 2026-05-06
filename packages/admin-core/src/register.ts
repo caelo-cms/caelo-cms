@@ -92,6 +92,13 @@ import {
 } from "./ops/domains.js";
 import { getEmailConfigOp, setEmailConfigOp } from "./ops/email_config.js";
 import {
+  executeExperimentProposalOp,
+  listPendingExperimentProposalsOp,
+  proposeExperimentActivateOp,
+  proposeExperimentCompleteOp,
+  rejectExperimentProposalOp,
+} from "./ops/experiment_pending.js";
+import {
   activateExperimentOp,
   completeExperimentOp,
   createExperimentOp,
@@ -556,6 +563,16 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listExperimentsOp);
   registry.register(getExperimentResultsOp);
   registry.register(recordAssignmentOp);
+  // v0.2.24 — experiments propose/execute pairs for the live-traffic
+  // transitions (activate / complete). create stays AI-direct since it
+  // only mints a draft; activate flips production traffic on, and
+  // complete records the winner — both Owner-gated through the queue
+  // at /security/experiments/pending.
+  registry.register(proposeExperimentActivateOp);
+  registry.register(proposeExperimentCompleteOp);
+  registry.register(executeExperimentProposalOp);
+  registry.register(rejectExperimentProposalOp);
+  registry.register(listPendingExperimentProposalsOp);
   // P6.6b — UX polish surface.
   registry.register(aggregateNotificationsOp);
   registry.register(completeOnboardingOp);
