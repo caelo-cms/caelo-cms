@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.4
+
+### Fixes
+- 14040e9 idempotent npm publish wrapper absorbs npm 11.x --provenance race
+
 ## v0.2.3
 
 _no changes since last tag_
