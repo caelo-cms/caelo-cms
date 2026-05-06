@@ -20,6 +20,15 @@ import {
   setPinnedElementsOp,
 } from "./ops/chat/sessions.js";
 import {
+  executeLayoutProposalOp,
+  listPendingLayoutProposalsOp,
+  proposeLayoutCreateOp,
+  proposeLayoutDeleteOp,
+  proposeLayoutSetBlocksOp,
+  proposeLayoutUpdateOp,
+  rejectLayoutProposalOp,
+} from "./ops/content/layout_pending.js";
+import {
   createLayoutOp,
   deleteLayoutOp,
   getLayoutBlockModulesOp,
@@ -429,6 +438,17 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getLayoutBlockModulesOp);
   registry.register(setLayoutBlocksOp);
   registry.register(setLayoutModulesOp);
+  // v0.2.20 — layouts propose/execute pairs. AI proposes via
+  // layouts.propose_*; Owner approves at /security/layouts/pending
+  // which calls layouts.execute_proposal (human-only) → runs the
+  // underlying layouts.{create,update,delete,set_blocks} op.
+  registry.register(proposeLayoutCreateOp);
+  registry.register(proposeLayoutUpdateOp);
+  registry.register(proposeLayoutDeleteOp);
+  registry.register(proposeLayoutSetBlocksOp);
+  registry.register(executeLayoutProposalOp);
+  registry.register(rejectLayoutProposalOp);
+  registry.register(listPendingLayoutProposalsOp);
   registry.register(getSiteDefaultsOp);
   registry.register(setSiteDefaultsOp);
   // P12 review pass — email transport singleton.
