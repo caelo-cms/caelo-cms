@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.16
+
+### Features
+- afdc7ad Tier-2 DB-load on bootstrap + add_plugin_to_page AI tool + plugin-op auto-redeploy
+
 ## v0.2.15
 
 ### Features
