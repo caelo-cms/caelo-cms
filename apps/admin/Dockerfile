@@ -108,6 +108,20 @@ RUN mkdir -p /repo/node_modules/bun && \
 # monorepo build path needs the same artifact ahead of time.
 RUN bun run --filter @caelo-cms/shared build
 
+# v0.2.18 — build every Tier-1 plugin's dist/. The plugin-host loader
+# dynamic-imports `packages/plugins/<slug>/dist/index.js` at startup;
+# without these built into the image, every plugin lands at
+# status='failed'. .dockerignore excludes dist/ from the COPY, so the
+# Dockerfile must produce them itself. tsc -b is incremental, so the
+# cost is negligible after the first cached layer.
+RUN bunx tsc -b \
+  packages/plugins/translation \
+  packages/plugins/forms \
+  packages/plugins/comments \
+  packages/plugins/newsletter \
+  packages/plugins/ratings \
+  packages/plugins/auth
+
 # Build with `bun x vite build` (Node-style invocation, no Bun JIT).
 # Bun's JIT under Docker amd64 here SIGILLs the same way it does on
 # GitHub Actions runners — same Bun binary, same CPU baseline. Going

@@ -46,9 +46,75 @@ interface CommentRow {
   submitted_at: string;
 }
 
+/**
+ * v0.2.18 / Fix D — three-step drain for one moderated comment:
+ *   1. Read full row from cms_public so the data is in hand before
+ *      it disappears from the public DB.
+ *   2. Insert into cms_admin's comment_archive. Idempotent via
+ *      UNIQUE(public_row_id) so a retry can't double-archive.
+ *   3. Delete the public-DB row. Best-effort: if step 2 succeeded but
+ *      step 3 failed, the next moderation attempt re-runs cleanly
+ *      (insert is no-op, delete retries).
+ *
+ * Throws on input row not found OR ctx.cms unavailable. Errors from
+ * the archive insert propagate up so the moderation tool surfaces
+ * them honestly instead of silently failing.
+ */
+async function archiveAndDeletePublic(
+  ctx: PluginContextTier1,
+  commentId: string,
+  decision: "approved" | "rejected" | "spam",
+): Promise<void> {
+  if (!ctx.cms) {
+    throw new Error("comments.moderate: cms capability required to drain to admin");
+  }
+  // 1. Read the comment's data before deleting.
+  const matches = await ctx.query.list<"comments", CommentRow>("comments", {
+    id: commentId,
+    limit: 1,
+  });
+  const row = matches[0];
+  if (!row) {
+    // Already drained or never existed — nothing to do (and no error
+    // since a retry of an already-completed moderate is harmless).
+    return;
+  }
+  // 2. Insert into cms_admin archive. Idempotent.
+  await ctx.cms.call<
+    {
+      publicRowId: string;
+      pageId: string;
+      locale: string;
+      parentId: string | null;
+      authorName: string;
+      content: string;
+      status: "approved" | "rejected" | "spam";
+      submittedAt: string;
+    },
+    { archiveId: string | null }
+  >("comment_archive.insert", {
+    publicRowId: row.id,
+    pageId: row.page_id,
+    locale: row.locale,
+    parentId: row.parent_id && row.parent_id.length > 0 ? row.parent_id : null,
+    authorName: row.author_name,
+    content: row.content,
+    status: decision,
+    // submitted_at may come back as a Date from the driver; coerce
+    // to an ISO string so the archive op's z.string().datetime()
+    // validator accepts it.
+    submittedAt:
+      typeof row.submitted_at === "string"
+        ? row.submitted_at
+        : new Date(row.submitted_at as unknown as Date).toISOString(),
+  });
+  // 3. Delete from cms_public.
+  await ctx.query.delete("comments", row.id);
+}
+
 export default definePlugin<PluginContextTier1>({
   slug: "comments",
-  version: "1.0.0",
+  version: "1.1.0",
   tier: 1,
   schema: {
     comments: {
@@ -69,7 +135,7 @@ export default definePlugin<PluginContextTier1>({
       last_approved_at: "timestamp",
     },
   },
-  requestedCapabilities: ["ai_provider", "chat_runner_tools"],
+  requestedCapabilities: ["ai_provider", "chat_runner_tools", "cms_admin"],
   operations: {
     submit: async (ctx, args) => {
       const input = args as SubmitInput;
@@ -108,18 +174,43 @@ export default definePlugin<PluginContextTier1>({
     },
 
     list_approved: async (ctx, args) => {
+      // v0.2.18 / Fix D — approved comments live in cms_admin's
+      // comment_archive after moderation. cms_public.plugin_comments
+      // is now a write-only inbox; reads go through ctx.cms.call so a
+      // public-DB compromise leaks at most pending submissions.
       const input = args as { pageId: string; locale: string; since?: string };
-      const filter: Record<string, unknown> = {
-        page_id: input.pageId,
+      if (!("cms" in ctx) || !ctx.cms) return { comments: [] };
+      const r = await ctx.cms.call<
+        { pageId: string; locale: string; status: "approved"; since?: string; limit: number },
+        {
+          comments: ReadonlyArray<{
+            publicRowId: string;
+            authorName: string;
+            content: string;
+            submittedAt: string;
+          }>;
+        }
+      >("comment_archive.list_for_page", {
+        pageId: input.pageId,
         locale: input.locale,
         status: "approved",
-        orderBy: "submitted_at",
-        orderDir: "desc",
+        ...(input.since ? { since: input.since } : {}),
         limit: 200,
+      });
+      // Reshape to the legacy `CommentRow` shape so the Web Component +
+      // tests don't need to know reads moved to cms_admin.
+      return {
+        comments: r.comments.map((c) => ({
+          id: c.publicRowId,
+          page_id: input.pageId,
+          locale: input.locale,
+          parent_id: "",
+          author_name: c.authorName,
+          content: c.content,
+          status: "approved" as const,
+          submitted_at: c.submittedAt,
+        })),
       };
-      if (input.since) filter.since = input.since;
-      const rows = await ctx.query.list<"comments", CommentRow>("comments", filter);
-      return { comments: rows };
     },
 
     list_pending: async (ctx, _args) => {
@@ -133,8 +224,16 @@ export default definePlugin<PluginContextTier1>({
     },
 
     moderate: async (ctx, args) => {
+      // v0.2.18 / Fix D — moderation drains the row to cms_admin and
+      // deletes from cms_public. Three steps in handler-local order:
+      //   1. Read full row from cms_public so we have the data to
+      //      archive (after delete it's gone).
+      //   2. Insert into cms_admin.comment_archive (idempotent via
+      //      UNIQUE(public_row_id) — a retry doesn't double-archive).
+      //   3. Delete from cms_public so a public-DB compromise leaks
+      //      no historical comment data.
       const input = args as { commentId: string; decision: "approved" | "rejected" | "spam" };
-      await ctx.query.update("comments", input.commentId, { status: input.decision });
+      await archiveAndDeletePublic(ctx, input.commentId, input.decision);
       return { commentId: input.commentId, status: input.decision };
     },
 
@@ -145,8 +244,14 @@ export default definePlugin<PluginContextTier1>({
       };
       let updated = 0;
       for (const id of input.commentIds) {
-        await ctx.query.update("comments", id, { status: input.decision });
-        updated += 1;
+        try {
+          await archiveAndDeletePublic(ctx, id, input.decision);
+          updated += 1;
+        } catch {
+          // Per-row failure shouldn't strand the whole batch; the
+          // unarchived row stays in cms_public for a retry on the
+          // next moderation attempt.
+        }
       }
       return { updated };
     },
@@ -221,34 +326,42 @@ export default definePlugin<PluginContextTier1>({
    * 1000-page site does ONE list query instead of 1000.
    */
   metaSignatureBatch: async (ctx, args) => {
-    if (!("query" in ctx)) return new Map();
+    // v0.2.18 / Fix D — approved comments are in cms_admin's
+    // comment_archive after moderation. Per-page batched signature
+    // reads from there so a 1000-page deploy still does ONE query
+    // per (slug, locale) bucket.
+    if (!("cms" in ctx) || !ctx.cms) return new Map();
+    const out = new Map<string, string>();
     try {
-      const all = await ctx.query.list<
-        "comments",
-        { id: string; page_id: string; submitted_at: string }
-      >("comments", {
-        locale: args.locale,
-        status: "approved",
-        limit: 5000,
-      });
-      const byPage = new Map<string, { count: number; max: string }>();
-      for (const r of all) {
-        const cur = byPage.get(r.page_id);
-        if (!cur) {
-          byPage.set(r.page_id, { count: 1, max: r.submitted_at });
-        } else {
-          cur.count += 1;
-          if (r.submitted_at > cur.max) cur.max = r.submitted_at;
-        }
-      }
-      const out = new Map<string, string>();
+      // List for each requested page. comment_archive has its own
+      // (page_id, locale, status) index, so per-page lookups are
+      // cheap even though we issue N. The single-bucket pattern
+      // below stays in cms_admin.
       for (const pageId of args.pageIds) {
-        const v = byPage.get(pageId);
-        out.set(pageId, v ? `${v.count}:${v.max}` : "0:0");
+        const r = await ctx.cms.call<
+          { pageId: string; locale: string; status: string; limit: number },
+          {
+            comments: ReadonlyArray<{ id: string; submittedAt: string }>;
+          }
+        >("comment_archive.list_for_page", {
+          pageId,
+          locale: args.locale,
+          status: "approved",
+          limit: 5000,
+        });
+        if (r.comments.length === 0) {
+          out.set(pageId, "0:0");
+        } else {
+          let max = r.comments[0]?.submittedAt ?? "0";
+          for (const c of r.comments) {
+            if (c.submittedAt > max) max = c.submittedAt;
+          }
+          out.set(pageId, `${r.comments.length}:${max}`);
+        }
       }
       return out;
     } catch {
-      return new Map();
+      return out;
     }
   },
 
@@ -259,30 +372,23 @@ export default definePlugin<PluginContextTier1>({
    * page itself didn't change.
    */
   metaSignature: async (ctx, args) => {
-    if (!("query" in ctx)) return "";
+    // v0.2.18 / Fix D — read from cms_admin's comment_archive.
+    if (!("cms" in ctx) || !ctx.cms) return "";
     try {
-      const rows = await ctx.query.list<"comments", { id: string; submitted_at: string }>(
-        "comments",
+      const r = await ctx.cms.call<
+        { pageId: string; locale: string; status: string; limit: number },
         {
-          page_id: args.pageId,
-          locale: args.locale,
-          status: "approved",
-          orderBy: "submitted_at",
-          orderDir: "desc",
-          limit: 1,
-        },
-      );
-      // The full count would need an aggregate; the list-based shape we
-      // have today returns rows. Use (id-of-newest, count-of-fetched).
-      // For real production this becomes a one-row COUNT/MAX query when
-      // ctx.query supports aggregates (P14 surface).
-      const all = await ctx.query.list<"comments", { id: string }>("comments", {
-        page_id: args.pageId,
+          comments: ReadonlyArray<{ id: string; submittedAt: string }>;
+        }
+      >("comment_archive.list_for_page", {
+        pageId: args.pageId,
         locale: args.locale,
         status: "approved",
         limit: 1000,
       });
-      return `${all.length}:${rows[0]?.submitted_at ?? "0"}`;
+      let max = "0";
+      for (const c of r.comments) if (c.submittedAt > max) max = c.submittedAt;
+      return `${r.comments.length}:${max}`;
     } catch {
       return "";
     }
@@ -294,22 +400,30 @@ export default definePlugin<PluginContextTier1>({
    * deltas (rows added since the bake) on the client.
    */
   staticRender: async (ctx, args) => {
-    if (!("query" in ctx)) return "";
+    // v0.2.18 / Fix D — bake from cms_admin's comment_archive. The
+    // public DB only carries pending submissions; serving HTML reads
+    // from the admin-side long-term store.
+    if (!("cms" in ctx) || !ctx.cms) return "";
     try {
-      const rows = await ctx.query.list<
-        "comments",
-        { id: string; author_name: string; content: string; submitted_at: string }
-      >("comments", {
-        page_id: args.pageId,
+      const r = await ctx.cms.call<
+        { pageId: string; locale: string; status: string; limit: number },
+        {
+          comments: ReadonlyArray<{
+            id: string;
+            authorName: string;
+            content: string;
+            submittedAt: string;
+          }>;
+        }
+      >("comment_archive.list_for_page", {
+        pageId: args.pageId,
         locale: args.locale,
         status: "approved",
-        orderBy: "submitted_at",
-        orderDir: "desc",
         limit: 200,
       });
-      return rows
+      return r.comments
         .map((c) => {
-          const safeAuthor = c.author_name
+          const safeAuthor = c.authorName
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;");
@@ -317,7 +431,7 @@ export default definePlugin<PluginContextTier1>({
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;");
-          return `<article class="comment"><header>${safeAuthor} · ${new Date(c.submitted_at).toISOString()}</header><div class="body">${safeContent}</div></article>`;
+          return `<article class="comment"><header>${safeAuthor} · ${new Date(c.submittedAt).toISOString()}</header><div class="body">${safeContent}</div></article>`;
         })
         .join("");
     } catch {

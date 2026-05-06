@@ -152,6 +152,10 @@ import {
   insertBootstrapTokenOp,
 } from "./ops/owner-bootstrap-tokens.js";
 import {
+  commentArchiveInsertOp,
+  commentArchiveListForPageOp,
+} from "./ops/plugins/comment_archive.js";
+import {
   activatePluginOp,
   disablePluginOp,
   getPluginOp,
@@ -553,4 +557,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(disablePluginOp);
   registry.register(rejectPluginOp);
   registry.register(revalidatePluginOp);
+  // v0.2.18 — comments long-term archive (cms_public is now ephemeral
+  // after moderation; long-term store + static-render reads land here).
+  registry.register(commentArchiveInsertOp);
+  registry.register(commentArchiveListForPageOp);
 }

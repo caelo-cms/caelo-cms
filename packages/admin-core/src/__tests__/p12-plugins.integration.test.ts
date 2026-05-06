@@ -45,6 +45,9 @@ async function wipe(): Promise<void> {
   try {
     await adminSql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // v0.2.18 — comments archive lives in cms_admin and persists
+      // across test runs unless we wipe it explicitly.
+      await tx`DELETE FROM comment_archive`;
       for (const s of ALL_SLUGS) {
         // v0.2.16 — clear plugin-emitted audit rows before the actor.
         await tx`DELETE FROM audit_events WHERE actor_id IN (
@@ -130,6 +133,14 @@ beforeAll(async () => {
   await wipe();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
+  // v0.2.18 — comments.moderate now drains to cms_admin via
+  // ctx.cms.call("comment_archive.insert"); register the archive ops
+  // here so the test bypassing register.ts still resolves them.
+  const { commentArchiveInsertOp, commentArchiveListForPageOp } = await import(
+    "../ops/plugins/comment_archive.js"
+  );
+  registry.register(commentArchiveInsertOp);
+  registry.register(commentArchiveListForPageOp);
 });
 
 afterEach(async () => {
@@ -266,7 +277,7 @@ describe("Comments plugin", () => {
       pluginSlug: "comments",
       operationName: "submit",
       args: {
-        pageId: "blog-1",
+        pageId: "11111111-1111-4111-8111-111111111111",
         locale: "en",
         authorName: "Alice",
         content: "Great post!",
@@ -279,7 +290,7 @@ describe("Comments plugin", () => {
     const before = await runPluginOperation({
       pluginSlug: "comments",
       operationName: "list_approved",
-      args: { pageId: "blog-1", locale: "en" },
+      args: { pageId: "11111111-1111-4111-8111-111111111111", locale: "en" },
     });
     if (!before.ok) return;
     expect((before.value as { comments: unknown[] }).comments).toHaveLength(0);
@@ -294,7 +305,7 @@ describe("Comments plugin", () => {
     const after = await runPluginOperation({
       pluginSlug: "comments",
       operationName: "list_approved",
-      args: { pageId: "blog-1", locale: "en" },
+      args: { pageId: "11111111-1111-4111-8111-111111111111", locale: "en" },
     });
     if (!after.ok) return;
     expect((after.value as { comments: Array<{ status: string }> }).comments).toHaveLength(1);
@@ -310,7 +321,12 @@ describe("Comments plugin", () => {
       const r = await runPluginOperation({
         pluginSlug: "comments",
         operationName: "submit",
-        args: { pageId: "p", locale: "en", authorName: "A", content: `c${i}` },
+        args: {
+          pageId: "22222222-2222-4222-8222-222222222222",
+          locale: "en",
+          authorName: "A",
+          content: `c${i}`,
+        },
       });
       if (!r.ok) throw new Error("submit failed");
       ids.push((r.value as { commentId: string }).commentId);
