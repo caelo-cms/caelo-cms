@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.29
+
+### Chores
+- c676050 strip unused biome-ignore comments + fix useOptionalChain
+
 ## v0.2.28
 
 ### Features
