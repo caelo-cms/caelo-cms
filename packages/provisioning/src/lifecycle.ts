@@ -238,7 +238,6 @@ interface ServicePlan {
   readonly imageRef: string;
   readonly digest: string;
   readonly priorRevision: string;
-  readonly healthPath: string;
 }
 
 /**
@@ -322,31 +321,6 @@ async function findServiceUrl(
   ]);
   if (!r.ok) return null;
   return r.stdout.trim() || null;
-}
-
-/**
- * Poll the health endpoint until it returns 200 (ok) or the deadline
- * expires (unhealthy). Cold starts on Cloud Run can take 10–30s, so
- * we give 60s before declaring failure.
- */
-async function probeHealthy(url: string, deadlineMs: number): Promise<boolean> {
-  const deadline = Date.now() + deadlineMs;
-  while (Date.now() < deadline) {
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 5_000);
-      const res = await fetch(url, { signal: ctrl.signal });
-      clearTimeout(t);
-      if (res.ok) {
-        const body = (await res.json().catch(() => null)) as { ok?: boolean } | null;
-        if (body?.ok === true) return true;
-      }
-    } catch {
-      // network blip / cold start in progress — retry.
-    }
-    await new Promise((r) => setTimeout(r, 2_000));
-  }
-  return false;
 }
 
 async function rollbackTraffic(
@@ -448,9 +422,6 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       digest,
       imageRef: `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}@${digest}`,
       priorRevision,
-      // Admin's health endpoint is shipped at /_caelo/health (P21);
-      // gateway's is /healthz (existed since P0).
-      healthPath: slug === "admin" ? "/_caelo/health" : "/healthz",
     });
   }
   sPre.stop(green(`Pre-flight ok — ${plans.length} services planned`));
@@ -522,43 +493,29 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
       return;
     }
-    const url = await findServiceUrl(meta.projectId, region, plan.serviceName);
-    if (!url) {
+    if (!(await findServiceUrl(meta.projectId, region, plan.serviceName))) {
       s.stop(red(`Could not resolve service URL for ${plan.slug} — rolling back`));
       await rollbackTraffic(meta.projectId, region, plan.serviceName, plan.priorRevision);
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
       return;
     }
-    s.stop(green(`${plan.slug} rolled — probing ${url}${plan.healthPath} for 60s...`));
-
-    const sProbe = spinner();
-    sProbe.start(`Health-probing ${plan.slug}...`);
-    const healthy = await probeHealthy(`${url}${plan.healthPath}`, 60_000);
-    if (!healthy) {
-      sProbe.stop(red(`${plan.slug} unhealthy after roll — auto-rolling back`));
-      const rb = await rollbackTraffic(
-        meta.projectId,
-        region,
-        plan.serviceName,
-        plan.priorRevision,
-      );
-      if (!rb) {
-        log.error(
-          red(
-            `Rollback of ${plan.slug} FAILED — manually shift traffic back: ` +
-              `gcloud run services update-traffic ${plan.serviceName} ` +
-              `--to-revisions=${plan.priorRevision}=100 ` +
-              `--region=${region} --project=${meta.projectId}`,
-          ),
-        );
-      }
-      await rollbackPriorlyRolled(meta.projectId, region, rolled);
-      return;
-    }
-    sProbe.stop(green(`${plan.slug} healthy ✓`));
+    // Cloud Run's `update --image` (with default --quiet) returns only
+    // after the new revision passes its container-readiness probe AND
+    // becomes the serving revision. That's the gate we rely on now —
+    // the prior `/_caelo/health` HTTP probe via the run.app URL always
+    // 403'd because the admin Cloud Run service is invoker-restricted
+    // to the IAP service account (the LB+IAP gates user traffic; direct
+    // run.app calls are denied by design). Probing through the LB would
+    // require an IAP-issued OAuth token, which the operator's gcloud
+    // session doesn't carry. Trust Cloud Run's own readiness signal —
+    // a real startup failure surfaces as `gcloud update` returning an
+    // error, which the upd.ok check above already catches and rolls
+    // back. Deeper checks (DB connectivity, schema match) surface on
+    // the first request after upgrade.
+    s.stop(green(`${plan.slug} rolled to ${plan.digest.slice(0, 19)}... ✓`));
     rolled.push(plan);
   }
-  log.success(`Upgrade to ${bold(targetTag)} complete (admin + gateway both healthy).`);
+  log.success(`Upgrade to ${bold(targetTag)} complete (admin + gateway revisions Ready).`);
 }
 
 /**
