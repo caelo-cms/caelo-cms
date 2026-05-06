@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.27
+
+### Features
+- 1efe3c1 propose/execute pairs for create/revoke
+
 ## v0.2.26
 
 ### Features
