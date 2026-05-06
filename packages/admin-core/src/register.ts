@@ -92,6 +92,12 @@ import {
 } from "./ops/domains.js";
 import { getEmailConfigOp, setEmailConfigOp } from "./ops/email_config.js";
 import {
+  executeEmailConfigProposalOp,
+  listPendingEmailConfigProposalsOp,
+  proposeEmailConfigSetOp,
+  rejectEmailConfigProposalOp,
+} from "./ops/email_config_pending.js";
+import {
   executeExperimentProposalOp,
   listPendingExperimentProposalsOp,
   proposeExperimentActivateOp,
@@ -521,6 +527,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
+  // v0.2.25 — email_config propose/execute pair. AI proposes
+  // transport+fromAddress+config-without-secrets; Owner supplies the
+  // smtp password / resend apiKey / SES key inline at approve time
+  // via /security/email/pending. Introduces the secret-at-approve
+  // pattern that ai_providers and mcp_tokens reuse later.
+  registry.register(proposeEmailConfigSetOp);
+  registry.register(executeEmailConfigProposalOp);
+  registry.register(rejectEmailConfigProposalOp);
+  registry.register(listPendingEmailConfigProposalsOp);
   // P14 — domains registry.
   registry.register(listDomainsOp);
   registry.register(addDomainOp);
