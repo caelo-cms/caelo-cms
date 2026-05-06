@@ -55,7 +55,7 @@
 
   <!-- Stepper -->
   <ol class="flex items-center gap-2 text-xs">
-    {#each [{ k: "welcome", label: "1. URL" }, { k: "crawling", label: "2. Crawling" }, { k: "review", label: "3. Review" }, { k: "done", label: "4. Done" }] as s}
+    {#each [{ k: "preferences", label: "0. Preferences" }, { k: "welcome", label: "1. URL" }, { k: "crawling", label: "2. Crawling" }, { k: "review", label: "3. Review" }, { k: "done", label: "4. Done" }] as s}
       {@const active = data.step === s.k || (s.k === "done" && form?.composed)}
       <li class="flex items-center gap-2">
         <span class={active ? "rounded-full bg-primary px-3 py-1 text-primary-foreground" : "rounded-full border px-3 py-1 text-muted-foreground"}>
@@ -86,6 +86,67 @@
         <a class={buttonVariants({ variant: "outline" })} href="/security/structured/theme/site">
           Tweak theme tokens
         </a>
+      </CardContent>
+    </Card>
+  {:else if data.step === "preferences"}
+    <!-- Step 0 — Preferences. Optional. Each non-empty field becomes
+         a `site_ai_memory.set` call so the AI sees the operator's
+         intent from turn 1. Skippable; the AI's existing tone fallback
+         covers an empty memory. -->
+    <Card>
+      <CardHeader>
+        <CardTitle>Step 0 · Tell Caelo about your site</CardTitle>
+        <CardDescription>
+          Optional. Whatever you fill in becomes part of the AI's context for every chat. Skip if
+          you'd rather set this up later via <code>/security/memory</code>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form method="post" action="?/savePreferences" class="space-y-4">
+          <input type="hidden" name="_csrf" value={$page.data.csrfToken} />
+          <div class="space-y-2">
+            <Label for="purpose">Site purpose</Label>
+            <textarea
+              id="purpose"
+              name="purpose"
+              rows="3"
+              maxlength="2000"
+              class="block w-full rounded-md border bg-background p-2 text-sm"
+              placeholder="What is this site for? (e.g. 'developer-facing landing site for the Caelo CMS open-source project')"
+              value={data.memory?.purpose ?? ""}
+            ></textarea>
+          </div>
+          <div class="space-y-2">
+            <Label for="brandVoice">Brand voice / tone</Label>
+            <textarea
+              id="brandVoice"
+              name="brandVoice"
+              rows="3"
+              maxlength="2000"
+              class="block w-full rounded-md border bg-background p-2 text-sm"
+              placeholder="How should the AI write? (e.g. 'confident, plainspoken, slightly technical; no exclamation marks; favour active voice')"
+              value={data.memory?.brandVoice ?? ""}
+            ></textarea>
+          </div>
+          <div class="space-y-2">
+            <Label for="bannedPhrases">Words to avoid</Label>
+            <textarea
+              id="bannedPhrases"
+              name="bannedPhrases"
+              rows="2"
+              maxlength="2000"
+              class="block w-full rounded-md border bg-background p-2 text-sm"
+              placeholder="Comma-separated terms the AI should NOT use (e.g. 'cutting-edge, leverage, synergy, world-class')"
+              value={data.memory?.bannedPhrases ?? ""}
+            ></textarea>
+          </div>
+          <div class="flex items-center justify-between pt-2">
+            <a class={buttonVariants({ variant: "ghost" })} href="/ramp-up?step=url">
+              Skip — set up later
+            </a>
+            <Button type="submit">Save & continue →</Button>
+          </div>
+        </form>
       </CardContent>
     </Card>
   {:else if data.step === "welcome"}

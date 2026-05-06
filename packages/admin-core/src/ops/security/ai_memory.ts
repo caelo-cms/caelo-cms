@@ -18,7 +18,16 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 
-const SLOT_ENUM = z.enum(["brand-voice", "tone", "banned-phrases", "instructions", "glossary"]);
+// Mirror of the `site_ai_memory.slot` CHECK constraint (migration 0020
+// added 'purpose'; this enum was stale at 5 entries until v0.2.15).
+const SLOT_ENUM = z.enum([
+  "purpose",
+  "brand-voice",
+  "tone",
+  "banned-phrases",
+  "instructions",
+  "glossary",
+]);
 
 const memoryRowSchema = z.object({
   slot: SLOT_ENUM,
