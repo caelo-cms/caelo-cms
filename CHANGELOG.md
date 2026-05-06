@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.28
+
+### Features
+- e1f391f propose/execute pairs for update/delete
+
 ## v0.2.27
 
 ### Features
