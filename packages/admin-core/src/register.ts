@@ -257,6 +257,15 @@ import {
   reviewSkillProposalOp,
 } from "./ops/skills/proposals.js";
 import { archiveSkillOp, getSkillOp, listSkillsOp, setSkillOp } from "./ops/skills/skills.js";
+import {
+  executeSnapshotRevertProposalOp,
+  listPendingSnapshotRevertProposalsOp,
+  proposeRevertModuleOp,
+  proposeRevertPageOp,
+  proposeRevertSiteOp,
+  proposeRevertTemplateOp,
+  rejectSnapshotRevertProposalOp,
+} from "./ops/snapshot_pending.js";
 import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
 import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
 import { moduleImpactOp } from "./ops/snapshots/impact.js";
@@ -397,6 +406,19 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(revertTemplateOp);
   registry.register(revertPageOp);
   registry.register(archiveOlderThanOp);
+  // v0.2.23 — snapshot-revert propose/execute pairs (site / page /
+  // template / module). AI proposes via snapshots.propose_revert_*;
+  // Owner approves at /security/snapshots/pending which calls
+  // snapshots.execute_proposal (human-only) → underlying revert op.
+  // Highest blast-radius surface — site reverts can rewind hundreds
+  // of pages, so the preview surfaces affected entity counts.
+  registry.register(proposeRevertSiteOp);
+  registry.register(proposeRevertPageOp);
+  registry.register(proposeRevertTemplateOp);
+  registry.register(proposeRevertModuleOp);
+  registry.register(executeSnapshotRevertProposalOp);
+  registry.register(rejectSnapshotRevertProposalOp);
+  registry.register(listPendingSnapshotRevertProposalsOp);
   // P5 chat + AI memory + provider config + accounting
   registry.register(listChatSessionsOp);
   registry.register(createChatSessionOp);
