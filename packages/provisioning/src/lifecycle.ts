@@ -227,6 +227,105 @@ interface UpgradeOpts {
   readonly channel?: "stable" | "rc" | "beta";
 }
 
+interface ServicePlan {
+  readonly slug: "admin" | "gateway";
+  readonly serviceName: string;
+  readonly imageRef: string;
+  readonly digest: string;
+  readonly priorRevision: string;
+  readonly healthPath: string;
+}
+
+/** Look up the currently-serving Cloud Run revision so we can roll back to it. */
+async function findCurrentRevision(
+  projectId: string,
+  region: string,
+  serviceName: string,
+): Promise<string | null> {
+  const r = await gcloud([
+    "run",
+    "services",
+    "describe",
+    serviceName,
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--format=value(status.traffic[0].revisionName)",
+  ]);
+  if (!r.ok) return null;
+  const rev = r.stdout.trim().split("\n")[0]?.trim();
+  return rev || null;
+}
+
+/** Cloud Run service URL, used as the health-probe target after a roll. */
+async function findServiceUrl(
+  projectId: string,
+  region: string,
+  serviceName: string,
+): Promise<string | null> {
+  const r = await gcloud([
+    "run",
+    "services",
+    "describe",
+    serviceName,
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--format=value(status.url)",
+  ]);
+  if (!r.ok) return null;
+  return r.stdout.trim() || null;
+}
+
+/**
+ * Poll the health endpoint until it returns 200 (ok) or the deadline
+ * expires (unhealthy). Cold starts on Cloud Run can take 10–30s, so
+ * we give 60s before declaring failure.
+ */
+async function probeHealthy(url: string, deadlineMs: number): Promise<boolean> {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 5_000);
+      const res = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (res.ok) {
+        const body = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+        if (body?.ok === true) return true;
+      }
+    } catch {
+      // network blip / cold start in progress — retry.
+    }
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
+  return false;
+}
+
+async function rollbackTraffic(
+  projectId: string,
+  region: string,
+  serviceName: string,
+  priorRevision: string,
+): Promise<boolean> {
+  const r = await gcloud([
+    "run",
+    "services",
+    "update-traffic",
+    serviceName,
+    "--region",
+    region,
+    "--project",
+    projectId,
+    "--to-revisions",
+    `${priorRevision}=100`,
+    "--quiet",
+  ]);
+  return r.ok;
+}
+
 export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const { meta } = requireInstall();
   if (meta.provider !== "gcp") {
@@ -240,25 +339,23 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const registryRegion = "europe-west1";
   const registryRepo = "caelo-cms-images";
 
-  // P20 — version selection. The release CI's docker/metadata-action
-  // uses `type=semver,pattern={{version}}` which strips the leading `v`
-  // from the git tag, so Docker tags are bare semver: `:0.5.3`,
-  // `:0.5`, `:latest`. Pre-release tags get a channel-named tag
-  // (`:rc`, `:beta`) but NO `:latest`. Operators pin via --version
-  // (just the semver, no `v`), opt into pre-releases via --channel,
-  // or default to `:latest`.
   const targetTag = (() => {
     if (opts.version) return opts.version.startsWith("v") ? opts.version.slice(1) : opts.version;
     if (opts.channel === "rc") return "rc";
     if (opts.channel === "beta") return "beta";
     return "latest";
   })();
-  log.info(`Rolling admin + gateway to ${bold(targetTag)} (registry: ${dim(registryRepo)})`);
+  log.info(`Upgrading admin + gateway to ${bold(targetTag)}`);
 
+  // ────────────────────────────────────────────────────────────────
+  // Phase 1: pre-flight. Resolve both digests + capture both prior
+  // revisions BEFORE rolling anything. If any service is missing or
+  // any digest can't be resolved, abort cleanly with no partial state.
+  // ────────────────────────────────────────────────────────────────
+  const plans: ServicePlan[] = [];
+  const sPre = spinner();
+  sPre.start("Pre-flight: resolving services + image digests + current revisions...");
   for (const slug of ["admin", "gateway"] as const) {
-    const s = spinner();
-    s.start(`Resolving + rolling ${slug}...`);
-
     const serviceName = await resolveGcpResourceName(
       "run-service",
       `caelo-production-${slug}`,
@@ -266,14 +363,9 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       region,
     );
     if (!serviceName) {
-      s.stop(red(`Could not find caelo-production-${slug}* Cloud Run service`));
+      sPre.stop(red(`Could not find caelo-production-${slug}* Cloud Run service`));
       return;
     }
-
-    // Resolve the requested tag → current sha256 digest. Cloud Run
-    // only rolls when the image REFERENCE changes; pinning to the
-    // sha digest guarantees a fresh revision even if `:latest` was
-    // republished without changing tags.
     const tagInfo = await gcloud([
       "artifacts",
       "docker",
@@ -287,35 +379,120 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       registryProject,
     ]);
     if (!tagInfo.ok || !tagInfo.stdout.trim()) {
-      s.stop(red(`Couldn't resolve image digest for ${slug}:${targetTag}`));
+      sPre.stop(red(`Couldn't resolve image digest for ${slug}:${targetTag}`));
       log.error(
-        `Verify the tag exists. Available: \`gcloud artifacts docker tags list ${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug} --project=${registryProject}\``,
+        `Verify the tag exists at ${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}:${targetTag}`,
       );
       return;
     }
     const digest = tagInfo.stdout.trim().split("\n")[0]?.trim() ?? "";
-    const imageRef = `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}@${digest}`;
+    const priorRevision = await findCurrentRevision(meta.projectId, region, serviceName);
+    if (!priorRevision) {
+      sPre.stop(red(`Could not capture current revision for ${slug} — refusing to roll`));
+      return;
+    }
+    plans.push({
+      slug,
+      serviceName,
+      digest,
+      imageRef: `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}@${digest}`,
+      priorRevision,
+      // Admin's health endpoint is shipped at /_caelo/health (P21);
+      // gateway's is /healthz (existed since P0).
+      healthPath: slug === "admin" ? "/_caelo/health" : "/healthz",
+    });
+  }
+  sPre.stop(green(`Pre-flight ok — ${plans.length} services planned`));
 
-    const r = await gcloud([
+  // ────────────────────────────────────────────────────────────────
+  // Phase 2: roll each service, probe health, auto-rollback on fail.
+  // If admin succeeds but gateway fails, also roll admin back so the
+  // operator never ends up on a mismatched-version pair.
+  // ────────────────────────────────────────────────────────────────
+  const rolled: ServicePlan[] = [];
+  for (const plan of plans) {
+    const s = spinner();
+    s.start(`Rolling ${plan.slug} → ${plan.digest.slice(0, 19)}...`);
+    const upd = await gcloud([
       "run",
       "services",
       "update",
-      serviceName,
+      plan.serviceName,
       "--region",
       region,
       "--project",
       meta.projectId,
       "--image",
-      imageRef,
+      plan.imageRef,
       "--quiet",
     ]);
-    if (!r.ok) {
-      s.stop(red(`Failed: ${r.stderr.trim()}`));
+    if (!upd.ok) {
+      s.stop(red(`Failed: ${upd.stderr.trim()}`));
+      await rollbackPriorlyRolled(meta.projectId, region, rolled);
       return;
     }
-    s.stop(green(`${slug} (${targetTag}) rolled to ${digest.slice(0, 19)}...`));
+    const url = await findServiceUrl(meta.projectId, region, plan.serviceName);
+    if (!url) {
+      s.stop(red(`Could not resolve service URL for ${plan.slug} — rolling back`));
+      await rollbackTraffic(meta.projectId, region, plan.serviceName, plan.priorRevision);
+      await rollbackPriorlyRolled(meta.projectId, region, rolled);
+      return;
+    }
+    s.stop(green(`${plan.slug} rolled — probing ${url}${plan.healthPath} for 60s...`));
+
+    const sProbe = spinner();
+    sProbe.start(`Health-probing ${plan.slug}...`);
+    const healthy = await probeHealthy(`${url}${plan.healthPath}`, 60_000);
+    if (!healthy) {
+      sProbe.stop(red(`${plan.slug} unhealthy after roll — auto-rolling back`));
+      const rb = await rollbackTraffic(
+        meta.projectId,
+        region,
+        plan.serviceName,
+        plan.priorRevision,
+      );
+      if (!rb) {
+        log.error(
+          red(
+            `Rollback of ${plan.slug} FAILED — manually shift traffic back: ` +
+              `gcloud run services update-traffic ${plan.serviceName} ` +
+              `--to-revisions=${plan.priorRevision}=100 ` +
+              `--region=${region} --project=${meta.projectId}`,
+          ),
+        );
+      }
+      await rollbackPriorlyRolled(meta.projectId, region, rolled);
+      return;
+    }
+    sProbe.stop(green(`${plan.slug} healthy ✓`));
+    rolled.push(plan);
   }
-  log.success(`Upgrade to ${bold(targetTag)} complete.`);
+  log.success(`Upgrade to ${bold(targetTag)} complete (admin + gateway both healthy).`);
+}
+
+/**
+ * Roll back any services that already passed their probe in this
+ * upgrade run. Called when a later service fails its probe so the
+ * operator never ends up on an admin-new + gateway-old (or vice versa)
+ * mismatched pair.
+ */
+async function rollbackPriorlyRolled(
+  projectId: string,
+  region: string,
+  rolled: ServicePlan[],
+): Promise<void> {
+  if (rolled.length === 0) return;
+  log.warn(
+    yellow(`Rolling back ${rolled.length} service(s) that succeeded earlier in this run...`),
+  );
+  for (const plan of rolled) {
+    const ok = await rollbackTraffic(projectId, region, plan.serviceName, plan.priorRevision);
+    log.info(
+      ok
+        ? green(`  ${plan.slug} traffic restored to ${plan.priorRevision}`)
+        : red(`  ${plan.slug} rollback FAILED — manual fix required`),
+    );
+  }
 }
 
 // =========================================================================
