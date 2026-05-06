@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.23
+
+### Features
+- 92200fc propose/execute pairs for site/page/template/module revert
+
 ## v0.2.22
 
 ### Features
