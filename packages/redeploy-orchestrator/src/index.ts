@@ -59,6 +59,53 @@ interface Settings {
   opKinds: string[];
 }
 
+/**
+ * v0.2.16 — resolve a plugin write op + its entity_id to the page_id
+ * the operation logically affects, so auto-redeploy can rebuild only
+ * that page. Each entry queries the plugin's own cms_public table.
+ * Adding a new plugin op = adding a switch case below; no schema
+ * change needed.
+ */
+async function resolvePluginOpPageId(
+  adapter: DatabaseAdapter,
+  operation: string,
+  entityId: string,
+): Promise<string | null> {
+  // Comments — `comments.moderate` + bulk variant. entity_id is the
+  // comment id; lookup table is cms_public.plugin_comments.comments.
+  if (operation === "comments.moderate" || operation === "comments.moderate_bulk") {
+    try {
+      const pub = adapter.rawPublic();
+      const rows = (await pub`
+        SELECT page_id::text AS page_id FROM plugin_comments.comments
+        WHERE id = ${entityId}::uuid LIMIT 1
+      `) as unknown as { page_id: string | null }[];
+      return rows[0]?.page_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+  // Ratings — `ratings.submit` writes a row + updates aggregates.
+  // entity_id is the rating id; lookup is plugin_ratings.ratings.
+  if (operation === "ratings.submit") {
+    try {
+      const pub = adapter.rawPublic();
+      const rows = (await pub`
+        SELECT page_id::text AS page_id FROM plugin_ratings.ratings
+        WHERE id = ${entityId}::uuid LIMIT 1
+      `) as unknown as { page_id: string | null }[];
+      return rows[0]?.page_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+  // Forms / newsletter ops have no per-page binding (form submissions
+  // and newsletter signups don't change a particular page's bake), so
+  // they intentionally don't appear here. If a future plugin op should
+  // trigger a per-page rebuild, add a case + the lookup query.
+  return null;
+}
+
 export function startRedeployOrchestrator(cfg: OrchestratorConfig): OrchestratorHandle {
   const pollMs = cfg.pollIntervalMs ?? 1500;
   const gcMs = cfg.gcIntervalMs ?? 60 * 60 * 1000;
@@ -181,13 +228,20 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
     );
     if (rows.length === 0) return;
     // Collect per-page deltas. Operations on `pages.*` carry the page
-    // id directly; ops on `comments.moderate` etc. typically attach the
-    // page id via the page-relevance join — for v1 we treat any
-    // entity_id we see as a page candidate. The generator filter is a
-    // narrow whitelist so any non-page id silently no-ops.
+    // id as `entity_id` directly. Plugin write ops carry their own
+    // entity (e.g. `comments.moderate.entity_id` is the comment id);
+    // for those we resolve the bound page_id from the plugin's
+    // cms_public table so an approved comment auto-rebuilds only the
+    // page it attaches to. Op-allowlist is intentionally narrow —
+    // adding a new plugin op = one row in the resolver below.
     for (const r of rows) {
       if (r.entity_id && r.operation.startsWith("pages.")) {
         pendingPageIds.add(r.entity_id);
+        continue;
+      }
+      if (r.entity_id) {
+        const pageId = await resolvePluginOpPageId(cfg.adapter, r.operation, r.entity_id);
+        if (pageId) pendingPageIds.add(pageId);
       }
     }
     const latest = rows[rows.length - 1]?.created_at;

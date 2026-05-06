@@ -398,6 +398,8 @@ export async function* runChatTurn(
         "- every page on a template → `add_module_to_template`",
         "- every page on the site (or a whole layout) → `add_module_to_layout` (e.g. layoutSlug='site-default', blockName='footer')",
         "",
+        "Adding a plugin's output (comments, contact form, ratings, newsletter) to a page → `add_plugin_to_page` (per-page placeholder; the static-generator + Web Component handle the rest). Plugins must be installed + active — see `# Plugins` for available slugs.",
+        "",
         "`create_layout` is Owner-only (AI calls reject; surface the permission requirement). `set_site_defaults` is AI-callable directly — use it on a fresh install where `# Site defaults` shows '(none configured yet)'.",
       ].join("\n");
     }

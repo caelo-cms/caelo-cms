@@ -62,6 +62,14 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // v0.2.16 — runPluginOperation now emits audit_events rows
+      // referencing the plugin's actor. Clear those before the actor
+      // so the actor_id FK doesn't block cleanup.
+      await tx`DELETE FROM audit_events WHERE actor_id IN (
+        SELECT id FROM actors WHERE plugin_id IN (
+          SELECT id FROM plugins WHERE slug LIKE 'test-p115-%'
+        )
+      )`;
       await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug LIKE 'test-p115-%')`;
       await tx`DELETE FROM plugin_schema_migrations WHERE plugin_id IN (SELECT id FROM plugins WHERE slug LIKE 'test-p115-%')`;
       await tx`DELETE FROM plugins WHERE slug LIKE 'test-p115-%'`;

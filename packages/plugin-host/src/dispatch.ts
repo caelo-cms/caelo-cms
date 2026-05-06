@@ -13,8 +13,10 @@
  * operation handler).
  */
 
+import { createHash } from "node:crypto";
 import type { PluginContext, PluginContextTier1, PluginDefinition } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { sql } from "drizzle-orm";
 import type { AIProvider } from "./types.js";
 
 /** Runtime registry of loaded Tier-1 plugins. Loader writes here at startup;
@@ -62,6 +64,20 @@ export interface LoadedPlugin {
   /** Per-plugin actor row id — set as caelo.actor_id when the plugin's
    *  operations write through the Query API. */
   readonly pluginActorId: string;
+  /** v0.2.16 — true when a Tier-2 plugin's row + schema survived an
+   *  upgrade and was registered from the DB at bootstrap, but the
+   *  Deno-subprocess execution runtime is not yet wired. The plugin
+   *  is visible in `/security/plugins`; runOperation returns
+   *  Tier2RuntimePending. Defaults to undefined for Tier-1 + active
+   *  Tier-2 plugins (when the runtime ships, this flag stops being
+   *  set). */
+  readonly executionStub?: boolean;
+  /** Operation names from the plugin's manifest. Used only when
+   *  `executionStub` is true to distinguish "operation declared but
+   *  runtime missing" (Tier2RuntimePending) from "operation not
+   *  declared at all" (OperationNotDeclared). Real Tier-1 plugins
+   *  read their declared operations from `definition.operations`. */
+  readonly declaredOperationNames?: ReadonlyArray<string>;
 }
 
 export const loadedPlugins = new LoadedPluginsRegistry();
@@ -192,7 +208,8 @@ export type RunPluginOperationResult =
           | "PluginNotFound"
           | "PluginDisabled"
           | "OperationNotDeclared"
-          | "OperationFailed";
+          | "OperationFailed"
+          | "Tier2RuntimePending";
         readonly message: string;
       };
     };
@@ -227,6 +244,32 @@ export async function runPluginOperation(
       error: {
         kind: "PluginDisabled",
         message: `plugin "${opts.pluginSlug}" is disabled — re-enable via /security/plugins`,
+      },
+    };
+  }
+  // v0.2.16 — Tier-2 plugin survived upgrade (DB-loaded by loader) but
+  // execution runtime isn't wired yet. Honest error rather than the
+  // stale-feeling OperationNotDeclared (the operation IS declared in
+  // the manifest; we just can't run it).
+  if (plugin.executionStub) {
+    const declared = plugin.declaredOperationNames?.includes(opts.operationName) ?? false;
+    if (!declared) {
+      return {
+        ok: false,
+        error: {
+          kind: "OperationNotDeclared",
+          message: `plugin "${opts.pluginSlug}" does not declare operation "${opts.operationName}"`,
+        },
+      };
+    }
+    return {
+      ok: false,
+      error: {
+        kind: "Tier2RuntimePending",
+        message:
+          `Tier-2 plugin "${opts.pluginSlug}" is registered (source + schema survived the upgrade) ` +
+          `but the Deno-subprocess execution runtime is not yet shipped. ` +
+          `Use Tier-1 (PR-shipped) plugins for runtime functionality, or wait for the runtime ship.`,
       },
     };
   }
@@ -267,6 +310,21 @@ export async function runPluginOperation(
   }
   try {
     const value = await handler(ctx as PluginContext, opts.args);
+    // v0.2.16 — emit an audit_events row so plugin write ops (e.g.
+    // `comments.moderate`) are visible to the redeploy orchestrator's
+    // poll, allowing per-page incremental rebuild on plugin data
+    // change. Best-effort: failure to audit doesn't fail the op.
+    try {
+      await emitPluginAuditRow(cachedInfra.adapter, {
+        actorId: plugin.pluginActorId,
+        operation: `${plugin.slug}.${opts.operationName}`,
+        inputArgs: opts.args,
+        entityId: extractEntityId(value),
+        succeeded: true,
+      });
+    } catch {
+      // Audit failure shouldn't surface to the visitor / caller.
+    }
     return { ok: true, value };
   } catch (e) {
     return {
@@ -277,6 +335,69 @@ export async function runPluginOperation(
       },
     };
   }
+}
+
+/**
+ * v0.2.16 — write an audit_events row for a plugin op. Mirrors the
+ * shape `recordAudit` in admin-core uses, but runs raw SQL because
+ * plugin-host is a peer of admin-core (no upward import). The row
+ * lets the redeploy orchestrator + the operator's own audit trail
+ * see plugin write activity without each plugin author needing to
+ * call recordAudit explicitly.
+ */
+async function emitPluginAuditRow(
+  adapter: DatabaseAdapter,
+  args: {
+    actorId: string;
+    operation: string;
+    inputArgs: unknown;
+    entityId: string | null;
+    succeeded: boolean;
+  },
+): Promise<void> {
+  const hash = createHash("sha256").update(JSON.stringify(args.inputArgs ?? null)).digest("hex");
+  await adapter.withAdminTransaction(
+    {
+      actorId: args.actorId,
+      actorKind: "plugin",
+      requestId: `plugin-op-audit-${args.operation}`,
+    },
+    async (tx) => {
+      await tx.execute(sql`
+        INSERT INTO audit_events (actor_id, operation, input_hash, succeeded, entity_id)
+        VALUES (
+          ${args.actorId}::uuid,
+          ${args.operation},
+          ${hash},
+          ${args.succeeded},
+          ${args.entityId === null ? null : sql`${args.entityId}::uuid`}
+        )
+      `);
+    },
+  );
+}
+
+/**
+ * Extract a plausible entity id from a plugin op's return value. The
+ * convention: handlers that affect a specific row return an object
+ * with a field matching the table's primary key (`commentId`,
+ * `ratingId`, `formSubmissionId`, …) OR a generic `id`. The audit
+ * row's entity_id then unblocks per-page redeploy resolution in the
+ * orchestrator (which queries the plugin's own table by id to find
+ * the bound page_id). Falls back to null when the result doesn't
+ * look like one of these shapes.
+ */
+function extractEntityId(result: unknown): string | null {
+  if (result === null || typeof result !== "object") return null;
+  const r = result as Record<string, unknown>;
+  // Common per-table conventions first.
+  for (const key of ["commentId", "ratingId", "formSubmissionId", "subscriberId", "campaignId"]) {
+    const v = r[key];
+    if (typeof v === "string" && /^[0-9a-f-]{36}$/i.test(v)) return v;
+  }
+  // Generic fallback.
+  if (typeof r.id === "string" && /^[0-9a-f-]{36}$/i.test(r.id)) return r.id;
+  return null;
 }
 
 /**

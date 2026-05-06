@@ -73,6 +73,26 @@ export const addModuleToTemplateToolInput = z
   })
   .strict();
 
+/**
+ * v0.2.16 — `add_plugin_to_page` AI tool. Inserts a plugin's
+ * `<div data-caelo-plugin>` placeholder into a page's block via a
+ * synthetic module. The placeholder is what the static-generator's
+ * plugin pass (apps/static-generator/src/plugin-pass.ts) replaces
+ * with the plugin's `staticRender` output at deploy time, and what
+ * the plugin's Web Component hydrates against on the client. The
+ * tool resolves `plugin-host`'s in-memory registry to confirm the
+ * plugin is loaded + active before creating the module.
+ */
+export const addPluginToPageToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    pluginSlug: z.string().min(1).max(80),
+    blockName: z.string().min(1).max(80),
+    /** "top" | "bottom" | a 0-based integer index. */
+    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+  })
+  .strict();
+
 export const AI_TOOLS = [
   "edit_module",
   "site_memory_propose",
@@ -96,10 +116,12 @@ export const AI_TOOLS = [
   "move_module",
   "reorder_module",
   "set_nav_menu",
+  "add_plugin_to_page",
 ] as const;
 export type AiToolName = (typeof AI_TOOLS)[number];
 export type AddModuleToPageToolInput = z.infer<typeof addModuleToPageToolInput>;
 export type AddModuleToTemplateToolInput = z.infer<typeof addModuleToTemplateToolInput>;
+export type AddPluginToPageToolInput = z.infer<typeof addPluginToPageToolInput>;
 
 /** Chat ops input shapes — used by the SvelteKit form actions. */
 export const chatCreateSessionInput = z

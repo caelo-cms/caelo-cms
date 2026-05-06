@@ -3,6 +3,7 @@
 import { addModuleToLayoutTool } from "./add-module-to-layout.js";
 import { addModuleToPageTool } from "./add-module-to-page.js";
 import { addModuleToTemplateTool } from "./add-module-to-template.js";
+import { addPluginToPageTool } from "./add-plugin-to-page.js";
 import { autofillPageSeoTool } from "./autofill-page-seo.js";
 import { bulkCreateRedirectsTool } from "./bulk-create-redirects.js";
 import { bulkDeleteRedirectsTool } from "./bulk-delete-redirects.js";
@@ -58,6 +59,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);
+  // v0.2.16 — place a plugin's output on a page (synthetic placeholder
+  // module). Tier-1 plugins go live at next deploy; Tier-2 stubs reject
+  // with a clear "execution runtime pending" message.
+  registry.register(addPluginToPageTool);
   registry.register(createPageTool);
   registry.register(createTemplateTool);
   registry.register(composeFromImportTool);

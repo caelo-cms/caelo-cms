@@ -147,7 +147,133 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
     }
   }
 
+  // v0.2.16 — Tier-2 plugins persist as `plugins.source_code` + a
+  // `cms_public.plugin_<slug>` schema. Their rows survive every
+  // `cms-provision upgrade` because the DB does. But the loader only
+  // walks the filesystem (which holds Tier-1 plugins shipped in the
+  // image), so a Tier-2 plugin completely disappears from the runtime
+  // after upgrade unless we explicitly read it from the DB. Register
+  // each active Tier-2 row as a stub LoadedPlugin so it shows up in
+  // `/security/plugins` and gateway dispatches return a clear
+  // "Tier2RuntimePending" error rather than confusing PluginNotFound.
+  // The actual Deno-subprocess execution runtime is a deferred ship.
+  const tier2 = await loadActiveTier2Plugins(opts);
+  for (const t of tier2.loaded) loaded.push({ slug: t.slug, version: t.version, tier: 2 });
+  for (const f of tier2.failed) failed.push(f);
+
   return { loaded, failed };
+}
+
+/**
+ * v0.2.16 — Read every `plugins WHERE tier=2 AND status='active'` row
+ * and register a stub `LoadedPlugin` so the plugin is visible to the
+ * runtime registry post-upgrade. The stub's `runOperation` path
+ * returns `Tier2RuntimePending` for every declared op (see
+ * `dispatch.ts:runPluginOperation` — it short-circuits before the
+ * handler lookup when `executionStub` is true). Tools / workers /
+ * prompt-context renderers are NOT registered for Tier-2 stubs —
+ * those need real execution to function.
+ */
+async function loadActiveTier2Plugins(opts: BootstrapOpts): Promise<{
+  loaded: ReadonlyArray<{ slug: string; version: string }>;
+  failed: ReadonlyArray<{ slug: string; reason: string }>;
+}> {
+  const loaded: Array<{ slug: string; version: string }> = [];
+  const failed: Array<{ slug: string; reason: string }> = [];
+  let rows: ReadonlyArray<{
+    id: string;
+    slug: string;
+    version: string;
+    manifest_json: unknown;
+  }> = [];
+  try {
+    rows = await opts.infra.adapter.withAdminTransaction(
+      {
+        actorId: opts.systemActorId,
+        actorKind: "system",
+        requestId: "plugin-host-tier2-bootstrap",
+      },
+      async (tx) =>
+        (await tx.execute(sql`
+          SELECT id::text AS id, slug, version, manifest_json
+          FROM plugins
+          WHERE tier = 2 AND status = 'active'
+          ORDER BY slug ASC
+        `)) as unknown as ReadonlyArray<{
+          id: string;
+          slug: string;
+          version: string;
+          manifest_json: unknown;
+        }>,
+    );
+  } catch (e) {
+    // Don't block Tier-1 boot if the DB query fails — log + continue.
+    return {
+      loaded,
+      failed: [{ slug: "<tier2-bootstrap>", reason: (e as Error).message }],
+    };
+  }
+
+  for (const row of rows) {
+    try {
+      // Look up the per-plugin actor row created at activation time.
+      const actorId = await opts.infra.adapter.withAdminTransaction(
+        {
+          actorId: opts.systemActorId,
+          actorKind: "system",
+          requestId: `plugin-host-tier2-bootstrap-${row.slug}`,
+        },
+        async (tx) => {
+          const r = (await tx.execute(sql`
+            SELECT id::text AS id FROM actors
+            WHERE plugin_id = ${row.id}::uuid LIMIT 1
+          `)) as unknown as { id: string }[];
+          return r[0]?.id ?? null;
+        },
+      );
+      if (!actorId) {
+        failed.push({ slug: row.slug, reason: "missing per-plugin actor row" });
+        continue;
+      }
+      const declaredOps = extractDeclaredOps(row.manifest_json);
+      // Minimal frozen shell. dispatch.ts checks `executionStub` BEFORE
+      // touching `definition.operations`, so the empty operations object
+      // is never read. Same for component / workers / tools.
+      const stubDef = {
+        slug: row.slug,
+        version: row.version,
+        tier: 2 as const,
+        schema: {},
+        operations: {},
+      } as unknown as PluginDefinition<PluginContext>;
+      loadedPlugins.set({
+        pluginId: row.id,
+        slug: row.slug,
+        version: row.version,
+        tier: 2,
+        pluginActorId: actorId,
+        definition: stubDef,
+        executionStub: true,
+        declaredOperationNames: declaredOps,
+      });
+      loaded.push({ slug: row.slug, version: row.version });
+    } catch (e) {
+      failed.push({ slug: row.slug, reason: (e as Error).message });
+    }
+  }
+  return { loaded, failed };
+}
+
+function extractDeclaredOps(manifestJson: unknown): ReadonlyArray<string> {
+  if (manifestJson === null || typeof manifestJson !== "object") return [];
+  const ops = (manifestJson as { operations?: unknown }).operations;
+  if (Array.isArray(ops)) {
+    return ops.filter((o): o is string => typeof o === "string");
+  }
+  if (ops !== null && typeof ops === "object") {
+    return Object.keys(ops as Record<string, unknown>);
+  }
+  return [];
 }
 
 interface LoadOpts {
