@@ -45,8 +45,8 @@ function arg(name: string): boolean {
 
 function getCurrent(): string {
   const src = readFileSync(VERSION_FILE, "utf8");
-  const m = /CALEO_VERSION = "([^"]+)"/.exec(src);
-  if (!m) throw new Error("CALEO_VERSION not found in version.ts");
+  const m = /CAELO_VERSION = "([^"]+)"/.exec(src);
+  if (!m) throw new Error("CAELO_VERSION not found in version.ts");
   return m[1] as string;
 }
 
@@ -110,9 +110,9 @@ function bumpJsonVersions(newVersion: string, dryRun: boolean): string[] {
 
 function bumpVersionFile(newVersion: string, dryRun: boolean): void {
   const src = readFileSync(VERSION_FILE, "utf8");
-  const next = src.replace(/CALEO_VERSION = "[^"]+"/, `CALEO_VERSION = "${newVersion}"`);
+  const next = src.replace(/CAELO_VERSION = "[^"]+"/, `CAELO_VERSION = "${newVersion}"`);
   if (next === src) {
-    throw new Error("version.ts CALEO_VERSION line did not match — refusing to write");
+    throw new Error("version.ts CAELO_VERSION line did not match — refusing to write");
   }
   if (!dryRun) writeFileSync(VERSION_FILE, next);
 }
@@ -166,14 +166,132 @@ function maybeGitCommitTag(newVersion: string, dryRun: boolean): void {
   if (tag.exitCode !== 0) throw new Error("git tag failed");
 }
 
+function bumpKind(current: string, kind: "patch" | "minor" | "major"): string {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(current);
+  if (!m) throw new Error(`bad current version: ${current}`);
+  const [, maj, min, pat] = m;
+  switch (kind) {
+    case "patch":
+      return `${maj}.${min}.${Number(pat) + 1}`;
+    case "minor":
+      return `${maj}.${Number(min) + 1}.0`;
+    case "major":
+      return `${Number(maj) + 1}.0.0`;
+  }
+}
+
+function checkLockstep(target: string): { ok: boolean; mismatches: { file: string; v: string }[] } {
+  const proc = Bun.spawnSync(
+    [
+      "find",
+      REPO_ROOT,
+      "-name",
+      "package.json",
+      "-not",
+      "-path",
+      "*/node_modules/*",
+      "-not",
+      "-path",
+      "*/dist/*",
+      "-not",
+      "-path",
+      "*/.svelte-kit/*",
+      "-not",
+      "-path",
+      "*/build/*",
+    ],
+    { stdout: "pipe" },
+  );
+  const paths = new TextDecoder().decode(proc.stdout).trim().split("\n").filter(Boolean);
+  const mismatches: { file: string; v: string }[] = [];
+  for (const p of paths) {
+    const pkg = JSON.parse(readFileSync(p, "utf8")) as { version?: string };
+    if (pkg.version && pkg.version !== target) mismatches.push({ file: p, v: pkg.version });
+  }
+  return { ok: mismatches.length === 0, mismatches };
+}
+
+function lastReleaseTag(): string | null {
+  const proc = Bun.spawnSync(["git", "describe", "--tags", "--abbrev=0", "--match", "v*"], {
+    cwd: REPO_ROOT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (proc.exitCode !== 0) return null;
+  return new TextDecoder().decode(proc.stdout).trim() || null;
+}
+
+function generateChangelog(prevTag: string | null, newVersion: string): string {
+  const range = prevTag ? `${prevTag}..HEAD` : "HEAD";
+  const proc = Bun.spawnSync(
+    ["git", "log", range, "--pretty=format:%h %s", "--no-merges"],
+    { cwd: REPO_ROOT, stdout: "pipe" },
+  );
+  const log = new TextDecoder().decode(proc.stdout).trim();
+  if (!log) return `## v${newVersion}\n\n_no changes since last tag_\n`;
+  const groups: Record<string, string[]> = {
+    feat: [],
+    fix: [],
+    refactor: [],
+    docs: [],
+    chore: [],
+    test: [],
+    other: [],
+  };
+  for (const line of log.split("\n")) {
+    const m = line.match(/^([0-9a-f]+)\s+(\w+)(?:\([^)]+\))?(!)?:\s*(.+)$/);
+    if (m) {
+      const kind = m[2] in groups ? (m[2] as keyof typeof groups) : "other";
+      const breaking = m[3] ? " ⚠ BREAKING" : "";
+      groups[kind]?.push(`- ${m[1]} ${m[4]}${breaking}`);
+    } else {
+      groups.other?.push(`- ${line}`);
+    }
+  }
+  const HEADINGS: Record<string, string> = {
+    feat: "Features",
+    fix: "Fixes",
+    refactor: "Refactors",
+    docs: "Docs",
+    chore: "Chores",
+    test: "Tests",
+    other: "Other",
+  };
+  const out = [`## v${newVersion}\n`];
+  for (const k of ["feat", "fix", "refactor", "docs", "chore", "test", "other"]) {
+    const entries = groups[k] ?? [];
+    if (entries.length === 0) continue;
+    out.push(`### ${HEADINGS[k]}\n${entries.join("\n")}\n`);
+  }
+  return out.join("\n");
+}
+
 async function main(): Promise<void> {
-  const newVersion = process.argv[2];
-  if (!newVersion || newVersion.startsWith("--")) {
-    console.error("Usage: bun run scripts/release.ts <new-version> [--dry-run]");
+  const arg0 = process.argv[2];
+  if (!arg0 || arg0 === "--help" || arg0 === "-h") {
+    console.error(
+      "Usage:\n" +
+        "  bun run scripts/release.ts <patch|minor|major|x.y.z> [--dry-run]\n" +
+        "  bun run scripts/release.ts --check     # verify lockstep, no bump",
+    );
     process.exit(2);
+  }
+  if (arg0 === "--check") {
+    const target = getCurrent();
+    const result = checkLockstep(target);
+    if (result.ok) {
+      console.log(`✓ all packages at v${target}`);
+      process.exit(0);
+    }
+    console.error(`✗ ${result.mismatches.length} package(s) drift from v${target}:`);
+    for (const m of result.mismatches) console.error(`  ${m.file}: ${m.v}`);
+    process.exit(1);
   }
   const dryRun = arg("dry-run");
   const current = getCurrent();
+  const newVersion = ["patch", "minor", "major"].includes(arg0)
+    ? bumpKind(current, arg0 as "patch" | "minor" | "major")
+    : arg0;
   if (!semverGt(newVersion, current)) {
     console.error(`new version ${newVersion} must be strictly greater than current ${current}`);
     process.exit(2);
@@ -189,15 +307,20 @@ async function main(): Promise<void> {
   await resignManifests(dryRun);
   console.log(`✓ Tier-1 manifests resigned`);
 
-  // Release notes generation lands in scripts/release-notes.ts; for v1
-  // we just stamp a placeholder so the changelog file always exists.
-  const changelogPath = resolve(REPO_ROOT, "docs/CHANGELOG.md");
-  if (!existsSync(changelogPath) && !dryRun) {
-    writeFileSync(
-      changelogPath,
-      `# Caelo CHANGELOG\n\n## v${newVersion}\n\n- (auto-generated release notes — TODO: scripts/release-notes.ts)\n`,
-    );
-    console.log(`✓ docs/CHANGELOG.md initialised`);
+  // Generate the changelog stanza from conventional commits since the
+  // last v* tag. Prepended to CHANGELOG.md (top-level) so the most
+  // recent release is at the top.
+  const prevTag = lastReleaseTag();
+  const stanza = generateChangelog(prevTag, newVersion);
+  const changelogPath = resolve(REPO_ROOT, "CHANGELOG.md");
+  const HEADER = "# Changelog\n\n";
+  if (!dryRun) {
+    const prior = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8") : HEADER;
+    const body = prior.startsWith(HEADER) ? prior.slice(HEADER.length) : prior;
+    writeFileSync(changelogPath, `${HEADER}${stanza}\n${body}`);
+    console.log(`✓ CHANGELOG.md ${prevTag ? `appended commits since ${prevTag}` : "initialised"}`);
+  } else {
+    console.log("[dry-run] changelog stanza would prepend:\n" + stanza);
   }
 
   maybeGitCommitTag(newVersion, dryRun);

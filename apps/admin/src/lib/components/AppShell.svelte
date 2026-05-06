@@ -16,6 +16,7 @@
     Sun,
     Wand2,
   } from "lucide-svelte";
+  import { CAELO_VERSION } from "@caelo-cms/shared";
   import { mode, toggleMode } from "mode-watcher";
   const isDark = $derived(mode.current === "dark");
   import NotificationBell from "$lib/components/NotificationBell.svelte";
@@ -126,6 +127,9 @@
           {userEmail}
         </p>
       {/if}
+      <p class="px-3 py-1 text-[10px] text-muted-foreground" title="Caelo CMS version">
+        v{CAELO_VERSION}
+      </p>
       <form method="post" action="/logout">
         <input type="hidden" name="_csrf" value={csrfToken} />
         <Button variant="ghost" size="sm" type="submit" class="w-full justify-start gap-3">

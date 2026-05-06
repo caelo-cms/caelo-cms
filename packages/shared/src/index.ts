@@ -29,4 +29,4 @@ export * from "./snapshots.js";
 export * from "./structured-sets.js";
 export * from "./subagents.js";
 export * from "./translation.js";
-export { CALEO_VERSION, type CaeloVersion, parseVersion } from "./version.js";
+export { CAELO_VERSION, CALEO_VERSION, type CaeloVersion, parseVersion } from "./version.js";

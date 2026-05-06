@@ -22,7 +22,17 @@
  * follow standard SemVer.
  */
 
-export const CALEO_VERSION = "0.0.0-dev";
+export const CAELO_VERSION = "0.2.0";
+
+/**
+ * Deprecated alias for back-compat — early P17 work spelled this
+ * `CALEO_VERSION` (typo of "Caelo"). New code should import
+ * `CAELO_VERSION`. Kept as a re-export so existing callers keep
+ * compiling; remove once external consumers have migrated.
+ *
+ * @deprecated use CAELO_VERSION
+ */
+export const CALEO_VERSION = CAELO_VERSION;
 
 /**
  * Parsed shape — major/minor/patch + optional pre-release tag.
@@ -38,7 +48,7 @@ export interface CaeloVersion {
   readonly raw: string;
 }
 
-export function parseVersion(raw: string = CALEO_VERSION): CaeloVersion {
+export function parseVersion(raw: string = CAELO_VERSION): CaeloVersion {
   const m = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(raw);
   if (!m) {
     throw new Error(`invalid Caelo version: ${raw}`);
