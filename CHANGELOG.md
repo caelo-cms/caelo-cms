@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.11
+
+### Fixes
+- 978b909 drop /_caelo/health HTTP probe in upgrade — always 403'd
+
 ## v0.2.10
 
 ### Fixes
