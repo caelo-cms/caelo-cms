@@ -240,8 +240,19 @@ jobs:
         # AND emits a provenance attestation so downstream consumers
         # can verify the artifact came from this exact workflow.
         # Setup on the npm side is per-package; see RELEASING.md.
+        #
+        # Wrapped in scripts/npm-publish-idempotent.ts because
+        # npm 11.x's --provenance + Trusted Publishing flow can race
+        # on a follow-up PUT after the Rekor attestation lands —
+        # the package + provenance go live, then a second PUT hits
+        # 403 "already published" and the step exits non-zero
+        # despite a successful artifact. The wrapper detects that
+        # exact failure and verifies the published shasum matches
+        # the tarball we just built; if so, treats as idempotent
+        # success. See scripts/npm-publish-idempotent.ts header
+        # for the full diagnosis (observed on v0.2.3 / provisioning).
         working-directory: packages/${{ matrix.package }}
-        run: npm publish --provenance --access public --tag "${{ steps.disttag.outputs.tag }}"
+        run: bun "${GITHUB_WORKSPACE}/scripts/npm-publish-idempotent.ts" --tag "${{ steps.disttag.outputs.tag }}"
 
   # ──────────────────────────────────────────────────────────────────
   # Verify the published artifacts are actually reachable before
