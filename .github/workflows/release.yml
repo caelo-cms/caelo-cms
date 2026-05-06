@@ -111,14 +111,35 @@ jobs:
         run: bun scripts/release.ts --check
 
   # ──────────────────────────────────────────────────────────────────
+  # Build + push Docker images via the existing release-images workflow,
+  # invoked here as a reusable workflow so this release-driver remains
+  # the single source of truth for the tag's full publish state.
+  # `release-images.yml` no longer fires on `tags: [v*]` directly —
+  # it ships only via this `uses:` dispatch + dev-side push-to-main.
+  # ──────────────────────────────────────────────────────────────────
+  docker:
+    name: build + push docker images
+    needs: gate
+    uses: ./.github/workflows/release-images.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+  # ──────────────────────────────────────────────────────────────────
   # Publish each non-private @caelo-cms/* package to npm with
   # provenance attestation. Provenance proves the artifact came from
   # this exact workflow + commit + tag — operators (and `npm audit`)
   # can verify it without trusting registries.
+  #
+  # Depends on `docker` so a Docker-build failure short-circuits npm
+  # publish — atomicity: a v0.5.3 release either ships both registries
+  # or neither.
   # ──────────────────────────────────────────────────────────────────
   publish-npm:
     name: publish ${{ matrix.package }} to npm
-    needs: gate
+    needs: [gate, docker]
     runs-on: ubuntu-latest
 
     strategy:
@@ -177,13 +198,50 @@ jobs:
         run: npm publish --provenance --access public --tag "${{ steps.disttag.outputs.tag }}"
 
   # ──────────────────────────────────────────────────────────────────
+  # Verify the published artifacts are actually reachable before
+  # creating the GitHub Release. A green tick on the Release page
+  # means: gate passed, Docker pushed, npm published, AND end-users
+  # can pull both. If verify fails, the GitHub Release isn't created
+  # — the tag exists in git but operators won't see "v0.5.3 available"
+  # (npm dist-tag rollback is documented in RELEASING.md).
+  # ──────────────────────────────────────────────────────────────────
+  verify-published:
+    name: verify published artifacts
+    needs: [docker, publish-npm]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve version
+        id: ver
+        run: |
+          REF="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${REF#v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify GHCR images are pullable
+        run: |
+          for service in admin gateway; do
+            IMAGE="ghcr.io/caelo-cms/${service}:${{ steps.ver.outputs.version }}"
+            echo "Pulling ${IMAGE}..."
+            docker pull "${IMAGE}" || { echo "::error::failed to pull ${IMAGE}"; exit 1; }
+          done
+
+      - name: Verify npm packages are installable
+        run: |
+          for pkg in mcp-server provisioning; do
+            INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
+            echo "Inspecting ${INSTALL}..."
+            npm view "${INSTALL}" version || { echo "::error::npm view ${INSTALL} failed"; exit 1; }
+          done
+
+  # ──────────────────────────────────────────────────────────────────
   # Create the GitHub Release with the changelog stanza so operators
   # see the same notes whether they look at npmjs, ghcr.io, or the
-  # GitHub Releases page.
+  # GitHub Releases page. Depends on verify-published so the Release
+  # only appears when ALL artifacts are confirmed reachable.
   # ──────────────────────────────────────────────────────────────────
   github-release:
     name: create GitHub Release
-    needs: [gate, publish-npm]
+    needs: [gate, publish-npm, verify-published]
     runs-on: ubuntu-latest
 
     steps:

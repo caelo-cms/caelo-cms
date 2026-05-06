@@ -25,7 +25,12 @@ name: release-images
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    # P21 ship 1 — `tags: [v*]` removed. Tag releases are now driven by
+    # release.yml which calls this workflow via `workflow_call` after
+    # the lint/typecheck/test gate passes. That makes the full release
+    # atomic: if Docker fails, npm doesn't publish + no GitHub Release
+    # is created. Push-to-main still emits :main + :main-<sha7>.
+  workflow_call:
   workflow_dispatch:
 
 # Required for cosign keyless signing via OIDC.
