@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.13
+
+### Fixes
+- 7001018 force traffic to latest after upgrade roll
+
 ## v0.2.12
 
 ### Fixes
