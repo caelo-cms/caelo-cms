@@ -195,6 +195,14 @@ import {
   listRedirectsOp,
   lookupRedirectOp,
 } from "./ops/redirects.js";
+import {
+  executeRoleProposalOp,
+  listPendingRoleProposalsOp,
+  proposeRoleCreateOp,
+  proposeRoleDeleteOp,
+  proposeRoleUpdatePermissionsOp,
+  rejectRoleProposalOp,
+} from "./ops/role_pending.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
 import { aiBudgetsStatusOp, listAiBudgetsOp, setAiBudgetOp } from "./ops/security/ai_budgets.js";
 import {
@@ -345,6 +353,17 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createRoleOp);
   registry.register(deleteRoleOp);
   registry.register(updateRolePermissionsOp);
+  // v0.2.22 — roles propose/execute pairs. AI proposes via roles.propose_*;
+  // Owner approves at /security/roles/pending which calls
+  // roles.execute_proposal (human-only) → underlying roles.{create,
+  // update_permissions, delete} op. Built-in role protection still
+  // enforced at the underlying op layer.
+  registry.register(proposeRoleCreateOp);
+  registry.register(proposeRoleUpdatePermissionsOp);
+  registry.register(proposeRoleDeleteOp);
+  registry.register(executeRoleProposalOp);
+  registry.register(rejectRoleProposalOp);
+  registry.register(listPendingRoleProposalsOp);
   // P3 content layer
   registry.register(listModulesOp);
   registry.register(getModuleOp);
