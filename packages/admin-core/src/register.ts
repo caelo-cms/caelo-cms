@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { OperationRegistry } from "@caelo-cms/query-api";
+import {
+  executeAiProvidersProposalOp,
+  listPendingAiProvidersProposalsOp,
+  proposeAiProvidersClearKeyOp,
+  proposeAiProvidersSetOp,
+  rejectAiProvidersProposalOp,
+} from "./ops/ai_providers_pending.js";
 import { loginOp, logoutOp, resolveSessionOp } from "./ops/auth.js";
 import {
   appendChatMessageOp,
@@ -453,6 +460,16 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setAiProvidersOp);
   registry.register(clearAiProviderKeyOp);
   registry.register(anyAiProviderConfiguredOp);
+  // v0.2.26 — ai_providers propose/execute pairs (set / clear_key).
+  // AI proposes config + isActive; Owner pastes the apiKey inline at
+  // approve time at /security/ai/pending. Reuses the secret-at-approve
+  // pattern from email_config (v0.2.25) — the apiKey never lands in
+  // the proposal payload.
+  registry.register(proposeAiProvidersSetOp);
+  registry.register(proposeAiProvidersClearKeyOp);
+  registry.register(executeAiProvidersProposalOp);
+  registry.register(rejectAiProvidersProposalOp);
+  registry.register(listPendingAiProvidersProposalsOp);
   registry.register(aggregateAiCallsOp);
   registry.register(aggregatePluginAiSpendOp);
   registry.register(setPluginAiCostCapOp);
