@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.24
+
+### Features
+- b55db8f propose/execute pairs for activate/complete
+
 ## v0.2.23
 
 ### Features
