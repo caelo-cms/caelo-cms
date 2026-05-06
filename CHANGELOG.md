@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.15
+
+### Features
+- 898f0fe add Step 0 preferences capture so site_ai_memory is non-empty before first chat
+
 ## v0.2.14
 
 ### Fixes
