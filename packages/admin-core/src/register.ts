@@ -246,6 +246,13 @@ import {
 } from "./ops/security/ai_providers.js";
 import { auditByRequestIdOp } from "./ops/security/audit_by_request.js";
 import {
+  executeMcpTokenProposalOp,
+  listPendingMcpTokenProposalsOp,
+  proposeMcpTokenCreateOp,
+  proposeMcpTokenRevokeOp,
+  rejectMcpTokenProposalOp,
+} from "./ops/mcp_token_pending.js";
+import {
   createMcpTokenOp,
   listMcpTokensOp,
   mcpSendChatOp,
@@ -490,6 +497,16 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createMcpTokenOp);
   registry.register(revokeMcpTokenOp);
   registry.register(mcpSendChatOp);
+  // v0.2.27 — mcp_tokens propose/execute pairs (create / revoke).
+  // AI proposes new tokens by displayName + cap; the Owner approves
+  // at /security/mcp/pending and the plaintext token is generated
+  // server-side and shown ONCE in the response banner. Same shape
+  // as users.execute_proposal returning the temp password.
+  registry.register(proposeMcpTokenCreateOp);
+  registry.register(proposeMcpTokenRevokeOp);
+  registry.register(executeMcpTokenProposalOp);
+  registry.register(rejectMcpTokenProposalOp);
+  registry.register(listPendingMcpTokenProposalsOp);
   // P6 deploy
   registry.register(listDeployTargetsOp);
   registry.register(listDeployRunsOp);
