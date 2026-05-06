@@ -100,6 +100,14 @@ RUN mkdir -p /repo/node_modules/bun && \
     printf 'const G = globalThis;\nexport const SQL = G.Bun?.SQL;\nexport const Glob = G.Bun?.Glob;\nexport default G.Bun ?? {};\n' \
       > /repo/node_modules/bun/index.js
 
+# Build @caelo-cms/shared first. Vite (running under Node) resolves
+# `@caelo-cms/shared` via the symlinked workspace's package.json
+# `main` → `./dist/index.js`. Without this step the dist doesn't
+# exist and the build crashes with `ERR_MODULE_NOT_FOUND`. The
+# shared package's `main` points at dist for npm consumers; the
+# monorepo build path needs the same artifact ahead of time.
+RUN bun run --filter @caelo-cms/shared build
+
 # Build with `bun x vite build` (Node-style invocation, no Bun JIT).
 # Bun's JIT under Docker amd64 here SIGILLs the same way it does on
 # GitHub Actions runners — same Bun binary, same CPU baseline. Going
