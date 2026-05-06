@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.5
+
+### Other
+- 7b3bdc7 biome autofix on npm-publish-idempotent.ts
+
 ## v0.2.4
 
 ### Fixes
