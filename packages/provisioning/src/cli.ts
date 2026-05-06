@@ -665,7 +665,7 @@ async function pulumiOutputSync(): Promise<void> {
 async function version(): Promise<void> {
   // P17.0 — single source of truth lives in @caelo-cms/shared/version.ts.
   // Imported lazily so the CLI's startup cost stays small.
-  const { CAELO_VERSION } = await import("@caelo-cms/shared");
+  const { CAELO_VERSION } = await import("./version.js");
   console.log(`cms-provision (Caelo v${CAELO_VERSION})`);
 }
 

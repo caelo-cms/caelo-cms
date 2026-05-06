@@ -156,7 +156,6 @@ jobs:
       # files at job start. Hardcoded keeps the job idempotent.)
       matrix:
         package:
-          - shared
           - mcp-server
           - provisioning
 
@@ -274,7 +273,7 @@ jobs:
 
       - name: Verify npm packages are installable
         run: |
-          for pkg in shared mcp-server provisioning; do
+          for pkg in mcp-server provisioning; do
             INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
             echo "Inspecting ${INSTALL}..."
             npm view "${INSTALL}" version || { echo "::error::npm view ${INSTALL} failed"; exit 1; }
