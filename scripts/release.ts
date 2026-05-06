@@ -123,6 +123,21 @@ async function resignManifests(dryRun: boolean): Promise<number> {
     console.warn(`sign-tier1-manifest.ts not found — skipping resign step`);
     return 0;
   }
+  // Pre-check that a signing key is reachable. Maintainers running the
+  // release script need EITHER a local `.caelo-dev-key` (default dev
+  // pair) OR `CAELO_TIER1_PRIVATE_KEY` set (production release flow).
+  // Without one the sign script aborts with a confusing stack; surface
+  // the actionable hint up-front.
+  const devKeyPath = resolve(REPO_ROOT, ".caelo-dev-key");
+  if (!existsSync(devKeyPath) && !process.env.CAELO_TIER1_PRIVATE_KEY) {
+    throw new Error(
+      "no signing key found.\n" +
+        "  • For dev releases: run `bun apps/admin/scripts/sign-tier1-manifest.ts --new-key` " +
+        "to mint a local pair, then re-run.\n" +
+        "  • For production releases: export CAELO_TIER1_PRIVATE_KEY=<hex> from your secrets " +
+        "manager before running.",
+    );
+  }
   if (dryRun) {
     console.log(`[dry-run] would run: bun run ${signScript}`);
     return 0;

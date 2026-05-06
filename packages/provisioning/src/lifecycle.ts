@@ -240,13 +240,15 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const registryRegion = "europe-west1";
   const registryRepo = "caelo-cms-images";
 
-  // P20 — version selection. The release CI tags every published
-  // image with three labels: :vX.Y.Z (immutable), :X.Y (latest patch
-  // in the minor), :latest (stable). Pre-release tags additionally
-  // get :rc / :beta. Operators pin via --version, opt into
-  // pre-releases via --channel, or default to :latest.
+  // P20 — version selection. The release CI's docker/metadata-action
+  // uses `type=semver,pattern={{version}}` which strips the leading `v`
+  // from the git tag, so Docker tags are bare semver: `:0.5.3`,
+  // `:0.5`, `:latest`. Pre-release tags get a channel-named tag
+  // (`:rc`, `:beta`) but NO `:latest`. Operators pin via --version
+  // (just the semver, no `v`), opt into pre-releases via --channel,
+  // or default to `:latest`.
   const targetTag = (() => {
-    if (opts.version) return opts.version.startsWith("v") ? opts.version : `v${opts.version}`;
+    if (opts.version) return opts.version.startsWith("v") ? opts.version.slice(1) : opts.version;
     if (opts.channel === "rc") return "rc";
     if (opts.channel === "beta") return "beta";
     return "latest";

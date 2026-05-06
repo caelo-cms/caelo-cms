@@ -102,6 +102,12 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Lockstep version check
+        # P20 — every workspace package.json + version.ts must agree.
+        # Catches PRs that hand-edit a single package's version field
+        # (drift would silently ship). Bumps go through scripts/release.ts.
+        run: bun scripts/release.ts --check
+
       - name: Typecheck
         run: bun run typecheck
 
