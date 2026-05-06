@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.20
+
+### Features
+- 8a9cf0b propose/execute pairs for create/update/delete/set_blocks
+
 ## v0.2.19
 
 ### Features
