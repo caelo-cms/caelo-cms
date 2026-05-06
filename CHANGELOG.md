@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.22
+
+### Features
+- ea4c973 propose/execute pairs for create/update_permissions/delete
+
 ## v0.2.21
 
 ### Features
