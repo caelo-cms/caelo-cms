@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.7
+
+### Fixes
+- cbc3278 resolve image digest via public Docker V2 API in upgrade
+
 ## v0.2.6
 
 ### Fixes
