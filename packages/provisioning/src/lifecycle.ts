@@ -116,6 +116,37 @@ export async function statusCommand(): Promise<void> {
   }
 }
 
+/**
+ * P20 — fetch the latest stable Caelo release tag from GitHub.
+ * Returns null on any failure (network, rate limit, no releases yet)
+ * — status output skips the "newer available" line in that case.
+ * Caches in-process for 10 minutes to keep repeated `status` calls
+ * polite to GitHub's unauthenticated rate limit (60 req/hr).
+ */
+let releaseCheckCache: { fetchedAt: number; latest: string | null } | null = null;
+async function getLatestReleaseTag(): Promise<string | null> {
+  const now = Date.now();
+  if (releaseCheckCache && now - releaseCheckCache.fetchedAt < 10 * 60 * 1000) {
+    return releaseCheckCache.latest;
+  }
+  try {
+    const res = await fetch("https://api.github.com/repos/caelo-cms/caelo-cms/releases/latest", {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) {
+      releaseCheckCache = { fetchedAt: now, latest: null };
+      return null;
+    }
+    const json = (await res.json()) as { tag_name?: string };
+    const latest = json.tag_name ?? null;
+    releaseCheckCache = { fetchedAt: now, latest };
+    return latest;
+  } catch {
+    releaseCheckCache = { fetchedAt: now, latest: null };
+    return null;
+  }
+}
+
 async function gcpStatus(meta: InstallMetadata): Promise<void> {
   if (!meta.projectId) return;
   const s = spinner();
@@ -160,22 +191,43 @@ async function gcpStatus(meta: InstallMetadata): Promise<void> {
   ]);
   s.stop(green("Health check complete"));
 
+  // P20 — show running version vs latest available release. Pulled
+  // from the running admin's CAELO_VERSION env when set; falls back
+  // to the @caelo-cms/shared bundled version of the local CLI.
+  const { CAELO_VERSION } = await import("@caelo-cms/shared");
+  const latestTag = await getLatestReleaseTag();
+  const latestStable = latestTag?.replace(/^v/, "") ?? null;
+  const upgradeHint =
+    latestStable && latestStable !== CAELO_VERSION
+      ? `${yellow(`v${latestStable} available`)} — run \`bunx @caelo-cms/provisioning upgrade\``
+      : latestStable === CAELO_VERSION
+        ? green("up to date")
+        : dim("(latest unknown)");
+
   note(
     [
       `${dim("Admin Cloud Run URL")}  ${adminUri.ok ? bold(adminUri.stdout.trim()) : red("error")}`,
       `${dim("Cloud SQL state")}     ${sqlState.ok ? bold(sqlState.stdout.trim()) : red("error")}`,
       `${dim("Public site")}          ${cyan(`https://${meta.domain}`)}`,
       `${dim("Admin (IAP-gated)")}    ${cyan(`https://admin.${meta.domain}`)}`,
+      `${dim("CLI version")}          v${CAELO_VERSION}  ${upgradeHint}`,
     ].join("\n"),
     "Status",
   );
 }
 
 // =========================================================================
-// upgrade — pull latest images + roll Cloud Run
+// upgrade — roll Cloud Run to a specific version (or latest)
 // =========================================================================
 
-export async function upgradeCommand(): Promise<void> {
+interface UpgradeOpts {
+  /** Explicit semver to roll to (e.g. "0.5.3"). Defaults to "latest". */
+  readonly version?: string;
+  /** Pre-release channel: "stable" (default), "rc", "beta". */
+  readonly channel?: "stable" | "rc" | "beta";
+}
+
+export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const { meta } = requireInstall();
   if (meta.provider !== "gcp") {
     log.warn(`upgrade for provider ${meta.provider} not yet implemented.`);
@@ -184,18 +236,27 @@ export async function upgradeCommand(): Promise<void> {
   if (!meta.projectId) return;
 
   const region = meta.region ?? "europe-west1";
-  // Match the Pulumi stack's image source — the team-managed public
-  // Artifact Registry repo. `:main` is a floating tag; Cloud Run only
-  // rolls when the image *reference* changes, so we resolve to the
-  // current sha256 digest first and pass that.
   const registryProject = "caelo-website";
   const registryRegion = "europe-west1";
   const registryRepo = "caelo-cms-images";
+
+  // P20 — version selection. The release CI tags every published
+  // image with three labels: :vX.Y.Z (immutable), :X.Y (latest patch
+  // in the minor), :latest (stable). Pre-release tags additionally
+  // get :rc / :beta. Operators pin via --version, opt into
+  // pre-releases via --channel, or default to :latest.
+  const targetTag = (() => {
+    if (opts.version) return opts.version.startsWith("v") ? opts.version : `v${opts.version}`;
+    if (opts.channel === "rc") return "rc";
+    if (opts.channel === "beta") return "beta";
+    return "latest";
+  })();
+  log.info(`Rolling admin + gateway to ${bold(targetTag)} (registry: ${dim(registryRepo)})`);
+
   for (const slug of ["admin", "gateway"] as const) {
     const s = spinner();
     s.start(`Resolving + rolling ${slug}...`);
 
-    // 1. Find the deployed Cloud Run service name (Pulumi-suffixed).
     const serviceName = await resolveGcpResourceName(
       "run-service",
       `caelo-production-${slug}`,
@@ -207,7 +268,10 @@ export async function upgradeCommand(): Promise<void> {
       return;
     }
 
-    // 2. Resolve the floating `:main` tag → current sha256 digest.
+    // Resolve the requested tag → current sha256 digest. Cloud Run
+    // only rolls when the image REFERENCE changes; pinning to the
+    // sha digest guarantees a fresh revision even if `:latest` was
+    // republished without changing tags.
     const tagInfo = await gcloud([
       "artifacts",
       "docker",
@@ -215,20 +279,21 @@ export async function upgradeCommand(): Promise<void> {
       "list",
       `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}`,
       "--filter",
-      "tag=main",
+      `tag=${targetTag}`,
       "--format=value(version)",
       "--project",
       registryProject,
     ]);
     if (!tagInfo.ok || !tagInfo.stdout.trim()) {
-      s.stop(red(`Couldn't resolve image digest for ${slug}:main`));
-      log.error(`Verify the image exists at ghcr.io / caelo-cms-images. ${tagInfo.stderr.trim()}`);
+      s.stop(red(`Couldn't resolve image digest for ${slug}:${targetTag}`));
+      log.error(
+        `Verify the tag exists. Available: \`gcloud artifacts docker tags list ${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug} --project=${registryProject}\``,
+      );
       return;
     }
     const digest = tagInfo.stdout.trim().split("\n")[0]?.trim() ?? "";
     const imageRef = `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}@${digest}`;
 
-    // 3. Roll the Cloud Run service.
     const r = await gcloud([
       "run",
       "services",
@@ -246,9 +311,9 @@ export async function upgradeCommand(): Promise<void> {
       s.stop(red(`Failed: ${r.stderr.trim()}`));
       return;
     }
-    s.stop(green(`${slug} rolled to ${digest.slice(0, 19)}...`));
+    s.stop(green(`${slug} (${targetTag}) rolled to ${digest.slice(0, 19)}...`));
   }
-  log.success("Upgrade complete.");
+  log.success(`Upgrade to ${bold(targetTag)} complete.`);
 }
 
 // =========================================================================

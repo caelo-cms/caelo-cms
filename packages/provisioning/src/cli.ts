@@ -701,7 +701,18 @@ async function lifecycleStatus(): Promise<void> {
 }
 async function lifecycleUpgrade(): Promise<void> {
   const { upgradeCommand } = await import("./lifecycle.js");
-  await upgradeCommand();
+  // P20 — version + channel flags. Default = latest stable.
+  //   bunx @caelo-cms/provisioning upgrade
+  //   bunx @caelo-cms/provisioning upgrade --version 0.5.3
+  //   bunx @caelo-cms/provisioning upgrade --channel rc
+  const version = arg("version");
+  const channelArg = arg("channel");
+  const channel: "stable" | "rc" | "beta" | undefined =
+    channelArg === "rc" || channelArg === "beta" || channelArg === "stable" ? channelArg : undefined;
+  await upgradeCommand({
+    ...(version ? { version } : {}),
+    ...(channel ? { channel } : {}),
+  });
 }
 async function lifecycleBackup(): Promise<void> {
   const { backupCommand } = await import("./lifecycle.js");
