@@ -205,6 +205,26 @@ export const aiProvidersSetInput = z
   .strict();
 
 /**
+ * P19 — `compose_from_import` AI tool input. Wraps
+ * `imports.compose_from_run`. Single transaction synthesis: aggregates
+ * theme tokens, creates one template bound to the default layout,
+ * materialises every staged import_pages row into a draft page +
+ * modules. Idempotent — pages already accepted skip cleanly.
+ */
+export const composeFromImportToolInput = z
+  .object({
+    runId: z.string().uuid(),
+    templateSlug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase letters/digits/hyphens, leading non-hyphen")
+      .optional(),
+    includeImportPageIds: z.array(z.string().uuid()).optional(),
+  })
+  .strict();
+
+/**
  * Input for `ai_providers.clear_key` — Owner-only NULLs the encrypted
  * triplet so the resolver falls back to the env-var path for that
  * provider (or returns null if no env is set, which surfaces the
@@ -634,6 +654,7 @@ export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
+export type ComposeFromImportToolInput = z.infer<typeof composeFromImportToolInput>;
 export type RenamePageToolInput = z.infer<typeof renamePageToolInput>;
 export type SetPageTitleToolInput = z.infer<typeof setPageTitleToolInput>;
 export type ChangePageSlugToolInput = z.infer<typeof changePageSlugToolInput>;

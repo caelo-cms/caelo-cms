@@ -263,7 +263,7 @@ async function resolveImageDigests(services: string[]): Promise<Record<string, s
       cancel("Aborted.");
       process.exit(1);
     }
-    s.stop(green(`${service}: ${dim(digest.slice(0, 19) + "...")}`));
+    s.stop(green(`${service}: ${dim(`${digest.slice(0, 19)}...`)}`));
     out[service] = digest;
   }
   return out;

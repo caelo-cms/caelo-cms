@@ -101,6 +101,7 @@ import {
   acceptImportedPageOp,
   acknowledgeImportPageDiffOp,
   cleanupImportRunOp,
+  composeFromImportRunOp,
   createImportRunOp,
   executeImportProposalOp,
   getImportRunOp,
@@ -434,6 +435,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(writeExtractedPagesOp);
   registry.register(acceptImportedPageOp);
   registry.register(cleanupImportRunOp);
+  registry.register(composeFromImportRunOp);
   // P13 — gateway hardening surface.
   registry.register(getGatewaySettingsOp);
   registry.register(setGatewaySettingsOp);

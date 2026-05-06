@@ -9,6 +9,7 @@ import { bulkDeleteRedirectsTool } from "./bulk-delete-redirects.js";
 import { bulkOptimizeSeoTool } from "./bulk-optimize-seo.js";
 import { changePageSlugTool } from "./change-page-slug.js";
 import { changeTemplateTool } from "./change-template.js";
+import { composeFromImportTool } from "./compose-from-import.js";
 import { createLayoutTool } from "./create-layout.js";
 import { createPageTool } from "./create-page.js";
 import { createTemplateTool } from "./create-template.js";
@@ -59,6 +60,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(addModuleToTemplateTool);
   registry.register(createPageTool);
   registry.register(createTemplateTool);
+  registry.register(composeFromImportTool);
   registry.register(renamePageTool);
   registry.register(setPageTitleTool);
   registry.register(changePageSlugTool);

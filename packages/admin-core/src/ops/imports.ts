@@ -658,3 +658,328 @@ export const cleanupImportRunOp = defineOperation({
     return ok({});
   },
 });
+
+/**
+ * P19 — `imports.compose_from_run` synthesises a Caelo-shaped site from
+ * a `ready_for_review` import run in one transaction:
+ *
+ *   1. Aggregates `proposed_theme_tokens` across all pages (majority
+ *      value per key) → writes/updates `structured_sets kind=theme
+ *      slug=site` so the next render emits the imported site's CSS
+ *      vars.
+ *   2. Reuses the seeded `site-default` layout (or `defaults.default_layout_id`
+ *      when set) as the chrome — a v1 simplification; the Owner can
+ *      later add header/footer modules via `add_module_to_layout` from
+ *      chat. Building a fresh layout from imported chrome is a P19
+ *      polish concern.
+ *   3. Creates a single template (slug from input, default
+ *      `imported-page`) bound to that layout. HTML carries one
+ *      `<caelo-slot name="content">` so the per-page modules render
+ *      inside it.
+ *   4. For each `import_pages` row not yet accepted: inserts a page row
+ *      bound to the new template, materialises each `proposed_modules`
+ *      entry into a real `modules` row + `page_modules` mapping, marks
+ *      `accepted_page_id`.
+ *
+ * Idempotency: skips pages that already have `accepted_page_id`. If
+ * the run has no unaccepted pages left, returns the prior synthesis.
+ *
+ * Per CLAUDE.md §11: open to ai because the user's "compose from this
+ * crawl" intent is content-shaped — no hard-to-revert chrome change.
+ * The Owner reviews the resulting drafts via the standard publish flow.
+ */
+export const composeFromImportRunOp = defineOperation({
+  name: "imports.compose_from_run",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      /** Slug for the new template that the imported pages bind to. */
+      templateSlug: z
+        .string()
+        .min(1)
+        .max(120)
+        .regex(/^[a-z0-9][a-z0-9-]*$/)
+        .default("imported-page"),
+      /** Subset of import_pages to materialise; omitted = all not-yet-accepted. */
+      includeImportPageIds: z.array(z.string().uuid()).optional(),
+    })
+    .strict(),
+  output: z.object({
+    themeTokensApplied: z.number().int(),
+    layoutId: z.string(),
+    templateId: z.string(),
+    pageIds: z.array(z.string()),
+    homepageId: z.string().nullable(),
+    skippedAlreadyAccepted: z.number().int(),
+  }),
+  handler: async (ctx, input, tx) => {
+    // 1. Run must exist + be reviewable.
+    const runRows = (await tx.execute(sql`
+      SELECT id::text AS id, source_url, status
+      FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
+    `)) as unknown as { id: string; source_url: string; status: string }[];
+    const run = runRows[0];
+    if (!run) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.compose_from_run",
+        message: "import run not found",
+      });
+    }
+    if (run.status !== "ready_for_review" && run.status !== "completed") {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.compose_from_run",
+        message: `run is ${run.status}; wait for ready_for_review before composing`,
+      });
+    }
+
+    // 2. Load every (or filtered) import_pages row.
+    const pageRows = (await tx.execute(sql`
+      SELECT id::text AS id, proposed_slug, proposed_title,
+             proposed_modules, proposed_theme_tokens, accepted_page_id,
+             diff_status, acknowledged_at
+      FROM import_pages
+      WHERE run_id = ${input.runId}::uuid
+      ORDER BY created_at ASC
+    `)) as unknown as Array<{
+      id: string;
+      proposed_slug: string;
+      proposed_title: string;
+      proposed_modules: unknown;
+      proposed_theme_tokens: unknown;
+      accepted_page_id: string | null;
+      diff_status: "pass" | "warn" | "fail" | null;
+      acknowledged_at: string | Date | null;
+    }>;
+
+    const filterSet = input.includeImportPageIds ? new Set(input.includeImportPageIds) : null;
+    const eligible = pageRows.filter(
+      (r) => r.accepted_page_id === null && (filterSet === null || filterSet.has(r.id)),
+    );
+    const skippedAlreadyAccepted = pageRows.length - eligible.length;
+
+    if (eligible.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.compose_from_run",
+        message: "no import_pages to compose (all already accepted or filter empty)",
+      });
+    }
+
+    // 3. Pick layout — site_defaults.default_layout_id if configured,
+    // else the seeded `site-default` slug.
+    const layoutRows = (await tx.execute(sql`
+      SELECT COALESCE(
+        (SELECT default_layout_id FROM site_defaults WHERE id = 1),
+        (SELECT id FROM layouts WHERE slug = 'site-default' AND deleted_at IS NULL LIMIT 1)
+      )::text AS id
+    `)) as unknown as { id: string | null }[];
+    const layoutId = layoutRows[0]?.id;
+    if (!layoutId) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.compose_from_run",
+        message:
+          "no layout to bind the new template — seed site-default or set site_defaults.default_layout_id",
+      });
+    }
+
+    // 4. Aggregate theme tokens — for each key, majority value wins.
+    type TokensPer = Record<string, string>;
+    const tokenCounts: Record<string, Record<string, number>> = {};
+    for (const r of eligible) {
+      const tokens =
+        typeof r.proposed_theme_tokens === "string"
+          ? (JSON.parse(r.proposed_theme_tokens) as TokensPer)
+          : ((r.proposed_theme_tokens ?? {}) as TokensPer);
+      for (const [k, v] of Object.entries(tokens)) {
+        if (typeof v !== "string" || v.length === 0) continue;
+        tokenCounts[k] ??= {};
+        tokenCounts[k][v] = (tokenCounts[k][v] ?? 0) + 1;
+      }
+    }
+    const aggregatedTokens: Array<{ token: string; value: string; scope?: string }> = [];
+    for (const [k, valueMap] of Object.entries(tokenCounts)) {
+      let bestValue = "";
+      let bestCount = -1;
+      for (const [v, c] of Object.entries(valueMap)) {
+        if (c > bestCount) {
+          bestCount = c;
+          bestValue = v;
+        }
+      }
+      if (bestValue) {
+        // Infer scope from token prefix so the theme renderer can group
+        // by category. Unknown prefixes drop the scope (still valid).
+        const scope = k.startsWith("color-")
+          ? "color"
+          : k.startsWith("font-")
+            ? "font"
+            : k.startsWith("space-")
+              ? "space"
+              : k.startsWith("radius-")
+                ? "radius"
+                : k.startsWith("shadow-")
+                  ? "shadow"
+                  : undefined;
+        aggregatedTokens.push({
+          token: k,
+          value: bestValue,
+          ...(scope ? { scope } : {}),
+        });
+      }
+    }
+
+    // 5. Write theme set if anything was aggregated. Reuses the canonical
+    // `theme/site` slug consumed by the renderer.
+    if (aggregatedTokens.length > 0) {
+      await tx.execute(sql`
+        INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
+        VALUES (
+          'theme',
+          'site',
+          'Site theme (imported)',
+          ${JSON.stringify(aggregatedTokens)}::text::jsonb,
+          ${ctx.actorId}::uuid
+        )
+        ON CONFLICT (kind, slug) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          items        = EXCLUDED.items,
+          updated_at   = now(),
+          updated_by   = EXCLUDED.updated_by
+      `);
+    }
+
+    // 6. Find or create the target template. Fresh-on-conflict pattern
+    // keeps `compose_from_run` re-runnable: a second run targeting the
+    // same templateSlug just appends new pages to it.
+    let templateId: string;
+    const existingTplRows = (await tx.execute(sql`
+      SELECT id::text AS id FROM templates
+      WHERE slug = ${input.templateSlug} AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as { id: string }[];
+    if (existingTplRows[0]) {
+      templateId = existingTplRows[0].id;
+    } else {
+      const tplInsert = (await tx.execute(sql`
+        INSERT INTO templates (slug, display_name, html, css, layout_id)
+        VALUES (
+          ${input.templateSlug},
+          ${`Imported page (${run.source_url.slice(0, 60)})`},
+          '<div data-template="imported-page"><caelo-slot name="content">_</caelo-slot></div>',
+          '',
+          ${layoutId}::uuid
+        )
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+      const newId = tplInsert[0]?.id;
+      if (!newId) {
+        return err({
+          kind: "HandlerError",
+          operation: "imports.compose_from_run",
+          message: "template insert returned no id",
+        });
+      }
+      templateId = newId;
+      // Template wraps a single `content` block — match the layout's content slot.
+      await tx.execute(sql`
+        INSERT INTO template_blocks (template_id, name, display_name, position)
+        VALUES (${templateId}::uuid, 'content', 'Content', 0)
+      `);
+    }
+
+    // 7. Per import_page → page + modules + page_modules.
+    const createdPageIds: string[] = [];
+    let homepageId: string | null = null;
+    for (const r of eligible) {
+      // Block on unacknowledged screenshot fail — same gate as accept_page.
+      if (r.diff_status === "fail" && !r.acknowledged_at) {
+        continue;
+      }
+      const proposedModules = (
+        typeof r.proposed_modules === "string"
+          ? JSON.parse(r.proposed_modules)
+          : (r.proposed_modules ?? [])
+      ) as Array<{
+        blockName: string;
+        position: number;
+        html: string;
+        displayName: string;
+      }>;
+      const pageInsert = (await tx.execute(sql`
+        INSERT INTO pages (slug, locale, title, name, status, template_id, version)
+        VALUES (
+          ${r.proposed_slug}, 'en',
+          ${r.proposed_title || r.proposed_slug},
+          ${r.proposed_title || r.proposed_slug},
+          'draft', ${templateId}::uuid, 1
+        )
+        ON CONFLICT (slug, locale) WHERE deleted_at IS NULL
+          DO UPDATE SET title = EXCLUDED.title, name = EXCLUDED.name
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+      const pageId = pageInsert[0]?.id;
+      if (!pageId) continue;
+      createdPageIds.push(pageId);
+      if (r.proposed_slug === "home" || r.proposed_slug === "index" || homepageId === null) {
+        // First page wins as the "homepage" in the absence of an explicit
+        // home/index slug. The /ramp-up wizard surfaces this for the
+        // "View your homepage" CTA.
+        if (r.proposed_slug === "home" || r.proposed_slug === "index" || homepageId === null) {
+          homepageId = pageId;
+        }
+      }
+      // Replace any existing page_modules for this page (idempotent re-run).
+      await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${pageId}::uuid`);
+      for (const m of proposedModules) {
+        // Template only has a `content` block; remap header/footer to
+        // content for v1 (a follow-up will let the AI propose adding a
+        // header block to the layout).
+        const blockName = m.blockName === "content" ? "content" : "content";
+        const modInsert = (await tx.execute(sql`
+          INSERT INTO modules (slug, display_name, html, css, js)
+          VALUES (
+            ${`imported-${pageId.slice(0, 8)}-${m.blockName}-${m.position}`},
+            ${m.displayName || `${m.blockName} ${m.position}`},
+            ${m.html}, '', ''
+          )
+          RETURNING id::text AS id
+        `)) as unknown as { id: string }[];
+        const moduleId = modInsert[0]?.id;
+        if (!moduleId) continue;
+        await tx.execute(sql`
+          INSERT INTO page_modules (page_id, block_name, position, module_id)
+          VALUES (${pageId}::uuid, ${blockName}, ${m.position}, ${moduleId}::uuid)
+        `);
+      }
+      // Mark the staging row as accepted.
+      await tx.execute(sql`
+        UPDATE import_pages
+           SET accepted_page_id = ${pageId}::uuid, accepted_at = now()
+         WHERE id = ${r.id}::uuid
+      `);
+    }
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.compose_from_run",
+      input,
+      succeeded: true,
+      entityId: input.runId,
+      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} skipped=${skippedAlreadyAccepted}`,
+    });
+
+    return ok({
+      themeTokensApplied: aggregatedTokens.length,
+      layoutId,
+      templateId,
+      pageIds: createdPageIds,
+      homepageId,
+      skippedAlreadyAccepted,
+    });
+  },
+});

@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { FileText, Layers, Layout, MessageSquare, Rocket, ShieldCheck } from "lucide-svelte";
+  import { FileText, Layers, Layout, MessageSquare, Rocket, Sailboat, ShieldCheck } from "lucide-svelte";
   import {
     Card,
     CardContent,
@@ -22,6 +22,13 @@
       { href: "/security", label: "Security", desc: "Users, roles, AI provider, costs", icon: ShieldCheck, show: has("settings.read") },
     ].filter((t) => t.show),
   );
+
+  // P19 — when there are no published pages, surface "Ramp up" as the
+  // primary CTA at the top of the dashboard. After first publish the
+  // banner disappears and the sidebar entry remains for re-runs.
+  const showRampUpHero = $derived(
+    has("settings.write") && (data.publishedPageCount ?? 0) === 0,
+  );
 </script>
 
 <div class="space-y-6">
@@ -29,6 +36,24 @@
     <h1 class="text-2xl font-semibold tracking-tight">Welcome back</h1>
     <p class="text-sm text-muted-foreground">Signed in as <strong>{data.user.email}</strong></p>
   </div>
+
+  {#if showRampUpHero}
+    <a href="/ramp-up" class="block">
+      <Card class="border-primary/40 bg-primary/5 transition-colors hover:bg-primary/10">
+        <CardHeader>
+          <CardTitle class="flex items-center gap-2 text-base">
+            <Sailboat class="size-5" />
+            Ramp up your site
+          </CardTitle>
+          <CardDescription>
+            Point Caelo at an existing URL or start fresh — the AI extracts theme tokens, builds a
+            template, and stages draft pages you can publish in one click. Recommended first step
+            for new installs.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    </a>
+  {/if}
 
   <div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
     {#each tiles as tile (tile.href)}

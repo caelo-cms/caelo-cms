@@ -11,6 +11,7 @@
     MessageSquare,
     Moon,
     Rocket,
+    Sailboat,
     ShieldCheck,
     Sun,
     Wand2,
@@ -39,6 +40,7 @@
   const navItems = $derived(
     [
       { href: "/", label: "Dashboard", icon: LayoutDashboard, show: true },
+      { href: "/ramp-up", label: "Ramp up", icon: Sailboat, show: has("settings.write") },
       { href: "/edit", label: "Live edit", icon: Wand2, show: has("content.write") },
       { href: "/content/pages", label: "Pages", icon: FileText, show: has("content.read") },
       { href: "/content/modules", label: "Modules", icon: Layers, show: has("content.read") },
