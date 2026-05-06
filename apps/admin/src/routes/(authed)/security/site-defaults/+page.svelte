@@ -23,6 +23,19 @@
     </p>
   </div>
 
+  {#if data.loadErrors && data.loadErrors.length > 0}
+    <Alert variant="destructive">
+      <AlertDescription>
+        <p class="font-medium mb-1">Could not load all options:</p>
+        <ul class="list-disc list-inside text-sm">
+          {#each data.loadErrors as err (err)}
+            <li>{err}</li>
+          {/each}
+        </ul>
+      </AlertDescription>
+    </Alert>
+  {/if}
+
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {:else if form?.message}
@@ -38,31 +51,43 @@
         <input type="hidden" name="_csrf" value={data.csrfToken} />
         <div class="space-y-2">
           <Label for="defaultLayoutId">Default layout</Label>
-          <select
-            id="defaultLayoutId"
-            name="defaultLayoutId"
-            required
-            class="block w-full rounded-md border bg-background p-2 text-sm">
-            {#each data.layouts as layout (layout.id)}
-              <option value={layout.id} selected={data.defaults?.defaultLayoutId === layout.id}>
-                {layout.slug} — {layout.displayName}
-              </option>
-            {/each}
-          </select>
+          {#if data.layouts.length === 0}
+            <p class="text-sm text-muted-foreground italic">
+              No layouts available. Create one at <a href="/security/layouts" class="underline">/security/layouts</a>.
+            </p>
+          {:else}
+            <select
+              id="defaultLayoutId"
+              name="defaultLayoutId"
+              required
+              class="block w-full rounded-md border bg-background p-2 text-sm">
+              {#each data.layouts as layout (layout.id)}
+                <option value={layout.id} selected={data.defaults?.defaultLayoutId === layout.id}>
+                  {layout.slug} — {layout.displayName}
+                </option>
+              {/each}
+            </select>
+          {/if}
         </div>
         <div class="space-y-2">
           <Label for="defaultTemplateId">Default template</Label>
-          <select
-            id="defaultTemplateId"
-            name="defaultTemplateId"
-            required
-            class="block w-full rounded-md border bg-background p-2 text-sm">
-            {#each data.templates as tpl (tpl.id)}
-              <option value={tpl.id} selected={data.defaults?.defaultTemplateId === tpl.id}>
-                {tpl.slug} — {tpl.displayName}
-              </option>
-            {/each}
-          </select>
+          {#if data.templates.length === 0}
+            <p class="text-sm text-muted-foreground italic">
+              No templates available. Create one at <a href="/content/templates" class="underline">/content/templates</a>.
+            </p>
+          {:else}
+            <select
+              id="defaultTemplateId"
+              name="defaultTemplateId"
+              required
+              class="block w-full rounded-md border bg-background p-2 text-sm">
+              {#each data.templates as tpl (tpl.id)}
+                <option value={tpl.id} selected={data.defaults?.defaultTemplateId === tpl.id}>
+                  {tpl.slug} — {tpl.displayName}
+                </option>
+              {/each}
+            </select>
+          {/if}
         </div>
         <div class="flex justify-end">
           <Button type="submit">Save defaults</Button>

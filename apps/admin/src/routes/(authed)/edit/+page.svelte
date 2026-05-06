@@ -392,6 +392,7 @@
     initialLayout={data.layout}
     activePageId={activePageId || null}
     pageChats={data.pageChats}
+    globalChats={data.globalChats}
     onToolResult={onAiToolResult}
   />
 

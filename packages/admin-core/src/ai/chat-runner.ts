@@ -398,7 +398,7 @@ export async function* runChatTurn(
         "- every page on a template → `add_module_to_template`",
         "- every page on the site (or a whole layout) → `add_module_to_layout` (e.g. layoutSlug='site-default', blockName='footer')",
         "",
-        "`create_layout` and `set_site_defaults` are Owner-only — AI calls reject; surface the permission requirement instead of trying again.",
+        "`create_layout` is Owner-only (AI calls reject; surface the permission requirement). `set_site_defaults` is AI-callable directly — use it on a fresh install where `# Site defaults` shows '(none configured yet)'.",
       ].join("\n");
     }
   }
@@ -432,11 +432,31 @@ export async function* runChatTurn(
       "# Site defaults (used when caller omits a layout/template)",
       defaults
         ? `- default layout: ${defaults.defaultLayoutSlug}\n- default template: ${defaults.defaultTemplateSlug}`
-        : "- (none configured yet — Owner can set via /security/site-defaults)",
+        : "- (none configured yet — call `set_site_defaults({defaultLayoutSlug, defaultTemplateSlug})` directly to set them, or omit `templateId`/`layoutId` on individual creates to get a structured 'no defaults' error)",
       "",
       "# Templates → layouts",
       ...(templateLines.length > 0 ? templateLines : ["- (no templates yet)"]),
+      "",
+      // Action sentence anchored to the data above. Reduces AI
+      // hedging like "I only have its slug, paste the UUID" — the
+      // UUIDs ARE in the lines above; restating the action loop
+      // here makes the model use them.
+      templateLines.length > 0
+        ? `To create a page on a specific template, call create_page with templateId=<UUID from above>. To use the site default, omit templateId entirely. The lines above carry every UUID you need — do NOT ask the operator to paste it.`
+        : "No templates exist yet. Ask the operator to create one at /content/templates, or call create_page anyway and surface the resulting structured error.",
     ].join("\n");
+    // Optional debug telemetry. Gated behind CAELO_DEBUG_PROMPT so it
+    // costs nothing in production but can be flipped on for one Cloud
+    // Run revision to confirm what the AI actually sees.
+    if (process.env.CAELO_DEBUG_PROMPT === "1") {
+      console.log(
+        `[chat-runner] siteDefaultsBlock len=${siteDefaultsBlock.length} preview=${JSON.stringify(siteDefaultsBlock.slice(0, 600))}`,
+      );
+    }
+  } else if (process.env.CAELO_DEBUG_PROMPT === "1") {
+    console.log(
+      `[chat-runner] siteDefaultsBlock SKIPPED — defaultsR.ok=${defaultsR.ok} tplsR.ok=${tplsR.ok}`,
+    );
   }
 
   // P7 — recent + most-used media so the AI can pick existing assets

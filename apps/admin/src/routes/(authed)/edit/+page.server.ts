@@ -45,19 +45,40 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const activePage = pages.find((p) => p.id === queryPage) ?? home ?? pages[0] ?? null;
   const activePageId = activePage?.id ?? null;
 
-  // P6.7.4 — chats are now scoped to the active page. Load the page's
-  // bound chats + pick the most-recent unpublished one; if none, create
-  // a fresh page-bound session. Cross-page chats remain accessible from
-  // /content/chat — they don't show up in this dropdown.
-  const sessionsR = await execute(registry, adapter, locals.ctx, "chat.list_sessions", {
-    includeArchived: false,
-    pageId: activePageId,
-  });
+  // P6.7.4 / v0.2.14 — chats are scoped two ways:
+  //   - page-bound (`pageId = <activePageId>`): "this page's chats",
+  //     auto-resume on revisit, used for content edits scoped to one
+  //     page.
+  //   - global (`pageId IS NULL`): cross-cutting work like layout /
+  //     menu / footer changes that aren't tied to one page.
+  // Both buckets are loaded in parallel and surfaced in the overlay's
+  // chat picker. Form action `?/newChat` accepts an empty `pageId` to
+  // create a global chat.
+  const [sessionsR, globalSessionsR] = await Promise.all([
+    execute(registry, adapter, locals.ctx, "chat.list_sessions", {
+      includeArchived: false,
+      pageId: activePageId,
+    }),
+    execute(registry, adapter, locals.ctx, "chat.list_sessions", {
+      includeArchived: false,
+      pageId: null,
+    }),
+  ]);
   const sessions = sessionsR.ok ? (sessionsR.value as { sessions: ChatSession[] }).sessions : [];
+  const globalSessions = globalSessionsR.ok
+    ? (globalSessionsR.value as { sessions: ChatSession[] }).sessions
+    : [];
 
   const queryChat = url.searchParams.get("chat");
+  // Active chat: explicit ?chat= wins (can be page-bound OR global) →
+  // most-recent unpublished page-bound chat → auto-create page-bound.
+  // Picking a global chat here is fine; the page iframe stays loaded
+  // so the user can edit globally while looking at any page.
   let activeChat: ChatSession | null =
-    sessions.find((s) => s.id === queryChat) ?? sessions.find((s) => !s.publishedAt) ?? null;
+    sessions.find((s) => s.id === queryChat) ??
+    globalSessions.find((s) => s.id === queryChat) ??
+    sessions.find((s) => !s.publishedAt) ??
+    null;
   if (!activeChat) {
     const created = await execute(registry, adapter, locals.ctx, "chat.create_session", {
       title: activePage ? `Live edit · ${activePage.slug}` : "Live edit",
@@ -168,8 +189,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     branchEditedModuleIds,
     layout,
     translationBanner,
-    /** P6.7.4 — chats bound to the active page (for the history dropdown). */
+    /** P6.7.4 — chats bound to the active page (for the picker's "this page" group). */
     pageChats: sessions.map((s) => ({
+      id: s.id,
+      title: s.title,
+      lastActiveAt: s.lastActiveAt,
+      publishedAt: s.publishedAt,
+    })),
+    /** v0.2.14 — global chats (pageId IS NULL) for the picker's "global" group. */
+    globalChats: globalSessions.map((s) => ({
       id: s.id,
       title: s.title,
       lastActiveAt: s.lastActiveAt,
@@ -221,9 +249,11 @@ export const actions: Actions = {
     };
   },
   /**
-   * P6.7.4 — "+ New chat" creates a fresh page-bound session and
-   * redirects with `?chat=<id>` so the loader picks it up. Page id is
-   * carried in the form so we don't have to re-derive activePage.
+   * "+ New chat" creates a fresh page-bound OR global session and
+   * redirects with `?chat=<id>` so the loader picks it up. An empty
+   * `pageId` form value creates a global chat (pageId IS NULL); a
+   * non-empty UUID binds the chat to that page so revisiting the page
+   * later auto-resumes it.
    */
   newChat: async ({ request, locals, url }) => {
     requirePermission(locals, "content.write");
@@ -231,15 +261,19 @@ export const actions: Actions = {
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const pageId = String(form.get("pageId") ?? "");
+    const isGlobal = pageId.length === 0;
     const created = await execute(registry, adapter, locals.ctx, "chat.create_session", {
-      title: "New chat",
-      ...(pageId.length > 0 ? { pageId } : {}),
+      title: isGlobal ? "Global chat" : "Page chat",
+      ...(isGlobal ? {} : { pageId }),
     });
     if (!created.ok) return fail(500, { error: "Could not create chat." });
     const newId = (created.value as { chatSessionId: string }).chatSessionId;
     const next = new URL(url);
     next.searchParams.set("chat", newId);
-    if (pageId.length > 0) next.searchParams.set("page", pageId);
+    // Keep ?page= so the iframe still renders something even when the
+    // chat itself is global (the user is editing layouts/menus while
+    // looking at a representative page).
+    if (!isGlobal) next.searchParams.set("page", pageId);
     throw redirect(303, `${next.pathname}${next.search}`);
   },
   confirmPublish: async ({ request, locals }) => {

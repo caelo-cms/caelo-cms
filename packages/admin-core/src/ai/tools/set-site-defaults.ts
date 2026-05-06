@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7.6 — `set_site_defaults`. Owner-only at the op level. AI calls
- * reject with ActorScopeRejected and the chat surfaces a permission
- * message. The tool exists so the AI can recognize "make the bare
- * layout the default" as a request and explain that the user (Owner)
- * needs to make the change in /security/site-defaults.
+ * P6.7.6 / v0.2.14 — `set_site_defaults`. AI-callable per the §11.A
+ * exception in `ops/site_defaults.ts` (existing pages keep their
+ * pinned ids; the change only affects future creates that omit the
+ * explicit ids; snapshot-revertable). The AI can resolve a request
+ * like "make site-default the default layout" into a single tool
+ * call without operator round-trips.
  *
  * Slugs are accepted (not ids) so the AI can pass natural names.
  */
@@ -30,9 +31,10 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
 > = {
   name: "set_site_defaults",
   description:
-    "Change the site-wide default layout and/or default template. New pages created without an explicit layout/template " +
-    "fall back to these. Owner-only — AI calls reject with a permission message; the user must change defaults via " +
-    "/security/site-defaults. Pass slugs, not ids.",
+    "Set the site-wide default layout and/or default template. New pages created without an explicit layout/template " +
+    "fall back to these. SAFE TO CALL DIRECTLY — only affects future creates; existing pages keep their pinned ids. " +
+    "Pass slugs (e.g. `home-template`, `site-default`), not UUIDs. Useful on a fresh install when `# Site defaults` " +
+    "in the system prompt shows '(none configured yet)' and the operator wants to set them up.",
   schema: setSiteDefaultsToolInput,
   inputSchema: {
     type: "object",
@@ -108,14 +110,6 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
       defaultTemplateId: templateId,
     });
     if (!res.ok) {
-      const errKind = (res.error as { kind?: string }).kind;
-      if (errKind === "ActorScopeRejected") {
-        return {
-          ok: false,
-          content:
-            "changing site defaults requires Owner permission. Ask an Owner to update them via /security/site-defaults.",
-        };
-      }
       return { ok: false, content: `site_defaults.set failed: ${describeError(res.error)}` };
     }
     return {

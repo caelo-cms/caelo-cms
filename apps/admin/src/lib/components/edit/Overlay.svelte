@@ -50,7 +50,7 @@
     arguments?: { moduleId?: string; html?: string };
   };
 
-  interface PageChat {
+  interface ChatRef {
     id: string;
     title: string;
     lastActiveAt?: string;
@@ -64,8 +64,10 @@
     csrfToken: string;
     initialLayout?: OverlayLayout;
     activePageId?: string | null;
-    /** P6.7.4 — chats bound to the active page for the history dropdown. */
-    pageChats?: PageChat[];
+    /** P6.7.4 — chats bound to the active page (`page_id = activePageId`). */
+    pageChats?: ChatRef[];
+    /** v0.2.14 — global chats (`page_id IS NULL`) for cross-cutting work. */
+    globalChats?: ChatRef[];
     onToolResult?: (payload: ToolResultPayload) => void;
   }
   let {
@@ -76,6 +78,7 @@
     initialLayout = DEFAULT_LAYOUT,
     activePageId = null,
     pageChats = [],
+    globalChats = [],
     onToolResult,
   }: Props = $props();
 
@@ -310,32 +313,35 @@
       <GripHorizontal class="size-4 text-muted-foreground" />
       <span class="text-xs font-medium text-muted-foreground">Live edit</span>
 
-      {#if activePageId}
-        <!-- Chat history dropdown + new-chat button -->
-        <DropdownMenu>
-          <DropdownMenuTrigger>
-            {#snippet child({ props })}
-              <Button
-                {...props}
-                type="button"
-                variant="ghost"
-                size="sm"
-                aria-label="Chat history"
-                title="Switch chat"
-                data-testid="chat-history-trigger"
-                class="ml-1 h-7 px-2"
-              >
-                <History class="size-3" />
-              </Button>
-            {/snippet}
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            <div class="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-              Chats for this page
+      <!-- Chat picker — page-bound + global, with active-chat label
+           visible without requiring the dropdown to open. v0.2.14
+           replaced the prior History-icon-only design that buried
+           the picker behind two clicks. -->
+      <DropdownMenu>
+        <DropdownMenuTrigger>
+          {#snippet child({ props })}
+            <Button
+              {...props}
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label="Switch chat"
+              title="Switch chat"
+              data-testid="chat-picker-trigger"
+              class="ml-1 h-7 max-w-[160px] gap-1.5 px-2 text-xs font-normal"
+            >
+              <History class="size-3 shrink-0" />
+              <span class="truncate">{session.title || "chat"}</span>
+            </Button>
+          {/snippet}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" class="min-w-[240px]">
+          {#if activePageId}
+            <div class="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              This page
             </div>
-            <DropdownMenuSeparator />
             {#if pageChats.length === 0}
-              <DropdownMenuItem disabled>No chats yet</DropdownMenuItem>
+              <DropdownMenuItem disabled>No page chats yet</DropdownMenuItem>
             {:else}
               {#each pageChats as c (c.id)}
                 <DropdownMenuItem>
@@ -355,7 +361,6 @@
                 </DropdownMenuItem>
               {/each}
             {/if}
-            <DropdownMenuSeparator />
             <DropdownMenuItem>
               {#snippet child({ props })}
                 <form
@@ -367,15 +372,60 @@
                   <input type="hidden" name="_csrf" value={csrfToken} />
                   <input type="hidden" name="pageId" value={activePageId} />
                   <Plus class="size-3" />
-                  <button type="submit" class="flex-1 text-left" data-testid="new-chat-btn">
-                    New chat
+                  <button type="submit" class="flex-1 text-left" data-testid="new-page-chat-btn">
+                    New page chat
                   </button>
                 </form>
               {/snippet}
             </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      {/if}
+            <DropdownMenuSeparator />
+          {/if}
+          <div class="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Global
+          </div>
+          {#if globalChats.length === 0}
+            <DropdownMenuItem disabled>No global chats yet</DropdownMenuItem>
+          {:else}
+            {#each globalChats as c (c.id)}
+              <DropdownMenuItem>
+                {#snippet child({ props })}
+                  <a
+                    {...props}
+                    href={activePageId
+                      ? `/edit?page=${activePageId}&chat=${c.id}`
+                      : `/edit?chat=${c.id}`}
+                    class={cn(
+                      "flex flex-col gap-0.5 px-2 py-1.5 text-xs",
+                      c.id === session.id && "bg-accent",
+                    )}
+                  >
+                    <span class="truncate">{c.title}</span>
+                    <span class="text-muted-foreground">{fmtRelative(c.lastActiveAt)}</span>
+                  </a>
+                {/snippet}
+              </DropdownMenuItem>
+            {/each}
+          {/if}
+          <DropdownMenuItem>
+            {#snippet child({ props })}
+              <form
+                {...props}
+                method="post"
+                action="?/newChat"
+                class="flex w-full items-center gap-1.5 px-2 py-1.5 text-xs hover:bg-accent"
+              >
+                <input type="hidden" name="_csrf" value={csrfToken} />
+                <!-- Empty pageId → server creates a global chat. -->
+                <input type="hidden" name="pageId" value="" />
+                <Plus class="size-3" />
+                <button type="submit" class="flex-1 text-left" data-testid="new-global-chat-btn">
+                  New global chat
+                </button>
+              </form>
+            {/snippet}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       <div class="ml-auto flex items-center gap-1">
         <Button
