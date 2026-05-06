@@ -20,6 +20,9 @@
     pendingProposals: number;
     failedDeploys: number;
     staleBranches: number;
+    upgradeAvailable: boolean;
+    latestVersion: string | null;
+    releaseUrl: string | null;
     total: number;
   }
 
@@ -27,6 +30,9 @@
     pendingProposals: 0,
     failedDeploys: 0,
     staleBranches: 0,
+    upgradeAvailable: false,
+    latestVersion: null,
+    releaseUrl: null,
     total: 0,
   });
   let loaded = $state(false);
@@ -155,6 +161,18 @@
               >
                 <Badge variant="outline">{counts.staleBranches}</Badge>
                 <span>Chats inactive for 14+ days</span>
+              </a>
+            {/if}
+            {#if counts.upgradeAvailable && counts.latestVersion}
+              <a
+                href={counts.releaseUrl ?? "https://github.com/caelo-cms/caelo-cms/releases"}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="-mx-1 flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent"
+                onclick={() => (open = false)}
+              >
+                <Badge>v{counts.latestVersion}</Badge>
+                <span>New Caelo release available — release notes →</span>
               </a>
             {/if}
           {/if}

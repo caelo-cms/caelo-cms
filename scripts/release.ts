@@ -223,10 +223,10 @@ function lastReleaseTag(): string | null {
 
 function generateChangelog(prevTag: string | null, newVersion: string): string {
   const range = prevTag ? `${prevTag}..HEAD` : "HEAD";
-  const proc = Bun.spawnSync(
-    ["git", "log", range, "--pretty=format:%h %s", "--no-merges"],
-    { cwd: REPO_ROOT, stdout: "pipe" },
-  );
+  const proc = Bun.spawnSync(["git", "log", range, "--pretty=format:%h %s", "--no-merges"], {
+    cwd: REPO_ROOT,
+    stdout: "pipe",
+  });
   const log = new TextDecoder().decode(proc.stdout).trim();
   if (!log) return `## v${newVersion}\n\n_no changes since last tag_\n`;
   const groups: Record<string, string[]> = {
@@ -320,7 +320,7 @@ async function main(): Promise<void> {
     writeFileSync(changelogPath, `${HEADER}${stanza}\n${body}`);
     console.log(`✓ CHANGELOG.md ${prevTag ? `appended commits since ${prevTag}` : "initialised"}`);
   } else {
-    console.log("[dry-run] changelog stanza would prepend:\n" + stanza);
+    console.log(`[dry-run] changelog stanza would prepend:\n${stanza}`);
   }
 
   maybeGitCommitTag(newVersion, dryRun);

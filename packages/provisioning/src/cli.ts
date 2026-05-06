@@ -708,7 +708,9 @@ async function lifecycleUpgrade(): Promise<void> {
   const version = arg("version");
   const channelArg = arg("channel");
   const channel: "stable" | "rc" | "beta" | undefined =
-    channelArg === "rc" || channelArg === "beta" || channelArg === "stable" ? channelArg : undefined;
+    channelArg === "rc" || channelArg === "beta" || channelArg === "stable"
+      ? channelArg
+      : undefined;
   await upgradeCommand({
     ...(version ? { version } : {}),
     ...(channel ? { channel } : {}),
