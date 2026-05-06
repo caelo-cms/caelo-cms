@@ -355,7 +355,9 @@ async function emitPluginAuditRow(
     succeeded: boolean;
   },
 ): Promise<void> {
-  const hash = createHash("sha256").update(JSON.stringify(args.inputArgs ?? null)).digest("hex");
+  const hash = createHash("sha256")
+    .update(JSON.stringify(args.inputArgs ?? null))
+    .digest("hex");
   await adapter.withAdminTransaction(
     {
       actorId: args.actorId,
