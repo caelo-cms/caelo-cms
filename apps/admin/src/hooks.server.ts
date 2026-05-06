@@ -14,6 +14,7 @@ import {
   resetStuckTranslationUnits,
   setMode2Provider,
   setTranslationProvider,
+  startReleaseCheckWorker,
   startTranslationWorker,
 } from "@caelo-cms/admin-core";
 import authPluginDefinition from "@caelo-cms/plugin-auth";
@@ -262,6 +263,18 @@ function bootstrapRedeploy(): void {
   startRedeployOrchestrator({ adapter, registry });
 }
 
+// P21 ship 5 — release-check sidecar. Polls GitHub Releases once
+// per hour and writes to release_check_cache; notifications.aggregate
+// reads the cached row instead of doing the network call inside its
+// own transaction.
+let releaseCheckBootstrapped = false;
+function bootstrapReleaseCheck(): void {
+  if (releaseCheckBootstrapped) return;
+  releaseCheckBootstrapped = true;
+  const { adapter } = getQueryContext();
+  startReleaseCheckWorker({ adapter });
+}
+
 // P17 PR4 + P18 — wire the MCP bridge to the ProviderResolver so
 // external `bunx @caelo-cms/mcp-server` callers can drive the
 // chat-runner. resolveProvider returns null when no key is wired
@@ -302,6 +315,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   ensureProviderResolverConfigured();
   void bootstrapTranslationWorker();
   bootstrapRedeploy();
+  bootstrapReleaseCheck();
   bootstrapMcpBridge();
   void bootstrapPlugins();
   void consumePendingBootstrapToken();

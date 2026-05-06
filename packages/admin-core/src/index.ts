@@ -36,6 +36,9 @@ export * from "./password.js";
 export * from "./permissions.js";
 export * from "./rate-limit.js";
 export * from "./register.js";
+// P21 ship 5 — release-check sidecar worker (replaces the in-handler
+// GitHub fetch; bootstrap from hooks.server.ts).
+export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
 // P12+ at-rest secret encryption (project KEK + AES-GCM).
 export {
   decryptSecret,

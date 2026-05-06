@@ -10,16 +10,19 @@
  *   - staleBranches    — chat_sessions whose last_active_at is over 14
  *                        days old, no published_at, no archived_at.
  *
- * P20 — also surfaces the cms-provision-style "newer release available"
- * hint (`upgradeAvailable` + `latestVersion`). Polls
- * github.com/caelo-cms/caelo-cms/releases/latest with a 24h
- * in-process cache and a 5s AbortSignal so a slow GitHub never
- * blocks the bell. Failures degrade silently to upgradeAvailable=false.
+ * P20 ship 4 + P21 ship 5 — also surfaces the "newer release available"
+ * hint (`upgradeAvailable` + `latestVersion`). The GitHub fetch USED to
+ * happen inline in the op handler (a transaction-scoped network call,
+ * which held a Postgres connection open for up to 5s on a slow GitHub).
+ * That created a connection-pool exhaustion vector under load.
+ *
+ * Now: a background worker (`release-check-worker.ts`) polls GitHub
+ * every hour and writes to `release_check_cache`. This op just reads
+ * the table — pure Postgres, no network in the tx.
  *
  * Single op (not four) so the AppShell makes one network call per
  * poll. Adapter / Validator runs in the same actor scope as the
- * caller so the read is RLS-safe (every authenticated user can see
- * their own notification surface).
+ * caller so the read is RLS-safe.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -36,51 +39,6 @@ const notificationsRow = z.object({
   releaseUrl: z.string().nullable(),
   total: z.number().int().nonnegative(),
 });
-
-const RELEASE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-const RELEASE_FETCH_TIMEOUT_MS = 5_000;
-let releaseCheckCache: {
-  fetchedAt: number;
-  latestVersion: string | null;
-  releaseUrl: string | null;
-} | null = null;
-
-async function checkLatestRelease(): Promise<{
-  latestVersion: string | null;
-  releaseUrl: string | null;
-}> {
-  const now = Date.now();
-  if (releaseCheckCache && now - releaseCheckCache.fetchedAt < RELEASE_CACHE_TTL_MS) {
-    return {
-      latestVersion: releaseCheckCache.latestVersion,
-      releaseUrl: releaseCheckCache.releaseUrl,
-    };
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RELEASE_FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch("https://api.github.com/repos/caelo-cms/caelo-cms/releases/latest", {
-      headers: { Accept: "application/vnd.github+json" },
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      releaseCheckCache = { fetchedAt: now, latestVersion: null, releaseUrl: null };
-      return { latestVersion: null, releaseUrl: null };
-    }
-    const json = (await res.json()) as { tag_name?: string; html_url?: string };
-    const latestVersion = json.tag_name?.replace(/^v/, "") ?? null;
-    const releaseUrl = json.html_url ?? null;
-    releaseCheckCache = { fetchedAt: now, latestVersion, releaseUrl };
-    return { latestVersion, releaseUrl };
-  } catch {
-    // Network failure / abort / parse error — cache the negative result
-    // so we don't retry every request for the next 24h.
-    releaseCheckCache = { fetchedAt: now, latestVersion: null, releaseUrl: null };
-    return { latestVersion: null, releaseUrl: null };
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /**
  * Compare two semver strings; returns true when `latest` > `current`.
@@ -128,32 +86,40 @@ export const aggregateNotificationsOp = defineOperation({
         (SELECT count(*)::int FROM chat_sessions
            WHERE last_active_at < now() - interval '14 days'
              AND archived_at IS NULL
-             AND published_at IS NULL) AS stale_branches
+             AND published_at IS NULL) AS stale_branches,
+        (SELECT latest_version FROM release_check_cache WHERE id = 1) AS latest_version,
+        (SELECT release_url    FROM release_check_cache WHERE id = 1) AS release_url
     `)) as unknown as {
       pending_proposals: number | string;
       failed_deploys: number | string;
       stale_branches: number | string;
+      latest_version: string | null;
+      release_url: string | null;
     }[];
-    const r = rows[0] ?? { pending_proposals: 0, failed_deploys: 0, stale_branches: 0 };
+    const r = rows[0] ?? {
+      pending_proposals: 0,
+      failed_deploys: 0,
+      stale_branches: 0,
+      latest_version: null,
+      release_url: null,
+    };
     const toInt = (v: number | string): number =>
       typeof v === "string" ? Number.parseInt(v, 10) : v;
     const pendingProposals = toInt(r.pending_proposals);
     const failedDeploys = toInt(r.failed_deploys);
     const staleBranches = toInt(r.stale_branches);
 
-    // P20 — release-check piggybacks on this op so the bell renders
-    // upgrade availability without adding a second poll.
-    const release = await checkLatestRelease();
-    const upgradeAvailable =
-      release.latestVersion !== null && isNewerVersion(release.latestVersion, CAELO_VERSION);
+    const latestVersion = r.latest_version;
+    const releaseUrl = r.release_url;
+    const upgradeAvailable = latestVersion !== null && isNewerVersion(latestVersion, CAELO_VERSION);
 
     return ok({
       pendingProposals,
       failedDeploys,
       staleBranches,
       upgradeAvailable,
-      latestVersion: release.latestVersion,
-      releaseUrl: release.releaseUrl,
+      latestVersion,
+      releaseUrl,
       // Bell badge count includes "1" for the upgrade tile so the
       // operator notices a new release the same way they notice a
       // pending proposal.
