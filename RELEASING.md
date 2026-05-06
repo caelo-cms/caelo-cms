@@ -27,7 +27,7 @@ before the first tag.
 
 | Surface | Tags emitted |
 |---|---|
-| **npm** (`@caelo-cms/mcp-server`, `@caelo-cms/provisioning`) | `0.2.1` published with the right [dist-tag](https://docs.npmjs.com/cli/dist-tag) — `latest` for stable, `rc` / `beta` for pre-releases. Provenance attestation via GitHub OIDC (no NPM_TOKEN required for OIDC; we use NPM_TOKEN for back-compat with older npm clients). |
+| **npm** (`@caelo-cms/mcp-server`, `@caelo-cms/provisioning`) | `0.2.1` published with the right [dist-tag](https://docs.npmjs.com/cli/dist-tag) — `latest` for stable, `rc` / `beta` for pre-releases. Auth via [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) — no `NPM_TOKEN` secret, no 2FA bypass, short-lived credential exchanged from GitHub's OIDC token at publish time. Provenance attestation via the same OIDC. |
 | **GHCR** (`ghcr.io/caelo-cms/{admin,gateway}`) | `:0.2.1`, `:0.2`, `:latest` — pre-releases get the version-specific tag only (no `:latest`). Each image is signed with cosign (keyless / OIDC) for verifiable provenance. |
 | **GCP Artifact Registry** (`europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/{admin,gateway}`) | Same tags as GHCR, mirrored from GHCR by `release-images.yml`. Cloud Run pulls from here (Cloud Run rejects `ghcr.io` directly). |
 | **GitHub Release** | `v0.2.1` with the `## v0.2.1` stanza from `CHANGELOG.md` as the body. Marked `prerelease: true` when the version contains a hyphen. |
@@ -41,11 +41,26 @@ that lands the release commit.
 
 Before the first tag:
 
-1. **Create an `NPM_TOKEN` org secret** so the workflow can publish
-   without per-package 2FA:
-   - npm → Account → Access Tokens → Generate new (Granular).
-   - Scope: `@caelo-cms` packages, **publish**.
-   - Add as `NPM_TOKEN` at <https://github.com/organizations/caelo-cms/settings/secrets/actions>.
+1. **Configure npm Trusted Publishing** for each publishable package
+   (one-time per package). No long-lived token, no 2FA bypass.
+   - For each of `@caelo-cms/mcp-server` and `@caelo-cms/provisioning`:
+     - Visit <https://www.npmjs.com/package/@caelo-cms/PACKAGE/access>
+     - Scroll to **Trusted Publishers** → **Add Trusted Publisher**
+     - Subject: **GitHub Actions**
+     - Configuration:
+       - **Organization or user**: `caelo-cms`
+       - **Repository name**: `caelo-cms`
+       - **Workflow filename**: `release.yml`
+       - **Environment name**: leave blank
+   - On publish, npm 11.5.1+ exchanges the GitHub OIDC token for a
+     short-lived publish credential. The CI workflow already sets
+     `permissions: id-token: write` and upgrades npm; nothing else
+     to wire.
+   - First-time publish for a brand-new package needs a one-time
+     manual publish (or a temporary token) to create the package
+     name; trusted publishing applies from the second release on.
+     Both Caelo packages were already published in `0.1.x`, so this
+     gate is past.
 
 2. **Generate a Tier-1 plugin signing key** (one per maintainer machine):
    ```bash

@@ -176,8 +176,20 @@ jobs:
       - name: Setup Node (for npm publish)
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # npm Trusted Publishing requires npm 11.5.1+. Node 20/22
+          # ships with npm 10.x; we upgrade in the next step.
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm for Trusted Publishing OIDC
+        # Trusted Publishing (npm OIDC) is GA since npm 11.5.1 and is
+        # the recommended path for CI per npm's own warning against
+        # long-lived granular tokens. With `permissions: id-token:
+        # write` (set on the workflow) + npm 11.5.1+, `npm publish`
+        # auto-detects the GitHub OIDC token and exchanges it with
+        # npm for a short-lived publish credential. No NPM_TOKEN
+        # secret. No 2FA bypass. No long-lived credential at all.
+        run: npm install -g npm@latest
 
       - name: Determine npm dist-tag
         id: disttag
@@ -197,10 +209,14 @@ jobs:
             echo "Publishing ${VERSION} with --tag latest"
           fi
 
-      - name: npm publish (provenance enabled)
+      - name: npm publish (Trusted Publishing OIDC + provenance)
+        # No NODE_AUTH_TOKEN needed. npm 11.5.1+ exchanges the
+        # GitHub OIDC token (id-token: write permission, granted at
+        # the workflow root) for a short-lived publish credential
+        # AND emits a provenance attestation so downstream consumers
+        # can verify the artifact came from this exact workflow.
+        # Setup on the npm side is per-package; see RELEASING.md.
         working-directory: packages/${{ matrix.package }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public --tag "${{ steps.disttag.outputs.tag }}"
 
   # ──────────────────────────────────────────────────────────────────
