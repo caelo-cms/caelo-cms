@@ -48,6 +48,57 @@ function requireInstall(): { installId: string; meta: InstallMetadata } {
   return found;
 }
 
+/**
+ * Pulumi auto-naming appends a random 7-char suffix to every resource
+ * (e.g. `caelo-production-admin-3efcfea`). Lifecycle commands need the
+ * actual deployed names; this helper queries gcloud with a prefix
+ * filter and returns the single match (or null if missing/ambiguous).
+ *
+ * Used for Cloud Run services + Cloud SQL instances. We accept a
+ * `kind` for routing the gcloud subcommand (services vs sql instances).
+ */
+async function resolveGcpResourceName(
+  kind: "run-service" | "sql-instance",
+  prefix: string,
+  projectId: string,
+  region?: string,
+): Promise<string | null> {
+  const args: string[] = [];
+  if (kind === "run-service") {
+    args.push(
+      "run",
+      "services",
+      "list",
+      "--region",
+      region ?? "europe-west1",
+      "--project",
+      projectId,
+      "--filter",
+      `metadata.name~^${prefix}`,
+      "--format=value(metadata.name)",
+    );
+  } else {
+    args.push(
+      "sql",
+      "instances",
+      "list",
+      "--project",
+      projectId,
+      "--filter",
+      `name~^${prefix}`,
+      "--format=value(name)",
+    );
+  }
+  const r = await gcloud(args);
+  if (!r.ok) return null;
+  const matches = r.stdout
+    .trim()
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return matches[0] ?? null;
+}
+
 // =========================================================================
 // status — health check + monthly cost
 // =========================================================================
@@ -68,15 +119,32 @@ export async function statusCommand(): Promise<void> {
 async function gcpStatus(meta: InstallMetadata): Promise<void> {
   if (!meta.projectId) return;
   const s = spinner();
-  s.start("Checking Cloud Run + Cloud SQL health...");
+  s.start("Resolving deployed resources + checking health...");
+
+  const region = meta.region ?? "europe-west1";
+  const adminName = await resolveGcpResourceName(
+    "run-service",
+    "caelo-production-admin",
+    meta.projectId,
+    region,
+  );
+  const sqlName = await resolveGcpResourceName(
+    "sql-instance",
+    "caelo-production-pg",
+    meta.projectId,
+  );
+  if (!adminName || !sqlName) {
+    s.stop(red("Could not resolve deployed resource names — is the install live?"));
+    return;
+  }
 
   const adminUri = await gcloud([
     "run",
     "services",
     "describe",
-    "caelo-production-admin",
+    adminName,
     "--region",
-    meta.region ?? "europe-west1",
+    region,
     "--project",
     meta.projectId,
     "--format=value(status.url)",
@@ -85,7 +153,7 @@ async function gcpStatus(meta: InstallMetadata): Promise<void> {
     "sql",
     "instances",
     "describe",
-    "caelo-production-pg",
+    sqlName,
     "--project",
     meta.projectId,
     "--format=value(state)",
@@ -116,30 +184,69 @@ export async function upgradeCommand(): Promise<void> {
   if (!meta.projectId) return;
 
   const region = meta.region ?? "europe-west1";
-  for (const service of ["caelo-production-admin", "caelo-production-gateway"]) {
+  // Match the Pulumi stack's image source — the team-managed public
+  // Artifact Registry repo. `:main` is a floating tag; Cloud Run only
+  // rolls when the image *reference* changes, so we resolve to the
+  // current sha256 digest first and pass that.
+  const registryProject = "caelo-website";
+  const registryRegion = "europe-west1";
+  const registryRepo = "caelo-cms-images";
+  for (const slug of ["admin", "gateway"] as const) {
     const s = spinner();
-    s.start(`Rolling ${service} to ghcr.io/caelo-cms/${service.split("-")[2]}:latest...`);
+    s.start(`Resolving + rolling ${slug}...`);
+
+    // 1. Find the deployed Cloud Run service name (Pulumi-suffixed).
+    const serviceName = await resolveGcpResourceName(
+      "run-service",
+      `caelo-production-${slug}`,
+      meta.projectId,
+      region,
+    );
+    if (!serviceName) {
+      s.stop(red(`Could not find caelo-production-${slug}* Cloud Run service`));
+      return;
+    }
+
+    // 2. Resolve the floating `:main` tag → current sha256 digest.
+    const tagInfo = await gcloud([
+      "artifacts",
+      "docker",
+      "tags",
+      "list",
+      `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}`,
+      "--filter",
+      "tag=main",
+      "--format=value(version)",
+      "--project",
+      registryProject,
+    ]);
+    if (!tagInfo.ok || !tagInfo.stdout.trim()) {
+      s.stop(red(`Couldn't resolve image digest for ${slug}:main`));
+      log.error(`Verify the image exists at ghcr.io / caelo-cms-images. ${tagInfo.stderr.trim()}`);
+      return;
+    }
+    const digest = tagInfo.stdout.trim().split("\n")[0]?.trim() ?? "";
+    const imageRef = `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}@${digest}`;
+
+    // 3. Roll the Cloud Run service.
     const r = await gcloud([
       "run",
       "services",
       "update",
-      service,
+      serviceName,
       "--region",
       region,
       "--project",
       meta.projectId,
       "--image",
-      `ghcr.io/caelo-cms/${service.split("-")[2]}:latest`,
+      imageRef,
       "--quiet",
     ]);
     if (!r.ok) {
       s.stop(red(`Failed: ${r.stderr.trim()}`));
-      log.error(
-        `Cloud Run update failed. Check ${bold("ghcr.io/caelo-cms")} for the image, or pin via --image-tag.`,
-      );
       return;
     }
-    s.stop(green(`${service} rolled`));
+    s.stop(green(`${slug} rolled to ${digest.slice(0, 19)}...`));
   }
   log.success("Upgrade complete.");
 }
@@ -157,13 +264,22 @@ export async function backupCommand(): Promise<void> {
   if (!meta.projectId) return;
 
   const s = spinner();
-  s.start("Triggering Cloud SQL on-demand backup...");
+  s.start("Resolving Cloud SQL instance + triggering on-demand backup...");
+  const sqlName = await resolveGcpResourceName(
+    "sql-instance",
+    "caelo-production-pg",
+    meta.projectId,
+  );
+  if (!sqlName) {
+    s.stop(red("Could not find caelo-production-pg* Cloud SQL instance"));
+    return;
+  }
   const r = await gcloud([
     "sql",
     "backups",
     "create",
     "--instance",
-    "caelo-production-pg",
+    sqlName,
     "--project",
     meta.projectId,
     "--description",
@@ -173,9 +289,7 @@ export async function backupCommand(): Promise<void> {
     s.stop(red(`Failed: ${r.stderr.trim()}`));
     return;
   }
-  s.stop(
-    green("Backup created. List with `gcloud sql backups list --instance=caelo-production-pg`."),
-  );
+  s.stop(green(`Backup created. List with \`gcloud sql backups list --instance=${sqlName}\`.`));
 }
 
 // =========================================================================
@@ -186,7 +300,14 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
   if (!name) {
     log.error(red("Usage: caelo-cms rotate-secret <name>"));
     log.warn(
-      `Names: ${["postgres-password", "csrf-secret", "cookie-secret", "anthropic-api-key"].join(", ")}`,
+      `Names: ${[
+        "postgres-password",
+        "csrf-secret",
+        "cookie-secret",
+        "secret-kek",
+        "anthropic-api-key",
+        "resend-api-key",
+      ].join(", ")}`,
     );
     process.exit(2);
   }
