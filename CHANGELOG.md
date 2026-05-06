@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.3
+
+_no changes since last tag_
+
 ## v0.2.2
 
 ### Fixes
