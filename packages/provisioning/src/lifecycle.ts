@@ -567,6 +567,64 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
  * operator never ends up on an admin-new + gateway-old (or vice versa)
  * mismatched pair.
  */
+/** Returns true if `argv` runs to a zero exit; false on non-zero or ENOENT. */
+function probeBinary(argv: string[]): boolean {
+  try {
+    const r = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+    return r.exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure cosign is on PATH. If not — and the operator is on macOS with
+ * brew available — offer to `brew install cosign` interactively. Falls
+ * back to printing the platform install URL + the --skip-verify
+ * escape hatch when auto-install isn't possible.
+ *
+ * Returns true if cosign is callable after this function returns.
+ */
+async function ensureCosignAvailable(): Promise<boolean> {
+  if (probeBinary(["cosign", "version"])) return true;
+
+  log.error(red("cosign not found on PATH — required for image-signature verification."));
+
+  // macOS auto-install offer. Only when `brew` is itself on PATH —
+  // otherwise the operator is on a stripped-down install where
+  // homebrew was never set up, and the manual instructions are more
+  // useful than a failing brew shell-out.
+  if (process.platform === "darwin" && probeBinary(["brew", "--version"])) {
+    const proceed = await confirm({
+      message: "Install cosign via brew now? (one-shot: brew install cosign)",
+      initialValue: true,
+    });
+    if (!isCancel(proceed) && proceed === true) {
+      const s = spinner();
+      s.start("brew install cosign");
+      const installResult = Bun.spawnSync(["brew", "install", "cosign"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (installResult.exitCode === 0 && probeBinary(["cosign", "version"])) {
+        s.stop(green("cosign installed ✓"));
+        return true;
+      }
+      const stderr = new TextDecoder().decode(installResult.stderr);
+      s.stop(red("brew install cosign failed"));
+      log.error(stderr.trim().slice(0, 500));
+    }
+  }
+
+  log.warn(
+    "Install cosign:\n" +
+      "  • brew install cosign           (macOS)\n" +
+      "  • https://docs.sigstore.dev/cosign/installation/  (other)\n" +
+      "Or pass --skip-verify to roll without signature checks (NOT recommended for production).",
+  );
+  return false;
+}
+
 /**
  * P21 ship 4 — verify cosign keyless signatures on every planned
  * image digest. Sigstore Fulcio + Rekor; the certificate identity
@@ -583,31 +641,12 @@ async function verifyCosignAll(
   registryProject: string,
   registryRepo: string,
 ): Promise<boolean> {
-  // First check cosign is on PATH. Bun.spawnSync THROWS ENOENT when
-  // the binary is missing (rather than returning a non-zero exit), so
-  // we have to try/catch — relying on `exitCode !== 0` would surface
-  // a confusing stack trace to the operator instead of the actionable
+  // Probe cosign. Bun.spawnSync THROWS ENOENT when the binary is
+  // missing (instead of returning a non-zero exit), so the probe
+  // needs try/catch — relying on `exitCode !== 0` would surface a
+  // confusing stack trace to the operator instead of the actionable
   // "install cosign" hint.
-  let cosignProbeOk = false;
-  try {
-    const cosignProbe = Bun.spawnSync(["cosign", "version"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    cosignProbeOk = cosignProbe.exitCode === 0;
-  } catch {
-    cosignProbeOk = false;
-  }
-  if (!cosignProbeOk) {
-    log.error(red("cosign not found on PATH — required for image-signature verification."));
-    log.warn(
-      "Install cosign:\n" +
-        "  • brew install cosign           (macOS)\n" +
-        "  • https://docs.sigstore.dev/cosign/installation/  (other)\n" +
-        "Or pass --skip-verify to roll without signature checks (NOT recommended for production).",
-    );
-    return false;
-  }
+  if (!(await ensureCosignAvailable())) return false;
 
   for (const plan of plans) {
     const s = spinner();
