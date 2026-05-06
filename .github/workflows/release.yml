@@ -176,20 +176,16 @@ jobs:
       - name: Setup Node (for npm publish)
         uses: actions/setup-node@v4
         with:
-          # npm Trusted Publishing requires npm 11.5.1+. Node 20/22
-          # ships with npm 10.x; we upgrade in the next step.
-          node-version: "22"
+          # Node 24 ships with npm 11.x natively → no manual upgrade
+          # step (which would break npm's in-place self-upgrade by
+          # losing the `promise-retry` linkage mid-install). Trusted
+          # Publishing requires npm 11.5.1+; Node 24's bundled npm
+          # is past that threshold.
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Upgrade npm for Trusted Publishing OIDC
-        # Trusted Publishing (npm OIDC) is GA since npm 11.5.1 and is
-        # the recommended path for CI per npm's own warning against
-        # long-lived granular tokens. With `permissions: id-token:
-        # write` (set on the workflow) + npm 11.5.1+, `npm publish`
-        # auto-detects the GitHub OIDC token and exchanges it with
-        # npm for a short-lived publish credential. No NPM_TOKEN
-        # secret. No 2FA bypass. No long-lived credential at all.
-        run: npm install -g npm@latest
+      - name: Show npm version (must be 11.5.1+ for Trusted Publishing)
+        run: npm --version
 
       - name: Determine npm dist-tag
         id: disttag
