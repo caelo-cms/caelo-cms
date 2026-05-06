@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.19
+
+### Features
+- b412660 widen Category C ops + first deploy propose/execute pair
+
 ## v0.2.18
 
 ### Features
