@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.21
+
+### Features
+- 28609dc propose/execute pairs for create/set_roles/delete
+
 ## v0.2.20
 
 ### Features
