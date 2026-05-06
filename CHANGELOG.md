@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.12
+
+### Fixes
+- 8a37b05 build @caelo-cms/shared in Docker so runtime resolver finds dist/
+
 ## v0.2.11
 
 ### Fixes
