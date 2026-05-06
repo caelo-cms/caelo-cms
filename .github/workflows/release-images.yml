@@ -153,7 +153,7 @@ jobs:
         if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         run: gcloud auth configure-docker ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}-docker.pkg.dev --quiet
 
-      - name: Mirror image to GCP public AR
+      - name: Mirror image (+ signatures) to GCP public AR
         if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -162,12 +162,14 @@ jobs:
           AR_PROJECT: ${{ vars.GCP_PUBLIC_REGISTRY_PROJECT || 'caelo-website' }}
           AR_REPO: ${{ vars.GCP_PUBLIC_REGISTRY_REPO || 'caelo-cms-images' }}
         run: |
-          # Push the same tags the GHCR image carries to the AR mirror.
-          # Both registries serve identical bytes (same digest).
+          # `cosign copy` (NOT `docker pull/tag/push`) so the cosign
+          # signature OCI artifact at the source's `<digest>.sig` tag
+          # comes along too. The earlier docker-only mirror left the
+          # AR images unsigned even though GHCR's copies were signed,
+          # which broke `cms-provision upgrade --verify` for end users
+          # whose installs pull from AR.
           AR_BASE="${AR_REGION}-docker.pkg.dev/${AR_PROJECT}/${AR_REPO}/${{ matrix.service }}"
           for tag in $(echo "${{ steps.meta.outputs.tags }}" | tr ',' ' '); do
             short_tag="${tag##*:}"
-            docker pull "${GHCR_IMAGE}@${DIGEST}"
-            docker tag  "${GHCR_IMAGE}@${DIGEST}" "${AR_BASE}:${short_tag}"
-            docker push "${AR_BASE}:${short_tag}"
+            cosign copy --force "${GHCR_IMAGE}@${DIGEST}" "${AR_BASE}:${short_tag}"
           done
