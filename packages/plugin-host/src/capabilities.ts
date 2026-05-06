@@ -388,7 +388,6 @@ function makePluginEmail(infra: PluginHostInfra): PluginEmail {
     send: async (args) => {
       const transport = infra.emailTransport;
       if (!transport) {
-        // biome-ignore lint/suspicious/noConsole: stub visibility for dev
         console.warn(
           `[plugin-host] ctx.email.send (no transport configured): to=${args.to} subject=${args.subject}`,
         );

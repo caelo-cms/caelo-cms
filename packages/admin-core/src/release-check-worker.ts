@@ -79,12 +79,10 @@ export function startReleaseCheckWorker(opts: ReleaseCheckWorkerOpts): void {
   // doesn't sit at upgradeAvailable=false for an hour). Failures
   // surface as a console.error but don't crash the boot.
   void pollOnce(opts).catch((e) => {
-    // biome-ignore lint/suspicious/noConsole: worker error
     console.error("[release-check-worker] initial poll failed:", (e as Error).message);
   });
   workerHandle = setInterval(() => {
     void pollOnce(opts).catch((e) => {
-      // biome-ignore lint/suspicious/noConsole: worker error
       console.error("[release-check-worker] poll failed:", (e as Error).message);
     });
   }, opts.intervalMs ?? POLL_INTERVAL_MS);

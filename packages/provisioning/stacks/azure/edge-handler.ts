@@ -72,7 +72,6 @@ Bun.serve({
     });
 
     if (decision.logEntry) {
-      // biome-ignore lint/suspicious/noConsole: structured log → Log Analytics
       console.log(JSON.stringify(decision.logEntry));
     }
 

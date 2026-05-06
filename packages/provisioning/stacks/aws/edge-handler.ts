@@ -79,7 +79,6 @@ export const handler = async (event: CloudFrontEvent): Promise<CloudFrontRequest
   // Kinesis Firehose ships to S3, Athena queries it, P12A analytics
   // plugin's AWS adapter normalises into ab_assignment_aggregates.
   if (decision.logEntry) {
-    // biome-ignore lint/suspicious/noConsole: structured log → CloudWatch
     console.log(JSON.stringify(decision.logEntry));
   }
 

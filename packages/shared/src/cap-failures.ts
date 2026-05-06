@@ -36,7 +36,6 @@ export function recordCapLookupFailure(key: string): boolean {
   counters.set(key, next);
   if (next === LOOKUP_FAIL_THRESHOLD) {
     totalTrips++;
-    // biome-ignore lint/suspicious/noConsole: structured warning visibility
     console.warn(
       JSON.stringify({
         level: "warn",

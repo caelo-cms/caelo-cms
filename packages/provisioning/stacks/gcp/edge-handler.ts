@@ -85,7 +85,6 @@ Bun.serve({
     });
 
     if (decision.logEntry) {
-      // biome-ignore lint/suspicious/noConsole: structured log → Cloud Logging → BigQuery sink
       console.log(JSON.stringify(decision.logEntry));
     }
 

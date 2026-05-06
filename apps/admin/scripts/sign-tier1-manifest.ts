@@ -123,7 +123,6 @@ async function main(): Promise<void> {
   const reports = await signAll(devKey);
   for (const r of reports) {
     const tag = r.status === "signed" ? "OK" : r.status === "skipped" ? "--" : "!!";
-    // biome-ignore lint/suspicious/noConsole: tooling output
     console.log(`[${tag}] ${r.slug}${r.reason ? ` — ${r.reason}` : ""}`);
   }
   console.log(

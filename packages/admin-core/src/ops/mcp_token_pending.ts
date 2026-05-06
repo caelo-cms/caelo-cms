@@ -281,8 +281,7 @@ export const listPendingMcpTokenProposalsOp = defineOperation({
         payload: r.payload as Record<string, unknown>,
         preview: r.preview as Record<string, unknown>,
         status: r.status,
-        createdAt:
-          r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
         decidedAt: r.decided_at
           ? r.decided_at instanceof Date
             ? r.decided_at.toISOString()

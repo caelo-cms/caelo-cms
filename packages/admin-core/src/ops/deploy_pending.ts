@@ -127,7 +127,7 @@ export const proposeDeployPromoteOp = defineOperation({
       target_name: string;
     }>;
     const from = fromRunRows[0];
-    if (!from || !from.build_id) {
+    if (!from?.build_id) {
       return err({
         kind: "HandlerError",
         operation: "deploy.propose_promote",

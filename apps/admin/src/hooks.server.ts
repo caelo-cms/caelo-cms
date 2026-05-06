@@ -181,7 +181,6 @@ async function bootstrapPlugins(): Promise<void> {
       formsPluginDefinition,
     ].filter((p) => p.requestedCapabilities?.includes("email"));
     if (emailUsers.length > 0) {
-      // biome-ignore lint/suspicious/noConsole: startup warning
       console.warn(
         `[hooks] email transport NOT configured — ${emailUsers.map((p) => p.slug).join(", ")} will log sends to stderr only. Configure at /security/email.`,
       );

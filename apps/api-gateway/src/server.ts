@@ -703,6 +703,5 @@ if (import.meta.main) {
     port: PORT,
     fetch: handleRequest,
   });
-  // biome-ignore lint/suspicious/noConsole: startup banner
   console.log(`[api-gateway] listening on :${server.port}`);
 }

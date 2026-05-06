@@ -90,7 +90,6 @@ export function makeLogger(opts: LoggerOptions): Logger {
   const sink =
     opts.sink ??
     ((entry: StructuredLogEntry) => {
-      // biome-ignore lint/suspicious/noConsole: structured logger sink
       process.stderr.write(`${JSON.stringify(entry)}\n`);
     });
 

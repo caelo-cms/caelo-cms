@@ -56,7 +56,9 @@ export const actions: Actions = {
     const v = r.value as { tokenId: string | null; plaintextToken: string | null };
     return {
       ok: true,
-      message: v.tokenId ? `Proposal applied (tokenId=${v.tokenId.slice(0, 8)}…).` : "Proposal applied.",
+      message: v.tokenId
+        ? `Proposal applied (tokenId=${v.tokenId.slice(0, 8)}…).`
+        : "Proposal applied.",
       // One-time bearer; copy now or rotate via a fresh propose_create.
       plaintextToken: v.plaintextToken,
     };

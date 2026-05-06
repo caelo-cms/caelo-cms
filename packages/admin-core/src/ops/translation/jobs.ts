@@ -656,7 +656,6 @@ async function workerLoop(): Promise<void> {
       await processUnit(deps, claimed);
     } catch (e) {
       // Loop must never die. Log + sleep + continue.
-      // biome-ignore lint/suspicious/noConsole: process-loop visibility
       console.error("[translation-worker] loop error", e);
       await sleep(idleMs);
     }
