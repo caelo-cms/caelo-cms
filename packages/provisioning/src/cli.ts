@@ -705,15 +705,19 @@ async function lifecycleUpgrade(): Promise<void> {
   //   bunx @caelo-cms/provisioning upgrade
   //   bunx @caelo-cms/provisioning upgrade --version 0.5.3
   //   bunx @caelo-cms/provisioning upgrade --channel rc
+  // P21 ship 4 — `--skip-verify` opts out of cosign signature checks.
+  //   Default verifies; skip only for forks/staging using unsigned images.
   const version = arg("version");
   const channelArg = arg("channel");
   const channel: "stable" | "rc" | "beta" | undefined =
     channelArg === "rc" || channelArg === "beta" || channelArg === "stable"
       ? channelArg
       : undefined;
+  const skipVerify = process.argv.includes("--skip-verify");
   await upgradeCommand({
     ...(version ? { version } : {}),
     ...(channel ? { channel } : {}),
+    ...(skipVerify ? { skipVerify: true } : {}),
   });
 }
 async function lifecycleBackup(): Promise<void> {

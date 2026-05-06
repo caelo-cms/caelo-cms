@@ -225,6 +225,12 @@ interface UpgradeOpts {
   readonly version?: string;
   /** Pre-release channel: "stable" (default), "rc", "beta". */
   readonly channel?: "stable" | "rc" | "beta";
+  /**
+   * P21 ship 4 — escape hatch for forks / staging environments using
+   * unsigned images. Default = verify with cosign; refuse to roll on
+   * mismatch.
+   */
+  readonly skipVerify?: boolean;
 }
 
 interface ServicePlan {
@@ -405,6 +411,24 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   sPre.stop(green(`Pre-flight ok — ${plans.length} services planned`));
 
   // ────────────────────────────────────────────────────────────────
+  // P21 ship 4 — cosign verify each resolved digest against the
+  // Caelo release workflow's keyless OIDC identity. Refuses to roll
+  // on signature mismatch (compromised registry, typosquatted repo,
+  // or operator pointed at a fork's image).
+  //
+  // Verification is opt-out via --skip-verify for forks/staging that
+  // intentionally use unsigned images. Cosign-not-installed produces
+  // a clear "install cosign or pass --skip-verify" message rather
+  // than a confusing stack.
+  // ────────────────────────────────────────────────────────────────
+  if (!opts.skipVerify) {
+    const verified = await verifyCosignAll(plans, registryRegion, registryProject, registryRepo);
+    if (!verified) return;
+  } else {
+    log.warn(yellow("--skip-verify set — image signatures NOT verified."));
+  }
+
+  // ────────────────────────────────────────────────────────────────
   // P21 ship 3 — DB migrations BEFORE traffic shifts. Idempotent
   // (drizzle bookkeeping table); a failure here aborts the upgrade
   // before the new image touches traffic, so the admin keeps
@@ -498,6 +522,79 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
  * operator never ends up on an admin-new + gateway-old (or vice versa)
  * mismatched pair.
  */
+/**
+ * P21 ship 4 — verify cosign keyless signatures on every planned
+ * image digest. Sigstore Fulcio + Rekor; the certificate identity
+ * must match the Caelo release-images workflow. A mismatch means
+ * either a registry compromise, a typosquat, or the operator pointed
+ * at a fork's image. Either way: refuse to roll.
+ *
+ * Returns true on success (or skips with a clear error and returns
+ * false if cosign isn't installed / verification fails).
+ */
+async function verifyCosignAll(
+  plans: ServicePlan[],
+  registryRegion: string,
+  registryProject: string,
+  registryRepo: string,
+): Promise<boolean> {
+  // First check cosign is on PATH. The Bun.spawnSync API surfaces
+  // ENOENT as a non-zero exit; we surface the actionable hint
+  // separately from a real verify failure.
+  const cosignProbe = Bun.spawnSync(["cosign", "version"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (cosignProbe.exitCode !== 0) {
+    log.error(red("cosign not found on PATH — required for image-signature verification."));
+    log.warn(
+      "Install cosign:\n" +
+        "  • brew install cosign           (macOS)\n" +
+        "  • https://docs.sigstore.dev/cosign/installation/  (other)\n" +
+        "Or pass --skip-verify to roll without signature checks (NOT recommended for production).",
+    );
+    return false;
+  }
+
+  for (const plan of plans) {
+    const s = spinner();
+    s.start(`Verifying cosign signature for ${plan.slug}@${plan.digest.slice(0, 19)}...`);
+    const fullRef = `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${plan.slug}@${plan.digest}`;
+    const verify = Bun.spawnSync(
+      [
+        "cosign",
+        "verify",
+        fullRef,
+        "--certificate-identity-regexp",
+        // Both release-images.yml and release.yml dispatch images;
+        // accept either workflow as the signer identity. The repo
+        // path is fixed; only the workflow filename varies.
+        "https://github.com/caelo-cms/caelo-cms/.github/workflows/(release-images|release).yml@.*",
+        "--certificate-oidc-issuer",
+        "https://token.actions.githubusercontent.com",
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    if (verify.exitCode !== 0) {
+      const stderr = new TextDecoder().decode(verify.stderr);
+      s.stop(red(`cosign verify FAILED for ${plan.slug}`));
+      log.error(
+        red(
+          `${plan.slug}@${plan.digest.slice(0, 19)} signature does NOT match the Caelo release workflow identity.\n` +
+            "Either:\n" +
+            "  • the registry was compromised, OR\n" +
+            "  • you're targeting a fork's image (verify your install's registry path), OR\n" +
+            "  • cosign / sigstore had a transient outage (retry).\n" +
+            `cosign stderr: ${stderr.trim().slice(0, 500)}`,
+        ),
+      );
+      return false;
+    }
+    s.stop(green(`${plan.slug} signature verified ✓`));
+  }
+  return true;
+}
+
 async function rollbackPriorlyRolled(
   projectId: string,
   region: string,
