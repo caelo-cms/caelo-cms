@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.10
+
+### Fixes
+- d984668 mirror cosign signatures to GCP AR via cosign copy
+
 ## v0.2.9
 
 ### Features
