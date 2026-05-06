@@ -493,6 +493,32 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       await rollbackPriorlyRolled(meta.projectId, region, rolled);
       return;
     }
+    // Force traffic onto the new revision. `update --image` only auto-
+    // flips when the service has no explicit traffic config — but our
+    // own auto-rollback path (rollbackTraffic) pins traffic to the
+    // prior revision, and that pin survives subsequent `update --image`
+    // calls. Without an explicit `update-traffic --to-latest` here, a
+    // prior failed upgrade silently locks every future upgrade off the
+    // serving path: new revisions are created, marked Ready, and never
+    // see traffic. Re-issuing it on every successful image update is
+    // idempotent + fixes already-pinned services.
+    const flip = await gcloud([
+      "run",
+      "services",
+      "update-traffic",
+      plan.serviceName,
+      "--region",
+      region,
+      "--project",
+      meta.projectId,
+      "--to-latest",
+      "--quiet",
+    ]);
+    if (!flip.ok) {
+      s.stop(red(`Traffic flip to latest failed: ${flip.stderr.trim()}`));
+      await rollbackPriorlyRolled(meta.projectId, region, rolled);
+      return;
+    }
     if (!(await findServiceUrl(meta.projectId, region, plan.serviceName))) {
       s.stop(red(`Could not resolve service URL for ${plan.slug} — rolling back`));
       await rollbackTraffic(meta.projectId, region, plan.serviceName, plan.priorRevision);
