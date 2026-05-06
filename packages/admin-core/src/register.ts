@@ -294,6 +294,14 @@ import {
   listStyleGuidesOp,
   setStyleGuideOp,
 } from "./ops/translation/style_guide.js";
+import {
+  executeUserProposalOp,
+  listPendingUserProposalsOp,
+  proposeUserCreateOp,
+  proposeUserDeleteOp,
+  proposeUserSetRolesOp,
+  rejectUserProposalOp,
+} from "./ops/user_pending.js";
 import { getUserPreferenceOp, setUserPreferenceOp } from "./ops/user_preferences.js";
 import {
   completeOnboardingOp,
@@ -319,6 +327,17 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createUserOp);
   registry.register(setUserRolesOp);
   registry.register(deleteUserOp);
+  // v0.2.21 — users propose/execute pairs. AI proposes via
+  // users.propose_*; Owner approves at /security/users/pending which
+  // calls users.execute_proposal (human-only) → runs the underlying
+  // users.{create,set_roles,delete} op. Passwords on create are
+  // server-generated at execute time; AI never handles credentials.
+  registry.register(proposeUserCreateOp);
+  registry.register(proposeUserSetRolesOp);
+  registry.register(proposeUserDeleteOp);
+  registry.register(executeUserProposalOp);
+  registry.register(rejectUserProposalOp);
+  registry.register(listPendingUserProposalsOp);
   registry.register(loginOp);
   registry.register(logoutOp);
   registry.register(resolveSessionOp);
