@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.17
+
+### Other
+- 0b12d9c biome autofix on dispatch.ts
+
 ## v0.2.16
 
 ### Features

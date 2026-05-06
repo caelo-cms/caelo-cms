@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/plugin-sandbox",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
