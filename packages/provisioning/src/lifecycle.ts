@@ -241,6 +241,46 @@ interface ServicePlan {
   readonly healthPath: string;
 }
 
+/**
+ * Resolve a tag (e.g. `0.2.6` or `latest`) to the underlying sha256
+ * digest via the Docker Registry V2 API directly, without needing the
+ * caller's gcloud session to have IAM access to the registry's
+ * project. Used for the upgrade pre-flight resolve — the registry is
+ * public so an anonymous HEAD on the manifest endpoint suffices.
+ */
+async function resolveTagDigest(
+  region: string,
+  project: string,
+  repo: string,
+  image: string,
+  tag: string,
+): Promise<{ ok: true; digest: string } | { ok: false; reason: string }> {
+  const url = `https://${region}-docker.pkg.dev/v2/${project}/${repo}/${image}/manifests/${tag}`;
+  // Accept both Docker v2 + OCI manifest types so the registry returns
+  // the resource we asked about (single-arch + multi-arch index both
+  // surface a Docker-Content-Digest header that names the manifest
+  // we'd pull on a `docker pull <image>:<tag>`).
+  const accept = [
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.index.v1+json",
+  ].join(",");
+  try {
+    const res = await fetch(url, { method: "HEAD", headers: { Accept: accept } });
+    if (!res.ok) {
+      return { ok: false, reason: `HTTP ${res.status} ${res.statusText}` };
+    }
+    const digest = res.headers.get("docker-content-digest");
+    if (!digest || !/^sha256:[0-9a-f]{64}$/.test(digest)) {
+      return { ok: false, reason: `unexpected digest header: ${digest ?? "(missing)"}` };
+    }
+    return { ok: true, digest };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /** Look up the currently-serving Cloud Run revision so we can roll back to it. */
 async function findCurrentRevision(
   projectId: string,
@@ -371,26 +411,32 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
       sPre.stop(red(`Could not find caelo-production-${slug}* Cloud Run service`));
       return;
     }
-    const tagInfo = await gcloud([
-      "artifacts",
-      "docker",
-      "tags",
-      "list",
-      `${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}`,
-      "--filter",
-      `tag=${targetTag}`,
-      "--format=value(version)",
-      "--project",
+    // Resolve the tag via the public Docker Registry V2 API directly,
+    // not `gcloud artifacts docker tags list`. The gcloud path requires
+    // the operator's local credentials to have IAM read on the Caelo
+    // team's caelo-website project — end users don't have that, so
+    // the call fails for them with a misleading "tag doesn't exist"
+    // error. The AR repo is configured public; the V2 HEAD on the
+    // manifest endpoint returns the Docker-Content-Digest header
+    // anonymously. (Same source of truth `gcloud artifacts docker
+    // tags list` is wrapping; we just skip the IAM-gated CLI.)
+    const digestRes = await resolveTagDigest(
+      registryRegion,
       registryProject,
-    ]);
-    if (!tagInfo.ok || !tagInfo.stdout.trim()) {
+      registryRepo,
+      slug,
+      targetTag,
+    );
+    if (!digestRes.ok) {
       sPre.stop(red(`Couldn't resolve image digest for ${slug}:${targetTag}`));
       log.error(
-        `Verify the tag exists at ${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}:${targetTag}`,
+        `Public registry returned ${digestRes.reason}.\n` +
+          `Verify the tag exists at https://${registryRegion}-docker.pkg.dev/${registryProject}/${registryRepo}/${slug}:${targetTag}\n` +
+          `(latest releases live at https://github.com/caelo-cms/caelo-cms/releases — pass --version vX.Y.Z to pin.)`,
       );
       return;
     }
-    const digest = tagInfo.stdout.trim().split("\n")[0]?.trim() ?? "";
+    const digest = digestRes.digest;
     const priorRevision = await findCurrentRevision(meta.projectId, region, serviceName);
     if (!priorRevision) {
       sPre.stop(red(`Could not capture current revision for ${slug} — refusing to roll`));
