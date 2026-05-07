@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.47
+
+### Features
+- 6106f7d composer affordances — slash / @-mention / drag-drop (v0.2.47)
+
 ## v0.2.46
 
 ### Features
