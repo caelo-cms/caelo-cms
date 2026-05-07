@@ -82,6 +82,14 @@ export interface VolatileContext {
    *  every status='pending' row across the 15 *_pending tables so the
    *  AI doesn't re-queue what the Owner is already reviewing. */
   readonly pendingProposalsBlock?: string;
+  /** v0.2.38 — `## Users` inventory (email + roleNames per row). */
+  readonly usersBlock?: string;
+  /** v0.2.38 — `## Roles` inventory (name + permission count + builtin). */
+  readonly rolesBlock?: string;
+  /** v0.2.38 — `## AI providers` inventory (active + has-key per row). */
+  readonly aiProvidersBlock?: string;
+  /** v0.2.38 — `## Domains` inventory (hostname + kind + TLS status). */
+  readonly domainsBlock?: string;
   /** P10A — engaged skills' bodies, tagged with slug + source. */
   readonly skillsBlock?: string;
   /** P10.5 #5 — hint that spawn_subagent / spawn_subagents exist + when to use them. */
@@ -175,6 +183,18 @@ export function composeSystemPromptChunks(
       cacheable: false,
       label: "pending_proposals",
     });
+  }
+  if (volatile.usersBlock && volatile.usersBlock.trim().length > 0) {
+    chunks.push({ body: volatile.usersBlock, cacheable: false, label: "users" });
+  }
+  if (volatile.rolesBlock && volatile.rolesBlock.trim().length > 0) {
+    chunks.push({ body: volatile.rolesBlock, cacheable: false, label: "roles" });
+  }
+  if (volatile.aiProvidersBlock && volatile.aiProvidersBlock.trim().length > 0) {
+    chunks.push({ body: volatile.aiProvidersBlock, cacheable: false, label: "ai_providers" });
+  }
+  if (volatile.domainsBlock && volatile.domainsBlock.trim().length > 0) {
+    chunks.push({ body: volatile.domainsBlock, cacheable: false, label: "domains" });
   }
   if (volatile.pageContextBlock && volatile.pageContextBlock.trim().length > 0) {
     chunks.push({ body: volatile.pageContextBlock, cacheable: false, label: "page-context" });

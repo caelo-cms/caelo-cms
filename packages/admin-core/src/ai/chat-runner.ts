@@ -565,15 +565,14 @@ export async function* runChatTurn(
     }
   }
 
-  // v0.2.32 — `## Pending proposals` cross-domain block. Surfaces every
-  // pending proposal across deploy / layouts / users / roles / snapshots
-  // / experiments / email_config / ai_providers / mcp_tokens / templates
-  // / domains / locales / gateway / site_memory / skills so the AI
-  // doesn't re-queue work the Owner is already reviewing (CLAUDE.md
-  // §11.A). The op caps at 50 most-recent items + per-domain counts.
+  // v0.2.32 + v0.2.38 — `## Pending proposals` block, AI-self-filtered.
+  // Surfaces ONLY proposals the AI itself queued in any prior turn so it
+  // doesn't re-queue them (CLAUDE.md §11.A). Other actors' proposals get
+  // a one-line count so the AI knows the operator has other things in
+  // flight without flooding the context.
   let pendingProposalsBlock: string | undefined;
   const pendingR = await execute(registry, adapter, humanCtx, "pending_proposals.list", {
-    limit: 30,
+    limit: 200,
   });
   if (pendingR.ok) {
     const v = pendingR.value as {
@@ -582,24 +581,141 @@ export async function* runChatTurn(
         kind: string;
         proposalId: string;
         summary: string;
+        proposedBy: string;
         proposedAt: string;
       }>;
       byDomain: Record<string, number>;
       total: number;
     };
-    if (v.total > 0) {
-      const lines = v.items.map(
-        (i) =>
-          `- [${i.domain}.${i.kind}] ${i.summary} (id=${i.proposalId.slice(0, 8)}, ${i.proposedAt.slice(0, 10)})`,
-      );
-      const counts = Object.entries(v.byDomain)
-        .filter(([, c]) => c > 0)
-        .map(([d, c]) => `${d}=${c}`)
-        .join(", ");
+    const aiActorId = aiCtx.actorId;
+    const own = v.items.filter((i) => i.proposedBy === aiActorId);
+    const othersCount = v.total - own.length;
+    if (own.length > 0 || othersCount > 0) {
+      const lines = own
+        .slice(0, 30)
+        .map(
+          (i) =>
+            `- [${i.domain}.${i.kind}] ${i.summary} (id=${i.proposalId.slice(0, 8)}, ${i.proposedAt.slice(0, 10)})`,
+        );
+      const headerParts: string[] = [];
+      if (own.length > 0) headerParts.push(`${own.length} of your own`);
+      if (othersCount > 0) headerParts.push(`${othersCount} from other actors`);
       pendingProposalsBlock = [
-        `# Pending proposals (${v.total} total: ${counts})`,
-        "These proposals are already queued — DO NOT propose them again. The Owner approves at /security/<domain>/pending. If asked to do something that matches a queued item, tell the user it's already pending and link the queue.",
-        ...lines.slice(0, 30),
+        `# Pending proposals (${headerParts.join(", ")})`,
+        ...(own.length > 0
+          ? [
+              "Your queued proposals — DO NOT re-propose any of these. Tell the user they're already pending, or use `cancel_proposal` to withdraw.",
+              ...lines,
+            ]
+          : []),
+        ...(othersCount > 0
+          ? [
+              `(${othersCount} more pending from other actors — operator can review at /security/pending.)`,
+            ]
+          : []),
+      ].join("\n");
+    }
+  }
+
+  // v0.2.38 — `## Users` / `## Roles` / `## AI providers` / `## Domains`
+  // inventory blocks (CLAUDE.md §11: "new domains should ship a
+  // corresponding context block when the data fits in <2 KB"). Each
+  // block lets the AI plan domain-targeting work without a *.list
+  // round-trip per turn. Best-effort — if a list call fails the block
+  // is omitted, never blocks the turn.
+  let usersBlock: string | undefined;
+  const usersListR = await execute(registry, adapter, humanCtx, "users.list", {});
+  if (usersListR.ok) {
+    const users = (
+      usersListR.value as {
+        users: Array<{ id: string; email: string; displayName: string; roles: string[] }>;
+      }
+    ).users;
+    if (users.length > 0) {
+      usersBlock = [
+        `# Users (${users.length})`,
+        "Use `propose_create_user` to invite, `propose_set_user_roles` to change roles, `propose_delete_user` to soft-delete.",
+        ...users
+          .slice(0, 40)
+          .map(
+            (u) =>
+              `- ${u.email} "${u.displayName}" — ${u.roles.length > 0 ? u.roles.join("+") : "(no roles)"} (id=${u.id.slice(0, 8)})`,
+          ),
+      ].join("\n");
+    }
+  }
+
+  let rolesBlock: string | undefined;
+  const rolesListR = await execute(registry, adapter, humanCtx, "roles.list", {});
+  if (rolesListR.ok) {
+    const roles = (
+      rolesListR.value as {
+        roles: Array<{
+          id: string;
+          name: string;
+          description: string;
+          isBuiltin: boolean;
+          permissions: string[];
+        }>;
+      }
+    ).roles;
+    if (roles.length > 0) {
+      rolesBlock = [
+        `# Roles (${roles.length})`,
+        "Use `propose_create_role` for new roles, `propose_update_role_permissions` to modify, `propose_delete_role` to remove (built-in roles cannot be deleted).",
+        ...roles.map(
+          (r) =>
+            `- ${r.name}${r.isBuiltin ? " [builtin]" : ""} — ${r.permissions.length} permission${r.permissions.length === 1 ? "" : "s"} (id=${r.id.slice(0, 8)})`,
+        ),
+      ].join("\n");
+    }
+  }
+
+  let aiProvidersBlock: string | undefined;
+  const providersR = await execute(registry, adapter, humanCtx, "ai_providers.list", {});
+  if (providersR.ok) {
+    const providers = (
+      providersR.value as {
+        providers: Array<{
+          name: string;
+          displayName: string;
+          isActive: boolean;
+          apiKeySource: "db" | "env" | null;
+        }>;
+      }
+    ).providers;
+    if (providers.length > 0) {
+      aiProvidersBlock = [
+        "# AI providers",
+        "Use `propose_set_ai_provider` to add or modify config (Owner pastes apiKey at approve), `propose_clear_ai_provider_key` to wipe a stored key.",
+        ...providers.map(
+          (p) =>
+            `- ${p.name} "${p.displayName}" — active=${p.isActive}, key=${p.apiKeySource ?? "none"}`,
+        ),
+      ].join("\n");
+    }
+  }
+
+  let domainsBlock: string | undefined;
+  const domainsR = await execute(registry, adapter, humanCtx, "domains.list", {});
+  if (domainsR.ok) {
+    const domains = (
+      domainsR.value as {
+        domains: Array<{
+          id: string;
+          hostname: string;
+          kind: string;
+          tlsStatus: string;
+        }>;
+      }
+    ).domains;
+    if (domains.length > 0) {
+      domainsBlock = [
+        `# Domains (${domains.length})`,
+        "Use `propose_add_domain` for new hostnames, `propose_remove_domain` to drop. Use `domains.verify` (read-only DNS lookup) to preflight DNS resolution before proposing an add.",
+        ...domains.map(
+          (d) => `- ${d.hostname} (${d.kind}) — TLS=${d.tlsStatus} (id=${d.id.slice(0, 8)})`,
+        ),
       ].join("\n");
     }
   }
@@ -834,6 +950,10 @@ export async function* runChatTurn(
       redirectsBlock,
       localesBlock,
       pendingProposalsBlock,
+      usersBlock,
+      rolesBlock,
+      aiProvidersBlock,
+      domainsBlock,
       skillsBlock,
       subagentsBlock,
       pluginsBlock,
