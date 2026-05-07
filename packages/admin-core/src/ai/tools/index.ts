@@ -29,6 +29,33 @@ import { proposeRemoveLocaleTool } from "./propose-remove-locale.js";
 import { proposeSetDefaultLocaleTool } from "./propose-set-default-locale.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
 import { proposeSkillTool } from "./propose-skill.js";
+import {
+  proposeAiProvidersClearKeyTool,
+  proposeAiProvidersSetTool,
+  proposeDomainAddTool,
+  proposeDomainRemoveTool,
+  proposeEmailConfigSetTool,
+  proposeExperimentActivateTool,
+  proposeExperimentCompleteTool,
+  proposeLayoutCreateTool,
+  proposeLayoutDeleteTool,
+  proposeLayoutSetBlocksTool,
+  proposeLayoutUpdateTool,
+  proposeMcpTokenCreateTool,
+  proposeMcpTokenRevokeTool,
+  proposeRevertModuleTool,
+  proposeRevertPageTool,
+  proposeRevertSiteTool,
+  proposeRevertTemplateTool,
+  proposeRoleCreateTool,
+  proposeRoleDeleteTool,
+  proposeRoleUpdatePermissionsTool,
+  proposeTemplateDeleteTool,
+  proposeTemplateUpdateTool,
+  proposeUserCreateTool,
+  proposeUserDeleteTool,
+  proposeUserSetRolesTool,
+} from "./propose-tools-batch.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
@@ -128,6 +155,36 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // The execute side stays human-only.
   registry.register(proposeDeployPromoteTool);
   registry.register(proposeDeployRollbackTool);
+  // v0.2.31 — propose tools for every gated domain shipped in
+  // v0.2.20 → v0.2.30. The underlying *.propose_* ops were already
+  // registered in the operation registry; this surfaces them as
+  // chat-runner-callable tools so the AI can actually queue
+  // proposals through the standard tool-call loop.
+  registry.register(proposeLayoutCreateTool);
+  registry.register(proposeLayoutUpdateTool);
+  registry.register(proposeLayoutDeleteTool);
+  registry.register(proposeLayoutSetBlocksTool);
+  registry.register(proposeUserCreateTool);
+  registry.register(proposeUserSetRolesTool);
+  registry.register(proposeUserDeleteTool);
+  registry.register(proposeRoleCreateTool);
+  registry.register(proposeRoleUpdatePermissionsTool);
+  registry.register(proposeRoleDeleteTool);
+  registry.register(proposeRevertSiteTool);
+  registry.register(proposeRevertPageTool);
+  registry.register(proposeRevertTemplateTool);
+  registry.register(proposeRevertModuleTool);
+  registry.register(proposeExperimentActivateTool);
+  registry.register(proposeExperimentCompleteTool);
+  registry.register(proposeEmailConfigSetTool);
+  registry.register(proposeAiProvidersSetTool);
+  registry.register(proposeAiProvidersClearKeyTool);
+  registry.register(proposeMcpTokenCreateTool);
+  registry.register(proposeMcpTokenRevokeTool);
+  registry.register(proposeTemplateUpdateTool);
+  registry.register(proposeTemplateDeleteTool);
+  registry.register(proposeDomainAddTool);
+  registry.register(proposeDomainRemoveTool);
   return registry;
 }
 
