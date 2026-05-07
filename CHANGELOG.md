@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.33
+
+### Features
+- 2249f14 bulk variants for pages + modules (v0.2.33)
+
 ## v0.2.32
 
 ### Features
