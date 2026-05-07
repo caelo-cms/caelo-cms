@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.37
+
+### Features
+- 8b6d91c GC worker + cancel_proposal AI tool (v0.2.37)
+
 ## v0.2.36
 
 ### Features
