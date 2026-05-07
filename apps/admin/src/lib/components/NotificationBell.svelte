@@ -135,12 +135,12 @@
           {:else}
             {#if counts.pendingProposals > 0}
               <a
-                href="/security/ai/memory-proposals"
+                href="/security/pending"
                 class="-mx-1 flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent"
                 onclick={() => (open = false)}
               >
                 <Badge variant="secondary">{counts.pendingProposals}</Badge>
-                <span>AI memory proposals awaiting review</span>
+                <span>AI proposals awaiting your review</span>
               </a>
             {/if}
             {#if counts.failedDeploys > 0}
