@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/migrations",
-  "version": "0.2.52",
+  "version": "0.2.53",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",

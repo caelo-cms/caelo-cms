@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.53
+
+### Features
+- 22c2916 bump max output tokens 4096 → 16384, add per-provider config knob (v0.2.53)
+
 ## v0.2.52
 
 ### Fixes
