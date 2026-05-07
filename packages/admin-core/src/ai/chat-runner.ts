@@ -804,7 +804,23 @@ export async function* runChatTurn(
       // Allowlist intersection: when ANY engaged skill defines an
       // allowlist, the AI's tool catalogue narrows to the UNION of
       // those allowlists. When none do, the full catalogue stays.
+      //
+      // v0.2.48 — alwaysOn-only engagements DO NOT contribute to the
+      // narrowing. An alwaysOn skill engages on every turn; if it
+      // declares a narrow allowlist (e.g. brand-voice-guard's
+      // [site_memory_propose]), every chat where no other skill
+      // engages would be restricted to that single tool — the AI
+      // ends up unable to do real work. alwaysOn allowlists are
+      // treated as advisory: the skill body still loads, but tool
+      // access stays wide.
+      //
+      // Detection: matchSkills sets `rationale = "always-on"` exactly
+      // when only the alwaysOn flag fired (no chip trigger, no
+      // keyword match). When other reasons fire, they're appended
+      // with "; " separators, so any rationale ≠ "always-on"
+      // indicates a real signal beyond the alwaysOn floor.
       const allowlists = engagedSkills
+        .filter((e) => !(e.source === "auto" && e.rationale === "always-on"))
         .map((e) => activeSkills.find((s) => s.id === e.skillId)?.allowlistedTools ?? [])
         .filter((arr) => arr.length > 0);
       if (allowlists.length > 0) {
