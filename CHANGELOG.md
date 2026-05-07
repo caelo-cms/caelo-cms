@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.31
+
+### Features
+- d3fd2e1 wire v0.2.20-v0.2.30 propose ops as AI tools (v0.2.31)
+
 ## v0.2.30
 
 ### Features
