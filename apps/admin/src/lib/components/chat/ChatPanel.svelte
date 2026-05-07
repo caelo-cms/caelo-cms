@@ -11,8 +11,8 @@
    * to /content/chat/[sessionId]/stream stays untouched.
    */
 
-  import { Lock, Unlock } from "lucide-svelte";
-  import { onMount } from "svelte";
+  import { ArrowDown, Lock, Unlock } from "lucide-svelte";
+  import { onMount, tick } from "svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
@@ -25,6 +25,7 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
   import { cn } from "$lib/utils.js";
+  import StreamingMarkdown from "./StreamingMarkdown.svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "./types.js";
 
   interface Chip {
@@ -86,6 +87,56 @@
   let composerEl = $state<HTMLTextAreaElement | null>(null);
   let streaming = $state(false);
 
+  // v0.2.45 — autoscroll + jump-to-latest button.
+  // followBottom: when true (default), each new message / streaming-text
+  // delta scrolls the transcript to the bottom. The user can pause
+  // autoscroll by scrolling up >40px from the bottom; resuming is either
+  // automatic (scrolling back to the bottom) or via the floating
+  // "↓ Latest" button.
+  let transcriptEl = $state<HTMLUListElement | null>(null);
+  let followBottom = $state(true);
+  // Tracks whether new content arrived while paused; the jump button
+  // is only worth showing when content is actually waiting below.
+  let hasNewContent = $state(false);
+
+  function isNearBottom(el: HTMLElement): boolean {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= 40;
+  }
+  function scrollToBottom(): void {
+    const el = transcriptEl;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }
+  function jumpToLatest(): void {
+    followBottom = true;
+    hasNewContent = false;
+    scrollToBottom();
+  }
+  function handleTranscriptScroll(): void {
+    const el = transcriptEl;
+    if (!el) return;
+    if (isNearBottom(el)) {
+      followBottom = true;
+      hasNewContent = false;
+    } else {
+      followBottom = false;
+    }
+  }
+  // Effect: any time messages or streaming-text changes, autoscroll if
+  // we're following; otherwise mark that new content exists so the jump
+  // button can surface.
+  $effect(() => {
+    // Read tracked sources so the effect re-runs.
+    const _msgCount = messages.length;
+    const _streamLen = streamingText.length;
+    void _msgCount;
+    void _streamLen;
+    void tick().then(() => {
+      if (followBottom) scrollToBottom();
+      else hasNewContent = true;
+    });
+  });
+
   /**
    * P6.7.4 — auto-grow the composer from one row up to 6, then scroll.
    * Called from `oninput` and after a send clears the value. Plain
@@ -141,6 +192,9 @@
     const removed = chips[idx];
     chips = chips.filter((_, i) => i !== idx);
     if (removed?.pinned) void persistPinned();
+    // v0.2.45 bug fix — keep focus in the composer after a chip click so
+    // the operator can keep typing without re-clicking the textarea.
+    queueMicrotask(() => composerEl?.focus());
   }
 
   /**
@@ -153,6 +207,7 @@
     if (!c) return;
     chips = chips.map((x, i) => (i === idx ? { ...x, pinned: !x.pinned } : x));
     await persistPinned();
+    queueMicrotask(() => composerEl?.focus());
   }
 
   async function persistPinned(): Promise<void> {
@@ -240,6 +295,10 @@
     });
     if (!res.body) {
       streaming = false;
+      // v0.2.45 — surface a clear error instead of silently dropping the
+      // optimistic user message. The fetch reached the server but no body
+      // came back; usually means the route returned a non-stream error.
+      chatError = `Chat request returned no body (status ${res.status}). The server may be misconfigured — try again or check /security/audit.`;
       return;
     }
     const reader = res.body.getReader();
@@ -315,6 +374,19 @@
         }
       }
     }
+    // v0.2.45 — final-flush guard. If the SSE stream ended without
+    // emitting a `done` event (network drop, server crash, abort), the
+    // streaming text never landed in messages and just hangs in the
+    // typing-indicator spot. Persist what we have so the operator
+    // sees their answer; any reconnect logic (v0.2.47) can resume from
+    // the last assistant message id.
+    if (streamingText.length > 0) {
+      messages = [
+        ...messages,
+        { id: `local-a-flush-${Date.now()}`, role: "assistant", content: streamingText },
+      ];
+      streamingText = "";
+    }
     streaming = false;
   }
 
@@ -361,38 +433,80 @@
           compact ? "min-h-0 flex-1" : "h-[calc(100vh-12rem)]",
         )}
       >
-        <ul class="flex-1 space-y-2 overflow-y-auto">
-          {#each messages as m (m.id)}
-            <li
-              class={cn(
-                "rounded-md p-3 text-sm",
-                m.role === "user"
-                  ? "bg-primary/5"
-                  : m.role === "tool"
-                    ? "bg-emerald-500/10"
-                    : "bg-muted",
-              )}
+        <div class="relative flex min-h-0 flex-1">
+          <ul
+            bind:this={transcriptEl}
+            onscroll={handleTranscriptScroll}
+            class="flex-1 space-y-2 overflow-y-auto"
+          >
+            {#each messages as m (m.id)}
+              <li
+                class={cn(
+                  "rounded-md p-3 text-sm",
+                  m.role === "user"
+                    ? "bg-primary/5"
+                    : m.role === "tool"
+                      ? "bg-emerald-500/10"
+                      : "bg-muted",
+                )}
+              >
+                <strong>
+                  {m.role === "user" ? "You" : m.role === "tool" ? "Tool" : "AI"}:
+                </strong>
+                {#if m.role === "user"}
+                  <pre class="m-0 whitespace-pre-wrap font-sans">{m.content}</pre>
+                {:else}
+                  <StreamingMarkdown text={m.content} class="mt-0.5" />
+                {/if}
+              </li>
+            {/each}
+            {#if streaming && streamingText.length > 0}
+              <li class="rounded-md border-l-4 border-muted-foreground/40 bg-muted p-3 text-sm">
+                <strong>AI:</strong>
+                <StreamingMarkdown text={streamingText} class="mt-0.5" />
+              </li>
+            {:else if streaming}
+              <!-- v0.2.45 — typing indicator while we wait for the first
+                   text-delta. Bridges the gap between the user's optimistic
+                   message landing and the provider's first chunk. -->
+              <li
+                class="rounded-md border-l-4 border-muted-foreground/40 bg-muted p-3 text-sm"
+                data-testid="chat-typing"
+              >
+                <strong>AI:</strong>
+                <span class="ml-1 inline-flex items-center gap-1 text-muted-foreground">
+                  <span class="size-1.5 animate-pulse rounded-full bg-muted-foreground/60"></span>
+                  <span
+                    class="size-1.5 animate-pulse rounded-full bg-muted-foreground/60"
+                    style="animation-delay: 150ms"
+                  ></span>
+                  <span
+                    class="size-1.5 animate-pulse rounded-full bg-muted-foreground/60"
+                    style="animation-delay: 300ms"
+                  ></span>
+                </span>
+              </li>
+            {/if}
+            {#if chatError}
+              <li data-testid="chat-error">
+                <Alert variant="destructive">
+                  <AlertDescription>{chatError}</AlertDescription>
+                </Alert>
+              </li>
+            {/if}
+          </ul>
+          {#if !followBottom && hasNewContent}
+            <button
+              type="button"
+              onclick={jumpToLatest}
+              class="absolute bottom-2 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border bg-background px-3 py-1 text-xs shadow-md hover:bg-accent"
+              data-testid="chat-jump-latest"
             >
-              <strong>
-                {m.role === "user" ? "You" : m.role === "tool" ? "Tool" : "AI"}:
-              </strong>
-              <pre class="m-0 whitespace-pre-wrap font-sans">{m.content}</pre>
-            </li>
-          {/each}
-          {#if streaming && streamingText.length > 0}
-            <li class="rounded-md border-l-4 border-muted-foreground/40 bg-muted p-3 text-sm">
-              <strong>AI:</strong>
-              <pre class="m-0 whitespace-pre-wrap font-sans">{streamingText}</pre>
-            </li>
+              <ArrowDown class="size-3" />
+              <span>Jump to latest</span>
+            </button>
           {/if}
-          {#if chatError}
-            <li data-testid="chat-error">
-              <Alert variant="destructive">
-                <AlertDescription>{chatError}</AlertDescription>
-              </Alert>
-            </li>
-          {/if}
-        </ul>
+        </div>
 
         {#if chips.length > 0}
           <div class="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
