@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.41
+
+### Fixes
+- 1e07fe9 /security/pending Review button uses anchor + buttonVariants
+
 ## v0.2.40
 
 ### Features
