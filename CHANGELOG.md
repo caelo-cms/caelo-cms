@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.55
+
+### Features
+- 723f702 per-chat debug toggle + per-loop runner logging + manifest CORS fix (v0.2.55)
+
 ## v0.2.54
 
 ### Features
