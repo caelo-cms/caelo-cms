@@ -262,7 +262,9 @@ export const executeSnapshotRevertProposalOp = defineOperation({
         message: `proposal is already ${row.status}`,
       });
     }
-    const payload = row.payload as Record<string, unknown>;
+    const payload = (
+      typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload
+    ) as Record<string, unknown>;
     let siteSnapshotId: string | null = null;
     if (row.kind === "site") {
       const r = await revertSiteOp.handler(

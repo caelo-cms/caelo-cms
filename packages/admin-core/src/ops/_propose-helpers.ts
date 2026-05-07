@@ -79,11 +79,37 @@ export async function resolveChatSessionId(
  */
 export function isDuplicatePendingError(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
-  const e = err as { message?: string; code?: string };
-  // Postgres SQLSTATE 23505 = unique_violation.
-  if (e.code === "23505") return true;
-  if (typeof e.message === "string" && e.message.includes("payload_hash_pending_uniq")) return true;
+  const e = err as { message?: string; code?: string; cause?: unknown; errno?: string };
+  // Postgres SQLSTATE 23505 = unique_violation. Direct match (bun-postgres
+  // surfaces it as `errno`; node-postgres / drizzle as `code`).
+  if (e.code === "23505" || e.errno === "23505") return true;
+  // drizzle/bun-postgres often wraps the original error; check the cause.
+  if (e.cause && typeof e.cause === "object") {
+    if (isDuplicatePendingError(e.cause)) return true;
+  }
+  // Last-resort string matches — drizzle's "Failed query" wrapper
+  // and bun-postgres' wrapper surface the constraint name and/or
+  // the SQLSTATE in the message body.
+  if (typeof e.message === "string") {
+    if (e.message.includes("payload_hash_pending_uniq")) return true;
+    if (e.message.includes("duplicate key value violates unique constraint")) return true;
+    if (e.message.includes("23505")) return true;
+  }
   return false;
+}
+
+/**
+ * Normalizes a jsonb payload column read back from Postgres. The
+ * bun-postgres + drizzle stack sometimes returns jsonb as a string,
+ * sometimes as a parsed object — depending on how the column was
+ * inserted (`::jsonb` cast vs object binding). Every execute_proposal
+ * handler needs to spread payload fields into the underlying op's
+ * input; spreading a string unpacks character indices, not fields.
+ *
+ * Helper makes the parse explicit and idempotent.
+ */
+export function parsePayload<T>(payload: unknown): T {
+  return (typeof payload === "string" ? JSON.parse(payload) : payload) as T;
 }
 
 /**

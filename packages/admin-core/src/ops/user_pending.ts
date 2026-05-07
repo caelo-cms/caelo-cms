@@ -221,7 +221,9 @@ export const executeUserProposalOp = defineOperation({
         message: `proposal is already ${row.status}`,
       });
     }
-    const payload = row.payload as Record<string, unknown>;
+    const payload = (
+      typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload
+    ) as Record<string, unknown>;
     let resultUserId: string | null = row.user_id;
     let temporaryPassword: string | null = null;
     if (row.kind === "create") {

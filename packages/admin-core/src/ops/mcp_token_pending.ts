@@ -20,6 +20,7 @@ import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
   isDuplicatePendingError,
+  parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
 import { createMcpTokenOp, revokeMcpTokenOp } from "./security/mcp_tokens.js";
@@ -160,7 +161,7 @@ export const executeMcpTokenProposalOp = defineOperation({
     if (row.kind === "create") {
       const r = await createMcpTokenOp.handler(
         ctx,
-        row.payload as Parameters<typeof createMcpTokenOp.handler>[1],
+        parsePayload<Parameters<typeof createMcpTokenOp.handler>[1]>(row.payload),
         tx,
       );
       if (!r.ok) return passthroughError(r.error, "create");
@@ -170,7 +171,7 @@ export const executeMcpTokenProposalOp = defineOperation({
     } else if (row.kind === "revoke") {
       const r = await revokeMcpTokenOp.handler(
         ctx,
-        row.payload as Parameters<typeof revokeMcpTokenOp.handler>[1],
+        parsePayload<Parameters<typeof revokeMcpTokenOp.handler>[1]>(row.payload),
         tx,
       );
       if (!r.ok) return passthroughError(r.error, "revoke");

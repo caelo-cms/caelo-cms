@@ -184,7 +184,9 @@ export const executeExperimentProposalOp = defineOperation({
         message: `proposal is already ${row.status}`,
       });
     }
-    const payload = row.payload as Record<string, unknown>;
+    const payload = (
+      typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload
+    ) as Record<string, unknown>;
     if (row.kind === "activate") {
       const r = await activateExperimentOp.handler(
         ctx,
