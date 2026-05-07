@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.54
+
+### Features
+- 3aeed98 extended-thinking toggle + 32k default max_tokens (v0.2.54)
+
 ## v0.2.53
 
 ### Features
