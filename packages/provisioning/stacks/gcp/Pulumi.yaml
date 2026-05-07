@@ -54,6 +54,22 @@ config:
     type: string
     default: "0"
     description: Admin Cloud Run min instances. 0 = scale to zero. 1 = no cold start (+~$15/mo).
+  caelo-gcp:adminMaxInstances:
+    type: string
+    default: "5"
+    description: |
+      Admin Cloud Run max instances. Default 5 caps the connection-pool
+      footprint at ~100 Postgres conns (Bun SQL pool max=10, two pools per
+      admin instance). Bump alongside maxConnections + cloudSqlTier when
+      sizing for heavy editorial traffic.
+  caelo-gcp:maxConnections:
+    type: string
+    default: "100"
+    description: |
+      Postgres max_connections database flag. Default 100 matches the safe
+      ceiling for adminMaxInstances=5 + light gateway traffic. Cloud SQL's
+      db-f1-micro defaults to 25 — too low for any sustained admin load.
+      Tune up alongside cloudSqlTier when scaling out.
   caelo-gcp:gatewayMinInstances:
     type: string
     default: "0"

@@ -26,6 +26,12 @@ pulumi config set caelo-gcp:ownerEmail me@example.com
 pulumi config set caelo-gcp:project my-gcp-project
 pulumi config set caelo-gcp:region us-central1
 
+# Optional: scale up beyond the safe-by-default ceiling. The defaults
+# size for a small editorial install (admin maxScale 5 × Bun SQL pool
+# max 10 × 2 pools = 100 conns, matching Postgres max_connections=100).
+# pulumi config set caelo-gcp:adminMaxInstances 10
+# pulumi config set caelo-gcp:maxConnections 200
+
 # Build + push images. Operator does this once + on every release.
 gcloud auth configure-docker us-central1-docker.pkg.dev
 gcloud builds submit ... --tag us-central1-docker.pkg.dev/$PROJECT/caelo/admin:latest

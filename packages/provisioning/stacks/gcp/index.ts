@@ -42,7 +42,26 @@ const cloudSqlEdition = cfg.get("cloudSqlEdition") ?? "ENTERPRISE";
 // wants to `caelo-cms destroy` shouldn't hit a wall).
 const deletionProtection = cfg.getBoolean("deletionProtection") ?? false;
 const adminMinInstances = Number.parseInt(cfg.get("adminMinInstances") ?? "0", 10);
+// adminMaxInstances default is intentionally low. Each admin process holds
+// TWO Bun SQL pools (admin_role on cms_admin + admin_role on cms_public),
+// each with default pool-max=10 → up to ~20 connections per instance under
+// sustained load. With db-f1-micro's tunable max_connections, even 5 admin
+// instances saturate the pool (5 × 20 = 100 = our default ceiling below).
+// Operators on larger SQL tiers should bump maxConnections AND
+// adminMaxInstances together.
+//
+// Why 5, not 10 (Cloud Run's default)? An incident on production showed
+// admin scaling to 10 under bursty editor traffic, demanding 200 slots
+// against the original 25-slot Postgres default — connection exhaustion
+// took the admin offline. v0.2.49 bakes the post-incident shape so fresh
+// installs don't trip the same wall.
+const adminMaxInstances = Number.parseInt(cfg.get("adminMaxInstances") ?? "5", 10);
 const gatewayMinInstances = Number.parseInt(cfg.get("gatewayMinInstances") ?? "0", 10);
+// Postgres connection slot ceiling. Cloud SQL's db-f1-micro defaults to 25,
+// which 1 admin pool exhausts under load (Bun SQL pool-max=10, two pools per
+// admin instance, plus gateway + migrations + backup-agent overhead). 100 is
+// the safe floor for a small editorial install — tune up alongside SQL tier.
+const maxConnections = Number.parseInt(cfg.get("maxConnections") ?? "100", 10);
 const wafAdaptiveProtection = cfg.getBoolean("wafAdaptiveProtection") ?? false;
 const backupRetentionDays = Number.parseInt(cfg.get("backupRetentionDays") ?? "7", 10);
 // IAP allowlist: comma-list of "user:<email>" or "group:<group@domain>".
@@ -188,6 +207,12 @@ const sqlInstance = new gcp.sql.DatabaseInstance(
       diskSize: 20,
       diskType: "PD_SSD",
       diskAutoresize: true,
+      // db-f1-micro defaults max_connections=25, which a single
+      // admin Cloud Run instance can exhaust under load (Bun SQL
+      // pool-max=10, two pools per admin process). Override at
+      // instance level so the cap matches the Cloud Run scale-out
+      // headroom defined by adminMaxInstances + gatewayMaxInstances.
+      databaseFlags: [{ name: "max_connections", value: maxConnections.toString() }],
       backupConfiguration: {
         enabled: true,
         pointInTimeRecoveryEnabled: cloudSqlHa,
@@ -490,7 +515,7 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
 const adminSvc = cloudRunService({
   serviceName: "admin",
   minInstances: adminMinInstances,
-  maxInstances: 10,
+  maxInstances: adminMaxInstances,
   memory: "1Gi",
   // Admin's second pool: admin_role on cms_public for cross-DB reads
   // + DDL + migrations. NOT public_role (write-limited).
