@@ -172,6 +172,8 @@ When an audit finds an op that's "AI could call this but doesn't have a tool" or
 
 §11 says "default actorScope is `human + ai + system`" and "the AI is the primary user." Most writes follow that and are immediately applied. But a small set of ops are **hard or impossible to revert cleanly** — adding/deleting a locale fans out URL changes across the entire site, deleting a layout cascades through every page on every template that binds to it, activating a plugin runs untrusted code. Those don't go human-only. **They go AI-proposable + human-approve-by-click.**
 
+> **Implementation reference:** see [`docs/propose-execute-pattern.md`](./docs/propose-execute-pattern.md) for the per-domain table shape, op shape, cross-cutting infrastructure (cross-domain inbox, GC worker, dedup, chat origin), three credential-handling sub-patterns, and a step-by-step "how to add a new gated domain" checklist.
+
 The pattern, used uniformly across every gated domain:
 
 1. **AI calls `<domain>.propose_<action>`** with the full inputs. The handler writes a row to a per-domain `<domain>_pending_actions` table with `status='pending'`, computes a `preview` jsonb (blast-radius summary — affected page count, redirects to be created, etc.), records audit, returns `{proposalId, preview}`. AI scope is `human + ai + system`.
