@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.52
+
+### Fixes
+- 3a18f71 tool exceptions become recoverable failures + persist-fail surfaces (v0.2.52)
+
 ## v0.2.51
 
 ### Fixes
