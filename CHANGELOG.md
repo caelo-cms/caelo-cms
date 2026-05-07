@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.36
+
+### Features
+- 98f7ed4 unified /security/pending Owner inbox + chat origin per row (v0.2.36)
+
 ## v0.2.35
 
 ### Features
