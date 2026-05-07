@@ -440,6 +440,14 @@ interface CloudRunArgs {
   readonly minInstances: number;
   readonly maxInstances: number;
   readonly memory: string;
+  /**
+   * Per-request timeout. Cloud Run's default is 300s (5min), which is too
+   * short for the admin's SSE chat-stream — a multi-tool compose-page session
+   * regularly runs 5–15 min. Pass an explicit "<n>s" Pulumi-style duration
+   * string. Gateway stays on the default; visitor-facing endpoints don't
+   * legitimately need longer.
+   */
+  readonly timeout?: string;
   readonly extraEnv?: ReadonlyArray<{ name: string; value: pulumi.Input<string> }>;
 }
 
@@ -468,6 +476,7 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
           minInstanceCount: args.minInstances,
           maxInstanceCount: args.maxInstances,
         },
+        timeout: args.timeout,
         containers: [
           {
             image: imageTag(args.serviceName),
@@ -517,6 +526,13 @@ const adminSvc = cloudRunService({
   minInstances: adminMinInstances,
   maxInstances: adminMaxInstances,
   memory: "1Gi",
+  // 1 hour — covers the longest realistic SSE chat session (multi-tool
+  // compose-page runs that orchestrate 10+ tool calls). Cloud Run's
+  // 300s default truncated mid-stream and surfaced to operators as
+  // "request canceled" in the network panel + "Truncated response body"
+  // in Cloud Run logs. 3600s is the platform max; no cost penalty for
+  // unused timeout (Cloud Run bills running time, not allocated time).
+  timeout: "3600s",
   // Admin's second pool: admin_role on cms_public for cross-DB reads
   // + DDL + migrations. NOT public_role (write-limited).
   extraEnv: [{ name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl }],

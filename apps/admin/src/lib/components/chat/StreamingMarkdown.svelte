@@ -16,6 +16,7 @@
    * tool messages flow through here.
    */
 
+  import { browser } from "$app/environment";
   import DOMPurify from "dompurify";
   import { marked } from "marked";
 
@@ -32,28 +33,43 @@
   //  - async: false → marked.parse returns a string synchronously
   marked.setOptions({ gfm: true, breaks: true, async: false });
 
+  // DOMPurify needs a real DOM (window/document). On SSR (the
+  // /edit live-edit overlay renders the chat panel server-side via
+  // SvelteKit), there is no window — calling sanitize() throws and
+  // the entire page returns 500. Gate sanitization behind `browser`
+  // and render a plain-text fallback during SSR. The client hydrates
+  // to the rendered markdown on mount; the visible flicker is
+  // imperceptible because the chat panel mounts before any paint
+  // that contains assistant text. Server-side avoiding {@html}
+  // entirely also closes the XSS hole that an SSR DOMPurify shim
+  // would have opened — there's no path where unsanitized text ever
+  // reaches a {@html} sink.
   let html = $derived(
-    DOMPurify.sanitize(marked.parse(text, { async: false }) as string, {
-      // Allow common markdown output but block any HTML the LLM might emit
-      // that would break out of the message bubble (no <script>, no
-      // <iframe>, no inline event handlers — DOMPurify default is strict
-      // enough; this is the explicit list for clarity).
-      ALLOWED_TAGS: [
-        "p", "br", "hr", "blockquote",
-        "ul", "ol", "li",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "strong", "em", "del", "code", "pre",
-        "a", "img",
-        "table", "thead", "tbody", "tr", "th", "td",
-        "span", "div",
-      ],
-      ALLOWED_ATTR: ["href", "title", "alt", "src", "class"],
-    }),
+    browser
+      ? DOMPurify.sanitize(marked.parse(text, { async: false }) as string, {
+          // Allow common markdown output but block any HTML the LLM
+          // might emit that would break out of the message bubble.
+          ALLOWED_TAGS: [
+            "p", "br", "hr", "blockquote",
+            "ul", "ol", "li",
+            "h1", "h2", "h3", "h4", "h5", "h6",
+            "strong", "em", "del", "code", "pre",
+            "a", "img",
+            "table", "thead", "tbody", "tr", "th", "td",
+            "span", "div",
+          ],
+          ALLOWED_ATTR: ["href", "title", "alt", "src", "class"],
+        })
+      : "",
   );
 </script>
 
 <div class={`prose prose-sm max-w-none dark:prose-invert ${className}`}>
-  {@html html}
+  {#if browser}
+    {@html html}
+  {:else}
+    <pre class="whitespace-pre-wrap break-words font-sans">{text}</pre>
+  {/if}
 </div>
 
 <style>
