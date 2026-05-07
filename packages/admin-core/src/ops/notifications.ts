@@ -78,9 +78,32 @@ export const aggregateNotificationsOp = defineOperation({
   input: z.object({}).strict(),
   output: notificationsRow,
   handler: async (_ctx, _input, tx) => {
+    // v0.2.32 — `pending_proposals` now sums across every pending
+    // table (deploy / layouts / users / roles / snapshots / experiments
+    // / email_config / ai_providers / mcp_tokens / templates / domains
+    // / locales / gateway / site_memory / skills), not just
+    // site_memory_proposals. Each branch is a partial-index scan
+    // (status='pending'); cheap enough to compute on every bell poll.
     const rows = (await tx.execute(sql`
+      WITH pending AS (
+        SELECT 1 FROM deploy_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM layout_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM user_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM role_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM snapshot_revert_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM experiment_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM email_config_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM ai_providers_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM mcp_token_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM template_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM domain_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM locale_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM plugin_rate_limit_proposals WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM site_memory_proposals WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM skill_proposals WHERE status = 'pending'
+      )
       SELECT
-        (SELECT count(*)::int FROM site_memory_proposals WHERE status = 'pending') AS pending_proposals,
+        (SELECT count(*)::int FROM pending) AS pending_proposals,
         (SELECT count(*)::int FROM deploy_runs
            WHERE status = 'failed' AND started_at > now() - interval '7 days') AS failed_deploys,
         (SELECT count(*)::int FROM chat_sessions

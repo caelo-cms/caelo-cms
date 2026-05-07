@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * v0.2.32 — cross-domain pending-proposals aggregator.
+ *
+ * The propose/execute sweep (v0.2.19 → v0.2.30) shipped 11 per-domain
+ * `*_pending_actions` tables. Older subsystems use varying shapes
+ * (`locale_pending_actions`, `plugin_rate_limit_proposals`,
+ * `site_memory_proposals`, `skill_proposals`). Each domain has a
+ * per-domain list_pending op for its Owner UI page; nothing aggregates
+ * across them. Two consumers need the union:
+ *
+ *  1. The chat-runner's `## Pending proposals` system-prompt block
+ *     (CLAUDE.md §11.A: "the AI doesn't re-propose what's already in
+ *     the queue").
+ *  2. The AppShell bell badge (`notifications.aggregate`) — counts a
+ *     single integer for "things waiting on you".
+ *
+ * One UNION ALL across every table; Postgres plans this as N small
+ * partial-index scans, then sort + limit. Cheap enough to call on
+ * every chat turn.
+ *
+ * Schema reality: `media_alt_proposals` (no `status` column) and
+ * `import_runs` (`status='proposed'` not `'pending'`, no `preview`)
+ * are intentionally NOT included — different shape, surfaced via
+ * dedicated alt-proposals + import wizard UIs.
+ */
+
+import { defineOperation } from "@caelo-cms/query-api";
+import { ok } from "@caelo-cms/shared";
+import { sql } from "drizzle-orm";
+import { z } from "zod";
+
+const itemSchema = z.object({
+  domain: z.string(),
+  kind: z.string(),
+  proposalId: z.string(),
+  summary: z.string(),
+  proposedBy: z.string(),
+  proposedAt: z.string(),
+});
+
+const byDomainSchema = z.record(z.string(), z.number().int().nonnegative());
+
+export const listPendingProposalsAcrossDomainsOp = defineOperation({
+  name: "pending_proposals.list",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      limit: z.number().int().min(1).max(200).optional(),
+    })
+    .strict(),
+  output: z.object({
+    items: z.array(itemSchema),
+    byDomain: byDomainSchema,
+    total: z.number().int().nonnegative(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const limit = input.limit ?? 50;
+    // Common-shape stanzas use `created_at`. Older tables use
+    // `proposed_at` — they're explicitly aliased so the outer ORDER BY
+    // sees the same column name. The `kind` column normalizes
+    // `action_kind` (locales) and inferred kinds (gateway, site_memory,
+    // skills) into one discriminator.
+    const rows = (await tx.execute(sql`
+      WITH all_pending AS (
+        -- v0.2.19 → v0.2.30 unified-shape *_pending_actions tables.
+        SELECT 'deploy'::text AS domain, kind, id::text AS id,
+               proposed_by::text AS proposed_by, created_at AS proposed_at,
+               COALESCE(preview->>'fromTarget', preview->>'target', 'deploy') AS summary
+          FROM deploy_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'layouts', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'slug', preview->>'displayName', 'layout')
+          FROM layout_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'users', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'email', preview->>'displayName', 'user')
+          FROM user_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'roles', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'name', preview->>'roleName', 'role')
+          FROM role_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'snapshots', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'pageSlug', preview->>'templateSlug',
+                        preview->>'moduleSlug', preview->>'snapshotCreatedAt', 'snapshot')
+          FROM snapshot_revert_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'experiments', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'experimentSlug', 'experiment')
+          FROM experiment_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'email_config', 'set', id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'transport', 'email')
+          FROM email_config_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'ai_providers', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'name', 'provider')
+          FROM ai_providers_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'mcp_tokens', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'displayName', 'token')
+          FROM mcp_token_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'templates', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'templateSlug', preview->>'currentDisplayName', 'template')
+          FROM template_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'domains', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'hostname', 'domain')
+          FROM domain_pending_actions WHERE status = 'pending'
+        -- Older proposal tables (varying shape; aliased into common columns).
+        UNION ALL
+        SELECT 'locales', action_kind, id::text, proposed_by::text, proposed_at,
+               COALESCE(payload->>'code', 'locale')
+          FROM locale_pending_actions WHERE status = 'pending'
+        UNION ALL
+        SELECT 'gateway', 'rate_limit', id::text, proposed_by::text, created_at,
+               plugin_slug || '.' || operation
+          FROM plugin_rate_limit_proposals WHERE status = 'pending'
+        UNION ALL
+        SELECT 'site_memory', slot, id::text, proposed_by::text, created_at,
+               COALESCE(LEFT(body, 60), slot)
+          FROM site_memory_proposals WHERE status = 'pending'
+        UNION ALL
+        SELECT 'skills', 'create', id::text, proposed_by::text, created_at,
+               slug FROM skill_proposals WHERE status = 'pending'
+      )
+      SELECT * FROM all_pending ORDER BY proposed_at DESC LIMIT ${limit}
+    `)) as unknown as Array<{
+      domain: string;
+      kind: string;
+      id: string;
+      proposed_by: string;
+      proposed_at: string | Date;
+      summary: string;
+    }>;
+
+    // Per-domain counts (separate query so the items-list LIMIT
+    // doesn't truncate the totals).
+    const counts = (await tx.execute(sql`
+      WITH all_pending AS (
+        SELECT 'deploy'::text AS domain FROM deploy_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'layouts' FROM layout_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'users' FROM user_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'roles' FROM role_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'snapshots' FROM snapshot_revert_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'experiments' FROM experiment_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'email_config' FROM email_config_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'ai_providers' FROM ai_providers_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'mcp_tokens' FROM mcp_token_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'templates' FROM template_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'domains' FROM domain_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'locales' FROM locale_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'gateway' FROM plugin_rate_limit_proposals WHERE status = 'pending'
+        UNION ALL SELECT 'site_memory' FROM site_memory_proposals WHERE status = 'pending'
+        UNION ALL SELECT 'skills' FROM skill_proposals WHERE status = 'pending'
+      )
+      SELECT domain, count(*)::int AS c FROM all_pending GROUP BY domain
+    `)) as unknown as Array<{ domain: string; c: number }>;
+
+    const byDomain: Record<string, number> = {};
+    let total = 0;
+    for (const row of counts) {
+      byDomain[row.domain] = row.c;
+      total += row.c;
+    }
+
+    return ok({
+      items: rows.map((r) => ({
+        domain: r.domain,
+        kind: r.kind,
+        proposalId: r.id,
+        summary: r.summary,
+        proposedBy: r.proposed_by,
+        proposedAt:
+          r.proposed_at instanceof Date ? r.proposed_at.toISOString() : String(r.proposed_at),
+      })),
+      byDomain,
+      total,
+    });
+  },
+});

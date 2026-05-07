@@ -565,6 +565,45 @@ export async function* runChatTurn(
     }
   }
 
+  // v0.2.32 — `## Pending proposals` cross-domain block. Surfaces every
+  // pending proposal across deploy / layouts / users / roles / snapshots
+  // / experiments / email_config / ai_providers / mcp_tokens / templates
+  // / domains / locales / gateway / site_memory / skills so the AI
+  // doesn't re-queue work the Owner is already reviewing (CLAUDE.md
+  // §11.A). The op caps at 50 most-recent items + per-domain counts.
+  let pendingProposalsBlock: string | undefined;
+  const pendingR = await execute(registry, adapter, humanCtx, "pending_proposals.list", {
+    limit: 30,
+  });
+  if (pendingR.ok) {
+    const v = pendingR.value as {
+      items: Array<{
+        domain: string;
+        kind: string;
+        proposalId: string;
+        summary: string;
+        proposedAt: string;
+      }>;
+      byDomain: Record<string, number>;
+      total: number;
+    };
+    if (v.total > 0) {
+      const lines = v.items.map(
+        (i) =>
+          `- [${i.domain}.${i.kind}] ${i.summary} (id=${i.proposalId.slice(0, 8)}, ${i.proposedAt.slice(0, 10)})`,
+      );
+      const counts = Object.entries(v.byDomain)
+        .filter(([, c]) => c > 0)
+        .map(([d, c]) => `${d}=${c}`)
+        .join(", ");
+      pendingProposalsBlock = [
+        `# Pending proposals (${v.total} total: ${counts})`,
+        "These proposals are already queued — DO NOT propose them again. The Owner approves at /security/<domain>/pending. If asked to do something that matches a queued item, tell the user it's already pending and link the queue.",
+        ...lines.slice(0, 30),
+      ].join("\n");
+    }
+  }
+
   // P10A — load active skills + the user's pinned defaults + the
   // chat's manual overrides; resolve the engaged set; compose a
   // `## Engaged skills` system-prompt chunk + intersect tool
@@ -794,6 +833,7 @@ export async function* runChatTurn(
       mediaBlock,
       redirectsBlock,
       localesBlock,
+      pendingProposalsBlock,
       skillsBlock,
       subagentsBlock,
       pluginsBlock,

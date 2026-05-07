@@ -78,6 +78,10 @@ export interface VolatileContext {
   readonly redirectsBlock?: string;
   /** P9 — locales registry + AI's own pending locale-change proposals. */
   readonly localesBlock?: string;
+  /** v0.2.32 — cross-domain `## Pending proposals` block. Aggregates
+   *  every status='pending' row across the 15 *_pending tables so the
+   *  AI doesn't re-queue what the Owner is already reviewing. */
+  readonly pendingProposalsBlock?: string;
   /** P10A — engaged skills' bodies, tagged with slug + source. */
   readonly skillsBlock?: string;
   /** P10.5 #5 — hint that spawn_subagent / spawn_subagents exist + when to use them. */
@@ -164,6 +168,13 @@ export function composeSystemPromptChunks(
   }
   if (volatile.localesBlock && volatile.localesBlock.trim().length > 0) {
     chunks.push({ body: volatile.localesBlock, cacheable: false, label: "locales" });
+  }
+  if (volatile.pendingProposalsBlock && volatile.pendingProposalsBlock.trim().length > 0) {
+    chunks.push({
+      body: volatile.pendingProposalsBlock,
+      cacheable: false,
+      label: "pending_proposals",
+    });
   }
   if (volatile.pageContextBlock && volatile.pageContextBlock.trim().length > 0) {
     chunks.push({ body: volatile.pageContextBlock, cacheable: false, label: "page-context" });

@@ -208,6 +208,7 @@ import {
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
 } from "./ops/owner-bootstrap-tokens.js";
+import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import {
   commentArchiveInsertOp,
   commentArchiveListForPageOp,
@@ -656,6 +657,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPendingExperimentProposalsOp);
   // P6.6b — UX polish surface.
   registry.register(aggregateNotificationsOp);
+  // v0.2.32 — cross-domain pending proposals aggregator. Used by the
+  // chat-runner's `## Pending proposals` system-prompt block (so the
+  // AI doesn't re-propose what's already queued) and by the AppShell
+  // bell badge (cross-domain count of "things waiting on you").
+  registry.register(listPendingProposalsAcrossDomainsOp);
   registry.register(completeOnboardingOp);
   registry.register(listBranchEditedModulesOp);
   // P7 — media library.
