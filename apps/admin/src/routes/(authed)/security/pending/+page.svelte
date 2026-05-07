@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { buttonVariants } from "$lib/components/ui/button/button-variants.js";
   import {
     Card,
     CardContent,
@@ -89,7 +89,12 @@
                 {/if}
               </div>
             </div>
-            <Button href={route} variant="outline" size="sm" class="shrink-0">Review</Button>
+            <a
+              href={route}
+              class={`${buttonVariants({ variant: "outline", size: "sm" })} shrink-0`}
+            >
+              Review
+            </a>
           </CardContent>
         </Card>
       {/each}
