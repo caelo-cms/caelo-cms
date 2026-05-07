@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.44
+
+### Tests
+- 5f6cedc Playwright propose → approve flow (v0.2.44)
+
 ## v0.2.43
 
 ### Docs
