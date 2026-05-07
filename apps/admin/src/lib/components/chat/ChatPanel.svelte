@@ -198,6 +198,174 @@
   });
   let debugRawEvents = $state<unknown[]>([]);
 
+  // v0.2.47 — composer affordances. Slash menu (tool hints) + @-mention
+  // (module references) + drag-drop media upload.
+  type MentionKind = "slash" | "at" | null;
+  let mentionKind = $state<MentionKind>(null);
+  // Caret position where the trigger char (`/` or `@`) sits — used to
+  // replace from there through the current caret on selection.
+  let mentionAnchor = $state(0);
+  // Filter string typed after the trigger char (lowercase).
+  let mentionQuery = $state("");
+  // Selected index into the suggestion list; arrow-key navigation
+  // updates this.
+  let mentionIndex = $state(0);
+  // Drag-over highlight on the composer surface.
+  let dragOver = $state(false);
+  // Inline upload error state — shown briefly under the composer.
+  let uploadError = $state<string | null>(null);
+
+  /** Hardcoded tool hints for the slash menu. Not the full 80-tool
+   *  catalogue — that would overwhelm the popup. The list covers the
+   *  most-frequent operator intents; the AI will pick the actual tool
+   *  based on the natural-language phrasing the operator types after. */
+  const SLASH_HINTS: { label: string; insert: string; description: string }[] = [
+    { label: "/edit", insert: "Edit the ", description: "edit a module's HTML/CSS/JS" },
+    { label: "/create-page", insert: "Create a new page called ", description: "new page from scratch" },
+    { label: "/rename", insert: "Rename ", description: "rename a page or update slug" },
+    { label: "/seo", insert: "Optimize the SEO for ", description: "rewrite meta description" },
+    { label: "/redirect", insert: "Add a redirect from ", description: "create a 301 redirect" },
+    { label: "/translate", insert: "Translate ", description: "translate a page to another locale" },
+    { label: "/delete", insert: "Delete ", description: "remove a page or module" },
+    { label: "/publish", insert: "Publish the staged changes", description: "merge chat branch to main" },
+    { label: "/revert", insert: "Revert ", description: "undo a recent change via snapshot" },
+    { label: "/invite", insert: "Invite a new user: ", description: "propose a user invitation" },
+  ];
+
+  // Filtered suggestion list driven by mentionKind + mentionQuery.
+  const slashSuggestions = $derived(
+    mentionKind === "slash"
+      ? SLASH_HINTS.filter((h) =>
+          h.label.slice(1).toLowerCase().startsWith(mentionQuery.toLowerCase()),
+        ).slice(0, 8)
+      : [],
+  );
+  const atSuggestions = $derived(
+    mentionKind === "at"
+      ? modules
+          .filter((m) =>
+            (m.slug.toLowerCase() + " " + m.displayName.toLowerCase()).includes(
+              mentionQuery.toLowerCase(),
+            ),
+          )
+          .slice(0, 8)
+      : [],
+  );
+
+  function closeMention(): void {
+    mentionKind = null;
+    mentionQuery = "";
+    mentionIndex = 0;
+  }
+
+  /** Detect a fresh trigger near the caret and open the mention popup.
+   *  Triggered from oninput. The pattern: trigger char appears at
+   *  position 0 OR after a whitespace; query is the run of word chars
+   *  between the trigger and the caret. */
+  function detectMention(): void {
+    const el = composerEl;
+    if (!el) return;
+    const caret = el.selectionStart;
+    const text = composer.slice(0, caret);
+    // Walk back to find the most recent / or @ that isn't preceded by
+    // a non-whitespace char.
+    const m = text.match(/(?:^|\s)([/@])([\w-]*)$/);
+    if (!m) {
+      closeMention();
+      return;
+    }
+    const trigger = m[1];
+    const query = m[2] ?? "";
+    mentionKind = trigger === "/" ? "slash" : "at";
+    mentionAnchor = caret - query.length - 1; // position of the trigger char
+    mentionQuery = query;
+    mentionIndex = 0;
+  }
+
+  function applyMention(replacement: string): void {
+    const el = composerEl;
+    if (!el) return;
+    const caret = el.selectionStart;
+    composer = composer.slice(0, mentionAnchor) + replacement + composer.slice(caret);
+    closeMention();
+    queueMicrotask(() => {
+      el.focus();
+      const pos = mentionAnchor + replacement.length;
+      el.setSelectionRange(pos, pos);
+      autoSizeComposer();
+    });
+  }
+
+  function selectMention(): void {
+    if (mentionKind === "slash") {
+      const hit = slashSuggestions[mentionIndex];
+      if (hit) applyMention(hit.insert);
+    } else if (mentionKind === "at") {
+      const hit = atSuggestions[mentionIndex];
+      if (hit) applyMention(`@module:${hit.slug} `);
+    }
+  }
+
+  function onComposerKeydown(e: KeyboardEvent): void {
+    if (mentionKind === null) return;
+    const list = mentionKind === "slash" ? slashSuggestions : atSuggestions;
+    if (list.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      mentionIndex = (mentionIndex + 1) % list.length;
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      mentionIndex = (mentionIndex - 1 + list.length) % list.length;
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      selectMention();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeMention();
+    }
+  }
+
+  /** Drag-drop media upload. The drop handler sends the first file to
+   *  /api/media/upload and pastes the resulting URL into the composer
+   *  at the current caret. Reuses the existing media upload route +
+   *  the `caelo:insert-into-composer` event the media picker fires. */
+  async function onComposerDrop(e: DragEvent): Promise<void> {
+    e.preventDefault();
+    dragOver = false;
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    uploadError = null;
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const res = await fetch("/api/media/upload", {
+        method: "POST",
+        headers: { "x-csrf-token": csrfToken },
+        body: fd,
+      });
+      if (!res.ok) {
+        uploadError = `Upload failed (${res.status}). Drop a smaller file or use the media picker.`;
+        return;
+      }
+      const v = (await res.json()) as { url?: string; mediaId?: string; alt?: string };
+      const url = v.url ?? "";
+      const alt = v.alt ?? file.name;
+      if (!url) {
+        uploadError = "Upload returned no URL.";
+        return;
+      }
+      const snippet = file.type.startsWith("image/")
+        ? `<img src="${url}" alt="${alt}">`
+        : url;
+      // Reuse the existing inserter so caret position is respected.
+      document.dispatchEvent(
+        new CustomEvent("caelo:insert-into-composer", { detail: { text: snippet } }),
+      );
+    } catch (err) {
+      uploadError = `Upload failed: ${(err as Error).message ?? "unknown"}`;
+    }
+  }
+
   const moduleStateBefore: Record<string, string> = {};
   for (const m of modules) {
     if (typeof m.html === "string") moduleStateBefore[m.id] = m.html;
@@ -678,16 +846,85 @@
             e.preventDefault();
             void sendMessage();
           }}
-          class="space-y-2"
+          class="relative space-y-2"
+          ondragover={(e) => {
+            e.preventDefault();
+            dragOver = true;
+          }}
+          ondragleave={() => {
+            dragOver = false;
+          }}
+          ondrop={(e) => void onComposerDrop(e)}
         >
           <Textarea
             bind:value={composer}
             bind:ref={composerEl}
             rows={1}
-            placeholder="Tell the AI what to change…"
-            class="resize-none"
-            oninput={autoSizeComposer}
+            placeholder="Tell the AI what to change… (try / for shortcuts, @ for module references)"
+            class={cn("resize-none", dragOver && "border-primary ring-2 ring-primary/30")}
+            oninput={() => {
+              autoSizeComposer();
+              detectMention();
+            }}
+            onkeydown={onComposerKeydown}
           />
+          {#if mentionKind && (slashSuggestions.length > 0 || atSuggestions.length > 0)}
+            <!-- v0.2.47 — slash / @-mention popup. Positioned below the
+                 textarea via a relative ancestor (the form). Suggestion
+                 list scrolls if the filtered set exceeds the cap. -->
+            <div
+              class="absolute left-0 top-full z-10 mt-1 w-full max-w-md rounded-md border bg-popover shadow-md"
+              data-testid="chat-mention-popup"
+            >
+              <ul class="max-h-56 overflow-y-auto py-1 text-sm">
+                {#if mentionKind === "slash"}
+                  {#each slashSuggestions as h, i (h.label)}
+                    <li>
+                      <button
+                        type="button"
+                        class={cn(
+                          "flex w-full items-center gap-2 px-3 py-1.5 text-left",
+                          i === mentionIndex ? "bg-accent" : "hover:bg-accent/60",
+                        )}
+                        onclick={() => {
+                          mentionIndex = i;
+                          selectMention();
+                        }}
+                      >
+                        <span class="font-mono text-xs text-primary">{h.label}</span>
+                        <span class="text-xs text-muted-foreground">{h.description}</span>
+                      </button>
+                    </li>
+                  {/each}
+                {:else}
+                  {#each atSuggestions as m, i (m.id)}
+                    <li>
+                      <button
+                        type="button"
+                        class={cn(
+                          "flex w-full flex-col items-start px-3 py-1.5 text-left",
+                          i === mentionIndex ? "bg-accent" : "hover:bg-accent/60",
+                        )}
+                        onclick={() => {
+                          mentionIndex = i;
+                          selectMention();
+                        }}
+                      >
+                        <span class="font-mono text-xs">@module:{m.slug}</span>
+                        <span class="text-[10px] text-muted-foreground">{m.displayName}</span>
+                      </button>
+                    </li>
+                  {/each}
+                {/if}
+              </ul>
+              <div class="border-t px-3 py-1 text-[10px] text-muted-foreground">
+                ↑↓ navigate · Enter / Tab to insert · Esc to dismiss
+              </div>
+            </div>
+          {/if}
+          {#if uploadError}
+            <p class="text-xs text-destructive" data-testid="chat-upload-error">{uploadError}</p>
+          {/if}
           <div class="flex items-center gap-2">
             <Label for="picker" class="text-xs text-muted-foreground">+ Reference module</Label>
             <select
