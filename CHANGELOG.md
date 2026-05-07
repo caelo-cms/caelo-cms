@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.38
+
+### Features
+- d33a052 per-domain context blocks + AI-self-filtered pending block (v0.2.38)
+
 ## v0.2.37
 
 ### Features
