@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.46
+
+### Features
+- 379883b tool-result cards + inline diff + debug panel (v0.2.46)
+
 ## v0.2.45
 
 ### Features
