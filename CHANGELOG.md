@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.35
+
+### Features
+- 1cd9f93 schema foundation — chat origin + dedup + cancelled status (v0.2.35)
+
 ## v0.2.34
 
 ### Chores
