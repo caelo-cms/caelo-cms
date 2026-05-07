@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.49
+
+### Fixes
+- 5b83c5a bake post-incident defaults to prevent SQL conn exhaustion (v0.2.49)
+
 ## v0.2.48
 
 ### Fixes
