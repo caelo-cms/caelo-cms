@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.32
+
+### Features
+- d56a0ea cross-domain pending-proposals aggregator + chat-runner block
+
 ## v0.2.31
 
 ### Features
