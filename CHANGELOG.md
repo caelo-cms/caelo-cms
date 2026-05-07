@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.40
+
+### Features
+- af7bfa1 per-domain AI activity aggregator (v0.2.40)
+
 ## v0.2.39
 
 ### Other
