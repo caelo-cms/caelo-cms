@@ -78,6 +78,15 @@
      *  sidebar. Caller (page server load) gates on `?debug=1` URL param
      *  + permission check before passing true. */
     debug?: boolean;
+    /**
+     * v0.2.55 — operator has permission to flip the debug toggle. Set
+     * by the page server load from `data.canDebug`. When true,
+     * ChatPanel renders a small "🐞 Debug" button in the composer that
+     * fires `onToggleDebug`; the parent persists the state (typically
+     * via URL search-param) and re-passes `debug` accordingly.
+     */
+    canDebug?: boolean;
+    onToggleDebug?: () => void;
   }
   let {
     session,
@@ -89,6 +98,8 @@
     activePageId = null,
     onToolResult,
     debug = false,
+    canDebug = false,
+    onToggleDebug,
   }: Props = $props();
 
   let messages = $state<ChatMessage[]>(initialMessages);
@@ -551,7 +562,11 @@
             const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
             // v0.2.46 — record raw events + roll up tool calls / usage
             // for the debug panel. No-op when debug=false.
+            // v0.2.55 — also mirror to console so operators can copy a
+            // chat trace from devtools without opening the panel.
             if (debug) {
+              // biome-ignore lint/suspicious/noConsole: gated by debug flag
+              console.log("[chat sse]", ev);
               debugRawEvents = [...debugRawEvents, ev];
               if (ev["kind"] === "tool-start") {
                 debugToolCalls = [
@@ -1066,6 +1081,23 @@
             >
               {extendedThinkingEnabled ? "✦ Thinking" : "Thinking"}
             </Button>
+            {#if canDebug}
+              <!-- v0.2.55 — Debug toggle. Shows the panel + console-
+                   logs every SSE event when on. Visible only to
+                   operators with settings.read permission. -->
+              <Button
+                type="button"
+                size="sm"
+                variant={debug ? "default" : "outline"}
+                title={debug
+                  ? "Debug is ON — click to hide the panel + stop logging events"
+                  : "Click to enable debug (panel + console event log)"}
+                data-testid="chat-debug-toggle"
+                onclick={() => onToggleDebug?.()}
+              >
+                {debug ? "🐞 Debug ON" : "🐞 Debug"}
+              </Button>
+            {/if}
             <Button
               type="submit"
               size="sm"

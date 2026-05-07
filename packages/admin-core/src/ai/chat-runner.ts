@@ -1178,6 +1178,23 @@ export async function* runChatTurn(
       },
     ];
 
+    // v0.2.55 — Per-loop trace for postmortem. Cloud Run captures
+    // stdout/stderr; grep the chatSessionId to reconstruct exactly
+    // what happened across loops. Rationale: operators repeatedly
+    // hit "AI does step 1, says 'now I'll do step 2', then stops".
+    // The pattern is the model emitting end_turn after a tool result
+    // — invisible from the UI and previously silent in logs.
+    console.info("[chat-runner] loop", {
+      chatSessionId: input.chatSessionId,
+      loop,
+      loopStop,
+      toolCalls: accumulatedToolCalls.length,
+      textChars: accumulatedText.join("").length,
+      thinkingBlocks: accumulatedThinking.length,
+      tokensIn: totalIn,
+      tokensOut: totalOut,
+    });
+
     if (aborted()) break;
     if (loopStop !== "tool_use" || accumulatedToolCalls.length === 0) {
       stopReason = loopStop;

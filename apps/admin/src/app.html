@@ -6,7 +6,14 @@
     <meta name="robots" content="noindex" />
     <link rel="icon" type="image/svg+xml" href="%sveltekit.assets%/favicon.svg" />
     <link rel="apple-touch-icon" href="%sveltekit.assets%/apple-touch-icon.svg" />
-    <link rel="manifest" href="%sveltekit.assets%/manifest.json" />
+    <!--
+      v0.2.55 — manifest.json link removed. IAP gates every admin path,
+      so the PWA manifest fetch redirects to Google's OAuth endpoint, the
+      browser blocks the cross-origin redirect with a CORS error, and
+      every admin pageload spams the console with a benign-but-loud
+      message. The admin is an authoring tool behind IAP — installable-
+      PWA never made sense here. Remove the link, kill the noise.
+    -->
     <meta name="theme-color" content="#0f172a" />
     <title>Caelo CMS Admin</title>
     %sveltekit.head%

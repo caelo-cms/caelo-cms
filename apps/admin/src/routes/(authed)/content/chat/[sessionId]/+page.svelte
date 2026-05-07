@@ -9,7 +9,19 @@
   // v0.2.46 — debug panel toggle. Reactive so toggling ?debug=1 in
   // the URL flips it without reload. Permission gate happens in the
   // server load (data.canDebug); this just consumes the flag.
-  const debug = $derived(page.url.searchParams.get("debug") === "1" && data.canDebug === true);
+  // v0.2.55 — also toggleable via a button inside ChatPanel. The
+  // button calls toggleDebug which flips the URL param so the state
+  // survives reload + can be shared as a deep link.
+  let debugFlag = $state(page.url.searchParams.get("debug") === "1");
+  const debug = $derived(debugFlag && data.canDebug === true);
+
+  function toggleDebug(): void {
+    debugFlag = !debugFlag;
+    const url = new URL(window.location.href);
+    if (debugFlag) url.searchParams.set("debug", "1");
+    else url.searchParams.delete("debug");
+    window.history.replaceState({}, "", url.toString());
+  }
 
   // P8 review-pass: the SEO panel's Autofill / Re-optimize buttons
   // create a chat with `?prompt=<text>`. ChatPanel already listens
@@ -36,4 +48,6 @@
   csrfToken={data.csrfToken}
   formError={form?.error ?? null}
   {debug}
+  canDebug={data.canDebug}
+  onToggleDebug={toggleDebug}
 />
