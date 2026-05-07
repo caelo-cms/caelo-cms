@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.43
+
+### Docs
+- 90680c1 pattern reference + CLAUDE.md cross-link (v0.2.43)
+
 ## v0.2.42
 
 ### Features
