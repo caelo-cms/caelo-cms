@@ -1058,6 +1058,42 @@ export async function* runChatTurn(
         kind: "assistant-message-saved",
         messageId: lastAssistantMessageId,
       };
+    } else {
+      // v0.2.52 — Don't silently proceed to tool dispatch when the
+      // anchor message wasn't persisted. Pre-v0.2.52 this branch
+      // dropped through to tool-dispatch, tool rows persisted, and the
+      // assistant text only existed in the browser's streamingText
+      // state — on reload the AI message vanished while orphan tool
+      // rows remained. Surfacing the persist failure as an SSE error
+      // gives the operator a banner + Cloud Run a stderr breadcrumb.
+      console.error("[chat-runner] failed to persist assistant message", {
+        chatSessionId: input.chatSessionId,
+        error: assistantSave.error,
+      });
+      const persistErrMsg = (() => {
+        const e = assistantSave.error;
+        switch (e.kind) {
+          case "UnknownOperation":
+            return `unknown op: ${e.name}`;
+          case "ValidationFailed":
+            return `validation failed: ${JSON.stringify(e.issues)}`;
+          case "ActorScopeRejected":
+            return `actor scope rejected (${e.actorKind} on ${e.operation})`;
+          case "RateLimited":
+            return `rate limited on ${e.operation}`;
+          case "RLSDenied":
+            return `RLS denied on ${e.operation}: ${e.detail}`;
+          case "HandlerError":
+            return `${e.operation}: ${e.message}`;
+        }
+      })();
+      yield {
+        kind: "error",
+        message: `Failed to save assistant message: ${persistErrMsg}`,
+      };
+      stopReason = "error";
+      succeeded = false;
+      break;
     }
 
     // Update messages history for the potential next loop iteration.
@@ -1200,8 +1236,29 @@ export async function* runChatTurn(
           }
         }
         const settled = await finalDispatch;
-        if (!settled.ok) throw settled.error;
-        result = settled.value;
+        if (settled.ok) {
+          result = settled.value;
+        } else {
+          // v0.2.52 — A tool handler rejected (Zod runtime, plugin error,
+          // DB constraint, "Cannot read X of undefined"). Surface as a
+          // failed tool_result instead of aborting the turn: the AI sees
+          // the failure on the next provider call and decides whether to
+          // retry, switch tools, or give up gracefully. Pre-v0.2.52 this
+          // line threw, the generator aborted mid-loop, the SSE handler
+          // caught + emitted error+done, and tool_result rows for the
+          // failing + remaining tools were never persisted. Stderr is
+          // captured by Cloud Run so the next regression in this class is
+          // debuggable from logs alone.
+          console.error("[chat-runner] tool dispatch threw", {
+            chatSessionId: input.chatSessionId,
+            toolName: call.name,
+            toolCallId: call.id,
+            error: settled.error,
+          });
+          const errMsg =
+            settled.error instanceof Error ? settled.error.message : String(settled.error);
+          result = { ok: false, content: `tool error: ${errMsg}` };
+        }
         await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
           chatSessionId: input.chatSessionId,
           toolCallId: call.id,

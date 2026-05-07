@@ -112,6 +112,16 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
         }
       } catch (e) {
+        // v0.2.52 — Always log to stderr so Cloud Run captures the
+        // breadcrumb. Without this, exceptions thrown inside the runner
+        // were caught + relayed to the client but invisible in the
+        // logging sink, blocking postmortem (the user reported
+        // operator-side stalls with zero ERROR-level rows in Cloud
+        // Run logs).
+        console.error("[chat stream] exception", {
+          sessionId: params.sessionId,
+          error: e,
+        });
         if (!abortSignal.aborted) {
           const message = e instanceof Error ? e.message : String(e);
           controller.enqueue(
