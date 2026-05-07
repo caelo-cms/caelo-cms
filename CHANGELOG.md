@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.51
+
+### Fixes
+- baae7c9 SSR-safe markdown + Cloud Run admin SSE timeout (v0.2.51)
+
 ## v0.2.50
 
 ### Fixes
