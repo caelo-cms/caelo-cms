@@ -164,10 +164,49 @@
     el.style.height = `${Math.min(max, el.scrollHeight)}px`;
   }
   let streamingText = $state("");
+  // v0.2.54 — extended-thinking text accumulator. Streamed via the
+  // `thinking-delta` SSE event, rendered in a collapsed details block
+  // above the assistant streaming bubble. Cleared on `done` after
+  // attaching to the persisted message via the page reload's data load.
+  let streamingThinkingText = $state("");
   let pendingChanges = $state(0);
   /** P6.7.3 — surface SSE error events + failed tool results so users
    *  see a banner instead of a silent no-op when the AI stack errors. */
   let chatError = $state<string | null>(null);
+  // v0.2.54 — local mirror of session.extendedThinkingEnabled for
+  // optimistic toggle. The form action persists to chat_sessions; this
+  // local mirror keeps the toggle responsive without a page reload.
+  let extendedThinkingEnabled = $state<boolean>(
+    session.extendedThinkingEnabled ?? false,
+  );
+
+  /**
+   * v0.2.54 — flip extended thinking on/off via the page-server action.
+   * Optimistic UI: toggle the local mirror first, fire the POST, revert
+   * if the server rejects. SvelteKit form actions accept JSON-style
+   * application/x-www-form-urlencoded bodies on the action URL.
+   */
+  async function toggleExtendedThinking(): Promise<void> {
+    const next = !extendedThinkingEnabled;
+    extendedThinkingEnabled = next;
+    try {
+      const fd = new FormData();
+      fd.set("_csrf", csrfToken);
+      fd.set("enabled", next ? "1" : "0");
+      const res = await fetch("?/set_extended_thinking", {
+        method: "POST",
+        body: fd,
+        headers: { accept: "application/json" },
+      });
+      if (!res.ok) {
+        extendedThinkingEnabled = !next;
+        chatError = `Could not ${next ? "enable" : "disable"} extended thinking.`;
+      }
+    } catch (e) {
+      extendedThinkingEnabled = !next;
+      chatError = `Toggle failed: ${(e as Error).message ?? "unknown"}`;
+    }
+  }
   // Pinned chips (from session.pinnedElements) ride every send; transient
   // chips (dropdown picks, iframe element-clicks) are sent once and cleared.
   let chips = $state<Chip[]>(
@@ -562,6 +601,15 @@
                   toolArgs: meta?.args ?? {},
                 },
               ];
+            } else if (ev["kind"] === "thinking-delta") {
+              // v0.2.54 — extended thinking stream. Accumulates the
+              // model's reasoning text into the collapsed thinking
+              // block above the streaming assistant bubble.
+              streamingThinkingText += String(ev["text"] ?? "");
+            } else if (ev["kind"] === "thinking-stop") {
+              // No-op on the client; the runner persists the block
+              // server-side. Final text is already in
+              // streamingThinkingText.
             } else if (ev["kind"] === "text-delta") streamingText += String(ev["text"] ?? "");
             else if (ev["kind"] === "tool-result" && ev["ok"]) {
               pendingChanges += 1;
@@ -628,10 +676,22 @@
               if (streamingText.length > 0) {
                 messages = [
                   ...messages,
-                  { id: `local-a-${Date.now()}`, role: "assistant", content: streamingText },
+                  {
+                    id: `local-a-${Date.now()}`,
+                    role: "assistant",
+                    content: streamingText,
+                    // v0.2.54 — attach the accumulated thinking text to
+                    // the in-memory message so the collapsed details
+                    // block stays visible after streaming ends, until
+                    // the next page load swaps in the DB-persisted row.
+                    ...(streamingThinkingText.length > 0
+                      ? { thinkingText: streamingThinkingText }
+                      : {}),
+                  },
                 ];
               }
               streamingText = "";
+              streamingThinkingText = "";
               streaming = false;
             }
           } catch {
@@ -756,6 +816,19 @@
                   {#if m.role === "user"}
                     <pre class="m-0 whitespace-pre-wrap font-sans">{m.content}</pre>
                   {:else}
+                    {#if m.thinkingText}
+                      <details class="mt-1 rounded border border-muted-foreground/20 bg-background/50 px-2 py-1 text-xs">
+                        <summary
+                          class="cursor-pointer select-none text-muted-foreground"
+                          data-testid="chat-thinking-summary"
+                        >
+                          Reasoning ({m.thinkingText.length} chars)
+                        </summary>
+                        <pre
+                          class="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-muted-foreground"
+                          >{m.thinkingText}</pre>
+                      </details>
+                    {/if}
                     <StreamingMarkdown text={m.content} class="mt-0.5" />
                   {/if}
                 </li>
@@ -764,7 +837,41 @@
             {#if streaming && streamingText.length > 0}
               <li class="rounded-md border-l-4 border-muted-foreground/40 bg-muted p-3 text-sm">
                 <strong>AI:</strong>
+                {#if streamingThinkingText.length > 0}
+                  <details
+                    open
+                    class="mt-1 rounded border border-muted-foreground/20 bg-background/50 px-2 py-1 text-xs"
+                  >
+                    <summary class="cursor-pointer select-none text-muted-foreground">
+                      Reasoning… ({streamingThinkingText.length} chars)
+                    </summary>
+                    <pre
+                      class="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-muted-foreground"
+                      >{streamingThinkingText}</pre>
+                  </details>
+                {/if}
                 <StreamingMarkdown text={streamingText} class="mt-0.5" />
+              </li>
+            {:else if streaming && streamingThinkingText.length > 0}
+              <!-- v0.2.54 — thinking has started but no text yet; show
+                   the live reasoning while the model finishes thinking
+                   so the operator sees something is happening. -->
+              <li
+                class="rounded-md border-l-4 border-muted-foreground/40 bg-muted p-3 text-sm"
+                data-testid="chat-thinking-live"
+              >
+                <strong>AI:</strong>
+                <details
+                  open
+                  class="mt-1 rounded border border-muted-foreground/20 bg-background/50 px-2 py-1 text-xs"
+                >
+                  <summary class="cursor-pointer select-none text-muted-foreground">
+                    Reasoning… ({streamingThinkingText.length} chars)
+                  </summary>
+                  <pre
+                    class="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-muted-foreground"
+                    >{streamingThinkingText}</pre>
+                </details>
               </li>
             {:else if streaming}
               <!-- v0.2.45 — typing indicator while we wait for the first
@@ -938,10 +1045,30 @@
                 <option value={m.id}>{m.slug} — {m.displayName}</option>
               {/each}
             </select>
+            <!-- v0.2.54 — extended thinking toggle. Per-chat-session
+                 preference; the chat-runner reads it on each turn and
+                 passes the thinking budget to Anthropic. Posts to the
+                 page server's `set_extended_thinking` action via
+                 fetch (HTML doesn't allow nesting <form> elements,
+                 so we can't use a separate <form> inside the chat
+                 composer's form). The local mirror gets flipped
+                 optimistically; on failure we revert. -->
+            <Button
+              type="button"
+              size="sm"
+              class="ml-auto"
+              variant={extendedThinkingEnabled ? "default" : "outline"}
+              title={extendedThinkingEnabled
+                ? "Extended thinking is ON — click to disable"
+                : "Click to enable extended thinking (the model reasons before replying)"}
+              data-testid="chat-extended-thinking-toggle"
+              onclick={toggleExtendedThinking}
+            >
+              {extendedThinkingEnabled ? "✦ Thinking" : "Thinking"}
+            </Button>
             <Button
               type="submit"
               size="sm"
-              class="ml-auto"
               disabled={streaming || composer.trim().length === 0}
             >
               {streaming ? "…" : "Send"}

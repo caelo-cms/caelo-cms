@@ -31,6 +31,10 @@ export interface ChatSession {
   pageId?: string | null;
   /** P6.7.4 — template the chat is bound to (or null). */
   templateId?: string | null;
+  /** v0.2.54 — extended-thinking toggle state (default false). */
+  extendedThinkingEnabled?: boolean;
+  /** v0.2.54 — optional per-chat thinking budget; null = chat-runner default. */
+  extendedThinkingBudgetTokens?: number | null;
 }
 
 export interface ChatModule {
@@ -54,4 +58,11 @@ export interface ChatMessage {
    *  fields (e.g. moduleId for edit_module, hostname for propose_add_domain)
    *  to render richer summaries than the AI-supplied content string. */
   toolArgs?: Record<string, unknown>;
+  /**
+   * v0.2.54 — extended-thinking text for an assistant message.
+   * Concatenation of every thinking block's text (signatures are
+   * server-only). Rendered inside a collapsed details block above
+   * the assistant content.
+   */
+  thinkingText?: string;
 }

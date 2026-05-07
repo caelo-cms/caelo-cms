@@ -38,6 +38,10 @@ const sessionRow = z.object({
   pageId: z.string().nullable(),
   /** P6.7.4 — when set, the chat is scoped to a template. */
   templateId: z.string().nullable(),
+  /** v0.2.54 — per-chat extended-thinking toggle (default off). */
+  extendedThinkingEnabled: z.boolean(),
+  /** v0.2.54 — per-chat thinking budget override; null = chat-runner default. */
+  extendedThinkingBudgetTokens: z.number().int().nullable(),
 });
 
 interface PinnedElement {
@@ -90,7 +94,9 @@ export const listChatSessionsOp = defineOperation({
              created_at, last_active_at, published_at, archived_at,
              pinned_elements,
              page_id::text     AS page_id,
-             template_id::text AS template_id
+             template_id::text AS template_id,
+             extended_thinking_enabled,
+             extended_thinking_budget_tokens
       FROM chat_sessions
       WHERE created_by = ${ctx.actorId}::uuid
         AND subagent_role IS NULL
@@ -109,6 +115,8 @@ export const listChatSessionsOp = defineOperation({
       pinned_elements: unknown;
       page_id: string | null;
       template_id: string | null;
+      extended_thinking_enabled: boolean;
+      extended_thinking_budget_tokens: number | null;
     }[];
     const iso = (v: string | Date | null): string | null => {
       if (v === null) return null;
@@ -127,6 +135,8 @@ export const listChatSessionsOp = defineOperation({
         pinnedElements: parsePinnedElements(r.pinned_elements),
         pageId: r.page_id,
         templateId: r.template_id,
+        extendedThinkingEnabled: r.extended_thinking_enabled,
+        extendedThinkingBudgetTokens: r.extended_thinking_budget_tokens,
       })),
     });
   },
@@ -188,6 +198,8 @@ const sessionMessagesRow = z.object({
   tokensIn: z.number().int().nullable(),
   tokensOut: z.number().int().nullable(),
   createdAt: z.string(),
+  /** v0.2.54 — extended-thinking blocks for assistant turns. */
+  thinkingBlocks: z.array(z.object({ thinking: z.string(), signature: z.string() })).nullable(),
 });
 
 export const getChatSessionOp = defineOperation({
@@ -209,7 +221,9 @@ export const getChatSessionOp = defineOperation({
              created_at, last_active_at, published_at, archived_at,
              pinned_elements,
              page_id::text     AS page_id,
-             template_id::text AS template_id
+             template_id::text AS template_id,
+             extended_thinking_enabled,
+             extended_thinking_budget_tokens
       FROM chat_sessions
       WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
       LIMIT 1
@@ -225,6 +239,8 @@ export const getChatSessionOp = defineOperation({
       pinned_elements: unknown;
       page_id: string | null;
       template_id: string | null;
+      extended_thinking_enabled: boolean;
+      extended_thinking_budget_tokens: number | null;
     }[];
     const session = sessionRows[0];
     if (!session) {
@@ -236,7 +252,7 @@ export const getChatSessionOp = defineOperation({
     }
     const msgs = (await tx.execute(sql`
       SELECT id::text AS id, role, content, tool_calls, tool_call_id,
-             tokens_in, tokens_out, created_at
+             tokens_in, tokens_out, created_at, thinking_blocks
       FROM chat_messages
       WHERE chat_session_id = ${input.chatSessionId}::uuid
       ORDER BY created_at ASC
@@ -249,6 +265,7 @@ export const getChatSessionOp = defineOperation({
       tokens_in: number | null;
       tokens_out: number | null;
       created_at: string | Date;
+      thinking_blocks: unknown;
     }[];
     const iso = (v: string | Date | null): string | null => {
       if (v === null) return null;
@@ -267,10 +284,16 @@ export const getChatSessionOp = defineOperation({
         pinnedElements: parsePinnedElements(session.pinned_elements),
         pageId: session.page_id,
         templateId: session.template_id,
+        extendedThinkingEnabled: session.extended_thinking_enabled,
+        extendedThinkingBudgetTokens: session.extended_thinking_budget_tokens,
       },
       messages: msgs.map((m) => {
         const parsedTools =
           typeof m.tool_calls === "string" ? (JSON.parse(m.tool_calls) as unknown) : m.tool_calls;
+        const parsedThinking =
+          typeof m.thinking_blocks === "string"
+            ? (JSON.parse(m.thinking_blocks) as unknown)
+            : m.thinking_blocks;
         return {
           id: m.id,
           role: m.role,
@@ -280,9 +303,58 @@ export const getChatSessionOp = defineOperation({
           tokensIn: m.tokens_in,
           tokensOut: m.tokens_out,
           createdAt: iso(m.created_at) ?? "",
+          thinkingBlocks:
+            Array.isArray(parsedThinking) && parsedThinking.length > 0
+              ? (parsedThinking as { thinking: string; signature: string }[])
+              : null,
         };
       }),
     });
+  },
+});
+
+/**
+ * v0.2.54 — toggle extended thinking + optional budget on a chat session.
+ * Per-chat preference (chat-runner reads it on every turn) so the operator
+ * can flip thinking on for a hard problem without affecting other chats.
+ *
+ * Why human-only: per-user UI state; the AI doesn't choose to think
+ * harder — that's an operator decision, mirroring the model's UX in
+ * other Anthropic surfaces (Claude.ai's "Extended thinking" toggle is
+ * also user-facing only).
+ */
+export const setChatExtendedThinkingOp = defineOperation({
+  name: "chat.set_extended_thinking",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      enabled: z.boolean(),
+      // Anthropic min 1024; CHECK constraint on the column also enforces
+      // ≤ 64000. Null clears the override so the chat-runner default
+      // (10000) applies.
+      budgetTokens: z.number().int().min(1024).max(64000).nullable().optional(),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    await tx.execute(sql`
+      UPDATE chat_sessions
+      SET extended_thinking_enabled = ${input.enabled},
+          extended_thinking_budget_tokens = ${input.budgetTokens ?? null},
+          last_active_at = now()
+      WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
+    `);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "chat.set_extended_thinking",
+      input,
+      succeeded: true,
+      entityId: input.chatSessionId,
+    });
+    return ok({});
   },
 });
 

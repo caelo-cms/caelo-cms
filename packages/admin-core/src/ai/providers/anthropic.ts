@@ -48,6 +48,16 @@ function buildRequestBody(input: GenerateInput, model: string): Record<string, u
     }
     if (m.role === "assistant") {
       const blocks: Array<Record<string, unknown>> = [];
+      // v0.2.54 — thinking blocks (when present) MUST appear FIRST in
+      // the assistant content, before text + tool_use, with their
+      // cryptographic signatures intact. Anthropic verifies the
+      // signatures across tool-use turn boundaries to ensure the
+      // reasoning carried over from the prior turn was the model's
+      // own; stripping or reordering returns HTTP 400 on the next
+      // generate call.
+      for (const tb of m.thinkingBlocks ?? []) {
+        blocks.push({ type: "thinking", thinking: tb.thinking, signature: tb.signature });
+      }
       if (m.content.length > 0) blocks.push({ type: "text", text: m.content });
       for (const tc of m.toolCalls ?? []) {
         blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.arguments });
@@ -89,24 +99,33 @@ function buildRequestBody(input: GenerateInput, model: string): Record<string, u
     systemBlock = input.systemPrompt;
   }
 
-  // v0.2.53 — default lifted from 4096 → 16384 to give modern Claude
-  // models headroom on multi-tool-use turns. Tool_use blocks count as
-  // output tokens (the JSON args are part of the response stream); a
-  // compose-page-style turn that emits 200 tokens of text + 5 tool_use
-  // blocks at 100-300 args tokens each easily clears 1500 tokens, and
-  // the AI's follow-up summary after tool results can clear 2000+ on
-  // its own. 4096 was a Sonnet-3 era default that left Opus 4.7 / Sonnet
-  // 4.6 under-spec. Operators tune higher via /security/ai → Max output
-  // tokens (per-provider config knob).
+  // v0.2.54 — default lifted to 32768. v0.2.53 set 16k as a step up
+  // from the legacy 4k Sonnet-3-era default, but compose-page sessions
+  // with extended thinking enabled (thinking budget 10k + post-thinking
+  // text + multi-tool batch) routinely cleared 16k. 32k matches Opus
+  // 4.7's standard ceiling and leaves room for the thinking body. Tool-
+  // use blocks count toward this. Tune via /security/ai → Max output
+  // tokens (1024-200000) when the model supports more.
   const body: Record<string, unknown> = {
     model,
-    max_tokens: input.maxTokens ?? 16384,
+    max_tokens: input.maxTokens ?? 32768,
     system: systemBlock,
     messages,
     stream: true,
   };
   if (tools.length > 0) body.tools = tools;
   if (input.temperature !== undefined) body.temperature = input.temperature;
+  // v0.2.54 — extended thinking. Anthropic constraint: budget_tokens
+  // must be ≥ 1024 AND strictly less than max_tokens (the model needs
+  // room for the response after thinking). When temperature is set
+  // alongside thinking, Anthropic also requires temperature=1; the
+  // chat-runner doesn't set temperature, so we inherit Anthropic's
+  // own default of 1, which is compatible.
+  if (input.thinking) {
+    const max = (body.max_tokens as number) ?? 32768;
+    const budget = Math.max(1024, Math.min(input.thinking.budgetTokens, max - 1024));
+    body.thinking = { type: "enabled", budget_tokens: budget };
+  }
   return body;
 }
 
@@ -147,6 +166,12 @@ async function* readSse(reader: ReadableStreamDefaultReader<Uint8Array>): AsyncI
  */
 async function* translate(events: AsyncIterable<unknown>): AsyncIterable<ProviderEvent> {
   const toolCallBuf: Map<number, { id: string; name: string; argText: string }> = new Map();
+  // v0.2.54 — accumulate thinking text + signature per content_block
+  // index. Both arrive as deltas (thinking_delta = body, signature_delta
+  // = trailing signature appended once at the end), and content_block_stop
+  // is when we yield the assembled thinking-stop event for the runner
+  // to persist. Mid-stream we yield thinking-delta events for the UI.
+  const thinkingBuf: Map<number, { text: string; signature: string }> = new Map();
   let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
 
   for await (const ev of events) {
@@ -168,15 +193,34 @@ async function* translate(events: AsyncIterable<unknown>): AsyncIterable<Provide
       const block = e.content_block as { type?: string; id?: string; name?: string };
       if (block?.type === "tool_use") {
         toolCallBuf.set(idx, { id: block.id ?? "", name: block.name ?? "", argText: "" });
+      } else if (block?.type === "thinking") {
+        thinkingBuf.set(idx, { text: "", signature: "" });
       }
     } else if (type === "content_block_delta") {
       const idx = e.index as number;
-      const delta = e.delta as { type?: string; text?: string; partial_json?: string };
+      const delta = e.delta as {
+        type?: string;
+        text?: string;
+        partial_json?: string;
+        thinking?: string;
+        signature?: string;
+      };
       if (delta?.type === "text_delta") {
         if (typeof delta.text === "string") yield { kind: "text-delta", text: delta.text };
       } else if (delta?.type === "input_json_delta") {
         const buf = toolCallBuf.get(idx);
         if (buf && typeof delta.partial_json === "string") buf.argText += delta.partial_json;
+      } else if (delta?.type === "thinking_delta") {
+        const tb = thinkingBuf.get(idx);
+        if (tb && typeof delta.thinking === "string") {
+          tb.text += delta.thinking;
+          yield { kind: "thinking-delta", text: delta.thinking };
+        }
+      } else if (delta?.type === "signature_delta") {
+        const tb = thinkingBuf.get(idx);
+        if (tb && typeof delta.signature === "string") {
+          tb.signature += delta.signature;
+        }
       }
     } else if (type === "content_block_stop") {
       const idx = e.index as number;
@@ -190,6 +234,14 @@ async function* translate(events: AsyncIterable<unknown>): AsyncIterable<Provide
         }
         yield { kind: "tool-call", id: buf.id, name: buf.name, arguments: parsed };
         toolCallBuf.delete(idx);
+      }
+      // v0.2.54 — close-out for thinking blocks. Emit one thinking-stop
+      // event with the assembled text + signature so the runner can
+      // persist + round-trip on the next loop iteration.
+      const tb = thinkingBuf.get(idx);
+      if (tb) {
+        yield { kind: "thinking-stop", thinking: tb.text, signature: tb.signature };
+        thinkingBuf.delete(idx);
       }
     } else if (type === "message_delta") {
       const usageRaw = e.usage as Record<string, number> | undefined;

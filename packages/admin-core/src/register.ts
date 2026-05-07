@@ -25,6 +25,7 @@ import {
   listBranchEditedModulesOp,
   listChatSessionsOp,
   renameChatSessionOp,
+  setChatExtendedThinkingOp,
   setPinnedElementsOp,
 } from "./ops/chat/sessions.js";
 import {
@@ -574,6 +575,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listStructuredSetsOp);
   registry.register(deleteStructuredSetOp);
   registry.register(setPinnedElementsOp);
+  registry.register(setChatExtendedThinkingOp);
   // P6.7.6 — layouts (site-wide chrome) + site_defaults singleton.
   registry.register(listLayoutsOp);
   registry.register(getLayoutOp);

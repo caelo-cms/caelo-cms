@@ -30,6 +30,15 @@ export const appendChatMessageOp = defineOperation({
       tokensOut: z.number().int().nullable().optional(),
       cachedTokens: z.number().int().nullable().optional(),
       status: z.enum(["complete", "interrupted"]).optional(),
+      // v0.2.54 — extended-thinking blocks emitted on this assistant
+      // turn. Persisted verbatim so the chat-runner can replay them
+      // (with their cryptographic signatures) on the next loop's
+      // provider call. Anthropic verifies the signatures across tool-
+      // use turn boundaries; stripping returns 400.
+      thinkingBlocks: z
+        .array(z.object({ thinking: z.string(), signature: z.string() }))
+        .nullable()
+        .optional(),
     })
     .strict(),
   output: messageRow,
@@ -37,7 +46,7 @@ export const appendChatMessageOp = defineOperation({
     const rows = (await tx.execute(sql`
       INSERT INTO chat_messages (
         chat_session_id, role, content, tool_calls, tool_call_id,
-        tokens_in, tokens_out, cached_tokens, status
+        tokens_in, tokens_out, cached_tokens, status, thinking_blocks
       )
       VALUES (
         ${input.chatSessionId}::uuid,
@@ -48,7 +57,8 @@ export const appendChatMessageOp = defineOperation({
         ${input.tokensIn ?? null},
         ${input.tokensOut ?? null},
         ${input.cachedTokens ?? null},
-        ${input.status ?? "complete"}
+        ${input.status ?? "complete"},
+        ${input.thinkingBlocks && input.thinkingBlocks.length > 0 ? JSON.stringify(input.thinkingBlocks) : null}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];

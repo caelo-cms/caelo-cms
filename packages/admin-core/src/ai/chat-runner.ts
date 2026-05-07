@@ -60,6 +60,19 @@ export type ClientEvent =
   | { kind: "done" }
   | { kind: "error"; message: string }
   /**
+   * v0.2.54 — extended-thinking text deltas; ChatPanel renders into a
+   * collapsed details block above the assistant message. UI can ignore
+   * these when extended thinking is off.
+   */
+  | { kind: "thinking-delta"; text: string }
+  /**
+   * v0.2.54 — fired when one thinking content_block ends. Includes the
+   * full block + its cryptographic signature for completeness; the UI
+   * doesn't need to do anything with it (rendering uses thinking-delta
+   * accumulation), but the runner uses it to persist + round-trip.
+   */
+  | { kind: "thinking-stop"; thinking: string; signature: string }
+  /**
    * P10.5 #1 — wraps a child chat-runner's event when emitted from
    * inside a spawn_subagent / spawn_subagents tool dispatch. The UI
    * renders one collapsible card per role so the user sees the
@@ -182,17 +195,34 @@ export async function* runChatTurn(
     return;
   }
   const session = sessionResult.value as {
-    session: { chatBranchId: string };
+    session: {
+      chatBranchId: string;
+      extendedThinkingEnabled: boolean;
+      extendedThinkingBudgetTokens: number | null;
+    };
     messages: {
       role: "user" | "assistant" | "tool";
       content: string;
       toolCalls: unknown;
       toolCallId: string | null;
+      thinkingBlocks: { thinking: string; signature: string }[] | null;
     }[];
   };
 
+  // v0.2.54 — Resolve extended-thinking config for THIS turn.
+  // Per-chat-session toggle wins; budget falls back to a sensible
+  // default that fits comfortably under the 32k max_tokens floor.
+  // 10000 leaves ~22k for the response + tool_use, which covers
+  // every realistic compose-page-style turn.
+  const thinkingEnabled = session.session.extendedThinkingEnabled;
+  const thinkingBudget = thinkingEnabled
+    ? (session.session.extendedThinkingBudgetTokens ?? 10000)
+    : null;
+
   // Provider message history is everything in the chat now (the user
-  // message we just appended is in there too).
+  // message we just appended is in there too). v0.2.54 — thinking
+  // blocks from prior assistant turns are included so Anthropic can
+  // verify the cryptographic signatures across tool-use boundaries.
   const baseMessages: ChatMessageInput[] = session.messages.map((m) => ({
     role: m.role,
     content: m.content,
@@ -200,6 +230,9 @@ export async function* runChatTurn(
       ? (m.toolCalls as { id: string; name: string; arguments: unknown }[])
       : undefined,
     toolCallId: m.toolCallId ?? undefined,
+    ...(m.thinkingBlocks && m.thinkingBlocks.length > 0
+      ? { thinkingBlocks: m.thinkingBlocks }
+      : {}),
   }));
 
   // P5.2 #4 — chunked system prompt. Chips render as a volatile chunk
@@ -1013,6 +1046,9 @@ export async function* runChatTurn(
     if (aborted()) break;
     const accumulatedText: string[] = [];
     const accumulatedToolCalls: { id: string; name: string; arguments: unknown }[] = [];
+    // v0.2.54 — accumulate thinking blocks emitted on this turn for
+    // persistence + round-trip on the next loop's provider call.
+    const accumulatedThinking: { thinking: string; signature: string }[] = [];
     let loopStop: StopReason = "end_turn";
 
     let providerErr = false;
@@ -1022,11 +1058,21 @@ export async function* runChatTurn(
       tools: filteredTools,
       abortSignal,
       maxTokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS_DEFAULT,
+      ...(thinkingBudget !== null ? { thinking: { budgetTokens: thinkingBudget } } : {}),
     })) {
       if (aborted()) break;
       if (ev.kind === "text-delta") {
         accumulatedText.push(ev.text);
         yield { kind: "text-delta", text: ev.text };
+      } else if (ev.kind === "thinking-delta") {
+        // Stream-through: client renders progressively in the
+        // collapsed thinking block. Final text is captured at
+        // thinking-stop; mid-stream we don't accumulate here to avoid
+        // double-buffering.
+        yield { kind: "thinking-delta", text: ev.text };
+      } else if (ev.kind === "thinking-stop") {
+        accumulatedThinking.push({ thinking: ev.thinking, signature: ev.signature });
+        yield { kind: "thinking-stop", thinking: ev.thinking, signature: ev.signature };
       } else if (ev.kind === "tool-call") {
         accumulatedToolCalls.push({ id: ev.id, name: ev.name, arguments: ev.arguments });
       } else if (ev.kind === "usage") {
@@ -1067,6 +1113,11 @@ export async function* runChatTurn(
       role: "assistant",
       content: assistantContent,
       toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : null,
+      // v0.2.54 — persist thinking blocks alongside the assistant
+      // turn. chat.get_session reads them back; this turn's continuation
+      // (after tool_results) replays them in the messages array so
+      // Anthropic can verify the cryptographic signatures.
+      thinkingBlocks: accumulatedThinking.length > 0 ? accumulatedThinking : null,
       status: aborted() ? "interrupted" : "complete",
     });
     if (assistantSave.ok) {
@@ -1120,6 +1171,10 @@ export async function* runChatTurn(
         role: "assistant",
         content: assistantContent,
         toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
+        // v0.2.54 — round-trip thinking blocks. Anthropic verifies
+        // the signatures on the next provider call when this turn
+        // is followed by tool_results; stripping returns 400.
+        ...(accumulatedThinking.length > 0 ? { thinkingBlocks: accumulatedThinking } : {}),
       },
     ];
 
