@@ -386,3 +386,47 @@ export const deleteModulesManyOp = defineOperation({
     return ok({ deleted, alreadyDeleted, notFound });
   },
 });
+
+// ─── v0.2.33 bulk variant: modules.update_many ───────────────────────
+
+/**
+ * Bulk metadata edits across many modules in one tx (per CLAUDE.md §11).
+ * Each item carries the same shape as modules.update (moduleId + optional
+ * displayName/html/css/js). Per-item failures are reported in the
+ * result; the rest of the batch still applies.
+ */
+export const updateModulesManyOp = defineOperation({
+  name: "modules.update_many",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ updates: z.array(moduleUpdateSchema).min(1).max(200) }).strict(),
+  output: z.object({
+    updated: z.number().int(),
+    notFound: z.number().int(),
+    failed: z.array(z.string()),
+  }),
+  handler: async (ctx, input, tx) => {
+    let updated = 0;
+    let notFound = 0;
+    const failed: string[] = [];
+    for (const upd of input.updates) {
+      const r = await updateModuleOp.handler(ctx, upd, tx);
+      if (!r.ok) {
+        const msg = (r.error as { message?: string }).message ?? "";
+        if (msg.includes("not found") || msg.includes("deleted")) notFound += 1;
+        else failed.push(upd.moduleId);
+        continue;
+      }
+      updated += 1;
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "modules.update_many",
+      input,
+      succeeded: true,
+      resultSummary: `updated=${updated},notFound=${notFound},failed=${failed.length}`,
+    });
+    return ok({ updated, notFound, failed });
+  },
+});

@@ -994,3 +994,109 @@ export const changeTemplateOp = defineOperation({
     });
   },
 });
+
+// ─── v0.2.33 bulk variants ───────────────────────────────────────────
+
+/**
+ * pages.delete_many — bulk variant per CLAUDE.md §11. Soft-deletes
+ * each page in a single tx; emits one snapshot per deleted page so
+ * revert_site can restore the lot atomically.
+ */
+export const deletePagesManyOp = defineOperation({
+  name: "pages.delete_many",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ pageIds: z.array(z.string().uuid()).min(1).max(200) }).strict(),
+  output: z.object({
+    deleted: z.number().int(),
+    alreadyDeleted: z.number().int(),
+    notFound: z.number().int(),
+  }),
+  handler: async (ctx, input, tx) => {
+    let deleted = 0;
+    let alreadyDeleted = 0;
+    let notFound = 0;
+    for (const id of input.pageIds) {
+      const rows = (await tx.execute(sql`
+        SELECT slug, deleted_at FROM pages WHERE id = ${id}::uuid
+      `)) as unknown as { slug: string; deleted_at: Date | null }[];
+      const target = rows[0];
+      if (!target) {
+        notFound += 1;
+        continue;
+      }
+      if (target.deleted_at !== null) {
+        alreadyDeleted += 1;
+        continue;
+      }
+      await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${id}::uuid`);
+      const state = await loadPageState(tx, id);
+      if (state) {
+        await emitSnapshot(tx, {
+          actorId: ctx.actorId,
+          opKind: "pages.delete",
+          description: `pages.delete_many slug=${target.slug}`,
+          entities: [{ kind: "page", entityId: id, state }],
+        });
+      }
+      deleted += 1;
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "pages.delete_many",
+      input,
+      succeeded: true,
+      resultSummary: `deleted=${deleted},alreadyDeleted=${alreadyDeleted},notFound=${notFound}`,
+    });
+    return ok({ deleted, alreadyDeleted, notFound });
+  },
+});
+
+/**
+ * pages.update_many — bulk metadata edits across many pages in one tx.
+ * Each item carries the same shape as pages.update (pageId + optional
+ * fields). Per-item version conflicts are reported in the result;
+ * the rest of the batch still applies. (Atomic-per-row, not all-or-
+ * nothing — matches modules.delete_many's existing semantics.)
+ */
+export const updatePagesManyOp = defineOperation({
+  name: "pages.update_many",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      updates: z.array(pageUpdateSchema).min(1).max(200),
+    })
+    .strict(),
+  output: z.object({
+    updated: z.number().int(),
+    notFound: z.number().int(),
+    conflicts: z.array(z.string()),
+  }),
+  handler: async (ctx, input, tx) => {
+    let updated = 0;
+    let notFound = 0;
+    const conflicts: string[] = [];
+    for (const upd of input.updates) {
+      const r = await updatePageOp.handler(ctx, upd, tx);
+      if (!r.ok) {
+        const msg = (r.error as { message?: string }).message ?? "";
+        if (msg.includes("not found") || msg.includes("deleted")) notFound += 1;
+        else if (msg.includes("Conflict") || msg.includes("conflict")) conflicts.push(upd.pageId);
+        else conflicts.push(upd.pageId);
+        continue;
+      }
+      updated += 1;
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "pages.update_many",
+      input,
+      succeeded: true,
+      resultSummary: `updated=${updated},notFound=${notFound},conflicts=${conflicts.length}`,
+    });
+    return ok({ updated, notFound, conflicts });
+  },
+});

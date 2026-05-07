@@ -8,6 +8,11 @@ import { autofillPageSeoTool } from "./autofill-page-seo.js";
 import { bulkCreateRedirectsTool } from "./bulk-create-redirects.js";
 import { bulkDeleteRedirectsTool } from "./bulk-delete-redirects.js";
 import { bulkOptimizeSeoTool } from "./bulk-optimize-seo.js";
+import {
+  deletePagesManyTool,
+  updateModulesManyTool,
+  updatePagesManyTool,
+} from "./bulk-pages-modules.js";
 import { changePageSlugTool } from "./change-page-slug.js";
 import { changeTemplateTool } from "./change-template.js";
 import { composeFromImportTool } from "./compose-from-import.js";
@@ -127,6 +132,13 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(bulkCreateRedirectsTool);
   registry.register(bulkDeleteRedirectsTool);
   registry.register(bulkOptimizeSeoTool);
+  // v0.2.33 — bulk variants for pages + modules (CLAUDE.md §11
+  // "every routine domain ships a bulk variant"). delete_many for the
+  // operator's "drop these N stale posts" case; update_many for
+  // metadata edits across many pages/modules in one tool call.
+  registry.register(deletePagesManyTool);
+  registry.register(updatePagesManyTool);
+  registry.register(updateModulesManyTool);
   // P9 — locale propose tools (CLAUDE.md §11.A two-step gate).
   registry.register(proposeAddLocaleTool);
   registry.register(proposeRemoveLocaleTool);

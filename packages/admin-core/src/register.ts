@@ -52,17 +52,20 @@ import {
   getModuleOp,
   listModulesOp,
   updateModuleOp,
+  updateModulesManyOp,
 } from "./ops/content/modules.js";
 import {
   changeTemplateOp,
   createPageOp,
   deletePageOp,
+  deletePagesManyOp,
   duplicatePageOp,
   getPageOp,
   getPageWithModulesOp,
   listPagesOp,
   setPageModulesOp,
   updatePageOp,
+  updatePagesManyOp,
 } from "./ops/content/pages.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
@@ -420,6 +423,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getModuleOp);
   registry.register(createModuleOp);
   registry.register(updateModuleOp);
+  registry.register(updateModulesManyOp);
   registry.register(deleteModuleOp);
   registry.register(deleteModulesManyOp);
   registry.register(listTemplatesOp);
@@ -447,6 +451,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(duplicatePageOp);
   registry.register(changeTemplateOp);
   registry.register(deletePageOp);
+  // v0.2.33 — bulk variants per CLAUDE.md §11.
+  registry.register(deletePagesManyOp);
+  registry.register(updatePagesManyOp);
   registry.register(renderPagePreviewOp);
   // P4 snapshots
   registry.register(listSnapshotsOp);
