@@ -67,13 +67,15 @@ async function gcOnce(opts: ProposalGcWorkerOpts): Promise<{ totalMarked: number
       // plugin_rate_limit's CHECK is ('pending', 'applied', 'rejected')
       // and does NOT include 'superseded' — skip it from auto-supersede
       // until v0.2.41 widens that constraint).
-      if (table === "plugin_rate_limit_proposals") {
-        // Skip — its status CHECK only allows pending/applied/rejected.
-        // Adding 'superseded' is a separate migration; deferred.
-        continue;
-      }
+      // v0.2.42 — plugin_rate_limit_proposals' status CHECK was widened
+      // to include 'superseded', so it now participates in the sweep.
       const ageColumn = table === "locale_pending_actions" ? "proposed_at" : "created_at";
-      const reasonColumn = table === "locale_pending_actions" ? "decision_note" : "decision_reason";
+      const reasonColumn =
+        table === "locale_pending_actions"
+          ? "decision_note"
+          : table === "plugin_rate_limit_proposals"
+            ? "reason"
+            : "decision_reason";
       const result = (await tx.unsafe(
         `UPDATE ${table}
             SET status = 'superseded',
