@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.50
+
+### Fixes
+- 0ce0b14 clear compose-page allowlist to fix silent chat stall (v0.2.50)
+
 ## v0.2.49
 
 ### Fixes
