@@ -25,7 +25,11 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
   import { cn } from "$lib/utils.js";
+  import DebugPanel from "./DebugPanel.svelte";
+  import type { DebugToolCall, DebugUsage } from "./debug-types.js";
+  import InlineDiff from "./InlineDiff.svelte";
   import StreamingMarkdown from "./StreamingMarkdown.svelte";
+  import ToolCardRouter from "./tool-cards/ToolCardRouter.svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "./types.js";
 
   interface Chip {
@@ -70,6 +74,10 @@
     /** P6.7.3 — when set, the runner gets a Current-page system block. */
     activePageId?: string | null;
     onToolResult?: (payload: ToolResultPayload) => void;
+    /** v0.2.46 — render the debug panel alongside the publish/diff
+     *  sidebar. Caller (page server load) gates on `?debug=1` URL param
+     *  + permission check before passing true. */
+    debug?: boolean;
   }
   let {
     session,
@@ -80,6 +88,7 @@
     compact = false,
     activePageId = null,
     onToolResult,
+    debug = false,
   }: Props = $props();
 
   let messages = $state<ChatMessage[]>(initialMessages);
@@ -171,6 +180,23 @@
   );
   let proposedDiffs = $state<ProposedDiff[]>([]);
   let pickedModuleId = $state("");
+
+  /** v0.2.46 — `tool-start` events carry the tool name + arguments;
+   *  `tool-result` only carries the toolCallId + content. Bridge them
+   *  via this map so synthetic tool messages appended to the transcript
+   *  on tool-result can be routed by name in ToolCardRouter. */
+  const toolCallMeta = new Map<string, { name: string; args: Record<string, unknown> }>();
+
+  // v0.2.46 — debug state captured from the SSE stream when `debug=true`.
+  // Populated alongside the regular event handling; the panel reads it.
+  let debugToolCalls = $state<DebugToolCall[]>([]);
+  let debugUsage = $state<DebugUsage>({
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    cost: 0,
+  });
+  let debugRawEvents = $state<unknown[]>([]);
 
   const moduleStateBefore: Record<string, string> = {};
   for (const m of modules) {
@@ -316,13 +342,63 @@
         if (line.startsWith("data: ")) {
           try {
             const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+            // v0.2.46 — record raw events + roll up tool calls / usage
+            // for the debug panel. No-op when debug=false.
+            if (debug) {
+              debugRawEvents = [...debugRawEvents, ev];
+              if (ev["kind"] === "tool-start") {
+                debugToolCalls = [
+                  ...debugToolCalls,
+                  {
+                    toolCallId: String(ev["toolCallId"] ?? ""),
+                    name: String(ev["name"] ?? ""),
+                    args: (ev["arguments"] as Record<string, unknown>) ?? {},
+                    startedAt: Date.now(),
+                  },
+                ];
+              } else if (ev["kind"] === "tool-result") {
+                const id = String(ev["toolCallId"] ?? "");
+                debugToolCalls = debugToolCalls.map((tc) =>
+                  tc.toolCallId === id
+                    ? {
+                        ...tc,
+                        result: { ok: !!ev["ok"], content: String(ev["content"] ?? "") },
+                        endedAt: Date.now(),
+                      }
+                    : tc,
+                );
+              } else if (ev["kind"] === "usage") {
+                debugUsage = {
+                  inputTokens: debugUsage.inputTokens + Number(ev["inputTokens"] ?? 0),
+                  outputTokens: debugUsage.outputTokens + Number(ev["outputTokens"] ?? 0),
+                  cachedTokens: debugUsage.cachedTokens + Number(ev["cachedTokens"] ?? 0),
+                  cost: debugUsage.cost + Number(ev["cost"] ?? 0),
+                };
+              }
+            }
             if (ev["kind"] === "error") {
               chatError = typeof ev["message"] === "string" ? ev["message"] : "Chat failed.";
             } else if (ev["kind"] === "tool-result" && ev["ok"] === false) {
+              const toolCallId = String(ev["toolCallId"] ?? "");
+              const meta = toolCallMeta.get(toolCallId);
               chatError = `Tool call failed: ${String(ev["content"] ?? "unknown error")}`;
+              // v0.2.46 — also append a failed tool-card message so the
+              // transcript shows the failure inline, not just in the banner.
+              messages = [
+                ...messages,
+                {
+                  id: `local-t-${toolCallId || Date.now()}`,
+                  role: "tool",
+                  content: String(ev["content"] ?? ""),
+                  toolName: meta?.name ?? "unknown",
+                  toolArgs: meta?.args ?? {},
+                },
+              ];
             } else if (ev["kind"] === "text-delta") streamingText += String(ev["text"] ?? "");
             else if (ev["kind"] === "tool-result" && ev["ok"]) {
               pendingChanges += 1;
+              const toolCallId = String(ev["toolCallId"] ?? "");
+              const meta = toolCallMeta.get(toolCallId);
               const args = (ev["arguments"] as { moduleId?: string; html?: string }) ?? {};
               if (typeof args.moduleId === "string" && typeof args.html === "string") {
                 proposedDiffs = [
@@ -335,25 +411,47 @@
                   },
                 ];
               }
+              // v0.2.46 — append a synthetic tool message routed to its
+              // per-tool card. Without this, tool results only land in
+              // the transcript on next page load; during streaming the
+              // operator only sees the assistant's text reply.
+              messages = [
+                ...messages,
+                {
+                  id: `local-t-${toolCallId || Date.now()}`,
+                  role: "tool",
+                  content: String(ev["content"] ?? ""),
+                  toolName: meta?.name ?? "unknown",
+                  toolArgs: meta?.args ?? args,
+                },
+              ];
               // P6.7 — notify the live-edit overlay so it can reload
               // the iframe. The runtime payload has `arguments` only on
               // the `tool-start` event from the runner, but we forward
               // the args we have to keep the surface uniform.
               onToolResult?.({
-                toolCallId: String(ev["toolCallId"] ?? ""),
+                toolCallId,
                 ok: true,
                 content: String(ev["content"] ?? ""),
                 arguments: args,
               });
             } else if (ev["kind"] === "tool-start") {
-              const args = (ev["arguments"] as { moduleId?: string; html?: string }) ?? {};
-              if (typeof args.moduleId === "string" && typeof args.html === "string") {
+              const toolCallId = String(ev["toolCallId"] ?? "");
+              const name = String(ev["name"] ?? "");
+              const args = (ev["arguments"] as Record<string, unknown>) ?? {};
+              if (toolCallId && name) {
+                toolCallMeta.set(toolCallId, { name, args });
+              }
+              const moduleId =
+                typeof args.moduleId === "string" ? (args.moduleId as string) : undefined;
+              const html = typeof args.html === "string" ? (args.html as string) : undefined;
+              if (moduleId && html) {
                 proposedDiffs = [
                   ...proposedDiffs,
                   {
-                    moduleId: args.moduleId,
-                    before: moduleStateBefore[args.moduleId] ?? "",
-                    after: args.html,
+                    moduleId,
+                    before: moduleStateBefore[moduleId] ?? "",
+                    after: html,
                     selected: true,
                   },
                 ];
@@ -440,25 +538,60 @@
             class="flex-1 space-y-2 overflow-y-auto"
           >
             {#each messages as m (m.id)}
-              <li
-                class={cn(
-                  "rounded-md p-3 text-sm",
-                  m.role === "user"
-                    ? "bg-primary/5"
-                    : m.role === "tool"
-                      ? "bg-emerald-500/10"
-                      : "bg-muted",
-                )}
-              >
-                <strong>
-                  {m.role === "user" ? "You" : m.role === "tool" ? "Tool" : "AI"}:
-                </strong>
-                {#if m.role === "user"}
-                  <pre class="m-0 whitespace-pre-wrap font-sans">{m.content}</pre>
-                {:else}
-                  <StreamingMarkdown text={m.content} class="mt-0.5" />
-                {/if}
-              </li>
+              {#if m.role === "tool"}
+                <!-- v0.2.46 — tool messages render as per-tool cards via
+                     the router; falls back to plain markdown when no
+                     card matches the tool's name. Edit-module tools
+                     also get an inline diff card with Accept/Reject. -->
+                <li class="space-y-1.5 text-sm">
+                  <ToolCardRouter
+                    name={m.toolName ?? "unknown"}
+                    content={m.content}
+                    ok={true}
+                    args={m.toolArgs ?? {}}
+                  />
+                  {#if m.toolName === "edit_module" && typeof m.toolArgs?.moduleId === "string" && typeof m.toolArgs?.html === "string"}
+                    {@const moduleId = m.toolArgs.moduleId as string}
+                    {@const html = m.toolArgs.html as string}
+                    {@const diffIdx = proposedDiffs.findIndex(
+                      (d) => d.moduleId === moduleId && d.after === html,
+                    )}
+                    {#if diffIdx >= 0}
+                      {@const d = proposedDiffs[diffIdx]}
+                      <InlineDiff
+                        moduleId={d!.moduleId}
+                        before={d!.before}
+                        after={d!.after}
+                        selected={d!.selected}
+                        onAccept={() => {
+                          proposedDiffs = proposedDiffs.map((x, i) =>
+                            i === diffIdx ? { ...x, selected: true } : x,
+                          );
+                        }}
+                        onReject={() => {
+                          proposedDiffs = proposedDiffs.map((x, i) =>
+                            i === diffIdx ? { ...x, selected: false } : x,
+                          );
+                        }}
+                      />
+                    {/if}
+                  {/if}
+                </li>
+              {:else}
+                <li
+                  class={cn(
+                    "rounded-md p-3 text-sm",
+                    m.role === "user" ? "bg-primary/5" : "bg-muted",
+                  )}
+                >
+                  <strong>{m.role === "user" ? "You" : "AI"}:</strong>
+                  {#if m.role === "user"}
+                    <pre class="m-0 whitespace-pre-wrap font-sans">{m.content}</pre>
+                  {:else}
+                    <StreamingMarkdown text={m.content} class="mt-0.5" />
+                  {/if}
+                </li>
+              {/if}
             {/each}
             {#if streaming && streamingText.length > 0}
               <li class="rounded-md border-l-4 border-muted-foreground/40 bg-muted p-3 text-sm">
@@ -586,6 +719,13 @@
          diff view lives in the main /content/chat surface. -->
     {#if !compact}
     <aside class="space-y-4">
+      {#if debug}
+        <DebugPanel
+          toolCalls={debugToolCalls}
+          usage={debugUsage}
+          rawEvents={debugRawEvents}
+        />
+      {/if}
       <Card>
         <CardHeader>
           <CardTitle class="text-base">Publish changes</CardTitle>

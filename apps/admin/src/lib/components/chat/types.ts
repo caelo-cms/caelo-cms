@@ -44,4 +44,14 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "tool";
   content: string;
+  /** v0.2.46 — present on tool-role messages. Drives ToolCardRouter
+   *  dispatch so tool results render as domain-specific cards instead
+   *  of plain text blobs. Optional because pre-v0.2.46 chat_messages
+   *  rows don't carry it (route loader can populate from tool_calls
+   *  jsonb on the assistant message that produced the call). */
+  toolName?: string;
+  /** v0.2.46 — original tool-call arguments. The cards use selected
+   *  fields (e.g. moduleId for edit_module, hostname for propose_add_domain)
+   *  to render richer summaries than the AI-supplied content string. */
+  toolArgs?: Record<string, unknown>;
 }

@@ -12,6 +12,9 @@ interface ChatPageData {
   session: ChatSession;
   messages: ChatMessage[];
   modules: ChatModule[];
+  /** v0.2.46 — gates the debug panel. True when the user has
+   *  settings.read; the page component then opts in via `?debug=1`. */
+  canDebug: boolean;
 }
 
 export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPageData> => {
@@ -33,6 +36,9 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
     session: sessionData.session,
     messages: sessionData.messages,
     modules,
+    // v0.2.46 — debug panel exposes engaged-skills + tool args, so it
+    // needs the same permission as the rest of /security/* views.
+    canDebug: locals.user?.permissions.has("settings.read") ?? false,
   };
 };
 

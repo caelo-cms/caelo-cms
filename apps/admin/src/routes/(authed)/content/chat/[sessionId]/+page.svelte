@@ -6,6 +6,11 @@
 
   let { data, form } = $props();
 
+  // v0.2.46 — debug panel toggle. Reactive so toggling ?debug=1 in
+  // the URL flips it without reload. Permission gate happens in the
+  // server load (data.canDebug); this just consumes the flag.
+  const debug = $derived(page.url.searchParams.get("debug") === "1" && data.canDebug === true);
+
   // P8 review-pass: the SEO panel's Autofill / Re-optimize buttons
   // create a chat with `?prompt=<text>`. ChatPanel already listens
   // for the `caelo:insert-into-composer` CustomEvent (P7 wiring for
@@ -30,4 +35,5 @@
   modules={data.modules}
   csrfToken={data.csrfToken}
   formError={form?.error ?? null}
+  {debug}
 />
