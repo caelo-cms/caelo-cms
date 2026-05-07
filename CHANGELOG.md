@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.30
+
+### Features
+- 3828bbe propose/execute pairs for add/remove + widen verify
+
 ## v0.2.29
 
 ### Chores
