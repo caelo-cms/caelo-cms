@@ -24,6 +24,12 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import {
+  DUPLICATE_PROPOSAL_MESSAGE,
+  hashProposalPayload,
+  isDuplicatePendingError,
+  resolveChatSessionId,
+} from "./_propose-helpers.js";
 import { setEmailConfigOp } from "./email_config.js";
 
 const transportEnum = z.enum(["none", "smtp", "resend", "ses"]);
@@ -109,16 +115,33 @@ export const proposeEmailConfigSetOp = defineOperation({
       config: input.config,
       requiresSecrets,
     };
-    const rows = (await tx.execute(sql`
-      INSERT INTO email_config_pending_actions (proposed_by, payload, preview, status)
-      VALUES (
-        ${ctx.actorId}::uuid,
-        ${JSON.stringify(input)}::jsonb,
-        ${JSON.stringify(preview)}::jsonb,
-        'pending'
-      )
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
+    const payloadHash = await hashProposalPayload(input);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    let rows: { id: string }[];
+    try {
+      rows = (await tx.execute(sql`
+        INSERT INTO email_config_pending_actions
+          (proposed_by, payload, preview, status, chat_session_id, payload_hash)
+        VALUES (
+          ${ctx.actorId}::uuid,
+          ${JSON.stringify(input)}::jsonb,
+          ${JSON.stringify(preview)}::jsonb,
+          'pending',
+          ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
+          ${payloadHash}
+        )
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+    } catch (e) {
+      if (isDuplicatePendingError(e)) {
+        return err({
+          kind: "HandlerError",
+          operation: "email_config.propose_set",
+          message: DUPLICATE_PROPOSAL_MESSAGE,
+        });
+      }
+      throw e;
+    }
     const proposalId = rows[0]?.id;
     if (!proposalId) {
       return err({

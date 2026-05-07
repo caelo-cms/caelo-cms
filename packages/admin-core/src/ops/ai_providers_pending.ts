@@ -19,6 +19,12 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import {
+  DUPLICATE_PROPOSAL_MESSAGE,
+  hashProposalPayload,
+  isDuplicatePendingError,
+  resolveChatSessionId,
+} from "./_propose-helpers.js";
 import { clearAiProviderKeyOp, setAiProvidersOp } from "./security/ai_providers.js";
 
 const providerNameEnum = z.enum(["anthropic", "openai", "google", "local-openai-compat"]);
@@ -342,7 +348,7 @@ export const listPendingAiProvidersProposalsOp = defineOperation({
 
 async function queueProposal(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  ctx: { actorId: string; requestId: string },
+  ctx: { actorId: string; requestId: string; chatBranchId?: string },
   kind: "set" | "clear_key",
   providerName: string,
   payload: unknown,
@@ -355,19 +361,31 @@ async function queueProposal(
     }
   | { ok: false; error: { kind: "HandlerError"; operation: string; message: string } }
 > {
-  const rows = (await tx.execute(sql`
-    INSERT INTO ai_providers_pending_actions
-      (kind, proposed_by, provider_name, payload, preview, status)
-    VALUES (
-      ${kind},
-      ${ctx.actorId}::uuid,
-      ${providerName},
-      ${JSON.stringify(payload)}::jsonb,
-      ${JSON.stringify(preview)}::jsonb,
-      'pending'
-    )
-    RETURNING id::text AS id
-  `)) as unknown as { id: string }[];
+  const payloadHash = await hashProposalPayload(payload);
+  const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+  let rows: { id: string }[];
+  try {
+    rows = (await tx.execute(sql`
+      INSERT INTO ai_providers_pending_actions
+        (kind, proposed_by, provider_name, payload, preview, status, chat_session_id, payload_hash)
+      VALUES (
+        ${kind},
+        ${ctx.actorId}::uuid,
+        ${providerName},
+        ${JSON.stringify(payload)}::jsonb,
+        ${JSON.stringify(preview)}::jsonb,
+        'pending',
+        ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
+        ${payloadHash}
+      )
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+  } catch (e) {
+    if (isDuplicatePendingError(e)) {
+      return err({ kind: "HandlerError", operation: opName, message: DUPLICATE_PROPOSAL_MESSAGE });
+    }
+    throw e;
+  }
   const proposalId = rows[0]?.id;
   if (!proposalId) {
     return err({ kind: "HandlerError", operation: opName, message: "insert returned no id" });

@@ -24,6 +24,12 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import {
+  DUPLICATE_PROPOSAL_MESSAGE,
+  hashProposalPayload,
+  isDuplicatePendingError,
+  resolveChatSessionId,
+} from "./_propose-helpers.js";
 import { promoteDeployOp, rollbackDeployOp } from "./deploy.js";
 
 const proposalRowSchema = z.object({
@@ -144,17 +150,34 @@ export const proposeDeployPromoteOp = defineOperation({
       sourceBuildAt:
         from.started_at instanceof Date ? from.started_at.toISOString() : String(from.started_at),
     };
-    const rows = (await tx.execute(sql`
-      INSERT INTO deploy_pending_actions (kind, proposed_by, payload, preview, status)
-      VALUES (
-        'promote',
-        ${ctx.actorId}::uuid,
-        ${JSON.stringify(input)}::jsonb,
-        ${JSON.stringify(preview)}::jsonb,
-        'pending'
-      )
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
+    const payloadHash = await hashProposalPayload(input);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    let rows: { id: string }[];
+    try {
+      rows = (await tx.execute(sql`
+        INSERT INTO deploy_pending_actions
+          (kind, proposed_by, payload, preview, status, chat_session_id, payload_hash)
+        VALUES (
+          'promote',
+          ${ctx.actorId}::uuid,
+          ${JSON.stringify(input)}::jsonb,
+          ${JSON.stringify(preview)}::jsonb,
+          'pending',
+          ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
+          ${payloadHash}
+        )
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+    } catch (e) {
+      if (isDuplicatePendingError(e)) {
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.propose_promote",
+          message: DUPLICATE_PROPOSAL_MESSAGE,
+        });
+      }
+      throw e;
+    }
     const proposalId = rows[0]?.id;
     if (!proposalId) {
       return err({
@@ -230,17 +253,34 @@ export const proposeDeployRollbackOp = defineOperation({
       restoreBuildId: prior.build_id,
       restoreRunId: prior.run_id,
     };
-    const ins = (await tx.execute(sql`
-      INSERT INTO deploy_pending_actions (kind, proposed_by, payload, preview, status)
-      VALUES (
-        'rollback',
-        ${ctx.actorId}::uuid,
-        ${JSON.stringify(input)}::jsonb,
-        ${JSON.stringify(preview)}::jsonb,
-        'pending'
-      )
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
+    const payloadHash = await hashProposalPayload(input);
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    let ins: { id: string }[];
+    try {
+      ins = (await tx.execute(sql`
+        INSERT INTO deploy_pending_actions
+          (kind, proposed_by, payload, preview, status, chat_session_id, payload_hash)
+        VALUES (
+          'rollback',
+          ${ctx.actorId}::uuid,
+          ${JSON.stringify(input)}::jsonb,
+          ${JSON.stringify(preview)}::jsonb,
+          'pending',
+          ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
+          ${payloadHash}
+        )
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+    } catch (e) {
+      if (isDuplicatePendingError(e)) {
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.propose_rollback",
+          message: DUPLICATE_PROPOSAL_MESSAGE,
+        });
+      }
+      throw e;
+    }
     const proposalId = ins[0]?.id;
     if (!proposalId) {
       return err({
