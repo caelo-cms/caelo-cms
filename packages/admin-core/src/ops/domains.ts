@@ -173,7 +173,11 @@ export const removeDomainOp = defineOperation({
  */
 export const verifyDomainOp = defineOperation({
   name: "domains.verify",
-  actorScope: ["human", "system"],
+  // v0.2.30 — widened to AI: the op is diagnostic (DNS lookup +
+  // last_verified_at refresh), no destructive side effect; the AI
+  // calls it after the Owner approves a propose_add to surface an
+  // immediate TLS status indicator without a second Owner round-trip.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ domainId: z.string().uuid() }).strict(),
   output: z.object({

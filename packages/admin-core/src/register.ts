@@ -98,6 +98,13 @@ import {
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
 import {
+  executeDomainProposalOp,
+  listPendingDomainProposalsOp,
+  proposeDomainAddOp,
+  proposeDomainRemoveOp,
+  rejectDomainProposalOp,
+} from "./ops/domain_pending.js";
+import {
   addDomainOp,
   listDomainsOp,
   removeDomainOp,
@@ -592,6 +599,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(removeDomainOp);
   registry.register(verifyDomainOp);
   registry.register(setDomainTlsStatusOp);
+  // v0.2.30 — domains propose/execute pairs (add / remove). AI
+  // proposes via domains.propose_*; Owner approves at
+  // /security/domains/pending. domains.verify is widened to AI in the
+  // same release (diagnostic, no destructive side effect).
+  registry.register(proposeDomainAddOp);
+  registry.register(proposeDomainRemoveOp);
+  registry.register(executeDomainProposalOp);
+  registry.register(rejectDomainProposalOp);
+  registry.register(listPendingDomainProposalsOp);
   // P14 — Site Import Wizard.
   registry.register(listImportRunsOp);
   registry.register(getImportRunOp);
