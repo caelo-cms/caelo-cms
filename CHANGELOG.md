@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.39
+
+### Other
+- 48941d2 test+fix(propose): integration test fixture + jsonb-payload parse fix (v0.2.39)
+
 ## v0.2.38
 
 ### Features

@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/plugin-auth",
-  "version": "0.2.38",
+  "version": "0.2.39",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
