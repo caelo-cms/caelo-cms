@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.48
+
+### Fixes
+- 382d1b0 alwaysOn skills no longer narrow tool catalogue (v0.2.48)
+
 ## v0.2.47
 
 ### Features
