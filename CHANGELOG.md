@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.45
+
+### Features
+- 6fa7572 smooth UI — autoscroll + markdown + typing indicator (v0.2.45)
+
 ## v0.2.44
 
 ### Tests
