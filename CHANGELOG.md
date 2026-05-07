@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.34
+
+### Chores
+- ce6ce5e tool-description sweep — bulk routing pointers (v0.2.34)
+
 ## v0.2.33
 
 ### Features
