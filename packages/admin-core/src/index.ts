@@ -34,6 +34,8 @@ export { setMode2Provider } from "./ops/translation/mode_2.js";
 export * from "./ops/users.js";
 export * from "./password.js";
 export * from "./permissions.js";
+// v0.2.37 — proposal GC sidecar (sweeps stale pending rows daily).
+export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
 export * from "./rate-limit.js";
 export * from "./register.js";
 // P21 ship 5 — release-check sidecar worker (replaces the in-handler

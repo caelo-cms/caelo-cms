@@ -9,6 +9,7 @@ import {
   rejectAiProvidersProposalOp,
 } from "./ops/ai_providers_pending.js";
 import { loginOp, logoutOp, resolveSessionOp } from "./ops/auth.js";
+import { cancelProposalOp } from "./ops/cancel_proposal.js";
 import {
   appendChatMessageOp,
   cacheToolResultOp,
@@ -669,6 +670,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // AI doesn't re-propose what's already queued) and by the AppShell
   // bell badge (cross-domain count of "things waiting on you").
   registry.register(listPendingProposalsAcrossDomainsOp);
+  // v0.2.37 — cancel a pending proposal the AI queued in error
+  // (or the human Owner did). Restricted to the actor who proposed it
+  // by the WHERE clause; doesn't grant cross-actor cancel rights.
+  registry.register(cancelProposalOp);
   registry.register(completeOnboardingOp);
   registry.register(listBranchEditedModulesOp);
   // P7 — media library.

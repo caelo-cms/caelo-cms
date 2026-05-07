@@ -14,6 +14,7 @@ import {
   resetStuckTranslationUnits,
   setMode2Provider,
   setTranslationProvider,
+  startProposalGcWorker,
   startReleaseCheckWorker,
   startTranslationWorker,
 } from "@caelo-cms/admin-core";
@@ -274,6 +275,17 @@ function bootstrapReleaseCheck(): void {
   startReleaseCheckWorker({ adapter });
 }
 
+// v0.2.37 — proposal GC sidecar. Sweeps pending rows older than 30
+// days → 'superseded' once per day across all *_pending_actions
+// tables. Keeps the bell badge meaningful.
+let proposalGcBootstrapped = false;
+function bootstrapProposalGc(): void {
+  if (proposalGcBootstrapped) return;
+  proposalGcBootstrapped = true;
+  const { adapter } = getQueryContext();
+  startProposalGcWorker({ adapter });
+}
+
 // P17 PR4 + P18 — wire the MCP bridge to the ProviderResolver so
 // external `bunx @caelo-cms/mcp-server` callers can drive the
 // chat-runner. resolveProvider returns null when no key is wired
@@ -315,6 +327,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   void bootstrapTranslationWorker();
   bootstrapRedeploy();
   bootstrapReleaseCheck();
+  bootstrapProposalGc();
   bootstrapMcpBridge();
   void bootstrapPlugins();
   void consumePendingBootstrapToken();

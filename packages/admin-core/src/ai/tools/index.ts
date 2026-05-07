@@ -13,6 +13,7 @@ import {
   updateModulesManyTool,
   updatePagesManyTool,
 } from "./bulk-pages-modules.js";
+import { cancelProposalTool } from "./cancel-proposal.js";
 import { changePageSlugTool } from "./change-page-slug.js";
 import { changeTemplateTool } from "./change-template.js";
 import { composeFromImportTool } from "./compose-from-import.js";
@@ -197,6 +198,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeTemplateDeleteTool);
   registry.register(proposeDomainAddTool);
   registry.register(proposeDomainRemoveTool);
+  // v0.2.37 — AI can withdraw its own pending proposals.
+  registry.register(cancelProposalTool);
   return registry;
 }
 
