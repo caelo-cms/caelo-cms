@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.56
+
+### Fixes
+- bb10210 replace silent /edit→/content/chat redirect with explicit error + breadcrumbs (v0.2.56)
+
 ## v0.2.55
 
 ### Features
