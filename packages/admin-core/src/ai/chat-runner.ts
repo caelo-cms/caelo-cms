@@ -106,10 +106,26 @@ export interface ChatRunnerOptions {
    * provider call instead of post-hoc.
    */
   readonly costCapMicrocents?: number;
+  /**
+   * v0.2.53 — Per-turn output ceiling. SSE handler reads this from
+   * `getActiveProvider().maxOutputTokens` (set on `ai_providers.config`
+   * at /security/ai). Falls back to MAX_OUTPUT_TOKENS_DEFAULT when the
+   * operator hasn't tuned it.
+   */
+  readonly maxOutputTokens?: number;
 }
 
 const DEFAULT_INPUT_COST_PER_M = 15; // Opus 4.7 input rate, USD per 1M tokens
 const DEFAULT_OUTPUT_COST_PER_M = 75;
+/**
+ * v0.2.53 — Default output-token ceiling per provider call.
+ * 16384 covers compose-page-style turns (text + multi-tool_use batches +
+ * post-tool summary) on every modern Claude / GPT-4o / Gemini 2.5 model.
+ * The pre-v0.2.53 4096 default was Sonnet-3 era and routinely truncated
+ * tool_use blocks mid-stream on Opus 4.7 / Sonnet 4.6. Operators can
+ * tune higher (up to 200k) per provider via /security/ai.
+ */
+const MAX_OUTPUT_TOKENS_DEFAULT = 16384;
 
 function microcents(usd: number): number {
   // 1 USD = 1e8 microcents.
@@ -1005,6 +1021,7 @@ export async function* runChatTurn(
       messages,
       tools: filteredTools,
       abortSignal,
+      maxTokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS_DEFAULT,
     })) {
       if (aborted()) break;
       if (ev.kind === "text-delta") {

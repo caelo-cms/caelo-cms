@@ -116,6 +116,23 @@
             <Label for="model-{p.name}">Model</Label>
             <Input id="model-{p.name}" name="model" type="text" value={p.model} required />
           </div>
+          <div class="space-y-2">
+            <Label for="maxOutputTokens-{p.name}">Max output tokens</Label>
+            <Input
+              id="maxOutputTokens-{p.name}"
+              name="maxOutputTokens"
+              type="number"
+              min="1024"
+              max="200000"
+              step="1"
+              value={p.maxOutputTokens ?? ""}
+              placeholder="16384 (default)"
+            />
+            <p class="text-xs text-muted-foreground">
+              Per-call output ceiling. Tool-use args count against this. Leave blank for the
+              16K default. Range 1024-200000.
+            </p>
+          </div>
           {#if p.name === "local-openai-compat"}
             <div class="space-y-2">
               <Label for="baseUrl-{p.name}">Base URL</Label>

@@ -48,6 +48,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const { adapter, registry } = getQueryContext();
 
   let aiProvider: import("@caelo-cms/admin-core").AIProvider | null = null;
+  // v0.2.53 — Per-provider output ceiling, sourced from
+  // `ai_providers.config.maxOutputTokens`. Threads to runChatTurn which
+  // hands it to provider.generate. undefined = chat-runner default.
+  let maxOutputTokens: number | undefined;
   const testProviderName = request.headers.get(TEST_PROVIDER_HEADER);
   if (testProviderName) {
     aiProvider = resolveTestProvider(testProviderName);
@@ -68,6 +72,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       );
     }
     aiProvider = resolved.provider;
+    maxOutputTokens = resolved.maxOutputTokens;
   }
   const { createDefaultToolRegistry } = await import("@caelo-cms/admin-core");
   const tools = createDefaultToolRegistry();
@@ -96,6 +101,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             aiCtx,
             humanCtx: locals.ctx,
             abortSignal,
+            ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
           },
           {
             chatSessionId: params.sessionId,

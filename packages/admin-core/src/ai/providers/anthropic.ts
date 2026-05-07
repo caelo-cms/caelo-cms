@@ -89,9 +89,18 @@ function buildRequestBody(input: GenerateInput, model: string): Record<string, u
     systemBlock = input.systemPrompt;
   }
 
+  // v0.2.53 — default lifted from 4096 → 16384 to give modern Claude
+  // models headroom on multi-tool-use turns. Tool_use blocks count as
+  // output tokens (the JSON args are part of the response stream); a
+  // compose-page-style turn that emits 200 tokens of text + 5 tool_use
+  // blocks at 100-300 args tokens each easily clears 1500 tokens, and
+  // the AI's follow-up summary after tool results can clear 2000+ on
+  // its own. 4096 was a Sonnet-3 era default that left Opus 4.7 / Sonnet
+  // 4.6 under-spec. Operators tune higher via /security/ai → Max output
+  // tokens (per-provider config knob).
   const body: Record<string, unknown> = {
     model,
-    max_tokens: input.maxTokens ?? 4096,
+    max_tokens: input.maxTokens ?? 16384,
     system: systemBlock,
     messages,
     stream: true,

@@ -50,6 +50,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         DEFAULT_MODEL[name] ??
         "",
       baseUrl: typeof row?.config.baseUrl === "string" ? (row.config.baseUrl as string) : null,
+      // v0.2.53 — Per-provider output ceiling stored alongside model.
+      // null means "use the chat-runner default of 16384". Range
+      // enforced at write-time: 1024-200000 (covers every modern
+      // model's max output without permitting nonsensical values).
+      maxOutputTokens:
+        typeof row?.config.maxOutputTokens === "number"
+          ? (row.config.maxOutputTokens as number)
+          : null,
     };
   });
 
@@ -95,6 +103,20 @@ export const actions: Actions = {
     const isActive = form.get("isActive") === "1";
     const config: Record<string, unknown> = { model };
     if (baseUrl) config.baseUrl = baseUrl;
+    // v0.2.53 — Optional per-provider output ceiling. Empty input clears
+    // the override (resolver falls back to chat-runner's 16384 default).
+    // Out-of-range or non-numeric input is rejected here so the resolver
+    // never sees garbage data. Range: 1024-200000.
+    const maxOutputTokensRaw = String(form.get("maxOutputTokens") ?? "").trim();
+    if (maxOutputTokensRaw.length > 0) {
+      const n = Number(maxOutputTokensRaw);
+      if (!Number.isInteger(n) || n < 1024 || n > 200000) {
+        return fail(400, {
+          error: "Max output tokens must be a whole number between 1024 and 200000.",
+        });
+      }
+      config.maxOutputTokens = n;
+    }
 
     const result = await execute(registry, adapter, locals.ctx, "ai_providers.set", {
       name,

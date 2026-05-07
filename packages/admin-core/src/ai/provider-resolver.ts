@@ -60,6 +60,15 @@ interface ResolvedProvider {
   readonly model: string;
   /** Per-decrypted-key fingerprint (sha256[0..8]) — used as cache key + audit. */
   readonly keyFingerprint: string;
+  /**
+   * v0.2.53 — Per-provider output ceiling sourced from
+   * `ai_providers.config.maxOutputTokens`. Undefined when the operator
+   * hasn't tuned it; chat-runner falls back to its own
+   * `MAX_OUTPUT_TOKENS_DEFAULT` (16384) which then hits the per-provider
+   * default in `buildRequestBody`. Validated as positive integer in
+   * [1024, 200000] at config-write time.
+   */
+  readonly maxOutputTokens?: number;
 }
 
 interface CacheEntry {
@@ -173,10 +182,28 @@ async function loadEncryptedKeyFromDb(
   };
 }
 
-/** Read the active provider's name + config (model + baseUrl). */
-async function loadActiveProviderMeta(
-  d: ResolverDeps,
-): Promise<{ name: ProviderName; model: string; baseUrl?: string } | null> {
+/**
+ * v0.2.53 — Validated extractor for `ai_providers.config.maxOutputTokens`.
+ * Returns undefined for any non-numeric / out-of-range value so the chat-
+ * runner's default kicks in. Range chosen to span every current model's
+ * supported max (Haiku 4.5 ~32k, Sonnet 4.6 ~64k, GPT-4o ~16k, Gemini 2.5
+ * ~64k) without letting an operator paste a typo like "1000000".
+ */
+function readMaxOutputTokens(config: Record<string, unknown>): number | undefined {
+  const v = config.maxOutputTokens;
+  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+  if (!Number.isInteger(v)) return undefined;
+  if (v < 1024 || v > 200000) return undefined;
+  return v;
+}
+
+/** Read the active provider's name + config (model + baseUrl + maxOutputTokens). */
+async function loadActiveProviderMeta(d: ResolverDeps): Promise<{
+  name: ProviderName;
+  model: string;
+  baseUrl?: string;
+  maxOutputTokens?: number;
+} | null> {
   const rows = (await withSystemTx(
     d,
     (tx) => tx`
@@ -195,14 +222,20 @@ async function loadActiveProviderMeta(
   const config = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
   const model = typeof config.model === "string" ? config.model : DEFAULT_MODEL[row.name];
   const baseUrl = typeof config.baseUrl === "string" ? config.baseUrl : undefined;
-  return { name: row.name, model, ...(baseUrl ? { baseUrl } : {}) };
+  const maxOutputTokens = readMaxOutputTokens(config);
+  return {
+    name: row.name,
+    model,
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+  };
 }
 
 /** Read one specific provider's name + config. */
 async function loadProviderMeta(
   d: ResolverDeps,
   name: ProviderName,
-): Promise<{ model: string; baseUrl?: string } | null> {
+): Promise<{ model: string; baseUrl?: string; maxOutputTokens?: number } | null> {
   const rows = (await withSystemTx(
     d,
     (tx) => tx`
@@ -214,7 +247,12 @@ async function loadProviderMeta(
   const config = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
   const model = typeof config.model === "string" ? config.model : DEFAULT_MODEL[name];
   const baseUrl = typeof config.baseUrl === "string" ? config.baseUrl : undefined;
-  return { model, ...(baseUrl ? { baseUrl } : {}) };
+  const maxOutputTokens = readMaxOutputTokens(config);
+  return {
+    model,
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+  };
 }
 
 /**
@@ -223,14 +261,19 @@ async function loadProviderMeta(
  */
 async function resolveProvider(
   name: ProviderName,
-  meta: { model: string; baseUrl?: string },
+  meta: { model: string; baseUrl?: string; maxOutputTokens?: number },
 ): Promise<ResolvedProvider | null> {
   if (!deps) {
     throw new Error("provider-resolver not configured — call configureProviderResolver() at boot");
   }
   const cached = cache.get(name);
   const now = Date.now();
-  if (cached && cached.expiresAt > now && cached.resolved.model === meta.model) {
+  if (
+    cached &&
+    cached.expiresAt > now &&
+    cached.resolved.model === meta.model &&
+    cached.resolved.maxOutputTokens === meta.maxOutputTokens
+  ) {
     return cached.resolved;
   }
 
@@ -269,6 +312,7 @@ async function resolveProvider(
     providerName: name,
     model: meta.model,
     keyFingerprint,
+    ...(meta.maxOutputTokens !== undefined ? { maxOutputTokens: meta.maxOutputTokens } : {}),
   };
   cache.set(name, { resolved, expiresAt: now + TTL_MS });
   return resolved;
@@ -292,6 +336,7 @@ export async function getActiveProvider(): Promise<ResolvedProvider | null> {
   return resolveProvider(meta.name, {
     model: meta.model,
     ...(meta.baseUrl ? { baseUrl: meta.baseUrl } : {}),
+    ...(meta.maxOutputTokens !== undefined ? { maxOutputTokens: meta.maxOutputTokens } : {}),
   });
 }
 
