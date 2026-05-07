@@ -256,6 +256,7 @@ import {
   aggregatePluginAiSpendOp,
   setPluginAiCostCapOp,
 } from "./ops/security/ai_calls.js";
+import { aggregateAuditByOpPrefixOp } from "./ops/security/ai_calls_by_op.js";
 import {
   listAiMemoryOp,
   listMemoryProposalsOp,
@@ -512,6 +513,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(aggregateAiCallsOp);
   registry.register(aggregatePluginAiSpendOp);
   registry.register(setPluginAiCostCapOp);
+  // v0.2.40 — per-domain AI activity attribution. Counts AI-attributed
+  // audit_events per op-prefix so the operator can see where the AI
+  // is spending its time (and which domains have high failure rates,
+  // a signal to tune tool descriptions / pre-flight).
+  registry.register(aggregateAuditByOpPrefixOp);
   // P16 — multi-provider pricing + operation-type budgets.
   registry.register(listAiPricingOp);
   registry.register(setAiPricingOp);
