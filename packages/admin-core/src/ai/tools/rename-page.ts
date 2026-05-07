@@ -21,7 +21,8 @@ export const renamePageTool: ToolDefinitionWithHandler<
     "Rename a page's internal label only (the friendly name shown in the page picker / breadcrumbs). " +
     "Does NOT change the HTML <title> tag or the URL slug. Use this when the user says 'rename'. " +
     "If the user wants the browser tab / SERP title to change, call `set_page_title`. " +
-    "If the user wants the URL to change, call `change_page_slug`. When ambiguous, ask first.",
+    "If the user wants the URL to change, call `change_page_slug`. When ambiguous, ask first. " +
+    "Prefer `update_pages_many` when renaming > 1 page in the same request.",
   schema: renamePageToolInput,
   inputSchema: {
     type: "object",

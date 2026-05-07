@@ -34,7 +34,9 @@ export const deletePageTool: ToolDefinitionWithHandler<
   description:
     "Soft-delete a page. Required `disposition`: '404' returns not-found, 'redirect' creates a 301 to `redirectTo`. " +
     "Always confirm with the user first which behaviour they want for the dead URL — suggest a sensible redirect target " +
-    "(parent section, sibling page, or /) when proposing 'redirect'. Never silently leave dead URLs unredirected.",
+    "(parent section, sibling page, or /) when proposing 'redirect'. Never silently leave dead URLs unredirected. " +
+    "Prefer `delete_pages_many` when deleting > 1 page in the same request — saves tool-call rounds. " +
+    "(Note: `delete_pages_many` does NOT auto-create redirects per page; use this tool when you need 301s, repeating per-page.)",
   schema: deletePageToolInput,
   inputSchema: {
     type: "object",

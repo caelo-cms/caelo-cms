@@ -20,8 +20,10 @@ export const editModuleTool: ToolDefinitionWithHandler<
 > = {
   name: "edit_module",
   description:
-    "Edit one module's HTML, CSS, JS, or display name. Pages, templates, and " +
-    "cross-module changes use other tools (not yet available in this phase).",
+    "Edit ONE module's HTML, CSS, JS, or displayName. Use when the operator wants to change a single module's body. " +
+    "Prefer `update_modules_many` when targeting > 1 module in the same request — saves tool-call rounds. " +
+    "DO NOT use for page-level edits (`update_pages_many` / `set_page_title` / `change_page_slug`) or " +
+    "template-level edits (`propose_update_template`).",
   schema: editModuleToolInput,
   // Hand-aligned JSON Schema mirroring `editModuleToolInput`. Anthropic's
   // tool-use API takes the schema verbatim from this map.

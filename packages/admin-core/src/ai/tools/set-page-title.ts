@@ -18,7 +18,8 @@ export const setPageTitleTool: ToolDefinitionWithHandler<
   description:
     "Set the page's HTML <title> tag (the text shown in the browser tab and search-engine results). " +
     "URL stays the same; no redirect created. Use this when the user mentions 'browser tab', '<title>', or 'SERP'. " +
-    "Use `rename_page` for the internal label and `change_page_slug` for the URL.",
+    "Use `rename_page` for the internal label and `change_page_slug` for the URL. " +
+    "Prefer `update_pages_many` when retitling > 1 page in the same request.",
   schema: setPageTitleToolInput,
   inputSchema: {
     type: "object",

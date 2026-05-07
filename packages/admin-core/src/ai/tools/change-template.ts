@@ -28,7 +28,9 @@ export const changeTemplateTool: ToolDefinitionWithHandler<
     "Re-point a page to a different template (page-type). Modules in matching block names migrate; " +
     "modules in unmatched blocks are dropped or moved to a named block per `orphanDisposition`. " +
     "If the change would drop modules, CONFIRM with the user before passing `{ kind: 'drop' }`. " +
-    "After the call, surface the returned `migratedBlocks` and `droppedModules` lists in your reply.",
+    "After the call, surface the returned `migratedBlocks` and `droppedModules` lists in your reply. " +
+    "Prefer `update_pages_many` when re-pointing > 1 page to the same template (note: it does NOT do block-migration; " +
+    "use this single-page tool when block-migration is needed, even repeated).",
   schema: changeTemplateToolInput,
   inputSchema: {
     type: "object",

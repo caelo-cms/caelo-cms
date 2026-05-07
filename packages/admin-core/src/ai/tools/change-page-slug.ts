@@ -35,7 +35,8 @@ export const changePageSlugTool: ToolDefinitionWithHandler<
   description:
     "Change a page's URL slug (the path in the URL). Auto-creates a 301 from the old URL by default so existing inbound links keep working. " +
     "Also rewrites every nav-menu / link-list item that pointed at the old URL. " +
-    "Only call when the user explicitly mentions changing the URL / slug / path. For renaming the internal label, use `rename_page`.",
+    "Only call when the user explicitly mentions changing the URL / slug / path. For renaming the internal label, use `rename_page`. " +
+    "For retargeting > 1 page's slug at once, prefer `update_pages_many` (still creates per-page redirects).",
   schema: changePageSlugToolInput,
   inputSchema: {
     type: "object",
