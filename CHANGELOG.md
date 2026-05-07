@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.42
+
+### Features
+- c743032 plugin_rate_limit_proposals 'superseded' status (v0.2.42)
+
 ## v0.2.41
 
 ### Fixes
