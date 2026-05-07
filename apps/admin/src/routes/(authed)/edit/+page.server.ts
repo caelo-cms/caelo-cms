@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo-cms/query-api";
-import { fail, redirect } from "@sveltejs/kit";
+import { error, fail, redirect } from "@sveltejs/kit";
 import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
 import {
   DEFAULT_LAYOUT,
@@ -64,6 +64,23 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       pageId: null,
     }),
   ]);
+  // v0.2.56 — log the actual failure reason when an op returns ok:false.
+  // Pre-v0.2.56 these were silently swallowed (`?? []`), the
+  // downstream auto-create masked the symptom, and /edit eventually
+  // redirected to /content/chat with no breadcrumb naming WHICH op
+  // failed. Operators saw "Live edit takes me to chat" with no path
+  // to diagnose. The console.error surfaces in Cloud Run stderr.
+  if (!sessionsR.ok) {
+    console.error("[edit] chat.list_sessions (page-bound) failed", {
+      activePageId,
+      error: sessionsR.error,
+    });
+  }
+  if (!globalSessionsR.ok) {
+    console.error("[edit] chat.list_sessions (global) failed", {
+      error: globalSessionsR.error,
+    });
+  }
   const sessions = sessionsR.ok ? (sessionsR.value as { sessions: ChatSession[] }).sessions : [];
   const globalSessions = globalSessionsR.ok
     ? (globalSessionsR.value as { sessions: ChatSession[] }).sessions
@@ -91,10 +108,44 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       });
       if (fresh.ok) {
         activeChat = (fresh.value as { session: ChatSession }).session;
+      } else {
+        // v0.2.56 — the auto-create succeeded but the read-back failed.
+        // Without this log, the only symptom was a 303 to /content/chat
+        // with no breadcrumb. Almost always points to a schema-shape
+        // mismatch (op output validator rejecting a row that the SQL
+        // returned) — exactly the regression class introduced by
+        // v0.2.54's session-row schema additions.
+        console.error("[edit] chat.get_session failed after auto-create", {
+          createdSessionId: id,
+          error: fresh.error,
+        });
       }
+    } else {
+      // v0.2.56 — auto-create failed. Surfaces RLS rejections, FK
+      // violations, missing columns post-migration, etc.
+      console.error("[edit] chat.create_session failed", {
+        activePageId,
+        error: created.error,
+      });
     }
   }
-  if (!activeChat) throw redirect(303, "/content/chat");
+  if (!activeChat) {
+    // v0.2.56 — was a silent 303 redirect to /content/chat (matching
+    // the user's "clicking on live edit gets me to chat" report).
+    // Replaced with a 500 that names the symptom + points the
+    // operator at /security/audit. Cloud Run stderr now has a
+    // breadcrumb naming the failing op above.
+    console.error("[edit] no active chat available — could not load OR create one", {
+      sessionsLoaded: sessionsR.ok,
+      globalSessionsLoaded: globalSessionsR.ok,
+      activePageId,
+      pagesCount: pages.length,
+    });
+    throw error(
+      500,
+      "Could not start a live-edit session — the chat ops returned no usable row. Check Cloud Run logs for `[edit]` stderr lines, or visit /security/audit.",
+    );
+  }
 
   // Load the chat's messages + the modules list (powers the chip picker
   // inside the embedded ChatPanel).
