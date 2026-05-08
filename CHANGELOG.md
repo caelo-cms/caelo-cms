@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.74
+
+### Features
+- 7317d29 multimodal pipeline + screenshot_page tool — operator-browser capture (v0.2.74)
+
 ## v0.2.73
 
 ### Refactors
