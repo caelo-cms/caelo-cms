@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.62
+
+### Features
+- b9d56a0 inline Approve / Reject buttons on propose tool-cards (v0.2.62)
+
 ## v0.2.61
 
 ### Fixes
