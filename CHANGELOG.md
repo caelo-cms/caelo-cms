@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.61
+
+### Fixes
+- 1781f91 resolveChatSessionId queries chat_sessions, not the nonexistent chat_branches table (v0.2.61)
+
 ## v0.2.60
 
 ### Features
