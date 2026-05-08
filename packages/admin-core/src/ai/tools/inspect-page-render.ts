@@ -149,21 +149,18 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
         ).templates.find((t) => t.id === page.templateId) ?? null)
       : null;
 
-    let layout: {
+    interface LayoutRow {
       id: string;
       slug: string;
       displayName: string;
       html: string;
       css: string;
-    } | null = null;
+    }
+    let layout: LayoutRow | null = null;
     if (template) {
       const layoutR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.list", {});
       if (layoutR.ok) {
-        const layouts = (
-          layoutR.value as {
-            layouts: typeof layout extends null ? never[] : NonNullable<typeof layout>[];
-          }
-        ).layouts;
+        const layouts = (layoutR.value as { layouts: LayoutRow[] }).layouts;
         layout = layouts.find((l) => l.id === template.layoutId) ?? null;
       }
     }

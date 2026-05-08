@@ -13,7 +13,7 @@
     },
     "apps/admin": {
       "name": "@caelo-cms/admin",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/admin-core": "workspace:*",
         "@caelo-cms/plugin-auth": "workspace:*",
@@ -65,7 +65,7 @@
     },
     "apps/api-gateway": {
       "name": "@caelo-cms/api-gateway",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
@@ -79,7 +79,7 @@
     },
     "apps/static-generator": {
       "name": "@caelo-cms/static-generator",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "bin": {
         "caelo-static-generator": "./src/cli.ts",
       },
@@ -95,13 +95,17 @@
     },
     "packages/admin-core": {
       "name": "@caelo-cms/admin-core",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
+        "@ai-sdk/anthropic": "^2",
+        "@ai-sdk/google": "^2",
+        "@ai-sdk/openai": "^2",
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/plugin-sandbox": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
         "@caelo-cms/static-generator": "workspace:*",
+        "ai": "^5",
         "drizzle-orm": "0.45.2",
         "file-type": "^19",
         "htmlparser2": "^12.0.0",
@@ -121,11 +125,11 @@
     },
     "packages/edge-router": {
       "name": "@caelo-cms/edge-router",
-      "version": "0.2.44",
+      "version": "0.2.69",
     },
     "packages/mcp-server": {
       "name": "@caelo-cms/mcp-server",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "bin": {
         "caelo-mcp-server": "./src/index.ts",
       },
@@ -136,7 +140,7 @@
     },
     "packages/migrations": {
       "name": "@caelo-cms/migrations",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "drizzle-orm": "0.45.2",
       },
@@ -146,11 +150,11 @@
     },
     "packages/plugin-component-kit": {
       "name": "@caelo-cms/plugin-component-kit",
-      "version": "0.2.44",
+      "version": "0.2.69",
     },
     "packages/plugin-host": {
       "name": "@caelo-cms/plugin-host",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/plugin-sandbox": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -166,7 +170,7 @@
     },
     "packages/plugin-sandbox": {
       "name": "@caelo-cms/plugin-sandbox",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/plugin-sdk": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
@@ -176,7 +180,7 @@
     },
     "packages/plugin-sdk": {
       "name": "@caelo-cms/plugin-sdk",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/shared": "workspace:*",
         "zod": "4.3.6",
@@ -184,7 +188,7 @@
     },
     "packages/plugins/auth": {
       "name": "@caelo-cms/plugin-auth",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -192,7 +196,7 @@
     },
     "packages/plugins/comments": {
       "name": "@caelo-cms/plugin-comments",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -200,7 +204,7 @@
     },
     "packages/plugins/forms": {
       "name": "@caelo-cms/plugin-forms",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -208,7 +212,7 @@
     },
     "packages/plugins/newsletter": {
       "name": "@caelo-cms/plugin-newsletter",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -216,7 +220,7 @@
     },
     "packages/plugins/ratings": {
       "name": "@caelo-cms/plugin-ratings",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -224,14 +228,14 @@
     },
     "packages/plugins/translation": {
       "name": "@caelo-cms/plugin-translation",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
     },
     "packages/provisioning": {
       "name": "@caelo-cms/provisioning",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "bin": {
         "cms-provision": "./dist/cli.js",
       },
@@ -249,7 +253,7 @@
     },
     "packages/query-api": {
       "name": "@caelo-cms/query-api",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/shared": "workspace:*",
         "drizzle-orm": "0.45.2",
@@ -258,7 +262,7 @@
     },
     "packages/redeploy-orchestrator": {
       "name": "@caelo-cms/redeploy-orchestrator",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/site-importer": "workspace:*",
@@ -267,7 +271,7 @@
     },
     "packages/shared": {
       "name": "@caelo-cms/shared",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "htmlparser2": "^12.0.0",
         "zod": "4.3.6",
@@ -275,13 +279,25 @@
     },
     "packages/site-importer": {
       "name": "@caelo-cms/site-importer",
-      "version": "0.2.44",
+      "version": "0.2.69",
       "dependencies": {
         "htmlparser2": "^12.0.0",
       },
     },
   },
   "packages": {
+    "@ai-sdk/anthropic": ["@ai-sdk/anthropic@2.0.79", "", { "dependencies": { "@ai-sdk/provider": "2.0.3", "@ai-sdk/provider-utils": "3.0.25" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-K0U09FPDO1kmLPjRLXFcNSvmnKHJBMARCb8r3Ulw7wU6/+Zh9djWcFDiPPNsklg6yAezcdLTcYPszgWJJ6iOTA=="],
+
+    "@ai-sdk/gateway": ["@ai-sdk/gateway@2.0.88", "", { "dependencies": { "@ai-sdk/provider": "2.0.3", "@ai-sdk/provider-utils": "3.0.25", "@vercel/oidc": "3.1.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-H62l0gxr4K0rdR2WHbvck2wOKMsocAjdZg41Exsj9Qf5/TyAuHzcNt9jKNv5t2vRFXFZaCpbC5uCCxgUC/GiaA=="],
+
+    "@ai-sdk/google": ["@ai-sdk/google@2.0.72", "", { "dependencies": { "@ai-sdk/provider": "2.0.3", "@ai-sdk/provider-utils": "3.0.25" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-BjDY6l+rV4CmHKjZe4H0uRXW3M2o+g7PaYM8oFpW+9PP1qKNEybnJ6//Si7BSf6DT+86dKARrtEl09lxSSaMaA=="],
+
+    "@ai-sdk/openai": ["@ai-sdk/openai@2.0.106", "", { "dependencies": { "@ai-sdk/provider": "2.0.3", "@ai-sdk/provider-utils": "3.0.25" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-EFC0rpo1wfe4HIz5KZCE72edP2J7fOeR7wPXzjCDljaTRB1wectKDIKRLowpU4F0mbcJ+XScAsoYNPK/Z20aVQ=="],
+
+    "@ai-sdk/provider": ["@ai-sdk/provider@2.0.3", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-h88OPkavHTiN9tMn2l5awAznGB0lXzjcLhgR1/rvjB2zlLprsNxbM2tt6OJsHUxduLC3klq0/eqaSf6fX5XVww=="],
+
+    "@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@3.0.25", "", { "dependencies": { "@ai-sdk/provider": "2.0.3", "@standard-schema/spec": "^1.0.0", "eventsource-parser": "^3.0.6" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-CvsRu+32Y8a167s+lrIBtsybvgTHp8j9y+6BeTvLeoW3Q+okw/b4CnNUFOLIXsRaKHQKAH+IHNJPYWywfpw0LA=="],
+
     "@aws-crypto/sha256-browser": ["@aws-crypto/sha256-browser@5.2.0", "", { "dependencies": { "@aws-crypto/sha256-js": "^5.2.0", "@aws-crypto/supports-web-crypto": "^5.2.0", "@aws-crypto/util": "^5.2.0", "@aws-sdk/types": "^3.222.0", "@aws-sdk/util-locate-window": "^3.0.0", "@smithy/util-utf8": "^2.0.0", "tslib": "^2.6.2" } }, "sha512-AXfN/lGotSQwu6HNcEsIASo7kWXZ5HYWvfOmSNKDsEqC4OashTp8alTmaz+F7TC2L083SFv5RdB+qU3Vs1kZqw=="],
 
     "@aws-crypto/sha256-js": ["@aws-crypto/sha256-js@5.2.0", "", { "dependencies": { "@aws-crypto/util": "^5.2.0", "@aws-sdk/types": "^3.222.0", "tslib": "^2.6.2" } }, "sha512-FFQQyu7edu4ufvIZ+OadFpHHOt+eSTBaYaki44c+akjg7qZg9oOQeLlk77F6tSYqjDAFClrHJk9tMf0HdVyOvA=="],
@@ -950,6 +966,8 @@
 
     "@types/trusted-types": ["@types/trusted-types@2.0.7", "", {}, "sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw=="],
 
+    "@vercel/oidc": ["@vercel/oidc@3.1.0", "", {}, "sha512-Fw28YZpRnA3cAHHDlkt7xQHiJ0fcL+NRcIqsocZQUSmbzeIKRpwttJjik5ZGanXP+vlA4SbTg+AbA3bP363l+w=="],
+
     "abbrev": ["abbrev@2.0.0", "", {}, "sha512-6/mh1E2u2YgEsCHdY0Yx5oW+61gZU+1vXaoiHHrpKeuRNNgFvS+/jrwHiQhB5apAf5oB7UB7E19ol2R2LKH8hQ=="],
 
     "accepts": ["accepts@2.0.0", "", { "dependencies": { "mime-types": "^3.0.0", "negotiator": "^1.0.0" } }, "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng=="],
@@ -959,6 +977,8 @@
     "acorn-import-attributes": ["acorn-import-attributes@1.9.5", "", { "peerDependencies": { "acorn": "^8" } }, "sha512-n02Vykv5uA3eHGM/Z2dQrcD56kL8TyDb2p1+0P83PClMnC/nc+anbQRhIOWnSq4Ke/KvDPrY3C9hDtC/A3eHnQ=="],
 
     "agent-base": ["agent-base@7.1.4", "", {}, "sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ=="],
+
+    "ai": ["ai@5.0.186", "", { "dependencies": { "@ai-sdk/gateway": "2.0.88", "@ai-sdk/provider": "2.0.3", "@ai-sdk/provider-utils": "3.0.25", "@opentelemetry/api": "1.9.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-0HVwYO9k/x5eSNggqya/75uirBLjkZoL5QdNp9ftjOCl/IXWSzqys/SzsL3ifWBz603a0KbW+EZyYVtmbFJrTQ=="],
 
     "ajv": ["ajv@8.20.0", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "fast-uri": "^3.0.1", "json-schema-traverse": "^1.0.0", "require-from-string": "^2.0.2" } }, "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA=="],
 
@@ -1231,6 +1251,8 @@
     "js-yaml": ["js-yaml@3.14.2", "", { "dependencies": { "argparse": "^1.0.7", "esprima": "^4.0.0" }, "bin": { "js-yaml": "bin/js-yaml.js" } }, "sha512-PMSmkqxr106Xa156c2M265Z+FTrPl+oxd/rgOQy2tijQeK5TxQ43psO1ZCwhVOSdnn+RzkzlRz/eY4BgJBYVpg=="],
 
     "json-parse-even-better-errors": ["json-parse-even-better-errors@4.0.0", "", {}, "sha512-lR4MXjGNgkJc7tkQ97kb2nuEMnNCyU//XYVH0MKTGcXEiSudQ5MKGKen3C5QubYy0vmq+JGitUg92uuywGEwIA=="],
+
+    "json-schema": ["json-schema@0.4.0", "", {}, "sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA=="],
 
     "json-schema-traverse": ["json-schema-traverse@1.0.0", "", {}, "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug=="],
 
@@ -1709,6 +1731,8 @@
     "@tailwindcss/oxide-wasm32-wasi/tslib": ["tslib@2.8.1", "", { "bundled": true }, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
 
     "@types/serve-static/@types/send": ["@types/send@0.17.6", "", { "dependencies": { "@types/mime": "^1", "@types/node": "*" } }, "sha512-Uqt8rPBE8SY0RK8JB1EzVOIZ32uqy8HwdxCnoCOsYrvnswqmFZ/k+9Ikidlk/ImhsdvBsloHbAlewb2IEBV/Og=="],
+
+    "ai/@opentelemetry/api": ["@opentelemetry/api@1.9.0", "", {}, "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="],
 
     "bin-links/npm-normalize-package-bin": ["npm-normalize-package-bin@5.0.0", "", {}, "sha512-CJi3OS4JLsNMmr2u07OJlhcrPxCeOeP/4xq67aWNai6TNWWbTrlNDgl8NcFKVlcBKp18GPj+EzbNIgrBfZhsag=="],
 
