@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.73
+
+### Refactors
+- 5419a2a port OpenAI / Gemini / local-OpenAI-compat to AI SDK; extract shared helpers (v0.2.73)
+
 ## v0.2.72
 
 ### Refactors

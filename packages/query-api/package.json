@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/query-api",
-  "version": "0.2.72",
+  "version": "0.2.73",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
