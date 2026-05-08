@@ -1,50 +1,71 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Replays a recorded SSE stream through AnthropicProvider's translator
- * and asserts the ProviderEvent sequence matches expectations. Uses a
- * mock `fetch` that returns a ReadableStream of canned SSE bytes — no
- * network, no SDK, no live key.
+ * Provider-translator coverage. The hand-rolled SSE parser was replaced
+ * in v0.3.0 by `@ai-sdk/anthropic` + `streamText`; SSE-byte parsing is
+ * now the SDK's responsibility (and tested in its own suite). What we
+ * still own is the translation layer that maps the SDK's
+ * LanguageModelV2 stream parts → Caelo's `ProviderEvent` union — these
+ * tests exercise that layer end-to-end through `AnthropicProvider`,
+ * using `MockLanguageModelV2` so no API key + no network are needed.
+ *
+ * Plus the existing FixtureProvider sanity test (used elsewhere by
+ * chat-runner regression tests).
  */
 
 import { describe, expect, it } from "bun:test";
+import { MockLanguageModelV2 } from "ai/test";
 import type { ProviderEvent } from "../provider.js";
 import { AnthropicProvider, FixtureProvider } from "../providers/anthropic.js";
 
-function makeMockFetch(sseLines: string[]): typeof fetch {
-  return (async () => {
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        for (const line of sseLines) controller.enqueue(encoder.encode(`${line}\n`));
-        controller.close();
-      },
-    });
-    return new Response(stream, {
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-    });
-  }) as unknown as typeof fetch;
+function streamOf<T>(chunks: T[]): ReadableStream<T> {
+  return new ReadableStream<T>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
 }
 
-describe("AnthropicProvider SSE translator", () => {
-  it("emits text-delta events for streamed text", async () => {
-    const lines = [
-      `data: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 50, output_tokens: 0 } } })}`,
-      `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}`,
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello" } })}`,
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " world" } })}`,
-      `data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}`,
-      `data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 12 } })}`,
-      `data: ${JSON.stringify({ type: "message_stop" })}`,
-    ];
-    const provider = new AnthropicProvider({
-      apiKey: "test",
-      model: "claude-opus-4-7",
-      fetchImpl: makeMockFetch(lines),
+/**
+ * Construct an AnthropicProvider with `_modelOverride` pointing at a
+ * MockLanguageModelV2. This bypasses the SDK's createAnthropic()
+ * factory + API-key check so the SDK runs against the mock's stream
+ * directly — same code path streamText uses for any LanguageModelV2.
+ */
+function providerWithMock(mock: MockLanguageModelV2): AnthropicProvider {
+  return new AnthropicProvider({
+    apiKey: "test",
+    model: "claude-opus-4-7",
+    _modelOverride: mock,
+  });
+}
+
+describe("AnthropicProvider — SDK-event translation", () => {
+  it("emits text-delta events for streamed text + usage + done", async () => {
+    const mock = new MockLanguageModelV2({
+      doStream: async () => ({
+        stream: streamOf([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "Hello" },
+          { type: "text-delta", id: "t1", delta: " world" },
+          { type: "text-end", id: "t1" },
+          {
+            type: "finish",
+            finishReason: "stop",
+            usage: { inputTokens: 50, outputTokens: 12, totalTokens: 62 },
+          },
+        ]),
+      }),
     });
+    const provider = providerWithMock(mock);
     const events: ProviderEvent[] = [];
-    for await (const e of provider.generate({ systemPrompt: "x", messages: [], tools: [] })) {
+    for await (const e of provider.generate({
+      systemPrompt: "x",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+    })) {
       events.push(e);
     }
     expect(events).toEqual([
@@ -55,26 +76,36 @@ describe("AnthropicProvider SSE translator", () => {
     ]);
   });
 
-  it("aggregates input_json_delta into one tool-call event", async () => {
-    const lines = [
-      `data: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 10, output_tokens: 0 } } })}`,
-      `data: ${JSON.stringify({
-        type: "content_block_start",
-        index: 0,
-        content_block: { type: "tool_use", id: "tu_1", name: "edit_module" },
-      })}`,
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"moduleId":"abc' } })}`,
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '","html":"<p>x</p>"}' } })}`,
-      `data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}`,
-      `data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 30 } })}`,
-    ];
-    const provider = new AnthropicProvider({
-      apiKey: "test",
-      model: "claude-opus-4-7",
-      fetchImpl: makeMockFetch(lines),
+  it("emits one tool-call event with parsed args + done(tool_use)", async () => {
+    const mock = new MockLanguageModelV2({
+      doStream: async () => ({
+        stream: streamOf([
+          { type: "stream-start", warnings: [] },
+          { type: "tool-input-start", id: "tu_1", toolName: "edit_module" },
+          { type: "tool-input-delta", id: "tu_1", delta: '{"moduleId":"abc"' },
+          { type: "tool-input-delta", id: "tu_1", delta: ',"html":"<p>x</p>"}' },
+          { type: "tool-input-end", id: "tu_1" },
+          {
+            type: "tool-call",
+            toolCallId: "tu_1",
+            toolName: "edit_module",
+            input: '{"moduleId":"abc","html":"<p>x</p>"}',
+          },
+          {
+            type: "finish",
+            finishReason: "tool-calls",
+            usage: { inputTokens: 10, outputTokens: 30, totalTokens: 40 },
+          },
+        ]),
+      }),
     });
+    const provider = providerWithMock(mock);
     const events: ProviderEvent[] = [];
-    for await (const e of provider.generate({ systemPrompt: "x", messages: [], tools: [] })) {
+    for await (const e of provider.generate({
+      systemPrompt: "x",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+    })) {
       events.push(e);
     }
     const toolCall = events.find((e) => e.kind === "tool-call");
@@ -84,18 +115,74 @@ describe("AnthropicProvider SSE translator", () => {
       expect(toolCall.arguments).toEqual({ moduleId: "abc", html: "<p>x</p>" });
     }
     expect(events.find((e) => e.kind === "done")?.kind).toBe("done");
+    const done = events.find((e) => e.kind === "done");
+    expect(done && done.kind === "done" && done.stopReason).toBe("tool_use");
   });
 
-  it("yields error event on non-2xx HTTP", async () => {
-    const fetchImpl = (async () =>
-      new Response("upstream nope", { status: 500 })) as unknown as typeof fetch;
-    const provider = new AnthropicProvider({
-      apiKey: "test",
-      model: "claude-opus-4-7",
-      fetchImpl,
+  it("emits thinking-delta + thinking-stop with the signature for reasoning content", async () => {
+    const SIGNATURE = "sig-test-anthropic-translator";
+    const mock = new MockLanguageModelV2({
+      doStream: async () => ({
+        stream: streamOf([
+          { type: "stream-start", warnings: [] },
+          {
+            type: "reasoning-start",
+            id: "r1",
+            providerMetadata: { anthropic: { signature: SIGNATURE } },
+          },
+          { type: "reasoning-delta", id: "r1", delta: "thinking..." },
+          {
+            type: "reasoning-end",
+            id: "r1",
+            providerMetadata: { anthropic: { signature: SIGNATURE } },
+          },
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "ok" },
+          { type: "text-end", id: "t1" },
+          {
+            type: "finish",
+            finishReason: "stop",
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          },
+        ]),
+      }),
     });
+    const provider = providerWithMock(mock);
     const events: ProviderEvent[] = [];
-    for await (const e of provider.generate({ systemPrompt: "", messages: [], tools: [] })) {
+    for await (const e of provider.generate({
+      systemPrompt: "x",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+    })) {
+      events.push(e);
+    }
+    const tDelta = events.find((e) => e.kind === "thinking-delta");
+    expect(tDelta).toBeTruthy();
+    if (tDelta && tDelta.kind === "thinking-delta") expect(tDelta.text).toBe("thinking...");
+    const tStop = events.find((e) => e.kind === "thinking-stop");
+    expect(tStop).toBeTruthy();
+    if (tStop && tStop.kind === "thinking-stop") {
+      expect(tStop.thinking).toBe("thinking...");
+      expect(tStop.signature).toBe(SIGNATURE);
+    }
+  });
+
+  it("yields error + done(error) on a stream error event", async () => {
+    const mock = new MockLanguageModelV2({
+      doStream: async () => ({
+        stream: streamOf([
+          { type: "stream-start", warnings: [] },
+          { type: "error", error: new Error("upstream nope") },
+        ]),
+      }),
+    });
+    const provider = providerWithMock(mock);
+    const events: ProviderEvent[] = [];
+    for await (const e of provider.generate({
+      systemPrompt: "x",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+    })) {
       events.push(e);
     }
     expect(events[0]?.kind).toBe("error");
