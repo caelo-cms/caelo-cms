@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.64
+
+### Fixes
+- 7b95f0d teach the AI about the in-chat approval strip + tool-card buttons (v0.2.64)
+
 ## v0.2.63
 
 ### Features
