@@ -27,8 +27,15 @@
     content: string;
     ok: boolean;
     args?: Record<string, unknown>;
+    /**
+     * v0.2.62 — passed through to ProposeCard so Approve / Reject can
+     * fetch the queue's `?/approve` form action without sending the
+     * operator off to /security/<domain>/pending. Omit when the card
+     * is rendered outside a chat (none today, but contract is clean).
+     */
+    csrfToken?: string;
   }
-  let { name, content, ok, args = {} }: Props = $props();
+  let { name, content, ok, args = {}, csrfToken }: Props = $props();
 
   // Domain-prefix bucketing for the propose tools (25 of them across
   // 13 domains; one card handles all).
@@ -55,7 +62,7 @@
     <span class="ml-1">{content}</span>
   </div>
 {:else if isPropose}
-  <ProposeCard {name} {content} {args} />
+  <ProposeCard {name} {content} {args} {csrfToken} />
 {:else if name === "edit_module"}
   <EditModuleCard {content} {args} />
 {:else if isBulk}

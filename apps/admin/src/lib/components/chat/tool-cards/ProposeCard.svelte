@@ -9,21 +9,32 @@
    *   "Queued proposal <id>: <summary>. An Owner must click Approve at
    *    /security/<domain>/pending to apply."
    *
-   * We parse that shape, render the proposal id + summary as a Badge
-   * + headline, and put a primary "Review at /security/.../pending"
-   * link button so the operator's next click is one tap away.
+   * v0.2.62 — Inline Approve / Reject. Pre-v0.2.62 the card carried
+   * a "Review at /security/<domain>/pending" link button that sent
+   * the operator off to a separate page to click Approve. The user
+   * asked for the buttons to live inline ("i want to see the button
+   * direct in chat and can click it there"). Each /security/.../pending
+   * route already exposes `?/approve` and `?/reject` form actions
+   * accepting a `proposalId` form field; we POST to those directly
+   * from the card via fetch with the chat's csrfToken. On success we
+   * flip the card to a small "applied" / "rejected" badge so the
+   * outcome is visible without navigation.
    */
 
-  import { ExternalLink } from "lucide-svelte";
+  import { Check, ExternalLink, X } from "lucide-svelte";
   import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
   import { buttonVariants } from "$lib/components/ui/button/button-variants.js";
 
   interface Props {
     name: string;
     content: string;
     args: Record<string, unknown>;
+    /** Required to POST to the queue's ?/approve action. Optional
+     *  for backwards-compat with any caller that doesn't have one. */
+    csrfToken?: string;
   }
-  let { name, content, args }: Props = $props();
+  let { name, content, args, csrfToken }: Props = $props();
 
   // Parse "Queued proposal <id>: <summary>. ... /security/<path>/pending ..."
   const proposalMatch = $derived(content.match(/Queued proposal ([0-9a-f-]{36}):\s*([^.]+)\./));
@@ -41,6 +52,59 @@
     /^(delete|remove|revert|clear|deactivate|cancel)/i.test(kindLabel),
   );
   void args;
+
+  // v0.2.62 — local outcome state. null = pending (default), or one of
+  // the post-action terminal states. The pending row in the DB has its
+  // own status flip; this is purely UI.
+  let outcome = $state<"approving" | "rejecting" | "applied" | "rejected" | null>(null);
+  let outcomeError = $state<string | null>(null);
+
+  async function postAction(
+    action: "approve" | "reject",
+  ): Promise<void> {
+    if (!queueUrl || !proposalId || !csrfToken) {
+      outcomeError = "Missing csrf or queue url — open the pending page directly to approve.";
+      return;
+    }
+    outcome = action === "approve" ? "approving" : "rejecting";
+    outcomeError = null;
+    try {
+      const fd = new FormData();
+      fd.set("_csrf", csrfToken);
+      fd.set("proposalId", proposalId);
+      const res = await fetch(`${queueUrl}?/${action}`, {
+        method: "POST",
+        body: fd,
+        headers: { accept: "application/json" },
+      });
+      if (!res.ok) {
+        outcomeError = `${action} failed (HTTP ${res.status}).`;
+        outcome = null;
+        return;
+      }
+      // SvelteKit form-action JSON response wraps the action result;
+      // 200 + { type: "success" | "failure" } in the body. We parse
+      // shallowly — if the action returned a fail() the body has
+      // `{ type: "failure" }` even on HTTP 200.
+      try {
+        const data = (await res.json()) as { type?: string; data?: string };
+        // SvelteKit serializes the action's return value into
+        // `data.data` as a JSON string. We don't strictly need it
+        // here, but a "failure" type means we should bubble.
+        if (data.type === "failure") {
+          outcomeError = `${action} rejected by server`;
+          outcome = null;
+          return;
+        }
+      } catch {
+        // Non-JSON body — assume success.
+      }
+      outcome = action === "approve" ? "applied" : "rejected";
+    } catch (e) {
+      outcomeError = `${action} threw: ${(e as Error).message ?? "unknown"}`;
+      outcome = null;
+    }
+  }
 </script>
 
 <div
@@ -52,10 +116,73 @@
     {#if proposalId}
       <span class="font-mono text-[10px] text-muted-foreground">{proposalId.slice(0, 8)}…</span>
     {/if}
-    <span class="ml-auto text-[10px] text-muted-foreground">queued</span>
+    <span class="ml-auto text-[10px] text-muted-foreground">
+      {#if outcome === "applied"}
+        applied
+      {:else if outcome === "rejected"}
+        rejected
+      {:else if outcome === "approving"}
+        approving…
+      {:else if outcome === "rejecting"}
+        rejecting…
+      {:else}
+        queued
+      {/if}
+    </span>
   </div>
   <p class="mt-1.5 text-sm">{summary}</p>
-  {#if queueUrl}
+
+  {#if outcome === "applied"}
+    <div
+      class="mt-2 flex items-center gap-1.5 rounded border border-emerald-500/30 bg-emerald-500/5 px-2 py-1 text-xs text-emerald-700 dark:text-emerald-400"
+    >
+      <Check class="size-3" />
+      <span>Approved — proposal applied.</span>
+    </div>
+  {:else if outcome === "rejected"}
+    <div
+      class="mt-2 flex items-center gap-1.5 rounded border border-muted-foreground/30 bg-muted/40 px-2 py-1 text-xs text-muted-foreground"
+    >
+      <X class="size-3" />
+      <span>Rejected.</span>
+    </div>
+  {:else if proposalId && queueUrl && csrfToken}
+    <!-- v0.2.62 — inline action buttons. Disabled while a
+         submission is in flight. -->
+    <div class="mt-2 flex items-center gap-2">
+      <Button
+        type="button"
+        size="sm"
+        variant={isDestructive ? "destructive" : "default"}
+        disabled={outcome === "approving" || outcome === "rejecting"}
+        onclick={() => postAction("approve")}
+        data-testid="propose-approve"
+      >
+        <Check class="mr-1 size-3" />
+        {outcome === "approving" ? "Approving…" : "Approve"}
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        disabled={outcome === "approving" || outcome === "rejecting"}
+        onclick={() => postAction("reject")}
+        data-testid="propose-reject"
+      >
+        <X class="mr-1 size-3" />
+        {outcome === "rejecting" ? "Rejecting…" : "Reject"}
+      </Button>
+      <a
+        href={queueUrl}
+        class={`${buttonVariants({ variant: "ghost", size: "sm" })} ml-auto inline-flex items-center gap-1 text-muted-foreground`}
+        title="Open the queue in a new view to see the full preview"
+      >
+        <span class="text-xs">Queue</span>
+        <ExternalLink class="size-3" />
+      </a>
+    </div>
+  {:else if queueUrl}
+    <!-- Fallback: no csrf available; surface the link only. -->
     <a
       href={queueUrl}
       class={`${buttonVariants({ variant: "outline", size: "sm" })} mt-2 inline-flex items-center gap-1`}
@@ -63,5 +190,9 @@
       <span>Review at {queueUrl}</span>
       <ExternalLink class="size-3" />
     </a>
+  {/if}
+
+  {#if outcomeError}
+    <p class="mt-2 text-xs text-destructive" data-testid="propose-error">{outcomeError}</p>
   {/if}
 </div>

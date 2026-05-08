@@ -826,6 +826,7 @@
                     content={m.content}
                     ok={true}
                     args={m.toolArgs ?? {}}
+                    {csrfToken}
                   />
                   {#if m.toolName === "edit_module" && typeof m.toolArgs?.moduleId === "string" && typeof m.toolArgs?.html === "string"}
                     {@const moduleId = m.toolArgs.moduleId as string}
