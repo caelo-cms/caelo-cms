@@ -688,6 +688,18 @@ export async function* runChatTurn(
         ...(own.length > 0
           ? [
               "Your queued proposals — DO NOT re-propose any of these. Tell the user they're already pending, or use `cancel_proposal` to withdraw.",
+              // v0.2.64 — chat UI surfaces these proposals as a sticky
+              // strip at the top of the transcript with inline
+              // Approve / Reject buttons (shipped v0.2.62 / v0.2.63).
+              // When the operator asks "where's the approve button?",
+              // tell them: "scroll to the top of THIS chat — there's
+              // an amber 'Pending your approval' strip with the
+              // Approve button right there." Do NOT direct them to
+              // /security/<domain>/pending unless they explicitly
+              // want the full preview view; the strip is the fast
+              // path. Pre-v0.2.62 instances may not have the strip,
+              // so /security/pending is the safe fallback.
+              "When directing the operator to approve a queued proposal: tell them to look for the amber 'Pending your approval' strip at the top of this chat panel — each row has inline Approve / Reject buttons. They don't need to navigate to /security/<domain>/pending; the strip and the original tool-card both have one-click approve. If the strip isn't visible after a recent upgrade, ask the operator to hard-refresh.",
               ...lines,
             ]
           : []),
