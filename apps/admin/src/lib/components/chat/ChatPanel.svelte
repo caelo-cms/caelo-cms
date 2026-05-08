@@ -188,6 +188,69 @@
   // server-side before yielding tool-call) appears as silence.
   // Cleared on done.
   let currentActivity = $state<string | null>(null);
+  // v0.2.63 — Pending proposals strip (sticky at the top of the
+  // transcript). Surfaces every queued propose_* originating from
+  // THIS chat so the operator can Approve / Reject without scrolling
+  // up to find the original tool-card. Refreshed on mount + after
+  // every successful tool-result. The endpoint is read-only; Approve
+  // / Reject post to the existing /security/<domain>/pending form
+  // actions (same path ProposeCard uses).
+  interface PendingProposal {
+    proposalId: string;
+    domain: string;
+    kind: string;
+    summary: string;
+    proposedAt: string;
+    queueUrl: string;
+  }
+  let pendingProposals = $state<PendingProposal[]>([]);
+  let pendingActioning = $state<Record<string, "approving" | "rejecting" | null>>({});
+
+  async function loadPendingProposals(): Promise<void> {
+    try {
+      const res = await fetch(`/content/chat/${session.id}/pending`, {
+        headers: { accept: "application/json" },
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { items?: PendingProposal[] };
+      pendingProposals = data.items ?? [];
+    } catch {
+      // Pending strip is best-effort. A network blip leaves the
+      // existing list intact rather than wiping it.
+    }
+  }
+
+  async function actOnPending(
+    proposalId: string,
+    queueUrl: string,
+    action: "approve" | "reject",
+  ): Promise<void> {
+    pendingActioning = {
+      ...pendingActioning,
+      [proposalId]: action === "approve" ? "approving" : "rejecting",
+    };
+    try {
+      const fd = new FormData();
+      fd.set("_csrf", csrfToken);
+      fd.set("proposalId", proposalId);
+      const res = await fetch(`${queueUrl}?/${action}`, {
+        method: "POST",
+        body: fd,
+        headers: { accept: "application/json" },
+      });
+      if (res.ok) {
+        // Optimistically drop the row; reload to reflect any
+        // server-side state shifts (e.g., other proposals that
+        // chained on this one).
+        pendingProposals = pendingProposals.filter((p) => p.proposalId !== proposalId);
+        void loadPendingProposals();
+      } else {
+        pendingActioning = { ...pendingActioning, [proposalId]: null };
+      }
+    } catch {
+      pendingActioning = { ...pendingActioning, [proposalId]: null };
+    }
+  }
   let pendingChanges = $state(0);
   /** P6.7.3 — surface SSE error events + failed tool results so users
    *  see a banner instead of a silent no-op when the AI stack errors. */
@@ -484,6 +547,10 @@
    * user can select N elements then send "make them all green" in one turn.
    */
   onMount(() => {
+    // v0.2.63 — initial fetch of pending proposals scoped to this
+    // chat. Subsequent refreshes are triggered by tool-result events
+    // (the runner just queued or executed something).
+    void loadPendingProposals();
     const handler = (ev: Event) => {
       const detail = (ev as CustomEvent).detail as Chip | undefined;
       if (!detail || typeof detail.moduleId !== "string") return;
@@ -624,6 +691,16 @@
               const meta = toolCallMeta.get(String(ev["toolCallId"] ?? ""));
               const name = meta?.name ?? "tool";
               currentActivity = okFlag ? `${name} ok — continuing…` : `${name} failed`;
+              // v0.2.63 — refresh the pending strip when a propose_*
+              // tool succeeds (new row queued) OR when an
+              // execute_proposal succeeds (row marked applied → drops
+              // out of the strip's filter).
+              if (
+                okFlag &&
+                (name.startsWith("propose_") || name.endsWith(".execute_proposal"))
+              ) {
+                void loadPendingProposals();
+              }
             } else if (ev["kind"] === "tool-result-cached") {
               currentActivity = "Re-using cached result…";
             } else if (ev["kind"] === "assistant-message-saved") {
@@ -808,6 +885,64 @@
           compact ? "min-h-0 flex-1" : "h-[calc(100vh-12rem)]",
         )}
       >
+        <!-- v0.2.63 — Pending proposals strip. Appears above the
+             transcript whenever AI-queued proposals from THIS chat
+             are awaiting Owner action. Click Approve here instead of
+             scrolling up to the original tool-card OR navigating to
+             /security/<domain>/pending. Drops out as soon as the row
+             flips to applied / rejected. -->
+        {#if pendingProposals.length > 0}
+          <div
+            class="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs"
+            data-testid="chat-pending-strip"
+          >
+            <div class="mb-1.5 flex items-center gap-2 text-amber-700 dark:text-amber-400">
+              <span class="font-semibold">⏳ Pending your approval</span>
+              <span class="text-muted-foreground"
+                >({pendingProposals.length}
+                {pendingProposals.length === 1 ? "proposal" : "proposals"})</span
+              >
+            </div>
+            <ul class="space-y-1.5">
+              {#each pendingProposals as p (p.proposalId)}
+                <li class="flex items-center gap-2 rounded border bg-card p-1.5">
+                  <span class="font-mono text-[10px] text-muted-foreground"
+                    >{p.proposalId.slice(0, 8)}…</span
+                  >
+                  <span class="font-mono text-[10px] text-muted-foreground"
+                    >{p.domain}.{p.kind}</span
+                  >
+                  <span class="truncate">{p.summary}</span>
+                  <span class="ml-auto flex items-center gap-1.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={/^(delete|remove|revert|clear|deactivate|cancel)/i.test(p.kind)
+                        ? "destructive"
+                        : "default"}
+                      disabled={pendingActioning[p.proposalId] !== undefined &&
+                        pendingActioning[p.proposalId] !== null}
+                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "approve")}
+                      data-testid="pending-approve"
+                    >
+                      {pendingActioning[p.proposalId] === "approving" ? "Approving…" : "Approve"}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={pendingActioning[p.proposalId] !== undefined &&
+                        pendingActioning[p.proposalId] !== null}
+                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "reject")}
+                    >
+                      {pendingActioning[p.proposalId] === "rejecting" ? "Rejecting…" : "Reject"}
+                    </Button>
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
         <div class="relative flex min-h-0 flex-1">
           <ul
             bind:this={transcriptEl}
