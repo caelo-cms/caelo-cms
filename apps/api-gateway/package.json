@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/api-gateway",
-  "version": "0.2.58",
+  "version": "0.2.59",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",

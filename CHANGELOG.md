@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.59
+
+### Fixes
+- d7f916f SSE keep-alive ping + X-Accel-Buffering: no — fix proxy idle-timeout aborts (v0.2.59)
+
 ## v0.2.58
 
 ### Fixes
