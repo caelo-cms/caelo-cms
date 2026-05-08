@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.70
+
+### Fixes
+- 8370476 inspect-page-render typecheck + add AI SDK deps for v0.3.0 spike (v0.2.70)
+
 ## v0.2.69
 
 ### Features
