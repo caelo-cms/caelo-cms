@@ -73,6 +73,14 @@ export const templateCreateSchema = z
   })
   .strict();
 
+export const templateBlockSchema = z
+  .object({
+    name: slugSchema,
+    displayName: displayNameSchema,
+    position: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const templateUpdateSchema = z
   .object({
     templateId: z.string().uuid(),
@@ -81,14 +89,19 @@ export const templateUpdateSchema = z
     css: z.string().max(TEMPLATE_CSS_MAX).optional(),
     /** P6.7.6 — re-point the template to a different layout. */
     layoutId: z.string().uuid().optional(),
-  })
-  .strict();
-
-export const templateBlockSchema = z
-  .object({
-    name: slugSchema,
-    displayName: displayNameSchema,
-    position: z.number().int().nonnegative(),
+    /**
+     * v0.2.65 — Optional block-set replacement. When present, the
+     * update atomically applies the provided block list to
+     * `template_blocks` (DELETE-then-INSERT, same path as
+     * `template_blocks.set`). Critical for AI-driven flows: the AI's
+     * `propose_update_template` previously only wrote the html string
+     * and never touched the block table, so an approved proposal that
+     * added `<!-- block:content -->` markup left the page unable to
+     * find a "content" block. Allowing blocks here lets one
+     * propose+execute round add both the markup AND the block
+     * definition atomically.
+     */
+    blocks: z.array(templateBlockSchema).optional(),
   })
   .strict();
 

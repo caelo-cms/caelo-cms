@@ -241,10 +241,39 @@ export const getPageWithModulesOp = defineOperation({
       });
       grouped.set(r.block_name, arr);
     }
+    // v0.2.65 — Surface ALL template blocks, even those the page hasn't
+    // assigned modules to yet. Pre-v0.2.65 this op only returned blocks
+    // that had at least one module in `page_modules`, so a fresh page on
+    // a template with valid blocks reported `blocks: []` and the AI's
+    // `add_module_to_page` validator failed with "block 'X' does not
+    // exist on this page's template. Available blocks: ".
+    //
+    // The page's blocks are defined by `template_blocks` for its
+    // template_id. Pull those in sorted order, then merge with the
+    // module assignments computed above. Empty blocks return as
+    // `{blockName, modules: []}`.
+    const blockDefRows = (await tx.execute(sql`
+      SELECT name, position FROM template_blocks
+      WHERE template_id = ${pageRow.template_id}::uuid
+      ORDER BY position ASC
+    `)) as unknown as { name: string; position: number }[];
+    const orderedBlocks = blockDefRows.map((b) => ({
+      blockName: b.name,
+      modules: grouped.get(b.name) ?? [],
+    }));
+    // Stragglers: any `page_modules` rows referencing a block name
+    // that's no longer on the template (e.g., the template was edited
+    // to drop a block but page_modules still has rows). Append them
+    // last so the editor can see + clean them up.
+    for (const [blockName, modules] of grouped) {
+      if (!blockDefRows.some((b) => b.name === blockName)) {
+        orderedBlocks.push({ blockName, modules });
+      }
+    }
     return ok({
       page: {
         ...rowToPage(pageRow),
-        blocks: [...grouped.entries()].map(([blockName, modules]) => ({ blockName, modules })),
+        blocks: orderedBlocks,
       },
     });
   },

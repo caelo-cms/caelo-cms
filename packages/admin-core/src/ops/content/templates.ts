@@ -275,9 +275,46 @@ export const updateTemplateOp = defineOperation({
       css: input.css,
       layout_id: input.layoutId !== undefined ? sql`${input.layoutId}::uuid` : undefined,
     });
-    await tx.execute(sql`
-      UPDATE templates SET ${sets} WHERE id = ${input.templateId}::uuid
-    `);
+    // buildPatchSet returns an empty fragment when nothing changed —
+    // running an UPDATE with no SETs is invalid SQL. Skip the UPDATE
+    // when only `blocks` was provided.
+    const hasScalarPatch =
+      input.displayName !== undefined ||
+      input.html !== undefined ||
+      input.css !== undefined ||
+      input.layoutId !== undefined;
+    if (hasScalarPatch) {
+      await tx.execute(sql`
+        UPDATE templates SET ${sets} WHERE id = ${input.templateId}::uuid
+      `);
+    }
+    // v0.2.65 — Atomic block-set replace when the payload includes
+    // blocks. Same DELETE-then-INSERT shape as `template_blocks.set`;
+    // running it inside the same transaction means a partial failure
+    // leaves zero changes (the propose/execute pattern guarantees
+    // atomicity per CLAUDE.md §11.A).
+    if (input.blocks !== undefined) {
+      const seen = new Set<string>();
+      for (const b of input.blocks) {
+        if (seen.has(b.name)) {
+          return err({
+            kind: "HandlerError",
+            operation: "templates.update",
+            message: `duplicate block name in blocks payload: ${b.name}`,
+          });
+        }
+        seen.add(b.name);
+      }
+      await tx.execute(
+        sql`DELETE FROM template_blocks WHERE template_id = ${input.templateId}::uuid`,
+      );
+      for (const b of input.blocks) {
+        await tx.execute(sql`
+          INSERT INTO template_blocks (template_id, name, display_name, position)
+          VALUES (${input.templateId}::uuid, ${b.name}, ${b.displayName}, ${b.position})
+        `);
+      }
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
