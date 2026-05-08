@@ -379,7 +379,16 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
     "Spawn ONE subagent to take a fresh, focused angle on a task — its own context window + tool catalogue + auto-engaged skill. The subagent's matcher engages whichever skill its task wording scores highest against (e.g. role='qa', task='QA the new article' → engages qa-check). " +
     "Use spawn_subagents (plural) when you need MULTIPLE angles in parallel. Single is for one-off deeper-research tasks where you don't have multiple to fan out. " +
     "BLOCKS until the subagent finishes (typical: 5-30s). Returns the subagent's parsed verdict + cost + duration. Subagents are read-only by default (allowedToolNames defaults exclude writes). " +
-    "DO NOT use for one-line edits or quick lookups — use a regular tool. Subagents earn their cost when work is multi-step + needs an isolated reasoning context.",
+    "DO NOT use for one-line edits or quick lookups — use a regular tool. Subagents earn their cost when work is multi-step + needs an isolated reasoning context. " +
+    // v0.2.68 — explicit return-shape schemas. Pre-v0.2.68 the AI saw
+    // only the enum names and had to guess the JSON shape; mismatches
+    // landed as cryptic "shape mismatch" errors. Each shape now has
+    // its required JSON form right in the description.
+    "RETURN-SHAPE CONTRACT — when you set `expectedReturnShape`, you MUST include the matching JSON instruction VERBATIM in the `task` field so the subagent returns the right structure: " +
+    '"verdict" → subagent must return JSON: {pass: boolean, issues: (string|object)[], suggestions?: string[]}. Use for QA / audit / review tasks ("does X meet Y criteria?"). ' +
+    '"tree" → subagent must return JSON: {tree: any[], rationale?: string}. Use for hierarchical-structure tasks (sitemap, nav tree, IA outline). ' +
+    '"freeform" → subagent returns either {text: "..."} JSON or raw text (auto-wrapped). Use when the response is prose / narrative without a fixed structure. ' +
+    "When in doubt, pick `freeform` — the parse can't fail. Pick `verdict` or `tree` only when you've explicitly told the subagent to return that shape in the task prompt.",
   schema: spawnSubagentToolInput,
   inputSchema: {
     type: "object",
@@ -387,9 +396,20 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
     required: ["role", "task"],
     properties: {
       role: { type: "string", minLength: 1, maxLength: 120 },
-      task: { type: "string", minLength: 1, maxLength: 8000 },
+      task: {
+        type: "string",
+        minLength: 1,
+        maxLength: 8000,
+        description:
+          'When using expectedReturnShape="verdict" or "tree", include the JSON-shape instruction verbatim in the task (e.g. "Return JSON: {pass: boolean, issues: string[]}") — the subagent has no other way to know what to emit.',
+      },
       allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
-      expectedReturnShape: { type: "string", enum: ["verdict", "tree", "freeform"] },
+      expectedReturnShape: {
+        type: "string",
+        enum: ["verdict", "tree", "freeform"],
+        description:
+          "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; freeform={text:string} or raw text. PICK FREEFORM unless you're explicitly instructing the subagent to emit verdict/tree JSON.",
+      },
       maxCostMicrocents: { type: "integer", minimum: 0 },
       timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
       activePageId: { type: "string", format: "uuid" },
@@ -411,7 +431,13 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
     "Spawn MULTIPLE subagents in parallel. Each subagent gets its own context window + auto-engaged skill (matcher fires inside each subagent based on its task wording). All subagents run concurrently; this tool BLOCKS until all finish. " +
     "Use this when a task benefits from multiple angles in parallel — e.g. drafting an article and validating it via QA + legal + brand-voice review (3 parallel verdicts), or auditing a structure via a current-state auditor + a fresh-proposal generator (2 parallel angles). " +
     "Returns ONE bundled tool result with each subagent's parsed verdict + cost + duration, keeping the prompt-cache prefix clean. Subagents are read-only by default. " +
-    "Cap: 8 parallel subagents per call. Each subagent has its own per-spawn cost cap (default $0.50) + timeout (default 60s); the batch overall is capped at $2.00 unless overridden via env.",
+    "Cap: 8 parallel subagents per call. Each subagent has its own per-spawn cost cap (default $0.50) + timeout (default 60s); the batch overall is capped at $2.00 unless overridden via env. " +
+    // v0.2.68 — same return-shape guidance as spawn_subagent.
+    "RETURN-SHAPE CONTRACT (per subagent) — when you set `expectedReturnShape`, you MUST include the matching JSON instruction VERBATIM in that subagent's `task`: " +
+    '"verdict" → {pass: boolean, issues: (string|object)[], suggestions?: string[]}; ' +
+    '"tree" → {tree: any[], rationale?: string}; ' +
+    '"freeform" → {text: string} or raw text. ' +
+    "When in doubt, pick `freeform` per-subagent.",
   schema: spawnSubagentsToolInput,
   inputSchema: {
     type: "object",
@@ -428,9 +454,20 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
           required: ["role", "task"],
           properties: {
             role: { type: "string", minLength: 1, maxLength: 120 },
-            task: { type: "string", minLength: 1, maxLength: 8000 },
+            task: {
+              type: "string",
+              minLength: 1,
+              maxLength: 8000,
+              description:
+                'When using expectedReturnShape="verdict" or "tree", include the JSON-shape instruction verbatim in the task (e.g. "Return JSON: {pass: boolean, issues: string[]}").',
+            },
             allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
-            expectedReturnShape: { type: "string", enum: ["verdict", "tree", "freeform"] },
+            expectedReturnShape: {
+              type: "string",
+              enum: ["verdict", "tree", "freeform"],
+              description:
+                "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; freeform={text:string} or raw. PICK FREEFORM when not explicitly instructing the subagent to emit verdict/tree JSON.",
+            },
             maxCostMicrocents: { type: "integer", minimum: 0 },
             timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
             activePageId: { type: "string", format: "uuid" },
