@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.65
+
+### Fixes
+- f4bc74b pages.get_with_modules surfaces empty template_blocks; templates.update accepts blocks (v0.2.65)
+
 ## v0.2.64
 
 ### Fixes
