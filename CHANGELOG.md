@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.66
+
+### Fixes
+- bf4ef84 teach the AI that template render slots are <caelo-slot>, not HTML comments (v0.2.66)
+
 ## v0.2.65
 
 ### Fixes
