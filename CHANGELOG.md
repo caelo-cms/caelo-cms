@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.67
+
+### Fixes
+- 50a33d9 surface raw output + observed keys when verdict shape parse fails (v0.2.67)
+
 ## v0.2.66
 
 ### Fixes
