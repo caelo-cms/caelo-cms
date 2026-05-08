@@ -53,8 +53,19 @@ function canonicalize(value: unknown): string {
 /**
  * Resolves the chat session id from a chat branch id. Returns null
  * when the AI is calling outside a chat (e.g. background workers,
- * MCP without a fresh session). Cached at the row level per chat
- * branch since the relationship doesn't change after creation.
+ * MCP without a fresh session).
+ *
+ * v0.2.61 — Fix: there is no `chat_branches` table. The original
+ * query (`SELECT chat_session_id FROM chat_branches WHERE id = $1`)
+ * referenced a table that never existed in any migration; every
+ * `propose_*` op dispatched from an AI chat threw "Failed query"
+ * and propagated up as a failed tool_result. Symptom:
+ * "templates.propose_update failed: Failed query: SELECT
+ * chat_session_id::text ... FROM chat_branches WHERE id = $1::uuid".
+ *
+ * The actual schema is one-to-one: each `chat_sessions` row owns a
+ * unique `chat_branch_id` (NOT NULL UNIQUE column). Look the
+ * session up by branch id directly on `chat_sessions`.
  */
 export async function resolveChatSessionId(
   tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
@@ -62,8 +73,8 @@ export async function resolveChatSessionId(
 ): Promise<string | null> {
   if (!chatBranchId) return null;
   const rows = (await tx.execute(sql`
-    SELECT chat_session_id::text AS chat_session_id
-    FROM chat_branches WHERE id = ${chatBranchId}::uuid LIMIT 1
+    SELECT id::text AS chat_session_id
+    FROM chat_sessions WHERE chat_branch_id = ${chatBranchId}::uuid LIMIT 1
   `)) as unknown as Array<{ chat_session_id: string }>;
   return rows[0]?.chat_session_id ?? null;
 }
