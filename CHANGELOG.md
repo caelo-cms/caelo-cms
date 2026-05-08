@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.71
+
+### Tests
+- 3aa4732 SDK migration preflight spikes — all three checks PASS (v0.2.71)
+
 ## v0.2.70
 
 ### Fixes
