@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.68
+
+### Fixes
+- 549bd7d expose verdict/tree/freeform schemas to the AI in tool descriptions (v0.2.68)
+
 ## v0.2.67
 
 ### Fixes
