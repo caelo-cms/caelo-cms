@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.69
+
+### Features
+- 27df92c inspect_page_render tool — give the AI eyes on the rendered cascade (v0.2.69)
+
 ## v0.2.68
 
 ### Fixes
