@@ -33,6 +33,7 @@
     "cmdk-sv": "^0.0.19",
     "dompurify": "^3",
     "file-type": "^19",
+    "html2canvas": "1.4.1",
     "lucide-svelte": "^1.0.1",
     "marked": "^14",
     "mode-watcher": "^1.1.0",

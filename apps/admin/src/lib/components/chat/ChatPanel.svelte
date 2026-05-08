@@ -263,6 +263,140 @@
   );
 
   /**
+   * v0.3.1 — Capture the preview iframe via html2canvas and upload
+   * the PNG to the screenshot endpoint, which resolves the
+   * server-side `awaitScreenshot` Promise so the AI's
+   * `screenshot_page` tool returns the image bytes.
+   *
+   * Iframe source: `/edit/preview-by-path/<locale>/<slug>?branch=<chatBranchId>`
+   * — same URL the live-edit overlay uses. Capture is same-origin
+   * (admin-served), so html2canvas can read the contentDocument.
+   *
+   * Failure paths: if the iframe doesn't load, html2canvas throws,
+   * or the operator closed the tab during capture, we POST the
+   * `errorMessage` field so the SSE-side rejects cleanly + the AI
+   * can recover (per v0.2.52 tool-error path).
+   */
+  async function handleScreenshotRequest(req: {
+    requestId: string;
+    pageId: string;
+    chatBranchId?: string;
+    viewport: "desktop" | "tablet" | "mobile";
+  }): Promise<void> {
+    const VIEWPORT_DIMS = {
+      desktop: { width: 1280, height: 800 },
+      tablet: { width: 768, height: 1024 },
+      mobile: { width: 375, height: 812 },
+    };
+    const { width, height } = VIEWPORT_DIMS[req.viewport];
+
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.left = "-99999px";
+    iframe.style.top = "-99999px";
+    iframe.style.width = `${width}px`;
+    iframe.style.height = `${height}px`;
+    iframe.style.border = "0";
+    iframe.style.visibility = "hidden";
+    // The preview path needs locale + slug. We don't know them from
+    // the SSE event (only pageId + chatBranchId), so use the
+    // pages/preview pageId-based route which the editor iframe also
+    // uses. Builds the right URL server-side based on pageId.
+    const params = new URLSearchParams();
+    if (req.chatBranchId) params.set("branch", req.chatBranchId);
+    iframe.src = `/edit/preview/${req.pageId}${params.size > 0 ? `?${params}` : ""}`;
+    document.body.appendChild(iframe);
+
+    const uploadFailure = async (msg: string): Promise<void> => {
+      try {
+        await fetch(`/content/chat/${session.id}/screenshot/${req.requestId}`, {
+          method: "POST",
+          headers: { "x-csrf-token": csrfToken, "content-type": "application/json" },
+          body: JSON.stringify({ errorMessage: msg }),
+        });
+      } catch {
+        // best effort — server-side will time out at 30s anyway
+      } finally {
+        iframe.remove();
+      }
+    };
+
+    try {
+      // Wait for iframe load (or timeout). Capture happens on the
+      // load event so html2canvas sees the rendered DOM.
+      await new Promise<void>((resolve, reject) => {
+        const onLoad = (): void => {
+          iframe.removeEventListener("load", onLoad);
+          resolve();
+        };
+        iframe.addEventListener("load", onLoad);
+        setTimeout(() => reject(new Error("iframe load timeout (10s)")), 10_000);
+      });
+
+      const doc = iframe.contentDocument;
+      if (!doc) {
+        await uploadFailure("iframe contentDocument is null (cross-origin?)");
+        return;
+      }
+      // Dynamic import keeps html2canvas out of the main bundle —
+      // only loaded when the AI actually requests a screenshot.
+      const { default: html2canvas } = await import("html2canvas");
+      const canvas = await html2canvas(doc.body, {
+        width,
+        height,
+        windowWidth: width,
+        windowHeight: height,
+        scale: 1,
+        // useCORS lets the canvas pull in cross-origin images
+        // (CDN media). foreignObjectRendering=false avoids a
+        // Chromium quirk where SVGs in foreignObject fail to taint
+        // the canvas — important for read-back.
+        useCORS: true,
+        foreignObjectRendering: false,
+        logging: false,
+      });
+      // toBlob → base64. We strip the data:image/png;base64, prefix
+      // because the upload endpoint expects raw base64.
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, "image/png"),
+      );
+      if (!blob) {
+        await uploadFailure("canvas.toBlob returned null");
+        return;
+      }
+      const arrayBuffer = await blob.arrayBuffer();
+      // Convert ArrayBuffer → base64 in chunks to avoid hitting
+      // the call-stack limit for large images.
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = "";
+      const CHUNK = 0x8000;
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode(
+          ...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)),
+        );
+      }
+      const base64 = btoa(binary);
+
+      const res = await fetch(`/content/chat/${session.id}/screenshot/${req.requestId}`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrfToken, "content-type": "application/json" },
+        body: JSON.stringify({ base64 }),
+      });
+      if (!res.ok) {
+        // Best-effort: log + continue. The server-side awaitScreenshot
+        // will time out and the AI's tool result becomes a clean
+        // failure.
+        // biome-ignore lint/suspicious/noConsole: visibility for diagnosis
+        console.warn("[chat screenshot] upload failed", res.status);
+      }
+    } catch (e) {
+      await uploadFailure((e as Error).message ?? "unknown capture error");
+    } finally {
+      iframe.remove();
+    }
+  }
+
+  /**
    * v0.2.54 — flip extended thinking on/off via the page-server action.
    * Optimistic UI: toggle the local mirror first, fire the POST, revert
    * if the server rejects. SvelteKit form actions accept JSON-style
@@ -703,6 +837,19 @@
               }
             } else if (ev["kind"] === "tool-result-cached") {
               currentActivity = "Re-using cached result…";
+            } else if (ev["kind"] === "request-screenshot") {
+              // v0.3.1 — AI's screenshot_page tool asked the
+              // operator's browser to capture the preview iframe.
+              // Fire-and-forget; the capture + upload continues in
+              // the background. The next provider call will see the
+              // captured image attached as a multimodal user message.
+              currentActivity = "Capturing screenshot…";
+              void handleScreenshotRequest({
+                requestId: String(ev["requestId"] ?? ""),
+                pageId: String(ev["pageId"] ?? ""),
+                chatBranchId: typeof ev["chatBranchId"] === "string" ? ev["chatBranchId"] : undefined,
+                viewport: (ev["viewport"] as "desktop" | "tablet" | "mobile" | undefined) ?? "desktop",
+              });
             } else if (ev["kind"] === "assistant-message-saved") {
               currentActivity = "Continuing…";
             } else if (ev["kind"] === "usage") {

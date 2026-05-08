@@ -11,6 +11,12 @@ export {
   knownProviderNames,
 } from "./ai/provider-resolver.js";
 export * from "./ai/providers/index.js";
+export {
+  awaitScreenshot,
+  clearPendingScreenshots,
+  deliverScreenshot,
+  failScreenshot,
+} from "./ai/screenshot-orchestrator.js";
 export * from "./ai/system-prompt.js";
 export * from "./ai/tools/index.js";
 export * from "./audit.js";

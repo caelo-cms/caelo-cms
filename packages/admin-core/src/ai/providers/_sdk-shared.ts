@@ -35,6 +35,31 @@ import type { ChatMessageInput, GenerateInput, ProviderEvent } from "../provider
 export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessage[] {
   return messages.map((m): ModelMessage => {
     if (m.role === "user") {
+      // v0.3.0 — multimodal user messages. When a prior tool result
+      // delivered non-text content (e.g. screenshot_page returned a
+      // PNG), chat-runner builds a follow-up user message with the
+      // image attached via `additionalContent`. The SDK accepts an
+      // array of {type:"text"} | {type:"image"} parts.
+      if (m.additionalContent && m.additionalContent.length > 0) {
+        const parts: (
+          | { type: "text"; text: string }
+          | { type: "image"; image: string; mediaType: string }
+        )[] = [];
+        if (m.content.length > 0) parts.push({ type: "text", text: m.content });
+        for (const c of m.additionalContent) {
+          if (c.type === "text") parts.push({ type: "text", text: c.text });
+          else if (c.type === "image") {
+            // SDK accepts data URL for the `image` field; mediaType
+            // is informational so the provider knows the format.
+            parts.push({
+              type: "image",
+              image: `data:${c.mediaType};base64,${c.base64}`,
+              mediaType: c.mediaType,
+            });
+          }
+        }
+        return { role: "user", content: parts as ModelMessage["content"] } as ModelMessage;
+      }
       return { role: "user", content: m.content };
     }
     if (m.role === "assistant") {

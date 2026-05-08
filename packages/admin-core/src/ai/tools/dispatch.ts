@@ -62,11 +62,38 @@ export interface ToolContext {
    * push (every other tool) just leave it untouched.
    */
   readonly pushClientEvent?: (event: unknown) => void;
+  /**
+   * v0.3.1 — browser-mediated screenshot tool needs to wait for the
+   * operator's browser to capture + upload the image. When set, the
+   * tool can register itself with this orchestrator: it generates a
+   * requestId, the orchestrator returns a Promise that resolves when
+   * the SSE upload endpoint receives the image, and yields the
+   * `request-screenshot` SSE event so ChatPanel can perform the
+   * capture. Undefined when the tool is invoked outside an SSE chat
+   * (background workers, MCP, tests).
+   */
+  readonly requestScreenshot?: (req: {
+    pageId: string;
+    chatBranchId?: string;
+    viewport?: "desktop" | "tablet" | "mobile";
+    timeoutMs?: number;
+  }) => Promise<{ base64: string; mediaType: "image/png" }>;
 }
 
 export interface ToolResult {
   readonly ok: boolean;
   readonly content: string;
+  /**
+   * v0.3.0 — optional image attached to the result. When set, the
+   * chat-runner builds a follow-up multimodal user message
+   * (containing this image + a small "tool returned image" hint
+   * text) on the NEXT provider call, so the AI can reason over the
+   * image alongside the textual result. Used by `screenshot_page`.
+   */
+  readonly image?: {
+    base64: string;
+    mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  };
 }
 
 export interface ToolDefinitionWithHandler<I> {

@@ -24,10 +24,31 @@ export interface ToolDefinition {
 
 export interface ChatMessageInput {
   readonly role: "user" | "assistant" | "tool";
+  /**
+   * Plain text in the common case. v0.3.0 — when a tool result delivered
+   * non-text content (e.g. screenshot_page returns a PNG), the chat-runner
+   * builds a follow-up `user` message with structured `additionalContent`
+   * (image parts) alongside the text content. The SDK-mapper inlines
+   * the image into the next provider call as a multimodal user message;
+   * Anthropic + GPT-4o + Gemini all accept image content blocks via
+   * the AI SDK's normalized content shape.
+   */
   readonly content: string;
   readonly toolCalls?: readonly ProviderToolCall[];
   /** Set when role === "tool" — references the assistant's tool_use id. */
   readonly toolCallId?: string;
+  /**
+   * v0.3.0 — optional non-text content parts. Currently only image
+   * parts are produced (screenshot_page tool); future tools that emit
+   * audio / file attachments would extend the union here.
+   *
+   * Placement: each part rides ALONGSIDE `content` on the same
+   * message. The SDK-mapper composes them into a multimodal content
+   * array. The chat-runner does NOT persist these to chat_messages
+   * today — they're runtime-only (operator's screenshot is fed into
+   * the next provider call but not stored across sessions).
+   */
+  readonly additionalContent?: readonly ContentPart[];
   /**
    * v0.2.54 — extended-thinking blocks emitted by the model on a prior
    * assistant turn. When the chat-runner re-prompts after tool_results,
@@ -38,6 +59,17 @@ export interface ChatMessageInput {
    * otherwise. Empty array OR undefined = no thinking blocks.
    */
   readonly thinkingBlocks?: readonly ProviderThinkingBlock[];
+}
+
+export type ContentPart = TextPart | ImagePart;
+export interface TextPart {
+  readonly type: "text";
+  readonly text: string;
+}
+export interface ImagePart {
+  readonly type: "image";
+  readonly base64: string;
+  readonly mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
 }
 
 export interface ProviderThinkingBlock {

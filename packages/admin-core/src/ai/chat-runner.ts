@@ -1270,7 +1270,14 @@ export async function* runChatTurn(
         cachedLookup.ok &&
         (cachedLookup.value as { cached: { ok: boolean; content: string } | null }).cached;
 
-      let result: { ok: boolean; content: string };
+      let result: {
+        ok: boolean;
+        content: string;
+        image?: {
+          base64: string;
+          mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+        };
+      };
       if (cachedHit) {
         result = {
           ok: cachedHit.ok,
@@ -1297,7 +1304,15 @@ export async function* runChatTurn(
         // P11.5 commit 2 — Tier-1 plugin tools route through plugin-host's
         // runPluginOperation. Built-in tools fall through to tools.dispatch.
         const pluginTool = pluginToolsRegistry.resolve(call.name);
-        const dispatchPromise: Promise<{ ok: boolean; content: string }> = pluginTool
+        type DispatchValue = {
+          ok: boolean;
+          content: string;
+          image?: {
+            base64: string;
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+          };
+        };
+        const dispatchPromise: Promise<DispatchValue> = pluginTool
           ? runPluginOperation({
               pluginSlug: pluginTool.pluginSlug,
               operationName: pluginTool.spec.operationName,
@@ -1420,6 +1435,22 @@ export async function* runChatTurn(
         toolCallId: call.id,
       });
       messages.push({ role: "tool", content: result.content, toolCallId: call.id });
+      // v0.3.0 — when the tool returned an image (screenshot_page is
+      // the only producer today), append a multimodal user message
+      // so the AI sees the image alongside the text result on its
+      // next provider call. Image content is NOT persisted to
+      // chat_messages — it's runtime-only. After publish, the chat
+      // history shows only the text result; the image was consumed
+      // by the AI for that turn.
+      if (result.image) {
+        messages.push({
+          role: "user",
+          content: `[Screenshot returned by ${call.name}; analyse it for the operator's request.]`,
+          additionalContent: [
+            { type: "image", base64: result.image.base64, mediaType: result.image.mediaType },
+          ],
+        });
+      }
     }
   }
 

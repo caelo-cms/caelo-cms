@@ -68,6 +68,7 @@ import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
 import { renamePageTool } from "./rename-page.js";
 import { reorderModuleTool } from "./reorder-module.js";
+import { screenshotPageTool } from "./screenshot-page.js";
 import { setMediaAltTool } from "./set-media-alt.js";
 import { setNavMenuTool } from "./set-nav-menu.js";
 import { setPageSeoTool } from "./set-page-seo.js";
@@ -134,6 +135,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // v0.2.69 — render inspection. AI uses this BEFORE proposing CSS
   // / layout fixes so it sees the actual cascade instead of guessing.
   registry.register(inspectPageRenderTool);
+  // v0.3.1 — browser-mediated screenshot. For visual feedback only;
+  // CSS pathology should use inspect_page_render instead.
+  registry.register(screenshotPageTool);
   registry.register(bulkCreateRedirectsTool);
   registry.register(bulkDeleteRedirectsTool);
   registry.register(bulkOptimizeSeoTool);
