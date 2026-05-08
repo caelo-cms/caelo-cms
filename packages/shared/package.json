@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/shared",
-  "version": "0.2.62",
+  "version": "0.2.63",
   "private": false,
   "license": "MPL-2.0",
   "description": "Shared Zod schemas + types + the two-pass HTML composer used by every Caelo CMS workspace package. Stable enough for plugin authors and embedders to depend on directly.",

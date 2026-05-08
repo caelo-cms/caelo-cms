@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/plugin-component-kit",
-  "version": "0.2.62",
+  "version": "0.2.63",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",

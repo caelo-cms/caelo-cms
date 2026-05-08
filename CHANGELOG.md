@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.63
+
+### Features
+- ec6b0df pending-proposals strip — sticky inline approval UI for queued propose_* (v0.2.63)
+
 ## v0.2.62
 
 ### Features
