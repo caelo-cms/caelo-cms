@@ -522,8 +522,18 @@ export const proposeTemplateUpdateTool = makeProposeTool({
   opName: "templates.propose_update",
   pendingQueuePath: "/security/templates/pending",
   when:
-    "Propose updating a template's HTML/CSS/displayName/layoutId. " +
-    "Re-renders every page bound to the template — preview shows the count.",
+    "Propose updating a template's HTML/CSS/displayName/layoutId AND/OR " +
+    "the block-set (template_blocks). Re-renders every page bound to the " +
+    "template — preview shows the count. " +
+    "CRITICAL — block syntax: in `html`, render-slot markers MUST be " +
+    '`<caelo-slot name="X"></caelo-slot>` tags, NOT HTML comments. ' +
+    "Every block declared in `blocks` needs a matching `<caelo-slot " +
+    'name="<blockName>"></caelo-slot>` in `html` for the renderer to ' +
+    "inject the page's modules into it. Without the caelo-slot tag the " +
+    "modules attach to the right block name in the DB but the renderer " +
+    "has nowhere to put them and the page renders empty between header " +
+    "and footer. Send html + blocks together in ONE proposal so they " +
+    "apply atomically.",
   schema: z
     .object({
       templateId: uuid,
@@ -531,6 +541,15 @@ export const proposeTemplateUpdateTool = makeProposeTool({
       html: z.string().optional(),
       css: z.string().optional(),
       layoutId: uuid.optional(),
+      blocks: z
+        .array(
+          z.object({
+            name: z.string().min(1).max(64),
+            displayName: z.string().min(1).max(200),
+            position: z.number().int().nonnegative(),
+          }),
+        )
+        .optional(),
     })
     .strict(),
   inputSchema: {
@@ -540,9 +559,28 @@ export const proposeTemplateUpdateTool = makeProposeTool({
     properties: {
       templateId: { type: "string", format: "uuid" },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
-      html: { type: "string" },
+      html: {
+        type: "string",
+        description:
+          'Template HTML. Render slots use <caelo-slot name="X"></caelo-slot> tags (NOT HTML comments). One slot per block declared in `blocks`.',
+      },
       css: { type: "string" },
       layoutId: { type: "string", format: "uuid" },
+      blocks: {
+        type: "array",
+        description:
+          'Block-set definition. Each block name must have a matching <caelo-slot name="<name>"></caelo-slot> in `html`. Replaces the existing block set atomically (DELETE-then-INSERT). Omit to leave blocks unchanged.',
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name", "displayName", "position"],
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 64 },
+            displayName: { type: "string", minLength: 1, maxLength: 200 },
+            position: { type: "integer", minimum: 0 },
+          },
+        },
+      },
     },
   },
   summarize: (_input, preview) =>

@@ -28,7 +28,11 @@ export const createTemplateTool: ToolDefinitionWithHandler<
     "Use when the user wants a NEW page-type ('create a blog-post template', 'a landing-page layout'). " +
     "Do NOT use to create a one-off page — use `create_page` instead. " +
     "`layoutId` is optional: omit it to bind to the site default layout (see `## Site defaults`); " +
-    "pass a UUID from `## Layouts on this site` when the user asks for a non-default chrome.",
+    "pass a UUID from `## Layouts on this site` when the user asks for a non-default chrome. " +
+    'CRITICAL — block syntax: render slots in `html` MUST be <caelo-slot name="X"></caelo-slot> tags, ' +
+    "NOT HTML comments like <!-- block:X -->. The composer ignores comment-style markers and the page " +
+    "renders empty. Define block rows separately via the templates editor or " +
+    "propose_update_template's `blocks` field — every block name needs a matching <caelo-slot> in html.",
   schema: createTemplateToolInput,
   inputSchema: {
     type: "object",
