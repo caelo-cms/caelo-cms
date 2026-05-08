@@ -180,6 +180,14 @@
   // above the assistant streaming bubble. Cleared on `done` after
   // attaching to the persisted message via the page reload's data load.
   let streamingThinkingText = $state("");
+  // v0.2.60 — live activity pill. Updated on every SSE event so the
+  // operator sees a moving label between bursts of streaming text +
+  // tool-card landings. Without this, the gap between the AI's
+  // last text-delta and the first tool-start (Anthropic streams
+  // tool args via input_json_delta which our runner accumulates
+  // server-side before yielding tool-call) appears as silence.
+  // Cleared on done.
+  let currentActivity = $state<string | null>(null);
   let pendingChanges = $state(0);
   /** P6.7.3 — surface SSE error events + failed tool results so users
    *  see a banner instead of a silent no-op when the AI stack errors. */
@@ -525,6 +533,8 @@
     chips = chips.filter((c) => c.pinned);
     streaming = true;
     streamingText = "";
+    streamingThinkingText = "";
+    currentActivity = "Sending…";
     // Snap the composer back to one row after clearing it.
     queueMicrotask(autoSizeComposer);
     messages = [...messages, { id: `local-${Date.now()}`, role: "user", content: text }];
@@ -597,6 +607,29 @@
                   cost: debugUsage.cost + Number(ev["cost"] ?? 0),
                 };
               }
+            }
+            // v0.2.60 — live activity pill. Updated on every SSE
+            // event so the operator sees moving status between bursts
+            // of streaming text + tool-card landings. The set of
+            // labels intentionally maps to ONE per event kind so the
+            // pill changes visibly as the runner progresses.
+            if (ev["kind"] === "text-delta") {
+              currentActivity = "Writing…";
+            } else if (ev["kind"] === "thinking-delta") {
+              currentActivity = "Thinking…";
+            } else if (ev["kind"] === "tool-start") {
+              currentActivity = `Calling ${String(ev["name"] ?? "tool")}…`;
+            } else if (ev["kind"] === "tool-result") {
+              const okFlag = ev["ok"] === true;
+              const meta = toolCallMeta.get(String(ev["toolCallId"] ?? ""));
+              const name = meta?.name ?? "tool";
+              currentActivity = okFlag ? `${name} ok — continuing…` : `${name} failed`;
+            } else if (ev["kind"] === "tool-result-cached") {
+              currentActivity = "Re-using cached result…";
+            } else if (ev["kind"] === "assistant-message-saved") {
+              currentActivity = "Continuing…";
+            } else if (ev["kind"] === "usage") {
+              // No update; keep the prior activity pill visible.
             }
             if (ev["kind"] === "error") {
               chatError = typeof ev["message"] === "string" ? ev["message"] : "Chat failed.";
@@ -708,6 +741,7 @@
               streamingText = "";
               streamingThinkingText = "";
               streaming = false;
+              currentActivity = null;
             }
           } catch {
             // Tolerate non-JSON keepalive lines.
@@ -908,6 +942,22 @@
                     style="animation-delay: 300ms"
                   ></span>
                 </span>
+              </li>
+            {/if}
+            <!-- v0.2.60 — live activity pill. Visible whenever the
+                 streaming session is active and we have a label.
+                 Sits below the bubble so the operator always sees
+                 what step the runner is on, even during the gaps
+                 between bursts (text → tool args → tool dispatch). -->
+            {#if streaming && currentActivity}
+              <li
+                class="-mt-1 flex items-center gap-2 px-3 text-xs text-muted-foreground"
+                data-testid="chat-activity"
+              >
+                <span
+                  class="inline-block size-1.5 animate-pulse rounded-full bg-primary/70"
+                ></span>
+                <span class="font-mono">{currentActivity}</span>
               </li>
             {/if}
             {#if chatError}
