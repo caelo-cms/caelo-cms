@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.72
+
+### Refactors
+- 1073ebf Anthropic provider rewritten on Vercel AI SDK; same public shape (v0.2.72)
+
 ## v0.2.71
 
 ### Tests
