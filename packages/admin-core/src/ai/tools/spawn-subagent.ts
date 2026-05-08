@@ -343,9 +343,31 @@ function summarize(results: SubagentInvocationResult[]): string {
         `## ${r.role} (completed · ${r.durationMs}ms · $${cost})\n${JSON.stringify(r.resultJson, null, 2)}`,
       );
     } else {
-      lines.push(
-        `## ${r.role} (${r.status}${r.errorMessage ? ` — ${r.errorMessage}` : ""} · ${r.durationMs}ms · $${cost})`,
-      );
+      // v0.2.67 — include the subagent's raw output (when present) +
+      // a recovery hint so the parent AI can decide whether to retry,
+      // re-spawn with `expectedReturnShape: "freeform"`, or surface
+      // the underlying message to the user. Pre-v0.2.67 the parent
+      // saw only the verdict-shape Zod error and had no way to act on
+      // it. The shape-mismatch case sets resultJson = {raw: <first
+      // 4k of text>} per the parse-failure path; rendering it lets
+      // the parent see what the subagent actually said.
+      const header = `## ${r.role} (${r.status}${r.errorMessage ? ` — ${r.errorMessage}` : ""} · ${r.durationMs}ms · $${cost})`;
+      const rawText =
+        r.resultJson && typeof r.resultJson === "object" && "raw" in r.resultJson
+          ? String((r.resultJson as { raw: unknown }).raw ?? "")
+          : "";
+      const hint =
+        r.status === "errored" && r.errorMessage?.includes("shape mismatch")
+          ? 'Recovery: re-spawn this subagent with `expectedReturnShape: "freeform"` to read the raw output, OR adjust the subagent\'s `task` prompt to make the schema fit (e.g. include `Return JSON: {pass: boolean, issues: string[]}` verbatim in the task), OR surface the raw output below directly to the user.'
+          : null;
+      const sections: string[] = [header];
+      if (rawText) {
+        sections.push(`Subagent raw output (first 4 KB):\n${rawText}`);
+      }
+      if (hint) {
+        sections.push(hint);
+      }
+      lines.push(sections.join("\n\n"));
     }
   }
   return lines.join("\n\n");

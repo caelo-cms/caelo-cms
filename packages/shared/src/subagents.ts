@@ -193,14 +193,26 @@ export function parseSubagentResult(text: string, shape: ExpectedReturnShape): P
       error: `subagent response is not valid JSON: ${(e as Error).message}; first 200 chars: ${stripped.slice(0, 200)}`,
     };
   }
+  // v0.2.67 — when the schema rejects, include the actual top-level
+  // keys the subagent returned so the parent AI can tell whether the
+  // subagent ignored the schema entirely (returned freeform text under
+  // a different shape) vs. got close but mistyped a single field.
+  const observedKeys =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? Object.keys(parsed as Record<string, unknown>)
+      : [];
+  const observedSummary =
+    observedKeys.length > 0
+      ? ` got keys: [${observedKeys.slice(0, 8).join(", ")}]`
+      : ` got: ${typeof parsed} (${Array.isArray(parsed) ? "array" : "scalar"})`;
   if (shape === "verdict") {
     const validated = verdictReturnShape.safeParse(parsed);
     if (!validated.success) {
       return {
         ok: false,
-        error: `verdict shape mismatch: ${validated.error.issues
+        error: `verdict shape mismatch (expected {pass: boolean, issues: array, suggestions?: array}):${observedSummary}; ${validated.error.issues
           .slice(0, 3)
-          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
           .join("; ")}`,
       };
     }
@@ -211,9 +223,9 @@ export function parseSubagentResult(text: string, shape: ExpectedReturnShape): P
   if (!validated.success) {
     return {
       ok: false,
-      error: `tree shape mismatch: ${validated.error.issues
+      error: `tree shape mismatch (expected {tree: array, rationale?: string}):${observedSummary}; ${validated.error.issues
         .slice(0, 3)
-        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
         .join("; ")}`,
     };
   }
