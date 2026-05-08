@@ -155,6 +155,20 @@ export async function* runChatTurn(
   const maxLoops = options.maxToolLoops ?? 5;
   const startedAt = Date.now();
   const aborted = (): boolean => abortSignal?.aborted === true;
+  // v0.2.57 — entry breadcrumb. v0.2.55 added per-loop console.info(),
+  // but Cloud Run's stdout sink wasn't capturing it (Bun's adapter +
+  // SvelteKit prerender stack swallows console.info/log; only
+  // console.error reliably reaches the stderr stream). This entry
+  // line + the loop trace below both use console.error so they're
+  // guaranteed visible in the log explorer. Cost: a non-error log
+  // line shows with severity=ERROR in the Cloud Logging UI, which is
+  // ugly but workable and unambiguous.
+  console.error("[chat-runner] enter", {
+    chatSessionId: input.chatSessionId,
+    actorKind: aiCtx.actorKind,
+    maxLoops,
+    maxOutputTokens: options.maxOutputTokens,
+  });
 
   // 1. Persist the user message.
   const userContent =
@@ -1184,7 +1198,11 @@ export async function* runChatTurn(
     // hit "AI does step 1, says 'now I'll do step 2', then stops".
     // The pattern is the model emitting end_turn after a tool result
     // — invisible from the UI and previously silent in logs.
-    console.info("[chat-runner] loop", {
+    // v0.2.57 — bumped to console.error so Bun + SvelteKit's stdout
+    // path (which swallows console.info / console.log in production)
+    // doesn't drop it. Severity=ERROR in Cloud Logging is loud but
+    // beats invisibility.
+    console.error("[chat-runner] loop", {
       chatSessionId: input.chatSessionId,
       loop,
       loopStop,
