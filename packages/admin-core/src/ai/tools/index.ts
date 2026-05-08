@@ -27,6 +27,7 @@ import { editModuleTool } from "./edit-module.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
 import { generateImageTool } from "./generate-image.js";
+import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeAddLocaleTool } from "./propose-add-locale.js";
@@ -130,6 +131,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(optimizePageSeoTool);
   // P8 AI-first review pass — bulk variants + redirect surface.
   registry.register(findRedirectsTool);
+  // v0.2.69 — render inspection. AI uses this BEFORE proposing CSS
+  // / layout fixes so it sees the actual cascade instead of guessing.
+  registry.register(inspectPageRenderTool);
   registry.register(bulkCreateRedirectsTool);
   registry.register(bulkDeleteRedirectsTool);
   registry.register(bulkOptimizeSeoTool);
