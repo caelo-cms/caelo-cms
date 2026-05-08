@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.60
+
+### Features
+- c19bd33 live activity pill — show what the agent is doing during streaming (v0.2.60)
+
 ## v0.2.59
 
 ### Fixes
