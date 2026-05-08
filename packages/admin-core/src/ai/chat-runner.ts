@@ -163,6 +163,11 @@ export async function* runChatTurn(
   // guaranteed visible in the log explorer. Cost: a non-error log
   // line shows with severity=ERROR in the Cloud Logging UI, which is
   // ugly but workable and unambiguous.
+  // v0.2.58 — also emit when thinking is on so we can correlate
+  // long-streaming sessions ("AI stops mid-plan after 16s") with
+  // thinking budget — extended thinking turns can block on the
+  // model for 10-30s before the first text-delta lands; that window
+  // is where browser/proxy aborts tend to fire.
   console.error("[chat-runner] enter", {
     chatSessionId: input.chatSessionId,
     actorKind: aiCtx.actorKind,
@@ -232,6 +237,21 @@ export async function* runChatTurn(
   const thinkingBudget = thinkingEnabled
     ? (session.session.extendedThinkingBudgetTokens ?? 10000)
     : null;
+  // v0.2.58 — per-session forensics. Session is resolved here so we
+  // can correlate "AI stops mid-plan after 16s" with thinking config
+  // + history size + chip count. Important: extended thinking on a
+  // 10k budget can block the provider stream for 10-30s before the
+  // first text-delta lands — that window is where browser/proxy
+  // aborts tend to fire. If this log shows thinkingBudget=10000 +
+  // [chat stream] exception within 30s, the operator can flip the
+  // 🐞 Debug toggle off and verify the abort goes away.
+  console.error("[chat-runner] session", {
+    chatSessionId: input.chatSessionId,
+    thinkingEnabled,
+    thinkingBudget,
+    historyLen: session.messages.length,
+    chips: input.chips.length,
+  });
 
   // Provider message history is everything in the chat now (the user
   // message we just appended is in there too). v0.2.54 — thinking

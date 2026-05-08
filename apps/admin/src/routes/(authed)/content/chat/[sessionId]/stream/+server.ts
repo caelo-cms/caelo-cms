@@ -87,6 +87,16 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   // the browser tab mid-stream stops the loop and marks the in-flight
   // assistant message as 'interrupted'.
   const abortSignal = request.signal;
+  // v0.2.58 — Forensics: track when the connection aborts + how many
+  // events made it to the client before the connection closed. The
+  // user reported "AI stops mid-plan with no error in the chat" — the
+  // runner enters but the [chat-runner] loop log never fires, just an
+  // AbortError. With this tracking we can tell whether the abort
+  // came at byte 0 (proxy-side termination) or after N events (user
+  // / browser closed the tab).
+  const startedAt = Date.now();
+  let lastEventKind: string | null = null;
+  let eventsEnqueued = 0;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -116,24 +126,50 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         )) {
           if (abortSignal.aborted) break;
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          lastEventKind = ev.kind;
+          eventsEnqueued++;
         }
       } catch (e) {
-        // v0.2.52 — Always log to stderr so Cloud Run captures the
-        // breadcrumb. Without this, exceptions thrown inside the runner
-        // were caught + relayed to the client but invisible in the
-        // logging sink, blocking postmortem (the user reported
-        // operator-side stalls with zero ERROR-level rows in Cloud
-        // Run logs).
+        const elapsedMs = Date.now() - startedAt;
+        // v0.2.58 — distinguish abort sources. abortSignal.aborted ===
+        // true means the request was cancelled (browser closed tab,
+        // navigated away, sent a new message that aborted the prior
+        // fetch, or upstream proxy / IAP terminated). aborted=false
+        // with an exception means the runner threw — different bug
+        // class entirely.
         console.error("[chat stream] exception", {
           sessionId: params.sessionId,
+          aborted: abortSignal.aborted,
+          elapsedMs,
+          eventsEnqueued,
+          lastEventKind,
           error: e,
         });
-        if (!abortSignal.aborted) {
-          const message = e instanceof Error ? e.message : String(e);
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ kind: "error", message })}\n\n`),
-          );
+        // v0.2.58 — ALWAYS try to emit the error to the client. The
+        // pre-v0.2.58 guard `if (!abortSignal.aborted)` made sense
+        // when "abort always means the user closed the tab", but in
+        // practice we see aborts from upstream sources (Cloud Run,
+        // IAP, GCLB, browser auto-close on tab-suspend) where the
+        // operator is still looking at the page and would benefit
+        // from seeing "stream interrupted at <kind> after <ms>ms".
+        // The enqueue itself can throw if the stream is fully closed;
+        // wrap so the catch doesn't recurse.
+        const message = e instanceof Error ? e.message : String(e);
+        const isAbort =
+          abortSignal.aborted ||
+          (e instanceof Error &&
+            (e.name === "AbortError" || message.includes("connection was closed")));
+        const clientPayload = isAbort
+          ? {
+              kind: "error" as const,
+              message: `Stream interrupted after ${elapsedMs}ms / ${eventsEnqueued} events (last: ${lastEventKind ?? "—"}). Likely the browser tab, a new send, or a proxy closed the connection. If the AI was streaming, what arrived above is partial.`,
+            }
+          : { kind: "error" as const, message: `Server error: ${message}` };
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(clientPayload)}\n\n`));
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ kind: "done" })}\n\n`));
+        } catch {
+          // Stream is already fully torn down — nothing we can do.
         }
       } finally {
         controller.close();
