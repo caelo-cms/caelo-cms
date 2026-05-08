@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/static-generator",
-  "version": "0.2.57",
+  "version": "0.2.58",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",

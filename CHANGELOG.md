@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.58
+
+### Fixes
+- 733377e surface stream-abort to the chat UI + abort-source forensics (v0.2.58)
+
 ## v0.2.57
 
 ### Fixes
