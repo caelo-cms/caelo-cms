@@ -101,6 +101,24 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
+      // v0.2.59 — periodic SSE keep-alive. The Anthropic stream has
+      // natural idle pauses (1-3s between content blocks; sometimes
+      // longer between final text and the first tool_use). Without
+      // bytes flowing, GCLB / IAP / Cloud Run treat the HTTP/2 stream
+      // as idle and close it at ~14s (operator's reproducible
+      // elapsedMs across multiple traces). The standard fix: write
+      // a `:keepalive\n\n` SSE comment every 3s. Comments are part
+      // of the SSE spec — clients ignore them, but the bytes flush
+      // through proxies and reset their idle timers. Cleared when
+      // the stream finishes via the finally block.
+      const keepAlive = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": keepalive\n\n"));
+        } catch {
+          // Stream torn down; the finally below will clear this
+          // interval, so we don't accumulate dead writers.
+        }
+      }, 3000);
       try {
         for await (const ev of runChatTurn(
           {
@@ -172,6 +190,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
           // Stream is already fully torn down — nothing we can do.
         }
       } finally {
+        clearInterval(keepAlive);
         controller.close();
       }
     },
@@ -182,6 +201,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
       connection: "keep-alive",
+      // v0.2.59 — nginx-style hint to upstream proxies (including
+      // GCLB + IAP) that this response must NOT be buffered. SSE
+      // requires bytes to flush as they're produced; buffering would
+      // batch them and the client would see chunks land in big bursts
+      // (or never, if the buffer hits a size limit before the stream
+      // ends). Standard convention; harmless if the proxy doesn't
+      // recognise it.
+      "x-accel-buffering": "no",
     },
   });
 };
