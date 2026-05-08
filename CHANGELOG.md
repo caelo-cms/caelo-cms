@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.57
+
+### Fixes
+- 402526e switch chat-runner traces console.info → console.error so they actually reach Cloud Run logs (v0.2.57)
+
 ## v0.2.56
 
 ### Fixes
