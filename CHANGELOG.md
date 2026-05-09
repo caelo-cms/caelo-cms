@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.76
+
+### Fixes
+- e73421d pending-changes badge survives page reload (v0.2.76)
+
 ## v0.2.75
 
 ### Features
