@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.75
+
+### Features
+- a9f98b8 post-approval auto-reload + auto-continue (v0.2.75)
+
 ## v0.2.74
 
 ### Features
