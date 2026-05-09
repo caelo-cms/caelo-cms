@@ -224,6 +224,7 @@
     proposalId: string,
     queueUrl: string,
     action: "approve" | "reject",
+    kind?: string,
   ): Promise<void> {
     pendingActioning = {
       ...pendingActioning,
@@ -244,12 +245,63 @@
         // chained on this one).
         pendingProposals = pendingProposals.filter((p) => p.proposalId !== proposalId);
         void loadPendingProposals();
+        // v0.2.75 — propagate the approval so:
+        //   1. The /edit overlay's preview iframe reloads (the
+        //      proposal applied a change to the chat-branch
+        //      snapshot — the iframe needs to refetch).
+        //   2. The AI sees a follow-up message so it knows the
+        //      approval landed + continues without the operator
+        //      having to type "ok continue".
+        // Both are no-ops outside an /edit-overlay chat context.
+        if (action === "approve") {
+          onProposalApproved(kind, proposalId);
+        }
       } else {
         pendingActioning = { ...pendingActioning, [proposalId]: null };
       }
     } catch {
       pendingActioning = { ...pendingActioning, [proposalId]: null };
     }
+  }
+
+  /**
+   * v0.2.75 — Post-approval signaling. Two effects:
+   *   (a) Fire onToolResult so the /edit overlay's existing
+   *       handler reloads the preview iframe (mirrors the
+   *       iframe-reload that happens after every AI tool result).
+   *   (b) Auto-send a follow-up message to the AI naming the
+   *       approved proposal so it can continue immediately,
+   *       without the operator typing "ok continue".
+   * Both are best-effort and safe outside an /edit context.
+   */
+  function onProposalApproved(kind: string | undefined, proposalId: string): void {
+    // (a) iframe reload — same shape /edit's onAiToolResult expects.
+    onToolResult?.({
+      toolCallId: `approval-${proposalId}`,
+      ok: true,
+      content: "proposal applied",
+    });
+    // (b) auto-send a system-ish nudge to the AI. Only fire when
+    // we're not already mid-stream (don't interrupt an in-flight
+    // turn — the AI saw the approval queue at last turn-start).
+    if (streaming) return;
+    const label = kind ? `${kind} proposal` : "proposal";
+    void sendAutoMessage(
+      `Approved: ${label} ${proposalId.slice(0, 8)} applied to the chat branch. Please continue with what you were doing.`,
+    );
+  }
+
+  /**
+   * v0.2.75 — Programmatic send for system-driven follow-ups
+   * (post-approval). Reuses sendMessage by routing through composer
+   * — the operator briefly sees the auto-text in the composer before
+   * it clears, which makes the action visible. No-op if a turn is
+   * already in flight.
+   */
+  async function sendAutoMessage(text: string): Promise<void> {
+    if (streaming) return;
+    composer = text;
+    await sendMessage();
   }
   let pendingChanges = $state(0);
   /** P6.7.3 — surface SSE error events + failed tool results so users
@@ -1069,7 +1121,7 @@
                         : "default"}
                       disabled={pendingActioning[p.proposalId] !== undefined &&
                         pendingActioning[p.proposalId] !== null}
-                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "approve")}
+                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "approve", `${p.domain}.${p.kind}`)}
                       data-testid="pending-approve"
                     >
                       {pendingActioning[p.proposalId] === "approving" ? "Approving…" : "Approve"}
@@ -1109,6 +1161,7 @@
                     ok={true}
                     args={m.toolArgs ?? {}}
                     {csrfToken}
+                    onApproved={(info) => onProposalApproved(info.kind, info.proposalId)}
                   />
                   {#if m.toolName === "edit_module" && typeof m.toolArgs?.moduleId === "string" && typeof m.toolArgs?.html === "string"}
                     {@const moduleId = m.toolArgs.moduleId as string}

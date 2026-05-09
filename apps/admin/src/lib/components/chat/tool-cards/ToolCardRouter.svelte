@@ -34,8 +34,10 @@
      * is rendered outside a chat (none today, but contract is clean).
      */
     csrfToken?: string;
+    /** v0.2.75 — propagated to ProposeCard's Approve. */
+    onApproved?: (info: { proposalId: string; kind: string }) => void;
   }
-  let { name, content, ok, args = {}, csrfToken }: Props = $props();
+  let { name, content, ok, args = {}, csrfToken, onApproved }: Props = $props();
 
   // Domain-prefix bucketing for the propose tools (25 of them across
   // 13 domains; one card handles all).
@@ -62,7 +64,7 @@
     <span class="ml-1">{content}</span>
   </div>
 {:else if isPropose}
-  <ProposeCard {name} {content} {args} {csrfToken} />
+  <ProposeCard {name} {content} {args} {csrfToken} {onApproved} />
 {:else if name === "edit_module"}
   <EditModuleCard {content} {args} />
 {:else if isBulk}

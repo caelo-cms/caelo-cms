@@ -33,8 +33,14 @@
     /** Required to POST to the queue's ?/approve action. Optional
      *  for backwards-compat with any caller that doesn't have one. */
     csrfToken?: string;
+    /**
+     * v0.2.75 — Fires after a successful Approve. Lets the parent
+     * (ChatPanel) reload the preview iframe + auto-send a follow-up
+     * to the AI so it knows to continue.
+     */
+    onApproved?: (info: { proposalId: string; kind: string }) => void;
   }
-  let { name, content, args, csrfToken }: Props = $props();
+  let { name, content, args, csrfToken, onApproved }: Props = $props();
 
   // Parse "Queued proposal <id>: <summary>. ... /security/<path>/pending ..."
   const proposalMatch = $derived(content.match(/Queued proposal ([0-9a-f-]{36}):\s*([^.]+)\./));
@@ -100,6 +106,11 @@
         // Non-JSON body — assume success.
       }
       outcome = action === "approve" ? "applied" : "rejected";
+      // v0.2.75 — notify parent so the preview iframe reloads + the
+      // AI gets a continue-with-it message.
+      if (action === "approve" && proposalId) {
+        onApproved?.({ proposalId, kind: name.replace(/^propose_/, "") });
+      }
     } catch (e) {
       outcomeError = `${action} threw: ${(e as Error).message ?? "unknown"}`;
       outcome = null;
