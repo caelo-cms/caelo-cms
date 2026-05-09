@@ -166,12 +166,26 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // that actually have a pending edit; the previous fallback rendered
   // every module on the page.
   let branchEditedModuleIds: string[] = [];
+  // v0.2.76 — pre-loaded count of distinct entities (modules + pages
+  // + templates + page-layout bindings) edited on this chat branch.
+  // Initializes the toolbar's "N pending changes" badge so the count
+  // survives a page reload. Pre-v0.2.76 the badge was a local
+  // counter that incremented per AI tool result and reset to 0 on
+  // every reload — confusing when real changes were live on the
+  // branch.
+  let branchChangeCount = 0;
   if (activeChat) {
     const editedR = await execute(registry, adapter, locals.ctx, "chat.branch_edited_modules", {
       chatSessionId: activeChat.id,
     });
     if (editedR.ok) {
       branchEditedModuleIds = (editedR.value as { moduleIds: string[] }).moduleIds;
+    }
+    const countR = await execute(registry, adapter, locals.ctx, "chat.branch_change_count", {
+      chatSessionId: activeChat.id,
+    });
+    if (countR.ok) {
+      branchChangeCount = (countR.value as { count: number }).count;
     }
   }
 
@@ -238,6 +252,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     messages,
     modules,
     branchEditedModuleIds,
+    branchChangeCount,
     layout,
     translationBanner,
     /** P6.7.4 — chats bound to the active page (for the picker's "this page" group). */

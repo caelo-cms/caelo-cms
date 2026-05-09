@@ -66,7 +66,13 @@
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);
-  let pendingChanges = $state(0);
+  // v0.2.76 — initialize from server-loaded count of distinct
+  // entities edited on this chat branch. Pre-v0.2.76 this was a
+  // fresh `$state(0)` that incremented per AI tool result and reset
+  // to 0 on every reload — so the toolbar showed "10 pending
+  // changes" mid-session and "0 pending changes" after F5 even
+  // though real changes were still live on the branch.
+  let pendingChanges = $state(data.branchChangeCount ?? 0);
   let pendingSwitchTo = $state<string | null>(null);
   let dialogOpen = $state(false);
   // P6.7.3 — Edit mode toggle. ON: clicks in the iframe become chips.

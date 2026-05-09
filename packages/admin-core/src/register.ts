@@ -20,6 +20,7 @@ import {
 import { publishChatSessionOp } from "./ops/chat/publish.js";
 import {
   archiveChatSessionOp,
+  countBranchChangesOp,
   createChatSessionOp,
   getChatSessionOp,
   listBranchEditedModulesOp,
@@ -684,6 +685,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(cancelProposalOp);
   registry.register(completeOnboardingOp);
   registry.register(listBranchEditedModulesOp);
+  registry.register(countBranchChangesOp);
   // P7 — media library.
   registry.register(mediaUploadOp);
   registry.register(mediaListOp);

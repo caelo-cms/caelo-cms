@@ -457,3 +457,66 @@ export const listBranchEditedModulesOp = defineOperation({
     return ok({ moduleIds: rows.map((r) => r.module_id) });
   },
 });
+
+/**
+ * v0.2.76 — Count distinct entities edited on the chat branch
+ * across ALL entity kinds (modules + pages + templates + page-
+ * layout bindings). Drives the /edit toolbar's "N pending changes"
+ * badge so the count survives a page reload.
+ *
+ * Pre-v0.2.76 the badge was a local in-memory counter that
+ * incremented per successful AI tool result; on reload it reset
+ * to 0 even though real changes were live on the chat branch.
+ *
+ * The count is per-distinct-entity (deduped across multiple
+ * snapshots of the same module/page/etc.) — matches the operator's
+ * mental model of "things changed on this chat", not "tool calls
+ * issued".
+ */
+export const countBranchChangesOp = defineOperation({
+  name: "chat.branch_change_count",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ chatSessionId: z.string().uuid() }).strict(),
+  output: z.object({
+    count: z.number().int().nonnegative(),
+    byKind: z.object({
+      modules: z.number().int().nonnegative(),
+      pages: z.number().int().nonnegative(),
+      templates: z.number().int().nonnegative(),
+      pageLayouts: z.number().int().nonnegative(),
+    }),
+  }),
+  handler: async (_ctx, input, tx) => {
+    // Single query, four sub-counts. Each kind dedupes by its
+    // entity column. site_snapshots scoped to the chat's branch.
+    const rows = (await tx.execute(sql`
+      WITH branch AS (
+        SELECT ss.id AS snapshot_id
+        FROM site_snapshots ss
+        JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
+        WHERE cs.id = ${input.chatSessionId}::uuid
+      )
+      SELECT
+        (SELECT COUNT(DISTINCT module_id)::int   FROM module_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch))   AS modules,
+        (SELECT COUNT(DISTINCT page_id)::int     FROM page_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch))     AS pages,
+        (SELECT COUNT(DISTINCT template_id)::int FROM template_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS templates,
+        (SELECT COUNT(DISTINCT page_id)::int     FROM page_layout_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_layouts
+    `)) as unknown as {
+      modules: number;
+      pages: number;
+      templates: number;
+      page_layouts: number;
+    }[];
+    const r = rows[0] ?? { modules: 0, pages: 0, templates: 0, page_layouts: 0 };
+    return ok({
+      count: r.modules + r.pages + r.templates + r.page_layouts,
+      byKind: {
+        modules: r.modules,
+        pages: r.pages,
+        templates: r.templates,
+        pageLayouts: r.page_layouts,
+      },
+    });
+  },
+});
