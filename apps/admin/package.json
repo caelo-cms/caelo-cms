@@ -27,6 +27,7 @@
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/redeploy-orchestrator": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
+    "@google-cloud/storage": "^7.19.0",
     "@types/dompurify": "^3",
     "bits-ui": "^2.18.0",
     "clsx": "^2.1.1",

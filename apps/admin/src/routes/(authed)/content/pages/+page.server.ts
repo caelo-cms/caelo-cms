@@ -99,16 +99,32 @@ export const actions: Actions = {
       pageCount: number;
       fileCount: number;
       buildId: string;
+      runId: string;
     };
 
-    const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
+    let previewUrl: string;
+    if (process.env.CAELO_PROVIDER === "gcp") {
+      // v0.2.78 — see /edit?/stage for the GCP staging-preview path
+      // discussion. Same pattern: look up the page slug + locale,
+      // construct the IAP-gated proxy URL.
+      const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
+      if (pageRow.ok) {
+        const p = (pageRow.value as { page: { slug: string; locale: string } }).page;
+        previewUrl = `/_staging-preview/${summary.runId}/${p.locale}/${p.slug}/`;
+      } else {
+        previewUrl = `/_staging-preview/${summary.runId}/`;
+      }
+    } else {
+      const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
+      previewUrl = `${stagingBaseUrl}`;
+    }
     return {
       staged: {
         pageId,
         pageCount: summary.pageCount,
         fileCount: summary.fileCount,
         buildId: summary.buildId,
-        previewUrl: `${stagingBaseUrl}`,
+        previewUrl,
       },
     };
   },

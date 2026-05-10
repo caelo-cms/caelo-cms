@@ -27,7 +27,6 @@
  */
 
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   type DatabaseAdapter,
@@ -39,6 +38,7 @@ import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { loadStaticPublisher } from "../deploy/static-publisher.js";
 
 const targetRow = z.object({
   id: z.string(),
@@ -416,10 +416,22 @@ export const triggerDeployOp = defineOperation({
         message: "deploy-bridge not configured",
       });
     }
+    // v0.2.78 — on Cloud Run the row's out_dir (e.g. 'output/staging')
+    // resolves to a path the container can't write (read-only FS).
+    // Override to /tmp/caelo-builds/<env> which is always writable.
+    // The build is ephemeral — publishStaging uploads to durable
+    // storage immediately after, and the local copy is irrelevant
+    // by the time the next request comes in. Self-hosted keeps the
+    // row's configured out_dir.
+    const provider = process.env.CAELO_PROVIDER;
+    const isCloud = provider === "gcp" || provider === "aws" || provider === "azure";
+    const effectiveTarget: DeployTarget = isCloud
+      ? { ...rowToTarget(target), outDir: `/tmp/caelo-builds/${target.env}` }
+      : rowToTarget(target);
     const subprocess = await runGenerator(bridge.registry, bridge.adapter, ctx, {
       cliPath,
       runId,
-      target: rowToTarget(target),
+      target: effectiveTarget,
       repoRoot,
       changedPageIds: input.changedPageIds,
     });
@@ -445,12 +457,43 @@ export const triggerDeployOp = defineOperation({
       });
     }
 
+    // v0.2.78 — hand off to the per-provider StaticPublisher.
+    // Self-hosted is a no-op (the generator already synced into
+    // current/); cloud uploads to the staging bucket. Failures here
+    // mark the run as failed and surface to the form-action toast
+    // via the same describeError path as before.
+    let publishSummary: Awaited<
+      ReturnType<Awaited<ReturnType<typeof loadStaticPublisher>>["publishStaging"]>
+    >;
+    try {
+      const publisher = await loadStaticPublisher(provider);
+      publishSummary = await publisher.publishStaging({
+        buildDir: subprocess.result.buildDir,
+        runId,
+        target: effectiveTarget,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      await tx.execute(sql`
+        UPDATE deploy_runs
+        SET status = 'failed', finished_at = now(),
+            error_message = ${`publish failed: ${message}`}
+        WHERE id = ${runId}::uuid
+      `);
+      return err({
+        kind: "HandlerError",
+        operation: "deploy.trigger",
+        message: `publish failed: ${message}`,
+      });
+    }
+
     await tx.execute(sql`
       UPDATE deploy_runs
       SET status = 'succeeded', finished_at = now(),
           page_count = ${subprocess.result.pageCount},
           file_count = ${subprocess.result.fileCount},
-          build_id = ${runId}
+          build_id = ${runId},
+          publish_summary = ${JSON.stringify(publishSummary)}::jsonb
       WHERE id = ${runId}::uuid
     `);
 
@@ -533,10 +576,9 @@ export const promoteDeployOp = defineOperation({
     }
 
     const root = input.repoRoot ?? process.cwd();
-    const toDir = resolve(root, to.out_dir);
-    const toBuildsDir = join(toDir, "builds");
-    const toCurrent = join(toDir, "current");
     const fromBuildDir = resolve(root, from.out_dir, "builds", buildId);
+    const fromTarget = rowToTarget(from);
+    const toTarget = rowToTarget(to);
 
     const toRunIdRows = (await tx.execute(sql`
       INSERT INTO deploy_runs (target_id, actor_id, status)
@@ -552,48 +594,27 @@ export const promoteDeployOp = defineOperation({
       });
     }
     try {
-      // Materialise an overlay build dir on the destination that
-      // mirrors the source's build but with the destination's
-      // robots.txt + routing-manifest values. Then sync that overlay
-      // into the destination's `current/` so Caddy serves it.
-      const overlayBuildId = `${buildId}-${to.name}`;
-      const overlayDir = join(toBuildsDir, overlayBuildId);
-      await mkdir(overlayDir, { recursive: true });
-      const { buildRobotsTxt } = await import("@caelo-cms/static-generator");
-      // Copy the source build's files (excluding the per-target ones)
-      // into the overlay. Use file-by-file copy to avoid the bind-mount
-      // tree-recreate issue when overwriting.
-      await copyTreeExcept(fromBuildDir, overlayDir, ["robots.txt", "routing-manifest.json"]);
-      await writeFile(join(overlayDir, "robots.txt"), buildRobotsTxt(to.robots_default), "utf8");
-      const manifestRaw = await Bun.file(join(fromBuildDir, "routing-manifest.json"))
-        .text()
-        .catch(() => "{}");
-      try {
-        const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
-        manifest.target = to.name;
-        manifest.env = to.env;
-        await writeFile(
-          join(overlayDir, "routing-manifest.json"),
-          JSON.stringify(manifest, null, 2),
-          "utf8",
-        );
-      } catch {
-        // Malformed manifest — overlay just won't have one.
-      }
-
-      // Sync overlay → current.
-      await mkdir(toCurrent, { recursive: true });
-      await syncContentsInto(overlayDir, toCurrent);
-
+      // v0.2.78 — delegate to the per-provider StaticPublisher.
+      // Self-hosted does the existing copyTreeExcept + syncContents
+      // overlay; cloud does cross-bucket server-side object copies.
+      const provider = process.env.CAELO_PROVIDER;
+      const publisher = await loadStaticPublisher(provider);
+      const summary = await publisher.promoteToProduction({
+        sourceRunId: buildId,
+        sourceBuildDir: fromBuildDir,
+        fromTarget,
+        toTarget,
+      });
       await tx.execute(sql`
         UPDATE deploy_runs
         SET status = 'succeeded', finished_at = now(),
             page_count = (SELECT page_count FROM deploy_runs WHERE id = ${fromRunId}::uuid),
             file_count = (SELECT file_count FROM deploy_runs WHERE id = ${fromRunId}::uuid),
-            build_id = ${overlayBuildId}
+            build_id = ${summary.destinationBuildId},
+            publish_summary = ${JSON.stringify(summary)}::jsonb
         WHERE id = ${toRunId}::uuid
       `);
-      return ok({ fromRunId, toRunId, buildId: overlayBuildId });
+      return ok({ fromRunId, toRunId, buildId: summary.destinationBuildId });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       await tx.execute(sql`
@@ -660,10 +681,15 @@ export const rollbackDeployOp = defineOperation({
     const root = input.repoRoot ?? process.cwd();
     const outDir = resolve(root, target.out_dir);
     const buildDir = join(outDir, "builds", buildId);
-    const currentDir = join(outDir, "current");
     try {
-      await mkdir(currentDir, { recursive: true });
-      await syncContentsInto(buildDir, currentDir);
+      // v0.2.78 — delegate to the per-provider StaticPublisher.
+      const provider = process.env.CAELO_PROVIDER;
+      const publisher = await loadStaticPublisher(provider);
+      await publisher.rollback({
+        targetBuildId: buildId,
+        sourceBuildDir: buildDir,
+        target: rowToTarget(target),
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       return err({
@@ -700,74 +726,4 @@ export function setDeployBridge(b: DeployBridge): void {
 }
 export function getDeployBridge(): DeployBridge | null {
   return bridge;
-}
-
-/**
- * Copy every file in `src` into `dst` at the same relative path,
- * skipping the names listed in `exceptNames` at the root level.
- */
-async function copyTreeExcept(src: string, dst: string, exceptNames: string[]): Promise<void> {
-  const skip = new Set(exceptNames);
-  const walk = async (rel: string): Promise<void> => {
-    const entries = await readdir(join(src, rel), { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? join(rel, entry.name) : entry.name;
-      if (rel === "" && skip.has(entry.name)) continue;
-      if (entry.isDirectory()) {
-        await mkdir(join(dst, childRel), { recursive: true });
-        await walk(childRel);
-      } else {
-        await mkdir(join(dst, childRel, ".."), { recursive: true });
-        await copyFile(join(src, childRel), join(dst, childRel));
-      }
-    }
-  };
-  await walk("");
-}
-
-/**
- * Mirror `src` into `dst` so dst contains exactly src's tree. Used by
- * deploy.promote and deploy.rollback to update the destination's
- * `current/` directory in place without breaking serving-layer bind
- * mounts.
- */
-async function syncContentsInto(src: string, dst: string): Promise<void> {
-  const tryRm = async (path: string, opts: Parameters<typeof rm>[1] = {}) => {
-    try {
-      await rm(path, opts);
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException | undefined)?.code;
-      if (code !== "EFAULT" && code !== "ENOENT") throw e;
-    }
-  };
-  const srcFiles = new Set<string>();
-  const collect = async (rel: string): Promise<void> => {
-    const entries = await readdir(join(src, rel), { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? join(rel, entry.name) : entry.name;
-      if (entry.isDirectory()) await collect(childRel);
-      else srcFiles.add(childRel);
-    }
-  };
-  await collect("");
-  for (const rel of srcFiles) {
-    await mkdir(join(dst, rel, ".."), { recursive: true });
-    await copyFile(join(src, rel), join(dst, rel));
-  }
-  const sweep = async (rel: string): Promise<void> => {
-    const here = join(dst, rel);
-    if (!(await stat(here).catch(() => null))) return;
-    const entries = await readdir(here, { withFileTypes: true });
-    for (const entry of entries) {
-      const childRel = rel ? join(rel, entry.name) : entry.name;
-      if (entry.isDirectory()) {
-        await sweep(childRel);
-        const remaining = await readdir(join(dst, childRel)).catch(() => []);
-        if (remaining.length === 0) await tryRm(join(dst, childRel), { recursive: false });
-      } else if (!srcFiles.has(childRel)) {
-        await tryRm(join(dst, childRel), { force: true });
-      }
-    }
-  };
-  await sweep("");
 }

@@ -23,6 +23,7 @@
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
     "@caelo-cms/static-generator": "workspace:*",
+    "@google-cloud/storage": "^7.19.0",
     "ai": "^5",
     "drizzle-orm": "0.45.2",
     "file-type": "^19",

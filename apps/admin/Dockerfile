@@ -158,6 +158,16 @@ COPY --from=builder /repo/apps/admin/package.json ./apps/admin/package.json
 COPY --from=builder /repo/apps/admin/build ./apps/admin/build
 COPY --from=builder /repo/apps/admin/node_modules ./apps/admin/node_modules
 
+# v0.2.78 — bundle the static-generator source so deploy.trigger's
+# subprocess (`bun run apps/static-generator/src/cli.ts`) finds it
+# at the path the admin process passes via CAELO_GENERATOR_CLI.
+# Pre-v0.2.78 the runtime image only had `apps/admin/`, so the
+# subprocess errored with `Module not found
+# "/app/apps/apps/static-generator/src/cli.ts"`. CAELO_GENERATOR_CLI
+# is set by the GCP Pulumi stack on the admin Cloud Run service to
+# the absolute path here.
+COPY --from=builder /repo/apps/static-generator ./apps/static-generator
+
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000

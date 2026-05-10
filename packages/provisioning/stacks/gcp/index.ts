@@ -328,6 +328,25 @@ new gcp.storage.BucketIAMMember(
   opts,
 );
 
+// v0.2.78 — private staging bucket. Stage uploads here; Confirm-publish
+// server-side copies to the public static bucket. Never has allUsers
+// binding so the staged HTML is reachable ONLY through the admin's
+// IAP-gated /_staging-preview/<runId>/ proxy route. The public CDN
+// never serves from this bucket.
+const stagingBucket = new gcp.storage.Bucket(
+  `${namePrefix}-staging`,
+  {
+    name: `${project}-${namePrefix}-staging`,
+    location: region.toUpperCase(),
+    uniformBucketLevelAccess: true,
+    forceDestroy: env !== "production",
+    // No website config + no allUsers — private. Lifecycle: stage
+    // builds older than 7 days are GC'd by the admin's proposal-gc
+    // worker (extended in v0.2.78 to sweep stale runId prefixes).
+  },
+  opts,
+);
+
 // =========================================================================
 // Cloud Run service account — single SA used by admin + gateway
 // =========================================================================
@@ -375,9 +394,43 @@ new gcp.storage.BucketIAMMember(
   opts,
 );
 
+// v0.2.78 — admin Cloud Run is the deploy orchestrator. Stage uploads
+// to the private staging bucket; Confirm-publish server-side copies
+// objects from staging into the public static bucket. Both buckets get
+// `objectAdmin` for the run SA.
+//
+// This relaxes the original architecture comment "admin Cloud Run can
+// never accidentally write to the public-read bucket". Justification:
+// the admin process IS the deploy orchestrator now (was: "operator
+// runs gsutil rsync manually"). SA-isolation only protects against an
+// admin-code bug that calls the GCS client incorrectly. The real
+// defense — AI cannot reach the deploy.trigger op's filesystem side
+// effects directly — stays intact (AI calls op; op runs the upload
+// via its own code path, not via Bun.write or arbitrary fs).
+new gcp.storage.BucketIAMMember(
+  `${namePrefix}-admin-static-rw`,
+  {
+    bucket: staticBucket.name,
+    role: "roles/storage.objectAdmin",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+new gcp.storage.BucketIAMMember(
+  `${namePrefix}-admin-staging-rw`,
+  {
+    bucket: stagingBucket.name,
+    role: "roles/storage.objectAdmin",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+
 // `static-publisher` SA used by `bunx @caelo-cms/provisioning deploy` to
-// upload the static-generator output to the bucket. Separate from runSa so
-// admin Cloud Run can never accidentally write to the public-read bucket.
+// upload the static-generator output to the bucket. Pre-v0.2.78 this
+// was the only path; admin Cloud Run now does the publish in-process
+// via the StaticPublisher adapter. Kept for operators who want to run
+// a manual gsutil rsync from CI as a backup or for bulk re-uploads.
 // Account-id max 30 chars; collapse "production" → "prod" so dev/staging/prod
 // all fit within the budget.
 const envShort = env === "production" ? "prod" : env === "staging" ? "stg" : "dev";
@@ -535,7 +588,20 @@ const adminSvc = cloudRunService({
   timeout: "3600s",
   // Admin's second pool: admin_role on cms_public for cross-DB reads
   // + DDL + migrations. NOT public_role (write-limited).
-  extraEnv: [{ name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl }],
+  // v0.2.78 — CAELO_STATIC_BUCKET / CAELO_STAGING_BUCKET drive the
+  // GCS StaticPublisher (Stage uploads to staging, Confirm-publish
+  // copies to static). CAELO_GENERATOR_CLI points at the absolute
+  // path the Dockerfile shipped the static-generator source to —
+  // the cwd-walk fallback in resolveGeneratorCli landed at
+  // /app/apps/apps/static-generator/... (doubled apps/) before
+  // v0.2.78 because the SSR bundle's import.meta.dirname doesn't
+  // sit where the walk expects.
+  extraEnv: [
+    { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
+    { name: "CAELO_STATIC_BUCKET", value: staticBucket.name },
+    { name: "CAELO_STAGING_BUCKET", value: stagingBucket.name },
+    { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },
+  ],
 });
 const gatewaySvc = cloudRunService({
   serviceName: "gateway",

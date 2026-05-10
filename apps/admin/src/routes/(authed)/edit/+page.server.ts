@@ -311,15 +311,36 @@ export const actions: Actions = {
       pageCount: number;
       fileCount: number;
       buildId: string;
+      runId: string;
     };
-    const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
+    // v0.2.78 — on GCP installs the staged build lives in the private
+    // staging bucket; the editor previews it through the IAP-gated
+    // /_staging-preview/<runId>/<page-path>/ proxy. Self-hosted keeps
+    // the existing CAELO_STAGING_BASE_URL (a separate Caddy serving
+    // the bind-mounted staging out_dir).
+    let previewUrl: string;
+    if (process.env.CAELO_PROVIDER === "gcp") {
+      // Look up the page's locale + slug to build the staged URL.
+      // The static-generator emits each page as
+      // `<locale>/<slug>/index.html` (locale-prefixed). The proxy
+      // handles index.html when the path ends in `/`.
+      const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
+      if (pageRow.ok) {
+        const p = (pageRow.value as { page: { slug: string; locale: string } }).page;
+        previewUrl = `/_staging-preview/${summary.runId}/${p.locale}/${p.slug}/`;
+      } else {
+        previewUrl = `/_staging-preview/${summary.runId}/`;
+      }
+    } else {
+      previewUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
+    }
     return {
       staged: {
         pageId,
         pageCount: summary.pageCount,
         fileCount: summary.fileCount,
         buildId: summary.buildId,
-        previewUrl: stagingBaseUrl,
+        previewUrl,
       },
     };
   },
