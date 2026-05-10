@@ -92,18 +92,79 @@ async function gcOnce(opts: ProposalGcWorkerOpts): Promise<{ totalMarked: number
 }
 
 /**
+ * v0.2.79 — sweep stale `<runId>/` prefixes from the GCS staging
+ * bucket. Without this the staging bucket grows unbounded; an active
+ * site might Stage 50× a day, each leaving a per-runId prefix even
+ * after the build has been promoted (or rejected by the operator
+ * starting a fresh chat).
+ *
+ * Default lifetime: 7 days. Operators can tune via the
+ * `staleStagingAfterMs` opt. Promotion-status is intentionally NOT
+ * checked — once a build is promoted, its objects already live in
+ * the static bucket; the staging copy is ephemeral by design.
+ *
+ * GCP only — self-hosted has no staging bucket. Failures are logged
+ * to stderr; the next sweep retries.
+ */
+async function gcStaleStagingPrefixes(opts: {
+  staleAfterMs: number;
+}): Promise<{ deletedObjects: number }> {
+  if (process.env.CAELO_PROVIDER !== "gcp") return { deletedObjects: 0 };
+  const stagingBucketName = process.env.CAELO_STAGING_BUCKET;
+  if (!stagingBucketName) return { deletedObjects: 0 };
+
+  const { Storage } = await import("@google-cloud/storage");
+  const storage = new Storage();
+  const bucket = storage.bucket(stagingBucketName);
+  const cutoff = new Date(Date.now() - opts.staleAfterMs);
+
+  // List ALL objects (no prefix) — a single-prefix-per-runId layout
+  // means most objects share a common runId prefix, but listing root
+  // gives us one pass to find anything older than cutoff.
+  const [files] = await bucket.getFiles();
+  let deleted = 0;
+  for (const file of files) {
+    const created = (file.metadata as { timeCreated?: string } | undefined)?.timeCreated;
+    if (!created) continue;
+    if (new Date(created) >= cutoff) continue;
+    try {
+      await file.delete({ ignoreNotFound: true });
+      deleted += 1;
+    } catch (e) {
+      process.stderr.write(
+        `[proposal-gc-worker] failed to delete stale staging object ${file.name}: ${(e as Error).message}\n`,
+      );
+    }
+  }
+  return { deletedObjects: deleted };
+}
+
+const DEFAULT_STAGING_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/**
  * Start the periodic GC. Idempotent — second call is a no-op.
  */
 export function startProposalGcWorker(opts: ProposalGcWorkerOpts): void {
   if (workerHandle) return;
+  const stagingOpts = { staleAfterMs: DEFAULT_STAGING_STALE_AFTER_MS };
   // Initial sweep immediately so a fresh boot picks up any old
   // pending rows accumulated during downtime.
   void gcOnce(opts).catch((e) => {
     process.stderr.write(`[proposal-gc-worker] initial sweep failed: ${(e as Error).message}\n`);
   });
+  void gcStaleStagingPrefixes(stagingOpts).catch((e) => {
+    process.stderr.write(
+      `[proposal-gc-worker] initial staging-bucket sweep failed: ${(e as Error).message}\n`,
+    );
+  });
   workerHandle = setInterval(() => {
     void gcOnce(opts).catch((e) => {
       process.stderr.write(`[proposal-gc-worker] sweep failed: ${(e as Error).message}\n`);
+    });
+    void gcStaleStagingPrefixes(stagingOpts).catch((e) => {
+      process.stderr.write(
+        `[proposal-gc-worker] staging-bucket sweep failed: ${(e as Error).message}\n`,
+      );
     });
   }, opts.intervalMs ?? POLL_INTERVAL_MS);
 }

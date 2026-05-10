@@ -473,6 +473,72 @@ export const listBranchEditedModulesOp = defineOperation({
  * mental model of "things changed on this chat", not "tool calls
  * issued".
  */
+/**
+ * v0.2.79 — entity ids (not just counts) edited on a chat branch
+ * across all snapshot kinds. Drives Stage's cascade-expansion via
+ * snapshots.publish_impact_pages: the form action calls this to
+ * get {moduleIds, templateIds, pageLayoutIds} on the chat branch,
+ * then expands to the union of affected pageIds the generator
+ * should re-bake.
+ *
+ * Sibling of branch_change_count (which returns counts only — used
+ * by the toolbar pill).
+ */
+export const listBranchEditedEntitiesOp = defineOperation({
+  name: "chat.branch_edited_entities",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ chatSessionId: z.string().uuid() }).strict(),
+  output: z.object({
+    moduleIds: z.array(z.string()),
+    pageIds: z.array(z.string()),
+    templateIds: z.array(z.string()),
+    /** page_layout_snapshots stores per-page layout overrides; the
+     *  affected pageIds are the row's page_id, not a layout id. We
+     *  surface them as pageIds (alongside the snapshot pageIds) so
+     *  the cascade union covers them. */
+    pageLayoutPageIds: z.array(z.string()),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      WITH branch AS (
+        SELECT ss.id AS snapshot_id
+        FROM site_snapshots ss
+        JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
+        WHERE cs.id = ${input.chatSessionId}::uuid
+      )
+      SELECT 'module'::text AS kind, module_id::text AS entity_id
+        FROM module_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)
+      UNION ALL
+      SELECT 'page'::text AS kind, page_id::text AS entity_id
+        FROM page_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)
+      UNION ALL
+      SELECT 'template'::text AS kind, template_id::text AS entity_id
+        FROM template_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)
+      UNION ALL
+      SELECT 'page_layout'::text AS kind, page_id::text AS entity_id
+        FROM page_layout_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)
+    `)) as unknown as { kind: string; entity_id: string }[];
+
+    const moduleIds = new Set<string>();
+    const pageIds = new Set<string>();
+    const templateIds = new Set<string>();
+    const pageLayoutPageIds = new Set<string>();
+    for (const r of rows) {
+      if (r.kind === "module") moduleIds.add(r.entity_id);
+      else if (r.kind === "page") pageIds.add(r.entity_id);
+      else if (r.kind === "template") templateIds.add(r.entity_id);
+      else if (r.kind === "page_layout") pageLayoutPageIds.add(r.entity_id);
+    }
+    return ok({
+      moduleIds: [...moduleIds],
+      pageIds: [...pageIds],
+      templateIds: [...templateIds],
+      pageLayoutPageIds: [...pageLayoutPageIds],
+    });
+  },
+});
+
 export const countBranchChangesOp = defineOperation({
   name: "chat.branch_change_count",
   actorScope: ["human", "ai", "system"],

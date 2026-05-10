@@ -23,6 +23,7 @@ import {
   countBranchChangesOp,
   createChatSessionOp,
   getChatSessionOp,
+  listBranchEditedEntitiesOp,
   listBranchEditedModulesOp,
   listChatSessionsOp,
   renameChatSessionOp,
@@ -319,6 +320,7 @@ import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
 import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
 import { moduleImpactOp } from "./ops/snapshots/impact.js";
 import { listSnapshotsOp } from "./ops/snapshots/list.js";
+import { publishImpactPagesOp } from "./ops/snapshots/publish_impact_pages.js";
 import { revertModuleOp } from "./ops/snapshots/revert_module.js";
 import { revertPageOp } from "./ops/snapshots/revert_page.js";
 import { revertSiteOp } from "./ops/snapshots/revert_site.js";
@@ -463,6 +465,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listSnapshotsOp);
   registry.register(getSnapshotWithEntitiesOp);
   registry.register(moduleImpactOp);
+  registry.register(publishImpactPagesOp);
   registry.register(revertSiteOp);
   registry.register(revertModuleOp);
   registry.register(revertTemplateOp);
@@ -685,6 +688,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(cancelProposalOp);
   registry.register(completeOnboardingOp);
   registry.register(listBranchEditedModulesOp);
+  registry.register(listBranchEditedEntitiesOp);
   registry.register(countBranchChangesOp);
   // P7 — media library.
   registry.register(mediaUploadOp);

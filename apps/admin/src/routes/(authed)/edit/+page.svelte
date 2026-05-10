@@ -263,6 +263,13 @@
           <form method="post" action="?/stage" use:enhance>
             <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="pageId" value={activePageId} />
+            <!-- v0.2.79 — when a chat is active, the form submits the
+                 chat session id so the Stage handler derives the
+                 cascade-expanded changedPageIds (incremental rebuild).
+                 Without it: full-site rebuild. -->
+            {#if data.activeChat}
+              <input type="hidden" name="chatId" value={data.activeChat.id} />
+            {/if}
             <Button
               type="submit"
               size="sm"

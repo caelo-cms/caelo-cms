@@ -27,6 +27,7 @@ import { editModuleTool } from "./edit-module.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
 import { generateImageTool } from "./generate-image.js";
+import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
@@ -135,6 +136,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // v0.2.69 — render inspection. AI uses this BEFORE proposing CSS
   // / layout fixes so it sees the actual cascade instead of guessing.
   registry.register(inspectPageRenderTool);
+  registry.register(inspectBuiltPageTool);
   // v0.3.1 — browser-mediated screenshot. For visual feedback only;
   // CSS pathology should use inspect_page_render instead.
   registry.register(screenshotPageTool);

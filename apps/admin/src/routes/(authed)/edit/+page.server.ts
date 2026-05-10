@@ -294,8 +294,69 @@ export const actions: Actions = {
     });
     if (!updateResult.ok) return fail(400, { error: "Could not mark page as published." });
 
+    // v0.2.79 — derive the smallest possible changedPageIds from the
+    // chat branch's edited entities. Without the cascade expansion
+    // every Stage was a full-site rebuild — fine at dogfood scale,
+    // but at 10k pages × 8 locales = 80k routes a typical edit would
+    // re-bake 80k pages instead of the ~8 it actually affects.
+    //
+    // Lookup chain:
+    //   active chat → branch_edited_entities → publish_impact_pages
+    //   → union with the just-published pageId.
+    //
+    // Empty / no chat / fullSite → omit changedPageIds → triggerDeployOp
+    // does a full-site rebuild (preserves pre-v0.2.79 behaviour for
+    // non-chat-driven Stages).
+    const chatId = String(form.get("chatId") ?? "") || null;
+    let changedPageIds: string[] | undefined;
+    if (chatId) {
+      const entitiesR = await execute(
+        registry,
+        adapter,
+        locals.ctx,
+        "chat.branch_edited_entities",
+        { chatSessionId: chatId },
+      );
+      if (entitiesR.ok) {
+        const entities = entitiesR.value as {
+          moduleIds: string[];
+          pageIds: string[];
+          templateIds: string[];
+          pageLayoutPageIds: string[];
+        };
+        const impactR = await execute(
+          registry,
+          adapter,
+          locals.ctx,
+          "snapshots.publish_impact_pages",
+          {
+            moduleIds: entities.moduleIds,
+            templateIds: entities.templateIds,
+            // Per-page layout overrides surface as pageIds in the
+            // edited-entities op; collapse them into the layoutIds
+            // input position by passing them through as direct
+            // pageIds (they don't fan out further).
+            layoutIds: [],
+          },
+        );
+        if (impactR.ok) {
+          const impact = impactR.value as { pageIds: string[]; fullSite: boolean };
+          if (!impact.fullSite) {
+            const all = new Set<string>([
+              ...impact.pageIds,
+              ...entities.pageIds,
+              ...entities.pageLayoutPageIds,
+              pageId,
+            ]);
+            changedPageIds = [...all];
+          }
+        }
+      }
+    }
+
     const stagingDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
       targetName: "staging",
+      ...(changedPageIds && changedPageIds.length > 0 ? { changedPageIds } : {}),
     });
     if (!stagingDeploy.ok) {
       // v0.2.77 — surface the underlying generator error to the
