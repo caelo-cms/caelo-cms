@@ -18,6 +18,9 @@ export {
   failScreenshot,
 } from "./ai/screenshot-orchestrator.js";
 export * from "./ai/system-prompt.js";
+// v0.2.77 — describeError reused by SvelteKit form actions to surface
+// the underlying QueryError reason (e.g. "Staging build failed: ...").
+export { describeError } from "./ai/tools/_describe-error.js";
 export * from "./ai/tools/index.js";
 export * from "./audit.js";
 export * from "./csrf.js";

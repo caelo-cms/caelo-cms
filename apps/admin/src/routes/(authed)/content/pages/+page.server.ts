@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
@@ -88,7 +89,11 @@ export const actions: Actions = {
       targetName: "staging",
     });
     if (!stagingDeploy.ok) {
-      return fail(500, { error: "Staging build failed." });
+      // v0.2.77 — surface the underlying error so the operator
+      // sees the real reason (subprocess stderr / missing env var /
+      // missing target) rather than just "Staging build failed."
+      const reason = describeError(stagingDeploy.error);
+      return fail(500, { error: `Staging build failed: ${reason}` });
     }
     const summary = stagingDeploy.value as {
       pageCount: number;

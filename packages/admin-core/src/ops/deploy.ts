@@ -431,10 +431,17 @@ export const triggerDeployOp = defineOperation({
             error_message = ${subprocess.message + tail}
         WHERE id = ${runId}::uuid
       `);
+      // v0.2.77 — include the stderr tail in the HandlerError message
+      // so SvelteKit form actions surfacing the error to the operator
+      // (e.g. /edit?/stage's toast) carry the real reason. Without
+      // the tail, the operator sees "generator failed: generator
+      // exited 1 without a done event" and has to dig into Ops →
+      // Deployments → click the failed run for stderr.
+      const stderrTail = subprocess.stderr ? ` — ${subprocess.stderr.slice(-300).trim()}` : "";
       return err({
         kind: "HandlerError",
         operation: "deploy.trigger",
-        message: `generator failed: ${subprocess.message}`,
+        message: `generator failed: ${subprocess.message}${stderrTail}`,
       });
     }
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { error, fail, redirect } from "@sveltejs/kit";
 import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
@@ -296,7 +297,15 @@ export const actions: Actions = {
     const stagingDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
       targetName: "staging",
     });
-    if (!stagingDeploy.ok) return fail(500, { error: "Staging build failed." });
+    if (!stagingDeploy.ok) {
+      // v0.2.77 — surface the underlying generator error to the
+      // operator instead of the previous opaque "Staging build
+      // failed." Without the real message there's nowhere to look —
+      // deploy_runs.error_message has the stderr but the toolbar
+      // alert never pointed there.
+      const reason = describeError(stagingDeploy.error);
+      return fail(500, { error: `Staging build failed: ${reason}` });
+    }
 
     const summary = stagingDeploy.value as {
       pageCount: number;
