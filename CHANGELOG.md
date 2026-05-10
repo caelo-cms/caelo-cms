@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.78
+
+### Features
+- fde3ce7 cloud-portable Stage / Confirm-publish via GCS (v0.2.78)
+
 ## v0.2.77
 
 ### Fixes
