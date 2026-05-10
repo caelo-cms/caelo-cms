@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.77
+
+### Fixes
+- 02ccc8c surface real generator error in Stage button (v0.2.77)
+
 ## v0.2.76
 
 ### Fixes
