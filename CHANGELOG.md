@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.79
+
+### Features
+- 1458a0a cascade-expansion + inspect_built_page + staging GC (v0.2.79)
+
 ## v0.2.78
 
 ### Features
