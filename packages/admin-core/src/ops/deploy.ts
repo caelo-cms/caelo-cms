@@ -48,6 +48,11 @@ const targetRow = z.object({
   baseUrl: z.string(),
   robotsDefault: z.enum(["index", "noindex"]),
   isDefault: z.boolean(),
+  // v0.2.85 — per-target page emission style. 'directory' (default)
+  // emits <slug>/index.html; 'no-extension' emits bare <slug> with
+  // Content-Type: text/html for clean URLs without bucket-website
+  // redirect gymnastics.
+  pageUrlStyle: z.enum(["directory", "no-extension"]),
 });
 
 const runRow = z.object({
@@ -74,6 +79,7 @@ interface TargetDbRow {
   base_url: string;
   robots_default: "index" | "noindex";
   is_default: boolean;
+  page_url_style: "directory" | "no-extension";
 }
 
 function rowToTarget(r: TargetDbRow): z.infer<typeof targetRow> {
@@ -85,6 +91,7 @@ function rowToTarget(r: TargetDbRow): z.infer<typeof targetRow> {
     baseUrl: r.base_url,
     robotsDefault: r.robots_default,
     isDefault: r.is_default,
+    pageUrlStyle: r.page_url_style ?? "directory",
   };
 }
 
@@ -139,7 +146,7 @@ export const listDeployTargetsOp = defineOperation({
   output: z.object({ targets: z.array(targetRow) }),
   handler: async (_ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default
+      SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
       FROM deploy_targets
       ORDER BY env ASC, name ASC
     `)) as unknown as TargetDbRow[];
@@ -365,10 +372,10 @@ export const triggerDeployOp = defineOperation({
     const targetRows = (await tx.execute(
       input.targetName
         ? sql`
-            SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default
+            SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
             FROM deploy_targets WHERE name = ${input.targetName} LIMIT 1`
         : sql`
-            SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default
+            SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
             FROM deploy_targets WHERE is_default LIMIT 1`,
     )) as unknown as TargetDbRow[];
     const target = targetRows[0];
@@ -546,7 +553,7 @@ export const promoteDeployOp = defineOperation({
       });
     }
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default
+      SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
       FROM deploy_targets
       WHERE name IN (${input.fromTarget}, ${input.toTarget})
     `)) as unknown as TargetDbRow[];
@@ -651,7 +658,7 @@ export const rollbackDeployOp = defineOperation({
   output: z.object({ buildId: z.string(), newRunId: z.string() }),
   handler: async (ctx, input, tx) => {
     const targetRows = (await tx.execute(sql`
-      SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default
+      SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
       FROM deploy_targets WHERE name = ${input.targetName} LIMIT 1
     `)) as unknown as TargetDbRow[];
     const target = targetRows[0];

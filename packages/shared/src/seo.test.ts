@@ -44,6 +44,61 @@ describe("resolveCanonicalUrl", () => {
       }),
     ).toBe("https://example.com/about/");
   });
+
+  describe("v0.2.85 — pageUrlStyle='no-extension'", () => {
+    it("omits the trailing slash for non-home pages", () => {
+      expect(
+        resolveCanonicalUrl({
+          siteBaseUrl: "https://example.com",
+          pageSlug: "about",
+          pageLocale: "en",
+          override: null,
+          pageUrlStyle: "no-extension",
+        }),
+      ).toBe("https://example.com/about");
+    });
+
+    it("keeps the root URL for the home page", () => {
+      expect(
+        resolveCanonicalUrl({
+          siteBaseUrl: "https://example.com",
+          pageSlug: "home",
+          pageLocale: "en",
+          override: null,
+          pageUrlStyle: "no-extension",
+        }),
+      ).toBe("https://example.com/");
+    });
+
+    it("subdirectory locale strategy keeps the locale prefix, no trailing slash on slug", () => {
+      expect(
+        resolveCanonicalUrl({
+          siteBaseUrl: "https://example.com",
+          pageSlug: "about",
+          pageLocale: "de",
+          override: null,
+          pageUrlStyle: "no-extension",
+          localeConfig: {
+            code: "de",
+            urlStrategy: "subdirectory",
+            urlHost: null,
+            isDefault: false,
+          },
+        }),
+      ).toBe("https://example.com/de/about");
+    });
+
+    it("default style preserves pre-v0.2.85 trailing-slash behavior", () => {
+      expect(
+        resolveCanonicalUrl({
+          siteBaseUrl: "https://example.com",
+          pageSlug: "about",
+          pageLocale: "en",
+          override: null,
+        }),
+      ).toBe("https://example.com/about/");
+    });
+  });
 });
 
 describe("renderSeoHead", () => {

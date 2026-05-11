@@ -65,6 +65,10 @@ export async function runSeoPass(args: {
   /** `noindex` deploy target overrides per-page settings — staging
       stays out of the sitemap entirely regardless of the page flag. */
   envIsNoindex: boolean;
+  /** v0.2.85 — per-target page emission style. Drives canonical +
+   *  hreflang URL trailing-slash decisions to match what the bucket
+   *  actually serves. */
+  pageUrlStyle?: "directory" | "no-extension";
 }): Promise<{ sitemapEmitted: boolean }> {
   if (args.pages.length === 0) {
     return { sitemapEmitted: false };
@@ -203,7 +207,7 @@ export async function runSeoPass(args: {
       try {
         auto.push({
           locale: localeCode,
-          url: resolveLocaleUrl(cfg, bundle.slug, args.settings.siteBaseUrl),
+          url: resolveLocaleUrl(cfg, bundle.slug, args.settings.siteBaseUrl, args.pageUrlStyle),
         });
       } catch {
         // Misconfigured locale (missing url_host) — skip its hreflang
@@ -241,6 +245,7 @@ export async function runSeoPass(args: {
       pageLocale: bundle.locale,
       override: bundle.canonicalOverride,
       localeConfig: localeByCode.get(bundle.locale),
+      pageUrlStyle: args.pageUrlStyle,
     });
     const ogImageUrl = bundle.ogImageAssetId
       ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
@@ -268,6 +273,8 @@ export async function runSeoPass(args: {
           pageSlug: b.slug,
           pageLocale: b.locale,
           override: b.canonicalOverride,
+          localeConfig: localeByCode.get(b.locale),
+          pageUrlStyle: args.pageUrlStyle,
         });
         return [
           "  <url>",

@@ -38,6 +38,26 @@ export interface DeployTarget {
   readonly outDir: string;
   readonly baseUrl: string;
   readonly robotsDefault: "index" | "noindex";
+  /**
+   * v0.2.85 — per-target page emission style.
+   *
+   * 'directory'    → emit `<slug>/index.html`. The default.
+   *                  GCS bucket-website mode serves /<slug>/ →
+   *                  <slug>/index.html. /foo (no trailing slash)
+   *                  301s to /foo/index.html, exposing `.html`
+   *                  in the URL bar.
+   * 'no-extension' → emit `<slug>` (no extension) with explicit
+   *                  Content-Type: text/html. /foo → 200 page;
+   *                  /foo/ and /foo/index.html don't exist → 404.
+   *                  Canonical URLs become /foo (no trailing slash).
+   *                  No redirects needed because there's nothing
+   *                  to redirect away from.
+   *
+   * Optional with a 'directory' default so callers that haven't
+   * been updated (tests, older subprocess invocations) keep the
+   * pre-v0.2.85 behavior.
+   */
+  readonly pageUrlStyle?: "directory" | "no-extension";
 }
 
 export interface GenerateResult {
@@ -118,10 +138,22 @@ export interface PageLocaleConfig {
   readonly urlHost: string | null;
 }
 
-export function pageOutputPath(slug: string, locale?: PageLocaleConfig): string {
+export function pageOutputPath(
+  slug: string,
+  locale?: PageLocaleConfig,
+  pageUrlStyle: "directory" | "no-extension" = "directory",
+): string {
   const trimmed = slug.replace(/^\/+|\/+$/g, "");
   const isHome = trimmed === "" || trimmed === "home" || trimmed === "index";
-  const file = isHome ? "index.html" : `${trimmed}/index.html`;
+  // Home page stays at `index.html` regardless of style — the bucket
+  // root must serve something for `/`, and browsers + GCS expect
+  // index.html there. The home page's own canonical link points at
+  // `/` so search engines consolidate /index.html → / either way.
+  const file = isHome
+    ? "index.html"
+    : pageUrlStyle === "no-extension"
+      ? trimmed
+      : `${trimmed}/index.html`;
   if (!locale) return file;
   switch (locale.urlStrategy) {
     case "none":
@@ -437,7 +469,7 @@ export async function generateSite(args: {
       pageSlug: page.slug,
       pageLocale: page.locale,
       pageTitle: page.title,
-      relPath: pageOutputPath(page.slug, pageLocaleCfg),
+      relPath: pageOutputPath(page.slug, pageLocaleCfg, target.pageUrlStyle),
     });
     // P13 — record per-page bake target for the plugin render pass.
     bakeTargets.set(`${page.slug}:${page.locale}`, {
@@ -500,6 +532,7 @@ export async function generateSite(args: {
     pages: composedPages,
     settings: seoSettings,
     envIsNoindex: target.robotsDefault === "noindex",
+    pageUrlStyle: target.pageUrlStyle,
   });
   if (seoResult.sitemapEmitted) fileCount += 1;
 
@@ -516,11 +549,23 @@ export async function generateSite(args: {
     });
   }
 
+  // v0.2.85 — per-key Content-Type sidecar. When pageUrlStyle is
+  // 'no-extension' the page files are bare slugs (no `.html`), so
+  // the GCS publisher's extension-based contentTypeFor() lookup
+  // would default to application/octet-stream. The sidecar declares
+  // `<rel-path>` → `text/html; charset=utf-8` so the publisher
+  // gets the right Content-Type without smuggling rules. Only
+  // populated for files whose Content-Type can't be inferred from
+  // the extension (no extension AND it's a page).
+  const contentTypeOverrides: Record<string, string> = {};
   for (const p of composedPages) {
     const filePath = join(buildDir, p.relPath);
     await mkdir(join(filePath, ".."), { recursive: true });
     await writeFile(filePath, p.html, "utf8");
     fileCount += 1;
+    if (target.pageUrlStyle === "no-extension" && !p.relPath.endsWith(".html")) {
+      contentTypeOverrides[p.relPath] = "text/html; charset=utf-8";
+    }
   }
 
   // P13 audit fix #1 — variant file emission for active experiments.
@@ -605,7 +650,7 @@ export async function generateSite(args: {
     pages: pageRows.map((p) => ({
       slug: p.slug,
       locale: p.locale,
-      outputPath: pageOutputPath(p.slug, localeByCode.get(p.locale)),
+      outputPath: pageOutputPath(p.slug, localeByCode.get(p.locale), target.pageUrlStyle),
     })),
     variants: variantEntries,
   };
@@ -701,6 +746,18 @@ export async function generateSite(args: {
   // operators of which file they need. The same content works for
   // either CDN host.
   await writeFile(join(buildDir, "_redirects.cloudflare"), redirectsNetlify, "utf8");
+  fileCount += 1;
+
+  // v0.2.85 — emit the content-type sidecar even when empty so
+  // the publisher can rely on its presence to determine the
+  // pageUrlStyle indirectly. Skipped from `_redirects` collisions
+  // because the sidecar key is `_content-types.json` (extension
+  // makes the inference unambiguous + the file itself is JSON).
+  await writeFile(
+    join(buildDir, "_content-types.json"),
+    JSON.stringify(contentTypeOverrides, null, 2),
+    "utf8",
+  );
   fileCount += 1;
 
   // Atomic-ish swap. `current/` is a regular directory (not a symlink)

@@ -45,15 +45,25 @@ export interface LocaleConfig {
  *                     `subdirectory` (e.g. "https://example.com").
  * @returns Absolute URL, including scheme + host.
  */
-export function resolveLocaleUrl(locale: LocaleConfig, slug: string, siteBaseUrl: string): string {
+export function resolveLocaleUrl(
+  locale: LocaleConfig,
+  slug: string,
+  siteBaseUrl: string,
+  // v0.2.85 — page emission style. 'directory' (default) builds
+  // URLs ending in `/<slug>/`; 'no-extension' builds URLs ending
+  // in `/<slug>` (no trailing slash) to match what the bucket
+  // actually serves when pages are emitted as bare slugs. Home
+  // page is always `<base>/` regardless of style.
+  pageUrlStyle: "directory" | "no-extension" = "directory",
+): string {
   const stripped = slug.replace(/^\/+|\/+$/g, "");
-  // Home slug + empty/index variants render as the locale root.
-  // Non-home slugs get a trailing slash so the URL matches what the
-  // static host serves (clean URLs: every page is `<slug>/index.html`,
-  // browsers request `<slug>/`). Without this, redirect rows insert
-  // `/de/about` while users navigate to `/de/about/` and 301 misses.
   const isHome = stripped === "" || stripped === "home" || stripped === "index";
-  const tail = isHome ? "" : `${stripped}/`;
+  // tail: the path component appended after `<base>/` or `<base>/<locale>/`.
+  // 'directory' style: trailing slash for non-home so the URL points at
+  // the directory the bucket serves index.html from.
+  // 'no-extension' style: no trailing slash, no extension — the URL
+  // points at the bare-slug object the bucket serves directly.
+  const tail = isHome ? "" : pageUrlStyle === "no-extension" ? stripped : `${stripped}/`;
   const base = siteBaseUrl.replace(/\/+$/, "");
   switch (locale.urlStrategy) {
     case "none":

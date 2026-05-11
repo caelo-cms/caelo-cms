@@ -79,6 +79,12 @@ export const gcsStaticPublisher: StaticPublisher = {
     const h = await bucketHandles();
     const files = await walkBuildDir(buildDir);
     const manifest = await readLiveManifest(h.staticBucket);
+    // v0.2.85 — read the per-key Content-Type sidecar emitted by
+    // the static-generator. Keys whose Content-Type can't be
+    // inferred from extension (bare-slug pages in 'no-extension'
+    // mode) are declared here; the publisher uses the override
+    // before falling back to extension-based lookup.
+    const contentTypeOverrides = await readContentTypeOverrides(buildDir);
     let uploaded = 0;
     let skipped = 0;
     const prefix = `${runId}/`;
@@ -92,7 +98,9 @@ export const gcsStaticPublisher: StaticPublisher = {
         skipped += 1;
         return;
       }
-      await uploadFile(h.stagingBucket, prefix + file.relativePath, file.absolutePath);
+      const contentType =
+        contentTypeOverrides[file.relativePath] ?? contentTypeFor(file.relativePath);
+      await uploadFile(h.stagingBucket, prefix + file.relativePath, file.absolutePath, contentType);
       uploaded += 1;
     });
     return {
@@ -190,9 +198,15 @@ export const gcsStaticPublisher: StaticPublisher = {
     }
     const h = await bucketHandles();
     const files = await walkBuildDir(sourceBuildDir);
+    // v0.2.85 — same content-type-override pattern as publishStaging
+    // so a rollback restores bare-slug pages with the right
+    // Content-Type.
+    const contentTypeOverrides = await readContentTypeOverrides(sourceBuildDir);
     let uploaded = 0;
     await runBatched(files, PARALLEL_UPLOADS, async (file) => {
-      await uploadFile(h.staticBucket, file.relativePath, file.absolutePath);
+      const contentType =
+        contentTypeOverrides[file.relativePath] ?? contentTypeFor(file.relativePath);
+      await uploadFile(h.staticBucket, file.relativePath, file.absolutePath, contentType);
       uploaded += 1;
     });
     return {
@@ -288,12 +302,53 @@ function crc32c(buf: Buffer): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-async function uploadFile(bucket: Bucket, key: string, absolutePath: string): Promise<void> {
+async function uploadFile(
+  bucket: Bucket,
+  key: string,
+  absolutePath: string,
+  contentType?: string,
+): Promise<void> {
+  const ct = contentType ?? contentTypeFor(key);
   await bucket.upload(absolutePath, {
     destination: key,
-    contentType: contentTypeFor(key),
-    metadata: { cacheControl: cacheControlFor(key) },
+    contentType: ct,
+    // v0.2.85 — Cache-Control follows the content-type, not the key
+    // extension, so bare-slug HTML pages get the same short
+    // max-age + SWR as keyed `.html` files.
+    metadata: { cacheControl: cacheControlForContentType(ct, key) },
   });
+}
+
+async function readContentTypeOverrides(buildDir: string): Promise<Record<string, string>> {
+  try {
+    const body = await readFile(join(buildDir, "_content-types.json"), "utf8");
+    return JSON.parse(body) as Record<string, string>;
+  } catch {
+    // Older generator runs without the sidecar — assume empty map +
+    // fall back to extension-based content-type lookup.
+    return {};
+  }
+}
+
+function cacheControlForContentType(contentType: string, key: string): string {
+  // Hashed Vite assets keep their immutable Cache-Control regardless
+  // of content-type (the path prefix is the signal, not the body).
+  if (key.includes("/_app/immutable/") || key.includes("_app/immutable/")) {
+    return "public, max-age=31536000, immutable";
+  }
+  if (contentType.startsWith("text/html")) {
+    return "public, max-age=60, stale-while-revalidate=86400";
+  }
+  if (key === "routing-manifest.json" || key === "_content-types.json") {
+    return "public, max-age=10";
+  }
+  if (contentType.startsWith("application/json")) {
+    return "public, max-age=60";
+  }
+  if (key === "robots.txt" || key === "sitemap.xml") {
+    return "public, max-age=300";
+  }
+  return "public, max-age=3600";
 }
 
 async function uploadBytes(

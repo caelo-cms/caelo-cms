@@ -208,6 +208,33 @@ describe("gcsStaticPublisher.publishStaging", () => {
     expect((js?.metadata as { cacheControl?: string })?.cacheControl).toContain("immutable");
   });
 
+  it("v0.2.85 — honours _content-types.json sidecar for bare-slug uploads", async () => {
+    // Simulate a no-extension build: replace `en/about/index.html` with a
+    // bare-slug `en/about` (no extension) + emit the sidecar declaring
+    // the override. Publisher should upload `en/about` with
+    // Content-Type: text/html and Cache-Control matching HTML.
+    await rm(buildDir, { recursive: true, force: true });
+    buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-noext-"));
+    await mkdir(join(buildDir, "en"), { recursive: true });
+    await writeFile(join(buildDir, "en", "about"), "<html>about</html>", "utf8");
+    await writeFile(
+      join(buildDir, "_content-types.json"),
+      JSON.stringify({ "en/about": "text/html; charset=utf-8" }),
+      "utf8",
+    );
+    const { gcsStaticPublisher } = await import("../static-publisher-gcs.js");
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-noext",
+      target: TARGET,
+    });
+    const file = stagingBucket.files.get("run-noext/en/about");
+    expect(file).toBeDefined();
+    const meta = file?.metadata as { contentType?: string; cacheControl?: string };
+    expect(meta.contentType).toContain("text/html");
+    expect(meta.cacheControl).toContain("stale-while-revalidate");
+  });
+
   it("skips uploads when CRC32C matches the live manifest", async () => {
     // Pre-seed the live manifest with the CRC of the about page.
     const aboutBody = "<html>about</html>";

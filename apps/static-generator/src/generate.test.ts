@@ -58,6 +58,42 @@ describe("pageOutputPath", () => {
       expect(en).not.toBe(de);
     });
   });
+
+  describe("no-extension mode (v0.2.85)", () => {
+    const NONE = { code: "en", urlStrategy: "none" as const, urlHost: null };
+    const SUBDIR = { code: "de", urlStrategy: "subdirectory" as const, urlHost: null };
+
+    it("emits bare slug (no extension) for non-home pages", () => {
+      expect(pageOutputPath("about", undefined, "no-extension")).toBe("about");
+      expect(pageOutputPath("blog/post-1", undefined, "no-extension")).toBe("blog/post-1");
+    });
+
+    it("keeps index.html for the home page regardless of style", () => {
+      // Home must serve from the bucket root + browsers expect
+      // /index.html; the page emits <link rel='canonical' href='/'>
+      // so search engines consolidate.
+      expect(pageOutputPath("", undefined, "no-extension")).toBe("index.html");
+      expect(pageOutputPath("home", undefined, "no-extension")).toBe("index.html");
+      expect(pageOutputPath("index", undefined, "no-extension")).toBe("index.html");
+    });
+
+    it("locale strategy='none' produces bare slug at root", () => {
+      expect(pageOutputPath("about", NONE, "no-extension")).toBe("about");
+      expect(pageOutputPath("home", NONE, "no-extension")).toBe("index.html");
+    });
+
+    it("locale strategy='subdirectory' prepends the locale prefix to the bare slug", () => {
+      expect(pageOutputPath("about", SUBDIR, "no-extension")).toBe("de/about");
+      // Home still emits as index.html under the locale prefix
+      expect(pageOutputPath("home", SUBDIR, "no-extension")).toBe("de/index.html");
+    });
+
+    it("default 'directory' style preserves pre-v0.2.85 behavior", () => {
+      expect(pageOutputPath("about")).toBe("about/index.html");
+      expect(pageOutputPath("about", undefined, "directory")).toBe("about/index.html");
+      expect(pageOutputPath("about", NONE, "directory")).toBe("about/index.html");
+    });
+  });
 });
 
 describe("buildRobotsTxt", () => {

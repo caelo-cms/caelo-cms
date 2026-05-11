@@ -123,23 +123,33 @@ export function resolveCanonicalUrl(args: {
     urlHost: string | null;
     isDefault: boolean;
   };
+  /**
+   * v0.2.85 — page emission style. 'directory' (default) → URLs end
+   * in `/<slug>/`; 'no-extension' → URLs end in `/<slug>` (no
+   * trailing slash) to match what the bucket actually serves when
+   * pages are emitted as bare slugs.
+   */
+  pageUrlStyle?: "directory" | "no-extension";
 }): string {
   if (args.override && args.override.length > 0) return args.override;
   const base = args.siteBaseUrl.replace(/\/$/, "");
-  // Slug `home` renders to root path per the existing pageOutputPath
-  // contract in apps/static-generator.
   const cleanSlug = args.pageSlug === "home" || args.pageSlug === "" ? "" : args.pageSlug;
+  const style = args.pageUrlStyle ?? "directory";
+  // Tail = the slug portion of the canonical URL, with the trailing
+  // shape dictated by the page-emission style. Home pages always
+  // resolve to the base URL (no tail) regardless of style.
+  const tail = cleanSlug ? (style === "no-extension" ? cleanSlug : `${cleanSlug}/`) : "";
   const cfg = args.localeConfig;
   if (cfg && cfg.urlStrategy !== "none") {
     if (cfg.urlStrategy === "subdirectory") {
-      return cleanSlug ? `${base}/${cfg.code}/${cleanSlug}/` : `${base}/${cfg.code}/`;
+      return tail ? `${base}/${cfg.code}/${tail}` : `${base}/${cfg.code}/`;
     }
     if ((cfg.urlStrategy === "subdomain" || cfg.urlStrategy === "domain") && cfg.urlHost) {
       const protocol = base.startsWith("http://") ? "http://" : "https://";
-      return cleanSlug ? `${protocol}${cfg.urlHost}/${cleanSlug}/` : `${protocol}${cfg.urlHost}/`;
+      return tail ? `${protocol}${cfg.urlHost}/${tail}` : `${protocol}${cfg.urlHost}/`;
     }
   }
-  return cleanSlug ? `${base}/${cleanSlug}/` : `${base}/`;
+  return tail ? `${base}/${tail}` : `${base}/`;
 }
 
 export interface SeoMetaInput {
