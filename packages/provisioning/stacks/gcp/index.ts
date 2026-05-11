@@ -160,12 +160,13 @@ const cookieSecret = pulumi.secret(cookieSecretBytes.hex);
 // (see comment above). Cloud Run binds it as CAELO_SECRET_KEK env
 // via `valueSource.secretKeyRef` below.
 const caeloSecretKek = pulumi.secret(kekBytes.hex);
-// anthropicApiKey is now OPTIONAL — operators configure the key via
-// /security/ai (encrypted into ai_providers) after first login. Setting
-// it via Pulumi config is supported as a backwards-compat path for
-// installs that already wired it before P18; the Secret resource still
-// exists in either case so a future v1 can be added without redeploying.
-const anthropicApiKeyConfig = cfg.getSecret("anthropicApiKey");
+// v0.3.2 — anthropic-api-key Secret + Pulumi config dropped. The
+// runtime AI provider configuration lives at /security/ai (key
+// encrypted under the project KEK + stored in ai_providers).
+// Pre-v0.3.2 the wizard prompted for a key + Pulumi provisioned a
+// Secret + SecretVersion, but the Cloud Run service never read it
+// (no env-var mount existed). Dead code path removed.
+//
 // resendApiKey is OPTIONAL — empty config means "skip the SecretVersion"
 // so GCP doesn't reject `payload: ""`. The Secret resource itself still
 // exists; operators add a v1 later via `gcloud secrets versions add`.
@@ -197,10 +198,9 @@ const pgSecret = makeSecret("postgres-password", postgresPassword);
 const csrfSecretRes = makeSecret("csrf-secret", csrfSecret);
 const cookieSecretRes = makeSecret("cookie-secret", cookieSecret);
 const kekSecret = makeSecret("secret-kek", caeloSecretKek);
-// Anthropic key is optional now — operators configure providers via
-// /security/ai after first login. Skip the v1 when no key is in config;
-// the Secret resource still exists for backwards-compat env-var path.
-const anthropicSecretRes = makeSecret("anthropic-api-key", anthropicApiKeyConfig ?? null);
+// v0.3.2 — anthropic-api-key Secret dropped. See the
+// caeloSecretKek comment above for the runtime-path rationale.
+//
 // Resend: skip the v1 when no key is configured (cfg.getSecret returns
 // undefined when the key is unset in Pulumi.yaml + not overridden in the
 // stack config). The Secret resource still exists; operators add a v1
@@ -384,7 +384,6 @@ for (const made of [
   { name: "csrf-secret", made: csrfSecretRes },
   { name: "cookie-secret", made: cookieSecretRes },
   { name: "secret-kek", made: kekSecret },
-  { name: "anthropic-api-key", made: anthropicSecretRes },
   { name: "resend-api-key", made: resendSecretRes },
 ]) {
   new gcp.secretmanager.SecretIamMember(

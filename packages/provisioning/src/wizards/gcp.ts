@@ -10,29 +10,21 @@
  *   6. Enables 13 APIs in one call
  *   7. Creates the provisioner SA + grants 15 IAM roles
  *   8. Mints a JSON SA key into `~/.caelo-<install-id>/secrets/sa-key.json`
- *   9. Captures Anthropic API key (input-hidden) → secrets/anthropic-api-key
- *  10. Generates Pulumi passphrase if absent → secrets/pulumi-passphrase
- *  11. Pre-flight cost-estimate table; single y/N confirm
- *  12. Pulumi up via the Automation SDK; streams progress
- *  13. Prints DNS records + bootstrap URL (IAP runs on the LB
- *      BackendService; no post-up gcloud step needed)
+ *   9. Generates Pulumi passphrase if absent → secrets/pulumi-passphrase
+ *  10. Pre-flight cost-estimate table; single y/N confirm
+ *  11. Pulumi up via the Automation SDK; streams progress
+ *  12. Prints DNS records + bootstrap URL + a note pointing the
+ *      operator at /security/ai for AI provider key configuration
+ *      (the runtime path; pre-v0.3.2 there was a wizard prompt for
+ *      the Anthropic key but it landed in Secret Manager + never
+ *      reached the running admin — dead code, dropped).
  */
 
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  cancel,
-  confirm,
-  isCancel,
-  log,
-  note,
-  password,
-  select,
-  spinner,
-  text,
-} from "@clack/prompts";
+import { cancel, confirm, isCancel, log, note, select, spinner, text } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { pickDnsAdapter } from "../dns/index.js";
 import {
@@ -114,8 +106,13 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   await stepGrantRoles(installId, projectId, saEmail);
   const keyPath = await stepMintKey(installId, projectId, saEmail, secretsDir);
 
-  // === 7. Anthropic API key + Pulumi passphrase ===
-  const anthropicKey = await stepAnthropicKey(installId, opts.nonInteractive);
+  // === 7. Pulumi passphrase ===
+  // v0.3.2 — removed the legacy `stepAnthropicKey` prompt. The
+  // runtime AI provider configuration lives at /security/ai (the
+  // key is encrypted under the project KEK and stored in
+  // ai_providers). Pre-v0.3.2 the wizard captured a key + stored
+  // it in Secret Manager but the Cloud Run service never read it,
+  // so the prompt was dead UX cost.
   const pulumiPassphrase = stepPulumiPassphrase(installId);
 
   const region = "europe-west1";
@@ -185,7 +182,6 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     region,
     saKeyPath: keyPath,
     pulumiPassphrase,
-    anthropicApiKey: anthropicKey,
     cloudSqlTier: costInputs.cloudSqlTier,
     cloudSqlHa: costInputs.cloudSqlHa,
     adminMinInstances: costInputs.adminMinInstances,
@@ -534,38 +530,6 @@ async function stepMintKey(
   return keyPath;
 }
 
-async function stepAnthropicKey(installId: string, nonInteractive: boolean): Promise<string> {
-  const existing = readSecret(installId, "anthropic-api-key");
-  if (existing) {
-    log.success(`Anthropic API key ${dim("(reused from secrets/, not re-prompted)")}`);
-    return existing;
-  }
-  if (nonInteractive) {
-    log.error(red("Missing Anthropic API key + --non-interactive — cannot proceed."));
-    log.warn(
-      `Write the key to ${bold(`~/.caelo-${installId}/secrets/anthropic-api-key`)} (mode 600) then re-run.`,
-    );
-    cancel("Aborted.");
-    process.exit(1);
-  }
-  const value = await password({
-    message: "Anthropic API key (input hidden; saved to secrets/anthropic-api-key)",
-    validate: (v) => {
-      if (!v || v.length < 20) return "Looks too short — Anthropic keys start with sk-ant-";
-      if (!v.startsWith("sk-")) return "Should start with sk-";
-      return undefined;
-    },
-  });
-  if (isCancel(value)) {
-    cancel("Cancelled.");
-    process.exit(0);
-  }
-  const key = (value as string).trim();
-  writeSecret(installId, "anthropic-api-key", key);
-  log.success(`Anthropic key saved → ${dim(`~/.caelo-${installId}/secrets/anthropic-api-key`)}`);
-  return key;
-}
-
 function stepPulumiPassphrase(installId: string): string {
   const existing = readSecret(installId, "pulumi-passphrase");
   if (existing) {
@@ -587,7 +551,6 @@ interface PulumiUpOpts {
   region: string;
   saKeyPath: string;
   pulumiPassphrase: string;
-  anthropicApiKey: string;
   cloudSqlTier: string;
   cloudSqlHa: boolean;
   adminMinInstances: number;
@@ -1090,6 +1053,10 @@ async function stepFinalize(installId: string): Promise<void> {
       "",
       bold("Owner setup (open in your browser):"),
       `  ${cyan(String(bootstrapUrl))}`,
+      "",
+      bold("Configure AI provider:"),
+      `  After first login, visit ${cyan(`https://admin.${meta.domain}/security/ai`)} to paste your Anthropic API key.`,
+      `  The key is encrypted under the project KEK + stored in ai_providers — no env-var management.`,
       "",
       bold("Lifecycle commands:"),
       `  ${dim("bunx @caelo-cms/provisioning status")}     — health check + monthly cost`,

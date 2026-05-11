@@ -30,11 +30,8 @@ config:
   caelo-gcp-firebase:project:
     type: string
     description: GCP project id (also the Firebase project — Firebase Hosting requires the Firebase Management API to be enabled on the same project).
-  caelo-gcp-firebase:anthropicApiKey:
-    type: string
-    secret: true
-    default: ""
-    description: OPTIONAL backwards-compat. Operators configure AI provider keys via /security/ai after first login.
+  # v0.3.2 — anthropicApiKey config dropped. Runtime path is
+  # /security/ai → ai_providers (KEK-encrypted).
   # The 7 cross-provider knobs (subset of gcp's 8 — no Cloud Armor adaptive protection here)
   caelo-gcp-firebase:region:
     type: string

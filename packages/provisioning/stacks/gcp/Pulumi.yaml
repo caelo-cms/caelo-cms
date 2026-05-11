@@ -24,15 +24,11 @@ config:
   caelo-gcp:project:
     type: string
     description: GCP project id.
-  caelo-gcp:anthropicApiKey:
-    type: string
-    secret: true
-    default: ""
-    description: |
-      OPTIONAL backwards-compat. Operators configure AI provider keys via
-      /security/ai after first login (encrypted into ai_providers via the
-      project KEK). Leave empty for fresh installs; set this only if you
-      need the legacy ANTHROPIC_API_KEY env-var path on Cloud Run.
+  # v0.3.2 — anthropicApiKey config dropped. Runtime path is
+  # /security/ai → ai_providers (KEK-encrypted). Pre-v0.3.2 the
+  # wizard captured a key + Pulumi provisioned a Secret +
+  # SecretVersion, but the Cloud Run service never read it — dead
+  # config removed.
   # The 8 cross-provider knobs (CLAUDE.md §11.B)
   caelo-gcp:region:
     type: string

@@ -125,7 +125,12 @@ const postgresPassword = pulumi.secret(pgPasswordBytes.hex);
 const csrfSecret = pulumi.secret(csrfSecretBytes.hex);
 const cookieSecret = pulumi.secret(cookieSecretBytes.hex);
 const caeloSecretKek = pulumi.secret(kekBytes.hex);
-const anthropicApiKeyConfig = cfg.getSecret("anthropicApiKey");
+// v0.3.2 — anthropic-api-key Secret + Pulumi config dropped. The
+// runtime AI provider configuration lives at /security/ai (key
+// encrypted under the project KEK + stored in ai_providers).
+// Pre-v0.3.2 the wizard prompted for a key + Pulumi provisioned a
+// Secret + SecretVersion, but the Cloud Run service never read it
+// (no env-var mount existed). Dead code path removed.
 const resendApiKeyConfig = cfg.getSecret("resendApiKey");
 
 interface MadeSecret {
@@ -152,7 +157,6 @@ const pgSecret = makeSecret("postgres-password", postgresPassword);
 const csrfSecretRes = makeSecret("csrf-secret", csrfSecret);
 const cookieSecretRes = makeSecret("cookie-secret", cookieSecret);
 const kekSecret = makeSecret("secret-kek", caeloSecretKek);
-const anthropicSecretRes = makeSecret("anthropic-api-key", anthropicApiKeyConfig ?? null);
 const resendSecretRes = makeSecret("resend-api-key", resendApiKeyConfig ?? null);
 
 // =========================================================================
@@ -250,7 +254,6 @@ for (const made of [
   { name: "csrf-secret", made: csrfSecretRes },
   { name: "cookie-secret", made: cookieSecretRes },
   { name: "secret-kek", made: kekSecret },
-  { name: "anthropic-api-key", made: anthropicSecretRes },
   { name: "resend-api-key", made: resendSecretRes },
 ]) {
   new gcp.secretmanager.SecretIamMember(

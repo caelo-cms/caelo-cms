@@ -23,7 +23,6 @@ export interface PulumiUpInputs {
   region: string;
   saKeyPath: string;
   pulumiPassphrase: string;
-  anthropicApiKey: string;
   cloudSqlTier: string;
   cloudSqlHa: boolean;
   adminMinInstances: number;
@@ -114,7 +113,10 @@ export async function pulumiUpGcp(
       ? { [`${ns}:wafAdaptiveProtection`]: { value: String(inputs.wafAdaptiveProtection) } }
       : {}),
     [`${ns}:iapAllowlist`]: { value: inputs.iapAllowlist.join(",") },
-    [`${ns}:anthropicApiKey`]: { value: inputs.anthropicApiKey, secret: true },
+    // v0.3.2 — anthropicApiKey config dropped. Runtime path is
+    // /security/ai → ai_providers (KEK-encrypted). The pre-v0.3.2
+    // Secret + SecretVersion in Secret Manager were never mounted
+    // on Cloud Run, so the config was dead.
     ...Object.fromEntries(
       Object.entries(inputs.imageDigests).map(([service, digest]) => [
         `${ns}:image-digest-${service}`,
