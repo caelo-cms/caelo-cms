@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.3
+
+### Fixes
+- 7a90f5b gcp-firebase cost preview drops LB/CDN/Armor lines (v0.3.3)
+
 ## v0.3.2
 
 ### Chores
