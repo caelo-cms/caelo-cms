@@ -203,6 +203,37 @@ describe("P6 deploy.trigger", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("incremental deploy with changedPageIds re-bakes only those pages", async () => {
+    // v0.2.80 regression — pre-fix this query failed inside a tx
+    // with `Failed query: ... ANY(($1)::uuid[])` because drizzle's
+    // bound-array interpolation through bun-sql doesn't translate
+    // a JS array to PG's array_in cleanly. The cascade-driven Stage
+    // (v0.2.79) was the first caller to actually exercise this code
+    // path with a non-empty changedPageIds, so the regression was
+    // invisible until then.
+    //
+    // Use the existing seeded page (the suite's previous tests
+    // already ran seedPage). Look up its id via pages.list_by_status.
+    const list = await execute(registry, adapter, HUMAN, "pages.list", {});
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+    const pages = (list.value as { pages: { id: string; slug: string }[] }).pages;
+    const seeded = pages.find((p) => p.slug === PAGE_SLUG);
+    expect(seeded).toBeDefined();
+    if (!seeded) return;
+
+    const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
+      targetName: "production",
+      repoRoot: testRoot,
+      changedPageIds: [seeded.id],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const out = result.value as { pageCount: number };
+    // Only the one whitelisted page should have been baked.
+    expect(out.pageCount).toBe(1);
+  });
+
   it("records a deploy_runs row with status=succeeded and counts", async () => {
     const runs = await execute(registry, adapter, HUMAN, "deploy.list_runs", { limit: 10 });
     expect(runs.ok).toBe(true);

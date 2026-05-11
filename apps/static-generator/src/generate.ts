@@ -48,6 +48,14 @@ export interface GenerateResult {
   readonly buildDir: string;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function uuidArrayLiteral(ids: ReadonlyArray<string>): string {
+  for (const id of ids) {
+    if (!UUID_RE.test(id)) throw new Error(`uuidArrayLiteral: not a UUID: ${id}`);
+  }
+  return `ARRAY[${ids.map((id) => `'${id}'`).join(",")}]`;
+}
+
 interface PageRow {
   page_id: string;
   slug: string;
@@ -174,9 +182,19 @@ export async function generateSite(args: {
 
   // P13 ideas-pass — incremental whitelist filter when caller supplied
   // changedPageIds. Empty list / undefined = full-site build.
+  // v0.2.80 — drizzle's bound-array interpolation through bun-sql
+  // produces invalid SQL (`ANY(($1)::uuid[])` with a scalar param)
+  // inside transactions, so the v0.2.79 cascade-driven Stage was
+  // failing immediately when the form action passed a non-empty
+  // changedPageIds (pre-v0.2.79 the form never did, so this code
+  // path was never exercised in production). Inline the UUID list
+  // as a literal — Zod validates each as a UUID upstream; the
+  // regex below is defense-in-depth in case a future schema
+  // relaxation removes that guard. Same workaround as
+  // packages/admin-core/src/ops/snapshots/publish_impact_pages.ts.
   const incrementalFilter =
     args.changedPageIds && args.changedPageIds.length > 0
-      ? sql` AND p.id = ANY(${[...args.changedPageIds]}::uuid[])`
+      ? sql.raw(` AND p.id = ANY(${uuidArrayLiteral(args.changedPageIds)}::uuid[])`)
       : sql.raw("");
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id,
