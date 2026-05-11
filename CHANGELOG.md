@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.82
+
+### Features
+- 267b772 surface KEK-mismatch on /security/ai (v0.2.82)
+
 ## v0.2.81
 
 ### Fixes
