@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.80
+
+### Fixes
+- 8dfe693 incremental Stage no longer crashes (v0.2.80)
+
 ## v0.2.79
 
 ### Features
