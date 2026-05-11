@@ -38,7 +38,7 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
  * provider-native location string.
  */
 export interface PublishSummary {
-  provider: "self-hosted" | "gcp" | "aws" | "azure";
+  provider: "self-hosted" | "gcp" | "gcp-firebase" | "aws" | "azure";
   /** How many files were uploaded / synced in this step. May be < the
    *  total file count if the publisher skipped unchanged files via a
    *  hash manifest. */
@@ -51,6 +51,15 @@ export interface PublishSummary {
    *  Examples: 'gs://bucket/_staging/<runId>/' (cloud),
    *  'output/staging/builds/<runId>/' (self-hosted). */
   location: string;
+  /**
+   * v0.3.0 — provider-supplied preview URL for the staged build.
+   * Populated by the Firebase Hosting publisher (Firebase generates
+   * the channel URL like https://<site>--runid-<runId>-<hash>.web.app).
+   * Absent on other publishers — callers fall back to the
+   * provider-specific URL construction (e.g. /_staging-preview/
+   * proxy on `gcp`).
+   */
+  previewUrl?: string;
 }
 
 export interface PromoteSummary extends PublishSummary {
@@ -122,6 +131,8 @@ export async function loadStaticPublisher(provider?: string): Promise<StaticPubl
   switch (provider) {
     case "gcp":
       return (await import("./static-publisher-gcs.js")).gcsStaticPublisher;
+    case "gcp-firebase":
+      return (await import("./static-publisher-firebase.js")).firebaseHostingPublisher;
     case "aws":
       return (await import("./static-publisher-aws.js")).s3StaticPublisher;
     case "azure":
@@ -132,7 +143,7 @@ export async function loadStaticPublisher(provider?: string): Promise<StaticPubl
       return (await import("./static-publisher-self-hosted.js")).selfHostedStaticPublisher;
     default:
       throw new Error(
-        `loadStaticPublisher: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | aws | azure.`,
+        `loadStaticPublisher: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | gcp-firebase | aws | azure.`,
       );
   }
 }

@@ -29,6 +29,7 @@ import {
   writeMetadata,
 } from "./install-state.js";
 import { runGcpWizard } from "./wizards/gcp.js";
+import { runGcpFirebaseWizard } from "./wizards/gcp-firebase.js";
 
 export interface WizardOptions {
   /** Skip prompts; require all inputs via flags. CI-friendly. */
@@ -100,6 +101,15 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         nonInteractive: opts.nonInteractive ?? false,
       });
       break;
+    case "gcp-firebase":
+      await runGcpFirebaseWizard({
+        installId,
+        domain,
+        ownerEmail,
+        projectId: opts.projectId ?? null,
+        nonInteractive: opts.nonInteractive ?? false,
+      });
+      break;
     case "self-hosted":
       cancel(
         "Self-hosted wizard is the existing `cms-provision init` flow. Run `bunx @caelo-cms/provisioning init --domain ... --owner-email ...` for now; wizard polish lands in a follow-up commit.",
@@ -125,7 +135,12 @@ async function pickProvider(): Promise<Provider> {
       {
         value: "gcp",
         label: "Google Cloud Platform",
-        hint: "Cloud Run + Cloud SQL + Cloud Storage + Cloud CDN. Default for v0.1.",
+        hint: "Cloud Run + Cloud SQL + Cloud Storage + Cloud CDN. Single LB serves admin + gateway + static.",
+      },
+      {
+        value: "gcp-firebase",
+        label: "Google Cloud Platform (Firebase Hosting)",
+        hint: "Cloud Run + Cloud SQL + Firebase Hosting (no LB). Lower fixed cost, native clean URLs + preview channels. Gateway via Firebase rewrites (no Cloud Armor).",
       },
       {
         value: "self-hosted",

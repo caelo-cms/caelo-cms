@@ -57,7 +57,7 @@ const PENDING_TOKEN_PATH = resolve(CAELO_DIR, "pending-token.json");
 // when missing (preserves the P14 path).
 const PROVIDER_PATH = resolve(CAELO_DIR, "provider.json");
 
-type Provider = "self-hosted" | "gcp" | "aws" | "azure";
+type Provider = "self-hosted" | "gcp" | "gcp-firebase" | "aws" | "azure";
 
 function loadProvider(): Provider {
   if (!existsSync(PROVIDER_PATH)) return "self-hosted";
@@ -175,13 +175,15 @@ async function init(): Promise<void> {
   const domain = arg("domain");
   const ownerEmail = arg("owner-email");
   const providerArg = (arg("provider") ?? "self-hosted") as Provider;
-  if (!["self-hosted", "gcp", "aws", "azure"].includes(providerArg)) {
-    console.error(`Unknown --provider ${providerArg}. Choose self-hosted | gcp | aws | azure.`);
+  if (!["self-hosted", "gcp", "gcp-firebase", "aws", "azure"].includes(providerArg)) {
+    console.error(
+      `Unknown --provider ${providerArg}. Choose self-hosted | gcp | gcp-firebase | aws | azure.`,
+    );
     process.exit(2);
   }
   if (!domain || !ownerEmail) {
     console.error(
-      "Usage: cms-provision init [--provider gcp|aws|azure|self-hosted] --domain example.com --owner-email me@example.com",
+      "Usage: cms-provision init [--provider gcp|gcp-firebase|aws|azure|self-hosted] --domain example.com --owner-email me@example.com",
     );
     process.exit(2);
   }

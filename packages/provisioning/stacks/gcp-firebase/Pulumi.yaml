@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo GCP Firebase Hosting provider stack (v0.3.0).
+#
+# Differences from the `gcp` stack:
+#   - Static site: Firebase Hosting (no LB, no BackendBucket, no Cloud CDN)
+#   - Admin: Cloud Run domain mapping + IAP-on-Cloud-Run (no LB)
+#   - Gateway: Cloud Run + Firebase Hosting rewrites for /api/* (no LB, no Cloud Armor)
+#   - Postgres + Cloud Run + Secret Manager: unchanged
+#
+# Operator trade-off (accepted): no Cloud Armor on the gateway.
+# Mitigation: Firebase Edge DDoS protection + Cloud Run rate limits +
+# Caelo's in-app rate-limit middleware + form CAPTCHA/PoW.
+name: caelo-gcp-firebase
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+    packagemanager: bun
+main: ./index.ts
+description: Caelo GCP Firebase Hosting stack — Cloud SQL + Cloud Run + Firebase Hosting + Secret Manager.
+config:
+  # Required
+  caelo-gcp-firebase:domain:
+    type: string
+    description: Primary domain (e.g. example.com).
+  caelo-gcp-firebase:ownerEmail:
+    type: string
+    description: Operator email for the default IAP allowlist.
+  caelo-gcp-firebase:project:
+    type: string
+    description: GCP project id (also the Firebase project — Firebase Hosting requires the Firebase Management API to be enabled on the same project).
+  caelo-gcp-firebase:anthropicApiKey:
+    type: string
+    secret: true
+    default: ""
+    description: OPTIONAL backwards-compat. Operators configure AI provider keys via /security/ai after first login.
+  # The 7 cross-provider knobs (subset of gcp's 8 — no Cloud Armor adaptive protection here)
+  caelo-gcp-firebase:region:
+    type: string
+    default: us-central1
+    description: Primary GCP region (Cloud SQL, Cloud Run).
+  caelo-gcp-firebase:cloudSqlTier:
+    type: string
+    default: db-f1-micro
+    description: Cloud SQL machine tier. Default ~$10/mo (ENTERPRISE).
+  caelo-gcp-firebase:cloudSqlEdition:
+    type: string
+    default: ENTERPRISE
+    description: Cloud SQL edition.
+  caelo-gcp-firebase:cloudSqlHa:
+    type: boolean
+    default: false
+    description: HA failover. +~$20/mo.
+  caelo-gcp-firebase:adminMinInstances:
+    type: string
+    default: "0"
+    description: Admin Cloud Run min instances.
+  caelo-gcp-firebase:adminMaxInstances:
+    type: string
+    default: "5"
+    description: Admin Cloud Run max instances.
+  caelo-gcp-firebase:maxConnections:
+    type: string
+    default: "100"
+    description: Postgres max_connections.
+  caelo-gcp-firebase:gatewayMinInstances:
+    type: string
+    default: "0"
+    description: Gateway Cloud Run min instances.
+  caelo-gcp-firebase:iapAllowlist:
+    type: string
+    default: ""
+    description: Comma-list of IAP principals on the admin Cloud Run service.
+  caelo-gcp-firebase:backupRetentionDays:
+    type: string
+    default: "7"
+    description: Cloud SQL backup retention.
+  caelo-gcp-firebase:deletionProtection:
+    type: boolean
+    default: false
+    description: Block `pulumi destroy`.
+  caelo-gcp-firebase:firebaseSiteId:
+    type: string
+    default: ""
+    description: |
+      Optional Firebase Hosting site ID. Defaults to `caelo-<env>-site`.
+      Note Firebase site IDs are GLOBALLY UNIQUE; if the default collides
+      with another project's site, set this to something distinct
+      (e.g. `caelo-mycompany-site`).

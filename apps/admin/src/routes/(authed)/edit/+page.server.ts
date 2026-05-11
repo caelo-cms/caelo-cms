@@ -374,6 +374,7 @@ export const actions: Actions = {
       fileCount: number;
       buildId: string;
       runId: string;
+      previewUrl?: string;
     };
     // v0.2.78 — on GCP installs the staged build lives in the private
     // staging bucket; the editor previews it through the IAP-gated
@@ -381,7 +382,12 @@ export const actions: Actions = {
     // the existing CAELO_STAGING_BASE_URL (a separate Caddy serving
     // the bind-mounted staging out_dir).
     let previewUrl: string;
-    if (process.env.CAELO_PROVIDER === "gcp") {
+    // v0.3.0 — gcp-firebase publishes to a Firebase preview channel
+    // and surfaces the URL through summary.previewUrl. Consume it
+    // verbatim — no admin-side proxying needed.
+    if (summary.previewUrl) {
+      previewUrl = summary.previewUrl;
+    } else if (process.env.CAELO_PROVIDER === "gcp") {
       // v0.2.84 — the generator's pageOutputPath logic depends on
       // the locale's url_strategy: 'none' emits bare `<slug>/index.html`,
       // 'subdirectory' prepends `<locale>/`, 'subdomain' / 'domain'

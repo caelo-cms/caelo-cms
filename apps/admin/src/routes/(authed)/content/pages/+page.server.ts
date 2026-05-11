@@ -101,10 +101,16 @@ export const actions: Actions = {
       fileCount: number;
       buildId: string;
       runId: string;
+      previewUrl?: string;
     };
 
     let previewUrl: string;
-    if (process.env.CAELO_PROVIDER === "gcp") {
+    // v0.3.0 — gcp-firebase publishes to a Firebase preview channel
+    // and surfaces the URL through summary.previewUrl. Consume it
+    // verbatim.
+    if (summary.previewUrl) {
+      previewUrl = summary.previewUrl;
+    } else if (process.env.CAELO_PROVIDER === "gcp") {
       // v0.2.84 — locale-strategy-aware preview path. See
       // apps/admin/src/lib/server/staging-preview-path.ts for the
       // rationale (mirrors static-generator's pageOutputPath).

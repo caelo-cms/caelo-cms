@@ -23,7 +23,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type Provider = "self-hosted" | "gcp" | "aws" | "azure";
+export type Provider = "self-hosted" | "gcp" | "gcp-firebase" | "aws" | "azure";
 
 export interface InstallMetadata {
   installId: string;

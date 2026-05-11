@@ -367,6 +367,13 @@ export const triggerDeployOp = defineOperation({
     fileCount: z.number().int(),
     durationMs: z.number().int(),
     buildId: z.string(),
+    /**
+     * v0.3.0 — provider-supplied preview URL for the staged build.
+     * Populated by the Firebase Hosting publisher (Firebase
+     * generates the channel URL); undefined on other publishers
+     * which leaves URL construction to the form action.
+     */
+    previewUrl: z.string().optional(),
   }),
   handler: async (ctx, input, tx) => {
     const targetRows = (await tx.execute(
@@ -511,6 +518,7 @@ export const triggerDeployOp = defineOperation({
       fileCount: subprocess.result.fileCount,
       durationMs: subprocess.result.durationMs,
       buildId: runId,
+      ...(publishSummary.previewUrl ? { previewUrl: publishSummary.previewUrl } : {}),
     });
   },
 });

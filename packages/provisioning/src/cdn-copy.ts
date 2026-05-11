@@ -66,6 +66,13 @@ export async function loadCdnCopyAdapter(provider?: string): Promise<CdnCopyAdap
     case "gcp":
       // biome-ignore lint/suspicious/noExplicitAny: opt-in dynamic import
       return ((await import("./cdn-copy-gcs.js" as string)) as any).gcsCloudCdnPin;
+    case "gcp-firebase":
+      // v0.3.0 — Firebase Hosting manages CDN caching natively (each
+      // deploy creates an immutable version + the CDN's freshness is
+      // dictated by Firebase Hosting headers). There's no per-asset
+      // "pin to edge" API; this adapter is effectively a no-op that
+      // returns the same shape as self-hosted.
+      return selfHostedCdnCopy;
     case "aws":
       // biome-ignore lint/suspicious/noExplicitAny: opt-in dynamic import
       return ((await import("./cdn-copy-aws.js" as string)) as any).s3CloudfrontPrewarm;
@@ -78,7 +85,7 @@ export async function loadCdnCopyAdapter(provider?: string): Promise<CdnCopyAdap
       return selfHostedCdnCopy;
     default:
       throw new Error(
-        `loadCdnCopyAdapter: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | aws | azure.`,
+        `loadCdnCopyAdapter: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | gcp-firebase | aws | azure.`,
       );
   }
 }
