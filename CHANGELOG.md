@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.1
+
+### Fixes
+- fdd69ca gcp-firebase launch-readiness (v0.3.1)
+
 ## v0.3.0
 
 ### Features
