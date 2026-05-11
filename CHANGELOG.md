@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.83
+
+### Fixes
+- c387d45 config-pinned secret override preserves KEK across v0.2.81 transition (v0.2.83)
+
 ## v0.2.82
 
 ### Features
