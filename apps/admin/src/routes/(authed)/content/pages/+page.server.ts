@@ -6,6 +6,7 @@ import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
+import { stagingPreviewPath } from "$lib/server/staging-preview-path.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -104,13 +105,20 @@ export const actions: Actions = {
 
     let previewUrl: string;
     if (process.env.CAELO_PROVIDER === "gcp") {
-      // v0.2.78 — see /edit?/stage for the GCP staging-preview path
-      // discussion. Same pattern: look up the page slug + locale,
-      // construct the IAP-gated proxy URL.
+      // v0.2.84 — locale-strategy-aware preview path. See
+      // apps/admin/src/lib/server/staging-preview-path.ts for the
+      // rationale (mirrors static-generator's pageOutputPath).
       const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
-      if (pageRow.ok) {
+      const localesR = await execute(registry, adapter, locals.ctx, "locales.list", {});
+      if (pageRow.ok && localesR.ok) {
         const p = (pageRow.value as { page: { slug: string; locale: string } }).page;
-        previewUrl = `/_staging-preview/${summary.runId}/${p.locale}/${p.slug}/`;
+        const locales = (
+          localesR.value as {
+            locales: { code: string; urlStrategy: string; urlHost: string | null }[];
+          }
+        ).locales;
+        const cfg = locales.find((l) => l.code === p.locale);
+        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.slug, cfg)}`;
       } else {
         previewUrl = `/_staging-preview/${summary.runId}/`;
       }

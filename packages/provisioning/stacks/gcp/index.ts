@@ -152,38 +152,14 @@ const cookieSecretBytes = new random.RandomBytes(`${namePrefix}-cookie-secret-by
 });
 const kekBytes = new random.RandomBytes(`${namePrefix}-secret-kek-bytes`, { length: 32 });
 
-// v0.2.83 — config-pinned override for operators upgrading from a
-// pre-v0.2.81 install. The FIRST `pulumi up` after v0.2.81 lands
-// would otherwise rotate the KEK one more time (Pulumi sees the
-// program changed from `randomHex(32)` to RandomBytes and treats
-// the SecretVersion's secretData as having changed → creates v6).
-// To preserve the live KEK across that transition the operator can:
-//
-//   gcloud secrets versions access latest \
-//       --secret=caelo-production-secret-kek \
-//     | pulumi config set --secret caelo-gcp:secret-kek-hex --stdin
-//   pulumi up
-//
-// With the config set, Pulumi sees the SecretVersion's secretData
-// equals the live value → no diff → no rotation. The same shape
-// works for the three other auto-rotated secrets if an operator
-// wants to preserve them (csrf-secret rotation only invalidates
-// open sessions; cookie-secret same; postgres-password is generally
-// harmless because Cloud SQL accepts whatever the latest version
-// says).
-const kekHexOverride = cfg.getSecret("secret-kek-hex");
-const csrfSecretOverride = cfg.getSecret("csrf-secret-hex");
-const cookieSecretOverride = cfg.getSecret("cookie-secret-hex");
-const pgPasswordOverride = cfg.getSecret("postgres-password-hex");
-
-const postgresPassword = pgPasswordOverride ?? pulumi.secret(pgPasswordBytes.hex);
-const csrfSecret = csrfSecretOverride ?? pulumi.secret(csrfSecretBytes.hex);
-const cookieSecret = cookieSecretOverride ?? pulumi.secret(cookieSecretBytes.hex);
+const postgresPassword = pulumi.secret(pgPasswordBytes.hex);
+const csrfSecret = pulumi.secret(csrfSecretBytes.hex);
+const cookieSecret = pulumi.secret(cookieSecretBytes.hex);
 // P18 — project KEK (32 bytes hex) encrypts AI provider API keys
 // + future at-rest secrets in cms_admin. Stable across `pulumi up`
 // (see comment above). Cloud Run binds it as CAELO_SECRET_KEK env
 // via `valueSource.secretKeyRef` below.
-const caeloSecretKek = kekHexOverride ?? pulumi.secret(kekBytes.hex);
+const caeloSecretKek = pulumi.secret(kekBytes.hex);
 // anthropicApiKey is now OPTIONAL — operators configure the key via
 // /security/ai (encrypted into ai_providers) after first login. Setting
 // it via Pulumi config is supported as a backwards-compat path for

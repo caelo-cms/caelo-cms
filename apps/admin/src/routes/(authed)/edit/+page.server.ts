@@ -11,6 +11,7 @@ import {
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
+import { stagingPreviewPath } from "$lib/server/staging-preview-path.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 interface PageRow {
@@ -381,14 +382,26 @@ export const actions: Actions = {
     // the bind-mounted staging out_dir).
     let previewUrl: string;
     if (process.env.CAELO_PROVIDER === "gcp") {
-      // Look up the page's locale + slug to build the staged URL.
-      // The static-generator emits each page as
-      // `<locale>/<slug>/index.html` (locale-prefixed). The proxy
-      // handles index.html when the path ends in `/`.
+      // v0.2.84 — the generator's pageOutputPath logic depends on
+      // the locale's url_strategy: 'none' emits bare `<slug>/index.html`,
+      // 'subdirectory' prepends `<locale>/`, 'subdomain' / 'domain'
+      // emit under `_hosts/<host>/`. Pre-v0.2.84 the form action
+      // hardcoded `<locale>/<slug>/` which 404'd on single-locale
+      // installs (the most common shape) — the bucket had
+      // `features/index.html` while the proxy was looking up
+      // `en/features/index.html`. Mirror the generator's logic so
+      // the URL points at what actually exists.
       const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
-      if (pageRow.ok) {
+      const localesR = await execute(registry, adapter, locals.ctx, "locales.list", {});
+      if (pageRow.ok && localesR.ok) {
         const p = (pageRow.value as { page: { slug: string; locale: string } }).page;
-        previewUrl = `/_staging-preview/${summary.runId}/${p.locale}/${p.slug}/`;
+        const locales = (
+          localesR.value as {
+            locales: { code: string; urlStrategy: string; urlHost: string | null }[];
+          }
+        ).locales;
+        const cfg = locales.find((l) => l.code === p.locale);
+        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.slug, cfg)}`;
       } else {
         previewUrl = `/_staging-preview/${summary.runId}/`;
       }
