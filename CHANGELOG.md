@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.4
+
+### Fixes
+- 74b7fbc bundle ts-node so Pulumi can load stack .ts files (v0.3.4)
+
 ## v0.3.3
 
 ### Fixes
