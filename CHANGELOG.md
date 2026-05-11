@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.84
+
+### Fixes
+- 2ab2083 staging-preview path + drop v0.2.83 override (v0.2.84)
+
 ## v0.2.83
 
 ### Fixes
