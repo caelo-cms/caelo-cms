@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.5
+
+### Fixes
+- 717d44c gcp-firebase stack type errors + stack-level tsconfig (v0.3.5)
+
 ## v0.3.4
 
 ### Fixes
