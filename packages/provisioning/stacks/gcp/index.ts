@@ -935,7 +935,7 @@ new gcp.bigquery.DatasetIamMember(
 
 const tokenInfo = generateBootstrapToken();
 
-const dnsRecordsRequired: pulumi.Output<DnsRecord[]> = lbIp.address.apply((ip) => [
+const dnsRecordsRequired: pulumi.Output<DnsRecord[]> = lbIp.address.apply((ip): DnsRecord[] => [
   {
     hostname: domain,
     type: "A",

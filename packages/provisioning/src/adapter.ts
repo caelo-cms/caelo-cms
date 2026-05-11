@@ -89,7 +89,7 @@ export interface CloudAdapterOutputs {
   readonly environment: Environment;
 }
 
-export type SupportedProvider = "self-hosted" | "gcp" | "aws" | "azure";
+export type SupportedProvider = "self-hosted" | "gcp" | "gcp-firebase" | "aws" | "azure";
 
 /**
  * Convenience: the shape persisted in `cms_admin.provisioning_outputs.outputs_json`.

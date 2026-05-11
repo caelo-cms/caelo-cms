@@ -309,7 +309,11 @@ const firebaseCustomDomain = new gcp.firebase.HostingCustomDomain(
   `${namePrefix}-firebase-apex`,
   {
     project,
-    siteId: firebaseSite.siteId,
+    // Use the input string (known at config time) instead of the
+    // resource's siteId output — the typed output is
+    // `Output<string | undefined>` but Input<string> doesn't accept
+    // undefined.
+    siteId: firebaseSiteId,
     customDomain: domain,
     waitDnsVerification: false,
   },
@@ -419,7 +423,9 @@ const adminSvc = cloudRunService({
   iapEnabled: true,
   extraEnv: [
     { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
-    { name: "CAELO_FIREBASE_SITE", value: firebaseSite.siteId },
+    // Use the input string (known at config time) — resource output
+    // is Output<string | undefined> which Input<string> rejects.
+    { name: "CAELO_FIREBASE_SITE", value: firebaseSiteId },
     { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },
     // v0.3.1 — Firebase publisher needs the gateway service name +
     // region to declare the /api/** rewrite when creating each
@@ -516,7 +522,12 @@ const dnsRecords: pulumi.Output<DnsRecord[]> = pulumi
         ?.flatMap((s) => s.resourceRecords ?? [])
         .map((r) => ({ type: r.type ?? "CNAME", value: r.rrdata ?? "" })) ?? [];
     for (const t of adminTargets) {
-      out.push({ host: adminDomain, type: t.type as DnsRecord["type"], value: t.value });
+      out.push({
+        hostname: adminDomain,
+        type: t.type as DnsRecord["type"],
+        value: t.value,
+        purpose: "Admin app → Cloud Run direct (gen2 IAP-gated)",
+      });
     }
 
     // Apex — Firebase Hosting custom-domain DNS instructions.
@@ -529,9 +540,10 @@ const dnsRecords: pulumi.Output<DnsRecord[]> = pulumi
       for (const desired of apex.desireds ?? []) {
         for (const v of desired.records ?? []) {
           out.push({
-            host: domain,
+            hostname: domain,
             type: (v.type ?? "A") as DnsRecord["type"],
             value: v.rdata ?? "",
+            purpose: "Public site → Firebase Hosting CDN",
           });
         }
       }
@@ -539,24 +551,40 @@ const dnsRecords: pulumi.Output<DnsRecord[]> = pulumi
     return out;
   });
 
-const bootstrapToken = generateBootstrapToken();
+const tokenInfo = generateBootstrapToken();
 
-const outputs: CloudAdapterOutputs = {
-  adminUrl: pulumi.interpolate`https://${adminDomain}`,
-  gatewayUrl: gatewaySvc.uri,
-  staticUrl: `https://${domain}`,
-  adminDatabaseUrl,
-  publicDatabaseUrl,
-  bootstrapToken,
-  dnsRecords,
+// Cast pulumi.Output<string> values to plain `string` to satisfy the
+// shared CloudAdapterOutputs shape. Pulumi serialises Outputs to
+// plain strings in stack outputs at runtime; the cast bridges the
+// build-time type. Same pattern as packages/provisioning/stacks/gcp/index.ts.
+const out: CloudAdapterOutputs = {
+  adminDatabaseUrl: adminDatabaseUrl as unknown as string,
+  publicDatabaseUrl: publicDatabaseUrl as unknown as string,
+  mediaStorageUrl: pulumi.interpolate`gs://${mediaBucket.name}` as unknown as string,
+  // Firebase Hosting serves media via its own CDN; we proxy through
+  // the Firebase site's apex domain for canonical URLs.
+  mediaCdnBaseUrl: `https://${domain}/media` as unknown as string,
+  bootstrapUrl:
+    pulumi.interpolate`https://${adminDomain}/setup?token=${tokenInfo.token}` as unknown as string,
+  dnsRecordsRequired: dnsRecords as unknown as DnsRecord[],
+  // gcp-firebase doesn't provision BigQuery sinks today (no LB → no
+  // edge log stream). v0.3.x+ adds a Firebase Hosting log export.
+  edgeLogSinkUrl: `bigquery://${project}/firebase_logs` as unknown as string,
+  provider: "gcp-firebase",
+  environment: env,
 };
 
-export const adminUrl = outputs.adminUrl;
-export const gatewayUrl = outputs.gatewayUrl;
-export const staticUrl = outputs.staticUrl;
-export const adminDatabaseUrlOut = outputs.adminDatabaseUrl;
-export const publicDatabaseUrlOut = outputs.publicDatabaseUrl;
-export const bootstrapTokenOut = outputs.bootstrapToken;
-export const dnsRecordsOut = outputs.dnsRecords;
-export const firebaseSiteIdOut = firebaseSite.siteId;
-export const firebaseSiteName = firebaseSite.name;
+export const adminDatabaseUrlOut = out.adminDatabaseUrl;
+export const publicDatabaseUrlOut = out.publicDatabaseUrl;
+export const mediaStorageUrlOut = out.mediaStorageUrl;
+export const mediaCdnBaseUrlOut = out.mediaCdnBaseUrl;
+export const bootstrapUrlOut = out.bootstrapUrl;
+export const dnsRecordsRequiredOut = out.dnsRecordsRequired;
+export const edgeLogSinkUrlOut = out.edgeLogSinkUrl;
+export const providerOut = out.provider;
+export const environmentOut = out.environment;
+export const adminCloudRunUrlOut = adminSvc.uri;
+export const gatewayCloudRunUrlOut = gatewaySvc.uri;
+export const adminDomainOut = adminDomain;
+export const firebaseSiteIdOut = firebaseSiteId;
+export const bootstrapTokenExpiresAtOut = tokenInfo.expiresAt;

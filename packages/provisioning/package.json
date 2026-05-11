@@ -33,9 +33,9 @@
     "package.json"
   ],
   "scripts": {
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc --project stacks/gcp/tsconfig.json && tsc --project stacks/gcp-firebase/tsconfig.json",
     "build": "tsc -b --force",
-    "prepublishOnly": "tsc -b --force"
+    "prepublishOnly": "tsc -b --force && tsc --project stacks/gcp/tsconfig.json && tsc --project stacks/gcp-firebase/tsconfig.json"
   },
   "dependencies": {
     "@caelo-cms/shared": "workspace:*",

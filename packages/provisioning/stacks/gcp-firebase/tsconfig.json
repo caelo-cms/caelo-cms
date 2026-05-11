@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": ["index.ts"],
+  "ts-node": {
+    "transpileOnly": true,
+    "compilerOptions": {
+      "module": "nodenext",
+      "moduleResolution": "nodenext"
+    }
+  }
+}
