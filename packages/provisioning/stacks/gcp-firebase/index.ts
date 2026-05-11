@@ -324,7 +324,12 @@ interface CloudRunArgs {
   readonly memory: string;
   readonly timeout: string;
   readonly extraEnv?: ReadonlyArray<{ name: string; value: pulumi.Input<string> }>;
-  readonly ingressAll?: boolean;
+  /** v0.3.1 — admin: ALL (so IAP gates internet traffic). gateway:
+   *  INTERNAL_LOAD_BALANCER (locked down; only Firebase Hosting
+   *  rewrites + run.invoker-authorised callers can reach it). */
+  readonly ingress: "INGRESS_TRAFFIC_ALL" | "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER";
+  /** v0.3.1 — set true on admin so Cloud Run IAP gates traffic. */
+  readonly iapEnabled?: boolean;
 }
 
 function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
@@ -332,12 +337,12 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
     `${namePrefix}-${args.serviceName}`,
     {
       location: region,
-      // Admin needs INGRESS_TRAFFIC_ALL so visitors hit IAP first;
-      // gateway is reached via Firebase Hosting rewrites (server-side
-      // proxy), so INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER also works —
-      // but for v0.3.0 we set both to ALL to keep the topology simple
-      // (Firebase Hosting rewrites use Google-internal traffic).
-      ingress: args.ingressAll ? "INGRESS_TRAFFIC_ALL" : "INGRESS_TRAFFIC_ALL",
+      ingress: args.ingress,
+      // v0.3.1 — Cloud Run native IAP. With this on, every request
+      // is gated by IAP before the container sees it. Allowlisted
+      // users get through via the IAM bindings further below;
+      // others get a 403 from IAP's login challenge.
+      iapEnabled: args.iapEnabled ?? false,
       deletionProtection,
       template: {
         serviceAccount: runSa.email,
@@ -384,27 +389,68 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
   );
 }
 
-const adminSvc = cloudRunService({
-  serviceName: "admin",
-  minInstances: adminMinInstances,
-  maxInstances: adminMaxInstances,
-  memory: "1Gi",
-  timeout: "3600s",
-  extraEnv: [
-    { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
-    { name: "CAELO_FIREBASE_SITE", value: firebaseSite.siteId },
-    { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },
-  ],
-});
-
+// Gateway provisioned first so we can pass its name/region into the
+// admin's env (the Firebase publisher needs them to wire rewrites).
 const gatewaySvc = cloudRunService({
   serviceName: "gateway",
   minInstances: gatewayMinInstances,
   maxInstances: 100,
   memory: "512Mi",
   timeout: "60s",
+  // v0.3.1 — gateway is reachable ONLY via Firebase Hosting
+  // rewrites or any caller holding roles/run.invoker on the
+  // service. Anonymous internet traffic gets a Cloud Run 403.
+  ingress: "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER",
   extraEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
 });
+
+const adminSvc = cloudRunService({
+  serviceName: "admin",
+  minInstances: adminMinInstances,
+  maxInstances: adminMaxInstances,
+  memory: "1Gi",
+  timeout: "3600s",
+  // v0.3.1 — admin is internet-reachable but gated by Cloud Run
+  // native IAP. iapEnabled flips the IAP integration on the service.
+  ingress: "INGRESS_TRAFFIC_ALL",
+  iapEnabled: true,
+  extraEnv: [
+    { name: "PUBLIC_ADMIN_DATABASE_URL", value: publicAdminDatabaseUrl },
+    { name: "CAELO_FIREBASE_SITE", value: firebaseSite.siteId },
+    { name: "CAELO_GENERATOR_CLI", value: "/app/apps/static-generator/src/cli.ts" },
+    // v0.3.1 — Firebase publisher needs the gateway service name +
+    // region to declare the /api/** rewrite when creating each
+    // version.
+    { name: "CAELO_GATEWAY_SERVICE", value: gatewaySvc.name },
+    { name: "CAELO_GATEWAY_REGION", value: region },
+  ],
+});
+
+// =========================================================================
+// Gateway — Firebase Hosting service identity gets run.invoker
+// =========================================================================
+
+// v0.3.1 — Firebase Hosting uses a Google-managed service identity
+// to proxy traffic via `rewrites` to Cloud Run. Grant it
+// `roles/run.invoker` on the gateway so /api/** requests succeed.
+// The SA name follows the standard `service-<project-number>@
+// gcp-sa-firebasehosting.iam.gserviceaccount.com` shape. We fetch
+// the project number via `gcp.organizations.getProject` rather than
+// hardcoding it.
+const projectInfo = gcp.organizations.getProjectOutput({ projectId: project }, opts);
+const firebaseHostingSa = pulumi.interpolate`serviceAccount:service-${projectInfo.number}@gcp-sa-firebasehosting.iam.gserviceaccount.com`;
+
+new gcp.cloudrun.IamMember(
+  `${namePrefix}-gateway-firebase-invoker`,
+  {
+    location: region,
+    project,
+    service: gatewaySvc.name,
+    role: "roles/run.invoker",
+    member: firebaseHostingSa,
+  },
+  opts,
+);
 
 // =========================================================================
 // Admin custom domain — Cloud Run domain mapping

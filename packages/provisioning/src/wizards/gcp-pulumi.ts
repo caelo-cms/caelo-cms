@@ -34,6 +34,12 @@ export interface PulumiUpInputs {
    *  pre-resolves the floating `:main` tag to a fixed digest so each
    *  pulumi up rolls Cloud Run to the freshest published image. */
   imageDigests: Record<string, string>;
+  /**
+   * v0.3.1 — provider variant. Selects which stack dir to apply
+   * + which config namespace (caelo-gcp vs caelo-gcp-firebase).
+   * Defaults to 'gcp' for backwards compatibility.
+   */
+  provider?: "gcp" | "gcp-firebase";
 }
 
 export interface PulumiUpResult {
@@ -46,12 +52,12 @@ export interface PulumiUpResult {
  * Works whether the CLI runs from source (apps/admin/scripts/...)
  * or from the published npm tarball (node_modules/@caelo-cms/...).
  */
-function gcpStackWorkDir(): string {
-  // The Pulumi.yaml + stacks/gcp/index.ts ship in the npm tarball
-  // under `stacks/gcp/`. From this file's location at runtime
-  // (dist/wizards/gcp-pulumi.js), the stack dir is two levels up
-  // + into stacks/gcp/.
-  return resolvePath(import.meta.dir, "../../stacks/gcp");
+function gcpStackWorkDir(provider: "gcp" | "gcp-firebase" = "gcp"): string {
+  // The Pulumi.yaml + stacks/<provider>/index.ts ship in the npm
+  // tarball under `stacks/<provider>/`. From this file's location at
+  // runtime (dist/wizards/gcp-pulumi.js), the stack dir is two
+  // levels up + into the provider-specific stack folder.
+  return resolvePath(import.meta.dir, `../../stacks/${provider}`);
 }
 
 /**
@@ -74,8 +80,12 @@ export async function pulumiUpGcp(
     PULUMI_BACKEND_URL: `file://${join(inputs.installRoot, "state")}`,
   };
 
+  const provider = inputs.provider ?? "gcp";
   const stackName = "production";
-  const workDir = gcpStackWorkDir();
+  const workDir = gcpStackWorkDir(provider);
+  // Pulumi config namespace mirrors the stack's `name:` field in
+  // Pulumi.yaml (caelo-gcp vs caelo-gcp-firebase).
+  const ns = `caelo-${provider}`;
 
   const stack = await pulumi.LocalWorkspace.createOrSelectStack(
     {
@@ -89,21 +99,25 @@ export async function pulumiUpGcp(
 
   // Set every config value the stack reads. Secrets via setConfig with
   // {value, secret: true}; Pulumi encrypts them in state.
+  // wafAdaptiveProtection is gcp-only; the gcp-firebase stack has no
+  // Cloud Armor + ignores the key, but setting it does no harm.
   await stack.setAllConfig({
-    "caelo-gcp:project": { value: inputs.projectId },
-    "caelo-gcp:domain": { value: inputs.domain },
-    "caelo-gcp:ownerEmail": { value: inputs.ownerEmail },
-    "caelo-gcp:region": { value: inputs.region },
-    "caelo-gcp:cloudSqlTier": { value: inputs.cloudSqlTier },
-    "caelo-gcp:cloudSqlHa": { value: String(inputs.cloudSqlHa) },
-    "caelo-gcp:adminMinInstances": { value: String(inputs.adminMinInstances) },
-    "caelo-gcp:gatewayMinInstances": { value: String(inputs.gatewayMinInstances) },
-    "caelo-gcp:wafAdaptiveProtection": { value: String(inputs.wafAdaptiveProtection) },
-    "caelo-gcp:iapAllowlist": { value: inputs.iapAllowlist.join(",") },
-    "caelo-gcp:anthropicApiKey": { value: inputs.anthropicApiKey, secret: true },
+    [`${ns}:project`]: { value: inputs.projectId },
+    [`${ns}:domain`]: { value: inputs.domain },
+    [`${ns}:ownerEmail`]: { value: inputs.ownerEmail },
+    [`${ns}:region`]: { value: inputs.region },
+    [`${ns}:cloudSqlTier`]: { value: inputs.cloudSqlTier },
+    [`${ns}:cloudSqlHa`]: { value: String(inputs.cloudSqlHa) },
+    [`${ns}:adminMinInstances`]: { value: String(inputs.adminMinInstances) },
+    [`${ns}:gatewayMinInstances`]: { value: String(inputs.gatewayMinInstances) },
+    ...(provider === "gcp"
+      ? { [`${ns}:wafAdaptiveProtection`]: { value: String(inputs.wafAdaptiveProtection) } }
+      : {}),
+    [`${ns}:iapAllowlist`]: { value: inputs.iapAllowlist.join(",") },
+    [`${ns}:anthropicApiKey`]: { value: inputs.anthropicApiKey, secret: true },
     ...Object.fromEntries(
       Object.entries(inputs.imageDigests).map(([service, digest]) => [
-        `caelo-gcp:image-digest-${service}`,
+        `${ns}:image-digest-${service}`,
         { value: digest },
       ]),
     ),

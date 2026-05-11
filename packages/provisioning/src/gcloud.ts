@@ -121,8 +121,21 @@ const REQUIRED_APIS: readonly string[] = [
   "serviceusage.googleapis.com",
 ];
 
-export async function enableApis(projectId: string): Promise<GcloudResult> {
-  return gcloud(["services", "enable", ...REQUIRED_APIS, "--project", projectId]);
+// v0.3.1 — gcp-firebase provider needs the Firebase Management +
+// Firebase Hosting APIs on top of the gcp baseline. Without these
+// the Pulumi `gcp.firebase.HostingSite` resource fails to create.
+const GCP_FIREBASE_EXTRA_APIS: readonly string[] = [
+  "firebase.googleapis.com",
+  "firebasehosting.googleapis.com",
+];
+
+export async function enableApis(
+  projectId: string,
+  provider: "gcp" | "gcp-firebase" = "gcp",
+): Promise<GcloudResult> {
+  const apis =
+    provider === "gcp-firebase" ? [...REQUIRED_APIS, ...GCP_FIREBASE_EXTRA_APIS] : REQUIRED_APIS;
+  return gcloud(["services", "enable", ...apis, "--project", projectId]);
 }
 
 export async function serviceAccountExists(projectId: string, saEmail: string): Promise<boolean> {
@@ -226,4 +239,5 @@ export async function createServiceAccountKey(
 }
 
 export const REQUIRED_API_LIST = REQUIRED_APIS;
+export const GCP_FIREBASE_EXTRA_API_LIST = GCP_FIREBASE_EXTRA_APIS;
 export const PROVISIONER_ROLE_LIST = PROVISIONER_ROLES;

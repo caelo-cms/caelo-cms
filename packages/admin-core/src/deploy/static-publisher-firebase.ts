@@ -213,10 +213,52 @@ export const firebaseHostingPublisher: StaticPublisher = {
       }),
     );
 
-    // 2. Create a new version.
+    // 2. Create a new version with site config — rewrites for the
+    //    gateway + per-extension caching headers. The rewrites send
+    //    `/api/**` traffic to the gateway Cloud Run service so visitor
+    //    form submissions, comments, ratings, etc. work end-to-end.
+    //    Without rewrites those requests would 404 against the static
+    //    bucket — v0.3.0 shipped without them which was the launch
+    //    blocker the v0.3.1 audit surfaced.
+    //
+    //    Gateway service name + region come from env vars set by the
+    //    gcp-firebase Pulumi stack on the admin Cloud Run service.
+    //    No fallback per CLAUDE.md §2 — failing to set these env vars
+    //    means the gcp-firebase Pulumi stack is misconfigured.
+    const gatewayService = process.env.CAELO_GATEWAY_SERVICE;
+    const gatewayRegion = process.env.CAELO_GATEWAY_REGION;
+    if (!gatewayService || !gatewayRegion) {
+      throw new Error(
+        "static-publisher-firebase: CAELO_GATEWAY_SERVICE / CAELO_GATEWAY_REGION not set. The gcp-firebase Pulumi stack must set these env vars on the admin Cloud Run service.",
+      );
+    }
+    const versionConfig = {
+      rewrites: [
+        {
+          glob: "/api/**",
+          run: { serviceId: gatewayService, region: gatewayRegion },
+        },
+      ],
+      // Per-path headers mirror the cacheControlForContentType
+      // helper in static-publisher-gcs. Firebase Hosting applies
+      // these as response headers. Hashed Vite assets get
+      // immutable; HTML gets short max-age + SWR.
+      headers: [
+        {
+          glob: "/_app/immutable/**",
+          headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],
+        },
+        {
+          glob: "/**/*.html",
+          headers: [
+            { key: "Cache-Control", value: "public, max-age=60, stale-while-revalidate=86400" },
+          ],
+        },
+      ],
+    };
     const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
       method: "POST",
-      body: JSON.stringify({ config: {} }),
+      body: JSON.stringify({ config: versionConfig }),
       token,
     });
     const versionName = created.name; // "sites/<site>/versions/<versionId>"

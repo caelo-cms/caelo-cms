@@ -47,14 +47,12 @@ export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise
     ].join("\n"),
   );
 
-  // For v0.3.0 the wizard delegates the gcloud pre-Pulumi steps to
-  // the shared `runGcpWizard` since they're structurally identical
-  // (project, billing, APIs, SA, secrets capture). The Pulumi stack
-  // differs but the wizard arguments stay the same.
-  //
-  // The shared wizard knows to use the gcp-firebase stack folder
-  // via the `provider` config the operator set earlier in
-  // saveProvider().
+  // v0.3.1 — the gcloud pre-Pulumi steps are structurally identical
+  // (project, billing, APIs, SA, secrets capture) and the shared
+  // `runGcpWizard` flow now accepts a `provider` arg that:
+  //   - enables the additional Firebase APIs in stepEnableApis
+  //   - routes the final pulumiUpGcp at stacks/gcp-firebase
+  //   - uses the caelo-gcp-firebase config namespace
   const { runGcpWizard } = await import("./gcp.js");
   await runGcpWizard({
     installId: opts.installId,
@@ -62,19 +60,6 @@ export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise
     ownerEmail: opts.ownerEmail,
     projectId: opts.projectId,
     nonInteractive: opts.nonInteractive,
+    provider: "gcp-firebase",
   });
-
-  note(
-    [
-      `Next: run \`pulumi up\` against the gcp-firebase stack:`,
-      `  cd packages/provisioning/stacks/gcp-firebase`,
-      `  pulumi stack init prod`,
-      `  pulumi config set caelo-gcp-firebase:domain ${opts.domain}`,
-      `  pulumi config set caelo-gcp-firebase:ownerEmail ${opts.ownerEmail}`,
-      `  pulumi up`,
-      "",
-      `Once Pulumi finishes, DNS instructions for the apex (${opts.domain}) and admin (admin.${opts.domain}) print to the console.`,
-    ].join("\n"),
-    "Pulumi (gcp-firebase stack)",
-  );
 }

@@ -73,6 +73,13 @@ export interface GcpWizardOpts {
   ownerEmail: string;
   projectId: string | null;
   nonInteractive: boolean;
+  /**
+   * v0.3.1 — provider variant. 'gcp' is the LB-based topology;
+   * 'gcp-firebase' adds Firebase Hosting + Cloud Run direct. The
+   * variant gates per-provider gcloud steps (e.g. Firebase APIs
+   * enablement, Search Console verification prompts).
+   */
+  provider?: "gcp" | "gcp-firebase";
 }
 
 export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
@@ -99,7 +106,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   await stepBillingLink(installId, projectId, opts.nonInteractive);
 
   // === 5. Enable APIs ===
-  await stepEnableApis(installId, projectId);
+  await stepEnableApis(installId, projectId, opts.provider ?? "gcp");
 
   // === 6. Service account + roles + key ===
   const saEmail = `${SA_ACCOUNT_ID}@${projectId}.iam.gserviceaccount.com`;
@@ -186,6 +193,9 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
     wafAdaptiveProtection: costInputs.wafAdaptiveProtection,
     iapAllowlist: [`user:${ownerEmail}`],
     imageDigests,
+    // v0.3.1 — route pulumi up at the right stack folder + use the
+    // matching config namespace.
+    provider: opts.provider ?? "gcp",
   });
 
   // === 10. Wait for managed cert to flip from PROVISIONING → ACTIVE ===
@@ -415,22 +425,34 @@ async function stepBillingLink(
   markStepDone(installId, stepName, { billingAccountId: chosen.id });
 }
 
-async function stepEnableApis(installId: string, projectId: string): Promise<void> {
-  const stepName = `enable-apis-${projectId}`;
+async function stepEnableApis(
+  installId: string,
+  projectId: string,
+  provider: "gcp" | "gcp-firebase" = "gcp",
+): Promise<void> {
+  // v0.3.1 — gcp-firebase needs the Firebase Management + Firebase
+  // Hosting APIs on top of the gcp baseline. Re-key the step name
+  // so installs that initially ran with `gcp` and then re-ran with
+  // `gcp-firebase` (re-key clears the checkpoint) re-enable the
+  // additional APIs. The base APIs are idempotent → re-enabling
+  // is a no-op.
+  const stepName = `enable-apis-${provider}-${projectId}`;
+  const apiCount =
+    provider === "gcp-firebase" ? REQUIRED_API_LIST.length + 2 : REQUIRED_API_LIST.length;
   if (isStepDone(installId, stepName)) {
-    log.success(`APIs enabled ${dim(`(${REQUIRED_API_LIST.length} services, checkpointed)`)}`);
+    log.success(`APIs enabled ${dim(`(${apiCount} services, checkpointed)`)}`);
     return;
   }
   const s = spinner();
-  s.start(`Enabling ${REQUIRED_API_LIST.length} GCP APIs (15-30s)...`);
-  const r = await enableApis(projectId);
+  s.start(`Enabling ${apiCount} GCP APIs (15-30s)...`);
+  const r = await enableApis(projectId, provider);
   if (!r.ok) {
     s.stop(red(`Failed: ${r.stderr.trim()}`));
     cancel("Aborted.");
     process.exit(1);
   }
-  s.stop(green(`${REQUIRED_API_LIST.length} APIs enabled`));
-  markStepDone(installId, stepName, { count: REQUIRED_API_LIST.length });
+  s.stop(green(`${apiCount} APIs enabled`));
+  markStepDone(installId, stepName, { count: apiCount });
 }
 
 async function stepServiceAccount(
@@ -573,6 +595,8 @@ interface PulumiUpOpts {
   wafAdaptiveProtection: boolean;
   iapAllowlist: string[];
   imageDigests: Record<string, string>;
+  /** v0.3.1 — provider variant; routes pulumi up at the right stack. */
+  provider?: "gcp" | "gcp-firebase";
 }
 
 async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void> {
@@ -591,6 +615,7 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
       installRoot: root,
       secretsDir,
       ...opts,
+      provider: opts.provider ?? "gcp",
     },
     (kind, message) => {
       if (kind === "resource") {
