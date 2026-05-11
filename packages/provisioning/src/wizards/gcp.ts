@@ -119,12 +119,17 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   if (meta) writeMetadata(installId, { ...meta, projectId, region });
 
   // === 8. Cost-estimate pre-flight ===
+  // v0.3.3 — provider variant threads through so gcp-firebase
+  // drops the LB / Cloud CDN / Cloud Armor lines (saves ~$19/mo
+  // vs gcp). Default 'gcp' for backwards compatibility with
+  // installs that don't set the field.
   const costInputs = {
     cloudSqlTier: "db-f1-micro",
     cloudSqlHa: false,
     adminMinInstances: 0,
     gatewayMinInstances: 0,
     wafAdaptiveProtection: false,
+    provider: opts.provider ?? ("gcp" as const),
   };
   const estimate = estimateGcpCost(costInputs);
   note(

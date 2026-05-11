@@ -23,6 +23,14 @@ export interface CostEstimateInputs {
   adminMinInstances: number;
   gatewayMinInstances: number;
   wafAdaptiveProtection: boolean;
+  /**
+   * v0.3.3 — provider variant. 'gcp' is the LB-fronted topology
+   * (+$18 LB + Cloud CDN + Cloud Armor lines). 'gcp-firebase'
+   * drops all three (no LB, Firebase Hosting native CDN, no Cloud
+   * Armor) — saves ~$19/mo. Defaults to 'gcp' for backwards
+   * compatibility.
+   */
+  provider?: "gcp" | "gcp-firebase";
 }
 
 const SQL_TIER_USD: Record<string, number> = {
@@ -46,6 +54,8 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
   const sqlBase = SQL_TIER_USD[inputs.cloudSqlTier] ?? 30;
   const sqlMultiplier = inputs.cloudSqlHa ? 2.0 : 1.0;
   const sqlMonthly = Math.round(sqlBase * sqlMultiplier);
+
+  const provider = inputs.provider ?? "gcp";
 
   const lines: CostLine[] = [
     {
@@ -71,27 +81,45 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
           ? "scale-to-zero; ~$1/mo light traffic"
           : `${inputs.gatewayMinInstances} min-instance${inputs.gatewayMinInstances > 1 ? "s" : ""}`,
     },
+    // v0.3.3 — LB / Cloud CDN / Cloud Armor lines apply only to the
+    // gcp variant. gcp-firebase has no LB (Firebase Hosting is the
+    // edge); no Cloud CDN line (Firebase Hosting has its own CDN
+    // included in free tier); no Cloud Armor (admin is gated by
+    // Cloud Run IAP, gateway by run.invoker IAM).
+    ...(provider === "gcp"
+      ? ([
+          {
+            name: "Load balancer + managed SSL cert",
+            monthlyUsd: 18,
+            notes: "Global LB base fee + cert (free) — flat",
+          },
+          {
+            name: "Cloud CDN cache",
+            monthlyUsd: 1,
+            notes: "Free egress at edge cache hits",
+          },
+          {
+            name: "Cloud Armor WAF",
+            monthlyUsd: inputs.wafAdaptiveProtection ? 5 : 0,
+            notes: inputs.wafAdaptiveProtection
+              ? "Adaptive protection (ML-based bot mitigation)"
+              : "Free tier — rate limit + OWASP basic rules",
+          },
+        ] satisfies CostLine[])
+      : ([
+          {
+            name: "Firebase Hosting",
+            monthlyUsd: 0,
+            notes: "Free tier: 10 GB storage + 360 MB/day egress",
+          },
+        ] satisfies CostLine[])),
     {
-      name: "Load balancer + managed SSL cert",
-      monthlyUsd: 18,
-      notes: "Global LB base fee + cert (free) — flat",
-    },
-    {
-      name: "Cloud Storage (static + media)",
+      name:
+        provider === "gcp"
+          ? "Cloud Storage (static + media)"
+          : "Cloud Storage (media only — static lives on Firebase)",
       monthlyUsd: 1,
       notes: "~5 GB storage + low egress; growth roughly $0.02/GB",
-    },
-    {
-      name: "Cloud CDN cache",
-      monthlyUsd: 1,
-      notes: "Free egress at edge cache hits",
-    },
-    {
-      name: "Cloud Armor WAF",
-      monthlyUsd: inputs.wafAdaptiveProtection ? 5 : 0,
-      notes: inputs.wafAdaptiveProtection
-        ? "Adaptive protection (ML-based bot mitigation)"
-        : "Free tier — rate limit + OWASP basic rules",
     },
     {
       name: "Secret Manager (5 secrets)",
