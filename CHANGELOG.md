@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.0
+
+### Features
+- 2aacedf gcp-firebase provider (v0.3.0)
+
 ## v0.2.85
 
 ### Features
