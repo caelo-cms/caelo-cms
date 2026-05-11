@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.85
+
+### Features
+- c2aaab3 page_url_style 'no-extension' for clean URLs (v0.2.85)
+
 ## v0.2.84
 
 ### Fixes
