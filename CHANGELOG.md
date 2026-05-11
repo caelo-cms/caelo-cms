@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.81
+
+### Fixes
+- 984d98a KEK no longer rotates on every pulumi up (v0.2.81)
+
 ## v0.2.80
 
 ### Fixes
