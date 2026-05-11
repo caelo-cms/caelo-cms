@@ -282,13 +282,31 @@ async function resolveProvider(
   let source: "db" | "env" = "env";
   const encrypted = await loadEncryptedKeyFromDb(deps, name);
   if (encrypted) {
-    apiKey = await decryptSecret({
-      ciphertext: encrypted.ciphertext,
-      iv: encrypted.iv,
-      kekFingerprint: encrypted.kekFingerprint,
-    });
-    source = "db";
-  } else {
+    try {
+      apiKey = await decryptSecret({
+        ciphertext: encrypted.ciphertext,
+        iv: encrypted.iv,
+        kekFingerprint: encrypted.kekFingerprint,
+      });
+      source = "db";
+    } catch (e) {
+      // v0.2.81 — KEK rotation orphaned the stored ciphertext.
+      // Treat as "no key" so the chat handler routes the operator
+      // to /security/ai with a clear "re-enter your API key" UX
+      // instead of crashing the SSE stream with a 500. The
+      // /security/ai page detects the same condition and shows a
+      // recovery affordance. Pre-v0.2.81 the Pulumi stack
+      // regenerated the KEK on every `pulumi up` (random.RandomBytes
+      // resource fixes that going forward); for installs that
+      // already lost their KEK, this catch is the recovery on-ramp.
+      const message = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[provider-resolver] DB-stored key for ${name} unreadable (${message}). Falling back to env / surfacing as not-configured.`,
+      );
+      apiKey = null;
+    }
+  }
+  if (!apiKey) {
     // Env fallback.
     const envKey = process.env[envNameFor(name)];
     if (envKey) {

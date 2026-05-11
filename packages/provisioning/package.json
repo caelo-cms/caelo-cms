@@ -46,6 +46,7 @@
     "@pulumi/command": "^1",
     "@pulumi/gcp": "^9",
     "@pulumi/pulumi": "^3",
+    "@pulumi/random": "^4.19.2",
     "kleur": "4.1.5"
   },
   "publishConfig": {
