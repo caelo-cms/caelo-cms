@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { checkProviderKeyHealth, type ProviderKeyHealth } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
@@ -36,6 +37,25 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // the row to flip activate. `apiKeySource` is computed by the op so
   // there's one source of truth.
   const byName = new Map(rows.map((r) => [r.name, r]));
+  // v0.2.82 — probe each db-sourced row's encryption health so the
+  // UI can show a specific banner when the ciphertext is unreadable
+  // (vs the misleading "Encrypted key set" badge that fired even
+  // when decrypt failed). Post-KEK-rotation operators saw "Encrypted"
+  // + "Save successful" + chat saying "AI provider not configured" —
+  // the banner closes the loop with "this key was sealed under a
+  // rotated KEK; paste it again to fix".
+  const healthByName = new Map<string, ProviderKeyHealth>();
+  await Promise.all(
+    KNOWN_PROVIDERS.map(async (name) => {
+      try {
+        healthByName.set(name, await checkProviderKeyHealth(name));
+      } catch {
+        // Probe errors shouldn't block the page; fall back to
+        // "no_key" so the row still renders.
+        healthByName.set(name, "no_key");
+      }
+    }),
+  );
   const providers = KNOWN_PROVIDERS.map((name) => {
     const row = byName.get(name);
     return {
@@ -45,6 +65,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       configured: Boolean(row),
       apiKeySource: (row?.apiKeySource ?? null) as "db" | "env" | null,
       apiKeySetAt: row?.apiKeySetAt ?? null,
+      keyHealth: healthByName.get(name) ?? "no_key",
       model:
         (typeof row?.config.model === "string" ? (row.config.model as string) : null) ??
         DEFAULT_MODEL[name] ??

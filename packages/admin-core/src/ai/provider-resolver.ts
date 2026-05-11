@@ -341,6 +341,47 @@ async function resolveProvider(
  * Returns null when no provider is configured anywhere — chat / translation
  * / plugin host all surface this as "configure your AI provider."
  */
+/**
+ * v0.2.82 — diagnostic probe for the /security/ai UI. Distinguishes
+ * the three "key isn't usable" reasons so the page can show a
+ * specific banner (vs the generic "Encrypted key set" which was
+ * misleading after the v0.2.81 KEK-rotation incident — operators
+ * saw "configured" but chat said "not configured").
+ *
+ *   'ok'                    — DB row present + decrypts successfully
+ *   'env_only'              — no DB row, env var fallback in play
+ *   'no_key'                — no DB row + no env var
+ *   'unreadable_kek_mismatch' — DB row present BUT sealed under a
+ *                              different KEK; operator must re-paste
+ *                              the API key to recover (the cipher
+ *                              under the old KEK is unrecoverable)
+ *
+ * Read-only; no side-effects on the resolver cache. Safe to call
+ * for every provider on page load.
+ */
+export type ProviderKeyHealth = "ok" | "env_only" | "no_key" | "unreadable_kek_mismatch";
+
+export async function checkProviderKeyHealth(name: ProviderName): Promise<ProviderKeyHealth> {
+  if (!deps) {
+    throw new Error("provider-resolver not configured — call configureProviderResolver() at boot");
+  }
+  const encrypted = await loadEncryptedKeyFromDb(deps, name);
+  if (encrypted) {
+    try {
+      await decryptSecret({
+        ciphertext: encrypted.ciphertext,
+        iv: encrypted.iv,
+        kekFingerprint: encrypted.kekFingerprint,
+      });
+      return "ok";
+    } catch {
+      return "unreadable_kek_mismatch";
+    }
+  }
+  if (process.env[envNameFor(name)]) return "env_only";
+  return "no_key";
+}
+
 export async function getActiveProvider(): Promise<ResolvedProvider | null> {
   if (!deps) return null;
   const meta = await loadActiveProviderMeta(deps);

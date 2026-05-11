@@ -4,11 +4,13 @@ export * from "./ai/chat-runner.js";
 export * from "./ai/pricing-cache.js";
 export * from "./ai/provider.js";
 export {
+  checkProviderKeyHealth,
   configureProviderResolver,
   getActiveProvider,
   getProviderByName,
   invalidateProviderCache,
   knownProviderNames,
+  type ProviderKeyHealth,
 } from "./ai/provider-resolver.js";
 export * from "./ai/providers/index.js";
 export {

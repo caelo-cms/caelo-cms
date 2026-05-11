@@ -70,7 +70,9 @@
           {#if p.isActive}
             <Badge variant="success">Active</Badge>
           {/if}
-          {#if p.apiKeySource === "db"}
+          {#if p.keyHealth === "unreadable_kek_mismatch"}
+            <Badge variant="destructive">Re-enter required</Badge>
+          {:else if p.apiKeySource === "db"}
             <Badge variant="success">Source: DB ✓</Badge>
           {:else if p.apiKeySource === "env"}
             <Badge variant="success">Source: env (fallback) ✓</Badge>
@@ -79,7 +81,13 @@
           {/if}
         </CardTitle>
         <CardDescription>
-          {#if p.apiKeySource === "db" && p.apiKeySetAt}
+          {#if p.keyHealth === "unreadable_kek_mismatch"}
+            <span class="text-destructive">
+              The stored API key was encrypted under a project KEK that no longer matches the
+              current one (likely a Pulumi config rotation). The ciphertext cannot be decrypted.
+              Paste your API key below and Save to re-encrypt under the current KEK.
+            </span>
+          {:else if p.apiKeySource === "db" && p.apiKeySetAt}
             Encrypted key set {new Date(p.apiKeySetAt).toLocaleString()}.
           {:else if p.apiKeySource === "env"}
             Reads the legacy environment variable. Save a key below to migrate to the encrypted DB
