@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.2
+
+### Chores
+- bfeb572 drop dead anthropic-api-key wizard path (v0.3.2)
+
 ## v0.3.1
 
 ### Fixes
