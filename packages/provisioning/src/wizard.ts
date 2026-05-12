@@ -24,6 +24,8 @@ import { bold, cyan, dim } from "kleur/colors";
 import {
   deriveInstallId,
   ensureInstallDir,
+  type InstallMetadata,
+  listInstalls,
   type Provider,
   readMetadata,
   writeMetadata,
@@ -47,47 +49,69 @@ export interface WizardOptions {
 export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   intro(bold(cyan("Caelo CMS provisioner")) + dim(" — one-command deploy"));
 
-  // 1. Provider — pre-supplied via flag OR picker.
-  const provider = opts.provider ?? (await pickProvider());
+  // 1. Resume-existing-install fast path. Before prompting for anything,
+  //    scan ~/.caelo-* for installs and offer them as "resume X" options.
+  //    Picking an existing install carries domain + owner + projectId
+  //    over and skips re-prompting; "new install" falls through to the
+  //    fresh-flow below.
+  //
+  //    v0.3.18 — previously the wizard re-asked for provider + domain +
+  //    owner-email + project EVERY re-run. With this fast path, a
+  //    re-run is a single Enter to "resume <id>".
+  let provider: Provider;
+  let domain: string;
+  let ownerEmail: string;
+  let projectIdHint: string | null;
+  let installId: string;
 
-  // 2. Common inputs the provider wizard always needs. Provider-specific
-  //    inputs (GCP project id, AWS region, etc.) are prompted inside the
-  //    per-provider wizard.
-  const domain = opts.domain ?? (await promptDomain());
-  const ownerEmail = opts.ownerEmail ?? (await promptOwnerEmail());
+  const existing = opts.nonInteractive ? [] : listInstalls();
+  const resumeChoice =
+    existing.length > 0 && !opts.provider && !opts.domain && !opts.ownerEmail
+      ? await pickInstallToResume(existing)
+      : null;
 
-  // 3. Per-install state directory + resume detection. The install id is
-  //    derived from (provider, projectId-or-domain) so re-runs land here.
-  //    For GCP we don't have the project id yet (it's the next prompt);
-  //    use domain as the seed, then rewrite metadata once project id is
-  //    set in the GCP wizard.
-  const installId = deriveInstallId(provider, opts.projectId ?? domain);
-  ensureInstallDir(installId);
-
-  const existing = readMetadata(installId);
-  if (existing && !opts.nonInteractive) {
-    const resume = await confirm({
-      message: `Existing install '${installId}' detected (created ${dim(existing.createdAt)}). Resume?`,
-      initialValue: true,
-    });
-    if (isCancel(resume)) {
-      cancel("Cancelled.");
-      process.exit(0);
-    }
-    if (!resume) {
-      cancel(`Aborted. Run with a different domain or remove ~/.caelo-${installId}/ first.`);
-      process.exit(0);
-    }
+  if (resumeChoice) {
+    provider = resumeChoice.provider;
+    domain = resumeChoice.domain;
+    ownerEmail = resumeChoice.ownerEmail;
+    projectIdHint = resumeChoice.projectId;
+    installId = resumeChoice.installId;
+    ensureInstallDir(installId);
   } else {
-    writeMetadata(installId, {
-      installId,
-      provider,
-      projectId: opts.projectId ?? null,
-      domain,
-      ownerEmail,
-      region: null,
-      createdAt: new Date().toISOString(),
-    });
+    provider = opts.provider ?? (await pickProvider());
+    domain = opts.domain ?? (await promptDomain());
+    ownerEmail = opts.ownerEmail ?? (await promptOwnerEmail());
+    projectIdHint = opts.projectId ?? null;
+    installId = deriveInstallId(provider, projectIdHint ?? domain);
+    ensureInstallDir(installId);
+
+    // If the user picked "new install" but the derived id collides with
+    // an existing one (e.g. retyped the same domain), confirm resume.
+    const existingForId = readMetadata(installId);
+    if (existingForId && !opts.nonInteractive) {
+      const resume = await confirm({
+        message: `Existing install '${installId}' detected (created ${dim(existingForId.createdAt)}). Resume?`,
+        initialValue: true,
+      });
+      if (isCancel(resume)) {
+        cancel("Cancelled.");
+        process.exit(0);
+      }
+      if (!resume) {
+        cancel(`Aborted. Run with a different domain or remove ~/.caelo-${installId}/ first.`);
+        process.exit(0);
+      }
+    } else {
+      writeMetadata(installId, {
+        installId,
+        provider,
+        projectId: projectIdHint,
+        domain,
+        ownerEmail,
+        region: null,
+        createdAt: new Date().toISOString(),
+      });
+    }
   }
 
   // 4. Delegate to the provider-specific wizard.
@@ -97,7 +121,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         installId,
         domain,
         ownerEmail,
-        projectId: opts.projectId ?? null,
+        projectId: projectIdHint,
         nonInteractive: opts.nonInteractive ?? false,
       });
       break;
@@ -106,7 +130,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         installId,
         domain,
         ownerEmail,
-        projectId: opts.projectId ?? null,
+        projectId: projectIdHint,
         nonInteractive: opts.nonInteractive ?? false,
       });
       break;
@@ -126,6 +150,37 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   }
 
   outro(bold("Done. Welcome to Caelo CMS."));
+}
+
+/**
+ * Offer the operator the list of existing installs (newest first)
+ * plus a "start a new install" option. Returning `null` means the
+ * operator picked "new" and the wizard falls through to the fresh-
+ * inputs prompts. Returning an install means resume — every input
+ * (provider, domain, owner, project) carries over from metadata.
+ */
+async function pickInstallToResume(installs: InstallMetadata[]): Promise<InstallMetadata | null> {
+  const first = installs[0];
+  const choice = await select<string>({
+    message:
+      installs.length === 1 && first
+        ? `Resume existing install '${first.installId}'?`
+        : "Resume an existing install or start a new one?",
+    options: [
+      ...installs.map((m) => ({
+        value: m.installId,
+        label: `${bold(m.installId)} ${dim(`(${m.provider}, ${m.domain})`)}`,
+        hint: `created ${m.createdAt.slice(0, 10)}`,
+      })),
+      { value: "__new__", label: "Start a new install", hint: "fresh inputs" },
+    ],
+  });
+  if (isCancel(choice)) {
+    cancel("Cancelled.");
+    process.exit(0);
+  }
+  if (choice === "__new__") return null;
+  return installs.find((m) => m.installId === choice) ?? null;
 }
 
 async function pickProvider(): Promise<Provider> {

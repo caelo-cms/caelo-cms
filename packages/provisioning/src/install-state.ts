@@ -19,7 +19,14 @@
  * by hand. The wizard + lifecycle commands wrap every read + write.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -88,6 +95,31 @@ export function ensureInstallDir(installId: string): {
   chmodSync(stateDir, 0o700);
 
   return { root, secretsDir, stateDir };
+}
+
+/**
+ * Scan `~/.caelo-*` for every install with a readable `install.json`.
+ * Used by the wizard to offer "resume X" before prompting for the
+ * domain / owner / project again. Silently skips dirs that fail to
+ * parse — partial / orphaned dirs don't block the new-install flow.
+ */
+export function listInstalls(): InstallMetadata[] {
+  const home = homedir();
+  let entries: string[];
+  try {
+    entries = readdirSync(home);
+  } catch {
+    return [];
+  }
+  const out: InstallMetadata[] = [];
+  for (const entry of entries) {
+    if (!entry.startsWith(ROOT_PREFIX)) continue;
+    const installId = entry.slice(ROOT_PREFIX.length);
+    const meta = readMetadata(installId);
+    if (meta) out.push(meta);
+  }
+  out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  return out;
 }
 
 export function readMetadata(installId: string): InstallMetadata | null {
