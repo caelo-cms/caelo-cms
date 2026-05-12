@@ -570,10 +570,13 @@ for (const principal of iapAllowlist) {
 // Outputs — DNS records the operator wires manually
 // =========================================================================
 
-const adminMappingStatuses: pulumi.Output<gcp.types.output.cloudrun.DomainMappingStatus[] | undefined> =
-  adminDomainMapping
-    ? adminDomainMapping.statuses
-    : (pulumi.output(undefined) as pulumi.Output<gcp.types.output.cloudrun.DomainMappingStatus[] | undefined>);
+const adminMappingStatuses: pulumi.Output<
+  gcp.types.output.cloudrun.DomainMappingStatus[] | undefined
+> = adminDomainMapping
+  ? adminDomainMapping.statuses
+  : (pulumi.output(undefined) as pulumi.Output<
+      gcp.types.output.cloudrun.DomainMappingStatus[] | undefined
+    >);
 
 const dnsRecords: pulumi.Output<DnsRecord[]> = pulumi
   .all([adminMappingStatuses, firebaseCustomDomain.requiredDnsUpdates])
