@@ -546,26 +546,44 @@ const adminDomainMapping = provisionAdminDomain
 // shipped. If your provider build is older than v8.x, run
 // `gcloud beta run services update <admin-service> --iap` as a
 // post-up step. The stack provisions the IAM bindings either way.
-// v0.3.16 — IAP-protected Cloud Run requires `roles/iap.httpsResourceAccessor`
-// on the IAP WEB layer (not the Cloud Run service IAM). The IAP
-// layer authenticates the user, checks this role on the
-// IAP-web-cloud-run resource, then forwards the request to the
-// Cloud Run service (which auto-trusts IAP-forwarded traffic via
-// the native IAP integration on the cloudrunv2.Service spec).
+// v0.3.17 — Native IAP on Cloud Run requires TWO bindings per
+// allowlisted user (testing showed iap-only isn't enough — Cloud
+// Run still rejects with 403 Forbidden after IAP forwards):
 //
-// Resource: `gcp.iap.WebCloudRunServiceIamMember` — Cloud Run IAM
-// (v1 + v2) both reject this role with "Role is not supported for
-// this resource". The correct binding is at the IAP web service
-// layer via this dedicated resource (`gcloud iap web
-// add-iam-policy-binding --resource-type=cloud-run` shape).
+//   1. `roles/iap.httpsResourceAccessor` on the IAP WEB layer —
+//      lets the user pass IAP authentication.
+//      Resource: `gcp.iap.WebCloudRunServiceIamMember`
+//      (matches `gcloud beta iap web add-iam-policy-binding`).
+//
+//   2. `roles/run.invoker` on the Cloud Run service v2 IAM —
+//      lets Cloud Run accept the IAP-forwarded request. Without
+//      this, Cloud Run's own auth gate rejects with "Your client
+//      does not have permission".
+//
+// Both are needed for IAP-protected Cloud Run to actually serve
+// requests to the operator.
 for (const principal of iapAllowlist) {
+  const slug = principal.replace(/[^a-z0-9]/gi, "-").slice(0, 40);
+
   new gcp.iap.WebCloudRunServiceIamMember(
-    `${namePrefix}-admin-iap-${principal.replace(/[^a-z0-9]/gi, "-").slice(0, 40)}`,
+    `${namePrefix}-admin-iap-${slug}`,
     {
       project,
       location: region,
       cloudRunServiceName: adminSvc.name,
       role: "roles/iap.httpsResourceAccessor",
+      member: principal,
+    },
+    opts,
+  );
+
+  new gcp.cloudrunv2.ServiceIamMember(
+    `${namePrefix}-admin-invoker-${slug}`,
+    {
+      project,
+      location: region,
+      name: adminSvc.name,
+      role: "roles/run.invoker",
       member: principal,
     },
     opts,
