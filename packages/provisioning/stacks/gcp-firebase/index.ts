@@ -59,10 +59,20 @@ const iapAllowlist =
 const env = pulumi.getStack() as "dev" | "staging" | "production";
 const namePrefix = `caelo-${env}`;
 const adminDomain = `admin.${domain}`;
-// Firebase site IDs are GLOBALLY unique across all Firebase projects.
-// Default uses the namePrefix; operator can override if the default
-// collides with another project's site.
-const firebaseSiteId = cfg.get("firebaseSiteId") || `${namePrefix}-site`;
+// Firebase site IDs are GLOBALLY unique across all Firebase projects —
+// and reserved for ~30 days even after the parent project is deleted.
+// A fixed default like `caelo-production-site` collides on re-install
+// or after a failed run against a soft-deleted project. The suffix is
+// a `random.RandomId` so it persists in Pulumi state across `up` runs
+// but stays unique across installs. Operator override stays available
+// for branded URLs (e.g. `cms.example.com` → `cms-example-com`).
+const firebaseSiteSuffix = new random.RandomId(`${namePrefix}-firebase-site-suffix`, {
+  byteLength: 3, // 6 hex chars — `caelo-production-site-abc123`
+});
+const firebaseSiteIdOverride = cfg.get("firebaseSiteId");
+const firebaseSiteId: pulumi.Input<string> = firebaseSiteIdOverride
+  ? firebaseSiteIdOverride
+  : pulumi.interpolate`${namePrefix}-site-${firebaseSiteSuffix.hex}`;
 
 const gcpProvider = new gcp.Provider(`${namePrefix}-gcp`, { project, region });
 const opts = { provider: gcpProvider };
