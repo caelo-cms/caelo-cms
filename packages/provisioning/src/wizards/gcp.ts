@@ -1046,13 +1046,27 @@ async function stepFinalize(installId: string): Promise<void> {
     outputs: Record<string, unknown>;
   }>(installId, upStep);
   const outputs = upPayload?.outputs ?? {};
+  const provider = String(outputs.providerOut ?? "gcp");
   const lbIp = String(outputs.lbIpOut ?? "");
-  const bootstrapUrl = outputs.bootstrapUrlOut ?? "<unknown>";
   const adminDomainOut = String(outputs.adminDomainOut ?? `admin.${meta.domain}`);
+  const adminCloudRunUrl = String(outputs.adminCloudRunUrlOut ?? "");
 
-  // Auto-create DNS via Cloudflare if CLOUDFLARE_API_TOKEN is set;
+  // v0.3.15 — On gcp-firebase, the admin DomainMapping is opt-in
+  // (`provisionAdminDomain=true` after Search Console verification);
+  // without it, `admin.<domain>` doesn't resolve and the bootstrap
+  // URL must point at the Cloud Run-generated *.run.app URL. The
+  // bootstrap token in Pulumi's output already includes the right
+  // path + query; we just swap the host.
+  const bootstrapToken = String(outputs.bootstrapUrlOut ?? "").match(/token=([^&]+)/)?.[1] ?? "";
+  const bootstrapUrl =
+    provider === "gcp-firebase" && adminCloudRunUrl.length > 0
+      ? `${adminCloudRunUrl}/setup?token=${bootstrapToken}`
+      : String(outputs.bootstrapUrlOut ?? "<unknown>");
+
+  // gcp-firebase: surface the Firebase Hosting DNS records.
+  // gcp: auto-create via Cloudflare if CLOUDFLARE_API_TOKEN is set;
   // otherwise the manual adapter prints + verify-polls.
-  if (lbIp.length > 0 && lbIp !== "<unknown>") {
+  if (provider === "gcp" && lbIp.length > 0 && lbIp !== "<unknown>") {
     const stepName = `dns-${meta.projectId}`;
     if (!isStepDone(installId, stepName)) {
       const adapter = await pickDnsAdapter({ domain: meta.domain });
@@ -1076,15 +1090,54 @@ async function stepFinalize(installId: string): Promise<void> {
     }
   }
 
+  // Firebase Hosting prints A + TXT records; the operator adds them
+  // at the registrar manually (no auto-adapter for now — Cloudflare
+  // is gcp-only because the record-types differ).
+  const dnsRecordsRequired = Array.isArray(outputs.dnsRecordsRequiredOut)
+    ? (outputs.dnsRecordsRequiredOut as Array<{
+        hostname: string;
+        type: string;
+        value: string;
+        purpose?: string;
+      }>)
+    : [];
+  const dnsLines: string[] = [];
+  if (provider === "gcp-firebase" && dnsRecordsRequired.length > 0) {
+    dnsLines.push("", bold(`DNS records to add at your registrar for ${meta.domain}:`));
+    for (const r of dnsRecordsRequired) {
+      dnsLines.push(`  ${r.type.padEnd(6)} ${r.hostname.padEnd(meta.domain.length)} → ${r.value}`);
+    }
+    dnsLines.push(
+      `  ${dim("After DNS propagates (5-30 min), Firebase Hosting issues TLS automatically.")}`,
+    );
+  }
+
+  const adminNote: string[] =
+    provider === "gcp-firebase"
+      ? [
+          "",
+          bold("Admin custom domain (admin.<domain>):"),
+          `  Not configured — using the Cloud Run URL above.`,
+          `  To bind ${cyan(`admin.${meta.domain}`)}: verify the domain at`,
+          `  ${cyan("https://search.google.com/search-console")}, then set`,
+          `  ${dim(`pulumi config set caelo-gcp-firebase:provisionAdminDomain true`)} + ${dim("pulumi up")}`,
+          `  in ${dim(installRoot(installId))}.`,
+        ]
+      : [];
+
   note(
     [
       green(`✓ ${meta.domain} provisioned.`),
+      ...dnsLines,
       "",
       bold("Owner setup (open in your browser):"),
       `  ${cyan(String(bootstrapUrl))}`,
+      ...adminNote,
       "",
       bold("Configure AI provider:"),
-      `  After first login, visit ${cyan(`https://admin.${meta.domain}/security/ai`)} to paste your Anthropic API key.`,
+      provider === "gcp-firebase"
+        ? `  After first login, visit ${cyan(`${adminCloudRunUrl}/security/ai`)} to paste your Anthropic API key.`
+        : `  After first login, visit ${cyan(`https://admin.${meta.domain}/security/ai`)} to paste your Anthropic API key.`,
       `  The key is encrypted under the project KEK + stored in ai_providers — no env-var management.`,
       "",
       bold("Lifecycle commands:"),
