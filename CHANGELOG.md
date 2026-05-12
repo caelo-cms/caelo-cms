@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.6
+
+### Fixes
+- 5a2f81e Firebase project init + admin roles for gcp-firebase (v0.3.6)
+
 ## v0.3.5
 
 ### Fixes
