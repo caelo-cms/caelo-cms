@@ -294,13 +294,25 @@ new gcp.projects.IAMMember(
 // Tier 1 — Firebase Hosting site
 // =========================================================================
 
+// v0.3.6 — initialize Firebase services on the GCP project. A
+// project with `firebase.googleapis.com` enabled is NOT
+// automatically a Firebase project — Firebase needs an explicit
+// `addFirebase` API call (via gcp.firebase.Project) before
+// HostingSite can be created. Without this v0.3.5 hit "Error 403:
+// The caller does not have permission" on HostingSite create.
+const firebaseProject = new gcp.firebase.Project(
+  `${namePrefix}-firebase-project`,
+  { project },
+  opts,
+);
+
 const firebaseSite = new gcp.firebase.HostingSite(
   `${namePrefix}-firebase-site`,
   {
     project,
     siteId: firebaseSiteId,
   },
-  opts,
+  { ...opts, dependsOn: [firebaseProject] },
 );
 
 // Custom domain on the Firebase site for the apex. The operator wires

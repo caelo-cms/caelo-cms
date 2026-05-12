@@ -193,6 +193,14 @@ const PROVISIONER_ROLES: readonly string[] = [
   // serviceusage.serviceUsageAdmin lets us trigger the IAP managed
   // service identity (gcp.projects.ServiceIdentity).
   "roles/serviceusage.serviceUsageAdmin",
+  // v0.3.6 — Firebase Hosting + Firebase project administration
+  // for the gcp-firebase provider variant. The stack's
+  // `gcp.firebase.Project` (which adds Firebase services to a GCP
+  // project) + `gcp.firebase.HostingSite` need these roles.
+  // Granting on gcp installs is a harmless no-op since those
+  // resources aren't created on that stack.
+  "roles/firebase.admin",
+  "roles/firebasehosting.admin",
 ];
 
 /**
