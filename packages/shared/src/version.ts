@@ -22,7 +22,7 @@
  * follow standard SemVer.
  */
 
-export const CAELO_VERSION = "0.3.8";
+export const CAELO_VERSION = "0.3.9";
 
 /**
  * Deprecated alias for back-compat — early P17 work spelled this

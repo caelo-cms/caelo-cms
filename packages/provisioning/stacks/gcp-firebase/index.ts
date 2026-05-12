@@ -464,12 +464,18 @@ const adminSvc = cloudRunService({
 // v0.3.1 — Firebase Hosting uses a Google-managed service identity
 // to proxy traffic via `rewrites` to Cloud Run. Grant it
 // `roles/run.invoker` on the gateway so /api/** requests succeed.
-// The SA name follows the standard `service-<project-number>@
-// gcp-sa-firebasehosting.iam.gserviceaccount.com` shape. We fetch
-// the project number via `gcp.organizations.getProject` rather than
-// hardcoding it.
-const projectInfo = gcp.organizations.getProjectOutput({ projectId: project }, opts);
-const firebaseHostingSa = pulumi.interpolate`serviceAccount:service-${projectInfo.number}@gcp-sa-firebasehosting.iam.gserviceaccount.com`;
+//
+// v0.3.9 — The Firebase Hosting service identity SA is created
+// on-demand, not when the API is merely enabled. Constructing the
+// email by name and granting IAM to it fails with "Service account
+// ... does not exist". `gcp.projects.ServiceIdentity` triggers
+// creation and returns the email; we depend on it so the binding
+// always sees the SA. Same pattern the gcp stack uses for IAP.
+const firebaseHostingIdentity = new gcp.projects.ServiceIdentity(
+  `${namePrefix}-firebasehosting-identity`,
+  { project, service: "firebasehosting.googleapis.com" },
+  opts,
+);
 
 new gcp.cloudrun.IamMember(
   `${namePrefix}-gateway-firebase-invoker`,
@@ -478,9 +484,9 @@ new gcp.cloudrun.IamMember(
     project,
     service: gatewaySvc.name,
     role: "roles/run.invoker",
-    member: firebaseHostingSa,
+    member: pulumi.interpolate`serviceAccount:${firebaseHostingIdentity.email}`,
   },
-  opts,
+  { ...opts, dependsOn: [firebaseHostingIdentity] },
 );
 
 // =========================================================================
