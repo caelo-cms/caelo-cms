@@ -25,6 +25,7 @@
  * Shared code lives in `packages/provisioning/src/` (imported here).
  */
 
+import * as command from "@pulumi/command";
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
@@ -465,17 +466,25 @@ const adminSvc = cloudRunService({
 // to proxy traffic via `rewrites` to Cloud Run. Grant it
 // `roles/run.invoker` on the gateway so /api/** requests succeed.
 //
-// v0.3.9 — The Firebase Hosting service identity SA is created
-// on-demand, not when the API is merely enabled. Constructing the
-// email by name and granting IAM to it fails with "Service account
-// ... does not exist". `gcp.projects.ServiceIdentity` triggers
-// creation and returns the email; we depend on it so the binding
-// always sees the SA. Same pattern the gcp stack uses for IAP.
-const firebaseHostingIdentity = new gcp.projects.ServiceIdentity(
+// v0.3.10 — `gcp.projects.ServiceIdentity` is NOT supported for
+// `firebasehosting.googleapis.com` (the GenerateServiceIdentity API
+// returns IAM_SERVICE_NOT_CONFIGURED_FOR_IDENTITIES for it). The
+// `gcloud beta services identity create` CLI command works where
+// the GenerateServiceIdentity API does not — it falls back to a
+// different bootstrap path. We shell out via @pulumi/command,
+// which is idempotent (gcloud returns existing if the SA is
+// already provisioned). The SA email is deterministic from the
+// project number, so we construct it independently.
+const firebaseHostingIdentityCmd = new command.local.Command(
   `${namePrefix}-firebasehosting-identity`,
-  { project, service: "firebasehosting.googleapis.com" },
+  {
+    create: pulumi.interpolate`gcloud beta services identity create --service=firebasehosting.googleapis.com --project=${project} --quiet`,
+  },
   opts,
 );
+
+const projectInfo = gcp.organizations.getProjectOutput({ projectId: project }, opts);
+const firebaseHostingSa = pulumi.interpolate`serviceAccount:service-${projectInfo.number}@gcp-sa-firebasehosting.iam.gserviceaccount.com`;
 
 new gcp.cloudrun.IamMember(
   `${namePrefix}-gateway-firebase-invoker`,
@@ -484,27 +493,43 @@ new gcp.cloudrun.IamMember(
     project,
     service: gatewaySvc.name,
     role: "roles/run.invoker",
-    member: pulumi.interpolate`serviceAccount:${firebaseHostingIdentity.email}`,
+    member: firebaseHostingSa,
   },
-  { ...opts, dependsOn: [firebaseHostingIdentity] },
+  { ...opts, dependsOn: [firebaseHostingIdentityCmd] },
 );
 
 // =========================================================================
 // Admin custom domain — Cloud Run domain mapping
 // =========================================================================
-
-const adminDomainMapping = new gcp.cloudrun.DomainMapping(
-  `${namePrefix}-admin-domain`,
-  {
-    location: region,
-    name: adminDomain,
-    metadata: { namespace: project },
-    spec: {
-      routeName: adminSvc.name,
-    },
-  },
-  { ...opts, dependsOn: [adminSvc] },
-);
+//
+// v0.3.10 — Cloud Run DomainMapping requires the operator to verify
+// domain ownership in Google Search Console FIRST. Without that
+// verification the create fails with "Caller is not authorized to
+// administer the domain ..." even when the provisioner SA has full
+// admin rights on the project. This is a one-time manual step we
+// cannot automate.
+//
+// To keep the install working out of the box, the DomainMapping is
+// opt-in via `provisionAdminDomain=true`. When disabled (default),
+// the operator reaches the admin via the Cloud Run-generated URL
+// (`https://<admin-svc>-<hash>-<region>.a.run.app`). They can flip
+// the knob + verify the domain at https://search.google.com/search-console
+// later and run `pulumi up` to bind admin.<domain> → Cloud Run.
+const provisionAdminDomain = cfg.getBoolean("provisionAdminDomain") ?? false;
+const adminDomainMapping = provisionAdminDomain
+  ? new gcp.cloudrun.DomainMapping(
+      `${namePrefix}-admin-domain`,
+      {
+        location: region,
+        name: adminDomain,
+        metadata: { namespace: project },
+        spec: {
+          routeName: adminSvc.name,
+        },
+      },
+      { ...opts, dependsOn: [adminSvc] },
+    )
+  : undefined;
 
 // =========================================================================
 // IAP on the admin Cloud Run service (no LB)
@@ -521,13 +546,19 @@ const adminDomainMapping = new gcp.cloudrun.DomainMapping(
 // shipped. If your provider build is older than v8.x, run
 // `gcloud beta run services update <admin-service> --iap` as a
 // post-up step. The stack provisions the IAM bindings either way.
+// v0.3.10 — Cloud Run v1 IAM API (`gcp.cloudrun.IamMember`) rejects
+// `roles/iap.httpsResourceAccessor` with "Role is not supported for
+// this resource". The v2 IAM API (`gcp.cloudrunv2.ServiceIamMember`)
+// is the right binding for native-IAP-on-Cloud-Run, matching
+// Google's documented setup: `gcloud run services
+// add-iam-policy-binding ... --role=roles/iap.httpsResourceAccessor`.
 for (const principal of iapAllowlist) {
-  new gcp.cloudrun.IamMember(
+  new gcp.cloudrunv2.ServiceIamMember(
     `${namePrefix}-admin-iap-${principal.replace(/[^a-z0-9]/gi, "-").slice(0, 40)}`,
     {
       location: region,
       project,
-      service: adminSvc.name,
+      name: adminSvc.name,
       role: "roles/iap.httpsResourceAccessor",
       member: principal,
     },
@@ -539,12 +570,19 @@ for (const principal of iapAllowlist) {
 // Outputs — DNS records the operator wires manually
 // =========================================================================
 
+const adminMappingStatuses: pulumi.Output<gcp.types.output.cloudrun.DomainMappingStatus[] | undefined> =
+  adminDomainMapping
+    ? adminDomainMapping.statuses
+    : (pulumi.output(undefined) as pulumi.Output<gcp.types.output.cloudrun.DomainMappingStatus[] | undefined>);
+
 const dnsRecords: pulumi.Output<DnsRecord[]> = pulumi
-  .all([adminDomainMapping.statuses, firebaseCustomDomain.requiredDnsUpdates])
+  .all([adminMappingStatuses, firebaseCustomDomain.requiredDnsUpdates])
   .apply(([adminStatuses, firebaseUpdates]) => {
     const out: DnsRecord[] = [];
 
     // Admin subdomain — Cloud Run domain mapping prints CNAMEs/As.
+    // When `provisionAdminDomain=false`, no mapping exists and the
+    // operator reaches admin via the *.run.app URL printed separately.
     const adminTargets =
       adminStatuses
         ?.flatMap((s) => s.resourceRecords ?? [])
