@@ -259,30 +259,11 @@ export const REQUIRED_API_LIST = REQUIRED_APIS;
 export const GCP_FIREBASE_EXTRA_API_LIST = GCP_FIREBASE_EXTRA_APIS;
 export const PROVISIONER_ROLE_LIST = PROVISIONER_ROLES;
 
-/**
- * Materialize the Firebase Hosting Google-managed service identity
- * (`service-<projectnum>@gcp-sa-firebasehosting.iam.gserviceaccount.com`).
- *
- * v0.3.11 — Pulumi's `gcp.projects.ServiceIdentity` returns
- * IAM_SERVICE_NOT_CONFIGURED_FOR_IDENTITIES for `firebasehosting.googleapis.com`
- * — that API isn't wired to the GenerateServiceIdentity backend. The
- * `gcloud beta services identity create` CLI command uses a different
- * code path that DOES create the SA. We run it in the wizard (as the
- * user, who has owner perms) so the SA exists before Pulumi tries to
- * bind it as `roles/run.invoker` on the gateway.
- *
- * Idempotent — gcloud no-ops if the SA already exists.
- */
-export async function createFirebaseHostingIdentity(projectId: string): Promise<GcloudResult> {
-  return gcloud([
-    "beta",
-    "services",
-    "identity",
-    "create",
-    "--service",
-    "firebasehosting.googleapis.com",
-    "--project",
-    projectId,
-    "--quiet",
-  ]);
-}
+// v0.3.12 — removed createFirebaseHostingIdentity. The Service
+// Usage GenerateServiceIdentity API doesn't support
+// `firebasehosting.googleapis.com`, and `gcloud beta services
+// identity create` would have returned the same error after a
+// 2-min beta-component download. The SA gets auto-created lazily
+// by Firebase Hosting on first deploy. We grant run.invoker at
+// the project level instead of service level so the binding
+// doesn't require the SA to exist at bind time.

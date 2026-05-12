@@ -465,22 +465,30 @@ const adminSvc = cloudRunService({
 // to proxy traffic via `rewrites` to Cloud Run. Grant it
 // `roles/run.invoker` on the gateway so /api/** requests succeed.
 //
-// v0.3.11 — The Firebase Hosting service identity SA is created by
-// the WIZARD via `gcloud beta services identity create` BEFORE
-// Pulumi runs (see `stepFirebaseHostingIdentity` in wizards/gcp.ts).
-// Pulumi's `gcp.projects.ServiceIdentity` doesn't work for
-// firebasehosting.googleapis.com, and @pulumi/command's plugin
-// binary isn't always available in the bunx temp install. Bootstrap
-// in the wizard, construct the deterministic email here.
+// v0.3.12 — The Firebase Hosting service identity SA
+// (`service-<projectnum>@gcp-sa-firebasehosting.iam.gserviceaccount.com`)
+// is created LAZILY by Firebase Hosting itself on first deploy
+// with a Cloud Run rewrite. There's no public API that materializes
+// it on demand — `gcp.projects.ServiceIdentity` and
+// `gcloud beta services identity create` both return
+// IAM_SERVICE_NOT_CONFIGURED_FOR_IDENTITIES.
+//
+// Cloud Run v1 IAM (`gcp.cloudrun.IamMember`) eagerly validates SA
+// existence at bind time → rejects with "SA does not exist".
+// PROJECT-level IAM (`gcp.projects.IAMMember`) does NOT validate —
+// it accepts deferred google-managed principals. Binding
+// `roles/run.invoker` at the project level grants the Firebase
+// Hosting SA invoke rights on every Cloud Run service in the
+// project (admin + gateway). Admin is gated by IAP, so this
+// effectively grants Firebase invoke-gateway, which is the
+// intended behavior.
 const projectInfo = gcp.organizations.getProjectOutput({ projectId: project }, opts);
 const firebaseHostingSa = pulumi.interpolate`serviceAccount:service-${projectInfo.number}@gcp-sa-firebasehosting.iam.gserviceaccount.com`;
 
-new gcp.cloudrun.IamMember(
+new gcp.projects.IAMMember(
   `${namePrefix}-gateway-firebase-invoker`,
   {
-    location: region,
     project,
-    service: gatewaySvc.name,
     role: "roles/run.invoker",
     member: firebaseHostingSa,
   },
