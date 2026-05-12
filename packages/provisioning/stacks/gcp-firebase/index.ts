@@ -546,22 +546,26 @@ const adminDomainMapping = provisionAdminDomain
 // shipped. If your provider build is older than v8.x, run
 // `gcloud beta run services update <admin-service> --iap` as a
 // post-up step. The stack provisions the IAM bindings either way.
-// v0.3.13 — For IAP-protected Cloud Run, the correct IAM role
-// for allowlisted-user access is `roles/run.invoker`, NOT
-// `roles/iap.httpsResourceAccessor` (Cloud Run IAM rejects that
-// role on both v1 and v2 APIs with "Role is not supported for
-// this resource"). IAP authenticates the user via Google; after
-// auth passes, IAP forwards the request to Cloud Run, which
-// checks `run.invoker` on the authenticated identity. So
-// granting `run.invoker` to the user email IS the IAP allowlist.
+// v0.3.16 — IAP-protected Cloud Run requires `roles/iap.httpsResourceAccessor`
+// on the IAP WEB layer (not the Cloud Run service IAM). The IAP
+// layer authenticates the user, checks this role on the
+// IAP-web-cloud-run resource, then forwards the request to the
+// Cloud Run service (which auto-trusts IAP-forwarded traffic via
+// the native IAP integration on the cloudrunv2.Service spec).
+//
+// Resource: `gcp.iap.WebCloudRunServiceIamMember` — Cloud Run IAM
+// (v1 + v2) both reject this role with "Role is not supported for
+// this resource". The correct binding is at the IAP web service
+// layer via this dedicated resource (`gcloud iap web
+// add-iam-policy-binding --resource-type=cloud-run` shape).
 for (const principal of iapAllowlist) {
-  new gcp.cloudrunv2.ServiceIamMember(
+  new gcp.iap.WebCloudRunServiceIamMember(
     `${namePrefix}-admin-iap-${principal.replace(/[^a-z0-9]/gi, "-").slice(0, 40)}`,
     {
-      location: region,
       project,
-      name: adminSvc.name,
-      role: "roles/run.invoker",
+      location: region,
+      cloudRunServiceName: adminSvc.name,
+      role: "roles/iap.httpsResourceAccessor",
       member: principal,
     },
     opts,
