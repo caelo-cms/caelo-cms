@@ -13,7 +13,7 @@
     },
     "apps/admin": {
       "name": "@caelo-cms/admin",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/admin-core": "workspace:*",
         "@caelo-cms/plugin-auth": "workspace:*",
@@ -67,7 +67,7 @@
     },
     "apps/api-gateway": {
       "name": "@caelo-cms/api-gateway",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
@@ -81,7 +81,7 @@
     },
     "apps/static-generator": {
       "name": "@caelo-cms/static-generator",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "bin": {
         "caelo-static-generator": "./src/cli.ts",
       },
@@ -97,7 +97,7 @@
     },
     "packages/admin-core": {
       "name": "@caelo-cms/admin-core",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@ai-sdk/anthropic": "^2",
         "@ai-sdk/google": "^2",
@@ -130,11 +130,11 @@
     },
     "packages/edge-router": {
       "name": "@caelo-cms/edge-router",
-      "version": "0.3.3",
+      "version": "0.3.10",
     },
     "packages/mcp-server": {
       "name": "@caelo-cms/mcp-server",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "bin": {
         "caelo-mcp-server": "./src/index.ts",
       },
@@ -145,7 +145,7 @@
     },
     "packages/migrations": {
       "name": "@caelo-cms/migrations",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "drizzle-orm": "0.45.2",
       },
@@ -155,11 +155,11 @@
     },
     "packages/plugin-component-kit": {
       "name": "@caelo-cms/plugin-component-kit",
-      "version": "0.3.3",
+      "version": "0.3.10",
     },
     "packages/plugin-host": {
       "name": "@caelo-cms/plugin-host",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/plugin-sandbox": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -175,7 +175,7 @@
     },
     "packages/plugin-sandbox": {
       "name": "@caelo-cms/plugin-sandbox",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/plugin-sdk": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
@@ -185,7 +185,7 @@
     },
     "packages/plugin-sdk": {
       "name": "@caelo-cms/plugin-sdk",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/shared": "workspace:*",
         "zod": "4.3.6",
@@ -193,7 +193,7 @@
     },
     "packages/plugins/auth": {
       "name": "@caelo-cms/plugin-auth",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -201,7 +201,7 @@
     },
     "packages/plugins/comments": {
       "name": "@caelo-cms/plugin-comments",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -209,7 +209,7 @@
     },
     "packages/plugins/forms": {
       "name": "@caelo-cms/plugin-forms",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -217,7 +217,7 @@
     },
     "packages/plugins/newsletter": {
       "name": "@caelo-cms/plugin-newsletter",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -225,7 +225,7 @@
     },
     "packages/plugins/ratings": {
       "name": "@caelo-cms/plugin-ratings",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -233,14 +233,14 @@
     },
     "packages/plugins/translation": {
       "name": "@caelo-cms/plugin-translation",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
     },
     "packages/provisioning": {
       "name": "@caelo-cms/provisioning",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "bin": {
         "cms-provision": "./dist/cli.js",
       },
@@ -250,7 +250,6 @@
         "@pulumi/aws": "^7",
         "@pulumi/awsx": "^3",
         "@pulumi/azure-native": "^3",
-        "@pulumi/command": "^1",
         "@pulumi/gcp": "^9",
         "@pulumi/pulumi": "^3",
         "@pulumi/random": "^4.19.2",
@@ -261,7 +260,7 @@
     },
     "packages/query-api": {
       "name": "@caelo-cms/query-api",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/shared": "workspace:*",
         "drizzle-orm": "0.45.2",
@@ -270,7 +269,7 @@
     },
     "packages/redeploy-orchestrator": {
       "name": "@caelo-cms/redeploy-orchestrator",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/site-importer": "workspace:*",
@@ -279,7 +278,7 @@
     },
     "packages/shared": {
       "name": "@caelo-cms/shared",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "htmlparser2": "^12.0.0",
         "zod": "4.3.6",
@@ -287,7 +286,7 @@
     },
     "packages/site-importer": {
       "name": "@caelo-cms/site-importer",
-      "version": "0.3.3",
+      "version": "0.3.10",
       "dependencies": {
         "htmlparser2": "^12.0.0",
       },
@@ -763,8 +762,6 @@
     "@pulumi/awsx": ["@pulumi/awsx@3.5.0", "", { "dependencies": { "@aws-sdk/client-ecs": "^3.405.0", "@pulumi/aws": "^7.24.0", "@pulumi/docker": "^4.6.0", "@pulumi/docker-build": "^0.0.14", "@pulumi/pulumi": "^3.142.0", "@types/aws-lambda": "^8.10.23", "docker-classic": "npm:@pulumi/docker@3.6.1", "mime": "^2.0.0" } }, "sha512-sYEKL7SmgYrI/vUFrlWxLgGHTLgFeO/KYGc8YhHssNKb5gSdtAUEGqFHaUDy0a+ie5lKMwRATyzrdYyvbdeTXA=="],
 
     "@pulumi/azure-native": ["@pulumi/azure-native@3.17.0", "", { "dependencies": { "@pulumi/pulumi": "^3.142.0" } }, "sha512-oOC0YKvsv2OkchpG1aGgv2nucrBdgN6FfkkLemFuBV9P6vGHFuJxllPA6GQRW7VlQ4kCwO/wDMmE5+1VzuE7Xw=="],
-
-    "@pulumi/command": ["@pulumi/command@1.2.1", "", { "dependencies": { "@pulumi/pulumi": "^3.142.0" } }, "sha512-mutNDIUYP67yCBYOVIidQyxuTwZDY9v/sx9EGbgIv4PXfyfolOKGgGLeoHEbI1lxRwaw2wbTZ3VNIynDnA5VKA=="],
 
     "@pulumi/docker": ["@pulumi/docker@4.11.2", "", { "dependencies": { "@pulumi/pulumi": "^3.142.0", "semver": "^5.4.0" } }, "sha512-mm8Uscb/3S7OieYyg1E/vvFx3OS4bAkZvtFvi1yTqYda9NbnYOMbJi7a5fU5xB0N0Kd/uliS8olJ/e6nnvVVPg=="],
 

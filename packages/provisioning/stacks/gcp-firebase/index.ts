@@ -25,7 +25,6 @@
  * Shared code lives in `packages/provisioning/src/` (imported here).
  */
 
-import * as command from "@pulumi/command";
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
@@ -466,23 +465,13 @@ const adminSvc = cloudRunService({
 // to proxy traffic via `rewrites` to Cloud Run. Grant it
 // `roles/run.invoker` on the gateway so /api/** requests succeed.
 //
-// v0.3.10 — `gcp.projects.ServiceIdentity` is NOT supported for
-// `firebasehosting.googleapis.com` (the GenerateServiceIdentity API
-// returns IAM_SERVICE_NOT_CONFIGURED_FOR_IDENTITIES for it). The
-// `gcloud beta services identity create` CLI command works where
-// the GenerateServiceIdentity API does not — it falls back to a
-// different bootstrap path. We shell out via @pulumi/command,
-// which is idempotent (gcloud returns existing if the SA is
-// already provisioned). The SA email is deterministic from the
-// project number, so we construct it independently.
-const firebaseHostingIdentityCmd = new command.local.Command(
-  `${namePrefix}-firebasehosting-identity`,
-  {
-    create: pulumi.interpolate`gcloud beta services identity create --service=firebasehosting.googleapis.com --project=${project} --quiet`,
-  },
-  opts,
-);
-
+// v0.3.11 — The Firebase Hosting service identity SA is created by
+// the WIZARD via `gcloud beta services identity create` BEFORE
+// Pulumi runs (see `stepFirebaseHostingIdentity` in wizards/gcp.ts).
+// Pulumi's `gcp.projects.ServiceIdentity` doesn't work for
+// firebasehosting.googleapis.com, and @pulumi/command's plugin
+// binary isn't always available in the bunx temp install. Bootstrap
+// in the wizard, construct the deterministic email here.
 const projectInfo = gcp.organizations.getProjectOutput({ projectId: project }, opts);
 const firebaseHostingSa = pulumi.interpolate`serviceAccount:service-${projectInfo.number}@gcp-sa-firebasehosting.iam.gserviceaccount.com`;
 
@@ -495,7 +484,7 @@ new gcp.cloudrun.IamMember(
     role: "roles/run.invoker",
     member: firebaseHostingSa,
   },
-  { ...opts, dependsOn: [firebaseHostingIdentityCmd] },
+  opts,
 );
 
 // =========================================================================

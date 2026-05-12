@@ -30,6 +30,7 @@ import { pickDnsAdapter } from "../dns/index.js";
 import {
   activeAccount,
   type BillingAccount,
+  createFirebaseHostingIdentity,
   createProject,
   createServiceAccount,
   createServiceAccountKey,
@@ -99,6 +100,16 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
 
   // === 5. Enable APIs ===
   await stepEnableApis(installId, projectId, opts.provider ?? "gcp");
+
+  // === 5b. Firebase Hosting service identity (gcp-firebase only) ===
+  // v0.3.11 — gcloud beta is the only path that materializes the
+  // Firebase Hosting SA; Pulumi's gcp.projects.ServiceIdentity
+  // returns IAM_SERVICE_NOT_CONFIGURED_FOR_IDENTITIES for this
+  // service. We run it as the user (owner perms) so by the time
+  // Pulumi binds run.invoker to the SA, it exists.
+  if (opts.provider === "gcp-firebase") {
+    await stepFirebaseHostingIdentity(installId, projectId);
+  }
 
   // === 6. Service account + roles + key ===
   const saEmail = `${SA_ACCOUNT_ID}@${projectId}.iam.gserviceaccount.com`;
@@ -454,6 +465,24 @@ async function stepEnableApis(
   }
   s.stop(green(`${apiCount} APIs enabled`));
   markStepDone(installId, stepName, { count: apiCount });
+}
+
+async function stepFirebaseHostingIdentity(installId: string, projectId: string): Promise<void> {
+  const stepName = `firebase-hosting-identity-${projectId}`;
+  if (isStepDone(installId, stepName)) {
+    log.success(`Firebase Hosting service identity ${dim("(already created)")}`);
+    return;
+  }
+  const s = spinner();
+  s.start("Materializing Firebase Hosting service identity (~5s)...");
+  const r = await createFirebaseHostingIdentity(projectId);
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.stderr.trim()}`));
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green("Firebase Hosting service identity created"));
+  markStepDone(installId, stepName, {});
 }
 
 async function stepServiceAccount(
