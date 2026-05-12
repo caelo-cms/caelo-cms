@@ -215,7 +215,14 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // load + DNS propagation. The bootstrap URL is meaningless until
   // ACTIVE — without this step the wizard would tell the operator
   // "you're done" while HTTPS still ERR_CONNECTION_CLOSEDs.
-  await stepWaitForCertActive(projectId);
+  //
+  // v0.3.14 — gcp-firebase has no LB and no managed cert; Firebase
+  // Hosting's HostingCustomDomain resource handles TLS issuance
+  // internally (status surfaces via dnsRecordsRequired output).
+  // Skip the cert wait on that provider.
+  if ((opts.provider ?? "gcp") === "gcp") {
+    await stepWaitForCertActive(projectId);
+  }
 
   // === 11. Apply DB migrations against Cloud SQL via a one-shot Job ===
   // Cloud SQL lives on a private VPC IP that's only reachable from
@@ -240,7 +247,14 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // until the operator publishes their first deploy. Idempotent: skips
   // if any object already exists at the bucket root (i.e. the static
   // generator has already published).
-  await stepUploadStaticPlaceholder(installId, projectId, domain);
+  //
+  // v0.3.14 — gcp-firebase serves the static site from Firebase
+  // Hosting, not a GCS bucket; the static-publisher's first deploy
+  // creates the initial Firebase Hosting version. Skip the GCS
+  // placeholder upload on that provider.
+  if ((opts.provider ?? "gcp") === "gcp") {
+    await stepUploadStaticPlaceholder(installId, projectId, domain);
+  }
 
   // === 12. DNS records + bootstrap URL ===
   // IAP is enabled directly on the LB BackendService (Pulumi-managed);
