@@ -465,32 +465,35 @@ const adminSvc = cloudRunService({
 // to proxy traffic via `rewrites` to Cloud Run. Grant it
 // `roles/run.invoker` on the gateway so /api/** requests succeed.
 //
-// v0.3.12 — The Firebase Hosting service identity SA
-// (`service-<projectnum>@gcp-sa-firebasehosting.iam.gserviceaccount.com`)
-// is created LAZILY by Firebase Hosting itself on first deploy
-// with a Cloud Run rewrite. There's no public API that materializes
-// it on demand — `gcp.projects.ServiceIdentity` and
-// `gcloud beta services identity create` both return
-// IAM_SERVICE_NOT_CONFIGURED_FOR_IDENTITIES.
+// v0.3.13 — Gateway is PUBLIC by design.
 //
-// Cloud Run v1 IAM (`gcp.cloudrun.IamMember`) eagerly validates SA
-// existence at bind time → rejects with "SA does not exist".
-// PROJECT-level IAM (`gcp.projects.IAMMember`) does NOT validate —
-// it accepts deferred google-managed principals. Binding
-// `roles/run.invoker` at the project level grants the Firebase
-// Hosting SA invoke rights on every Cloud Run service in the
-// project (admin + gateway). Admin is gated by IAP, so this
-// effectively grants Firebase invoke-gateway, which is the
-// intended behavior.
-const projectInfo = gcp.organizations.getProjectOutput({ projectId: project }, opts);
-const firebaseHostingSa = pulumi.interpolate`serviceAccount:service-${projectInfo.number}@gcp-sa-firebasehosting.iam.gserviceaccount.com`;
-
-new gcp.projects.IAMMember(
-  `${namePrefix}-gateway-firebase-invoker`,
+// Per the gcp-firebase architecture decision: no Cloud Armor on
+// the gateway; in-app rate limits + CAPTCHA on form submission
+// endpoints gate abuse. The original plan was to grant the
+// Firebase Hosting SA `roles/run.invoker` so Firebase rewrites
+// could call the gateway as that SA. But the gcp-sa-firebasehosting
+// SA is created lazily by Firebase on first Cloud-Run-rewrite
+// deploy — there's no public API that materializes it
+// (GenerateServiceIdentity, ServiceIdentity, `gcloud beta services
+// identity create`, project-level IAMMember all return
+// IAM_SERVICE_NOT_CONFIGURED_FOR_IDENTITIES or
+// SA-does-not-exist).
+//
+// The cleaner architecture: skip the SA-specific binding and make
+// the gateway publicly invokable (`allUsers`). Same effective
+// behavior — Firebase rewrites work, and so do direct *.run.app
+// hits (which were already possible without Cloud Armor). The
+// in-app rate-limit middleware + form CAPTCHA + per-endpoint
+// authentication remain the real security boundary, exactly as
+// designed.
+new gcp.cloudrunv2.ServiceIamMember(
+  `${namePrefix}-gateway-public-invoker`,
   {
     project,
+    location: region,
+    name: gatewaySvc.name,
     role: "roles/run.invoker",
-    member: firebaseHostingSa,
+    member: "allUsers",
   },
   opts,
 );
@@ -543,12 +546,14 @@ const adminDomainMapping = provisionAdminDomain
 // shipped. If your provider build is older than v8.x, run
 // `gcloud beta run services update <admin-service> --iap` as a
 // post-up step. The stack provisions the IAM bindings either way.
-// v0.3.10 — Cloud Run v1 IAM API (`gcp.cloudrun.IamMember`) rejects
-// `roles/iap.httpsResourceAccessor` with "Role is not supported for
-// this resource". The v2 IAM API (`gcp.cloudrunv2.ServiceIamMember`)
-// is the right binding for native-IAP-on-Cloud-Run, matching
-// Google's documented setup: `gcloud run services
-// add-iam-policy-binding ... --role=roles/iap.httpsResourceAccessor`.
+// v0.3.13 — For IAP-protected Cloud Run, the correct IAM role
+// for allowlisted-user access is `roles/run.invoker`, NOT
+// `roles/iap.httpsResourceAccessor` (Cloud Run IAM rejects that
+// role on both v1 and v2 APIs with "Role is not supported for
+// this resource"). IAP authenticates the user via Google; after
+// auth passes, IAP forwards the request to Cloud Run, which
+// checks `run.invoker` on the authenticated identity. So
+// granting `run.invoker` to the user email IS the IAP allowlist.
 for (const principal of iapAllowlist) {
   new gcp.cloudrunv2.ServiceIamMember(
     `${namePrefix}-admin-iap-${principal.replace(/[^a-z0-9]/gi, "-").slice(0, 40)}`,
@@ -556,7 +561,7 @@ for (const principal of iapAllowlist) {
       location: region,
       project,
       name: adminSvc.name,
-      role: "roles/iap.httpsResourceAccessor",
+      role: "roles/run.invoker",
       member: principal,
     },
     opts,
