@@ -201,6 +201,15 @@ const PROVISIONER_ROLES: readonly string[] = [
   // resources aren't created on that stack.
   "roles/firebase.admin",
   "roles/firebasehosting.admin",
+  // v0.3.7 — project-level IAM binding admin. Required so the
+  // provisioner SA can grant other SAs roles AT THE PROJECT LEVEL
+  // via `gcp.projects.IAMMember`. The gcp-firebase stack uses
+  // this for `roles/firebasehosting.admin` on the run SA so it
+  // can deploy to Firebase Hosting. Without this role the
+  // provisioner gets a 403 "Policy update access denied" when
+  // creating project-level IAM bindings. Secret/bucket/SA-level
+  // bindings already work via the per-resource admin roles above.
+  "roles/resourcemanager.projectIamAdmin",
 ];
 
 /**

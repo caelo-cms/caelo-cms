@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/plugin-ratings",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
