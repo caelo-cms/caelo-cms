@@ -20,7 +20,7 @@
    */
 
   import { enhance } from "$app/forms";
-  import { goto } from "$app/navigation";
+  import { goto, invalidateAll } from "$app/navigation";
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import { onMount } from "svelte";
   import DiffPanel from "$lib/components/edit/DiffPanel.svelte";
@@ -189,9 +189,62 @@
     return () => window.removeEventListener("message", handler);
   });
 
-  function onAiToolResult(payload: { ok: boolean }): void {
+  // v0.3.22 — on fresh installs `data.pages` starts empty so
+  // `activePageId` is "" and the iframe has no src. The first time
+  // `data.pages` gets a page (from the AI creating one + the
+  // invalidateAll below), pick it as active so the iframe starts
+  // rendering. Prefer home/en; fall back to first.
+  $effect(() => {
+    if (activePageId === "" && data.pages.length > 0) {
+      const home = data.pages.find((p) => p.slug === "home" && p.locale === "en");
+      const pick = home ?? data.pages[0];
+      if (pick) activePageId = pick.id;
+    }
+  });
+
+  // v0.3.22 — debounce rapid iframe reloads. Bulk tool variants
+  // (*.create_many) and back-to-back module writes fire multiple
+  // `tool-result` events within <1s. Without debouncing each one
+  // triggers a fresh page load, mid-fetch reloads may be dropped,
+  // and the user sees flicker without convergence. 200ms trailing
+  // edge collapses bursts into one final reload showing the
+  // post-burst state.
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleReload(): void {
+    if (reloadTimer !== null) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      iframe?.contentWindow?.postMessage({ kind: "caelo:reload" }, window.location.origin);
+    }, 200);
+  }
+
+  function onAiToolResult(payload: {
+    ok: boolean;
+    arguments?: Record<string, unknown>;
+  }): void {
     if (payload.ok) pendingChanges += 1;
-    iframe?.contentWindow?.postMessage({ kind: "caelo:reload" }, window.location.origin);
+
+    // v0.3.22 — auto-follow the AI's edit target. When a tool's
+    // arguments name a different pageId than what's currently
+    // shown, switch the iframe to it. Layout / module-only edits
+    // omit pageId; we stay on the current page in that case.
+    // Stale `data.pages` here is fine — we run invalidateAll() right
+    // after, so the next tool-result picks up the fresh list.
+    const args = payload.arguments;
+    const targetPageId =
+      args && typeof args["pageId"] === "string" ? (args["pageId"] as string) : null;
+    if (targetPageId && targetPageId !== activePageId) {
+      const matched = data.pages.find((p) => p.id === targetPageId);
+      if (matched) activePageId = matched.id;
+    }
+
+    // v0.3.22 — refresh server-loaded `data.pages` etc. so newly-
+    // created pages / layouts surface in the page picker + activate
+    // automatically on fresh installs. Without this, `activePage`
+    // stays null and the iframe shows nothing while the AI builds.
+    void invalidateAll();
+
+    scheduleReload();
   }
 </script>
 
