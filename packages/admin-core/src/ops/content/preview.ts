@@ -182,9 +182,111 @@ export const renderPagePreviewOp = defineOperation({
       ORDER BY pm.block_name ASC, pm.position ASC
     `)) as unknown as ModuleSourceRow[];
 
-    // v0.4.0 — module CODE is global. Per-chat branch overlay applies to
-    // page-placement CONTENT, not module code. Load live content rows
-    // first, then overlay branch snapshots for the active chat.
+    // v0.5.1 — module code overlay: apply staged + caller-branch snapshots
+    // on top of the live `modules` row. Order:
+    //   main → all-staged-overlay → caller's-branch-overlay
+    // Caller's branch wins ties (it sees its own pending edits + everyone
+    // else's already-staged work, but not other chats' un-staged pendings).
+    if (modRows.length > 0) {
+      // Build the IN clause once. Bun's SQL adapter rejects an empty IN().
+      const moduleIds = modRows.map((r) => sql`${r.module_id}::uuid`);
+
+      // 1. Staged overlay — latest snapshot per module from any branch
+      // currently marked stage_state='staged'. EXCLUDE the caller's own
+      // branch so we don't double-apply (caller wins below).
+      const stagedRows = (await tx.execute(sql`
+        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
+        FROM module_snapshots ms
+        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+        JOIN chat_branch_publish_marks m
+          ON m.chat_branch_id = ss.chat_branch_id
+         AND m.entity_kind = 'module'
+         AND m.entity_id = ms.module_id
+         AND m.stage_state = 'staged'
+        WHERE ms.module_id IN (${sql.join(moduleIds, sql`, `)})
+          ${input.chatBranchId ? sql`AND ss.chat_branch_id <> ${input.chatBranchId}::uuid` : sql``}
+        ORDER BY ms.module_id, ss.created_at DESC
+      `)) as unknown as { module_id: string; state: unknown }[];
+
+      const overlayByModule = new Map<
+        string,
+        {
+          html: string;
+          css: string;
+          js: string;
+          displayName: string;
+          slug: string;
+          deleted: boolean;
+        }
+      >();
+      for (const r of stagedRows) {
+        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+        const s = raw as {
+          html?: string;
+          css?: string;
+          js?: string;
+          displayName?: string;
+          slug?: string;
+          deletedAt?: string | null;
+        };
+        overlayByModule.set(r.module_id, {
+          html: s.html ?? "",
+          css: s.css ?? "",
+          js: s.js ?? "",
+          displayName: s.displayName ?? "",
+          slug: s.slug ?? "",
+          deleted: !!s.deletedAt,
+        });
+      }
+
+      // 2. Caller-branch overlay — supersedes staged for modules the
+      // caller's chat has edited.
+      if (input.chatBranchId) {
+        const branchRows = (await tx.execute(sql`
+          SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
+          FROM module_snapshots ms
+          JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+          WHERE ss.chat_branch_id = ${input.chatBranchId}::uuid
+            AND ms.module_id IN (${sql.join(moduleIds, sql`, `)})
+          ORDER BY ms.module_id, ss.created_at DESC
+        `)) as unknown as { module_id: string; state: unknown }[];
+        for (const r of branchRows) {
+          const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+          const s = raw as {
+            html?: string;
+            css?: string;
+            js?: string;
+            displayName?: string;
+            slug?: string;
+            deletedAt?: string | null;
+          };
+          overlayByModule.set(r.module_id, {
+            html: s.html ?? "",
+            css: s.css ?? "",
+            js: s.js ?? "",
+            displayName: s.displayName ?? "",
+            slug: s.slug ?? "",
+            deleted: !!s.deletedAt,
+          });
+        }
+      }
+
+      // Apply the merged overlay.
+      for (const m of modRows) {
+        const overlay = overlayByModule.get(m.module_id);
+        if (!overlay) continue;
+        if (overlay.deleted) continue; // soft-deleted in the overlay — keep live
+        m.html = overlay.html;
+        m.css = overlay.css;
+        m.js = overlay.js;
+        m.display_name = overlay.displayName;
+        m.slug = overlay.slug;
+      }
+    }
+
+    // v0.4.0 — module CONTENT (per-placement values) is also branched.
+    // Load live content rows first, then overlay branch snapshots for the
+    // active chat.
     const contentRows = (await tx.execute(sql`
       SELECT block_name, position, content_values
       FROM page_module_content

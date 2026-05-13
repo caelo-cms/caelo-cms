@@ -21,6 +21,7 @@ import { sql } from "drizzle-orm";
 import { ZodError, z } from "zod";
 import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
+import { emitSnapshot } from "../snapshots/index.js";
 
 const setRow = z.object({
   id: z.string(),
@@ -36,6 +37,138 @@ function describeZodIssues(e: ZodError): string {
     .slice(0, 5)
     .map((i) => `${i.path.join(".")}: ${i.message}`)
     .join("; ");
+}
+
+/**
+ * v0.5.1 — Ordered-list kinds (nav-menu, taxonomy, link-list) emit
+ * one structured_set_operations row per discrete edit. Theme stays
+ * whole-blob.
+ *
+ * Item identity per kind:
+ *   nav-menu   → `href`
+ *   taxonomy   → `slug`
+ *   link-list  → `href`
+ *
+ * Falls back to `${index}` for items without an identity field (e.g.
+ * a malformed prev row). Identity collisions are silently coerced to
+ * "first wins" — the picker UI degrades to whole-list staging in that
+ * case.
+ */
+const LIST_KINDS: ReadonlySet<string> = new Set(["nav-menu", "taxonomy", "link-list"]);
+
+function itemId(kind: string, item: unknown, fallbackIndex: number): string {
+  if (typeof item !== "object" || item === null) return `idx:${fallbackIndex}`;
+  const obj = item as Record<string, unknown>;
+  const fields = kind === "taxonomy" ? ["slug"] : ["href"];
+  for (const f of fields) {
+    const v = obj[f];
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return `idx:${fallbackIndex}`;
+}
+
+type ListOp =
+  | { kind: "add"; itemId: string; payload: { item: unknown; position: number } }
+  | { kind: "rename"; itemId: string; payload: { from: string; to: string } }
+  | { kind: "move"; itemId: string; payload: { from: number; to: number } }
+  | { kind: "delete"; itemId: string; payload: { previousItem: unknown; previousPosition: number } }
+  | {
+      kind: "update";
+      itemId: string;
+      payload: { patch: Record<string, unknown>; previousItem: unknown };
+    };
+
+/**
+ * Diff prev vs next item arrays for an ordered-list kind. Returns a
+ * deterministic op list: deletes first (descending position), then
+ * adds, then in-place renames/updates/moves keyed by stable item id.
+ */
+function diffListItems(kind: string, prev: unknown[], next: unknown[]): ListOp[] {
+  const prevById = new Map<string, { item: unknown; index: number }>();
+  for (let i = 0; i < prev.length; i++) {
+    prevById.set(itemId(kind, prev[i], i), { item: prev[i], index: i });
+  }
+  const nextById = new Map<string, { item: unknown; index: number }>();
+  for (let i = 0; i < next.length; i++) {
+    nextById.set(itemId(kind, next[i], i), { item: next[i], index: i });
+  }
+
+  const ops: ListOp[] = [];
+
+  // Deletes — items in prev but not in next, descending by position
+  // so the apply step doesn't reshuffle indices mid-flight.
+  const deletes: ListOp[] = [];
+  for (const [id, p] of prevById) {
+    if (!nextById.has(id)) {
+      deletes.push({
+        kind: "delete",
+        itemId: id,
+        payload: { previousItem: p.item, previousPosition: p.index },
+      });
+    }
+  }
+  deletes.sort((a, b) => {
+    const ai = (a.payload as { previousPosition: number }).previousPosition;
+    const bi = (b.payload as { previousPosition: number }).previousPosition;
+    return bi - ai;
+  });
+  ops.push(...deletes);
+
+  // Adds — items in next but not in prev, ascending by position.
+  for (const [id, n] of nextById) {
+    if (!prevById.has(id)) {
+      ops.push({
+        kind: "add",
+        itemId: id,
+        payload: { item: n.item, position: n.index },
+      });
+    }
+  }
+
+  // Updates / moves — items in both. Detect by structural diff.
+  for (const [id, n] of nextById) {
+    const p = prevById.get(id);
+    if (!p) continue;
+    const prevItem = p.item as Record<string, unknown> | null;
+    const nextItem = n.item as Record<string, unknown> | null;
+    // Label rename (nav-menu / link-list).
+    if (
+      prevItem &&
+      nextItem &&
+      typeof prevItem.label === "string" &&
+      typeof nextItem.label === "string" &&
+      prevItem.label !== nextItem.label
+    ) {
+      ops.push({
+        kind: "rename",
+        itemId: id,
+        payload: { from: prevItem.label, to: nextItem.label },
+      });
+    }
+    // Any other field-level change → update op with the full patch.
+    const patch: Record<string, unknown> = {};
+    if (prevItem && nextItem) {
+      for (const k of new Set([...Object.keys(prevItem), ...Object.keys(nextItem)])) {
+        if (k === "label") continue; // covered by rename above
+        if (JSON.stringify(prevItem[k]) !== JSON.stringify(nextItem[k])) {
+          patch[k] = nextItem[k];
+        }
+      }
+    }
+    if (Object.keys(patch).length > 0) {
+      ops.push({ kind: "update", itemId: id, payload: { patch, previousItem: prevItem } });
+    }
+    // Position change.
+    if (p.index !== n.index) {
+      ops.push({
+        kind: "move",
+        itemId: id,
+        payload: { from: p.index, to: n.index },
+      });
+    }
+  }
+
+  return ops;
 }
 
 function rowToOut(r: {
@@ -101,11 +234,12 @@ export const setStructuredSetOp = defineOperation({
     // existing set (creates have no entity_id yet; race on first-create
     // is harmless — unique (kind, slug) catches it at upsert).
     const existing = (await tx.execute(sql`
-      SELECT id::text AS id FROM structured_sets
+      SELECT id::text AS id, items FROM structured_sets
       WHERE kind = ${input.kind} AND slug = ${input.slug}
       LIMIT 1
-    `)) as unknown as { id: string }[];
-    const existingId = existing[0]?.id;
+    `)) as unknown as { id: string; items: unknown }[];
+    const existingRow = existing[0];
+    const existingId = existingRow?.id;
     if (existingId) {
       const lock = await checkAndAcquireEntityLock(tx, {
         kind: "structuredSet",
@@ -116,6 +250,13 @@ export const setStructuredSetOp = defineOperation({
         return err(lockedError("structured_sets.set", "structuredSet", existingId, lock.holder));
       }
     }
+    // v0.5.1 — capture prev items for ordered-list diff (nav-menu /
+    // taxonomy / link-list). Theme stays whole-blob.
+    const prevItems = existingRow
+      ? typeof existingRow.items === "string"
+        ? (JSON.parse(existingRow.items) as unknown[])
+        : ((existingRow.items as unknown[]) ?? [])
+      : [];
     // Note: cast through ::text first so Bun's SQL adapter doesn't
     // try to JSON-encode the string a second time. Without ::text the
     // adapter sees the JSON-stringified value and re-wraps it as a
@@ -151,6 +292,42 @@ export const setStructuredSetOp = defineOperation({
       entityId: id,
       resultSummary: `${input.kind}/${input.slug} items=${validated.length}`,
     });
+
+    // v0.5.1 — for ordered-list kinds, diff prev vs next and emit one
+    // structured_set_operations row per discrete edit so the picker can
+    // stage individual changes. Theme + other non-list kinds skip this
+    // path; the whole-row state is the natural unit there.
+    if (LIST_KINDS.has(input.kind)) {
+      const ops = diffListItems(input.kind, prevItems, validated);
+      if (ops.length > 0) {
+        // emitSnapshot needs at least an empty entities[] — we attach
+        // no module/page/etc. entity here; the list ops are the
+        // entities. Use opKind 'structured_sets.set' (already in the
+        // CHECK constraint).
+        const result = await emitSnapshot(tx, {
+          actorId: ctx.actorId,
+          opKind: "structured_sets.set",
+          description: `structured_sets.set ${input.kind}/${input.slug} ops=${ops.length}`,
+          chatTaskId: ctx.chatTaskId ?? null,
+          chatBranchId: ctx.chatBranchId ?? null,
+          entities: [],
+        });
+        for (const op of ops) {
+          await tx.execute(sql`
+            INSERT INTO structured_set_operations
+              (site_snapshot_id, structured_set_id, op_kind, item_id, op_payload)
+            VALUES (
+              ${result.siteSnapshotId}::uuid,
+              ${id}::uuid,
+              ${op.kind},
+              ${op.itemId},
+              ${JSON.stringify(op.payload)}::jsonb
+            )
+          `);
+        }
+      }
+    }
+
     return ok({ setId: id });
   },
 });

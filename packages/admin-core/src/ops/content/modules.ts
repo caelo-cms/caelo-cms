@@ -236,10 +236,21 @@ export const updateModuleOp = defineOperation({
     if (!lock.permitted && lock.holder) {
       return err(lockedError("modules.update", "module", input.moduleId, lock.holder));
     }
-    // Fetch prev html before the update so the usage-tracker can diff.
+    // Fetch the FULL prev row — we need it for both the usage-diff and
+    // (v0.5.1) the branched-write path where we construct the new state
+    // in-memory without touching the live `modules` row.
     const prevRows = (await tx.execute(sql`
-      SELECT html FROM modules WHERE id = ${input.moduleId}::uuid AND deleted_at IS NULL LIMIT 1
-    `)) as unknown as { html: string }[];
+      SELECT slug, display_name, html, css, js, fields, deleted_at
+      FROM modules WHERE id = ${input.moduleId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as {
+      slug: string;
+      display_name: string;
+      html: string;
+      css: string;
+      js: string;
+      fields: unknown;
+      deleted_at: Date | string | null;
+    }[];
     const prev = prevRows[0];
     if (!prev) {
       return err({
@@ -248,22 +259,35 @@ export const updateModuleOp = defineOperation({
         message: "module not found",
       });
     }
-    // buildPatchSet ignores undefined keys and always appends updated_at = now().
-    // v0.4.0 — `fields` is jsonb; cast via SQL fragment.
-    const sets = buildPatchSet({
-      display_name: input.displayName,
-      html: input.html,
-      css: input.css,
-      js: input.js,
-      fields: input.fields !== undefined ? sql`${JSON.stringify(input.fields)}::jsonb` : undefined,
-    });
-    await tx.execute(sql`
-      UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid
-    `);
-    // P7 usage-tracker: only diff when html changed.
-    if (input.html !== undefined) {
-      await applyMediaUsageDelta(tx, prev.html, input.html);
+
+    const branchId = ctx.chatBranchId ?? null;
+
+    // v0.5.1 — branched writes skip the live UPDATE. Module code stays
+    // visible to other chats at its pre-edit state until publish merges
+    // the branch into main. The snapshot carries the new state so the
+    // caller's own chat preview sees the edit via the branch overlay
+    // in pages.render_preview.
+    if (!branchId) {
+      // buildPatchSet ignores undefined keys and always appends updated_at = now().
+      // v0.4.0 — `fields` is jsonb; cast via SQL fragment.
+      const sets = buildPatchSet({
+        display_name: input.displayName,
+        html: input.html,
+        css: input.css,
+        js: input.js,
+        fields:
+          input.fields !== undefined ? sql`${JSON.stringify(input.fields)}::jsonb` : undefined,
+      });
+      await tx.execute(sql`
+        UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid
+      `);
+      // P7 usage-tracker: only diff when html changed AND we wrote live.
+      // For branched writes, usage delta is applied at publish time.
+      if (input.html !== undefined) {
+        await applyMediaUsageDelta(tx, prev.html, input.html);
+      }
     }
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -278,16 +302,35 @@ export const updateModuleOp = defineOperation({
         input.js !== undefined && "js",
       ]
         .filter(Boolean)
-        .join(",")}`,
+        .join(",")}${branchId ? " (branch)" : ""}`,
     });
-    const state = await loadModuleState(tx, input.moduleId);
+
+    // For branched writes, construct the new state from prev + input;
+    // for live writes, re-load to capture defaults applied by the DB.
+    let state: import("../../snapshots/index.js").ModuleState | null;
+    if (branchId) {
+      const prevFields = typeof prev.fields === "string" ? JSON.parse(prev.fields) : prev.fields;
+      state = {
+        schemaVersion: 1,
+        slug: prev.slug,
+        displayName: input.displayName ?? prev.display_name,
+        html: input.html ?? prev.html,
+        css: input.css ?? prev.css,
+        js: input.js ?? prev.js,
+        fields: input.fields ?? (Array.isArray(prevFields) ? (prevFields as unknown[]) : []),
+        deletedAt: null,
+      };
+    } else {
+      state = await loadModuleState(tx, input.moduleId);
+    }
+
     if (state) {
       await emitSnapshot(tx, {
         actorId: ctx.actorId,
         opKind: "modules.update",
         description: `modules.update slug=${state.slug}`,
         chatTaskId: ctx.chatTaskId ?? null,
-        chatBranchId: ctx.chatBranchId ?? null,
+        chatBranchId: branchId,
         entities: [{ kind: "module", entityId: input.moduleId, state }],
       });
     }
