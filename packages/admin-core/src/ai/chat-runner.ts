@@ -152,7 +152,13 @@ export async function* runChatTurn(
   const { adapter, registry, provider, tools, aiCtx, humanCtx, abortSignal } = options;
   const inputCost = options.inputCostPerMTok ?? DEFAULT_INPUT_COST_PER_M;
   const outputCost = options.outputCostPerMTok ?? DEFAULT_OUTPUT_COST_PER_M;
-  const maxLoops = options.maxToolLoops ?? 5;
+  // v0.3.20 — raised from 5 to 25. Multi-section authoring sessions
+  // (homepage build with theme setup + modules + SEO + layout binding)
+  // routinely need >5 tool-use round-trips. The old cap silently
+  // truncated those builds mid-flight with no UI signal — see the
+  // cap-exhaustion notice below the for-loop for the visible-signal
+  // half of the fix.
+  const maxLoops = options.maxToolLoops ?? 25;
   const startedAt = Date.now();
   const aborted = (): boolean => abortSignal?.aborted === true;
   // v0.2.57 — entry breadcrumb. v0.2.55 added per-loop console.info(),
@@ -1084,9 +1090,15 @@ export async function* runChatTurn(
   let totalOut = 0;
   let totalCached = 0;
   let succeeded = true;
-  type StopReason = "end_turn" | "tool_use" | "max_tokens" | "error";
+  type StopReason = "end_turn" | "tool_use" | "max_tokens" | "error" | "max_loops";
   let stopReason: StopReason = "end_turn";
   let lastAssistantMessageId: string | null = null;
+  // v0.3.20 — track the most recent loopStop so we can detect the
+  // cap-exhaustion case (for-loop ran to completion without breaking
+  // on end_turn / max_tokens / error). Without this, hitting maxLoops
+  // looks identical to a normal end_turn finish — the UI shows no
+  // signal, and the user thinks the AI just stopped for no reason.
+  let lastLoopStop: StopReason | null = null;
 
   for (let loop = 0; loop < maxLoops; loop++) {
     if (aborted()) break;
@@ -1246,6 +1258,7 @@ export async function* runChatTurn(
     });
 
     if (aborted()) break;
+    lastLoopStop = loopStop;
     if (loopStop !== "tool_use" || accumulatedToolCalls.length === 0) {
       stopReason = loopStop;
       break;
@@ -1451,6 +1464,33 @@ export async function* runChatTurn(
           ],
         });
       }
+    }
+  }
+
+  // v0.3.20 — cap-exhaustion notice. If the for-loop ran to completion
+  // (i.e. didn't break) AND the last iteration ended with the AI still
+  // wanting to call more tools, we hit `maxLoops`. Surface a clear
+  // user-visible message so the chat doesn't appear to silently die.
+  // The user can reply "continue" to resume the build in a fresh turn.
+  if (lastLoopStop === "tool_use" && !aborted()) {
+    stopReason = "max_loops";
+    const notice =
+      `Paused at the tool-loop limit (${maxLoops} iterations). The build was still in progress — ` +
+      `reply "continue" to resume.`;
+    console.error("[chat-runner] max_loops cap hit", {
+      chatSessionId: input.chatSessionId,
+      maxLoops,
+    });
+    yield { kind: "text-delta", text: notice };
+    const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+      chatSessionId: input.chatSessionId,
+      role: "assistant",
+      content: notice,
+      status: "complete",
+    });
+    if (noticeSave.ok) {
+      lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+      yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
     }
   }
 
