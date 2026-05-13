@@ -25,6 +25,9 @@
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { buttonVariants } from "$lib/components/ui/button/button-variants.js";
+  // v0.5.13 — extracted to a shared module so ChatPanel's optimistic
+  // pending-strip push and ProposeCard parse from one place.
+  import { parseProposalContent } from "../proposal-parser.js";
 
   interface Props {
     name: string;
@@ -42,12 +45,15 @@
   }
   let { name, content, args, csrfToken, onApproved }: Props = $props();
 
-  // Parse "Queued proposal <id>: <summary>. ... /security/<path>/pending ..."
-  const proposalMatch = $derived(content.match(/Queued proposal ([0-9a-f-]{36}):\s*([^.]+)\./));
-  const queueMatch = $derived(content.match(/(\/security\/[^\s.]+\/pending)/));
-  const proposalId = $derived(proposalMatch?.[1] ?? null);
-  const summary = $derived(proposalMatch?.[2]?.trim() ?? content);
-  const queueUrl = $derived(queueMatch?.[1] ?? null);
+  // v0.5.13 — uses the shared parseProposalContent helper. Same regex
+  // as before; returns null on non-canonical content (and the card
+  // gracefully falls back to showing just the raw content + queue link
+  // below). The v0.5.11 wording-lock test guarantees every shipped
+  // propose tool emits the canonical shape.
+  const parsed = $derived(parseProposalContent(content));
+  const proposalId = $derived(parsed?.proposalId ?? null);
+  const summary = $derived(parsed?.summary ?? content);
+  const queueUrl = $derived(parsed?.queueUrl ?? null);
 
   // Map propose_create_user → "users.create" badge text. Strip the
   // "propose_" prefix and the singular shape.

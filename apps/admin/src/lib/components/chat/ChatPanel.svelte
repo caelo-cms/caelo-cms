@@ -29,6 +29,7 @@
   import StageSplitButton from "./StageSplitButton.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import InlineDiff from "./InlineDiff.svelte";
+  import { parseProposalContent } from "./proposal-parser.js";
   import StreamingMarkdown from "./StreamingMarkdown.svelte";
   import ToolCardRouter from "./tool-cards/ToolCardRouter.svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "./types.js";
@@ -945,12 +946,37 @@
               // propose-style tools that don't carry the propose_ name
               // prefix (create_layout, tune_rate_limit, bootstrap-site).
               const resultContent = String(ev["content"] ?? "");
-              const isProposeShaped = /^Queued proposal [0-9a-f-]{36}:/.test(resultContent);
+              // v0.5.13 — optimistic push. Before the async
+              // loadPendingProposals fetch returns, parse the
+              // canonical content shape locally and push the new
+              // proposal into pendingProposals immediately so the
+              // sticky strip updates THIS frame. De-dup by proposalId
+              // so the eventual async refresh doesn't flash a
+              // duplicate row. Replaces the "I had to reload /edit
+              // before the Approve button appeared" gap.
+              const parsedProposal = okFlag ? parseProposalContent(resultContent) : null;
+              if (parsedProposal) {
+                if (
+                  !pendingProposals.some((p) => p.proposalId === parsedProposal.proposalId)
+                ) {
+                  pendingProposals = [
+                    ...pendingProposals,
+                    {
+                      proposalId: parsedProposal.proposalId,
+                      domain: parsedProposal.domain,
+                      kind: name,
+                      summary: parsedProposal.summary,
+                      proposedAt: new Date().toISOString(),
+                      queueUrl: parsedProposal.queueUrl,
+                    },
+                  ];
+                }
+              }
               if (
                 okFlag &&
                 (name.startsWith("propose_") ||
                   name.endsWith(".execute_proposal") ||
-                  isProposeShaped)
+                  parsedProposal !== null)
               ) {
                 void loadPendingProposals();
               }
