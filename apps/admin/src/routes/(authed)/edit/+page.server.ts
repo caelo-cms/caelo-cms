@@ -90,13 +90,23 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
   const queryChat = url.searchParams.get("chat");
   // Active chat: explicit ?chat= wins (can be page-bound OR global) →
-  // most-recent unpublished page-bound chat → auto-create page-bound.
-  // Picking a global chat here is fine; the page iframe stays loaded
-  // so the user can edit globally while looking at any page.
+  // most-recent unpublished page-bound chat → most-recent unpublished
+  // GLOBAL chat (v0.3.23) → auto-create page-bound. Picking a global
+  // chat here is fine; the page iframe stays loaded so the user can
+  // edit globally while looking at any page.
+  //
+  // v0.3.23 — fallback extended to globalSessions. On fresh installs
+  // the AI's first chat is global (pageId=null, no pages yet). After
+  // the AI creates the home page and the user reloads, the page-bound
+  // fallback misses the AI's chat (it's global, not bound to home),
+  // and a NEW session was auto-created with a fresh branch — losing
+  // every uncommitted change. The 4th fallback line resumes the AI's
+  // global session so its branch (and Stage button) come back.
   let activeChat: ChatSession | null =
     sessions.find((s) => s.id === queryChat) ??
     globalSessions.find((s) => s.id === queryChat) ??
     sessions.find((s) => !s.publishedAt) ??
+    globalSessions.find((s) => !s.publishedAt) ??
     null;
   if (!activeChat) {
     const created = await execute(registry, adapter, locals.ctx, "chat.create_session", {
