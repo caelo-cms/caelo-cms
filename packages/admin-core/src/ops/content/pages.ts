@@ -342,21 +342,44 @@ export const createPageOp = defineOperation({
         message: "page already exists for this (slug, locale)",
       });
     }
-    const rows = (await tx.execute(sql`
-      INSERT INTO pages (slug, locale, name, title, template_id, status)
-      VALUES (
-        ${input.slug},
-        ${input.locale},
-        ${input.name ?? input.title},
-        ${input.title},
-        ${templateId}::uuid,
-        ${input.status}
-      )
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
-    const pageId = rows[0]?.id;
-    if (!pageId) {
-      return err({ kind: "HandlerError", operation: "pages.create", message: "no id returned" });
+    // v0.5.7 — branched create. Allocate the UUID via Postgres so the
+    // AI's follow-up tool calls (set_modules, set_seo) can reference it
+    // immediately, but DO NOT write the live `pages` row. The page is
+    // invisible to other chats' pages.list / pages.get until publish.
+    // Publish materialises the row via INSERT...ON CONFLICT (id) DO UPDATE.
+    const branched = !!ctx.chatBranchId;
+    let pageId: string;
+    if (branched) {
+      const idRows = (await tx.execute(sql`SELECT gen_random_uuid()::text AS id`)) as unknown as {
+        id: string;
+      }[];
+      const newId = idRows[0]?.id;
+      if (!newId) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.create",
+          message: "no id returned from gen_random_uuid",
+        });
+      }
+      pageId = newId;
+    } else {
+      const rows = (await tx.execute(sql`
+        INSERT INTO pages (slug, locale, name, title, template_id, status)
+        VALUES (
+          ${input.slug},
+          ${input.locale},
+          ${input.name ?? input.title},
+          ${input.title},
+          ${templateId}::uuid,
+          ${input.status}
+        )
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+      const newId = rows[0]?.id;
+      if (!newId) {
+        return err({ kind: "HandlerError", operation: "pages.create", message: "no id returned" });
+      }
+      pageId = newId;
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -365,20 +388,39 @@ export const createPageOp = defineOperation({
       input,
       succeeded: true,
       entityId: pageId,
-      resultSummary: `slug=${input.slug},locale=${input.locale}`,
+      resultSummary: `slug=${input.slug},locale=${input.locale}${branched ? ",branched" : ""}`,
     });
-    const state = await loadPageState(tx, pageId);
+    let state: import("../../snapshots/state.js").PageState | null;
+    if (branched) {
+      state = {
+        schemaVersion: 1,
+        slug: input.slug,
+        locale: input.locale,
+        title: input.title,
+        templateId,
+        status: input.status,
+        version: 0,
+        deletedAt: null,
+      };
+    } else {
+      state = await loadPageState(tx, pageId);
+    }
     if (state) {
       await emitSnapshot(tx, {
         actorId: ctx.actorId,
         opKind: "pages.create",
-        description: `pages.create slug=${input.slug} locale=${input.locale}`,
+        description: `pages.create slug=${input.slug} locale=${input.locale}${branched ? " (branched)" : ""}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: pageId, state }],
       });
     }
-    // P9 — initial content_hash (will be empty-blocks until set_modules
-    // runs, but populates the column so list/get queries don't NULL-out).
-    await recomputePageContentHash(tx, pageId);
+    // P9 — initial content_hash. Skip when branched: no live row exists
+    // yet, and the placement layer (set_modules) is the substantive input
+    // to the hash anyway. Publish recomputes after merging.
+    if (!branched) {
+      await recomputePageContentHash(tx, pageId);
+    }
     return ok({ pageId });
   },
 });
@@ -1149,13 +1191,17 @@ export const deletePagesManyOp = defineOperation({
     notFound: z.number().int(),
   }),
   handler: async (ctx, input, tx) => {
+    // v0.5.7 — delegate to deletePageOp per row so bulk delete picks up
+    // the v0.5.3 branched-delete + per-page-lock behaviour automatically.
+    // Pre-loop check for "not found" / "already deleted" so the result
+    // shape stays the same (deleted / alreadyDeleted / notFound counts).
     let deleted = 0;
     let alreadyDeleted = 0;
     let notFound = 0;
     for (const id of input.pageIds) {
       const rows = (await tx.execute(sql`
-        SELECT slug, deleted_at FROM pages WHERE id = ${id}::uuid
-      `)) as unknown as { slug: string; deleted_at: Date | null }[];
+        SELECT deleted_at FROM pages WHERE id = ${id}::uuid
+      `)) as unknown as { deleted_at: Date | null }[];
       const target = rows[0];
       if (!target) {
         notFound += 1;
@@ -1165,17 +1211,12 @@ export const deletePagesManyOp = defineOperation({
         alreadyDeleted += 1;
         continue;
       }
-      await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${id}::uuid`);
-      const state = await loadPageState(tx, id);
-      if (state) {
-        await emitSnapshot(tx, {
-          actorId: ctx.actorId,
-          opKind: "pages.delete",
-          description: `pages.delete_many slug=${target.slug}`,
-          entities: [{ kind: "page", entityId: id, state }],
-        });
-      }
-      deleted += 1;
+      const r = await deletePageOp.handler(ctx, { pageId: id }, tx);
+      if (r.ok) deleted += 1;
+      // Any other error (Locked etc) falls through to the bulk caller
+      // via the audit row + non-OK return on the next iteration. For
+      // delete_many we keep the loop going so a single Locked row
+      // doesn't kill the rest of the batch — matches update_many.
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,

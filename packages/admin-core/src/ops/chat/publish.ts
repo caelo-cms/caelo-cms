@@ -380,17 +380,30 @@ export const publishChatSessionOp = defineOperation({
         `);
       } else if (e.kind === "page") {
         // v0.5.3 — branched pages.update/delete skipped the live UPDATE.
-        // Promote branched state into live now. deletedAt → soft-delete.
+        // v0.5.7 — branched pages.create skipped the live INSERT too.
+        // Upsert by id covers both: existing rows get the patch; new
+        // branched-created pages get materialised here.
         await tx.execute(sql`
-          UPDATE pages
-          SET slug = ${e.state.slug},
-              title = ${e.state.title},
-              template_id = ${e.state.templateId}::uuid,
-              status = ${e.state.status},
-              deleted_at = ${e.state.deletedAt ? sql`now()` : sql`NULL`},
-              version = version + 1,
-              updated_at = now()
-          WHERE id = ${e.entityId}::uuid
+          INSERT INTO pages (id, slug, locale, name, title, template_id, status, deleted_at, version)
+          VALUES (
+            ${e.entityId}::uuid,
+            ${e.state.slug},
+            ${e.state.locale},
+            ${e.state.title},
+            ${e.state.title},
+            ${e.state.templateId}::uuid,
+            ${e.state.status},
+            ${e.state.deletedAt ? sql`now()` : sql`NULL`},
+            ${e.state.version}
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            slug        = EXCLUDED.slug,
+            title       = EXCLUDED.title,
+            template_id = EXCLUDED.template_id,
+            status      = EXCLUDED.status,
+            deleted_at  = EXCLUDED.deleted_at,
+            version     = pages.version + 1,
+            updated_at  = now()
         `);
       } else if (e.kind === "pageLayout") {
         // v0.5.3 — branched pages.set_modules skipped the page_modules
