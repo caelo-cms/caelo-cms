@@ -157,7 +157,7 @@ describe("skills propose / review / activate", () => {
 });
 
 describe("seeded base skills", () => {
-  it("compose-page, explain-page, brand-voice-guard, scoped-edit are active", async () => {
+  it("compose-page, explain-page, brand-voice-guard, scoped-edit, bootstrap-site are active", async () => {
     const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
     if (!r.ok) return;
     const slugs = (r.value as { skills: { slug: string }[] }).skills.map((s) => s.slug);
@@ -165,5 +165,36 @@ describe("seeded base skills", () => {
     expect(slugs).toContain("explain-page");
     expect(slugs).toContain("brand-voice-guard");
     expect(slugs).toContain("scoped-edit");
+    // v0.5.10 — new fresh-install bootstrap skill
+    expect(slugs).toContain("bootstrap-site");
+  });
+
+  // v0.5.10 — wording lock: skill bodies must not reference CLAUDE.md.
+  // The file isn't accessible to the AI; citations there sound like
+  // referenceable external docs and led the model to hallucinate
+  // about being able to follow them. Reword inline rules instead.
+  it("no skill body references CLAUDE.md", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+    if (!r.ok) return;
+    const skills = (r.value as { skills: { slug: string; body: string }[] }).skills;
+    for (const s of skills) {
+      expect(s.body).not.toContain("CLAUDE.md");
+    }
+  });
+
+  // v0.5.10 — bootstrap-site skill must allowlist the four scaffold
+  // tools so it can actually execute the layout → template →
+  // site_defaults → first-page chain when it engages.
+  it("bootstrap-site allowlists the four scaffold tools", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+    if (!r.ok) return;
+    const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
+    const bootstrap = skills.find((s) => s.slug === "bootstrap-site");
+    expect(bootstrap).toBeDefined();
+    const tools = bootstrap?.allowlistedTools ?? [];
+    expect(tools).toContain("create_layout");
+    expect(tools).toContain("create_template");
+    expect(tools).toContain("set_site_defaults");
+    expect(tools).toContain("create_page");
   });
 });

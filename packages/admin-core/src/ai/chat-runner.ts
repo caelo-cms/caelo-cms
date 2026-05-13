@@ -541,7 +541,10 @@ export async function* runChatTurn(
       // here makes the model use them.
       templateLines.length > 0
         ? `To create a page on a specific template, call create_page with templateId=<UUID from above>. To use the site default, omit templateId entirely. The lines above carry every UUID you need — do NOT ask the operator to paste it.`
-        : "No templates exist yet. Ask the operator to create one at /content/templates, or call create_page anyway and surface the resulting structured error.",
+        : // v0.5.10 — fresh-install bootstrap path. Pre-v0.5.10 this text
+          // primed passive behavior ("ask the operator"). New text names
+          // the exact tools and forbids the passive ask explicitly.
+          "No templates or layouts exist yet. Bootstrap them yourself: call create_layout to make a layout with three blocks (header, content, footer), then create_template pointing at that layout, then set_site_defaults. Do NOT ask the operator to do this — these tools are available to you. After bootstrap, proceed with the user's original request in the same turn.",
     ].join("\n");
     // Optional debug telemetry. Gated behind CAELO_DEBUG_PROMPT so it
     // costs nothing in production but can be flipped on for one Cloud
@@ -654,7 +657,10 @@ export async function* runChatTurn(
       }
       localesBlock = [
         "# Locales",
-        "Adding/removing/retargeting a locale is TWO-STEP per CLAUDE.md §11.A: AI proposes via `propose_add_locale` / `propose_remove_locale` / `propose_set_default_locale` / `propose_update_locale_strategy`; an Owner clicks Approve at /security/locales/pending to apply. Do not claim the action was applied — tell the user the proposal is queued.",
+        // v0.5.10 — dropped "per CLAUDE.md §11.A" citation. The AI can't
+        // access that file; the citation made it sound like a referenceable
+        // external doc. The rule itself stays.
+        "Adding/removing/retargeting a locale is a TWO-STEP propose/execute flow. You propose via `propose_add_locale` / `propose_remove_locale` / `propose_set_default_locale` / `propose_update_locale_strategy`; an Owner clicks Approve at /security/locales/pending to apply. Do not claim the action was applied — tell the user the proposal is queued.",
         ...lines,
         ...(pendingLines.length > 0 ? ["Your pending proposals:", ...pendingLines] : []),
       ].join("\n");
