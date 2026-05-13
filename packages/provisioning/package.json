@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/provisioning",
-  "version": "0.5.13",
+  "version": "0.5.14",
   "private": false,
   "license": "MPL-2.0",
   "description": "Pulumi-driven provisioning for Caelo CMS — `bunx @caelo-cms/provisioning --provider <self-hosted|gcp|aws|azure>` brings up a TLS-served install with Postgres + storage + secrets manager + the admin + the API gateway.",

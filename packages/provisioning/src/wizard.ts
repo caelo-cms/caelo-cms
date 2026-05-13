@@ -161,17 +161,31 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
  */
 async function pickInstallToResume(installs: InstallMetadata[]): Promise<InstallMetadata | null> {
   const first = installs[0];
+  // v0.5.14 — added per-install "Upgrade" entries that route to
+  // upgradeCommand (Cloud Run image roll) without re-running the
+  // wizard. Operator complaint: running bare `bunx @caelo-cms/
+  // provisioning@latest` on a working install dropped them into
+  // the wizard and they assumed it would upgrade. It didn't — the
+  // wizard provisions, only `upgrade` rolls a running deployment.
+  // Surfacing both intents in the same picker closes the gap.
   const choice = await select<string>({
     message:
       installs.length === 1 && first
-        ? `Resume existing install '${first.installId}'?`
-        : "Resume an existing install or start a new one?",
+        ? `What do you want to do with '${first.installId}'?`
+        : "Pick an existing install (or start a new one):",
     options: [
-      ...installs.map((m) => ({
-        value: m.installId,
-        label: `${bold(m.installId)} ${dim(`(${m.provider}, ${m.domain})`)}`,
-        hint: `created ${m.createdAt.slice(0, 10)}`,
-      })),
+      ...installs.flatMap((m) => [
+        {
+          value: `upgrade:${m.installId}`,
+          label: `Upgrade ${bold(m.installId)} ${dim(`(${m.provider}, ${m.domain})`)}`,
+          hint: `roll Cloud Run to the latest image — does not re-run the wizard`,
+        },
+        {
+          value: `resume:${m.installId}`,
+          label: `Resume wizard for ${bold(m.installId)} ${dim(`(${m.provider}, ${m.domain})`)}`,
+          hint: `created ${m.createdAt.slice(0, 10)} — re-runs provisioning steps`,
+        },
+      ]),
       { value: "__new__", label: "Start a new install", hint: "fresh inputs" },
     ],
   });
@@ -180,7 +194,23 @@ async function pickInstallToResume(installs: InstallMetadata[]): Promise<Install
     process.exit(0);
   }
   if (choice === "__new__") return null;
-  return installs.find((m) => m.installId === choice) ?? null;
+  // v0.5.14 — upgrade short-circuit. Dispatch to upgradeCommand
+  // directly and exit; we don't fall through to runWizard's main flow.
+  if (choice.startsWith("upgrade:")) {
+    const installId = choice.slice("upgrade:".length);
+    const target = installs.find((m) => m.installId === installId);
+    if (!target) {
+      cancel(`Could not find install metadata for '${installId}'.`);
+      process.exit(1);
+    }
+    const { upgradeCommand } = await import("./lifecycle.js");
+    // Defaults to channel=stable / tag=:latest — explicit-version is
+    // available via `cms-provision upgrade --version vX.Y.Z`.
+    await upgradeCommand();
+    process.exit(0);
+  }
+  const installId = choice.startsWith("resume:") ? choice.slice("resume:".length) : choice;
+  return installs.find((m) => m.installId === installId) ?? null;
 }
 
 async function pickProvider(): Promise<Provider> {
