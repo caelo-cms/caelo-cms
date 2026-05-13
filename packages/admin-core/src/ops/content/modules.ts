@@ -10,7 +10,9 @@ import { defineOperation } from "@caelo-cms/query-api";
 import {
   err,
   extractMediaRefs,
+  type ModuleField,
   moduleCreateSchema,
+  moduleFieldSchema,
   moduleUpdateSchema,
   ok,
 } from "@caelo-cms/shared";
@@ -53,6 +55,8 @@ const moduleRowSchema = z.object({
   html: z.string(),
   css: z.string(),
   js: z.string(),
+  /** v0.4.0 — declared field schema for placement content. */
+  fields: z.array(moduleFieldSchema),
   createdAt: z.string(),
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
@@ -65,11 +69,16 @@ function rowToModule(r: {
   html: string;
   css: string;
   js: string;
+  fields: unknown;
   created_at: string | Date;
   updated_at: string | Date;
   deleted_at: string | Date | null;
 }): z.infer<typeof moduleRowSchema> {
   const iso = (v: string | Date) => (v instanceof Date ? v.toISOString() : String(v));
+  // `fields` arrives as jsonb. Postgres returns it as a parsed array; coerce
+  // defensively for the (unlikely) string case.
+  const rawFields = typeof r.fields === "string" ? JSON.parse(r.fields) : r.fields;
+  const fields = Array.isArray(rawFields) ? (rawFields as ModuleField[]) : [];
   return {
     id: r.id,
     slug: r.slug,
@@ -77,6 +86,7 @@ function rowToModule(r: {
     html: r.html,
     css: r.css,
     js: r.js,
+    fields,
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
     deletedAt: r.deleted_at === null ? null : iso(r.deleted_at),
@@ -96,12 +106,12 @@ export const listModulesOp = defineOperation({
     const rows = (await tx.execute(
       input.includeDeleted
         ? sql`
-            SELECT id::text AS id, slug, display_name, html, css, js,
+            SELECT id::text AS id, slug, display_name, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules ORDER BY created_at ASC
           `
         : sql`
-            SELECT id::text AS id, slug, display_name, html, css, js,
+            SELECT id::text AS id, slug, display_name, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules WHERE deleted_at IS NULL ORDER BY created_at ASC
           `,
@@ -119,7 +129,7 @@ export const getModuleOp = defineOperation({
   output: z.object({ module: moduleRowSchema }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, display_name, html, css, js,
+      SELECT id::text AS id, slug, display_name, html, css, js, fields,
              created_at, updated_at, deleted_at
       FROM modules WHERE id = ${input.moduleId}::uuid LIMIT 1
     `)) as unknown as Parameters<typeof rowToModule>[0][];
@@ -160,8 +170,15 @@ export const createModuleOp = defineOperation({
       });
     }
     const rows = (await tx.execute(sql`
-      INSERT INTO modules (slug, display_name, html, css, js)
-      VALUES (${input.slug}, ${input.displayName}, ${input.html}, ${input.css}, ${input.js})
+      INSERT INTO modules (slug, display_name, html, css, js, fields)
+      VALUES (
+        ${input.slug},
+        ${input.displayName},
+        ${input.html},
+        ${input.css},
+        ${input.js},
+        ${JSON.stringify(input.fields)}::jsonb
+      )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const moduleId = rows[0]?.id;
@@ -220,11 +237,13 @@ export const updateModuleOp = defineOperation({
       });
     }
     // buildPatchSet ignores undefined keys and always appends updated_at = now().
+    // v0.4.0 — `fields` is jsonb; cast via SQL fragment.
     const sets = buildPatchSet({
       display_name: input.displayName,
       html: input.html,
       css: input.css,
       js: input.js,
+      fields: input.fields !== undefined ? sql`${JSON.stringify(input.fields)}::jsonb` : undefined,
     });
     await tx.execute(sql`
       UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid

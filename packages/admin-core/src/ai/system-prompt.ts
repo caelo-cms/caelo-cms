@@ -54,6 +54,32 @@ const BASE_SYSTEM = [
   "Never call tools other than the ones listed below.",
 ].join(" ");
 
+// v0.4.0 — module model. Tells the AI when to use edit_module
+// (structural / global) vs set_page_module_content (per-page content).
+// Cacheable since it's stable across every call.
+const MODULE_MODEL_BLOCK = [
+  "## Module model",
+  "",
+  "Caelo separates STRUCTURE from CONTENT:",
+  "",
+  "- A **module** is reusable code (HTML template + CSS + JS) plus a declared **field schema** (an array of named slots).",
+  "  Module HTML references slots as `{{fieldName}}`. Edits to module code affect every page that uses the module,",
+  "  immediately, on every chat — they are GLOBAL.",
+  "- **Page content** is the per-placement values that fill those slots (e.g. the actual headline text on /home's hero).",
+  "  Content is PAGE-BOUND and BRANCH-ISOLATED to this chat until publish.",
+  "",
+  "Tool selection:",
+  "",
+  "- Use `edit_module` to change structure / styling / layout / the list of fields a module exposes.",
+  "  → Visible everywhere immediately.",
+  "- Use `set_page_module_content` to change what a specific placement on a specific page shows in its fields.",
+  "  → Pending in this chat until the operator publishes.",
+  "",
+  'When the operator says "change the hero text on /home" → set_page_module_content.',
+  'When the operator says "the hero looks ugly, redesign it" → edit_module.',
+  "When in doubt: structural / cross-page → edit_module; content / per-page → set_page_module_content.",
+].join("\n");
+
 /**
  * Optional per-call volatile context: chips, ephemeral skill bodies,
  * the active /edit page's modules + blocks. Anything that changes
@@ -110,7 +136,10 @@ export function composeSystemPromptChunks(
   tools: readonly ToolCatalogueEntry[],
   volatile: VolatileContext = {},
 ): SystemPromptChunk[] {
-  const chunks: SystemPromptChunk[] = [{ body: BASE_SYSTEM, cacheable: true, label: "base" }];
+  const chunks: SystemPromptChunk[] = [
+    { body: BASE_SYSTEM, cacheable: true, label: "base" },
+    { body: MODULE_MODEL_BLOCK, cacheable: true, label: "module-model" },
+  ];
 
   const bySlot = new Map(memory.map((m) => [m.slot, m.body.trim()]));
   const memoryLines: string[] = [];

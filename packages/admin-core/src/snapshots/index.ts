@@ -9,6 +9,7 @@ export {
 export {
   loadModuleState,
   loadPageLayoutState,
+  loadPageModuleContentState,
   loadPageState,
   loadTemplateState,
 } from "./load.js";
@@ -36,6 +37,7 @@ export {
 export type {
   ModuleState,
   PageLayoutState,
+  PageModuleContentState,
   PageState,
   StateSchemaVersion,
   TemplateState,

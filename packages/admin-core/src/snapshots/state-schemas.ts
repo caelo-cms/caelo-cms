@@ -28,6 +28,10 @@ const moduleStateV1 = z
     html: z.string(),
     css: z.string(),
     js: z.string(),
+    /** v0.4.0 — field schema captured for restore. Defaults to [] for
+     *  snapshots written pre-v0.4.0 (post-truncate-only install — should
+     *  not happen in practice but safer than rejecting on parse). */
+    fields: z.array(z.unknown()).default([]),
     deletedAt: z.string().nullable(),
   })
   .strict();

@@ -551,10 +551,12 @@ export const countBranchChangesOp = defineOperation({
       pages: z.number().int().nonnegative(),
       templates: z.number().int().nonnegative(),
       pageLayouts: z.number().int().nonnegative(),
+      /** v0.4.0 — per-placement content edits on this branch. */
+      pageModuleContent: z.number().int().nonnegative(),
     }),
   }),
   handler: async (_ctx, input, tx) => {
-    // Single query, four sub-counts. Each kind dedupes by its
+    // Single query, five sub-counts. Each kind dedupes by its
     // entity column. site_snapshots scoped to the chat's branch.
     const rows = (await tx.execute(sql`
       WITH branch AS (
@@ -567,21 +569,30 @@ export const countBranchChangesOp = defineOperation({
         (SELECT COUNT(DISTINCT module_id)::int   FROM module_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch))   AS modules,
         (SELECT COUNT(DISTINCT page_id)::int     FROM page_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch))     AS pages,
         (SELECT COUNT(DISTINCT template_id)::int FROM template_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS templates,
-        (SELECT COUNT(DISTINCT page_id)::int     FROM page_layout_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_layouts
+        (SELECT COUNT(DISTINCT page_id)::int     FROM page_layout_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_layouts,
+        (SELECT COUNT(DISTINCT page_module_content_id)::int FROM page_module_content_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_module_content
     `)) as unknown as {
       modules: number;
       pages: number;
       templates: number;
       page_layouts: number;
+      page_module_content: number;
     }[];
-    const r = rows[0] ?? { modules: 0, pages: 0, templates: 0, page_layouts: 0 };
+    const r = rows[0] ?? {
+      modules: 0,
+      pages: 0,
+      templates: 0,
+      page_layouts: 0,
+      page_module_content: 0,
+    };
     return ok({
-      count: r.modules + r.pages + r.templates + r.page_layouts,
+      count: r.modules + r.pages + r.templates + r.page_layouts + r.page_module_content,
       byKind: {
         modules: r.modules,
         pages: r.pages,
         templates: r.templates,
         pageLayouts: r.page_layouts,
+        pageModuleContent: r.page_module_content,
       },
     });
   },

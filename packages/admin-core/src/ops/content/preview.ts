@@ -28,11 +28,6 @@ import {
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import {
-  parseAndUpgradeModuleState,
-  parseSnapshotState,
-  SnapshotSchemaError,
-} from "../../snapshots/index.js";
 
 interface ModuleSourceRow {
   block_name: string;
@@ -43,11 +38,60 @@ interface ModuleSourceRow {
   html: string;
   css: string;
   js: string;
+  /** v0.4.0 — module field schema (drives placeholder substitution). */
+  fields: unknown;
 }
 
-interface BranchSnapshotRow {
-  module_id: string;
-  state: unknown;
+/**
+ * v0.4.0 — Per-placement content row (live or branch-overlay).
+ */
+interface ContentSourceRow {
+  block_name: string;
+  position: number;
+  content_values: unknown;
+}
+
+/**
+ * v0.4.0 — Substitute `{{fieldName}}` placeholders in module HTML using
+ * the resolved content values for one placement. Missing keys fall back to
+ * the module field's `default` (then empty string).
+ *
+ * Only handles top-level fields; nested objects / arrays are surfaced as
+ * JSON-stringified text for visibility (rare in practice — `richtext` /
+ * `image` / `link` values are strings/objects depending on the kind, but
+ * stringification gives a non-empty default render).
+ */
+function substituteFields(
+  html: string,
+  fields: { name: string; default?: unknown }[],
+  contentValues: Record<string, unknown>,
+): string {
+  if (fields.length === 0) return html;
+  return html.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/gi, (full, name: string) => {
+    if (Object.hasOwn(contentValues, name)) {
+      const v = contentValues[name];
+      return v === null || v === undefined ? "" : String(v);
+    }
+    const field = fields.find((f) => f.name === name);
+    if (field && field.default !== undefined && field.default !== null) {
+      return String(field.default);
+    }
+    // Unknown / unresolved placeholder — leave the literal so the operator
+    // notices it visually. Pre-v1 fail-loud per CLAUDE.md §2.
+    return full;
+  });
+}
+
+function parseFields(raw: unknown): { name: string; default?: unknown }[] {
+  const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter((f): f is { name: string; default?: unknown } => {
+      return (
+        typeof f === "object" && f !== null && typeof (f as { name: unknown }).name === "string"
+      );
+    })
+    .map((f) => ({ name: f.name, default: (f as { default?: unknown }).default }));
 }
 
 export const renderPagePreviewOp = defineOperation({
@@ -131,57 +175,62 @@ export const renderPagePreviewOp = defineOperation({
              m.display_name AS display_name,
              m.html AS html,
              m.css AS css,
-             m.js AS js
+             m.js AS js,
+             m.fields AS fields
       FROM page_modules pm JOIN modules m ON m.id = pm.module_id
       WHERE pm.page_id = ${input.pageId}::uuid AND m.deleted_at IS NULL
       ORDER BY pm.block_name ASC, pm.position ASC
     `)) as unknown as ModuleSourceRow[];
 
-    // P6.7 — branch-aware overlay. For each module referenced by this
-    // page, look up the latest branch snapshot in the requested branch;
-    // if found, swap its state in for the live module row. Modules with
-    // no branch snapshot keep their live values.
-    const excludeSet = new Set(input.excludeBranchModules ?? []);
-    if (input.chatBranchId && modRows.length > 0) {
-      const branchRows = (await tx.execute(sql`
-        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-        FROM module_snapshots ms
-        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+    // v0.4.0 — module CODE is global. Per-chat branch overlay applies to
+    // page-placement CONTENT, not module code. Load live content rows
+    // first, then overlay branch snapshots for the active chat.
+    const contentRows = (await tx.execute(sql`
+      SELECT block_name, position, content_values
+      FROM page_module_content
+      WHERE page_id = ${input.pageId}::uuid
+    `)) as unknown as ContentSourceRow[];
+    const contentByKey = new Map<string, Record<string, unknown>>();
+    for (const r of contentRows) {
+      const raw =
+        typeof r.content_values === "string" ? JSON.parse(r.content_values) : r.content_values;
+      contentByKey.set(`${r.block_name}#${r.position}`, (raw ?? {}) as Record<string, unknown>);
+    }
+
+    if (input.chatBranchId) {
+      const branchContentRows = (await tx.execute(sql`
+        SELECT DISTINCT ON (pmcs.block_name, pmcs.position)
+               pmcs.block_name AS block_name,
+               pmcs.position AS position,
+               pmcs.state AS state
+        FROM page_module_content_snapshots pmcs
+        JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
         WHERE ss.chat_branch_id = ${input.chatBranchId}::uuid
-          AND ms.module_id::text IN (${sql.join(
-            modRows.map((r) => sql`${r.module_id}`),
-            sql`, `,
-          )})
-        ORDER BY ms.module_id, ss.created_at DESC
-      `)) as unknown as BranchSnapshotRow[];
-      const branchByModule = new Map<string, BranchSnapshotRow>();
-      for (const r of branchRows) branchByModule.set(r.module_id, r);
-      try {
-        for (const m of modRows) {
-          // P6.6b — skip the branch overlay for excluded modules so
-          // the right diff pane shows what the page would look like
-          // with this specific module's pending edit rolled back.
-          if (excludeSet.has(m.module_id)) continue;
-          const b = branchByModule.get(m.module_id);
-          if (!b) continue;
-          const state = parseAndUpgradeModuleState(parseSnapshotState(b.state));
-          if (state.deletedAt) continue; // soft-deleted in the branch
-          m.html = state.html;
-          m.css = state.css;
-          m.js = state.js;
-          m.display_name = state.displayName;
-          m.slug = state.slug;
+          AND pmcs.page_id = ${input.pageId}::uuid
+        ORDER BY pmcs.block_name, pmcs.position, ss.created_at DESC
+      `)) as unknown as {
+        block_name: string;
+        position: number;
+        state: unknown;
+      }[];
+      for (const r of branchContentRows) {
+        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+        const state = (raw ?? {}) as { contentValues?: Record<string, unknown> };
+        if (state.contentValues) {
+          contentByKey.set(
+            `${r.block_name}#${r.position}`,
+            state.contentValues as Record<string, unknown>,
+          );
         }
-      } catch (e) {
-        if (e instanceof SnapshotSchemaError) {
-          return err({
-            kind: "HandlerError",
-            operation: "pages.render_preview",
-            message: `branch snapshot schema mismatch: ${e.message}`,
-          });
-        }
-        throw e;
       }
+    }
+
+    // v0.4.0 — substitute {{fieldName}} placeholders in module HTML using
+    // resolved content (branch overlay → live row → module field default).
+    for (const m of modRows) {
+      const fields = parseFields(m.fields);
+      const contentValues = contentByKey.get(`${m.block_name}#${m.position}`) ?? {};
+      m.html = substituteFields(m.html, fields, contentValues);
     }
 
     const grouped = new Map<

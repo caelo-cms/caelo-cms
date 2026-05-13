@@ -38,6 +38,47 @@ const moduleHtml = z.string().max(MODULE_HTML_MAX, `html exceeds ${MODULE_HTML_M
 const moduleCss = z.string().max(MODULE_CSS_MAX, `css exceeds ${MODULE_CSS_MAX} bytes`);
 const moduleJs = z.string().max(MODULE_JS_MAX, `js exceeds ${MODULE_JS_MAX} bytes`);
 
+/**
+ * v0.4.0 — module field schema. Each field declares one substitution slot in
+ * the module's templated HTML (`{{fieldName}}`) and the kind of content it
+ * holds. Field values live on each page placement in `page_module_content`.
+ */
+export const MODULE_FIELD_KINDS = [
+  "text",
+  "richtext",
+  "url",
+  "image",
+  "number",
+  "boolean",
+  "link",
+] as const;
+export const moduleFieldSchema = z
+  .object({
+    /** Identifier referenced inside module HTML as `{{name}}`. */
+    name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/, "name must be snake_case"),
+    kind: z.enum(MODULE_FIELD_KINDS),
+    /** Human-readable label shown in the content editor. */
+    label: z.string().min(1).max(128),
+    /** Default value used when a placement has no override. */
+    default: z.unknown().optional(),
+  })
+  .strict();
+export type ModuleField = z.infer<typeof moduleFieldSchema>;
+
+const moduleFieldsArray = z
+  .array(moduleFieldSchema)
+  .max(64, "modules may declare at most 64 fields")
+  .superRefine((arr, ctx) => {
+    const seen = new Set<string>();
+    for (const f of arr) {
+      if (seen.has(f.name)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `duplicate field name: ${f.name}` });
+        return;
+      }
+      seen.add(f.name);
+    }
+  });
+
 export const moduleCreateSchema = z
   .object({
     slug: slugSchema,
@@ -45,6 +86,7 @@ export const moduleCreateSchema = z
     html: moduleHtml,
     css: moduleCss.default(""),
     js: moduleJs.default(""),
+    fields: moduleFieldsArray.default([]),
   })
   .strict();
 
@@ -55,6 +97,7 @@ export const moduleUpdateSchema = z
     html: moduleHtml.optional(),
     css: moduleCss.optional(),
     js: moduleJs.optional(),
+    fields: moduleFieldsArray.optional(),
   })
   .strict();
 

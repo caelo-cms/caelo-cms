@@ -9,6 +9,8 @@ export * from "./chat_sessions.js";
 export * from "./module_snapshots.js";
 export * from "./modules.js";
 export * from "./page_layout_snapshots.js";
+export * from "./page_module_content.js";
+export * from "./page_module_content_snapshots.js";
 export * from "./page_modules.js";
 export * from "./page_snapshots.js";
 export * from "./pages.js";

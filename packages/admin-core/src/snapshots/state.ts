@@ -20,7 +20,22 @@ export interface ModuleState {
   readonly html: string;
   readonly css: string;
   readonly js: string;
+  /** v0.4.0 — module field schema (captured for snapshot-restore). */
+  readonly fields: unknown[];
   readonly deletedAt: string | null;
+}
+
+/**
+ * v0.4.0 — Page-placement content state. One row per placement
+ * (page + block + position).
+ */
+export interface PageModuleContentState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly pageId: string;
+  readonly blockName: string;
+  readonly position: number;
+  readonly contentValues: Record<string, unknown>;
+  readonly version: number;
 }
 
 export interface TemplateState {

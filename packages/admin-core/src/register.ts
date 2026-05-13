@@ -59,6 +59,10 @@ import {
   updateModulesManyOp,
 } from "./ops/content/modules.js";
 import {
+  getPageModuleContentOp,
+  setPageModuleContentOp,
+} from "./ops/content/page-module-content.js";
+import {
   changeTemplateOp,
   createPageOp,
   deletePageOp,
@@ -454,6 +458,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createPageOp);
   registry.register(updatePageOp);
   registry.register(setPageModulesOp);
+  registry.register(getPageModuleContentOp);
+  registry.register(setPageModuleContentOp);
   registry.register(duplicatePageOp);
   registry.register(changeTemplateOp);
   registry.register(deletePageOp);

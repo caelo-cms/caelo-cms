@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * AI tool: edit_module. Writes one module's HTML/CSS/JS or display name.
- * The only mutation tool the AI gets in P5.
+ * AI tool: edit_module. Writes one module's HTML/CSS/JS, displayName, or
+ * field schema. Modules are the *structural* layer (CMS_REQUIREMENTS §3.1)
+ * — edits land on main immediately and propagate to every page using the
+ * module.
  *
- * Wraps `modules.update` so the existing P3 validation, audit logging,
- * and P4 snapshot emission all flow through unchanged. The handler
- * pushes ctx.chatBranchId into the call so the snapshot lands tagged
- * with the chat's branch — the publish step (P5 chat ops) then re-emits
- * those branch snapshots as main snapshots.
+ * v0.4.0 — module HTML is a TEMPLATE referencing fields as `{{name}}`.
+ * The per-page content that fills those placeholders lives on each page
+ * placement (see `set_page_module_content`). Use `edit_module` for code /
+ * styling / field-schema changes that should affect every page using the
+ * module. Use `set_page_module_content` to change what a specific page
+ * shows in those fields.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -20,13 +23,16 @@ export const editModuleTool: ToolDefinitionWithHandler<
 > = {
   name: "edit_module",
   description:
-    "Edit ONE module's HTML, CSS, JS, or displayName. Use when the operator wants to change a single module's body. " +
-    "Prefer `update_modules_many` when targeting > 1 module in the same request — saves tool-call rounds. " +
-    "DO NOT use for page-level edits (`update_pages_many` / `set_page_title` / `change_page_slug`) or " +
+    "Edit ONE module's structure: HTML template, CSS, JS, displayName, or field schema. " +
+    "v0.4.0 — module HTML is a TEMPLATE that references fields via `{{name}}` placeholders. " +
+    "Edits are GLOBAL and IMMEDIATE — they affect every page using this module, on every chat. " +
+    "Use this when changing structure, styling, layout, or the list of fields a module exposes. " +
+    "DO NOT use this to change what a specific page shows in a field — use `set_page_module_content` " +
+    "for that (page-bound + branch-isolated). " +
+    "Prefer `update_modules_many` when targeting > 1 module. " +
+    "DO NOT use for page metadata (`update_pages_many` / `set_page_title` / `change_page_slug`) or " +
     "template-level edits (`propose_update_template`).",
   schema: editModuleToolInput,
-  // Hand-aligned JSON Schema mirroring `editModuleToolInput`. Anthropic's
-  // tool-use API takes the schema verbatim from this map.
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -37,6 +43,24 @@ export const editModuleTool: ToolDefinitionWithHandler<
       html: { type: "string" },
       css: { type: "string" },
       js: { type: "string" },
+      fields: {
+        type: "array",
+        maxItems: 64,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name", "kind", "label"],
+          properties: {
+            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
+            kind: {
+              type: "string",
+              enum: ["text", "richtext", "url", "image", "number", "boolean", "link"],
+            },
+            label: { type: "string", minLength: 1, maxLength: 128 },
+            default: {},
+          },
+        },
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {

@@ -72,6 +72,7 @@ import { reorderModuleTool } from "./reorder-module.js";
 import { screenshotPageTool } from "./screenshot-page.js";
 import { setMediaAltTool } from "./set-media-alt.js";
 import { setNavMenuTool } from "./set-nav-menu.js";
+import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageSeoTool } from "./set-page-seo.js";
 import { setPageTitleTool } from "./set-page-title.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
@@ -93,6 +94,7 @@ import { updateThemeTool } from "./update-theme.js";
 export function createDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(editModuleTool);
+  registry.register(setPageModuleContentTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);

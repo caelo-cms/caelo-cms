@@ -75,12 +75,14 @@ export const publishChatSessionOp = defineOperation({
     // the branch for a future chat.publish call. Empty arrays are
     // collapsed to "no rows" so the SQL doesn't see an empty IN ().
     type Row = { entity_id: string; state: unknown };
-    const filterByKind = (kind: "module" | "template" | "page" | "pageLayout") =>
-      input.entities?.filter((e) => e.kind === kind).map((e) => e.entityId) ?? null;
+    const filterByKind = (
+      kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent",
+    ) => input.entities?.filter((e) => e.kind === kind).map((e) => e.entityId) ?? null;
     const wantModules = filterByKind("module");
     const wantTemplates = filterByKind("template");
     const wantPages = filterByKind("page");
     const wantLayouts = filterByKind("pageLayout");
+    const wantContent = filterByKind("pageModuleContent");
     const includeAll = input.entities === undefined;
 
     // For each entity kind, pull the latest branch snapshot per entity,
@@ -94,7 +96,9 @@ export const publishChatSessionOp = defineOperation({
             ids.map((id) => sql`${id}`),
             sql`, `,
           )})`;
-    const notYetPublished = (kind: "module" | "template" | "page" | "pageLayout") => sql`
+    const notYetPublished = (
+      kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent",
+    ) => sql`
       AND entity_id_text NOT IN (
         SELECT entity_id::text FROM chat_branch_publish_marks
         WHERE chat_branch_id = ${session.chat_branch_id}::uuid AND entity_kind = ${kind}
@@ -154,7 +158,34 @@ export const publishChatSessionOp = defineOperation({
       WHERE 1=1 ${notYetPublished("pageLayout")} ${inFilter(includeAll ? null : (wantLayouts ?? []))}
     `)) as unknown as Row[]);
 
-    const total = moduleRows.length + templateRows.length + pageRows.length + layoutRows.length;
+    // v0.4.0 — page_module_content snapshots ride the same branch-publish
+    // path. Each entity_id here is a `page_module_content.id`. The merge
+    // step below updates the live row in addition to re-emitting the
+    // snapshot, because content writes go to branch-only (live is not
+    // touched at write time when ctx.chatBranchId is set).
+    const contentRows =
+      !includeAll && (wantContent?.length ?? 0) === 0
+        ? []
+        : ((await tx.execute(sql`
+      SELECT entity_id, state FROM (
+        SELECT DISTINCT ON (pmcs.page_module_content_id)
+               pmcs.page_module_content_id::text AS entity_id,
+               pmcs.state,
+               pmcs.page_module_content_id::text AS entity_id_text
+        FROM page_module_content_snapshots pmcs
+        JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
+        WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+        ORDER BY pmcs.page_module_content_id, ss.created_at DESC
+      ) sub
+      WHERE 1=1 ${notYetPublished("pageModuleContent")} ${inFilter(includeAll ? null : (wantContent ?? []))}
+    `)) as unknown as Row[]);
+
+    const total =
+      moduleRows.length +
+      templateRows.length +
+      pageRows.length +
+      layoutRows.length +
+      contentRows.length;
     if (total === 0) {
       // Nothing happened in the branch — mark published anyway so the
       // session is closed; no merged snapshot.
@@ -205,6 +236,24 @@ export const publishChatSessionOp = defineOperation({
             state: parseAndUpgradePageLayoutState(parseSnapshotState(r.state)),
           }),
         ),
+        // v0.4.0 — page_module_content. We trust the branch-snapshot
+        // state shape here (written by our own op a moment ago); no
+        // upgrade step needed since v0.4.0 is the initial version.
+        ...contentRows.map((r): SnapshotEntity => {
+          const raw = parseSnapshotState(r.state) as {
+            schemaVersion: 1;
+            pageId: string;
+            blockName: string;
+            position: number;
+            contentValues: Record<string, unknown>;
+            version: number;
+          };
+          return {
+            kind: "pageModuleContent",
+            entityId: r.entity_id,
+            state: raw,
+          };
+        }),
       ];
     } catch (e) {
       if (e instanceof SnapshotSchemaError) {
@@ -225,6 +274,24 @@ export const publishChatSessionOp = defineOperation({
         : `chat.publish (partial) title=${session.title} entities=${total}`,
       entities,
     });
+
+    // v0.4.0 — page_module_content writes go to branch-only at
+    // chat-time; publish must promote them into the live table here.
+    // Other kinds (module/template/page/pageLayout) already wrote live
+    // at chat-time (pre-v0.4.0 behavior unchanged) so they don't need
+    // a re-write step.
+    for (const e of entities) {
+      if (e.kind === "pageModuleContent") {
+        const valuesJson = JSON.stringify(e.state.contentValues);
+        await tx.execute(sql`
+          UPDATE page_module_content
+          SET content_values = ${valuesJson}::jsonb,
+              version = version + 1,
+              updated_at = now()
+          WHERE id = ${e.entityId}::uuid
+        `);
+      }
+    }
 
     // Mark every published entity so subsequent publishes (with no filter)
     // skip them — partial publish would otherwise re-pick already-shipped

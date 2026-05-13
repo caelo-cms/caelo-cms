@@ -20,7 +20,7 @@ export async function loadModuleState(
   moduleId: string,
 ): Promise<ModuleState | null> {
   const rows = (await tx.execute(sql`
-    SELECT slug, display_name, html, css, js, deleted_at
+    SELECT slug, display_name, html, css, js, fields, deleted_at
     FROM modules WHERE id = ${moduleId}::uuid LIMIT 1
   `)) as unknown as {
     slug: string;
@@ -28,10 +28,12 @@ export async function loadModuleState(
     html: string;
     css: string;
     js: string;
+    fields: unknown;
     deleted_at: string | Date | null;
   }[];
   const r = rows[0];
   if (!r) return null;
+  const rawFields = typeof r.fields === "string" ? JSON.parse(r.fields) : r.fields;
   return {
     schemaVersion: 1,
     slug: r.slug,
@@ -39,7 +41,48 @@ export async function loadModuleState(
     html: r.html,
     css: r.css,
     js: r.js,
+    fields: Array.isArray(rawFields) ? (rawFields as unknown[]) : [],
     deletedAt: iso(r.deleted_at),
+  };
+}
+
+/**
+ * v0.4.0 — Load page_module_content current state for snapshot emission.
+ */
+export async function loadPageModuleContentState(
+  tx: TransactionRunner,
+  pageModuleContentId: string,
+): Promise<{
+  schemaVersion: 1;
+  pageId: string;
+  blockName: string;
+  position: number;
+  contentValues: Record<string, unknown>;
+  version: number;
+} | null> {
+  const rows = (await tx.execute(sql`
+    SELECT page_id::text AS page_id, block_name, position, content_values, version
+    FROM page_module_content
+    WHERE id = ${pageModuleContentId}::uuid
+    LIMIT 1
+  `)) as unknown as {
+    page_id: string;
+    block_name: string;
+    position: number;
+    content_values: unknown;
+    version: number | string;
+  }[];
+  const r = rows[0];
+  if (!r) return null;
+  const raw =
+    typeof r.content_values === "string" ? JSON.parse(r.content_values) : r.content_values;
+  return {
+    schemaVersion: 1,
+    pageId: r.page_id,
+    blockName: r.block_name,
+    position: r.position,
+    contentValues: (raw ?? {}) as Record<string, unknown>,
+    version: typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version,
   };
 }
 

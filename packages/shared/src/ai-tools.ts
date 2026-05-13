@@ -21,8 +21,43 @@ export const editModuleToolInput = z
     html: z.string().max(MODULE_HTML_MAX).optional(),
     css: z.string().max(MODULE_CSS_MAX).optional(),
     js: z.string().max(MODULE_JS_MAX).optional(),
+    /**
+     * v0.4.0 — module field schema. Each field declares one substitution
+     * slot referenced in the module HTML as `{{name}}`. Page placements
+     * fill these via `set_page_module_content`. Optional on edits — pass
+     * to replace the declared schema.
+     */
+    fields: z
+      .array(
+        z
+          .object({
+            name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+            kind: z.enum(["text", "richtext", "url", "image", "number", "boolean", "link"]),
+            label: z.string().min(1).max(128),
+            default: z.unknown().optional(),
+          })
+          .strict(),
+      )
+      .max(64)
+      .optional(),
   })
   .strict();
+
+/**
+ * v0.4.0 — `set_page_module_content` AI tool. Fills the content values for
+ * a module placement on a specific page. Page-bound + branch-isolated per
+ * chat until publish (unlike `edit_module` which is global + immediate).
+ */
+export const setPageModuleContentToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    blockName: z.string().min(1).max(64),
+    position: z.number().int().nonnegative(),
+    /** Map of module field name → value. Fully replaces existing values. */
+    contentValues: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+export type SetPageModuleContentToolInput = z.infer<typeof setPageModuleContentToolInput>;
 
 export const siteMemoryProposeToolInput = z
   .object({
@@ -185,7 +220,7 @@ export const chatPublishInput = z
       .array(
         z
           .object({
-            kind: z.enum(["module", "template", "page", "pageLayout"]),
+            kind: z.enum(["module", "template", "page", "pageLayout", "pageModuleContent"]),
             entityId: z.string().uuid(),
           })
           .strict(),

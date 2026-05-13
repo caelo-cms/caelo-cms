@@ -16,7 +16,13 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
-import type { ModuleState, PageLayoutState, PageState, TemplateState } from "./state.js";
+import type {
+  ModuleState,
+  PageLayoutState,
+  PageModuleContentState,
+  PageState,
+  TemplateState,
+} from "./state.js";
 
 /**
  * Catalog of write kinds that can produce a snapshot. Mirrors the Postgres
@@ -39,13 +45,24 @@ export type SnapshotOpKind =
   | "snapshots.revert_template"
   | "snapshots.revert_page"
   | "chat.publish"
-  | "layout_modules.set";
+  | "layout_modules.set"
+  // v0.4.0 — page-placement content + globals revert kinds.
+  | "page_module_content.set"
+  | "structured_sets.set"
+  | "redirects.create"
+  | "redirects.update"
+  | "redirects.delete";
 
 export type SnapshotEntity =
   | { readonly kind: "module"; readonly entityId: string; readonly state: ModuleState }
   | { readonly kind: "template"; readonly entityId: string; readonly state: TemplateState }
   | { readonly kind: "page"; readonly entityId: string; readonly state: PageState }
-  | { readonly kind: "pageLayout"; readonly entityId: string; readonly state: PageLayoutState };
+  | { readonly kind: "pageLayout"; readonly entityId: string; readonly state: PageLayoutState }
+  | {
+      readonly kind: "pageModuleContent";
+      readonly entityId: string;
+      readonly state: PageModuleContentState;
+    };
 
 export interface SnapshotInput {
   readonly actorId: string;
@@ -108,6 +125,20 @@ export async function emitSnapshot(
         await tx.execute(sql`
           INSERT INTO page_layout_snapshots (site_snapshot_id, page_id, state)
           VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${stateJson}::jsonb)
+        `);
+        break;
+      case "pageModuleContent":
+        await tx.execute(sql`
+          INSERT INTO page_module_content_snapshots
+            (site_snapshot_id, page_module_content_id, page_id, block_name, position, state)
+          VALUES (
+            ${siteSnapshotId}::uuid,
+            ${entity.entityId}::uuid,
+            ${entity.state.pageId}::uuid,
+            ${entity.state.blockName},
+            ${entity.state.position},
+            ${stateJson}::jsonb
+          )
         `);
         break;
     }
