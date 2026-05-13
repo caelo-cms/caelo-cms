@@ -21,6 +21,7 @@ coverage/
 .vscode/
 !.vscode/settings.json
 !.vscode/extensions.json
+.claude/
 
 # Phase 6 static-gen output (per-target dist trees)
 apps/admin/output/
