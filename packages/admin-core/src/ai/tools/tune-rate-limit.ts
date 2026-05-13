@@ -57,7 +57,9 @@ export const tuneRateLimitTool: ToolDefinitionWithHandler<TuneRateLimitInput> = 
     const v = r.value as { proposalId: string };
     return {
       ok: true,
-      content: `Queued proposal ${v.proposalId} for ${input.pluginSlug}.${input.operation} = ${input.proposedMax}/${input.proposedWindowSec}s. Tell the user to review at /security/gateway/pending.`,
+      // v0.5.11 — canonical "Queued proposal <uuid>: <summary>." shape
+      // so ProposeCard renders inline Approve / Reject.
+      content: `Queued proposal ${v.proposalId}: rate-limit ${input.pluginSlug}.${input.operation} = ${input.proposedMax}/${input.proposedWindowSec}s. An Owner must click Approve at /security/gateway/pending to apply.`,
     };
   },
 };

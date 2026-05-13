@@ -63,11 +63,16 @@ export const createLayoutTool: ToolDefinitionWithHandler<
       return { ok: false, content: `layouts.propose_create failed: ${describeError(res.error)}` };
     }
     const v = res.value as { proposalId: string; preview: { blockCount: number } };
+    // v0.5.11 — canonical "Queued proposal <uuid>: <summary>." shape so
+    // ChatPanel's ProposeCard parses + renders inline Approve / Reject
+    // buttons. Pre-v0.5.11 this used "Queued layout-create proposal <id>
+    // (slug=..." which didn't match the ProposeCard regex; the result
+    // landed in the plain-markdown fallback with no inline action.
     return {
       ok: true,
       content:
-        `Queued layout-create proposal ${v.proposalId} (slug=${input.slug}, ${v.preview.blockCount} blocks). ` +
-        `An Owner must click Approve at /security/layouts/pending to create the layout.`,
+        `Queued proposal ${v.proposalId}: layout-create slug=${input.slug} (${v.preview.blockCount} blocks). ` +
+        `An Owner must click Approve at /security/layouts/pending to apply.`,
     };
   },
 };

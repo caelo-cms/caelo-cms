@@ -49,7 +49,8 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
     const v = r.value as { runId: string };
     return {
       ok: true,
-      content: `Queued import proposal ${v.runId} for ${input.sourceUrl} (depth=${input.depth ?? 2}, max=${input.maxPages ?? 50}). Tell the user to review at /security/import/pending.`,
+      // v0.5.11 — canonical shape so ProposeCard renders inline approve.
+      content: `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (depth=${input.depth ?? 2}, max=${input.maxPages ?? 50}). An Owner must click Approve at /security/import/pending to apply.`,
     };
   },
 };

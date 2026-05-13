@@ -940,9 +940,17 @@
               // tool succeeds (new row queued) OR when an
               // execute_proposal succeeds (row marked applied → drops
               // out of the strip's filter).
+              // v0.5.11 — also refresh when the tool's content matches
+              // the canonical "Queued proposal <uuid>:" shape. Catches
+              // propose-style tools that don't carry the propose_ name
+              // prefix (create_layout, tune_rate_limit, bootstrap-site).
+              const resultContent = String(ev["content"] ?? "");
+              const isProposeShaped = /^Queued proposal [0-9a-f-]{36}:/.test(resultContent);
               if (
                 okFlag &&
-                (name.startsWith("propose_") || name.endsWith(".execute_proposal"))
+                (name.startsWith("propose_") ||
+                  name.endsWith(".execute_proposal") ||
+                  isProposeShaped)
               ) {
                 void loadPendingProposals();
               }

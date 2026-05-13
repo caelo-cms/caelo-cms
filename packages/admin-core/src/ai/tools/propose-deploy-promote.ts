@@ -60,8 +60,11 @@ export const proposeDeployPromoteTool: ToolDefinitionWithHandler<Input> = {
     };
     return {
       ok: true,
+      // v0.5.11 — canonical "Queued proposal <uuid>: <summary>." prefix
+      // (pre-v0.5.11 was "Queued promote proposal" — same data, but the
+      // non-canonical prefix made the ProposeCard regex miss it).
       content:
-        `Queued promote proposal ${v.proposalId}: ${input.fromTarget} → ${input.toTarget} ` +
+        `Queued proposal ${v.proposalId}: promote ${input.fromTarget} → ${input.toTarget} ` +
         `(build=${v.preview.sourceBuildId}, pages=${v.preview.pageCount}, files=${v.preview.fileCount}). ` +
         `An Owner must click Approve at /security/deployments/pending to apply.`,
     };
@@ -108,8 +111,9 @@ export const proposeDeployRollbackTool: ToolDefinitionWithHandler<RollbackInput>
     };
     return {
       ok: true,
+      // v0.5.11 — canonical shape for ProposeCard parser.
       content:
-        `Queued rollback proposal ${v.proposalId}: ${input.target} ` +
+        `Queued proposal ${v.proposalId}: rollback ${input.target} ` +
         `(${v.preview.currentBuildId} → ${v.preview.restoreBuildId}). ` +
         `An Owner must click Approve at /security/deployments/pending to apply.`,
     };

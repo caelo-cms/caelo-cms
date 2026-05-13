@@ -41,7 +41,15 @@
 
   // Domain-prefix bucketing for the propose tools (25 of them across
   // 13 domains; one card handles all).
-  const isPropose = $derived(name.startsWith("propose_"));
+  // v0.5.11 — content-based predicate. The previous name.startsWith
+  // ("propose_") check missed tools that route through a propose
+  // pipeline but don't carry the prefix (create_layout, tune_rate_limit,
+  // bootstrap-site's create_layout call). With v0.5.11 every propose-
+  // style tool emits the canonical "Queued proposal <uuid>: …" content
+  // shape; matching that prefix routes them all uniformly.
+  const isPropose = $derived(
+    name.startsWith("propose_") || /^Queued proposal [0-9a-f-]{36}:/.test(content),
+  );
   const isBulk = $derived(
     name === "bulk_create_redirects" ||
       name === "bulk_delete_redirects" ||
