@@ -62,12 +62,13 @@ afterAll(async () => {
 
 describe("structured_sets branched writes (v0.5.3)", () => {
   it("branched theme write skips live items + lands a branched snapshot; publish merges", async () => {
-    // Seed the theme set in main with one token.
+    // Seed the theme set in main with one token. Theme items use
+    // {token,value} (token is lowercase kebab-case, no leading --).
     const seed = await execute(registry, adapter, HUMAN, "structured_sets.set", {
       kind: "theme",
       slug: SET_SLUG,
       displayName: "Test Theme",
-      items: [{ name: "--bg", value: "#fff" }],
+      items: [{ token: "bg", value: "#fff" }],
     });
     if (!seed.ok) throw new Error("seed");
     const setId = (seed.value as { setId: string }).setId;
@@ -93,7 +94,7 @@ describe("structured_sets branched writes (v0.5.3)", () => {
       kind: "theme",
       slug: SET_SLUG,
       displayName: "Test Theme",
-      items: [{ name: "--bg", value: "#000" }],
+      items: [{ token: "bg", value: "#000" }],
     });
     expect(branchedWrite.ok).toBe(true);
 
