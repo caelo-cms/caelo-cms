@@ -209,6 +209,32 @@ export const listPendingChangesOp = defineOperation({
        AND marks.entity_id::text = l.entity_id
     `)) as unknown as Row[];
 
+    // v0.5.3 — structured_set snapshots. Theme kind goes in `globals`;
+    // ordered-list kinds (nav-menu / taxonomy / link-list) go in `lists`.
+    const structuredSetRows = (await tx.execute(sql`
+      WITH latest AS (
+        SELECT DISTINCT ON (sss.structured_set_id)
+          sss.structured_set_id::text AS entity_id,
+          sss.state
+        FROM structured_set_snapshots sss
+        JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
+        WHERE ss.chat_branch_id = ${branchId}::uuid
+        ORDER BY sss.structured_set_id, ss.created_at DESC
+      )
+      SELECT
+        l.entity_id,
+        ss.display_name AS label,
+        (ss.kind || '/' || ss.slug) AS detail,
+        ss.kind AS kind,
+        COALESCE(marks.stage_state, 'pending') AS stage_state
+      FROM latest l
+      LEFT JOIN structured_sets ss ON ss.id::text = l.entity_id
+      LEFT JOIN chat_branch_publish_marks marks
+        ON marks.chat_branch_id = ${branchId}::uuid
+       AND marks.entity_kind = 'structuredSet'
+       AND marks.entity_id::text = l.entity_id
+    `)) as unknown as (Row & { kind: string })[];
+
     function bucketize(
       rows: Row[],
       kind: EntityRef["kind"],
@@ -235,16 +261,37 @@ export const listPendingChangesOp = defineOperation({
     const modules = bucketize(moduleRows, "module");
     const templates = bucketize(templateRows, "template");
 
+    // v0.5.3 — structured_set rows split between globals (theme) and
+    // lists (nav-menu / taxonomy / link-list) based on `kind`.
+    const ssPendingGlobals: EntityRef[] = [];
+    const ssPendingLists: EntityRef[] = [];
+    const ssStagedGlobals: EntityRef[] = [];
+    const ssStagedLists: EntityRef[] = [];
+    for (const r of structuredSetRows) {
+      const ref: EntityRef = {
+        kind: "structuredSet",
+        entityId: r.entity_id,
+        label: r.label ?? r.entity_id,
+        ...(r.detail ? { detail: r.detail } : {}),
+      };
+      const isList = r.kind === "nav-menu" || r.kind === "taxonomy" || r.kind === "link-list";
+      if (r.stage_state === "staged") {
+        (isList ? ssStagedLists : ssStagedGlobals).push(ref);
+      } else if (r.stage_state === "pending") {
+        (isList ? ssPendingLists : ssPendingGlobals).push(ref);
+      }
+    }
+
     return ok({
       pending: {
         pages: [...content.pending, ...pages.pending, ...layouts.pending],
-        globals: [...modules.pending, ...templates.pending],
-        lists: [], // v0.5.0: list-op granularity deferred to v0.5.1
+        globals: [...modules.pending, ...templates.pending, ...ssPendingGlobals],
+        lists: ssPendingLists,
       },
       staged: {
         pages: [...content.staged, ...pages.staged, ...layouts.staged],
-        globals: [...modules.staged, ...templates.staged],
-        lists: [],
+        globals: [...modules.staged, ...templates.staged, ...ssStagedGlobals],
+        lists: ssStagedLists,
       },
     });
   },
@@ -321,6 +368,8 @@ export const stageChatChangesOp = defineOperation({
               return "page_layout_snapshots";
             case "pageModuleContent":
               return "page_module_content_snapshots";
+            case "structuredSet":
+              return "structured_set_snapshots";
             default:
               return null;
           }
@@ -338,6 +387,8 @@ export const stageChatChangesOp = defineOperation({
               return "page_id";
             case "pageModuleContent":
               return "page_module_content_id";
+            case "structuredSet":
+              return "structured_set_id";
             default:
               return "id";
           }
@@ -419,6 +470,18 @@ export const stageChatChangesOp = defineOperation({
           WHERE ss.chat_branch_id = ${branchId}::uuid
           ORDER BY pmcs.page_module_content_id, ss.created_at DESC
         ) c
+        UNION ALL
+        SELECT entity_id, entity_kind, site_snapshot_id FROM (
+          SELECT DISTINCT ON (sss.structured_set_id)
+            sss.structured_set_id::text AS entity_id,
+            'structuredSet'::text AS entity_kind,
+            sss.site_snapshot_id::text AS site_snapshot_id,
+            ss.created_at
+          FROM structured_set_snapshots sss
+          JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
+          WHERE ss.chat_branch_id = ${branchId}::uuid
+          ORDER BY sss.structured_set_id, ss.created_at DESC
+        ) s
       `)) as unknown as { entity_id: string; entity_kind: string; site_snapshot_id: string }[];
       for (const row of allLatest) {
         picks.push({

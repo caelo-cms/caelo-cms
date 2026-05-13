@@ -167,7 +167,7 @@ export const renderPagePreviewOp = defineOperation({
       });
     }
 
-    const modRows = (await tx.execute(sql`
+    let modRows = (await tx.execute(sql`
       SELECT pm.block_name AS block_name,
              pm.position AS position,
              m.id::text AS module_id,
@@ -181,6 +181,58 @@ export const renderPagePreviewOp = defineOperation({
       WHERE pm.page_id = ${input.pageId}::uuid AND m.deleted_at IS NULL
       ORDER BY pm.block_name ASC, pm.position ASC
     `)) as unknown as ModuleSourceRow[];
+
+    // v0.5.3 — page layout overlay: when the caller's chat has a
+    // branched page_layout_snapshot for this page, replace the live
+    // page_modules ordering with the snapshot's blocks/moduleIds.
+    // Module rows (html/css/js) still join from `modules`; the module
+    // overlay below applies branched module CODE on top.
+    if (input.chatBranchId) {
+      const layoutSnap = (await tx.execute(sql`
+        SELECT state FROM page_layout_snapshots pls
+        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+        WHERE pls.page_id = ${input.pageId}::uuid
+          AND ss.chat_branch_id = ${input.chatBranchId}::uuid
+        ORDER BY ss.created_at DESC
+        LIMIT 1
+      `)) as unknown as { state: unknown }[];
+      const raw = layoutSnap[0]?.state;
+      if (raw) {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const blocks = (parsed as { blocks?: { blockName: string; moduleIds: string[] }[] }).blocks;
+        if (Array.isArray(blocks)) {
+          const moduleIds = [...new Set(blocks.flatMap((b) => b.moduleIds))];
+          if (moduleIds.length === 0) {
+            modRows = [];
+          } else {
+            const byId = new Map<string, ModuleSourceRow>();
+            const fetched = (await tx.execute(sql`
+              SELECT m.id::text AS module_id, m.slug AS slug, m.display_name AS display_name,
+                     m.html AS html, m.css AS css, m.js AS js, m.fields AS fields
+              FROM modules m
+              WHERE m.id IN (${sql.join(
+                moduleIds.map((id) => sql`${id}::uuid`),
+                sql`, `,
+              )}) AND m.deleted_at IS NULL
+            `)) as unknown as Omit<ModuleSourceRow, "block_name" | "position">[];
+            for (const m of fetched) {
+              byId.set(m.module_id, { ...m, block_name: "", position: 0 });
+            }
+            const replaced: ModuleSourceRow[] = [];
+            for (const b of blocks) {
+              let pos = 0;
+              for (const mid of b.moduleIds) {
+                const m = byId.get(mid);
+                if (!m) continue;
+                replaced.push({ ...m, block_name: b.blockName, position: pos });
+                pos += 1;
+              }
+            }
+            modRows = replaced;
+          }
+        }
+      }
+    }
 
     // v0.5.1 — module code overlay: apply staged + caller-branch snapshots
     // on top of the live `modules` row. Order:
@@ -375,6 +427,55 @@ export const renderPagePreviewOp = defineOperation({
         byKindSlug[`${r.kind}/${r.slug}`] = JSON.parse(r.items) as unknown[];
       } catch {
         // ignore malformed rows
+      }
+    }
+
+    // v0.5.3 — structured_set overlay. Same shape as the module overlay:
+    //   main → all-staged-overlay → caller's-branch-overlay
+    // Theme stays whole-blob (replaces items[]); list kinds also overlay
+    // whole-blob here — per-item granularity in structured_set_operations
+    // is the picker's concern, not the renderer's.
+    if (setRows.length > 0) {
+      const overlayBySetId = new Map<string, { kind: string; slug: string; items: unknown[] }>();
+      const stagedSets = (await tx.execute(sql`
+        SELECT DISTINCT ON (sss.structured_set_id)
+          sss.structured_set_id::text AS set_id, sss.state
+        FROM structured_set_snapshots sss
+        JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
+        JOIN chat_branch_publish_marks m
+          ON m.chat_branch_id = ss.chat_branch_id
+         AND m.entity_kind = 'structuredSet'
+         AND m.entity_id = sss.structured_set_id
+         AND m.stage_state = 'staged'
+        ${input.chatBranchId ? sql`WHERE ss.chat_branch_id <> ${input.chatBranchId}::uuid` : sql``}
+        ORDER BY sss.structured_set_id, ss.created_at DESC
+      `)) as unknown as { set_id: string; state: unknown }[];
+      for (const r of stagedSets) {
+        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+        const s = raw as { kind?: string; slug?: string; items?: unknown[] };
+        if (s.kind && s.slug && Array.isArray(s.items)) {
+          overlayBySetId.set(r.set_id, { kind: s.kind, slug: s.slug, items: s.items });
+        }
+      }
+      if (input.chatBranchId) {
+        const branchSets = (await tx.execute(sql`
+          SELECT DISTINCT ON (sss.structured_set_id)
+            sss.structured_set_id::text AS set_id, sss.state
+          FROM structured_set_snapshots sss
+          JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
+          WHERE ss.chat_branch_id = ${input.chatBranchId}::uuid
+          ORDER BY sss.structured_set_id, ss.created_at DESC
+        `)) as unknown as { set_id: string; state: unknown }[];
+        for (const r of branchSets) {
+          const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+          const s = raw as { kind?: string; slug?: string; items?: unknown[] };
+          if (s.kind && s.slug && Array.isArray(s.items)) {
+            overlayBySetId.set(r.set_id, { kind: s.kind, slug: s.slug, items: s.items });
+          }
+        }
+      }
+      for (const { kind, slug, items } of overlayBySetId.values()) {
+        byKindSlug[`${kind}/${slug}`] = items;
       }
     }
 

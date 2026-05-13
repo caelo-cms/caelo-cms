@@ -77,13 +77,14 @@ export const publishChatSessionOp = defineOperation({
     // collapsed to "no rows" so the SQL doesn't see an empty IN ().
     type Row = { entity_id: string; state: unknown };
     const filterByKind = (
-      kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent",
+      kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent" | "structuredSet",
     ) => input.entities?.filter((e) => e.kind === kind).map((e) => e.entityId) ?? null;
     const wantModules = filterByKind("module");
     const wantTemplates = filterByKind("template");
     const wantPages = filterByKind("page");
     const wantLayouts = filterByKind("pageLayout");
     const wantContent = filterByKind("pageModuleContent");
+    const wantStructuredSets = filterByKind("structuredSet");
     const includeAll = input.entities === undefined;
 
     // For each entity kind, pull the latest branch snapshot per entity,
@@ -102,7 +103,7 @@ export const publishChatSessionOp = defineOperation({
     // means "snapshot exists but operator hasn't clicked Stage yet" — those
     // stay on the branch for the next publish.
     const notYetPublished = (
-      kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent",
+      kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent" | "structuredSet",
     ) => sql`
       AND entity_id_text NOT IN (
         SELECT entity_id::text FROM chat_branch_publish_marks
@@ -130,7 +131,7 @@ export const publishChatSessionOp = defineOperation({
     `)) as unknown as { n: number }[];
     const hasStagedMarks = (stagedCountRows[0]?.n ?? 0) > 0;
     const stageFilter = (
-      kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent",
+      kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent" | "structuredSet",
     ) =>
       includeAll && hasStagedMarks
         ? sql`
@@ -218,12 +219,32 @@ export const publishChatSessionOp = defineOperation({
       WHERE 1=1 ${notYetPublished("pageModuleContent")} ${stageFilter("pageModuleContent")} ${inFilter(includeAll ? null : (wantContent ?? []))}
     `)) as unknown as Row[]);
 
+    // v0.5.3 — structured_set snapshots. Live `items` were NOT updated at
+    // chat-time when ctx.chatBranchId was set; publish promotes them here.
+    const structuredSetRows =
+      !includeAll && (wantStructuredSets?.length ?? 0) === 0
+        ? []
+        : ((await tx.execute(sql`
+      SELECT entity_id, state FROM (
+        SELECT DISTINCT ON (sss.structured_set_id)
+               sss.structured_set_id::text AS entity_id,
+               sss.state,
+               sss.structured_set_id::text AS entity_id_text
+        FROM structured_set_snapshots sss
+        JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
+        WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+        ORDER BY sss.structured_set_id, ss.created_at DESC
+      ) sub
+      WHERE 1=1 ${notYetPublished("structuredSet")} ${stageFilter("structuredSet")} ${inFilter(includeAll ? null : (wantStructuredSets ?? []))}
+    `)) as unknown as Row[]);
+
     const total =
       moduleRows.length +
       templateRows.length +
       pageRows.length +
       layoutRows.length +
-      contentRows.length;
+      contentRows.length +
+      structuredSetRows.length;
     if (total === 0) {
       // Nothing happened in the branch — mark published anyway so the
       // session is closed; no merged snapshot.
@@ -292,6 +313,23 @@ export const publishChatSessionOp = defineOperation({
             state: raw,
           };
         }),
+        // v0.5.3 — structuredSet whole-blob state. Trust the branch
+        // snapshot shape (written by our own op); no upgrade step.
+        ...structuredSetRows.map((r): SnapshotEntity => {
+          const raw = parseSnapshotState(r.state) as {
+            schemaVersion: 1;
+            kind: string;
+            slug: string;
+            displayName: string;
+            items: readonly unknown[];
+            deletedAt: string | null;
+          };
+          return {
+            kind: "structuredSet",
+            entityId: r.entity_id,
+            state: raw,
+          };
+        }),
       ];
     } catch (e) {
       if (e instanceof SnapshotSchemaError) {
@@ -325,6 +363,65 @@ export const publishChatSessionOp = defineOperation({
           UPDATE page_module_content
           SET content_values = ${valuesJson}::jsonb,
               version = version + 1,
+              updated_at = now()
+          WHERE id = ${e.entityId}::uuid
+        `);
+      } else if (e.kind === "structuredSet") {
+        // v0.5.3 — live items[] were left untouched at chat-time. Promote
+        // the staged whole-blob into live now.
+        const itemsJson = JSON.stringify(e.state.items);
+        await tx.execute(sql`
+          UPDATE structured_sets
+          SET items = ${itemsJson}::text::jsonb,
+              display_name = ${e.state.displayName},
+              updated_at = now(),
+              updated_by = ${ctx.actorId}::uuid
+          WHERE id = ${e.entityId}::uuid
+        `);
+      } else if (e.kind === "page") {
+        // v0.5.3 — branched pages.update/delete skipped the live UPDATE.
+        // Promote branched state into live now. deletedAt → soft-delete.
+        await tx.execute(sql`
+          UPDATE pages
+          SET slug = ${e.state.slug},
+              title = ${e.state.title},
+              template_id = ${e.state.templateId}::uuid,
+              status = ${e.state.status},
+              deleted_at = ${e.state.deletedAt ? sql`now()` : sql`NULL`},
+              version = version + 1,
+              updated_at = now()
+          WHERE id = ${e.entityId}::uuid
+        `);
+      } else if (e.kind === "pageLayout") {
+        // v0.5.3 — branched pages.set_modules skipped the page_modules
+        // rewrite. Replay it now from the staged blocks.
+        await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${e.entityId}::uuid`);
+        for (const b of e.state.blocks) {
+          let pos = 0;
+          for (const mid of b.moduleIds) {
+            await tx.execute(sql`
+              INSERT INTO page_modules (page_id, block_name, position, module_id)
+              VALUES (${e.entityId}::uuid, ${b.blockName}, ${pos}, ${mid}::uuid)
+            `);
+            pos += 1;
+          }
+        }
+        await tx.execute(sql`
+          UPDATE pages SET updated_at = now(), version = version + 1
+          WHERE id = ${e.entityId}::uuid
+        `);
+      } else if (e.kind === "module") {
+        // v0.5.1 — branched modules.update/delete skipped the live row.
+        // Promote here.
+        await tx.execute(sql`
+          UPDATE modules
+          SET slug = ${e.state.slug},
+              display_name = ${e.state.displayName},
+              html = ${e.state.html},
+              css = ${e.state.css},
+              js = ${e.state.js},
+              fields = ${JSON.stringify(e.state.fields)}::text::jsonb,
+              deleted_at = ${e.state.deletedAt ? sql`now()` : sql`NULL`},
               updated_at = now()
           WHERE id = ${e.entityId}::uuid
         `);

@@ -321,6 +321,18 @@ export const deleteRedirectsManyOp = defineOperation({
   handler: async (ctx, input, tx) => {
     let deleted = 0;
     if (input.redirectIds) {
+      // v0.5.3 — per-id lock for chat-driven bulk deletes. Mirrors
+      // redirects.delete (which already locks).
+      for (const id of input.redirectIds) {
+        const lock = await checkAndAcquireEntityLock(tx, {
+          kind: "redirect",
+          entityId: id,
+          chatBranchId: ctx.chatBranchId,
+        });
+        if (!lock.permitted && lock.holder) {
+          return err(lockedError("redirects.delete_many", "redirect", id, lock.holder));
+        }
+      }
       for (const id of input.redirectIds) {
         const r = (await tx.execute(sql`
           DELETE FROM redirects WHERE id = ${id}::uuid RETURNING 1

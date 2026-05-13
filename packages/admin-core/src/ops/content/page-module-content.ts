@@ -15,6 +15,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot, loadPageModuleContentState } from "../../snapshots/index.js";
 
 const pageModuleContentRowSchema = z.object({
@@ -110,6 +111,16 @@ export const setPageModuleContentOp = defineOperation({
     .strict(),
   output: z.object({ pageModuleContentId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // v0.5.3 — per-page lock. Content writes are page-bound; two
+    // chats editing the same placement would silently overwrite.
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "page",
+      entityId: input.pageId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!lock.permitted && lock.holder) {
+      return err(lockedError("page_module_content.set", "page", input.pageId, lock.holder));
+    }
     // Confirm the placement exists in page_modules — content without a
     // matching placement would orphan + 404 at render time.
     const placement = (await tx.execute(sql`

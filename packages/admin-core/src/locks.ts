@@ -27,7 +27,14 @@ export type LockedEntityKind =
   | "pageLayout"
   | "layout"
   | "structuredSet"
-  | "redirect";
+  | "redirect"
+  // v0.5.3 — page-bound writes (pages.update / pages.delete /
+  // pages.set_modules etc.) and global config singletons
+  // (site_settings / site_defaults) gain locks to close the v0.5
+  // coverage gap.
+  | "page"
+  | "siteSettings"
+  | "siteDefaults";
 
 export interface LockHolder {
   chatSessionId: string;

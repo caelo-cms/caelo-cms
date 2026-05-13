@@ -21,6 +21,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot, loadPageLayoutState, loadPageState } from "../../snapshots/index.js";
 import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
 import { readSiteDefaults } from "../site_defaults.js";
@@ -393,9 +394,34 @@ export const updatePageOp = defineOperation({
   input: pageUpdateSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // v0.5.3 — per-page lock. Two chats editing the same page (e.g.
+    // slug + title) would otherwise step on each other; the lock
+    // forces serialisation at write time with a clear actionable
+    // error for the second chat.
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "page",
+      entityId: input.pageId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!lock.permitted && lock.holder) {
+      return err(lockedError("pages.update", "page", input.pageId, lock.holder));
+    }
+    // v0.5.3 — branched update path. When ctx.chatBranchId is set we
+    // skip the live UPDATE and emit a branched snapshot carrying the
+    // post-patch state, mirroring modules.update's v0.5.1 pattern.
+    const branched = !!ctx.chatBranchId;
     const existingRows = (await tx.execute(sql`
-      SELECT version FROM pages WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL LIMIT 1
-    `)) as unknown as { version: number | string }[];
+      SELECT version, slug, locale, title, template_id::text AS template_id, status, deleted_at
+      FROM pages WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as {
+      version: number | string;
+      slug: string;
+      locale: string;
+      title: string;
+      template_id: string;
+      status: "draft" | "published";
+      deleted_at: string | Date | null;
+    }[];
     const existing = existingRows[0];
     if (!existing) {
       return err({
@@ -436,15 +462,9 @@ export const updatePageOp = defineOperation({
         });
       }
     }
-    // template_id needs an explicit ::uuid cast — pass it as a fragment so the
-    // helper just emits `template_id = $n::uuid` rather than `= $n` (which
-    // would need a separate query path). version bumps in the same UPDATE so
-    // the patch lands atomically with the new token.
-    // P6.7.5 — `name`, `title`, and `slug` are independently patchable.
-    // The slug change additionally needs a (slug, locale) uniqueness
-    // pre-check; we run it here since `pages.update` is the canonical
-    // mutation entry-point for renames.
     if (input.slug !== undefined) {
+      // Slug uniqueness still checked against live, even when branched:
+      // a chat shouldn't claim a slug another live page already owns.
       const dup = (await tx.execute(sql`
         SELECT 1 FROM pages
         WHERE slug = ${input.slug}
@@ -460,17 +480,34 @@ export const updatePageOp = defineOperation({
         });
       }
     }
-    const sets = buildPatchSet({
-      name: input.name,
-      title: input.title,
-      slug: input.slug,
-      template_id: input.templateId !== undefined ? sql`${input.templateId}::uuid` : undefined,
-      status: input.status,
-      version: sql`version + 1`,
-    });
-    await tx.execute(sql`
-      UPDATE pages SET ${sets} WHERE id = ${input.pageId}::uuid
-    `);
+
+    let state: import("../../snapshots/state.js").PageState | null;
+    if (branched) {
+      // Build post-patch state in-memory; live row untouched.
+      state = {
+        schemaVersion: 1,
+        slug: input.slug ?? existing.slug,
+        locale: existing.locale,
+        title: input.title ?? existing.title,
+        templateId: input.templateId ?? existing.template_id,
+        status: input.status ?? existing.status,
+        version: currentVersion + 1,
+        deletedAt: null,
+      };
+    } else {
+      const sets = buildPatchSet({
+        name: input.name,
+        title: input.title,
+        slug: input.slug,
+        template_id: input.templateId !== undefined ? sql`${input.templateId}::uuid` : undefined,
+        status: input.status,
+        version: sql`version + 1`,
+      });
+      await tx.execute(sql`
+        UPDATE pages SET ${sets} WHERE id = ${input.pageId}::uuid
+      `);
+      state = await loadPageState(tx, input.pageId);
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -478,13 +515,15 @@ export const updatePageOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.pageId,
+      ...(branched ? { resultSummary: "branched" } : {}),
     });
-    const state = await loadPageState(tx, input.pageId);
     if (state) {
       await emitSnapshot(tx, {
         actorId: ctx.actorId,
         opKind: "pages.update",
-        description: `pages.update slug=${state.slug}`,
+        description: `pages.update slug=${state.slug}${branched ? " (branched)" : ""}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: input.pageId, state }],
       });
     }
@@ -509,6 +548,14 @@ export const setPageModulesOp = defineOperation({
   input: pageSetModulesSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    const setModulesLock = await checkAndAcquireEntityLock(tx, {
+      kind: "page",
+      entityId: input.pageId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!setModulesLock.permitted && setModulesLock.holder) {
+      return err(lockedError("pages.set_modules", "page", input.pageId, setModulesLock.holder));
+    }
     const pageRows = (await tx.execute(sql`
       SELECT template_id::text AS template_id, version FROM pages
       WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL LIMIT 1
@@ -593,21 +640,36 @@ export const setPageModulesOp = defineOperation({
       }
     }
 
-    await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${input.pageId}::uuid`);
-    for (const block of input.blocks) {
-      let position = 0;
-      for (const moduleId of block.moduleIds) {
-        await tx.execute(sql`
-          INSERT INTO page_modules (page_id, block_name, position, module_id)
-          VALUES (${input.pageId}::uuid, ${block.blockName}, ${position}, ${moduleId}::uuid)
-        `);
-        position += 1;
+    // v0.5.3 — branched: skip live page_modules write; build the
+    // layout state in-memory and emit branched snapshot.
+    const branched = !!ctx.chatBranchId;
+    let layoutState: import("../../snapshots/state.js").PageLayoutState;
+    if (branched) {
+      layoutState = {
+        schemaVersion: 1,
+        blocks: input.blocks.map((b) => ({
+          blockName: b.blockName,
+          moduleIds: [...b.moduleIds],
+        })),
+      };
+    } else {
+      await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${input.pageId}::uuid`);
+      for (const block of input.blocks) {
+        let position = 0;
+        for (const moduleId of block.moduleIds) {
+          await tx.execute(sql`
+            INSERT INTO page_modules (page_id, block_name, position, module_id)
+            VALUES (${input.pageId}::uuid, ${block.blockName}, ${position}, ${moduleId}::uuid)
+          `);
+          position += 1;
+        }
       }
+      await tx.execute(sql`
+        UPDATE pages SET updated_at = now(), version = version + 1
+        WHERE id = ${input.pageId}::uuid
+      `);
+      layoutState = await loadPageLayoutState(tx, input.pageId);
     }
-    await tx.execute(sql`
-      UPDATE pages SET updated_at = now(), version = version + 1
-      WHERE id = ${input.pageId}::uuid
-    `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -615,19 +677,23 @@ export const setPageModulesOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.pageId,
-      resultSummary: `blocks=${input.blocks.length},modules=${allModuleIds.length}`,
+      resultSummary: `blocks=${input.blocks.length},modules=${allModuleIds.length}${branched ? ",branched" : ""}`,
     });
     // Layout-only edit — emit a page_layout_snapshot, not a full page snapshot.
-    const layoutState = await loadPageLayoutState(tx, input.pageId);
     await emitSnapshot(tx, {
       actorId: ctx.actorId,
       opKind: "pages.set_modules",
-      description: `pages.set_modules blocks=${input.blocks.length}`,
+      description: `pages.set_modules blocks=${input.blocks.length}${branched ? " (branched)" : ""}`,
+      chatTaskId: ctx.chatTaskId ?? null,
+      chatBranchId: ctx.chatBranchId ?? null,
       entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
     });
     // P9 — content changed; refresh content_hash + recompute
-    // translation_status for any variants of this page.
-    await recomputePageContentHash(tx, input.pageId);
+    // translation_status for any variants of this page. Skip when
+    // branched — live content is unchanged.
+    if (!branched) {
+      await recomputePageContentHash(tx, input.pageId);
+    }
     return ok({});
   },
 });
@@ -642,6 +708,14 @@ export const deletePageOp = defineOperation({
   input: z.object({ pageId: z.string().uuid() }),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    const deleteLock = await checkAndAcquireEntityLock(tx, {
+      kind: "page",
+      entityId: input.pageId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!deleteLock.permitted && deleteLock.holder) {
+      return err(lockedError("pages.delete", "page", input.pageId, deleteLock.holder));
+    }
     const rows = (await tx.execute(sql`
       SELECT deleted_at FROM pages WHERE id = ${input.pageId}::uuid
     `)) as unknown as { deleted_at: Date | null }[];
@@ -665,7 +739,39 @@ export const deletePageOp = defineOperation({
       });
       return ok({});
     }
-    await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${input.pageId}::uuid`);
+    // v0.5.3 — branched: skip live soft-delete; emit branched snapshot
+    // with deletedAt set so preview hides the page in the caller's chat.
+    const branched = !!ctx.chatBranchId;
+    let state: import("../../snapshots/state.js").PageState | null;
+    if (branched) {
+      const prev = (await tx.execute(sql`
+        SELECT slug, locale, title, template_id::text AS template_id, status, version
+        FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
+      `)) as unknown as {
+        slug: string;
+        locale: string;
+        title: string;
+        template_id: string;
+        status: "draft" | "published";
+        version: number | string;
+      }[];
+      const p = prev[0];
+      state = p
+        ? {
+            schemaVersion: 1,
+            slug: p.slug,
+            locale: p.locale,
+            title: p.title,
+            templateId: p.template_id,
+            status: p.status,
+            version: typeof p.version === "string" ? Number.parseInt(p.version, 10) : p.version,
+            deletedAt: new Date().toISOString(),
+          }
+        : null;
+    } else {
+      await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${input.pageId}::uuid`);
+      state = await loadPageState(tx, input.pageId);
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -673,14 +779,15 @@ export const deletePageOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.pageId,
-      resultSummary: "soft-deleted",
+      resultSummary: branched ? "branched soft-delete" : "soft-deleted",
     });
-    const state = await loadPageState(tx, input.pageId);
     if (state) {
       await emitSnapshot(tx, {
         actorId: ctx.actorId,
         opKind: "pages.delete",
-        description: `pages.delete slug=${state.slug}`,
+        description: `pages.delete slug=${state.slug}${branched ? " (branched)" : ""}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: input.pageId, state }],
       });
     }

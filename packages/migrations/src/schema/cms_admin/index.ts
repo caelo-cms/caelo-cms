@@ -21,6 +21,7 @@ export * from "./site_ai_memory.js";
 export * from "./site_memory_proposals.js";
 export * from "./site_snapshots.js";
 export * from "./structured_set_operations.js";
+export * from "./structured_set_snapshots.js";
 export * from "./template_blocks.js";
 export * from "./template_snapshots.js";
 export * from "./templates.js";

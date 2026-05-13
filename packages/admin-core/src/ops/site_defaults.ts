@@ -24,6 +24,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
 
 const siteDefaultsRow = z.object({
   defaultLayoutId: z.string(),
@@ -87,6 +88,21 @@ export const setSiteDefaultsOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // v0.5.3 — singleton lock. site_defaults is one row; two chats
+    // setting different defaults would silently clobber.
+    // SiteDefaults' primary key is the int '1', but locks key on uuid;
+    // use a stable namespace UUID derived from the constant 'global'.
+    const SITE_DEFAULTS_LOCK_ID = "00000000-0000-0000-0000-000000c5d4f7";
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "siteDefaults",
+      entityId: SITE_DEFAULTS_LOCK_ID,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!lock.permitted && lock.holder) {
+      return err(
+        lockedError("site_defaults.set", "siteDefaults", SITE_DEFAULTS_LOCK_ID, lock.holder),
+      );
+    }
     const layoutOk = (await tx.execute(sql`
       SELECT 1 FROM layouts
       WHERE id = ${input.defaultLayoutId}::uuid AND deleted_at IS NULL LIMIT 1

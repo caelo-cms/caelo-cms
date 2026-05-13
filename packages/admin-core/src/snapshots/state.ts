@@ -70,3 +70,18 @@ export interface PageLayoutState {
     readonly moduleIds: readonly string[];
   }[];
 }
+
+/**
+ * v0.5.3 — Whole-blob branched state for structured_sets (theme tokens,
+ * nav menu, taxonomy, link list). The branched snapshot is authoritative
+ * for reads; per-item ops in structured_set_operations are the picker's
+ * stage-granularity layer.
+ */
+export interface StructuredSetState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly kind: string;
+  readonly slug: string;
+  readonly displayName: string;
+  readonly items: readonly unknown[];
+  readonly deletedAt: string | null;
+}

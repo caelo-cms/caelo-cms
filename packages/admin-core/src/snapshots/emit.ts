@@ -21,6 +21,7 @@ import type {
   PageLayoutState,
   PageModuleContentState,
   PageState,
+  StructuredSetState,
   TemplateState,
 } from "./state.js";
 
@@ -62,6 +63,11 @@ export type SnapshotEntity =
       readonly kind: "pageModuleContent";
       readonly entityId: string;
       readonly state: PageModuleContentState;
+    }
+  | {
+      readonly kind: "structuredSet";
+      readonly entityId: string;
+      readonly state: StructuredSetState;
     };
 
 export interface SnapshotInput {
@@ -137,6 +143,17 @@ export async function emitSnapshot(
             ${entity.state.pageId}::uuid,
             ${entity.state.blockName},
             ${entity.state.position},
+            ${stateJson}::jsonb
+          )
+        `);
+        break;
+      case "structuredSet":
+        await tx.execute(sql`
+          INSERT INTO structured_set_snapshots
+            (site_snapshot_id, structured_set_id, state)
+          VALUES (
+            ${siteSnapshotId}::uuid,
+            ${entity.entityId}::uuid,
             ${stateJson}::jsonb
           )
         `);

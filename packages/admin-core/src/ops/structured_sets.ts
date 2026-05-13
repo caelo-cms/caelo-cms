@@ -250,39 +250,81 @@ export const setStructuredSetOp = defineOperation({
         return err(lockedError("structured_sets.set", "structuredSet", existingId, lock.holder));
       }
     }
-    // v0.5.1 — capture prev items for ordered-list diff (nav-menu /
-    // taxonomy / link-list). Theme stays whole-blob.
+    // Capture prev items for ordered-list diff (nav-menu / taxonomy /
+    // link-list). Theme stays whole-blob.
     const prevItems = existingRow
       ? typeof existingRow.items === "string"
         ? (JSON.parse(existingRow.items) as unknown[])
         : ((existingRow.items as unknown[]) ?? [])
       : [];
+
+    // v0.5.3 — when ctx.chatBranchId is set, do NOT overwrite live
+    // items. Two paths:
+    //
+    //   branched + existing row → keep live items unchanged; emit
+    //     branched snapshot carrying the new items.
+    //   branched + new row → INSERT row with EMPTY items so the
+    //     structured_set_id is stable; emit branched snapshot with the
+    //     new items. Publish materialises real items into live.
+    //   unbranched → UPSERT live items (existing behaviour).
+    //
     // Note: cast through ::text first so Bun's SQL adapter doesn't
-    // try to JSON-encode the string a second time. Without ::text the
-    // adapter sees the JSON-stringified value and re-wraps it as a
-    // JSON string before binding, ending up with a jsonb column whose
-    // top-level type is `string` instead of `array`.
+    // try to JSON-encode the string a second time.
+    const branched = !!ctx.chatBranchId;
     const itemsJson = JSON.stringify(validated);
-    const rows = (await tx.execute(sql`
-      INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
-      VALUES (
-        ${input.kind},
-        ${input.slug},
-        ${input.displayName},
-        ${itemsJson}::text::jsonb,
-        ${ctx.actorId}::uuid
-      )
-      ON CONFLICT (kind, slug) DO UPDATE SET
-        display_name = EXCLUDED.display_name,
-        items        = EXCLUDED.items,
-        updated_at   = now(),
-        updated_by   = EXCLUDED.updated_by
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
-    const id = rows[0]?.id;
-    if (!id) {
-      return err({ kind: "HandlerError", operation: "structured_sets.set", message: "no id" });
+    let id: string;
+    if (branched) {
+      if (existingId) {
+        id = existingId;
+      } else {
+        // Allocate the row in main with empty items so all chats
+        // see the same id; branched snapshot carries the real items.
+        const insRows = (await tx.execute(sql`
+          INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
+          VALUES (
+            ${input.kind},
+            ${input.slug},
+            ${input.displayName},
+            '[]'::jsonb,
+            ${ctx.actorId}::uuid
+          )
+          ON CONFLICT (kind, slug) DO UPDATE SET updated_at = structured_sets.updated_at
+          RETURNING id::text AS id
+        `)) as unknown as { id: string }[];
+        const newId = insRows[0]?.id;
+        if (!newId) {
+          return err({
+            kind: "HandlerError",
+            operation: "structured_sets.set",
+            message: "no id from branched create",
+          });
+        }
+        id = newId;
+      }
+    } else {
+      const rows = (await tx.execute(sql`
+        INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
+        VALUES (
+          ${input.kind},
+          ${input.slug},
+          ${input.displayName},
+          ${itemsJson}::text::jsonb,
+          ${ctx.actorId}::uuid
+        )
+        ON CONFLICT (kind, slug) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          items        = EXCLUDED.items,
+          updated_at   = now(),
+          updated_by   = EXCLUDED.updated_by
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+      const newId = rows[0]?.id;
+      if (!newId) {
+        return err({ kind: "HandlerError", operation: "structured_sets.set", message: "no id" });
+      }
+      id = newId;
     }
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -290,41 +332,53 @@ export const setStructuredSetOp = defineOperation({
       input,
       succeeded: true,
       entityId: id,
-      resultSummary: `${input.kind}/${input.slug} items=${validated.length}`,
+      resultSummary: `${input.kind}/${input.slug} items=${validated.length}${
+        branched ? " (branched)" : ""
+      }`,
     });
 
-    // v0.5.1 — for ordered-list kinds, diff prev vs next and emit one
-    // structured_set_operations row per discrete edit so the picker can
-    // stage individual changes. Theme + other non-list kinds skip this
-    // path; the whole-row state is the natural unit there.
+    // v0.5.3 — always emit a whole-blob structuredSet snapshot. Carries
+    // the full new state so preview can overlay reads (branched) and
+    // site-history can revert (unbranched).
+    const result = await emitSnapshot(tx, {
+      actorId: ctx.actorId,
+      opKind: "structured_sets.set",
+      description: `structured_sets.set ${input.kind}/${input.slug} items=${validated.length}`,
+      chatTaskId: ctx.chatTaskId ?? null,
+      chatBranchId: ctx.chatBranchId ?? null,
+      entities: [
+        {
+          kind: "structuredSet",
+          entityId: id,
+          state: {
+            schemaVersion: 1,
+            kind: input.kind,
+            slug: input.slug,
+            displayName: input.displayName,
+            items: validated,
+            deletedAt: null,
+          },
+        },
+      ],
+    });
+
+    // v0.5.1 — for ordered-list kinds, also emit per-op rows so the
+    // picker can stage individual changes. Attached to the same
+    // site_snapshot as the whole-blob row above.
     if (LIST_KINDS.has(input.kind)) {
       const ops = diffListItems(input.kind, prevItems, validated);
-      if (ops.length > 0) {
-        // emitSnapshot needs at least an empty entities[] — we attach
-        // no module/page/etc. entity here; the list ops are the
-        // entities. Use opKind 'structured_sets.set' (already in the
-        // CHECK constraint).
-        const result = await emitSnapshot(tx, {
-          actorId: ctx.actorId,
-          opKind: "structured_sets.set",
-          description: `structured_sets.set ${input.kind}/${input.slug} ops=${ops.length}`,
-          chatTaskId: ctx.chatTaskId ?? null,
-          chatBranchId: ctx.chatBranchId ?? null,
-          entities: [],
-        });
-        for (const op of ops) {
-          await tx.execute(sql`
-            INSERT INTO structured_set_operations
-              (site_snapshot_id, structured_set_id, op_kind, item_id, op_payload)
-            VALUES (
-              ${result.siteSnapshotId}::uuid,
-              ${id}::uuid,
-              ${op.kind},
-              ${op.itemId},
-              ${JSON.stringify(op.payload)}::jsonb
-            )
-          `);
-        }
+      for (const op of ops) {
+        await tx.execute(sql`
+          INSERT INTO structured_set_operations
+            (site_snapshot_id, structured_set_id, op_kind, item_id, op_payload)
+          VALUES (
+            ${result.siteSnapshotId}::uuid,
+            ${id}::uuid,
+            ${op.kind},
+            ${op.itemId},
+            ${JSON.stringify(op.payload)}::jsonb
+          )
+        `);
       }
     }
 
