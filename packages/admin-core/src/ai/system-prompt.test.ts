@@ -4,12 +4,14 @@ import { describe, expect, it } from "bun:test";
 import { composeSystemPromptChunks } from "./system-prompt.js";
 
 describe("composeSystemPromptChunks", () => {
-  it("emits base + memory + tools as cacheable chunks in stable order", () => {
+  it("emits base + module-model + memory + tools as cacheable chunks in stable order", () => {
     const chunks = composeSystemPromptChunks(
       [{ slot: "tone", body: "calm" }],
       [{ name: "edit_module", description: "edit a module" }],
     );
-    expect(chunks.map((c) => c.label)).toEqual(["base", "memory", "tools"]);
+    // v0.4.0 — the module-model chunk sits between base and memory and is
+    // cacheable (stable across every call).
+    expect(chunks.map((c) => c.label)).toEqual(["base", "module-model", "memory", "tools"]);
     for (const c of chunks) expect(c.cacheable).toBe(true);
   });
 
@@ -30,6 +32,7 @@ describe("composeSystemPromptChunks", () => {
 
   it("skips empty slots", () => {
     const chunks = composeSystemPromptChunks([], []);
-    expect(chunks.map((c) => c.label)).toEqual(["base"]);
+    // v0.4.0 — base + module-model are always present (cacheable prefix).
+    expect(chunks.map((c) => c.label)).toEqual(["base", "module-model"]);
   });
 });
