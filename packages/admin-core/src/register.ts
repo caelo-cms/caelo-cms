@@ -23,6 +23,7 @@ import {
   countBranchChangesOp,
   createChatSessionOp,
   getChatSessionOp,
+  listActivePagesOp,
   listBranchEditedEntitiesOp,
   listBranchEditedModulesOp,
   listChatSessionsOp,
@@ -704,6 +705,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listBranchEditedModulesOp);
   registry.register(listBranchEditedEntitiesOp);
   registry.register(countBranchChangesOp);
+  // v0.5.8 — per-page chat gate companion: list pages with an open chat.
+  registry.register(listActivePagesOp);
   // P7 — media library.
   registry.register(mediaUploadOp);
   registry.register(mediaListOp);

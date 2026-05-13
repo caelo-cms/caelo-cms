@@ -157,6 +157,39 @@ export const createChatSessionOp = defineOperation({
     const pageId = input.pageId ?? null;
     const templateId = input.templateId ?? null;
     const subagentRole = input.subagentRole ?? null;
+
+    // v0.5.8 — per-page chat gate. Two parallel chats editing the same
+    // page would either compete on the per-page lock (when both try to
+    // write) or silently diverge until publish. Reject creation upfront
+    // so the operator gets pointed at the existing chat instead.
+    //
+    // Global chats (pageId IS NULL) stay unrestricted — globals like
+    // theme / structured-sets / modules cross many pages, and the
+    // per-entity lock + staging picker handle their conflict surface.
+    if (pageId) {
+      const existing = (await tx.execute(sql`
+        SELECT id::text AS id, title FROM chat_sessions
+        WHERE page_id = ${pageId}::uuid AND published_at IS NULL
+        ORDER BY created_at DESC LIMIT 1
+      `)) as unknown as { id: string; title: string }[];
+      const open = existing[0];
+      if (open) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "chat.create_session",
+          input,
+          succeeded: false,
+          resultSummary: `page-gate-conflict open=${open.id.slice(0, 8)}`,
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "chat.create_session",
+          message: `page ${pageId} already has an open chat (${open.title}, id=${open.id}); resume that chat or publish it first`,
+        });
+      }
+    }
+
     const rows = (await tx.execute(sql`
       INSERT INTO chat_sessions (title, created_by, chat_branch_id, page_id, template_id, subagent_role)
       VALUES (
@@ -598,6 +631,56 @@ export const countBranchChangesOp = defineOperation({
         pageLayouts: r.page_layouts,
         pageModuleContent: r.page_module_content,
       },
+    });
+  },
+});
+
+/**
+ * v0.5.8 — Active-page list for the /edit picker. Returns one row per
+ * page that currently has an open (unpublished) chat session. /edit's
+ * page picker uses this to dot pages with pending chats so the
+ * operator picks "Resume" instead of "New chat".
+ */
+export const listActivePagesOp = defineOperation({
+  name: "chat.list_active_pages",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({
+    pages: z.array(
+      z
+        .object({
+          pageId: z.string(),
+          chatSessionId: z.string(),
+          chatTitle: z.string(),
+          createdAt: z.string(),
+        })
+        .strict(),
+    ),
+  }),
+  handler: async (_ctx, _input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT DISTINCT ON (page_id)
+             page_id::text       AS page_id,
+             id::text            AS chat_session_id,
+             title               AS chat_title,
+             created_at          AS created_at
+      FROM chat_sessions
+      WHERE page_id IS NOT NULL AND published_at IS NULL AND archived_at IS NULL
+      ORDER BY page_id, created_at DESC
+    `)) as unknown as {
+      page_id: string;
+      chat_session_id: string;
+      chat_title: string;
+      created_at: string | Date;
+    }[];
+    return ok({
+      pages: rows.map((r) => ({
+        pageId: r.page_id,
+        chatSessionId: r.chat_session_id,
+        chatTitle: r.chat_title,
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+      })),
     });
   },
 });

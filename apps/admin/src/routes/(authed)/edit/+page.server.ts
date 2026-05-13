@@ -201,6 +201,26 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     }
   }
 
+  // v0.5.8 — categorized pending/staged view for the StageSplitButton
+  // inside /edit's embedded ChatPanel. Same shape as the /content/chat
+  // route. Empty default when no chat is active (rare — auto-create
+  // above usually provides one).
+  type PendingEntity = { kind: string; entityId: string; label: string; detail?: string };
+  type PendingChangesView = {
+    pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
+    staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
+  };
+  let pendingChanges: PendingChangesView = {
+    pending: { pages: [], globals: [], lists: [] },
+    staged: { pages: [], globals: [], lists: [] },
+  };
+  if (activeChat) {
+    const pR = await execute(registry, adapter, locals.ctx, "chat.list_pending_changes", {
+      chatSessionId: activeChat.id,
+    });
+    if (pR.ok) pendingChanges = pR.value as PendingChangesView;
+  }
+
   // Layout preference — default if unset.
   let layout: OverlayLayout = DEFAULT_LAYOUT;
   if (prefsR.ok) {
@@ -265,6 +285,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     modules,
     branchEditedModuleIds,
     branchChangeCount,
+    pendingChanges,
     layout,
     translationBanner,
     /** P6.7.4 — chats bound to the active page (for the picker's "this page" group). */
@@ -448,6 +469,27 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const pageId = String(form.get("pageId") ?? "");
     const isGlobal = pageId.length === 0;
+
+    // v0.5.8 — per-page gate. If the page already has an open chat,
+    // resume it instead of failing on the server-side reject. Keeps
+    // the "+ New chat" button useful even when a stale tab created a
+    // page-bound chat the user forgot about.
+    if (!isGlobal) {
+      const active = await execute(registry, adapter, locals.ctx, "chat.list_active_pages", {});
+      if (active.ok) {
+        const v = active.value as {
+          pages: { pageId: string; chatSessionId: string }[];
+        };
+        const existing = v.pages.find((p) => p.pageId === pageId);
+        if (existing) {
+          const next = new URL(url);
+          next.searchParams.set("chat", existing.chatSessionId);
+          next.searchParams.set("page", pageId);
+          throw redirect(303, `${next.pathname}${next.search}`);
+        }
+      }
+    }
+
     const created = await execute(registry, adapter, locals.ctx, "chat.create_session", {
       title: isGlobal ? "Global chat" : "Page chat",
       ...(isGlobal ? {} : { pageId }),
@@ -480,5 +522,117 @@ export const actions: Actions = {
         targetName: "production",
       },
     };
+  },
+  // v0.5.8 — chat-branch staging actions for the embedded StageSplitButton.
+  // Distinct from /edit's `?/stage` (static-generator pipeline) which
+  // builds + promotes to the staging environment URL. These three operate
+  // on chat_branch_publish_marks via the chat.stage / chat.unstage /
+  // chat.publish ops. Form expects:
+  //   - chatSessionId (hidden, sourced from data.activeChat.id)
+  //   - entity[] = kind:id (zero or more; empty = all pending / all staged)
+  chatStage: async ({ request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const chatSessionId = String(form.get("chatSessionId") ?? "");
+    if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
+    const rawEntities = form.getAll("entity");
+    type Kind =
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "pageModuleContent"
+      | "structuredSet";
+    const allowed = new Set<Kind>([
+      "module",
+      "template",
+      "page",
+      "pageLayout",
+      "pageModuleContent",
+      "structuredSet",
+    ]);
+    const entities: { kind: Kind; entityId: string }[] = [];
+    for (const e of rawEntities) {
+      const [k, id] = String(e).split(":");
+      if (k && id && allowed.has(k as Kind)) entities.push({ kind: k as Kind, entityId: id });
+    }
+    const r = await execute(registry, adapter, locals.ctx, "chat.stage", {
+      chatSessionId,
+      ...(entities.length > 0 ? { entities } : {}),
+    });
+    if (!r.ok) return fail(400, { error: "Could not stage changes." });
+    return { ok: true };
+  },
+  chatUnstage: async ({ request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const chatSessionId = String(form.get("chatSessionId") ?? "");
+    if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
+    const rawEntities = form.getAll("entity");
+    type Kind =
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "pageModuleContent"
+      | "structuredSet";
+    const allowed = new Set<Kind>([
+      "module",
+      "template",
+      "page",
+      "pageLayout",
+      "pageModuleContent",
+      "structuredSet",
+    ]);
+    const entities: { kind: Kind; entityId: string }[] = [];
+    for (const e of rawEntities) {
+      const [k, id] = String(e).split(":");
+      if (k && id && allowed.has(k as Kind)) entities.push({ kind: k as Kind, entityId: id });
+    }
+    const r = await execute(registry, adapter, locals.ctx, "chat.unstage", {
+      chatSessionId,
+      ...(entities.length > 0 ? { entities } : {}),
+    });
+    if (!r.ok) return fail(400, { error: "Could not unstage changes." });
+    return { ok: true };
+  },
+  chatPublishStaged: async ({ request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const chatSessionId = String(form.get("chatSessionId") ?? "");
+    if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
+    const rawEntities = form.getAll("entity");
+    type Kind =
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "pageModuleContent"
+      | "structuredSet";
+    const allowed = new Set<Kind>([
+      "module",
+      "template",
+      "page",
+      "pageLayout",
+      "pageModuleContent",
+      "structuredSet",
+    ]);
+    const entities: { kind: Kind; entityId: string }[] = [];
+    for (const e of rawEntities) {
+      const [k, id] = String(e).split(":");
+      if (k && id && allowed.has(k as Kind)) entities.push({ kind: k as Kind, entityId: id });
+    }
+    const r = await execute(registry, adapter, locals.ctx, "chat.publish", {
+      chatSessionId,
+      ...(entities.length > 0 ? { entities } : {}),
+    });
+    if (!r.ok) return fail(400, { error: "Could not publish chat-branch staged changes." });
+    return { ok: true };
   },
 };

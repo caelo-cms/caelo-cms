@@ -23,6 +23,9 @@ coverage/
 !.vscode/extensions.json
 .claude/
 
+# Local AI workflow orchestrator — not part of the CMS source tree.
+claude-workflow/
+
 # Phase 6 static-gen output (per-target dist trees)
 apps/admin/output/
 output/dev/

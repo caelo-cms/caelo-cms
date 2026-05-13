@@ -24,6 +24,7 @@
   import { onDestroy, onMount } from "svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
   import ChatPanel from "$lib/components/chat/ChatPanel.svelte";
+  import StageSplitButton from "$lib/components/chat/StageSplitButton.svelte";
   import MediaPicker from "$lib/components/MediaPicker.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Card } from "$lib/components/ui/card/index.js";
@@ -57,6 +58,17 @@
     publishedAt: string | null;
   }
 
+  interface PendingEntity {
+    kind: string;
+    entityId: string;
+    label: string;
+    detail?: string;
+  }
+  interface PendingChangesView {
+    pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
+    staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
+  }
+
   interface Props {
     session: ChatSession;
     initialMessages: ChatMessage[];
@@ -68,6 +80,9 @@
     pageChats?: ChatRef[];
     /** v0.2.14 — global chats (`page_id IS NULL`) for cross-cutting work. */
     globalChats?: ChatRef[];
+    /** v0.5.8 — pending/staged view feeding the StageSplitButton inside
+     *  the embedded ChatPanel. Same shape + flow as /content/chat. */
+    pendingChanges?: PendingChangesView;
     onToolResult?: (payload: ToolResultPayload) => void;
   }
   let {
@@ -79,6 +94,10 @@
     activePageId = null,
     pageChats = [],
     globalChats = [],
+    pendingChanges = {
+      pending: { pages: [], globals: [], lists: [] },
+      staged: { pages: [], globals: [], lists: [] },
+    },
     onToolResult,
   }: Props = $props();
 
@@ -475,6 +494,24 @@
       </div>
     </div>
 
+    <!-- v0.5.8 — chat-branch staging picker. Sits above the compact
+         ChatPanel so it's visible without losing real-estate inside the
+         message list. This is orthogonal to the /edit toolbar's
+         Stage / Confirm-publish strip — that drives the
+         static-generator pipeline (build → staging URL → prod);
+         StageSplitButton drives the chat-branch → main merge step. -->
+    <div class="px-3 pt-2">
+      <StageSplitButton
+        {pendingChanges}
+        {csrfToken}
+        sessionPublished={!!session.publishedAt}
+        chatSessionId={session.id}
+        stageAction="?/chatStage"
+        unstageAction="?/chatUnstage"
+        publishAction="?/chatPublishStaged"
+      />
+    </div>
+
     <!-- Embedded chat panel -->
     <ChatPanel
       {session}
@@ -482,6 +519,7 @@
       {modules}
       {csrfToken}
       {activePageId}
+      {pendingChanges}
       compact
       onToolResult={handleToolResult}
     />

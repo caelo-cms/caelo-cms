@@ -459,6 +459,7 @@
     activePageId={activePageId || null}
     pageChats={data.pageChats}
     globalChats={data.globalChats}
+    pendingChanges={data.pendingChanges}
     onToolResult={onAiToolResult}
   />
 

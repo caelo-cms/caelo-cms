@@ -27,14 +27,29 @@
     staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
   }
 
+  // v0.5.8 — action overrides for hosts other than /content/chat. /edit
+  // already has a `?/stage` action that drives the static-generator
+  // pipeline (different stage concept); when StageSplitButton lives in
+  // /edit it posts to dedicated chat-branch actions instead.
   let {
     pendingChanges,
     csrfToken,
     sessionPublished = false,
+    stageAction = "?/stage",
+    unstageAction = "?/unstage",
+    publishAction = "?/publish",
+    /** v0.5.8 — when set, every form includes a hidden chatSessionId
+     *  field. /edit's chatStage/chatUnstage/chatPublishStaged actions
+     *  need this since the route lacks a [sessionId] path param. */
+    chatSessionId = null as string | null,
   }: {
     pendingChanges: PendingChangesView;
     csrfToken: string;
     sessionPublished?: boolean;
+    stageAction?: string;
+    unstageAction?: string;
+    publishAction?: string;
+    chatSessionId?: string | null;
   } = $props();
 
   const pendingCount = $derived(
@@ -92,14 +107,20 @@
       <!-- top-line counts + primary action -->
       <div class="flex items-center gap-2">
         {#if stagedCount > 0}
-          <form method="post" action="?/publish" class="contents">
+          <form method="post" action={publishAction} class="contents">
             <input type="hidden" name="_csrf" value={csrfToken} />
+            {#if chatSessionId}
+              <input type="hidden" name="chatSessionId" value={chatSessionId} />
+            {/if}
             <Button type="submit" size="sm">Publish staged ({stagedCount})</Button>
           </form>
         {:else if pendingCount > 0}
           <!-- No staged → "Stage all pending" stages everything in one click. -->
-          <form method="post" action="?/stage" class="contents">
+          <form method="post" action={stageAction} class="contents">
             <input type="hidden" name="_csrf" value={csrfToken} />
+            {#if chatSessionId}
+              <input type="hidden" name="chatSessionId" value={chatSessionId} />
+            {/if}
             <Button type="submit" size="sm">Stage all ({pendingCount})</Button>
           </form>
         {/if}
@@ -176,8 +197,11 @@
 
           {#if selected.size > 0}
             <div class="flex flex-wrap items-center gap-2 border-t pt-2">
-              <form method="post" action="?/stage" class="contents">
+              <form method="post" action={stageAction} class="contents">
                 <input type="hidden" name="_csrf" value={csrfToken} />
+            {#if chatSessionId}
+              <input type="hidden" name="chatSessionId" value={chatSessionId} />
+            {/if}
                 {#each selectedAsList() as e (`${e.kind}:${e.entityId}`)}
                   <input type="hidden" name="entity" value={`${e.kind}:${e.entityId}`} />
                 {/each}
@@ -185,8 +209,11 @@
                   Stage selected ({selected.size})
                 </Button>
               </form>
-              <form method="post" action="?/unstage" class="contents">
+              <form method="post" action={unstageAction} class="contents">
                 <input type="hidden" name="_csrf" value={csrfToken} />
+            {#if chatSessionId}
+              <input type="hidden" name="chatSessionId" value={chatSessionId} />
+            {/if}
                 {#each selectedAsList() as e (`${e.kind}:${e.entityId}`)}
                   <input type="hidden" name="entity" value={`${e.kind}:${e.entityId}`} />
                 {/each}
@@ -194,8 +221,11 @@
                   Unstage selected
                 </Button>
               </form>
-              <form method="post" action="?/publish" class="contents">
+              <form method="post" action={publishAction} class="contents">
                 <input type="hidden" name="_csrf" value={csrfToken} />
+            {#if chatSessionId}
+              <input type="hidden" name="chatSessionId" value={chatSessionId} />
+            {/if}
                 {#each selectedAsList() as e (`${e.kind}:${e.entityId}`)}
                   <input type="hidden" name="entity" value={`${e.kind}:${e.entityId}`} />
                 {/each}
