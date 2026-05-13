@@ -29,6 +29,9 @@ import { findRedirectsTool } from "./find-redirects.js";
 import { generateImageTool } from "./generate-image.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
+import { listLayoutsTool } from "./list-layouts.js";
+import { listPagesTool } from "./list-pages.js";
+import { listTemplatesTool } from "./list-templates.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeAddLocaleTool } from "./propose-add-locale.js";
@@ -101,6 +104,13 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // but never publishes (no publish_staged tool — that's the human's button).
   registry.register(stageChangeTool);
   registry.register(unstageChangeTool);
+  // v0.5.12 — explicit read fallbacks for layouts / templates / pages.
+  // Mirror the system-prompt `# Layouts on this site` / `# Templates →
+  // layouts` / `# All pages` context blocks. Existed only as system-prompt
+  // text before; the AI had no fetch path when it claimed to lack a UUID.
+  registry.register(listLayoutsTool);
+  registry.register(listTemplatesTool);
+  registry.register(listPagesTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);

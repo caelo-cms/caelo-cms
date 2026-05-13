@@ -185,7 +185,10 @@ describe("seeded base skills", () => {
   // v0.5.10 — bootstrap-site skill must allowlist the four scaffold
   // tools so it can actually execute the layout → template →
   // site_defaults → first-page chain when it engages.
-  it("bootstrap-site allowlists the four scaffold tools", async () => {
+  // v0.5.12 — extended to also require the read-fallback tools so the
+  // skill can self-fetch UUIDs after each step instead of asking the
+  // operator.
+  it("bootstrap-site allowlists scaffold + list_* fetch tools", async () => {
     const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
     if (!r.ok) return;
     const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
@@ -196,5 +199,9 @@ describe("seeded base skills", () => {
     expect(tools).toContain("create_template");
     expect(tools).toContain("set_site_defaults");
     expect(tools).toContain("create_page");
+    // v0.5.12 — list_* fetch tools (close the "I don't have the UUID" gap)
+    expect(tools).toContain("list_layouts");
+    expect(tools).toContain("list_templates");
+    expect(tools).toContain("list_pages");
   });
 });
