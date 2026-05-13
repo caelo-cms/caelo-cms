@@ -74,6 +74,19 @@ For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE
 
 The pre-1.0 invariant from `CLAUDE.md` §2: every code path that could "default to something sensible when data is missing" instead **fails loudly with a structured error**. That rule is relaxed deliberately at 1.0.0 with a documented breaking-change policy.
 
+## Roadmap
+
+The roadmap lives on the GitHub Project board: **[Caelo Roadmap](https://github.com/orgs/caelo-cms/projects/1)**. Issues are tagged with Area, Priority, and Size; statuses move through Backlog → Ready → In progress → In review → Done.
+
+Current shape (v0.3.x → 1.0):
+
+- **AI surface** — voice input into the chat composer, then AI-provider STT (Whisper et al.), eventually a real-time voice mode (two-way audio with the AI). Engaged-skills panel on every chat session.
+- **Plugin tier** — Owner UI for activating / deactivating plugins, AI-proposable activation via the propose/execute pattern, ship-default of only essential plugins active.
+- **Cloud provisioning** — AWS + Azure adapters to parity with GCP, DNS adapter abstraction (Cloudflare / Route53 / Cloud DNS / Azure DNS).
+- **Engineering hygiene** — `knip` + `madge` + coverage thresholds in CI, branch protection on `main`, automated AI code review on every PR, splitting the codebase's largest files, extracting Query API op boilerplate.
+
+See the board for the full list and current status.
+
 ## Local development
 
 Prerequisites: [Bun](https://bun.sh/) ≥ 1.3, Docker + Docker Compose, [Deno](https://deno.com) ≥ 2 (for the Tier 2 plugin sandbox), an Anthropic API key.
