@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/plugin-newsletter",
-  "version": "0.5.14",
+  "version": "0.5.15",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",

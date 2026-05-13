@@ -347,7 +347,14 @@ async function rollbackTraffic(
 
 export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const { meta } = requireInstall();
-  if (meta.provider !== "gcp") {
+  // v0.5.15 — extended to cover gcp-firebase too. Both providers share
+  // the identical admin + gateway shape on Cloud Run (Artifact
+  // Registry image, `caelo-production-<slug>` service naming, the same
+  // gcloud commands). The only delta is the static-site layer (Cloud
+  // CDN vs Firebase Hosting) which upgradeCommand doesn't touch. AWS
+  // + Azure still bail with "not yet implemented" until those
+  // provider adapters land.
+  if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
     log.warn(`upgrade for provider ${meta.provider} not yet implemented.`);
     return;
   }
