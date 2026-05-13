@@ -687,6 +687,7 @@ const handlers: Record<string, () => Promise<void>> = {
   upgrade: lifecycleUpgrade,
   "rotate-secret": lifecycleRotateSecret,
   destroy: lifecycleDestroy,
+  truncate: lifecycleTruncate,
   // Misc
   "pulumi-output-sync": pulumiOutputSync,
   version,
@@ -734,6 +735,10 @@ async function lifecycleDestroy(): Promise<void> {
   const { destroyCommand } = await import("./lifecycle.js");
   await destroyCommand();
 }
+async function lifecycleTruncate(): Promise<void> {
+  const { truncateCommand } = await import("./lifecycle.js");
+  await truncateCommand();
+}
 
 /**
  * §11.C — interactive wizard. Loaded lazily so the bare-CLI startup
@@ -761,7 +766,7 @@ if (!handler) {
     await wizardCommand();
   } else {
     console.log(
-      "Usage: cms-provision [wizard] | <init|up|status|upgrade|backup|restore|rotate-secret|destroy|regenerate-caddy|pulumi-output-sync|version> [options]\n" +
+      "Usage: cms-provision [wizard] | <init|up|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|pulumi-output-sync|version> [options]\n" +
         "Pass --no-wizard with no sub-command to print this usage instead of the wizard.",
     );
     process.exit(cmd ? 2 : 0);

@@ -776,6 +776,77 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
 // destroy — pulumi destroy + gcloud projects delete
 // =========================================================================
 
+/**
+ * v0.4.0 — Truncate all content + history tables on the install's Cloud
+ * SQL, preserving identity (users / roles / providers / domains /
+ * site_defaults / provisioning_outputs / site_ai_memory). The operator
+ * can re-author from scratch against the current schema without
+ * destroying infra.
+ *
+ * Useful after a schema-changing release (e.g. v0.4.0's module/content
+ * split) when AI-authored content built against the old shape no
+ * longer renders cleanly.
+ */
+export async function truncateCommand(): Promise<void> {
+  const { meta } = requireInstall();
+
+  log.warn(
+    yellow(
+      `${bold("Truncate")} wipes ALL pages, modules, templates, layouts, redirects, nav menus, theme tokens, media assets, chat history, audit log, and snapshots on ${bold(meta.domain)}.\n` +
+        `Preserved: users / roles / AI providers / domains / site_defaults / provisioning_outputs / site memory.`,
+    ),
+  );
+  const confirm1 = await confirm({
+    message: `Truncate content on ${bold(meta.domain)} (${bold(meta.projectId ?? "self-hosted")})?`,
+    initialValue: false,
+  });
+  if (isCancel(confirm1) || !confirm1) {
+    cancel("Cancelled.");
+    process.exit(0);
+  }
+  const typed = await import("@clack/prompts").then((m) =>
+    m.text({
+      message: `Type the domain to confirm: ${bold(meta.domain)}`,
+      validate: (v) => (v === meta.domain ? undefined : "Domain doesn't match — aborting"),
+    }),
+  );
+  if (isCancel(typed)) {
+    cancel("Cancelled.");
+    process.exit(0);
+  }
+
+  if (meta.provider === "self-hosted") {
+    log.warn(
+      "Self-hosted truncate not yet wired. Run the SQL directly via " +
+        `${cyan("docker compose -f .caelo/docker-compose.yml exec postgres psql -U admin_role cms_admin")} ` +
+        "and TRUNCATE the content tables manually.",
+    );
+    return;
+  }
+
+  if ((meta.provider === "gcp" || meta.provider === "gcp-firebase") && meta.projectId) {
+    const { truncateViaCloudRunJob } = await import("./migration-runner.js");
+    const region = meta.region ?? "europe-west1";
+    const r = await truncateViaCloudRunJob({ projectId: meta.projectId, region });
+    if (!r.ok) {
+      cancel(`Truncate failed: ${r.error}.`);
+      process.exit(1);
+    }
+    note(
+      [
+        green(`✓ Content truncated on ${meta.domain}.`),
+        "",
+        "Next: visit the admin and start a fresh chat. The AI will author against",
+        "the current schema (v0.4.0 → module = code + fields; content per page).",
+      ].join("\n"),
+      "Done",
+    );
+    return;
+  }
+
+  log.warn(`Truncate not implemented for provider=${meta.provider}.`);
+}
+
 export async function destroyCommand(): Promise<void> {
   const { installId, meta } = requireInstall();
 

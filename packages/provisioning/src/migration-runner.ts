@@ -120,6 +120,91 @@ async function readAdminConfig(opts: MigrationRunnerOpts): Promise<AdminConfig |
  * callers can decide what to do on failure (the wizard exits the
  * process; upgrade aborts before rolling Cloud Run).
  */
+/**
+ * v0.4.0 — Run TRUNCATE against cms_admin + cms_public via the same
+ * one-shot Cloud Run Job pattern the migrator uses. Wipes content /
+ * history / chat tables; keeps users / roles / providers / domains /
+ * site_defaults / provisioning_outputs / site_ai_memory.
+ *
+ * Useful after a schema change (e.g. v0.4.0's module/content split)
+ * when the operator wants the AI to start fresh against the new shape
+ * without destroying the install.
+ */
+export async function truncateViaCloudRunJob(
+  opts: MigrationRunnerOpts,
+): Promise<{ ok: boolean; error?: string }> {
+  const sAdmin = spinner();
+  sAdmin.start("Reading admin Cloud Run config for truncate job...");
+  const cfg = await readAdminConfig(opts);
+  if (!cfg) {
+    sAdmin.stop(red("Couldn't resolve admin config — admin may not be deployed yet"));
+    return { ok: false, error: "admin-config-unresolved" };
+  }
+  sAdmin.stop(green(`Admin config resolved (${cfg.imageRef.slice(-19)})`));
+
+  for (const target of ["admin", "public"] as const) {
+    const s = spinner();
+    s.start(`TRUNCATEing ${target} tables via one-shot Cloud Run Job...`);
+    await gcloud([
+      "run",
+      "jobs",
+      "delete",
+      `caelo-truncate-${target}`,
+      "--region",
+      opts.region,
+      "--project",
+      opts.projectId,
+      "--quiet",
+    ]);
+    const create = await gcloud([
+      "run",
+      "jobs",
+      "create",
+      `caelo-truncate-${target}`,
+      `--image=${cfg.imageRef}`,
+      "--region",
+      opts.region,
+      "--project",
+      opts.projectId,
+      "--service-account",
+      `caelo-production-run-sa@${opts.projectId}.iam.gserviceaccount.com`,
+      "--network",
+      cfg.networkRef.split("/").pop() ?? cfg.networkRef,
+      "--subnet",
+      cfg.subnetRef.split("/").pop() ?? cfg.subnetRef,
+      "--vpc-egress=private-ranges-only",
+      "--command=bun",
+      `--args=--bun,/app/packages/migrations/src/truncate.ts,${target}`,
+      "--set-env-vars",
+      `ADMIN_DATABASE_URL=${cfg.adminUrl},PUBLIC_ADMIN_DATABASE_URL=${cfg.publicUrl}`,
+      "--max-retries=0",
+      "--task-timeout=5m",
+      "--quiet",
+    ]);
+    if (!create.ok) {
+      s.stop(red(`Job create failed: ${create.stderr.trim()}`));
+      return { ok: false, error: `truncate-${target}-create: ${create.stderr.trim()}` };
+    }
+    const exec = await gcloud([
+      "run",
+      "jobs",
+      "execute",
+      `caelo-truncate-${target}`,
+      "--region",
+      opts.region,
+      "--project",
+      opts.projectId,
+      "--wait",
+    ]);
+    if (!exec.ok) {
+      s.stop(red(`${target} truncate failed: ${exec.stderr.trim()}`));
+      return { ok: false, error: `truncate-${target}-exec: ${exec.stderr.trim()}` };
+    }
+    s.stop(green(`${target} truncated`));
+  }
+  return { ok: true };
+}
+
 export async function runMigrationsViaCloudRunJob(
   opts: MigrationRunnerOpts,
 ): Promise<{ ok: boolean; error?: string }> {
