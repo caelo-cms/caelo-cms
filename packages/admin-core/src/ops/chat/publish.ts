@@ -18,6 +18,7 @@ import { chatPublishInput, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { releaseChatLocks } from "../../locks.js";
 import {
   emitSnapshot,
   parseAndUpgradeModuleState,
@@ -96,14 +97,51 @@ export const publishChatSessionOp = defineOperation({
             ids.map((id) => sql`${id}`),
             sql`, `,
           )})`;
+    // v0.5.0 — only entities marked `stage_state='staged'` are merged.
+    // Pre-v0.5.0 marks default to 'published' (existing behavior); 'pending'
+    // means "snapshot exists but operator hasn't clicked Stage yet" — those
+    // stay on the branch for the next publish.
     const notYetPublished = (
       kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent",
     ) => sql`
       AND entity_id_text NOT IN (
         SELECT entity_id::text FROM chat_branch_publish_marks
-        WHERE chat_branch_id = ${session.chat_branch_id}::uuid AND entity_kind = ${kind}
+        WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+          AND entity_kind = ${kind}
+          AND stage_state = 'published'
       )
     `;
+    /**
+     * v0.5.0 — when the operator hasn't passed an explicit `entities[]`,
+     * include only entities that are currently 'staged'. This is the
+     * Split-button + picker flow: pick → stage → publish. Operator
+     * passing entities[] explicitly bypasses the stage filter so
+     * scripted / direct publish paths keep working unchanged.
+     *
+     * Backward-compat: if the branch has ZERO 'staged' marks (operator
+     * never used the picker), fall through to the pre-v0.5.0 path of
+     * publishing every pending entity. This preserves the existing
+     * /content/chat publish button + AI workflow.
+     */
+    const stagedCountRows = (await tx.execute(sql`
+      SELECT COUNT(*)::int AS n FROM chat_branch_publish_marks
+      WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+        AND stage_state = 'staged'
+    `)) as unknown as { n: number }[];
+    const hasStagedMarks = (stagedCountRows[0]?.n ?? 0) > 0;
+    const stageFilter = (
+      kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent",
+    ) =>
+      includeAll && hasStagedMarks
+        ? sql`
+            AND entity_id_text IN (
+              SELECT entity_id::text FROM chat_branch_publish_marks
+              WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+                AND entity_kind = ${kind}
+                AND stage_state = 'staged'
+            )
+          `
+        : sql``;
 
     const moduleRows =
       !includeAll && (wantModules?.length ?? 0) === 0
@@ -116,7 +154,7 @@ export const publishChatSessionOp = defineOperation({
         WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
         ORDER BY ms.module_id, ss.created_at DESC
       ) sub
-      WHERE 1=1 ${notYetPublished("module")} ${inFilter(includeAll ? null : (wantModules ?? []))}
+      WHERE 1=1 ${notYetPublished("module")} ${stageFilter("module")} ${inFilter(includeAll ? null : (wantModules ?? []))}
     `)) as unknown as Row[]);
     const templateRows =
       !includeAll && (wantTemplates?.length ?? 0) === 0
@@ -129,7 +167,7 @@ export const publishChatSessionOp = defineOperation({
         WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
         ORDER BY ts.template_id, ss.created_at DESC
       ) sub
-      WHERE 1=1 ${notYetPublished("template")} ${inFilter(includeAll ? null : (wantTemplates ?? []))}
+      WHERE 1=1 ${notYetPublished("template")} ${stageFilter("template")} ${inFilter(includeAll ? null : (wantTemplates ?? []))}
     `)) as unknown as Row[]);
     const pageRows =
       !includeAll && (wantPages?.length ?? 0) === 0
@@ -142,7 +180,7 @@ export const publishChatSessionOp = defineOperation({
         WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
         ORDER BY ps.page_id, ss.created_at DESC
       ) sub
-      WHERE 1=1 ${notYetPublished("page")} ${inFilter(includeAll ? null : (wantPages ?? []))}
+      WHERE 1=1 ${notYetPublished("page")} ${stageFilter("page")} ${inFilter(includeAll ? null : (wantPages ?? []))}
     `)) as unknown as Row[]);
     const layoutRows =
       !includeAll && (wantLayouts?.length ?? 0) === 0
@@ -155,7 +193,7 @@ export const publishChatSessionOp = defineOperation({
         WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
         ORDER BY pls.page_id, ss.created_at DESC
       ) sub
-      WHERE 1=1 ${notYetPublished("pageLayout")} ${inFilter(includeAll ? null : (wantLayouts ?? []))}
+      WHERE 1=1 ${notYetPublished("pageLayout")} ${stageFilter("pageLayout")} ${inFilter(includeAll ? null : (wantLayouts ?? []))}
     `)) as unknown as Row[]);
 
     // v0.4.0 — page_module_content snapshots ride the same branch-publish
@@ -177,7 +215,7 @@ export const publishChatSessionOp = defineOperation({
         WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
         ORDER BY pmcs.page_module_content_id, ss.created_at DESC
       ) sub
-      WHERE 1=1 ${notYetPublished("pageModuleContent")} ${inFilter(includeAll ? null : (wantContent ?? []))}
+      WHERE 1=1 ${notYetPublished("pageModuleContent")} ${stageFilter("pageModuleContent")} ${inFilter(includeAll ? null : (wantContent ?? []))}
     `)) as unknown as Row[]);
 
     const total =
@@ -318,6 +356,11 @@ export const publishChatSessionOp = defineOperation({
         UPDATE chat_sessions SET published_at = now()
         WHERE id = ${input.chatSessionId}::uuid
       `);
+      // v0.5.0 — release every per-entity lock held by this chat once
+      // it's fully published. Partial publishes keep their locks so
+      // subsequent writes against the same entities stay scoped to
+      // this chat.
+      await releaseChatLocks(tx, input.chatSessionId);
     }
 
     await recordAudit(tx, {

@@ -15,6 +15,7 @@ import { chatCreateSessionInput, chatRenameSessionInput, err, ok } from "@caelo-
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { releaseChatLocks } from "../../locks.js";
 
 const pinnedElement = z
   .object({
@@ -422,6 +423,9 @@ export const archiveChatSessionOp = defineOperation({
       UPDATE chat_sessions SET archived_at = now()
       WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
     `);
+    // v0.5.0 — archiving releases any per-entity locks the chat held
+    // so other chats can edit those globals again.
+    await releaseChatLocks(tx, input.chatSessionId);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

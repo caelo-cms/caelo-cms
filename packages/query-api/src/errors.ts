@@ -12,7 +12,25 @@ export type QueryError =
   | { readonly kind: "ActorScopeRejected"; readonly operation: string; readonly actorKind: string }
   | { readonly kind: "RateLimited"; readonly operation: string; readonly retryAfterMs?: number }
   | { readonly kind: "RLSDenied"; readonly operation: string; readonly detail: string }
-  | { readonly kind: "HandlerError"; readonly operation: string; readonly message: string };
+  | { readonly kind: "HandlerError"; readonly operation: string; readonly message: string }
+  /**
+   * v0.5.0 — per-entity write lock rejected the write. The named entity
+   * is held by another chat; caller must wait for that chat to publish
+   * or discard, or pick a different target. AI surfaces this via the
+   * tool-result so the operator sees who holds the lock.
+   */
+  | {
+      readonly kind: "Locked";
+      readonly operation: string;
+      readonly message: string;
+      readonly entityKind: string;
+      readonly entityId: string;
+      readonly holder: {
+        readonly chatSessionId: string;
+        readonly chatBranchId: string;
+        readonly lockedAt: string;
+      };
+    };
 
 /**
  * Postgres error codes that mean "RLS denied the row" — either `USING` filtered

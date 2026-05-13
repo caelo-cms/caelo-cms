@@ -20,6 +20,7 @@ import { err, ok, structuredSetKind, validateStructuredSetItems } from "@caelo-c
 import { sql } from "drizzle-orm";
 import { ZodError, z } from "zod";
 import { recordAudit } from "../audit.js";
+import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
 
 const setRow = z.object({
   id: z.string(),
@@ -95,6 +96,25 @@ export const setStructuredSetOp = defineOperation({
         });
       }
       throw e;
+    }
+    // v0.5.0 — per-entity lock. Only meaningful when updating an
+    // existing set (creates have no entity_id yet; race on first-create
+    // is harmless — unique (kind, slug) catches it at upsert).
+    const existing = (await tx.execute(sql`
+      SELECT id::text AS id FROM structured_sets
+      WHERE kind = ${input.kind} AND slug = ${input.slug}
+      LIMIT 1
+    `)) as unknown as { id: string }[];
+    const existingId = existing[0]?.id;
+    if (existingId) {
+      const lock = await checkAndAcquireEntityLock(tx, {
+        kind: "structuredSet",
+        entityId: existingId,
+        chatBranchId: ctx.chatBranchId,
+      });
+      if (!lock.permitted && lock.holder) {
+        return err(lockedError("structured_sets.set", "structuredSet", existingId, lock.holder));
+      }
     }
     // Note: cast through ::text first so Bun's SQL adapter doesn't
     // try to JSON-encode the string a second time. Without ::text the

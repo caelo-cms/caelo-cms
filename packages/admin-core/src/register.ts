@@ -31,6 +31,11 @@ import {
   setPinnedElementsOp,
 } from "./ops/chat/sessions.js";
 import {
+  listPendingChangesOp,
+  stageChatChangesOp,
+  unstageChatChangesOp,
+} from "./ops/chat/stage.js";
+import {
   executeLayoutProposalOp,
   listPendingLayoutProposalsOp,
   proposeLayoutCreateOp,
@@ -502,6 +507,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(lookupToolResultOp);
   registry.register(recordAiCallOp);
   registry.register(publishChatSessionOp);
+  registry.register(listPendingChangesOp);
+  registry.register(stageChatChangesOp);
+  registry.register(unstageChatChangesOp);
   registry.register(listAiMemoryOp);
   registry.register(setAiMemoryOp);
   registry.register(proposeAiMemoryOp);

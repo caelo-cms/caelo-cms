@@ -10,6 +10,7 @@ import { err, ok, templateCreateSchema, templateUpdateSchema } from "@caelo-cms/
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot, loadTemplateState } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
 import { readSiteDefaults } from "../site_defaults.js";
@@ -247,6 +248,15 @@ export const updateTemplateOp = defineOperation({
   input: templateUpdateSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // v0.5.0 — per-entity lock.
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "template",
+      entityId: input.templateId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!lock.permitted && lock.holder) {
+      return err(lockedError("templates.update", "template", input.templateId, lock.holder));
+    }
     const existing = (await tx.execute(sql`
       SELECT 1 FROM templates WHERE id = ${input.templateId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as { exists: number }[];
@@ -408,6 +418,15 @@ export const deleteTemplateOp = defineOperation({
   input: z.object({ templateId: z.string().uuid() }),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // v0.5.0 — per-entity lock.
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "template",
+      entityId: input.templateId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!lock.permitted && lock.holder) {
+      return err(lockedError("templates.delete", "template", input.templateId, lock.holder));
+    }
     const inUse = (await tx.execute(sql`
       SELECT 1 FROM pages WHERE template_id = ${input.templateId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as { exists: number }[];

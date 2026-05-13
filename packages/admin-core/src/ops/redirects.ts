@@ -17,6 +17,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
 
 const redirectRow = z.object({
   id: z.string(),
@@ -192,6 +193,15 @@ export const deleteRedirectOp = defineOperation({
   input: z.object({ redirectId: z.string().uuid() }).strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // v0.5.0 — per-entity lock.
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "redirect",
+      entityId: input.redirectId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!lock.permitted && lock.holder) {
+      return err(lockedError("redirects.delete", "redirect", input.redirectId, lock.holder));
+    }
     await tx.execute(sql`DELETE FROM redirects WHERE id = ${input.redirectId}::uuid`);
     await recordAudit(tx, {
       actorId: ctx.actorId,

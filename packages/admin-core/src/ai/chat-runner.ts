@@ -1211,6 +1211,8 @@ export async function* runChatTurn(
             return `RLS denied on ${e.operation}: ${e.detail}`;
           case "HandlerError":
             return `${e.operation}: ${e.message}`;
+          case "Locked":
+            return `${e.operation}: ${e.message}`;
         }
       })();
       yield {

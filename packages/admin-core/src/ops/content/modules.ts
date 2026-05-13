@@ -19,6 +19,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot, loadModuleState } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
 
@@ -224,6 +225,17 @@ export const updateModuleOp = defineOperation({
   input: moduleUpdateSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // v0.5.0 — per-entity lock. When the caller is in a chat,
+    // acquire the lock for this module; reject if another chat holds
+    // it. System writes (no chatBranchId) bypass.
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "module",
+      entityId: input.moduleId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!lock.permitted && lock.holder) {
+      return err(lockedError("modules.update", "module", input.moduleId, lock.holder));
+    }
     // Fetch prev html before the update so the usage-tracker can diff.
     const prevRows = (await tx.execute(sql`
       SELECT html FROM modules WHERE id = ${input.moduleId}::uuid AND deleted_at IS NULL LIMIT 1
@@ -292,6 +304,15 @@ export const deleteModuleOp = defineOperation({
   input: z.object({ moduleId: z.string().uuid() }),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // v0.5.0 — per-entity lock.
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "module",
+      entityId: input.moduleId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!lock.permitted && lock.holder) {
+      return err(lockedError("modules.delete", "module", input.moduleId, lock.holder));
+    }
     const rows = (await tx.execute(sql`
       SELECT deleted_at, html FROM modules WHERE id = ${input.moduleId}::uuid
     `)) as unknown as { deleted_at: Date | null; html: string }[];

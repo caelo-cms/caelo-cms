@@ -18,6 +18,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 
 const layoutBlockShape = z.object({
@@ -231,6 +232,15 @@ export const updateLayoutOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // v0.5.0 — per-entity lock.
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "layout",
+      entityId: input.layoutId,
+      chatBranchId: ctx.chatBranchId,
+    });
+    if (!lock.permitted && lock.holder) {
+      return err(lockedError("layouts.update", "layout", input.layoutId, lock.holder));
+    }
     const sets: ReturnType<typeof sql>[] = [];
     if (input.displayName !== undefined) sets.push(sql`display_name = ${input.displayName}`);
     if (input.html !== undefined) {
