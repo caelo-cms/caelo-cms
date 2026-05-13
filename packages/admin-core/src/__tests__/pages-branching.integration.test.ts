@@ -136,6 +136,24 @@ describe("pages branched writes (v0.5.3)", () => {
       await sql.end();
     }
 
+    // v0.5.5 — preview overlay reflects branched slug + title for
+    // the chat's branch; without chatBranchId, live values still win.
+    const branchedPreview = await execute(registry, adapter, HUMAN, "pages.render_preview", {
+      pageId,
+      chatBranchId,
+    });
+    if (branchedPreview.ok) {
+      const v = branchedPreview.value as { pageSlug: string };
+      expect(v.pageSlug).toBe(`${PAGE_SLUG}-renamed`);
+    }
+    const livePreview = await execute(registry, adapter, HUMAN, "pages.render_preview", {
+      pageId,
+    });
+    if (livePreview.ok) {
+      const v = livePreview.value as { pageSlug: string };
+      expect(v.pageSlug).toBe(PAGE_SLUG);
+    }
+
     // Publish merges branched values into live.
     const pub = await execute(registry, adapter, HUMAN, "chat.publish", {
       chatSessionId,

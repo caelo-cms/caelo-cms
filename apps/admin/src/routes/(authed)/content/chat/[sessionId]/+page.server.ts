@@ -8,6 +8,21 @@ import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
+/**
+ * v0.5.5 — one entry in the Stage picker. Mirrors the shape returned by
+ * `chat.list_pending_changes`.
+ */
+interface PendingEntity {
+  kind: string;
+  entityId: string;
+  label: string;
+  detail?: string;
+}
+interface PendingChangesView {
+  pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
+  staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
+}
+
 interface ChatPageData {
   session: ChatSession;
   messages: ChatMessage[];
@@ -22,17 +37,26 @@ interface ChatPageData {
    * the preview pane until the AI creates the first page.
    */
   previewDefault: { locale: string; slug: string } | null;
+  /**
+   * v0.5.5 — categorized pending/staged view feeding the Stage
+   * split-button + picker popover. Empty when the chat has no
+   * branched writes.
+   */
+  pendingChanges: PendingChangesView;
 }
 
 export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPageData> => {
   requirePermission(locals, "content.read");
   const { adapter, registry } = getQueryContext();
-  const [sessionR, modulesR, pagesR] = await Promise.all([
+  const [sessionR, modulesR, pagesR, pendingR] = await Promise.all([
     execute(registry, adapter, locals.ctx, "chat.get_session", {
       chatSessionId: params.sessionId,
     }),
     execute(registry, adapter, locals.ctx, "modules.list", {}),
     execute(registry, adapter, locals.ctx, "pages.list", {}),
+    execute(registry, adapter, locals.ctx, "chat.list_pending_changes", {
+      chatSessionId: params.sessionId,
+    }),
   ]);
   if (!sessionR.ok) throw error(404, "Chat not found");
   const sessionData = sessionR.value as {
@@ -67,6 +91,15 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
       ? { locale: firstPage.locale, slug: firstPage.slug }
       : null;
 
+  // v0.5.5 — pending-changes view for the Stage picker. Empty default
+  // when chat has no branched writes; the picker collapses to a
+  // disabled "Nothing to publish" button in that case.
+  const emptyChanges: PendingChangesView = {
+    pending: { pages: [], globals: [], lists: [] },
+    staged: { pages: [], globals: [], lists: [] },
+  };
+  const pendingChanges = pendingR.ok ? (pendingR.value as PendingChangesView) : emptyChanges;
+
   return {
     session: sessionData.session,
     messages,
@@ -75,6 +108,7 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
     // needs the same permission as the rest of /security/* views.
     canDebug: locals.user?.permissions.has("settings.read") ?? false,
     previewDefault,
+    pendingChanges,
   };
 };
 
@@ -86,16 +120,29 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     // P5.2 #5 — partial publish. Form sends `entity[]` as `kind:id`
     // pairs (one per ticked checkbox). Empty array → publish everything.
+    // v0.5.5 — extended kinds to include pageModuleContent + structuredSet
+    // (both are branched on writes now).
     const rawEntities = form.getAll("entity");
-    const entities: { kind: "module" | "template" | "page" | "pageLayout"; entityId: string }[] =
-      [];
+    const allowedKinds = new Set([
+      "module",
+      "template",
+      "page",
+      "pageLayout",
+      "pageModuleContent",
+      "structuredSet",
+    ] as const);
+    type AllowedKind =
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "pageModuleContent"
+      | "structuredSet";
+    const entities: { kind: AllowedKind; entityId: string }[] = [];
     for (const e of rawEntities) {
       const [kind, id] = String(e).split(":");
-      if (
-        (kind === "module" || kind === "template" || kind === "page" || kind === "pageLayout") &&
-        id
-      ) {
-        entities.push({ kind, entityId: id });
+      if (kind && id && allowedKinds.has(kind as AllowedKind)) {
+        entities.push({ kind: kind as AllowedKind, entityId: id });
       }
     }
     const result = await execute(registry, adapter, locals.ctx, "chat.publish", {
@@ -117,6 +164,80 @@ export const actions: Actions = {
     });
     if (!result.ok) return fail(400, { error: "Could not rename chat." });
     return { ok: true };
+  },
+  // v0.5.5 — flip selected pending → staged. Same kind:id encoding as
+  // the publish action. Empty array stages every pending entity on the
+  // branch.
+  stage: async ({ params, request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const rawEntities = form.getAll("entity");
+    type AllowedKind =
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "pageModuleContent"
+      | "structuredSet";
+    const allowedKinds = new Set<AllowedKind>([
+      "module",
+      "template",
+      "page",
+      "pageLayout",
+      "pageModuleContent",
+      "structuredSet",
+    ]);
+    const entities: { kind: AllowedKind; entityId: string }[] = [];
+    for (const e of rawEntities) {
+      const [kind, id] = String(e).split(":");
+      if (kind && id && allowedKinds.has(kind as AllowedKind)) {
+        entities.push({ kind: kind as AllowedKind, entityId: id });
+      }
+    }
+    const result = await execute(registry, adapter, locals.ctx, "chat.stage", {
+      chatSessionId: params.sessionId,
+      ...(entities.length > 0 ? { entities } : {}),
+    });
+    if (!result.ok) return fail(400, { error: "Could not stage changes." });
+    return { ok: true, staged: (result.value as { staged: number }).staged };
+  },
+  // v0.5.5 — flip selected staged → pending.
+  unstage: async ({ params, request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const rawEntities = form.getAll("entity");
+    type AllowedKind =
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "pageModuleContent"
+      | "structuredSet";
+    const allowedKinds = new Set<AllowedKind>([
+      "module",
+      "template",
+      "page",
+      "pageLayout",
+      "pageModuleContent",
+      "structuredSet",
+    ]);
+    const entities: { kind: AllowedKind; entityId: string }[] = [];
+    for (const e of rawEntities) {
+      const [kind, id] = String(e).split(":");
+      if (kind && id && allowedKinds.has(kind as AllowedKind)) {
+        entities.push({ kind: kind as AllowedKind, entityId: id });
+      }
+    }
+    const result = await execute(registry, adapter, locals.ctx, "chat.unstage", {
+      chatSessionId: params.sessionId,
+      ...(entities.length > 0 ? { entities } : {}),
+    });
+    if (!result.ok) return fail(400, { error: "Could not unstage changes." });
+    return { ok: true, unstaged: (result.value as { unstaged: number }).unstaged };
   },
   // v0.2.54 — toggle extended thinking on/off for this chat session.
   // The form posts a single `enabled` checkbox; budget tuning is left

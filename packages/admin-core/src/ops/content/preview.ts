@@ -152,6 +152,30 @@ export const renderPagePreviewOp = defineOperation({
         message: "page not found",
       });
     }
+
+    // v0.5.5 — page meta overlay. v0.5.3 branched pages.update writes
+    // slug/title into page_snapshots but the live join above still
+    // carries the pre-branch values; iframe <title> + URL composition
+    // would leak the live slug/title to a chat that renamed the page.
+    // Overlay slug + title only — templateId overlay (which would
+    // cascade through template_html / layout_html) is out of scope
+    // until pages.change_template branching lands.
+    if (input.chatBranchId) {
+      const snap = (await tx.execute(sql`
+        SELECT state FROM page_snapshots ps
+        JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+        WHERE ps.page_id = ${input.pageId}::uuid
+          AND ss.chat_branch_id = ${input.chatBranchId}::uuid
+        ORDER BY ss.created_at DESC LIMIT 1
+      `)) as unknown as { state: unknown }[];
+      const raw = snap[0]?.state;
+      if (raw) {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const s = parsed as { slug?: string; title?: string };
+        if (s.slug) pageRow.slug = s.slug;
+        if (s.title) pageRow.title = s.title;
+      }
+    }
     // P6.7.6 no-fallbacks invariant — the layout must declare a
     // `content` block (the slot the template renders into). Surface a
     // loud error if it doesn't, instead of silently producing chrome

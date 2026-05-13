@@ -26,6 +26,7 @@
   import { Textarea } from "$lib/components/ui/textarea/index.js";
   import { cn } from "$lib/utils.js";
   import DebugPanel from "./DebugPanel.svelte";
+  import StageSplitButton from "./StageSplitButton.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import InlineDiff from "./InlineDiff.svelte";
   import StreamingMarkdown from "./StreamingMarkdown.svelte";
@@ -59,12 +60,27 @@
     arguments?: { moduleId?: string; html?: string };
   };
 
+  interface PendingEntity {
+    kind: string;
+    entityId: string;
+    label: string;
+    detail?: string;
+  }
+  interface PendingChangesView {
+    pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
+    staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
+  }
+
   interface Props {
     session: ChatSession;
     initialMessages: ChatMessage[];
     modules: ChatModule[];
     csrfToken: string;
     formError?: string | null;
+    /** v0.5.5 — pending/staged view from chat.list_pending_changes for
+     *  the Stage picker. Optional — older callers pass nothing and the
+     *  picker collapses to "No pending changes". */
+    pendingChanges?: PendingChangesView;
     /**
      * Sized-by-parent variant for the live-edit overlay. The default
      * uses `h-[calc(100vh-12rem)]` which is right inside AppShell but
@@ -94,6 +110,10 @@
     modules,
     csrfToken,
     formError = null,
+    pendingChanges = {
+      pending: { pages: [], globals: [], lists: [] },
+      staged: { pages: [], globals: [], lists: [] },
+    },
     compact = false,
     activePageId = null,
     onToolResult,
@@ -303,7 +323,12 @@
     composer = text;
     await sendMessage();
   }
-  let pendingChanges = $state(0);
+  // v0.5.5 — renamed from `pendingChanges` to avoid name-clash with the
+  // new prop carrying the categorized {pending,staged} view from
+  // chat.list_pending_changes. This local counter tracks live tool-result
+  // signals during streaming; the prop is the authoritative server-load
+  // view re-fetched between turns.
+  let pendingChangeCount = $state(0);
   /** P6.7.3 — surface SSE error events + failed tool results so users
    *  see a banner instead of a silent no-op when the AI stack errors. */
   let chatError = $state<string | null>(null);
@@ -936,7 +961,7 @@
               // streamingThinkingText.
             } else if (ev["kind"] === "text-delta") streamingText += String(ev["text"] ?? "");
             else if (ev["kind"] === "tool-result" && ev["ok"]) {
-              pendingChanges += 1;
+              pendingChangeCount += 1;
               const toolCallId = String(ev["toolCallId"] ?? "");
               const meta = toolCallMeta.get(toolCallId);
               const args = (ev["arguments"] as { moduleId?: string; html?: string }) ?? {};
@@ -1508,45 +1533,20 @@
           rawEvents={debugRawEvents}
         />
       {/if}
-      <Card>
-        <CardHeader>
-          <CardTitle class="text-base">Publish changes</CardTitle>
-        </CardHeader>
-        <CardContent class="space-y-3 text-sm">
-          {#if session.publishedAt}
-            <p class="text-muted-foreground"><em>Already published.</em></p>
-          {:else if pendingChanges === 0}
-            <p class="text-muted-foreground"><em>No pending changes.</em></p>
-          {:else}
-            <p>{pendingChanges} pending change{pendingChanges === 1 ? "" : "s"}.</p>
-            <form method="post" action="?/publish" class="space-y-2">
-              <input type="hidden" name="_csrf" value={csrfToken} />
-              {#if proposedDiffs.length > 0}
-                <ul class="space-y-1">
-                  {#each proposedDiffs as d, i (`${d.moduleId}-${i}`)}
-                    <li>
-                      <label class="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          name="entity"
-                          value={`module:${d.moduleId}`}
-                          checked={d.selected}
-                          class="h-4 w-4 rounded border-input"
-                        />
-                        module {d.moduleId.slice(0, 8)}
-                      </label>
-                    </li>
-                  {/each}
-                </ul>
-                <p class="text-xs text-muted-foreground">
-                  Untick to leave the change on the chat branch.
-                </p>
-              {/if}
-              <Button type="submit" size="sm">Publish</Button>
-            </form>
-          {/if}
-        </CardContent>
-      </Card>
+      <!-- v0.5.5 — Stage & publish picker replaces the v0.4.0 publish
+           card. Uses chat.list_pending_changes data passed in by the
+           parent page server load. -->
+      <StageSplitButton
+        {pendingChanges}
+        {csrfToken}
+        sessionPublished={!!session.publishedAt}
+      />
+      {#if pendingChangeCount > 0 && !session.publishedAt}
+        <p class="text-xs text-muted-foreground">
+          {pendingChangeCount} edit{pendingChangeCount === 1 ? "" : "s"} during this turn — reload
+          to refresh the picker.
+        </p>
+      {/if}
 
       {#if proposedDiffs.length > 0}
         <Card>
