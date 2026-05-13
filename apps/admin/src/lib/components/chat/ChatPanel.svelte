@@ -332,6 +332,32 @@
   /** P6.7.3 — surface SSE error events + failed tool results so users
    *  see a banner instead of a silent no-op when the AI stack errors. */
   let chatError = $state<string | null>(null);
+  // v0.5.9 — non-fatal warning channel. Surfaced as a subtle banner
+  // (not destructive alert) so the operator sees observability hints
+  // like "AI responded with text only" without it looking like a hard
+  // error. Cleared on send.
+  let chatWarning = $state<string | null>(null);
+  // v0.5.9 — stalled-stream watchdog. Tracks when the last SSE event
+  // arrived. While streaming, if >90s since the last event, surface a
+  // banner so the operator knows the stream stalled instead of
+  // waiting on a frozen spinner. Independent from server-side stream
+  // termination guarantees — protects against TCP drops the server
+  // cannot detect (browser tab suspend, network glitch, etc.).
+  let lastEventAtMs = $state<number>(0);
+  let streamStalled = $state<boolean>(false);
+  const STREAM_STALL_THRESHOLD_MS = 90_000;
+  $effect(() => {
+    if (!streaming) {
+      streamStalled = false;
+      return;
+    }
+    const id = setInterval(() => {
+      if (Date.now() - lastEventAtMs > STREAM_STALL_THRESHOLD_MS) {
+        streamStalled = true;
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  });
   // v0.2.54 — local mirror of session.extendedThinkingEnabled for
   // optimistic toggle. The form action persists to chat_sessions; this
   // local mirror keeps the toggle responsive without a page reload.
@@ -807,6 +833,9 @@
     const sentChips = chips;
     composer = "";
     chatError = null;
+    chatWarning = null;
+    streamStalled = false;
+    lastEventAtMs = Date.now();
     // Pinned chips ride every send; transient chips clear after.
     chips = chips.filter((c) => c.pinned);
     streaming = true;
@@ -848,6 +877,11 @@
         if (line.startsWith("data: ")) {
           try {
             const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+            // v0.5.9 — reset the stall-watchdog timer on every SSE
+            // event. Any event keeps the watchdog quiet; only true
+            // silence trips it.
+            lastEventAtMs = Date.now();
+            streamStalled = false;
             // v0.2.46 — record raw events + roll up tool calls / usage
             // for the debug panel. No-op when debug=false.
             // v0.2.55 — also mirror to console so operators can copy a
@@ -934,6 +968,11 @@
             }
             if (ev["kind"] === "error") {
               chatError = typeof ev["message"] === "string" ? ev["message"] : "Chat failed.";
+            } else if (ev["kind"] === "warning") {
+              // v0.5.9 — non-fatal observability hint (e.g.
+              // passive-response). Distinct from chatError so the
+              // banner renders as informational, not destructive.
+              chatWarning = typeof ev["message"] === "string" ? ev["message"] : "Notice";
             } else if (ev["kind"] === "tool-result" && ev["ok"] === false) {
               const toolCallId = String(ev["toolCallId"] ?? "");
               const meta = toolCallMeta.get(toolCallId);
@@ -1325,6 +1364,22 @@
               <li data-testid="chat-error">
                 <Alert variant="destructive">
                   <AlertDescription>{chatError}</AlertDescription>
+                </Alert>
+              </li>
+            {/if}
+            {#if chatWarning}
+              <li data-testid="chat-warning">
+                <Alert>
+                  <AlertDescription>{chatWarning}</AlertDescription>
+                </Alert>
+              </li>
+            {/if}
+            {#if streamStalled}
+              <li data-testid="chat-stalled">
+                <Alert>
+                  <AlertDescription>
+                    Connection seems stalled — no events for over 90s. Refresh the page to retry.
+                  </AlertDescription>
                 </Alert>
               </li>
             {/if}

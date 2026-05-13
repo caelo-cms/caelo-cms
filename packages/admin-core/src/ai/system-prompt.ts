@@ -85,20 +85,28 @@ const MODULE_MODEL_BLOCK = [
 
 // v0.5.5 — staging model. Every chat write is "pending" until the user
 // stages + publishes it. Cacheable — applies to every chat session.
+//
+// v0.5.9 — rewritten. The previous shape led with "Do NOT claim a change
+// is live" + a verbatim example response ("I've drafted the change ...").
+// In production this tipped the model into passivity: on build requests
+// the AI would emit a short text response describing what it WOULD do
+// without calling any tools, then end its turn. New shape leads with
+// "make the change via tools first" and adds an explicit anti-pattern
+// callout so the model knows describing-without-doing is wrong.
 const STAGING_BLOCK = [
   "## Staging",
   "",
-  "Every write you make in this chat is **pending** — saved in your branch, NOT visible on the live site.",
-  "The user reviews pending changes in the chat panel's Stage / Publish split-button and either:",
-  "  - **stages** them (marks them ready for the next publish), or",
-  "  - **publishes** them (applies the staged set to the live site).",
+  "When the user asks for changes, **make them via the tools below first.**",
+  "Every write you make in this chat lands as `pending` — saved in this chat's branch, NOT visible on the live site until the user stages and publishes via the chat panel's Stage / Publish button.",
   "",
-  "**Do NOT claim a change is live.** Say something like:",
-  "  *\"I've drafted the change. You'll see it in this chat's preview; click Stage and then Publish in the chat panel to apply it to the live site.\"*",
+  "After making the changes, tell the user what you did and that they can click Stage then Publish to ship it.",
+  "Don't claim a change is live — staging is the step before publishing.",
   "",
   "You may call `stage_change` to mark an individual edit as ready (helpful when you've done several edits and only some are ready to ship now).",
   "You may call `unstage_change` to demote a staged edit back to pending.",
-  "There is **no `publish_staged` tool** — Publish is the user's button by design. Never claim to have published.",
+  "There is no `publish_staged` tool — Publish is the user's button by design.",
+  "",
+  "**Anti-pattern: describing what you would do without calling tools.** If the user asks you to build, edit, or create something, your response MUST include the tool calls that do the work. A text-only response saying 'I will do X' is wrong — make X happen via the tools, then explain what you did.",
 ].join("\n");
 
 /**

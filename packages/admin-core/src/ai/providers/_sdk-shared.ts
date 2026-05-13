@@ -120,100 +120,132 @@ export async function* translateSDKStream(
   // Reasoning text accumulates across deltas; emit at reasoning-end.
   const reasoningById = new Map<string, string>();
 
-  for await (const ev of source) {
-    if (!ev || typeof ev !== "object") continue;
-    const e = ev as { type: string; [k: string]: unknown };
+  // v0.5.9 — track whether a terminal `done` event was yielded. If the
+  // underlying SDK stream ends without a `finish` or `error` part
+  // (proxy cut HTTP/2 cleanly with FIN/RST, model API closed the
+  // stream without a terminator, etc.) the for-await loop exits with
+  // no `done` yielded — downstream chat-runner falls through to an
+  // empty turn and the user sees a silent completion. The finally
+  // block below emits a synthetic terminal pair so every stream-end
+  // path produces an explicit signal.
+  let yieldedDone = false;
 
-    switch (e.type) {
-      case "text-delta": {
-        const text = (e.delta ?? e.text) as string | undefined;
-        if (typeof text === "string" && text.length > 0) yield { kind: "text-delta", text };
-        break;
-      }
-      case "reasoning-start": {
-        const id = (e.id as string | undefined) ?? "";
-        if (id) reasoningById.set(id, "");
-        break;
-      }
-      case "reasoning-delta": {
-        const id = (e.id as string | undefined) ?? "";
-        const delta = (e.delta ?? e.text) as string | undefined;
-        if (typeof delta === "string" && delta.length > 0) {
-          if (id) reasoningById.set(id, (reasoningById.get(id) ?? "") + delta);
-          yield { kind: "thinking-delta", text: delta };
+  try {
+    for await (const ev of source) {
+      if (!ev || typeof ev !== "object") continue;
+      const e = ev as { type: string; [k: string]: unknown };
+
+      switch (e.type) {
+        case "text-delta": {
+          const text = (e.delta ?? e.text) as string | undefined;
+          if (typeof text === "string" && text.length > 0) yield { kind: "text-delta", text };
+          break;
         }
-        break;
-      }
-      case "reasoning-end": {
-        const id = (e.id as string | undefined) ?? "";
-        const meta = (e.providerMetadata ?? e.providerOptions) as
-          | { anthropic?: { signature?: string } }
-          | undefined;
-        const signature = meta?.anthropic?.signature ?? "";
-        const accumulated = id ? (reasoningById.get(id) ?? "") : "";
-        const text = (e.text as string | undefined) ?? accumulated;
-        yield { kind: "thinking-stop", thinking: text, signature };
-        if (id) reasoningById.delete(id);
-        break;
-      }
-      case "tool-call": {
-        const id = (e.toolCallId as string | undefined) ?? "";
-        const name = (e.toolName as string | undefined) ?? "";
-        const args = typeof e.input === "string" ? safeJsonParse(e.input) : (e.input as unknown);
-        yield { kind: "tool-call", id, name, arguments: args };
-        break;
-      }
-      case "finish-step": {
-        const u = e.usage as
-          | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
-          | undefined;
-        if (u) {
-          usage = {
-            inputTokens: u.inputTokens ?? usage.inputTokens,
-            outputTokens: u.outputTokens ?? usage.outputTokens,
-            cachedTokens: u.cachedInputTokens ?? usage.cachedTokens,
+        case "reasoning-start": {
+          const id = (e.id as string | undefined) ?? "";
+          if (id) reasoningById.set(id, "");
+          break;
+        }
+        case "reasoning-delta": {
+          const id = (e.id as string | undefined) ?? "";
+          const delta = (e.delta ?? e.text) as string | undefined;
+          if (typeof delta === "string" && delta.length > 0) {
+            if (id) reasoningById.set(id, (reasoningById.get(id) ?? "") + delta);
+            yield { kind: "thinking-delta", text: delta };
+          }
+          break;
+        }
+        case "reasoning-end": {
+          const id = (e.id as string | undefined) ?? "";
+          const meta = (e.providerMetadata ?? e.providerOptions) as
+            | { anthropic?: { signature?: string } }
+            | undefined;
+          const signature = meta?.anthropic?.signature ?? "";
+          const accumulated = id ? (reasoningById.get(id) ?? "") : "";
+          const text = (e.text as string | undefined) ?? accumulated;
+          yield { kind: "thinking-stop", thinking: text, signature };
+          if (id) reasoningById.delete(id);
+          break;
+        }
+        case "tool-call": {
+          const id = (e.toolCallId as string | undefined) ?? "";
+          const name = (e.toolName as string | undefined) ?? "";
+          const args = typeof e.input === "string" ? safeJsonParse(e.input) : (e.input as unknown);
+          yield { kind: "tool-call", id, name, arguments: args };
+          break;
+        }
+        case "finish-step": {
+          const u = e.usage as
+            | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
+            | undefined;
+          if (u) {
+            usage = {
+              inputTokens: u.inputTokens ?? usage.inputTokens,
+              outputTokens: u.outputTokens ?? usage.outputTokens,
+              cachedTokens: u.cachedInputTokens ?? usage.cachedTokens,
+            };
+          }
+          break;
+        }
+        case "finish": {
+          const tu = (e.totalUsage ?? e.usage) as
+            | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
+            | undefined;
+          if (tu) {
+            usage = {
+              inputTokens: tu.inputTokens ?? usage.inputTokens,
+              outputTokens: tu.outputTokens ?? usage.outputTokens,
+              cachedTokens: tu.cachedInputTokens ?? usage.cachedTokens,
+            };
+          }
+          yield { kind: "usage", ...usage };
+          const reason = e.finishReason as string | undefined;
+          yield {
+            kind: "done",
+            stopReason:
+              reason === "stop"
+                ? "end_turn"
+                : reason === "tool-calls"
+                  ? "tool_use"
+                  : reason === "length"
+                    ? "max_tokens"
+                    : "error",
           };
+          yieldedDone = true;
+          break;
         }
-        break;
-      }
-      case "finish": {
-        const tu = (e.totalUsage ?? e.usage) as
-          | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
-          | undefined;
-        if (tu) {
-          usage = {
-            inputTokens: tu.inputTokens ?? usage.inputTokens,
-            outputTokens: tu.outputTokens ?? usage.outputTokens,
-            cachedTokens: tu.cachedInputTokens ?? usage.cachedTokens,
-          };
+        case "error": {
+          const errVal = e.error as unknown;
+          const message =
+            errVal instanceof Error
+              ? errVal.message
+              : typeof errVal === "string"
+                ? errVal
+                : "provider error";
+          yield { kind: "error", message };
+          yield { kind: "done", stopReason: "error" };
+          yieldedDone = true;
+          break;
         }
-        yield { kind: "usage", ...usage };
-        const reason = e.finishReason as string | undefined;
-        yield {
-          kind: "done",
-          stopReason:
-            reason === "stop"
-              ? "end_turn"
-              : reason === "tool-calls"
-                ? "tool_use"
-                : reason === "length"
-                  ? "max_tokens"
-                  : "error",
-        };
-        break;
       }
-      case "error": {
-        const errVal = e.error as unknown;
-        const message =
-          errVal instanceof Error
-            ? errVal.message
-            : typeof errVal === "string"
-              ? errVal
-              : "provider error";
-        yield { kind: "error", message };
-        yield { kind: "done", stopReason: "error" };
-        break;
-      }
+    }
+  } finally {
+    // v0.5.9 — every exit path emits a terminal pair. If the source
+    // ended without a `finish` or `error` part the chat-runner would
+    // otherwise see the inner for-await exit with no `done`, then
+    // fall through to an empty-turn no-op. Emit synthetic events so
+    // downstream sees explicit failure.
+    if (!yieldedDone) {
+      console.error("[provider stream] ended without finish event", {
+        usageInput: usage.inputTokens,
+        usageOutput: usage.outputTokens,
+      });
+      yield {
+        kind: "error",
+        message:
+          "Provider stream ended without a finish event — likely an upstream proxy closed the connection. Retry the message.",
+      };
+      yield { kind: "done", stopReason: "error" };
     }
   }
 }

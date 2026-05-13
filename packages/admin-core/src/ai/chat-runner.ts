@@ -60,6 +60,13 @@ export type ClientEvent =
   | { kind: "done" }
   | { kind: "error"; message: string }
   /**
+   * v0.5.9 — non-fatal observability signal. Surfaces conditions that
+   * aren't errors but the operator likely wants to see. Distinct kind
+   * so ChatPanel can render warnings differently from hard errors. Code
+   * field lets future warnings differentiate.
+   */
+  | { kind: "warning"; code: string; message: string }
+  /**
    * v0.2.54 — extended-thinking text deltas; ChatPanel renders into a
    * collapsed details block above the assistant message. UI can ignore
    * these when extended thinking is off.
@@ -1258,6 +1265,29 @@ export async function* runChatTurn(
       tokensIn: totalIn,
       tokensOut: totalOut,
     });
+
+    // v0.5.9 — passive-response detection. When the very first loop
+    // iteration ends without any tool calls AND the AI ended its own
+    // turn, surface a non-fatal warning. Catches the production
+    // symptom where the AI describes what it would do in prose
+    // instead of calling tools (root cause traced to a too-passive
+    // STAGING_BLOCK; warning here as defence-in-depth). Sometimes
+    // text-only IS the right answer (the user asked a question, not
+    // a build request) — the warning is informational, not blocking.
+    if (loop === 0 && accumulatedToolCalls.length === 0 && loopStop === "end_turn" && !aborted()) {
+      const textChars = accumulatedText.join("").length;
+      console.error("[chat-runner] passive-response", {
+        chatSessionId: input.chatSessionId,
+        textChars,
+        tokensOut: totalOut,
+      });
+      yield {
+        kind: "warning",
+        code: "passive-response",
+        message:
+          "AI responded with text only — no tools were called. If you expected changes, reply asking the AI to use its tools to make them.",
+      };
+    }
 
     if (aborted()) break;
     lastLoopStop = loopStop;

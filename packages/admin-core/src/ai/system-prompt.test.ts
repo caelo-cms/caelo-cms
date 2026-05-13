@@ -44,4 +44,20 @@ describe("composeSystemPromptChunks", () => {
     // v0.5.5 — staging joins them as a third permanent cacheable chunk.
     expect(chunks.map((c) => c.label)).toEqual(["base", "module-model", "staging"]);
   });
+
+  // v0.5.9 — wording-lock: production silent-fail traced to STAGING_BLOCK
+  // tipping the AI into passive ("I've drafted...") responses. The new
+  // shape leads with "make them via the tools below first" and adds an
+  // anti-pattern callout. This test fails if either is regressed.
+  it("staging chunk leads with action and forbids describing-without-doing", () => {
+    const chunks = composeSystemPromptChunks([], []);
+    const staging = chunks.find((c) => c.label === "staging");
+    expect(staging).toBeDefined();
+    const body = staging?.body ?? "";
+    expect(body).toContain("make them via the tools below first");
+    expect(body).toContain("Anti-pattern");
+    expect(body).toContain("describing what you would do without calling tools");
+    // Pre-v0.5.9 example response — must NOT come back.
+    expect(body).not.toContain("I've drafted the change");
+  });
 });

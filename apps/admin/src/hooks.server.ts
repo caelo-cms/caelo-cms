@@ -1,5 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// v0.5.9 — process-level handlers. Catches every async-leaked rejection
+// and uncaught exception that would otherwise vanish into Bun's default
+// (kill the process on uncaughtException; silently drop unhandledRejection
+// in some configurations). Logs to stderr with a distinctive prefix so
+// Cloud Run captures it and operators can grep one identifier across
+// otherwise-invisible failures. Does NOT call process.exit — the runtime
+// stays up; we just want visibility.
+process.on("unhandledRejection", (reason, p) => {
+  console.error("[unhandled.rejection]", { reason, promise: String(p) });
+});
+process.on("uncaughtException", (e) => {
+  console.error("[uncaught.exception]", e);
+});
+
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
@@ -324,13 +338,18 @@ function ensureProviderResolverConfigured(): void {
 
 export const handle: Handle = async ({ event, resolve }) => {
   ensureProviderResolverConfigured();
-  void bootstrapTranslationWorker();
+  // v0.5.9 — fire-and-forget bootstraps had `void` prefixes that
+  // swallowed their rejections. Replace with .catch() so background
+  // task failures (translation worker crash, plugin manifest invalid,
+  // bootstrap token DB write) land in Cloud Run stderr instead of
+  // disappearing into the void.
+  bootstrapTranslationWorker().catch((e) => console.error("[bootstrap.translation] failed", e));
   bootstrapRedeploy();
   bootstrapReleaseCheck();
   bootstrapProposalGc();
   bootstrapMcpBridge();
-  void bootstrapPlugins();
-  void consumePendingBootstrapToken();
+  bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
+  consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   const { adapter, registry } = getQueryContext();
   const token = event.cookies.get(SESSION_COOKIE);
   let user: App.Locals["user"] = null;
