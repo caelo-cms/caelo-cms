@@ -546,22 +546,55 @@ const adminDomainMapping = provisionAdminDomain
 // shipped. If your provider build is older than v8.x, run
 // `gcloud beta run services update <admin-service> --iap` as a
 // post-up step. The stack provisions the IAM bindings either way.
-// v0.3.17 — Native IAP on Cloud Run requires TWO bindings per
-// allowlisted user (testing showed iap-only isn't enough — Cloud
-// Run still rejects with 403 Forbidden after IAP forwards):
+// v0.3.19 — Native IAP on Cloud Run needs THREE bindings to
+// actually serve requests. The first two go per allowlisted user;
+// the third goes on the IAP service identity (one for the whole
+// install).
 //
-//   1. `roles/iap.httpsResourceAccessor` on the IAP WEB layer —
-//      lets the user pass IAP authentication.
+//   1. `roles/iap.httpsResourceAccessor` on the IAP WEB layer
+//      (per user) — passes IAP auth.
 //      Resource: `gcp.iap.WebCloudRunServiceIamMember`
 //      (matches `gcloud beta iap web add-iam-policy-binding`).
 //
-//   2. `roles/run.invoker` on the Cloud Run service v2 IAM —
-//      lets Cloud Run accept the IAP-forwarded request. Without
-//      this, Cloud Run's own auth gate rejects with "Your client
-//      does not have permission".
+//   2. `roles/run.invoker` on the Cloud Run service v2 IAM
+//      (per user) — kept for "private mode" (user hits the
+//      *.run.app URL with an OAuth token directly, bypassing
+//      IAP). Not strictly required for IAP-forwarded traffic
+//      since IAP forwards as its own SA (#3) — but the user
+//      principal is harmless extra.
 //
-// Both are needed for IAP-protected Cloud Run to actually serve
-// requests to the operator.
+//   3. `roles/run.invoker` to the IAP SERVICE IDENTITY
+//      (`service-<projectnum>@gcp-sa-iap.iam.gserviceaccount.com`)
+//      on the Cloud Run service. THIS is the critical one for
+//      IAP-forwarded traffic: when IAP intercepts a request and
+//      forwards to Cloud Run, it does so AS the IAP SA, and
+//      Cloud Run gates the invocation on `run.invoker` for that
+//      principal. Without this, Cloud Run returns 403 "request
+//      was not authenticated" even after IAP allowed the user
+//      through.
+//
+// The IAP SA is materialized via `gcp.projects.ServiceIdentity`
+// (works for iap.googleapis.com; the v0.3.10 attempt failed only
+// for firebasehosting.googleapis.com).
+
+const iapServiceIdentity = new gcp.projects.ServiceIdentity(
+  `${namePrefix}-iap-sa`,
+  { project, service: "iap.googleapis.com" },
+  opts,
+);
+
+new gcp.cloudrunv2.ServiceIamMember(
+  `${namePrefix}-admin-iap-sa-invoker`,
+  {
+    project,
+    location: region,
+    name: adminSvc.name,
+    role: "roles/run.invoker",
+    member: pulumi.interpolate`serviceAccount:${iapServiceIdentity.email}`,
+  },
+  { ...opts, dependsOn: [iapServiceIdentity] },
+);
+
 for (const principal of iapAllowlist) {
   const slug = principal.replace(/[^a-z0-9]/gi, "-").slice(0, 40);
 
