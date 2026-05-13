@@ -98,13 +98,24 @@ async function drain(it: AsyncIterable<unknown>): Promise<void> {
 
 describe("chat branch isolation", () => {
   it("two chats produce snapshots tagged with their own branch ids; main untouched", async () => {
-    const create = await execute(registry, adapter, HUMAN, "modules.create", {
-      slug: MOD_SLUG,
-      displayName: "M",
-      html: "<p>main</p>",
+    // v0.5.0 — per-entity lock makes two chats editing the SAME module
+    // structurally impossible (second chat gets a Locked error). To
+    // keep verifying branch-tagging behavior, use two separate modules
+    // (one per chat). Each chat locks its own module; both succeed;
+    // each branch's snapshot carries the matching edit.
+    const createA = await execute(registry, adapter, HUMAN, "modules.create", {
+      slug: `${MOD_SLUG}-a`,
+      displayName: "M-A",
+      html: "<p>main-a</p>",
     });
-    if (!create.ok) throw new Error("seed");
-    const moduleId = (create.value as { moduleId: string }).moduleId;
+    const createB = await execute(registry, adapter, HUMAN, "modules.create", {
+      slug: `${MOD_SLUG}-b`,
+      displayName: "M-B",
+      html: "<p>main-b</p>",
+    });
+    if (!createA.ok || !createB.ok) throw new Error("seed");
+    const moduleIdA = (createA.value as { moduleId: string }).moduleId;
+    const moduleIdB = (createB.value as { moduleId: string }).moduleId;
 
     const sessionA = await execute(registry, adapter, HUMAN, "chat.create_session", {
       title: "p5-iso-a",
@@ -122,7 +133,7 @@ describe("chat branch isolation", () => {
         {
           adapter,
           registry,
-          provider: new MultiFixtureProvider(fixture(moduleId, "<p>edit-from-A</p>")),
+          provider: new MultiFixtureProvider(fixture(moduleIdA, "<p>edit-from-A</p>")),
           tools,
           aiCtx: AI,
           humanCtx: HUMAN,
@@ -135,7 +146,7 @@ describe("chat branch isolation", () => {
         {
           adapter,
           registry,
-          provider: new MultiFixtureProvider(fixture(moduleId, "<p>edit-from-B</p>")),
+          provider: new MultiFixtureProvider(fixture(moduleIdB, "<p>edit-from-B</p>")),
           tools,
           aiCtx: AI,
           humanCtx: HUMAN,
@@ -145,8 +156,8 @@ describe("chat branch isolation", () => {
     );
 
     // Latest module_snapshots row in branch A reflects A's edit; B's
-    // reflects B's edit. Main (no branch) carries the original 'main' from
-    // the seed (modules.create wrote a snapshot with chat_branch_id NULL).
+    // reflects B's edit. Main (no branch) carries the original from the
+    // seed (modules.create wrote a snapshot with chat_branch_id NULL).
     const sql = new SQL(ADMIN_URL!);
     try {
       await sql.begin(async (tx) => {
@@ -154,7 +165,7 @@ describe("chat branch isolation", () => {
         const aRow = (await tx`
           SELECT ms.state FROM module_snapshots ms
           JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ms.module_id = ${moduleId}::uuid AND ss.chat_branch_id = ${a.chatBranchId}::uuid
+          WHERE ms.module_id = ${moduleIdA}::uuid AND ss.chat_branch_id = ${a.chatBranchId}::uuid
           ORDER BY ss.created_at DESC LIMIT 1
         `) as unknown as { state: string | { html: string } }[];
         const aHtml =
@@ -166,7 +177,7 @@ describe("chat branch isolation", () => {
         const bRow = (await tx`
           SELECT ms.state FROM module_snapshots ms
           JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ms.module_id = ${moduleId}::uuid AND ss.chat_branch_id = ${b.chatBranchId}::uuid
+          WHERE ms.module_id = ${moduleIdB}::uuid AND ss.chat_branch_id = ${b.chatBranchId}::uuid
           ORDER BY ss.created_at DESC LIMIT 1
         `) as unknown as { state: string | { html: string } }[];
         const bHtml =
@@ -175,18 +186,18 @@ describe("chat branch isolation", () => {
             : (bRow[0]?.state as { html: string }).html;
         expect(bHtml).toContain("edit-from-B");
 
-        // Main snapshot for this module — still the seeded "main" body.
+        // Main snapshot for module A — still the seeded "main-a" body.
         const mainRow = (await tx`
           SELECT ms.state FROM module_snapshots ms
           JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ms.module_id = ${moduleId}::uuid AND ss.chat_branch_id IS NULL
+          WHERE ms.module_id = ${moduleIdA}::uuid AND ss.chat_branch_id IS NULL
           ORDER BY ss.created_at DESC LIMIT 1
         `) as unknown as { state: string | { html: string } }[];
         const mainHtml =
           typeof mainRow[0]?.state === "string"
             ? (JSON.parse(mainRow[0].state).html as string)
             : (mainRow[0]?.state as { html: string }).html;
-        expect(mainHtml).toBe("<p>main</p>");
+        expect(mainHtml).toBe("<p>main-a</p>");
       });
     } finally {
       await sql.end();
