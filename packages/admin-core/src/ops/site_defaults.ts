@@ -125,8 +125,16 @@ export const setSiteDefaultsOp = defineOperation({
         message: "default template not found or deleted",
       });
     }
+    // v0.5.16 — site_defaults.id is `int GENERATED ALWAYS AS IDENTITY`
+    // with a singleton CHECK (id = 1). Postgres rejects explicit values
+    // on GENERATED ALWAYS columns unless OVERRIDING SYSTEM VALUE is
+    // present. The seed migration (0023) uses it; this runtime INSERT
+    // was missing it. Symptom: site_defaults.set failed on every fresh
+    // install that hadn't received the seed row (any layout slug !=
+    // 'site-default'). Matching the seed shape closes the gap.
     await tx.execute(sql`
       INSERT INTO site_defaults (id, default_layout_id, default_template_id, updated_by)
+      OVERRIDING SYSTEM VALUE
       VALUES (1, ${input.defaultLayoutId}::uuid, ${input.defaultTemplateId}::uuid, ${ctx.actorId}::uuid)
       ON CONFLICT (id) DO UPDATE SET
         default_layout_id   = EXCLUDED.default_layout_id,
