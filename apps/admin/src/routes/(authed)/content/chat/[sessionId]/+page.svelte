@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { Eye, EyeOff } from "lucide-svelte";
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import ChatPanel from "$lib/components/chat/ChatPanel.svelte";
@@ -39,15 +40,92 @@
       window.history.replaceState({}, "", next.toString());
     }
   });
+
+  // v0.3.21 — live-preview pane. Mirrors /edit's iframe-postMessage
+  // protocol so the user can watch the AI build pages in real time
+  // without leaving the chat surface. Defaults to OPEN when the
+  // install has at least one page; collapsed otherwise (fresh
+  // install — AI is about to create the first page). User toggle
+  // persists in localStorage so the choice survives reloads.
+  const previewKey = "caelo:chat-preview-open";
+  let previewOpen = $state(false);
+  let iframe = $state<HTMLIFrameElement | null>(null);
+
+  onMount(() => {
+    const stored = localStorage.getItem(previewKey);
+    if (stored === "0") previewOpen = false;
+    else if (stored === "1") previewOpen = true;
+    else previewOpen = data.previewDefault !== null;
+  });
+
+  function togglePreview(): void {
+    previewOpen = !previewOpen;
+    localStorage.setItem(previewKey, previewOpen ? "1" : "0");
+  }
+
+  const previewSrc = $derived(
+    data.previewDefault
+      ? `/edit/preview-by-path/${data.previewDefault.locale}/${data.previewDefault.slug}?branch=${data.session.chatBranchId}`
+      : null,
+  );
+
+  // Reload the iframe on every successful AI tool-result so the user
+  // sees mutations land in real time. Same protocol as /edit's
+  // onAiToolResult — iframe-inject-script listens for caelo:reload.
+  function onAiToolResult(payload: { ok: boolean }): void {
+    if (!payload.ok || !iframe?.contentWindow) return;
+    iframe.contentWindow.postMessage({ kind: "caelo:reload" }, window.location.origin);
+  }
 </script>
 
-<ChatPanel
-  session={data.session}
-  initialMessages={data.messages}
-  modules={data.modules}
-  csrfToken={data.csrfToken}
-  formError={form?.error ?? null}
-  {debug}
-  canDebug={data.canDebug}
-  onToggleDebug={toggleDebug}
-/>
+<div class="flex h-screen">
+  {#if previewOpen && previewSrc}
+    <div class="flex-1 border-r bg-background relative">
+      <iframe
+        bind:this={iframe}
+        src={previewSrc}
+        title="Live preview"
+        class="h-full w-full border-0"
+      ></iframe>
+      <button
+        type="button"
+        onclick={togglePreview}
+        class="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md bg-background/90 px-2 py-1 text-xs shadow ring-1 ring-border hover:bg-accent"
+        aria-label="Hide live preview"
+      >
+        <EyeOff class="size-3" />
+        Hide preview
+      </button>
+    </div>
+  {/if}
+
+  <div class="flex {previewOpen && previewSrc ? 'w-[480px]' : 'flex-1'} flex-col">
+    {#if !previewOpen}
+      <div class="border-b px-3 py-1.5 flex items-center justify-end">
+        <button
+          type="button"
+          onclick={togglePreview}
+          class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs ring-1 ring-border hover:bg-accent"
+          aria-label="Show live preview"
+        >
+          <Eye class="size-3" />
+          {data.previewDefault ? "Show live preview" : "Preview (no pages yet)"}
+        </button>
+      </div>
+    {/if}
+
+    <div class="flex-1 overflow-hidden">
+      <ChatPanel
+        session={data.session}
+        initialMessages={data.messages}
+        modules={data.modules}
+        csrfToken={data.csrfToken}
+        formError={form?.error ?? null}
+        {debug}
+        canDebug={data.canDebug}
+        onToggleDebug={toggleDebug}
+        onToolResult={onAiToolResult}
+      />
+    </div>
+  </div>
+</div>

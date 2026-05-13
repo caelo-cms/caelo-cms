@@ -15,16 +15,24 @@ interface ChatPageData {
   /** v0.2.46 — gates the debug panel. True when the user has
    *  settings.read; the page component then opts in via `?debug=1`. */
   canDebug: boolean;
+  /**
+   * v0.3.21 — default page to render in the live-preview pane. Falls
+   * back to home/en, then the first page in the list, then null when
+   * the install has zero pages (fresh-install case). Null collapses
+   * the preview pane until the AI creates the first page.
+   */
+  previewDefault: { locale: string; slug: string } | null;
 }
 
 export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPageData> => {
   requirePermission(locals, "content.read");
   const { adapter, registry } = getQueryContext();
-  const [sessionR, modulesR] = await Promise.all([
+  const [sessionR, modulesR, pagesR] = await Promise.all([
     execute(registry, adapter, locals.ctx, "chat.get_session", {
       chatSessionId: params.sessionId,
     }),
     execute(registry, adapter, locals.ctx, "modules.list", {}),
+    execute(registry, adapter, locals.ctx, "pages.list", {}),
   ]);
   if (!sessionR.ok) throw error(404, "Chat not found");
   const sessionData = sessionR.value as {
@@ -46,6 +54,19 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
         ? m.thinkingBlocks.map((b) => b.thinking).join("\n\n")
         : undefined,
   }));
+  // v0.3.21 — pick the default preview page (mirrors /edit's logic).
+  // Prefer home/en, fall back to the first page, null when none exist.
+  const allPages = pagesR.ok
+    ? (pagesR.value as { pages: { slug: string; locale: string }[] }).pages
+    : [];
+  const home = allPages.find((p) => p.slug === "home" && p.locale === "en");
+  const firstPage = allPages[0];
+  const previewDefault = home
+    ? { locale: home.locale, slug: home.slug }
+    : firstPage
+      ? { locale: firstPage.locale, slug: firstPage.slug }
+      : null;
+
   return {
     session: sessionData.session,
     messages,
@@ -53,6 +74,7 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
     // v0.2.46 — debug panel exposes engaged-skills + tool args, so it
     // needs the same permission as the rest of /security/* views.
     canDebug: locals.user?.permissions.has("settings.read") ?? false,
+    previewDefault,
   };
 };
 
