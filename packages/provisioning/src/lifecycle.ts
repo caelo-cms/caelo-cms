@@ -792,8 +792,8 @@ export async function truncateCommand(): Promise<void> {
 
   log.warn(
     yellow(
-      `${bold("Truncate")} wipes ALL pages, modules, templates, layouts, redirects, nav menus, theme tokens, media assets, chat history, audit log, and snapshots on ${bold(meta.domain)}.\n` +
-        `Preserved: users / roles / AI providers / domains / site_defaults / provisioning_outputs / site memory.`,
+      `${bold("Truncate")} wipes ALL pages, modules, templates, layouts, redirects, nav menus, theme tokens, media assets, chat history, audit log, snapshots, and site memory on ${bold(meta.domain)}.\n` +
+        `Preserved: users / roles / AI providers / domains / site_defaults / provisioning_outputs.`,
     ),
   );
   const confirm1 = await confirm({

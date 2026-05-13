@@ -58,10 +58,12 @@ if (!url) {
  *   - site_defaults                      → default layout / template IDs
  *   - deploy_targets                     → staging / production targets
  *   - provisioning_outputs               → DNS records the wizard saved
- *   - site_ai_memory                     → Owner-curated brand voice
  *   - skills / skill_proposals           → AI behaviour
  *   - bootstrap_tokens (cleared anyway)  → next setup token
  *   - __drizzle_migrations               → migration bookkeeping
+ *
+ * site_ai_memory IS wiped per operator direction — brand voice can be
+ * re-curated on the fresh install.
  */
 const ADMIN_TABLES = [
   // Snapshots (referencing content + chats)
@@ -99,6 +101,12 @@ const ADMIN_TABLES = [
 
   // Audit history (chat + content)
   "audit_events",
+
+  // v0.4.1 — site memory (Owner brand voice) + AI-proposed memory queue.
+  // Per operator direction: truncate alongside content so post-truncate
+  // installs start with a clean brand-voice slate.
+  "site_memory_proposals",
+  "site_ai_memory",
 
   // Pending proposals (always tied to specific entities)
   "ai_providers_pending",
