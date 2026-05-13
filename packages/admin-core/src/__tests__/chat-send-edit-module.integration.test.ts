@@ -153,12 +153,14 @@ describe("chat send → edit_module → snapshot", () => {
     expect(events).toContain("tool-result");
     expect(events).toContain("done");
 
-    // Live module updated.
+    // v0.5.1 — chat-driven module edits stay in the chat's branch
+    // (live row unchanged). Verify the latest branched snapshot
+    // reflects the edit and live still carries the seed HTML.
     const got = await execute(registry, adapter, humanCtx, "modules.get", { moduleId });
     if (!got.ok) return;
-    expect((got.value as { module: { html: string } }).module.html).toContain("color:blue");
+    expect((got.value as { module: { html: string } }).module.html).toBe("<h1>Hero</h1>");
 
-    // Snapshot tagged with the chat branch.
+    // Snapshot tagged with the chat branch AND carrying the edit body.
     const sql = new SQL(ADMIN_URL!);
     try {
       await sql.begin(async (tx) => {
@@ -168,6 +170,19 @@ describe("chat send → edit_module → snapshot", () => {
           WHERE chat_branch_id = ${chatBranchId}::uuid
         `) as unknown as { c: number }[];
         expect(rows[0]?.c).toBeGreaterThanOrEqual(1);
+
+        const stateRows = (await tx`
+          SELECT ms.state FROM module_snapshots ms
+          JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+          WHERE ms.module_id = ${moduleId}::uuid AND ss.chat_branch_id = ${chatBranchId}::uuid
+          ORDER BY ss.created_at DESC LIMIT 1
+        `) as unknown as { state: string | { html: string } }[];
+        const raw = stateRows[0]?.state;
+        const branchedHtml =
+          typeof raw === "string"
+            ? (JSON.parse(raw).html as string)
+            : ((raw as { html: string }).html ?? "");
+        expect(branchedHtml).toContain("color:blue");
       });
     } finally {
       await sql.end();

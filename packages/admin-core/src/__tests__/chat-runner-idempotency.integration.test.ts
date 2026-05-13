@@ -95,7 +95,10 @@ describe("chat-runner tool-call idempotency", () => {
       title: "p5-2-idem-1",
     });
     if (!session.ok) throw new Error("session");
-    const { chatSessionId } = session.value as { chatSessionId: string };
+    const { chatSessionId, chatBranchId } = session.value as {
+      chatSessionId: string;
+      chatBranchId: string;
+    };
 
     const sharedToolCallId = "tool_dup_xyz";
     const provider = new TwoTurnProvider([
@@ -123,10 +126,32 @@ describe("chat-runner tool-call idempotency", () => {
       // drain
     }
 
-    // After turn 1, module is at v1.
-    const after1 = await execute(registry, adapter, HUMAN, "modules.get", { moduleId });
-    if (!after1.ok) throw new Error("get");
-    expect((after1.value as { module: { html: string } }).module.html).toBe("<p>v1</p>");
+    // v0.5.1 — chat-driven module edits stay in the chat's branch
+    // (live row is unchanged until publish). Verify the branched
+    // snapshot reflects v1 and that live remains v0.
+    const sqlCheck = new SQL(ADMIN_URL!);
+    const branchHtml = async (): Promise<string> => {
+      let html = "";
+      await sqlCheck.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const rows = (await tx`
+          SELECT ms.state FROM module_snapshots ms
+          JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+          WHERE ms.module_id = ${moduleId}::uuid AND ss.chat_branch_id = ${chatBranchId}::uuid
+          ORDER BY ss.created_at DESC LIMIT 1
+        `) as unknown as { state: string | { html: string } }[];
+        const raw = rows[0]?.state;
+        html =
+          typeof raw === "string"
+            ? (JSON.parse(raw).html as string)
+            : ((raw as { html: string }).html ?? "");
+      });
+      return html;
+    };
+    expect(await branchHtml()).toBe("<p>v1</p>");
+    const liveAfter1 = await execute(registry, adapter, HUMAN, "modules.get", { moduleId });
+    if (!liveAfter1.ok) throw new Error("get");
+    expect((liveAfter1.value as { module: { html: string } }).module.html).toBe("<p>v0</p>");
 
     // Turn 2: same tool_call_id, but try to set v2. The runner MUST
     // serve the cached result and NOT mutate the module again.
@@ -157,8 +182,12 @@ describe("chat-runner tool-call idempotency", () => {
     }
     expect(cachedHits).toBe(1);
 
-    const after2 = await execute(registry, adapter, HUMAN, "modules.get", { moduleId });
-    if (!after2.ok) throw new Error("get2");
-    expect((after2.value as { module: { html: string } }).module.html).toBe("<p>v1</p>");
+    // Idempotency check: the branched snapshot must still reflect v1,
+    // not v2 (cached tool-result short-circuited the second mutation).
+    expect(await branchHtml()).toBe("<p>v1</p>");
+    const liveAfter2 = await execute(registry, adapter, HUMAN, "modules.get", { moduleId });
+    if (!liveAfter2.ok) throw new Error("get2");
+    expect((liveAfter2.value as { module: { html: string } }).module.html).toBe("<p>v0</p>");
+    await sqlCheck.end();
   });
 });
