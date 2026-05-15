@@ -87,6 +87,26 @@ export const addModuleToPageToolInput = z
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
+    /**
+     * v0.5.21 — module field schema (v0.4.0 module/content split). The
+     * AI declares fields here when creating a module that uses `{{name}}`
+     * substitutions; per-page content gets filled via
+     * `set_page_module_content` later. Optional — modules with no
+     * field schema are static HTML.
+     */
+    fields: z
+      .array(
+        z
+          .object({
+            name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+            kind: z.enum(["text", "richtext", "url", "image", "number", "boolean", "link"]),
+            label: z.string().min(1).max(128),
+            default: z.unknown().optional(),
+          })
+          .strict(),
+      )
+      .max(64)
+      .optional(),
   })
   .strict();
 
@@ -105,6 +125,20 @@ export const addModuleToTemplateToolInput = z
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
+    /** v0.5.21 — see addModuleToPageToolInput.fields for context. */
+    fields: z
+      .array(
+        z
+          .object({
+            name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+            kind: z.enum(["text", "richtext", "url", "image", "number", "boolean", "link"]),
+            label: z.string().min(1).max(128),
+            default: z.unknown().optional(),
+          })
+          .strict(),
+      )
+      .max(64)
+      .optional(),
   })
   .strict();
 
@@ -420,6 +454,20 @@ export const addModuleToLayoutToolInput = z
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
+    /** v0.5.21 — see addModuleToPageToolInput.fields for context. */
+    fields: z
+      .array(
+        z
+          .object({
+            name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+            kind: z.enum(["text", "richtext", "url", "image", "number", "boolean", "link"]),
+            label: z.string().min(1).max(128),
+            default: z.unknown().optional(),
+          })
+          .strict(),
+      )
+      .max(64)
+      .optional(),
   })
   .strict();
 

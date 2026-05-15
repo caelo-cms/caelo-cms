@@ -217,6 +217,31 @@ export const createTemplateOp = defineOperation({
         message: "no id returned",
       });
     }
+    // v0.5.21 — auto-derive template_blocks from <caelo-slot name="X">
+    // tags in the HTML. Pre-v0.5.21 templates.create created the
+    // template row but no block rows; the AI's follow-up
+    // add_module_to_page("content") rejected because the block
+    // didn't exist. Block names are deduped + ordered by first
+    // appearance in HTML; positions are 0-based ascending.
+    const slotNames: string[] = [];
+    const seenSlots = new Set<string>();
+    const slotPattern = /<caelo-slot\s+name=["']([^"']+)["']/gi;
+    for (const match of input.html.matchAll(slotPattern)) {
+      const name = match[1];
+      if (name && !seenSlots.has(name)) {
+        seenSlots.add(name);
+        slotNames.push(name);
+      }
+    }
+    for (let i = 0; i < slotNames.length; i++) {
+      const blockName = slotNames[i];
+      if (!blockName) continue;
+      await tx.execute(sql`
+        INSERT INTO template_blocks (template_id, name, display_name, position)
+        VALUES (${templateId}::uuid, ${blockName}, ${blockName}, ${i})
+        ON CONFLICT DO NOTHING
+      `);
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -224,7 +249,7 @@ export const createTemplateOp = defineOperation({
       input,
       succeeded: true,
       entityId: templateId,
-      resultSummary: `slug=${input.slug}`,
+      resultSummary: `slug=${input.slug} blocks=${slotNames.length}`,
     });
     const state = await loadTemplateState(tx, templateId);
     if (state) {

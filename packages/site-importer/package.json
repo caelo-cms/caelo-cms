@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/site-importer",
-  "version": "0.5.20",
+  "version": "0.5.21",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",

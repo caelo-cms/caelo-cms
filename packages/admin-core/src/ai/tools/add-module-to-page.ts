@@ -81,6 +81,26 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
       js: { type: "string", maxLength: 50_000 },
+      // v0.5.21 — module field schema (v0.4.0 split). See edit_module
+      // for the per-field shape; same validation rules apply here.
+      fields: {
+        type: "array",
+        maxItems: 64,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name", "kind", "label"],
+          properties: {
+            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
+            kind: {
+              type: "string",
+              enum: ["text", "richtext", "url", "image", "number", "boolean", "link"],
+            },
+            label: { type: "string", minLength: 1, maxLength: 128 },
+            default: {},
+          },
+        },
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {
@@ -91,6 +111,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
       html: input.html,
       css: input.css ?? "",
       js: input.js ?? "",
+      ...(input.fields ? { fields: input.fields } : {}),
     });
     if (!created.ok) {
       return {
