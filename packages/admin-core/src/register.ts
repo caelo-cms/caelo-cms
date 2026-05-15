@@ -36,6 +36,7 @@ import {
   stageChatChangesOp,
   unstageChatChangesOp,
 } from "./ops/chat/stage.js";
+import { summarizeChatOp } from "./ops/chat/summarize.js";
 import {
   executeLayoutProposalOp,
   listPendingLayoutProposalsOp,
@@ -707,6 +708,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(countBranchChangesOp);
   // v0.5.8 — per-page chat gate companion: list pages with an open chat.
   registry.register(listActivePagesOp);
+  // v0.5.20 — per-chat completion view (powers /content/chat/[id]/summary).
+  registry.register(summarizeChatOp);
   // P7 — media library.
   registry.register(mediaUploadOp);
   registry.register(mediaListOp);

@@ -119,6 +119,23 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
           // interval, so we don't accumulate dead writers.
         }
       }, 3000);
+      // v0.5.20 — heartbeat event. Distinct from the SSE comment above
+      // because comments don't reach the client's `EventSource` event
+      // handler (they're proxy-idle-timeout traversal only). The
+      // ChatPanel client watchdog tracks `lastEventAtMs` from event
+      // arrivals; on long multi-tool builds (5× add_module_to_page,
+      // 20-30s each, no streaming text between) the watchdog fires a
+      // false-positive "stream stalled" banner. A real {kind:"heartbeat"}
+      // event every 30s resets the timer client-side. ChatPanel's
+      // existing event handler ignores unknown kinds harmlessly + the
+      // lastEventAtMs reset (v0.5.13) fires regardless.
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ kind: "heartbeat" })}\n\n`));
+        } catch {
+          // Stream torn down; finally clears.
+        }
+      }, 30_000);
       try {
         for await (const ev of runChatTurn(
           {
@@ -191,6 +208,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         }
       } finally {
         clearInterval(keepAlive);
+        clearInterval(heartbeat);
         controller.close();
       }
     },

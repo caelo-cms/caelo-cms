@@ -15,6 +15,7 @@
   import { onMount, tick } from "svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
+  import { buttonVariants } from "$lib/components/ui/button/button-variants.js";
   import {
     Card,
     CardContent,
@@ -346,7 +347,14 @@
   // cannot detect (browser tab suspend, network glitch, etc.).
   let lastEventAtMs = $state<number>(0);
   let streamStalled = $state<boolean>(false);
-  const STREAM_STALL_THRESHOLD_MS = 90_000;
+  // v0.5.20 — bumped 90s → 180s. The 90s threshold fired false-positives
+  // on long multi-tool builds where the AI is sequentially dispatching
+  // 5+ tool calls (each 20-30s of DB writes + snapshot emission) with
+  // no streaming text between them. Server-side now also emits a
+  // {kind:"heartbeat"} event every 30s so even a 5-minute tool burst
+  // never trips the timer; 180s is the absolute fallback for genuinely
+  // dropped connections.
+  const STREAM_STALL_THRESHOLD_MS = 180_000;
   $effect(() => {
     if (!streaming) {
       streamStalled = false;
@@ -359,6 +367,24 @@
     }, 5000);
     return () => clearInterval(id);
   });
+
+  // v0.5.20 — failed-only transcript filter. Hides successful tool-cards
+  // so the operator can find what went wrong without scrolling 50
+  // successful rows. User + assistant messages stay visible regardless
+  // (they're context for the failures). Failure detection is content-
+  // based: tool result text starting with "<op_name> failed:" or
+  // "Tool call failed:" or containing "invalid arguments" /
+  // "validation failed". Same heuristic as chat.summarize on the
+  // server.
+  let showFailedOnly = $state(false);
+  function isFailedToolMessage(content: string): boolean {
+    if (!content) return false;
+    if (/^Tool call failed:/i.test(content)) return true;
+    if (/^[a-z][a-z0-9_.]*\s+failed:/i.test(content)) return true;
+    if (/^invalid arguments\b/i.test(content)) return true;
+    if (/^validation failed\b/i.test(content)) return true;
+    return false;
+  }
   // v0.2.54 — local mirror of session.extendedThinkingEnabled for
   // optimistic toggle. The form action persists to chat_sessions; this
   // local mirror keeps the toggle responsive without a page reload.
@@ -1240,23 +1266,54 @@
             </ul>
           </div>
         {/if}
+        <!-- v0.5.20 — failed-only transcript filter. Shows only tool
+             messages whose content matches the failure heuristic. User
+             + assistant messages stay visible regardless. The count in
+             the button label gives a glance-able failure tally without
+             scrolling the transcript. -->
+        {@const failureCount = messages.filter(
+          (m) => m.role === "tool" && isFailedToolMessage(m.content),
+        ).length}
+        <div class="flex items-center justify-end gap-2 px-1 pb-1 text-xs">
+          <span class="text-muted-foreground" data-testid="transcript-failure-count">
+            {failureCount} failure{failureCount === 1 ? "" : "s"}
+          </span>
+          {#if failureCount > 0 || showFailedOnly}
+            <Button
+              type="button"
+              size="sm"
+              variant={showFailedOnly ? "default" : "outline"}
+              onclick={() => {
+                showFailedOnly = !showFailedOnly;
+              }}
+              data-testid="transcript-filter-toggle"
+            >
+              {showFailedOnly ? "Showing failures only" : "Failed only"}
+            </Button>
+          {/if}
+        </div>
         <div class="relative flex min-h-0 flex-1">
           <ul
             bind:this={transcriptEl}
             onscroll={handleTranscriptScroll}
             class="flex-1 space-y-2 overflow-y-auto"
           >
-            {#each messages as m (m.id)}
+            {#each messages.filter((m) => !showFailedOnly || m.role !== "tool" || isFailedToolMessage(m.content)) as m (m.id)}
               {#if m.role === "tool"}
                 <!-- v0.2.46 — tool messages render as per-tool cards via
                      the router; falls back to plain markdown when no
                      card matches the tool's name. Edit-module tools
                      also get an inline diff card with Accept/Reject. -->
                 <li class="space-y-1.5 text-sm">
+                  <!-- v0.5.20 — derive ok from message content. Pre-v0.5.20
+                       this was hardcoded `ok={true}`, which made every
+                       persisted failure render through the success path
+                       (plain markdown). Failures now render through
+                       ToolCardRouter's destructive style. -->
                   <ToolCardRouter
                     name={m.toolName ?? "unknown"}
                     content={m.content}
-                    ok={true}
+                    ok={!isFailedToolMessage(m.content)}
                     args={m.toolArgs ?? {}}
                     {csrfToken}
                     onApproved={(info) => onProposalApproved(info.kind, info.proposalId)}
@@ -1675,6 +1732,15 @@
           </form>
         </CardContent>
       </Card>
+
+      <!-- v0.5.20 — quick link to the per-chat completion view. -->
+      <a
+        href={`/content/chat/${session.id}/summary`}
+        class={`${buttonVariants({ variant: "outline", size: "sm" })} w-full justify-center`}
+        data-testid="open-chat-summary"
+      >
+        Open chat summary
+      </a>
     </aside>
     {/if}
   </div>
