@@ -11,7 +11,19 @@
 
 export function describeError(error: unknown): string {
   if (!error || typeof error !== "object") return "unknown";
-  const e = error as { kind?: string; message?: string; issues?: unknown[]; detail?: string };
+  const e = error as {
+    kind?: string;
+    message?: string;
+    issues?: unknown[];
+    detail?: string;
+    pgDetail?: {
+      code?: string;
+      constraint?: string;
+      table?: string;
+      column?: string;
+      detail?: string;
+    };
+  };
   if (e.kind === "ValidationFailed" && Array.isArray(e.issues)) {
     return `validation: ${e.issues
       .slice(0, 3)
@@ -21,11 +33,24 @@ export function describeError(error: unknown): string {
       })
       .join("; ")}`;
   }
-  // v0.5.16 — when the message contains Bun.SQL's "Failed query:" wrapper
-  // the underlying PostgreSQL reason is buried in .cause (or carried as
-  // structured fields on the error itself). Surface the actual reason so
-  // AI tool errors stop being just truncated SQL the operator can't
-  // diagnose.
+  // v0.5.17 — adapter now extracts Postgres structured fields and
+  // attaches them as `pgDetail` on the HandlerError. When present,
+  // surface that as the primary message — it's the actual reason
+  // for the SQL throw (SQLSTATE + constraint + detail), not the
+  // truncated query text.
+  if (e.pgDetail) {
+    const parts: string[] = [];
+    if (e.pgDetail.code) parts.push(`SQLSTATE ${e.pgDetail.code}`);
+    if (e.pgDetail.constraint) parts.push(`constraint=${e.pgDetail.constraint}`);
+    if (e.pgDetail.table) parts.push(`table=${e.pgDetail.table}`);
+    if (e.pgDetail.column) parts.push(`column=${e.pgDetail.column}`);
+    if (e.pgDetail.detail) parts.push(e.pgDetail.detail);
+    if (parts.length > 0) return parts.join(" — ").slice(0, 240);
+  }
+  // v0.5.16 — fallback: when the message contains Bun.SQL's "Failed
+  // query:" wrapper but pgDetail wasn't populated (caller built their
+  // own HandlerError without going through the adapter), walk the cause
+  // chain locally.
   const message = typeof e.message === "string" ? e.message : null;
   if (message && message.startsWith("Failed query")) {
     const pgDetail = extractPgDetail(error);

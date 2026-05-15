@@ -18,7 +18,7 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
 
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
-import { isRlsDenial, type QueryError } from "./errors.js";
+import { extractPgFields, isRlsDenial, type QueryError } from "./errors.js";
 import type { OperationDefinition, TransactionRunner } from "./operation.js";
 
 /**
@@ -148,10 +148,17 @@ export class DatabaseAdapter {
           detail: (thrown as { message?: string }).message ?? "RLS policy denied the write",
         });
       }
+      // v0.5.17 — extract Postgres structured fields from the throw
+      // before the message is the only thing the caller sees. Bun.SQL
+      // puts SQL text in `.message` and the actual reason (SQLSTATE,
+      // constraint, detail) on `.cause`. Without this, `describeError`
+      // gets only "Failed query: <sql>" and operators can't diagnose.
+      const pgDetail = extractPgFields(thrown);
       return err({
         kind: "HandlerError",
         operation: op.name,
         message: thrown instanceof Error ? thrown.message : String(thrown),
+        ...(pgDetail ? { pgDetail } : {}),
       });
     }
   }

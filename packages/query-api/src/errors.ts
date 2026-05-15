@@ -12,7 +12,26 @@ export type QueryError =
   | { readonly kind: "ActorScopeRejected"; readonly operation: string; readonly actorKind: string }
   | { readonly kind: "RateLimited"; readonly operation: string; readonly retryAfterMs?: number }
   | { readonly kind: "RLSDenied"; readonly operation: string; readonly detail: string }
-  | { readonly kind: "HandlerError"; readonly operation: string; readonly message: string }
+  | {
+      readonly kind: "HandlerError";
+      readonly operation: string;
+      readonly message: string;
+      /**
+       * v0.5.17 — when the throw originated from a SQL driver (Bun.SQL,
+       * drizzle, pg-postgres), the adapter walks `.cause` and lifts the
+       * Postgres-specific fields here so downstream consumers (AI tool
+       * `describeError`, /security/audit) can render a structured reason
+       * instead of a truncated "Failed query: …" string. Optional —
+       * handlers that build their own HandlerError leave it undefined.
+       */
+      readonly pgDetail?: {
+        readonly code?: string;
+        readonly constraint?: string;
+        readonly table?: string;
+        readonly column?: string;
+        readonly detail?: string;
+      };
+    }
   /**
    * v0.5.0 — per-entity write lock rejected the write. The named entity
    * is held by another chat; caller must wait for that chat to publish
@@ -38,6 +57,61 @@ export type QueryError =
  * write (error code 42501 = insufficient_privilege).
  */
 export const PG_INSUFFICIENT_PRIVILEGE = "42501";
+
+/**
+ * v0.5.17 — extract Postgres structured fields from a thrown SQL error.
+ * Walks `.cause` (depth-limited) since drizzle wraps the bun-postgres
+ * error and bun-postgres wraps the wire-level PG error. Returns the
+ * first object that carries any of the recognized fields, or null when
+ * the throw isn't a SQL-shaped error.
+ *
+ * Bun.SQL puts SQLSTATE on `.errno`; pg-style drivers use `.code`.
+ * Both surface `.detail` / `.constraint` / `.table` / `.column` directly
+ * on the Postgres error object.
+ */
+export function extractPgFields(error: unknown): {
+  code?: string;
+  constraint?: string;
+  table?: string;
+  column?: string;
+  detail?: string;
+} | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && typeof current === "object" && current !== null; depth++) {
+    const e = current as {
+      code?: unknown;
+      errno?: unknown;
+      detail?: unknown;
+      constraint?: unknown;
+      table?: unknown;
+      column?: unknown;
+      cause?: unknown;
+    };
+    const code =
+      typeof e.code === "string" ? e.code : typeof e.errno === "string" ? e.errno : undefined;
+    const constraint = typeof e.constraint === "string" ? e.constraint : undefined;
+    const table = typeof e.table === "string" ? e.table : undefined;
+    const column = typeof e.column === "string" ? e.column : undefined;
+    const detail = typeof e.detail === "string" ? e.detail : undefined;
+    if (code || constraint || table || column || detail) {
+      const out: {
+        code?: string;
+        constraint?: string;
+        table?: string;
+        column?: string;
+        detail?: string;
+      } = {};
+      if (code) out.code = code;
+      if (constraint) out.constraint = constraint;
+      if (table) out.table = table;
+      if (column) out.column = column;
+      if (detail) out.detail = detail;
+      return out;
+    }
+    current = e.cause;
+  }
+  return null;
+}
 
 export function isRlsDenial(error: unknown): boolean {
   // Drizzle wraps driver errors in a DrizzleQueryError whose `.cause` is the
