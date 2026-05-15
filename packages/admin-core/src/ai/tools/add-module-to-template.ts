@@ -77,8 +77,11 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
   name: "add_module_to_template",
   description:
     "Create a new module and add it to EVERY page that uses the target template, in the same block at the same position. " +
-    'Use ONLY when the user explicitly wants the change to apply site-wide ("add a footer to every page", "a header banner across the site"). ' +
-    "For a single-page change, use add_module_to_page instead.",
+    'Use for template-wide changes ("add a sidebar to every blog post"). ' +
+    "For a single-page change, use add_module_to_page. " +
+    "For site-wide chrome (header / footer / nav across every page on every template), use add_module_to_layout. " +
+    'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
+    'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
   schema: addModuleToTemplateToolInput,
   inputSchema: {
     type: "object",

@@ -59,7 +59,10 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
   description:
     "Create a new module (HTML, optional CSS/JS) and place it in one of the page's blocks at the chosen position. " +
     "Use when the user asks to add NEW content (a button, a banner, a menu, a section) — not when they want to change " +
-    "an existing module (use edit_module for that). `position` is 'top', 'bottom', or a 0-based index in the block.",
+    "an existing module (use edit_module for that). " +
+    "For chrome that should appear on every page, use add_module_to_layout instead; for every page on a template, use add_module_to_template. " +
+    'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
+    'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
   schema: addModuleToPageToolInput,
   inputSchema: {
     type: "object",

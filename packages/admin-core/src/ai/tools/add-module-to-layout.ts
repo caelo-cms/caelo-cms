@@ -43,9 +43,11 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
   description:
     "Create a new module and attach it to a LAYOUT block (header / footer / nav). " +
     "The chrome reaches every page on every template bound to the layout. " +
-    'Use ONLY for site-wide chrome ("a footer on every page", "a global header banner"). ' +
+    'Use for site-wide chrome ("a footer on every page", "a global header banner"). ' +
     "For template-wide changes use add_module_to_template; for one page use add_module_to_page. " +
-    'Common layoutSlug is "site-default"; "bare" is the no-chrome layout.',
+    'layoutSlug is the slug you set on create_layout (often "default" or "site-default"). ' +
+    'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
+    'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
   schema: addModuleToLayoutToolInput,
   inputSchema: {
     type: "object",
