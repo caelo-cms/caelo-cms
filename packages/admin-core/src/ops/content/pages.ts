@@ -342,44 +342,40 @@ export const createPageOp = defineOperation({
         message: "page already exists for this (slug, locale)",
       });
     }
-    // v0.5.7 — branched create. Allocate the UUID via Postgres so the
-    // AI's follow-up tool calls (set_modules, set_seo) can reference it
-    // immediately, but DO NOT write the live `pages` row. The page is
-    // invisible to other chats' pages.list / pages.get until publish.
-    // Publish materialises the row via INSERT...ON CONFLICT (id) DO UPDATE.
-    const branched = !!ctx.chatBranchId;
-    let pageId: string;
-    if (branched) {
-      const idRows = (await tx.execute(sql`SELECT gen_random_uuid()::text AS id`)) as unknown as {
-        id: string;
-      }[];
-      const newId = idRows[0]?.id;
-      if (!newId) {
-        return err({
-          kind: "HandlerError",
-          operation: "pages.create",
-          message: "no id returned from gen_random_uuid",
-        });
-      }
-      pageId = newId;
-    } else {
-      const rows = (await tx.execute(sql`
-        INSERT INTO pages (slug, locale, name, title, template_id, status)
-        VALUES (
-          ${input.slug},
-          ${input.locale},
-          ${input.name ?? input.title},
-          ${input.title},
-          ${templateId}::uuid,
-          ${input.status}
-        )
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-      const newId = rows[0]?.id;
-      if (!newId) {
-        return err({ kind: "HandlerError", operation: "pages.create", message: "no id returned" });
-      }
-      pageId = newId;
+    // v0.5.19 — pages.create writes LIVE unconditionally (reverts the
+    // v0.5.7 branched-create path). Branched pages were invisible to
+    // every downstream read tool (pages.get, pages.list,
+    // pages.get_with_modules) because those query the live `pages`
+    // table — they don't union page_snapshots. AI workflow that
+    // creates a page and then attaches modules to it was structurally
+    // impossible: create returned a pageId, but every follow-up
+    // (add_module_to_page, etc.) failed with "page not found".
+    //
+    // Hiding new pages from other chats was a real design intent
+    // (v0.5.7 §3) but isn't load-bearing — a fresh empty page is
+    // harmless to see. Updates + deletes + set_modules stay branched
+    // (the load-bearing part of staging), so a chat editing an
+    // existing page's slug or layout still keeps that scoped to itself.
+    //
+    // Snapshot still emitted (with chatBranchId when set) so the page
+    // shows up in the chat's branch_change_count + appears in
+    // /site-history; publish path's UPSERT no-ops on the create case
+    // since the row already exists.
+    const rows = (await tx.execute(sql`
+      INSERT INTO pages (slug, locale, name, title, template_id, status)
+      VALUES (
+        ${input.slug},
+        ${input.locale},
+        ${input.name ?? input.title},
+        ${input.title},
+        ${templateId}::uuid,
+        ${input.status}
+      )
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const pageId = rows[0]?.id;
+    if (!pageId) {
+      return err({ kind: "HandlerError", operation: "pages.create", message: "no id returned" });
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -388,39 +384,23 @@ export const createPageOp = defineOperation({
       input,
       succeeded: true,
       entityId: pageId,
-      resultSummary: `slug=${input.slug},locale=${input.locale}${branched ? ",branched" : ""}`,
+      resultSummary: `slug=${input.slug},locale=${input.locale}`,
     });
-    let state: import("../../snapshots/state.js").PageState | null;
-    if (branched) {
-      state = {
-        schemaVersion: 1,
-        slug: input.slug,
-        locale: input.locale,
-        title: input.title,
-        templateId,
-        status: input.status,
-        version: 0,
-        deletedAt: null,
-      };
-    } else {
-      state = await loadPageState(tx, pageId);
-    }
+    const state = await loadPageState(tx, pageId);
     if (state) {
       await emitSnapshot(tx, {
         actorId: ctx.actorId,
         opKind: "pages.create",
-        description: `pages.create slug=${input.slug} locale=${input.locale}${branched ? " (branched)" : ""}`,
+        description: `pages.create slug=${input.slug} locale=${input.locale}`,
         chatTaskId: ctx.chatTaskId ?? null,
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: pageId, state }],
       });
     }
-    // P9 — initial content_hash. Skip when branched: no live row exists
-    // yet, and the placement layer (set_modules) is the substantive input
-    // to the hash anyway. Publish recomputes after merging.
-    if (!branched) {
-      await recomputePageContentHash(tx, pageId);
-    }
+    // P9 — initial content_hash so list/get queries don't NULL-out the
+    // column on a freshly-created page. recomputes after set_modules
+    // attaches its first module.
+    await recomputePageContentHash(tx, pageId);
     return ok({ pageId });
   },
 });
