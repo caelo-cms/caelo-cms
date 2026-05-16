@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.1
+
+### Features
+- 55a2fcc branch-aware placement check + SEO tools in allowlists + composite SEO auto-fill
+
 ## v0.6.0
 
 ### Features
