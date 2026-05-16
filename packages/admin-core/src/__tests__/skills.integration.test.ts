@@ -203,5 +203,25 @@ describe("seeded base skills", () => {
     expect(tools).toContain("list_layouts");
     expect(tools).toContain("list_templates");
     expect(tools).toContain("list_pages");
+    // v0.6.1 — SEO tools (migration 0086). Without them the skill's
+    // engaged catalog filters them out and AI reports "tool doesn't
+    // exist" when asked to set meta-descriptions on a fresh build.
+    expect(tools).toContain("set_page_seo");
+  });
+
+  // v0.6.1 — compose-page is the most frequently engaged skill on
+  // build prompts. Migration 0086 added the three SEO tools to its
+  // allowlist so the AI never surfaces "I don't have a tool for that"
+  // for SEO during a compose flow.
+  it("compose-page allowlists SEO tools (set_page_seo + autofill + optimize)", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+    if (!r.ok) return;
+    const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
+    const compose = skills.find((s) => s.slug === "compose-page");
+    expect(compose).toBeDefined();
+    const tools = compose?.allowlistedTools ?? [];
+    expect(tools).toContain("set_page_seo");
+    expect(tools).toContain("autofill_page_seo");
+    expect(tools).toContain("optimize_page_seo");
   });
 });

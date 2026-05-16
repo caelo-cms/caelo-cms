@@ -18,6 +18,64 @@ import { recordAudit } from "../../audit.js";
 import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot, loadPageModuleContentState } from "../../snapshots/index.js";
 
+/**
+ * v0.6.1 — branch-aware placement-exists check used by
+ * `set_page_module_content`. Mirrors the chat-preview overlay pattern in
+ * `preview.ts:214-258`:
+ *
+ *   - When `chatBranchId` is set, the active chat's latest
+ *     `page_layout_snapshots` row for this page authoritatively
+ *     describes the page's blocks + module order. `pages.set_modules`
+ *     deliberately skips writing to live `page_modules` while a chat
+ *     branch is active (the snapshot IS the branch's state until
+ *     publish merges it back). So a placement created earlier in the
+ *     same chat WILL be in the snapshot but NOT in `page_modules`.
+ *   - When no branched snapshot exists (the page hasn't been touched
+ *     in this chat) OR no `chatBranchId` is supplied (direct human /
+ *     system write), fall through to the live `page_modules` query.
+ *
+ * Returns true iff `(blockName, position)` resolves to a non-empty
+ * module ID under the relevant view. The caller never sees branched
+ * snapshot details — just an existence boolean.
+ */
+async function branchAwarePlacementExists(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  pageId: string,
+  blockName: string,
+  position: number,
+  chatBranchId: string | undefined,
+): Promise<boolean> {
+  if (chatBranchId) {
+    const snap = (await tx.execute(sql`
+      SELECT state FROM page_layout_snapshots pls
+      JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+      WHERE pls.page_id = ${pageId}::uuid
+        AND ss.chat_branch_id = ${chatBranchId}::uuid
+      ORDER BY ss.created_at DESC
+      LIMIT 1
+    `)) as unknown as { state: unknown }[];
+    const raw = snap[0]?.state;
+    if (raw) {
+      const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
+        blocks?: { blockName: string; moduleIds: string[] }[];
+      };
+      const block = parsed.blocks?.find((b) => b.blockName === blockName);
+      if (block && position < block.moduleIds.length) return true;
+      // Branched snapshot exists for this page on this branch but the
+      // (block, position) pair isn't in it. Fall through to live so a
+      // placement created BEFORE the chat started is still visible.
+    }
+  }
+  const live = (await tx.execute(sql`
+    SELECT 1 FROM page_modules
+    WHERE page_id = ${pageId}::uuid
+      AND block_name = ${blockName}
+      AND position = ${position}
+    LIMIT 1
+  `)) as unknown as { exists: number }[];
+  return live.length > 0;
+}
+
 const pageModuleContentRowSchema = z.object({
   id: z.string(),
   pageId: z.string(),
@@ -121,18 +179,30 @@ export const setPageModuleContentOp = defineOperation({
     if (!lock.permitted && lock.holder) {
       return err(lockedError("page_module_content.set", "page", input.pageId, lock.holder));
     }
-    // Confirm the placement exists in page_modules — content without a
-    // matching placement would orphan + 404 at render time.
-    const placement = (await tx.execute(sql`
-      SELECT 1 FROM page_modules
-      WHERE page_id = ${input.pageId}::uuid
-        AND block_name = ${input.blockName}
-        AND position = ${input.position}
-      LIMIT 1
-    `)) as unknown as { exists: number }[];
-    if (placement.length === 0) {
-      // v0.6.0 W3 — surface a recovery hint so the AI fetches the
-      // page's actual block placements instead of guessing again.
+    // v0.6.1 — branch-aware placement check. The earlier draft queried
+    // live `page_modules` only. But `pages.set_modules` (called per-page
+    // by `add_module_to_template`) writes branched layouts to
+    // `page_layout_snapshots` and SKIPS the live table when
+    // `ctx.chatBranchId` is set — so placements created in the SAME chat
+    // were invisible here, causing legitimate per-page content
+    // overrides to fail with "no placement" and the v0.6.0 W3 recovery
+    // hint pointing at `inspect_page_render` (which ALSO read live
+    // state, surfacing the same empty block in a recovery loop).
+    //
+    // The fix mirrors the chat-preview overlay pattern at
+    // `preview.ts:214-258`: when `ctx.chatBranchId` is set, consult the
+    // branched layout snapshot first; fall through to live
+    // `page_modules` when no branched snapshot exists for this page on
+    // this branch. The recovery hint stays correct — only fires when
+    // the placement is genuinely missing on BOTH branch + live.
+    const placementExists = await branchAwarePlacementExists(
+      tx,
+      input.pageId,
+      input.blockName,
+      input.position,
+      ctx.chatBranchId,
+    );
+    if (!placementExists) {
       return err({
         kind: "HandlerError",
         operation: "page_module_content.set",

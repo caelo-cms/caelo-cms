@@ -74,6 +74,9 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
     lines.push(
       "Default blockName is `content`. Sections are placed in array order. Per-section failures are reported individually; the page is not rolled back.",
     );
+    lines.push(
+      "v0.6.1: SEO auto-fills inline — caller does NOT need a separate set_page_seo call. Override with `seo.metaDescription`, or skip via `seo.skipSeo:true` (e.g. for stubs).",
+    );
     return lines.join(" ");
   },
   schema: composePageFromSpecToolInput,
@@ -103,6 +106,16 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
             css: { type: "string", maxLength: 50_000 },
             js: { type: "string", maxLength: 50_000 },
           },
+        },
+      },
+      // v0.6.1 — optional SEO. Composite auto-fills if omitted.
+      seo: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          metaDescription: { type: "string", minLength: 1, maxLength: 320 },
+          ogImageAssetId: { type: "string", format: "uuid" },
+          skipSeo: { type: "boolean" },
         },
       },
     },
@@ -217,10 +230,57 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
       };
     }
 
+    // v0.6.1 Layer 3 — SEO autofill inline. The "invisible-by-default"
+    // principle: composing a page also fills SEO so the AI never needs
+    // a separate set_page_seo round-trip. Honors the SEO fill-once
+    // invariant (CLAUDE.md §2) by going through pages_seo.autofill
+    // which sets autofilled_at — subsequent content edits won't silently
+    // overwrite operator-edited SEO.
+    //
+    // Skipped when:
+    //   - input.seo.skipSeo is true (caller explicitly opts out — e.g.,
+    //     stub pages where SEO would be noise),
+    //   - autofill rejects with "AlreadyAutofilled" (page existed; we
+    //     don't overwrite),
+    //   - the derived description would be empty / too short.
+    let seoSummary: string | null = null;
+    const skipSeo = input.seo?.skipSeo === true;
+    if (!skipSeo) {
+      const derivedDescription =
+        input.seo?.metaDescription ?? deriveSeoDescription(input.title, input.sections);
+      if (derivedDescription && derivedDescription.length > 0) {
+        const seoArgs: Record<string, unknown> = {
+          pageId,
+          metaDescription: derivedDescription,
+        };
+        if (input.seo?.ogImageAssetId) {
+          seoArgs.ogImageAssetId = input.seo.ogImageAssetId;
+        }
+        const seoRes = await execute(
+          toolCtx.registry,
+          toolCtx.adapter,
+          ctx,
+          "pages_seo.autofill",
+          seoArgs,
+        );
+        if (seoRes.ok) {
+          seoSummary = `SEO autofilled (description: ${derivedDescription.length} chars${input.seo?.metaDescription ? ", caller-supplied" : ", auto-derived"})`;
+        } else {
+          const errMsg = describeError(seoRes.error);
+          // "AlreadyAutofilled" is a no-op informational outcome, not
+          // a real failure — page composition succeeded; just note it.
+          seoSummary = errMsg.includes("AlreadyAutofilled")
+            ? "SEO already autofilled previously — skipped (use optimize_page_seo for explicit re-fill)"
+            : `SEO autofill skipped: ${errMsg}`;
+        }
+      }
+    }
+
     const failed = sectionResults.filter((r) => !r.ok);
     const summary = [
       `compose_page_from_spec: page ${input.slug} (id=${pageId}) created with ${createdModuleIds.length}/${input.sections.length} sections on block "${blockName}".`,
       `module IDs (in order): ${createdModuleIds.join(", ")}`,
+      seoSummary,
       failed.length > 0
         ? `FAILED sections: ${failed.map((f) => `[${f.idx}] ${f.displayName} — ${f.reason}`).join("; ")}`
         : null,
@@ -230,3 +290,32 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
     return { ok: failed.length === 0, content: summary };
   },
 };
+
+/**
+ * v0.6.1 — derive a default SEO description from the spec when the
+ * caller doesn't supply one. Format: `${title} — ${first 1-2 sections'
+ * displayNames}`, capped at SEO_DESCRIPTION_RECOMMENDED_MAX (160) to
+ * stay within Google's snippet length without truncation.
+ *
+ * Returns "" when nothing usable could be derived (e.g., section
+ * displayNames are all extremely long); caller then skips the SEO
+ * autofill step entirely.
+ */
+function deriveSeoDescription(title: string, sections: readonly { displayName: string }[]): string {
+  const RECOMMENDED_MAX = 160;
+  const titlePart = title.trim();
+  if (titlePart.length === 0) return "";
+  const sectionList = sections
+    .slice(0, 2)
+    .map((s) => s.displayName.trim())
+    .filter((s) => s.length > 0)
+    .join(", ");
+  const composed = sectionList ? `${titlePart} — ${sectionList}` : titlePart;
+  if (composed.length <= RECOMMENDED_MAX) return composed;
+  // Composed is too long; fall back to title alone if it fits, else
+  // truncate composed at a word boundary near the limit.
+  if (titlePart.length <= RECOMMENDED_MAX) return titlePart;
+  const truncated = composed.slice(0, RECOMMENDED_MAX);
+  const lastSpace = truncated.lastIndexOf(" ");
+  return lastSpace > RECOMMENDED_MAX - 40 ? truncated.slice(0, lastSpace) : truncated;
+}

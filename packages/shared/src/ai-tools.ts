@@ -1002,6 +1002,26 @@ export const composePageFromSpecToolInput = z
       )
       .min(1)
       .max(32),
+    /**
+     * v0.6.1 — optional SEO. When supplied, the composite calls
+     * `pages_seo.autofill` after the page is created. When omitted,
+     * the composite auto-derives a meta description from the page
+     * title + first section's displayName (capped at the recommended
+     * length). This is the "invisible-by-default" SEO step — caller
+     * never needs a separate set_page_seo round-trip.
+     *
+     * `metaDescription` overrides the auto-derived fallback. Set
+     * `skipSeo: true` to opt out entirely (e.g., stub pages where
+     * SEO would be noise).
+     */
+    seo: z
+      .object({
+        metaDescription: z.string().min(1).max(320).optional(),
+        ogImageAssetId: z.string().uuid().optional(),
+        skipSeo: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type ComposePageFromSpecToolInput = z.infer<typeof composePageFromSpecToolInput>;
