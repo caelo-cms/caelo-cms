@@ -60,6 +60,11 @@ export const listSnapshotsOp = defineOperation({
           )})`
         : sql``;
     const archivedFilter = input.includeArchived ? sql`` : sql`AND s.archived_at IS NULL`;
+    // v0.6.0 — filter by chat_branch_id for the revert_chat_changes
+    // composite tool. Indexed by chat_branch_id on site_snapshots.
+    const chatBranchFilter = input.forChatBranchId
+      ? sql`AND s.chat_branch_id = ${input.forChatBranchId}::uuid`
+      : sql``;
     const rows = (await tx.execute(sql`
       SELECT s.id::text AS id,
              s.actor_id::text AS actor_id,
@@ -74,7 +79,7 @@ export const listSnapshotsOp = defineOperation({
              (SELECT count(*) FROM page_snapshots ps WHERE ps.site_snapshot_id = s.id)::int AS page_count,
              (SELECT count(*) FROM page_layout_snapshots pls WHERE pls.site_snapshot_id = s.id)::int AS page_layout_count
       FROM site_snapshots s
-      WHERE 1=1 ${beforeFilter} ${moduleFilter} ${templateFilter} ${pageFilter} ${opKindFilter} ${archivedFilter}
+      WHERE 1=1 ${beforeFilter} ${moduleFilter} ${templateFilter} ${pageFilter} ${opKindFilter} ${archivedFilter} ${chatBranchFilter}
       ORDER BY s.created_at DESC
       LIMIT ${input.limit}
     `)) as unknown as {

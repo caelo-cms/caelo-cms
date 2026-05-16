@@ -29,6 +29,26 @@ const uuid = z.string().uuid();
 const deleteInput = z.object({ pageIds: z.array(uuid).min(1).max(200) }).strict();
 type DeleteInput = z.infer<typeof deleteInput>;
 
+/**
+ * v0.6.0 W5 reference migration — the FIRST tool to use the
+ * needsApproval gate from packages/admin-core/src/ai/tools/dispatch.ts.
+ *
+ * Per CLAUDE.md §11.A, hard-to-revert ops should be Owner-gated. The
+ * earlier propose/execute pattern (per-domain `*_pending_actions`
+ * table + propose_* op + execute_proposal op) carries audit history +
+ * preview metadata for high-stakes ops like layouts.create. For
+ * delete_pages_many, that machinery is overkill — the action is
+ * snapshot-recoverable, the preview is just "N page IDs", and the
+ * audit row is already on `audit_log`. needsApproval gives the same
+ * one-click gate without the table.
+ *
+ * Threshold: 5+ pages triggers approval. 1-4 runs immediately
+ * (matches the existing UX where a small bulk delete feels safe).
+ * Operator-tunable in code if production data suggests a different
+ * floor.
+ */
+const DELETE_PAGES_MANY_APPROVAL_THRESHOLD = 5;
+
 export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
   name: "delete_pages_many",
   description:
@@ -36,7 +56,14 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
     "Use when the operator says 'delete these N pages', 'drop these stale posts', 'remove the entire {category} tree'. " +
     "Prefer this over multiple `delete_page` calls when N > 1 — saves tool-call rounds + lets the operator revert " +
     "the lot in one site snapshot. Each page is soft-deleted and emits its own page snapshot, so revert_site (or " +
-    "individual revert_page) restores them. The result reports {deleted, alreadyDeleted, notFound}.",
+    "individual revert_page) restores them. The result reports {deleted, alreadyDeleted, notFound}. " +
+    `Deleting ${DELETE_PAGES_MANY_APPROVAL_THRESHOLD}+ pages needs one Owner click in chat before the delete runs.`,
+  needsApproval: (input) => input.pageIds.length >= DELETE_PAGES_MANY_APPROVAL_THRESHOLD,
+  buildApprovalPreview: (input) => ({
+    op: "delete_pages_many",
+    pageCount: input.pageIds.length,
+    samplePageIds: input.pageIds.slice(0, 5),
+  }),
   schema: deleteInput,
   inputSchema: {
     type: "object",

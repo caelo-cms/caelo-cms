@@ -1,0 +1,231 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * v0.6.0 W4 (deferred) — `compose_page_from_spec` composite tool.
+ *
+ * Creates a page and attaches N modules to its content block in one
+ * tool call. Replaces the AI-orchestrated chain:
+ *   create_page → pages.get_with_modules → modules.create × N → pages.set_modules
+ * with a single call whose handler runs the whole chain server-side.
+ *
+ * The AI naturally describes pages as "a title + a sequence of
+ * sections"; this tool meets that mental model directly. Saves
+ * ~(N+1)×round-trips of streaming + ~(N+1)×tool-result token spend.
+ *
+ * Per-section failure handling: if a single section fails to create
+ * or attach, the tool reports a partial-success result with the IDs
+ * that landed + the ones that didn't. The page itself is NOT rolled
+ * back — the AI can re-call the tool with just the failed sections
+ * (using add_module_to_page individually) to fix the gaps.
+ */
+
+import { execute } from "@caelo-cms/query-api";
+import { composePageFromSpecToolInput } from "@caelo-cms/shared";
+import { describeError, forwardNextAction } from "./_describe-error.js";
+import type { ToolDefinitionWithHandler } from "./dispatch.js";
+
+interface PageWithModules {
+  id: string;
+  templateId: string;
+  blocks: { blockName: string; modules: { moduleId: string }[] }[];
+}
+
+function slugify(displayName: string, idx: number): string {
+  const base = displayName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  const stem = base.length > 0 ? base : "section";
+  // Include an index so two sections with the same displayName don't
+  // collide on the unique slug constraint.
+  return `${stem}-${idx}-${Date.now().toString(36)}`;
+}
+
+export const composePageFromSpecTool: ToolDefinitionWithHandler<
+  import("@caelo-cms/shared").ComposePageFromSpecToolInput
+> = {
+  name: "compose_page_from_spec",
+  description:
+    "Composite: create a page and attach N section-modules in one call. " +
+    "Pass {slug, name, title, sections:[{displayName, html, css?, js?}]} — the handler creates the page, " +
+    "then creates and attaches each section as a module on the `content` block (override with `blockName`). " +
+    "Saves N+1 round-trips vs. orchestrating create_page + add_module_to_page individually. " +
+    "Use for 'compose a homepage with hero / features / testimonials' or any multi-section page where you know all sections up front. " +
+    "Per-section failure: page is NOT rolled back; tool reports which sections landed + which didn't.",
+  describe: (state) => {
+    const lines: string[] = [
+      "Composite — create page + attach N sections in one call.",
+      "Pass slug, name, title, and a sections array (each = {displayName, html, css?, js?}).",
+    ];
+    if (state.siteDefaults && state.templates.length > 0) {
+      lines.push(
+        `\`templateId\` optional — defaults to site default "${state.siteDefaults.defaultTemplateSlug}".`,
+      );
+    } else if (state.templates.length > 0) {
+      lines.push(
+        `\`templateId\` REQUIRED — site_defaults not configured. Pick a UUID from \`## Templates → layouts\` (slugs: ${state.templates.map((t) => t.slug).join(", ")}).`,
+      );
+    } else {
+      lines.push(
+        "Will fail — NO templates exist yet. Call bootstrap_site_scaffold first to set up layout + template + defaults.",
+      );
+    }
+    lines.push(
+      "Default blockName is `content`. Sections are placed in array order. Per-section failures are reported individually; the page is not rolled back.",
+    );
+    return lines.join(" ");
+  },
+  schema: composePageFromSpecToolInput,
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["slug", "name", "title", "sections"],
+    properties: {
+      slug: { type: "string", minLength: 1, maxLength: 120, pattern: "^[a-z0-9][a-z0-9-]*$" },
+      name: { type: "string", minLength: 1, maxLength: 256 },
+      title: { type: "string", minLength: 1, maxLength: 256 },
+      locale: { type: "string", minLength: 2, maxLength: 10 },
+      templateId: { type: "string", format: "uuid" },
+      status: { type: "string", enum: ["draft", "published"] },
+      blockName: { type: "string", minLength: 1, maxLength: 80 },
+      sections: {
+        type: "array",
+        minItems: 1,
+        maxItems: 32,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["displayName", "html"],
+          properties: {
+            displayName: { type: "string", minLength: 1, maxLength: 128 },
+            html: { type: "string", minLength: 1, maxLength: 50_000 },
+            css: { type: "string", maxLength: 50_000 },
+            js: { type: "string", maxLength: 50_000 },
+          },
+        },
+      },
+    },
+  },
+  handler: async (ctx, input, toolCtx) => {
+    const blockName = input.blockName ?? "content";
+
+    // STEP 1 — create the page. Inherits create_page's nextAction
+    // recovery (no defaults → list_templates auto-recovery).
+    const pageRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.create", {
+      slug: input.slug,
+      name: input.name,
+      title: input.title,
+      ...(input.locale !== undefined ? { locale: input.locale } : {}),
+      ...(input.templateId !== undefined ? { templateId: input.templateId } : {}),
+      ...(input.status !== undefined ? { status: input.status } : {}),
+    });
+    if (!pageRes.ok) {
+      const next = forwardNextAction(pageRes.error);
+      return {
+        ok: false,
+        content: `compose_page_from_spec: pages.create failed: ${describeError(pageRes.error)}`,
+        ...(next ? { nextAction: next } : {}),
+      };
+    }
+    const pageId = (pageRes.value as { pageId: string }).pageId;
+
+    // STEP 2 — verify the target block exists on the page's template.
+    // Same shape as add_module_to_page's pre-check.
+    const pageDetailRes = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      ctx,
+      "pages.get_with_modules",
+      { pageId },
+    );
+    if (!pageDetailRes.ok) {
+      return {
+        ok: false,
+        content: `compose_page_from_spec: page created (id=${pageId}) but pages.get_with_modules failed for module placement: ${describeError(pageDetailRes.error)}`,
+      };
+    }
+    const page = (pageDetailRes.value as { page: PageWithModules }).page;
+    const targetBlock = page.blocks.find((b) => b.blockName === blockName);
+    if (!targetBlock) {
+      const allowed = page.blocks.map((b) => b.blockName).join(", ");
+      return {
+        ok: false,
+        content: `compose_page_from_spec: page created (id=${pageId}) but block "${blockName}" does not exist on this template — available: ${allowed}. Use edit_template_blocks to add the block, then add_module_to_page individually.`,
+      };
+    }
+
+    // STEP 3 — create each section module + collect IDs. Per-section
+    // failures are reported but the loop continues so partial-success
+    // is the worst case (caller can fix gaps individually).
+    const createdModuleIds: string[] = [];
+    const sectionResults: { idx: number; displayName: string; ok: boolean; reason?: string }[] = [];
+    for (let i = 0; i < input.sections.length; i++) {
+      const section = input.sections[i]!;
+      const slug = slugify(section.displayName, i);
+      const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
+        slug,
+        displayName: section.displayName,
+        html: section.html,
+        css: section.css ?? "",
+        js: section.js ?? "",
+      });
+      if (!created.ok) {
+        sectionResults.push({
+          idx: i,
+          displayName: section.displayName,
+          ok: false,
+          reason: describeError(created.error),
+        });
+        continue;
+      }
+      const moduleId = (created.value as { moduleId: string }).moduleId;
+      createdModuleIds.push(moduleId);
+      sectionResults.push({ idx: i, displayName: section.displayName, ok: true });
+    }
+
+    if (createdModuleIds.length === 0) {
+      return {
+        ok: false,
+        content: `compose_page_from_spec: page created (id=${pageId}) but ALL ${input.sections.length} section modules failed to create. ${sectionResults
+          .filter((r) => !r.ok)
+          .map((r) => `${r.displayName}: ${r.reason}`)
+          .join("; ")}`,
+      };
+    }
+
+    // STEP 4 — splice the created module IDs onto the target block,
+    // preserving any existing modules. (A freshly-created page has an
+    // empty content block; if the AI calls this on an existing page
+    // with content already there, we append to the end.)
+    const existingIds = targetBlock.modules.map((m) => m.moduleId);
+    const newBlockIds = [...existingIds, ...createdModuleIds];
+    const blocks = page.blocks.map((b) =>
+      b.blockName === blockName
+        ? { blockName: b.blockName, moduleIds: newBlockIds }
+        : { blockName: b.blockName, moduleIds: b.modules.map((m) => m.moduleId) },
+    );
+    const setRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_modules", {
+      pageId,
+      blocks,
+    });
+    if (!setRes.ok) {
+      return {
+        ok: false,
+        content: `compose_page_from_spec: page created (id=${pageId}), ${createdModuleIds.length}/${input.sections.length} section modules created, but pages.set_modules failed: ${describeError(setRes.error)}. Modules exist but are not attached — re-run with add_module_to_page or call pages.set_modules manually.`,
+      };
+    }
+
+    const failed = sectionResults.filter((r) => !r.ok);
+    const summary = [
+      `compose_page_from_spec: page ${input.slug} (id=${pageId}) created with ${createdModuleIds.length}/${input.sections.length} sections on block "${blockName}".`,
+      `module IDs (in order): ${createdModuleIds.join(", ")}`,
+      failed.length > 0
+        ? `FAILED sections: ${failed.map((f) => `[${f.idx}] ${f.displayName} — ${f.reason}`).join("; ")}`
+        : null,
+    ]
+      .filter((s): s is string => s !== null)
+      .join("\n");
+    return { ok: failed.length === 0, content: summary };
+  },
+};

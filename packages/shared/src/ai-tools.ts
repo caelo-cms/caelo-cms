@@ -961,3 +961,69 @@ export const bootstrapSiteScaffoldToolInput = z
   })
   .strict();
 export type BootstrapSiteScaffoldToolInput = z.infer<typeof bootstrapSiteScaffoldToolInput>;
+
+/**
+ * v0.6.0 W4 (deferred) — composite tool. Creates a page and attaches N
+ * modules to its content block in one tool call, mirroring the way the
+ * AI naturally describes a multi-section page: a title + a series of
+ * sections, each with its own HTML/CSS. The handler runs the chain
+ * server-side so the AI doesn't have to orchestrate create_page +
+ * N×add_module_to_page across N+1 round-trips.
+ *
+ * `sections[]` are placed on the block named in `blockName` (default
+ * `content`) in the order given.
+ */
+export const composePageFromSpecToolInput = z
+  .object({
+    /** Page identifiers (mirror create_page). */
+    slug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z0-9][a-z0-9-]*$/),
+    name: z.string().min(1).max(256),
+    title: z.string().min(1).max(256),
+    locale: z.string().min(2).max(10).optional(),
+    /** Template UUID. Optional — resolves to site_defaults if absent,
+     * yielding the same nextAction recovery as create_page when missing. */
+    templateId: z.string().uuid().optional(),
+    status: z.enum(["draft", "published"]).optional(),
+    /** Block to place the sections in. Defaults to `content`. */
+    blockName: z.string().min(1).max(80).optional(),
+    /** Sections to place, in order. Each becomes a freshly-created module. */
+    sections: z
+      .array(
+        z.object({
+          displayName: z.string().min(1).max(128),
+          html: z.string().min(1).max(50_000),
+          css: z.string().max(50_000).optional(),
+          js: z.string().max(50_000).optional(),
+        }),
+      )
+      .min(1)
+      .max(32),
+  })
+  .strict();
+export type ComposePageFromSpecToolInput = z.infer<typeof composePageFromSpecToolInput>;
+
+/**
+ * v0.6.0 W4 (deferred) — composite revert. Undoes every snapshot tagged
+ * with the given chat's branch_id. Per-entity revert ops handle the
+ * fan-out; this composite groups them so a single AI tool call wipes
+ * everything in a chat instead of N tool calls per touched entity.
+ *
+ * Bounded: when the chat touched more than `maxEntities` entities, the
+ * tool refuses and asks the operator to use the per-entity revert UI;
+ * keeps the AI from accidentally reverting a wide-ranging chat in one
+ * click.
+ */
+export const revertChatChangesToolInput = z
+  .object({
+    chatSessionId: z.string().uuid(),
+    /** Safety cap — when the chat's branch touched more than this many
+     * entities, the composite refuses. Default 20. Set higher
+     * explicitly when the user really wants a wide revert. */
+    maxEntities: z.number().int().min(1).max(500).optional(),
+  })
+  .strict();
+export type RevertChatChangesToolInput = z.infer<typeof revertChatChangesToolInput>;

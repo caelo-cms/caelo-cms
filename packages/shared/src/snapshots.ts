@@ -28,6 +28,10 @@ export const snapshotsListInput = z
     opKinds: z.array(z.string()).optional(),
     /** When true, archived snapshots are also returned. Defaults to false. */
     includeArchived: z.boolean().default(false),
+    /** v0.6.0 — only snapshots tagged with this chat's branch are returned.
+     * Used by `revert_chat_changes` to enumerate everything one chat did
+     * without scanning the full timeline. */
+    forChatBranchId: z.string().uuid().optional(),
   })
   .strict();
 
