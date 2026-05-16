@@ -175,27 +175,47 @@ export async function* translateSDKStream(
           break;
         }
         case "finish-step": {
+          // SDK 6 LanguageModelUsage shape: flat inputTokens/outputTokens
+          // counters with cache info nested under inputTokenDetails.
+          // (SDK 5 had a flat `cachedInputTokens` field.) Read both for
+          // forward-compat with future shape changes.
           const u = e.usage as
-            | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
+            | {
+                inputTokens?: number;
+                outputTokens?: number;
+                cachedInputTokens?: number;
+                inputTokenDetails?: { cacheReadTokens?: number };
+              }
             | undefined;
           if (u) {
             usage = {
               inputTokens: u.inputTokens ?? usage.inputTokens,
               outputTokens: u.outputTokens ?? usage.outputTokens,
-              cachedTokens: u.cachedInputTokens ?? usage.cachedTokens,
+              cachedTokens:
+                u.inputTokenDetails?.cacheReadTokens ??
+                u.cachedInputTokens ??
+                usage.cachedTokens,
             };
           }
           break;
         }
         case "finish": {
           const tu = (e.totalUsage ?? e.usage) as
-            | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
+            | {
+                inputTokens?: number;
+                outputTokens?: number;
+                cachedInputTokens?: number;
+                inputTokenDetails?: { cacheReadTokens?: number };
+              }
             | undefined;
           if (tu) {
             usage = {
               inputTokens: tu.inputTokens ?? usage.inputTokens,
               outputTokens: tu.outputTokens ?? usage.outputTokens,
-              cachedTokens: tu.cachedInputTokens ?? usage.cachedTokens,
+              cachedTokens:
+                tu.inputTokenDetails?.cacheReadTokens ??
+                tu.cachedInputTokens ??
+                usage.cachedTokens,
             };
           }
           yield { kind: "usage", ...usage };

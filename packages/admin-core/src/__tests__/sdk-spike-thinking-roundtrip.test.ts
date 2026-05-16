@@ -36,7 +36,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { streamText } from "ai";
-import { MockLanguageModelV2 } from "ai/test";
+import { MockLanguageModelV3 } from "ai/test";
 
 // Hand-rolled stream constructor — avoids the `msw` peer dep that
 // `simulateReadableStream` from `ai/test` pulls in at module load.
@@ -54,7 +54,7 @@ function streamOf<T>(chunks: T[]): ReadableStream<T> {
 // stream, and return the full response. Streaming has to be drained
 // before result.response resolves.
 async function runStream(
-  model: MockLanguageModelV2,
+  model: MockLanguageModelV3,
   messages: Parameters<typeof streamText>[0]["messages"],
 ) {
   const result = streamText({ model, messages });
@@ -71,7 +71,7 @@ describe("AI SDK spike — thinking-block signature round-trip (v0.2.71 prefligh
 
     // Mock model emits a reasoning block (with signature in
     // providerMetadata.anthropic), some text, then finishes.
-    const firstCallMock = new MockLanguageModelV2({
+    const firstCallMock = new MockLanguageModelV3({
       doStream: async () => ({
         stream: streamOf([
           { type: "stream-start", warnings: [] },
@@ -91,8 +91,8 @@ describe("AI SDK spike — thinking-block signature round-trip (v0.2.71 prefligh
           { type: "text-end", id: "t1" },
           {
             type: "finish",
-            finishReason: "stop",
-            usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+            finishReason: { unified: "stop" },
+            usage: { inputTokens: { total: 10 }, outputTokens: { total: 20 } },
           },
         ]),
       }),
@@ -129,7 +129,7 @@ describe("AI SDK spike — thinking-block signature round-trip (v0.2.71 prefligh
     // as input. The mock records the prompt the SDK sends; we then
     // verify the assistant turn carries the reasoning content with
     // the SAME signature in providerMetadata.
-    const secondCallMock = new MockLanguageModelV2({
+    const secondCallMock = new MockLanguageModelV3({
       doStream: async () => ({
         stream: streamOf([
           { type: "stream-start", warnings: [] },
@@ -138,8 +138,8 @@ describe("AI SDK spike — thinking-block signature round-trip (v0.2.71 prefligh
           { type: "text-end", id: "t1" },
           {
             type: "finish",
-            finishReason: "stop",
-            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            finishReason: { unified: "stop" },
+            usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
           },
         ]),
       }),

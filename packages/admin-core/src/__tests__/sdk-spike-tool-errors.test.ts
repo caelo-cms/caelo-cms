@@ -34,7 +34,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { streamText, tool } from "ai";
-import { MockLanguageModelV2 } from "ai/test";
+import { MockLanguageModelV3 } from "ai/test";
 import { z } from "zod";
 
 function streamOf<T>(chunks: T[]): ReadableStream<T> {
@@ -62,7 +62,7 @@ describe("AI SDK spike — tool error differentiation (v0.2.71 preflight)", () =
     // the result (tool execution happens between turns). The SDK
     // executes the tool, captures the throw, and surfaces it as an
     // event.
-    const mock = new MockLanguageModelV2({
+    const mock = new MockLanguageModelV3({
       doStream: async () => ({
         stream: streamOf([
           { type: "stream-start", warnings: [] },
@@ -77,8 +77,8 @@ describe("AI SDK spike — tool error differentiation (v0.2.71 preflight)", () =
           },
           {
             type: "finish",
-            finishReason: "tool-calls",
-            usage: { inputTokens: 5, outputTokens: 5, totalTokens: 10 },
+            finishReason: { unified: "tool-calls" },
+            usage: { inputTokens: { total: 5 }, outputTokens: { total: 5 } },
           },
         ]),
       }),
@@ -127,7 +127,7 @@ describe("AI SDK spike — tool error differentiation (v0.2.71 preflight)", () =
     // tool; second call MUST receive the tool result in its prompt.
     let secondCallSeenPrompt: unknown = null;
     let firstCallDone = false;
-    const mock = new MockLanguageModelV2({
+    const mock = new MockLanguageModelV3({
       doStream: async ({ prompt }) => {
         if (firstCallDone) {
           secondCallSeenPrompt = prompt;
@@ -139,8 +139,8 @@ describe("AI SDK spike — tool error differentiation (v0.2.71 preflight)", () =
               { type: "text-end", id: "t1" },
               {
                 type: "finish",
-                finishReason: "stop",
-                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                finishReason: { unified: "stop" },
+                usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
               },
             ]),
           };
@@ -160,8 +160,8 @@ describe("AI SDK spike — tool error differentiation (v0.2.71 preflight)", () =
             },
             {
               type: "finish",
-              finishReason: "tool-calls",
-              usage: { inputTokens: 5, outputTokens: 5, totalTokens: 10 },
+              finishReason: { unified: "tool-calls" },
+              usage: { inputTokens: { total: 5 }, outputTokens: { total: 5 } },
             },
           ]),
         };

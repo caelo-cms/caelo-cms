@@ -7,14 +7,14 @@
  * still own is the translation layer that maps the SDK's
  * LanguageModelV2 stream parts → Caelo's `ProviderEvent` union — these
  * tests exercise that layer end-to-end through `AnthropicProvider`,
- * using `MockLanguageModelV2` so no API key + no network are needed.
+ * using `MockLanguageModelV3` so no API key + no network are needed.
  *
  * Plus the existing FixtureProvider sanity test (used elsewhere by
  * chat-runner regression tests).
  */
 
 import { describe, expect, it } from "bun:test";
-import { MockLanguageModelV2 } from "ai/test";
+import { MockLanguageModelV3 } from "ai/test";
 import type { ProviderEvent } from "../provider.js";
 import { AnthropicProvider, FixtureProvider } from "../providers/anthropic.js";
 
@@ -29,11 +29,11 @@ function streamOf<T>(chunks: T[]): ReadableStream<T> {
 
 /**
  * Construct an AnthropicProvider with `_modelOverride` pointing at a
- * MockLanguageModelV2. This bypasses the SDK's createAnthropic()
+ * MockLanguageModelV3. This bypasses the SDK's createAnthropic()
  * factory + API-key check so the SDK runs against the mock's stream
  * directly — same code path streamText uses for any LanguageModelV2.
  */
-function providerWithMock(mock: MockLanguageModelV2): AnthropicProvider {
+function providerWithMock(mock: MockLanguageModelV3): AnthropicProvider {
   return new AnthropicProvider({
     apiKey: "test",
     model: "claude-opus-4-7",
@@ -43,7 +43,7 @@ function providerWithMock(mock: MockLanguageModelV2): AnthropicProvider {
 
 describe("AnthropicProvider — SDK-event translation", () => {
   it("emits text-delta events for streamed text + usage + done", async () => {
-    const mock = new MockLanguageModelV2({
+    const mock = new MockLanguageModelV3({
       doStream: async () => ({
         stream: streamOf([
           { type: "stream-start", warnings: [] },
@@ -53,8 +53,8 @@ describe("AnthropicProvider — SDK-event translation", () => {
           { type: "text-end", id: "t1" },
           {
             type: "finish",
-            finishReason: "stop",
-            usage: { inputTokens: 50, outputTokens: 12, totalTokens: 62 },
+            finishReason: { unified: "stop" },
+            usage: { inputTokens: { total: 50 }, outputTokens: { total: 12 } },
           },
         ]),
       }),
@@ -77,7 +77,7 @@ describe("AnthropicProvider — SDK-event translation", () => {
   });
 
   it("emits one tool-call event with parsed args + done(tool_use)", async () => {
-    const mock = new MockLanguageModelV2({
+    const mock = new MockLanguageModelV3({
       doStream: async () => ({
         stream: streamOf([
           { type: "stream-start", warnings: [] },
@@ -93,8 +93,8 @@ describe("AnthropicProvider — SDK-event translation", () => {
           },
           {
             type: "finish",
-            finishReason: "tool-calls",
-            usage: { inputTokens: 10, outputTokens: 30, totalTokens: 40 },
+            finishReason: { unified: "tool-calls" },
+            usage: { inputTokens: { total: 10 }, outputTokens: { total: 30 } },
           },
         ]),
       }),
@@ -121,7 +121,7 @@ describe("AnthropicProvider — SDK-event translation", () => {
 
   it("emits thinking-delta + thinking-stop with the signature for reasoning content", async () => {
     const SIGNATURE = "sig-test-anthropic-translator";
-    const mock = new MockLanguageModelV2({
+    const mock = new MockLanguageModelV3({
       doStream: async () => ({
         stream: streamOf([
           { type: "stream-start", warnings: [] },
@@ -141,8 +141,8 @@ describe("AnthropicProvider — SDK-event translation", () => {
           { type: "text-end", id: "t1" },
           {
             type: "finish",
-            finishReason: "stop",
-            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            finishReason: { unified: "stop" },
+            usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
           },
         ]),
       }),
@@ -168,7 +168,7 @@ describe("AnthropicProvider — SDK-event translation", () => {
   });
 
   it("yields error + done(error) on a stream error event", async () => {
-    const mock = new MockLanguageModelV2({
+    const mock = new MockLanguageModelV3({
       doStream: async () => ({
         stream: streamOf([
           { type: "stream-start", warnings: [] },
