@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.0-alpha.4
+
+### Fixes
+- **T (high):** Approve route now appends the dispatched tool's actual result to the chat as a `role: "tool"` message via `chat.append_message`. AI sees the real outcome (e.g., for `delete_pages_many`: how many actually deleted, what was already-deleted, what was not-found) on its next turn — was: only saw a generic "proposal applied" client-side notification.
+- **X (high):** Integration-test wipe broadened from `chat_session_id = SESSION_ID` to `tool_name = 'integration_test_gated_tool'` — catches rows the first test inserts without a chatSessionId. Prevents dev-DB pollution.
+- **R:** Approve route documents the actor-scope constraint: Owner-ctx dispatch means tools with `actorScope` excluding "human" would fail at approve-time. Every currently-shipped gated tool has `["human", "ai", "system"]`; future ai-only gated tools would need scope widened.
+- **V:** `docs/propose-execute-pattern.md` extended with a "v0.6.0 alternative — `needsApproval` predicate" section + a "when to use which" table + the three documented constraints (built-in-tools-only, Owner-ctx dispatch, live-commit semantics).
+- **W:** W3 auto-recovery logic lifted from `chat-runner.ts` (135 lines, 5 nesting levels) to `auto-recovery.ts` (focused module with helper functions, 2 nesting levels). chat-runner call site is now ~15 lines.
+
+### Features
+- **U:** New `chat-get-branch-id.integration.test.ts` — 3 tests covering cross-actor lookup (AI ctx reading a human-owned chat's branch id), missing-session graceful return, and regression guard pinning that `chat.get_session` DOES still filter by `created_by` (so the separate op stays justified).
+- New `auto-recovery.test.ts` — 13 unit tests for `tryAutoRecover` + `extractAtPath`: happy path, non-read-only recovery rejection, missing-from-catalogue, no-retry-spec fold, path-doesn't-resolve fold, schema-validation skip, retry-also-failed both-attempts surfacing, plus 6 `extractAtPath` edge cases.
+
 ## v0.6.0-alpha.3
 
 ### Fixes

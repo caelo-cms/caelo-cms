@@ -59,11 +59,17 @@ const humanCtx: ExecutionContext = {
 };
 
 async function wipe(): Promise<void> {
+  // v0.6.0 alpha.4 Fix X — broadened wipe. The earlier filter
+  // (`WHERE chat_session_id = SESSION_ID`) missed rows the first test
+  // inserts WITHOUT a chatSessionId (toolCtx omits it). Those rows
+  // would persist forever in the dev DB. Filter by tool_name so we
+  // catch every row this test file ever created, regardless of which
+  // ctx shape was used.
   const sql = new SQL(ADMIN_URL!);
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx`DELETE FROM tool_approval_actions WHERE chat_session_id = ${SESSION_ID}::uuid`;
+      await tx`DELETE FROM tool_approval_actions WHERE tool_name = 'integration_test_gated_tool'`;
     });
   } finally {
     await sql.end();

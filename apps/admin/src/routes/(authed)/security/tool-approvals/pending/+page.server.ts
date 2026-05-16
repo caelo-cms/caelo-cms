@@ -42,6 +42,20 @@
  *     `pluginToolsRegistry` here and folding its entries into the
  *     dispatcher's lookup, mirroring the chat-runner's catalogue
  *     assembly at chat-runner.ts:966.
+ *
+ * (c) Owner-ctx dispatch + actor-scope mismatch (v0.6.0 alpha.4 Fix R).
+ *     The dispatched tool runs with `locals.ctx` (actorKind: "human")
+ *     so the audit log credits the Owner who approved. But the
+ *     ORIGINAL propose-time dispatch ran with the AI's ctx
+ *     (actorKind: "ai"). Tools whose actorScope EXCLUDES "human"
+ *     (e.g., the rare `["ai", "system"]` shape) would queue at
+ *     propose-time but fail at approve-time with `ActorScopeRejected`.
+ *     Every currently-shipped tool with `needsApproval`
+ *     (delete_pages_many) has `["human", "ai", "system"]` scope so
+ *     this is not a live bug — but a future ai-only gated tool would
+ *     need either: (i) the tool widens its actorScope to include
+ *     human, OR (ii) the route here passes through the proposer's
+ *     ctx with an Owner attribution layered on top.
  */
 
 import { createDefaultToolRegistry } from "@caelo-cms/admin-core";
@@ -129,6 +143,41 @@ export const actions: Actions = {
       ok: dispatchResult.ok,
       summary: dispatchResult.content.slice(0, 2000),
     });
+
+    // v0.6.0 alpha.4 Fix T — propagate the REAL dispatch result back
+    // into the chat session as a tool-role message so the AI sees the
+    // actual outcome on its next turn (was: only saw a generic
+    // "proposal applied" client-side notification). For
+    // delete_pages_many specifically: the AI now sees how many pages
+    // actually deleted, what was already-deleted, what was not-found
+    // — enough to give the user a meaningful follow-up.
+    //
+    // Best-effort: skip when chatSessionId is missing (out-of-chat
+    // approval, currently theoretical) and on append failure (the
+    // dispatch already succeeded; the chat-side message is the
+    // bonus). Tool-call id `approval-<proposalId>` matches the
+    // client-side onProposalApproved synthetic id so de-dup logic
+    // upstream stays consistent.
+    if (chatSessionId) {
+      try {
+        await execute(registry, adapter, locals.ctx, "chat.append_message", {
+          chatSessionId,
+          role: "tool",
+          content: `[approved + dispatched by Owner] ${toolName}: ${dispatchResult.content}`.slice(
+            0,
+            8000,
+          ),
+          toolCallId: `approval-${proposalId}`,
+        });
+      } catch (err) {
+        console.error("[tool-approvals.approve] chat.append_message failed", {
+          proposalId,
+          toolName,
+          chatSessionId,
+          error: err,
+        });
+      }
+    }
 
     if (!dispatchResult.ok) {
       return fail(400, { error: `Approved but tool returned failure: ${dispatchResult.content}` });

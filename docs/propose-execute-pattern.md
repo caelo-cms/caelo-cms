@@ -182,3 +182,67 @@ When in doubt, copy:
 - `packages/admin-core/src/ops/email_config_pending.ts` — Owner-supplies-secret shape.
 - `packages/admin-core/src/ops/template_pending.ts` — no-secret shape with blast-radius preview.
 - `packages/admin-core/src/ai/tools/propose-tools-batch.ts` — AI tool factory usage.
+
+## v0.6.0 alternative — `needsApproval` predicate on the tool
+
+For NEW gated tools where the per-domain `*_pending_actions` table
+adds no value beyond the gate itself, the v0.6.0 W5 `needsApproval`
+shape is simpler. The dispatcher persists to a single generic
+`tool_approval_actions` table; the Owner approves via
+`/security/tool-approvals/pending`; the route handler dispatches the
+tool with the persisted args.
+
+```ts
+// In packages/admin-core/src/ai/tools/<tool>.ts
+export const myGatedTool: ToolDefinitionWithHandler<MyInput> = {
+  name: "my_gated_tool",
+  description: "...",
+  schema: myInputSchema,
+  inputSchema: { /* JSON Schema */ },
+  needsApproval: (input) => input.affectedCount >= 5,
+  buildApprovalPreview: (input) => ({
+    op: "my_gated_tool",
+    affectedCount: input.affectedCount,
+    sample: input.ids.slice(0, 3),
+  }),
+  handler: async (ctx, input, toolCtx) => { /* normal */ },
+};
+```
+
+**When to use which:**
+
+| Choose | If you need |
+|---|---|
+| Per-domain propose/execute table | Domain-specific preview columns the queue page renders (snapshot id, slug, affected URLs); audit-history that survives separate from `audit_log`; multi-step credential handling (secret supplied at approve-time). |
+| v0.6.0 `needsApproval` predicate | A simple "gate if N exceeds threshold" + opaque preview JSON; no domain-specific columns; no Owner-supplies-secret step. |
+
+Both end up at the same canonical `Queued proposal <uuid>:` shape
+that ChatPanel renders inline, so the AI/operator UX is identical;
+the choice is about how much per-domain infrastructure the action
+needs to carry.
+
+The v0.6.0 reference implementation is `delete_pages_many` at
+`packages/admin-core/src/ai/tools/bulk-pages-modules.ts` — gates at
+`pageIds.length >= 5` via `needsApproval`, no per-domain table.
+Approve route at `apps/admin/src/routes/(authed)/security/tool-approvals/pending/+page.server.ts`.
+
+**Constraints (read before adding `needsApproval` to a new tool):**
+
+1. **Built-in tools only** — the approve route uses
+   `createDefaultToolRegistry()` which does NOT fold in Tier-1
+   plugin tools. A plugin tool with `needsApproval` would queue
+   but the Owner-side dispatch would 400 with "unknown tool". Lift
+   by importing `pluginToolsRegistry` in the route.
+
+2. **Owner-ctx dispatch** — the approved tool runs with the Owner's
+   `locals.ctx` (`actorKind: "human"`), NOT the AI ctx that
+   originally proposed. Tools whose `actorScope` excludes "human"
+   (e.g., `["ai", "system"]`) would fail at approve-time. Every
+   currently-shipped gated tool has `["human", "ai", "system"]`
+   scope so this is not a live bug — but widen scope to include
+   human before adding `needsApproval`.
+
+3. **Live-commit semantics** — approved tools commit directly to
+   main; `chatBranchId` is deliberately NOT propagated to the
+   dispatcher. If you need branch-write semantics post-approval,
+   extend the persisted row + route handler to carry the branch.

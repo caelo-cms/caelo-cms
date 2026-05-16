@@ -45,6 +45,7 @@ import {
   skillAutoEngagementHints,
 } from "@caelo-cms/shared";
 
+import { tryAutoRecover } from "./auto-recovery.js";
 import type { AIProvider, ChatMessageInput } from "./provider.js";
 import { composeSystemPromptChunks } from "./system-prompt.js";
 import { buildToolDescribeState } from "./tools/describe-state.js";
@@ -1483,165 +1484,28 @@ export async function* runChatTurn(
           result = settled.value;
           // v0.6.0 W3 — auto-recover from structured failures. When a
           // bootstrap-flow op fails with `nextAction.autoExecute=true`
-          // and the suggested tool is read-only by name (list_* / *.get),
-          // dispatch the recovery inline and fold its output into the
-          // tool-result content. The AI sees the original failure +
-          // the recovery data in ONE tool-result and retries with the
-          // right args on its next turn without an extra round-trip.
-          //
-          // Bounded: only fires when (a) result.ok===false, (b)
-          // nextAction.autoExecute, (c) isReadOnlyToolName(tool), (d)
-          // tool is in the catalogue. No recursion — the recovery
-          // itself does not get auto-recovery.
+          // and the suggested tool is read-only, the helper dispatches
+          // the recovery + (optionally) re-dispatches the original
+          // with rewritten args. AI sees a clean result in either
+          // success-with-retry or fold-into-content shape. See
+          // auto-recovery.ts for the full flow + safety guards.
           if (!result.ok && result.nextAction?.autoExecute) {
-            const recoveryToolName = result.nextAction.tool;
-            const isReadOnly =
-              recoveryToolName.startsWith("list_") ||
-              recoveryToolName.endsWith(".get") ||
-              recoveryToolName.endsWith("_get") ||
-              recoveryToolName.startsWith("get_");
-            const inCatalogue = tools.get(recoveryToolName) !== undefined;
-            if (isReadOnly && inCatalogue) {
-              try {
-                const recoveryArgs = result.nextAction.args ?? {};
-                const dispatchToolCtx = {
-                  adapter,
-                  registry,
-                  chatSessionId: input.chatSessionId,
-                  chatBranchId: session.session.chatBranchId,
-                  provider,
-                  tools,
-                  humanCtx,
-                };
-                const recovery = await tools.dispatch(
-                  recoveryToolName,
-                  recoveryArgs,
-                  aiCtxWithBranch,
-                  dispatchToolCtx,
-                );
-                const recoveryStatus = recovery.ok ? "ok" : "fail";
-
-                // v0.6.0 alpha.2 — original-call retry. When the
-                // recovery succeeded AND nextAction declared a
-                // retryWithArgs spec, extract the named field from
-                // recovery.value and re-dispatch the ORIGINAL tool with
-                // the corrected args. AI never sees the original
-                // failure — sees a clean success on its next turn.
-                // Bounded to one retry; if the retry also fails we
-                // fall through to the legacy fold-into-content path.
-                const retrySpec = result.nextAction.retryWithArgs;
-                if (recovery.ok && retrySpec && recovery.value !== undefined) {
-                  const extracted = extractAtPath(recovery.value, retrySpec.fromValuePath);
-                  if (extracted !== undefined) {
-                    const originalArgs = (call.arguments ?? {}) as Record<string, unknown>;
-                    const rewrittenArgs = {
-                      ...originalArgs,
-                      [retrySpec.argName]: extracted,
-                    };
-                    // v0.6.0 alpha.3 — validate the rewritten args
-                    // against the tool's Zod schema BEFORE re-dispatch.
-                    // Catches misconfigured retryWithArgs (wrong
-                    // argName, wrong fromValuePath shape) early so the
-                    // AI doesn't see a confusing "invalid arguments"
-                    // error from a tool it called with valid args. On
-                    // schema failure, fall through to fold-into-content
-                    // so the AI handles recovery on its next turn.
-                    const originalToolDef = tools.get(call.name);
-                    const validation = originalToolDef?.schema.safeParse(rewrittenArgs);
-                    if (!validation || !validation.success) {
-                      console.error("[chat-runner] retry rewritten args failed schema", {
-                        chatSessionId: input.chatSessionId,
-                        tool: call.name,
-                        retrySpec,
-                        issues: validation?.success === false ? validation.error.issues : null,
-                      });
-                      const combinedContent =
-                        `${result.content}\n\n[auto-recovery] ${recoveryToolName} (ok): ${recovery.content}\n[retry skipped — rewritten args failed schema; check the tool's retryWithArgs spec]`.slice(
-                          0,
-                          8000,
-                        );
-                      result = { ok: false, content: combinedContent };
-                      // Fall through to the downstream tool-result
-                      // persistence + yield. (Do NOT `continue` — that
-                      // would skip cache_tool_result + the SSE yield.)
-                    } else {
-                    try {
-                      const retried = await tools.dispatch(
-                        call.name,
-                        rewrittenArgs,
-                        aiCtxWithBranch,
-                        dispatchToolCtx,
-                      );
-                      if (retried.ok) {
-                        result = {
-                          ok: true,
-                          content:
-                            `${retried.content}\n[auto-recovered: list_* fetched ${retrySpec.argName}=${String(extracted).slice(0, 80)} and re-dispatched ${call.name}]`.slice(
-                              0,
-                              8000,
-                            ),
-                          ...(retried.image ? { image: retried.image } : {}),
-                        };
-                        // Skip the fold-into-content branch — retry succeeded.
-                      } else {
-                        // Retry failed — fall through to fold-into-content
-                        // so the AI sees what the corrected attempt did.
-                        result = {
-                          ok: false,
-                          content:
-                            `${result.content}\n\n[auto-recovery] ${recoveryToolName} (ok): ${recovery.content}\n[retry] ${call.name} with ${retrySpec.argName}=${String(extracted).slice(0, 80)} → ${retried.content}`.slice(
-                              0,
-                              8000,
-                            ),
-                        };
-                      }
-                    } catch (retryErr) {
-                      console.error("[chat-runner] retry dispatch threw", {
-                        chatSessionId: input.chatSessionId,
-                        originalTool: call.name,
-                        error: retryErr,
-                      });
-                      const combinedContent =
-                        `${result.content}\n\n[auto-recovery] ${recoveryToolName} (ok): ${recovery.content}`.slice(
-                          0,
-                          8000,
-                        );
-                      result = { ok: false, content: combinedContent };
-                    }
-                    } // close `else` of schema-validation
-                  } else {
-                    // Path didn't resolve (recovery returned empty / wrong
-                    // shape). Fall through to fold-into-content.
-                    const combinedContent =
-                      `${result.content}\n\n[auto-recovery] ${recoveryToolName} (${recoveryStatus}): ${recovery.content}`.slice(
-                        0,
-                        8000,
-                      );
-                    result = { ok: false, content: combinedContent };
-                  }
-                } else {
-                  // No retry spec OR recovery failed OR no structured
-                  // value to extract from. Fold the recovery output into
-                  // the failure content; AI handles retry on next turn.
-                  const combinedContent =
-                    `${result.content}\n\n[auto-recovery] ${recoveryToolName} (${recoveryStatus}): ${recovery.content}`.slice(
-                      0,
-                      8000,
-                    );
-                  result = { ok: false, content: combinedContent };
-                }
-              } catch (recErr) {
-                console.error("[chat-runner] auto-recovery dispatch threw", {
-                  chatSessionId: input.chatSessionId,
-                  recoveryTool: recoveryToolName,
-                  error: recErr,
-                });
-                // Recovery itself failed — leave the original result
-                // untouched. The AI sees just the original failure +
-                // the hint string; can call the recovery tool itself
-                // on the next turn if it wants.
-              }
-            }
+            result = await tryAutoRecover({
+              failed: result,
+              originalCall: { name: call.name, arguments: call.arguments },
+              tools,
+              aiCtx: aiCtxWithBranch,
+              toolCtx: {
+                adapter,
+                registry,
+                chatSessionId: input.chatSessionId,
+                chatBranchId: session.session.chatBranchId,
+                provider,
+                tools,
+                humanCtx,
+              },
+              chatSessionId: input.chatSessionId,
+            });
           }
         } else {
           // v0.2.52 — A tool handler rejected (Zod runtime, plugin error,
@@ -1776,33 +1640,5 @@ export async function* runChatTurn(
   yield { kind: "done" };
 }
 
-/**
- * v0.6.0 alpha.2 — declarative path extraction for the W3 retry path.
- * Resolves dot-separated paths against a structured `value` payload
- * returned by a recovery tool. Supports numeric indices for arrays
- * (e.g. "layouts.0.id" → value.layouts[0].id). Returns undefined when
- * any segment misses; callers fall back to the legacy
- * fold-into-content branch.
- *
- * Pure data extraction — no execution, no eval, no JSONPath. Each
- * segment is a property name OR a non-negative integer index.
- */
-function extractAtPath(value: unknown, path: string): unknown {
-  if (value === null || value === undefined) return undefined;
-  const segments = path.split(".").filter((s) => s.length > 0);
-  let current: unknown = value;
-  for (const segment of segments) {
-    if (current === null || current === undefined) return undefined;
-    if (Array.isArray(current)) {
-      const idx = Number.parseInt(segment, 10);
-      if (!Number.isInteger(idx) || idx < 0 || idx >= current.length) return undefined;
-      current = current[idx];
-    } else if (typeof current === "object") {
-      current = (current as Record<string, unknown>)[segment];
-    } else {
-      // Primitive value mid-path — can't descend further.
-      return undefined;
-    }
-  }
-  return current;
-}
+// v0.6.0 alpha.4 Fix W — extractAtPath + the W3 retry logic moved
+// to packages/admin-core/src/ai/auto-recovery.ts.
