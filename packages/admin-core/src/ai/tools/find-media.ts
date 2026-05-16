@@ -84,6 +84,11 @@ export const findMediaTool: ToolDefinitionWithHandler<
       const alt = a.alt ? `, alt="${a.alt}"` : "";
       return `- ${a.originalName} (${a.mime}${dims}${alt}) → ${buildMediaUrl(a.id, variant)}`;
     });
-    return { ok: true, content: `Matches:\n${lines.join("\n")}` };
+    return {
+      ok: true,
+      content: `Matches:\n${lines.join("\n")}`,
+      // v0.6.0 alpha.3 — structured payload for W3 retryWithArgs.
+      value: { assets },
+    };
   },
 };

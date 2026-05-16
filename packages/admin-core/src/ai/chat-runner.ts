@@ -1538,6 +1538,33 @@ export async function* runChatTurn(
                       ...originalArgs,
                       [retrySpec.argName]: extracted,
                     };
+                    // v0.6.0 alpha.3 — validate the rewritten args
+                    // against the tool's Zod schema BEFORE re-dispatch.
+                    // Catches misconfigured retryWithArgs (wrong
+                    // argName, wrong fromValuePath shape) early so the
+                    // AI doesn't see a confusing "invalid arguments"
+                    // error from a tool it called with valid args. On
+                    // schema failure, fall through to fold-into-content
+                    // so the AI handles recovery on its next turn.
+                    const originalToolDef = tools.get(call.name);
+                    const validation = originalToolDef?.schema.safeParse(rewrittenArgs);
+                    if (!validation || !validation.success) {
+                      console.error("[chat-runner] retry rewritten args failed schema", {
+                        chatSessionId: input.chatSessionId,
+                        tool: call.name,
+                        retrySpec,
+                        issues: validation?.success === false ? validation.error.issues : null,
+                      });
+                      const combinedContent =
+                        `${result.content}\n\n[auto-recovery] ${recoveryToolName} (ok): ${recovery.content}\n[retry skipped — rewritten args failed schema; check the tool's retryWithArgs spec]`.slice(
+                          0,
+                          8000,
+                        );
+                      result = { ok: false, content: combinedContent };
+                      // Fall through to the downstream tool-result
+                      // persistence + yield. (Do NOT `continue` — that
+                      // would skip cache_tool_result + the SSE yield.)
+                    } else {
                     try {
                       const retried = await tools.dispatch(
                         call.name,
@@ -1581,6 +1608,7 @@ export async function* runChatTurn(
                         );
                       result = { ok: false, content: combinedContent };
                     }
+                    } // close `else` of schema-validation
                   } else {
                     // Path didn't resolve (recovery returned empty / wrong
                     // shape). Fall through to fold-into-content.

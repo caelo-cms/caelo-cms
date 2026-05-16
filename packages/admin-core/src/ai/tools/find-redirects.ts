@@ -45,6 +45,8 @@ export const findRedirectsTool: ToolDefinitionWithHandler<
     return {
       ok: true,
       content: `Matches (showing ${redirects.length} of ${totalCount}):\n${lines.join("\n")}`,
+      // v0.6.0 alpha.3 — structured payload for W3 retryWithArgs.
+      value: { redirects, totalCount },
     };
   },
 };

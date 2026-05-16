@@ -22,6 +22,7 @@ import {
   archiveChatSessionOp,
   countBranchChangesOp,
   createChatSessionOp,
+  getChatBranchIdOp,
   getChatSessionOp,
   listActivePagesOp,
   listBranchEditedEntitiesOp,
@@ -517,6 +518,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listChatSessionsOp);
   registry.register(createChatSessionOp);
   registry.register(getChatSessionOp);
+  registry.register(getChatBranchIdOp);
   registry.register(renameChatSessionOp);
   registry.register(archiveChatSessionOp);
   registry.register(appendChatMessageOp);

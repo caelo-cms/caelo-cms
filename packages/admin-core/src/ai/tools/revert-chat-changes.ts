@@ -71,27 +71,26 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const maxEntities = input.maxEntities ?? 20;
 
-    // STEP 1 — resolve the chat's branch_id via chat.get_session.
-    // CLAUDE.md §2: all DB access goes through the Query API; the
-    // earlier draft of this tool used `new SQL(...)` directly which
-    // bypassed RLS, audit, validator, and pooling.
-    const sessionRes = await execute(
+    // STEP 1 — resolve the chat's branch_id via chat.get_branch_id.
+    // chat.get_session won't work here: it filters by
+    // `created_by = ctx.actorId`, and the AI actor is NOT the chat's
+    // creator (the human user is). chat.get_branch_id is a focused op
+    // that returns only the branch id + creator, open to AI scope so
+    // this tool can read what the human user wrote.
+    const branchRes = await execute(
       toolCtx.registry,
       toolCtx.adapter,
       ctx,
-      "chat.get_session",
+      "chat.get_branch_id",
       { chatSessionId: input.chatSessionId },
     );
-    if (!sessionRes.ok) {
+    if (!branchRes.ok) {
       return {
         ok: false,
-        content: `revert_chat_changes: chat.get_session failed: ${describeError(sessionRes.error)}`,
+        content: `revert_chat_changes: chat.get_branch_id failed: ${describeError(branchRes.error)}`,
       };
     }
-    const sessionValue = sessionRes.value as {
-      session: { chatBranchId: string | null } | null;
-    };
-    const chatBranchId = sessionValue.session?.chatBranchId ?? null;
+    const chatBranchId = (branchRes.value as { chatBranchId: string | null }).chatBranchId;
     if (!chatBranchId) {
       return {
         ok: false,

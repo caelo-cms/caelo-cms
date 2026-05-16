@@ -58,8 +58,19 @@ export interface ToolDescribeStateSiteDefaults {
  * synthetic fallback. The describe() callback can detect "no data
  * fetched yet" by checking `state.fetchedAt === null` and emit a
  * conservative description rather than asserting "no layouts exist".
+ *
+ * v0.6.0 alpha.3 — `actor` and `fetchedAt` are intentionally populated
+ * even though no shipped tool currently consumes them. They're
+ * extension points: a future tool's describe() might say "this op is
+ * restricted to system actors, you're an AI — DO NOT call" when
+ * actor.actorKind === "ai", or "site state is stale, the runner
+ * hasn't fetched it yet" when fetchedAt is null. Keeping them in the
+ * type now means existing tools don't need a migration when the
+ * first consumer ships.
  */
 export interface ToolDescribeState {
+  /** Actor on whose behalf the describe() call is being rendered.
+   * Tools can branch on actorKind to surface ai-vs-human guidance. */
   readonly actor: Pick<ExecutionContext, "actorId" | "actorKind">;
   readonly layouts: readonly ToolDescribeStateLayout[];
   readonly templates: readonly ToolDescribeStateTemplate[];

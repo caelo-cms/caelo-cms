@@ -19,6 +19,29 @@
  *   3. `tool_approvals.mark_result` — captures the dispatch outcome
  *      so the queue page shows "applied — succeeded" / "applied —
  *      failed: <reason>".
+ *
+ * DESIGN CONTRACTS:
+ *
+ * (a) Live-commit semantics. The dispatch carries `chatSessionId` (so
+ *     the audit log links the action back to the chat origin) but
+ *     deliberately OMITS `chatBranchId`. Once the Owner approves, the
+ *     action commits directly to main — it does NOT branch-write into
+ *     the proposing chat. Rationale: gated tools are by definition
+ *     hard-to-revert; making them branch-only would mean an Approve
+ *     click is a no-op on main until the chat publishes, which is
+ *     surprising for destructive ops. If you ship a future gated tool
+ *     where branch-write IS the desired semantic, store branchId in
+ *     the persisted row and read it here.
+ *
+ * (b) Built-in tools only. The dispatch uses
+ *     `createDefaultToolRegistry()` which is the BUILT-IN catalogue
+ *     only — Tier-1 plugin tools registered through
+ *     `pluginToolsRegistry` are NOT included. Plugin tools with
+ *     `needsApproval` would queue fine but Approve would 400 with
+ *     "unknown tool". Lift this constraint by importing
+ *     `pluginToolsRegistry` here and folding its entries into the
+ *     dispatcher's lookup, mirroring the chat-runner's catalogue
+ *     assembly at chat-runner.ts:966.
  */
 
 import { createDefaultToolRegistry } from "@caelo-cms/admin-core";

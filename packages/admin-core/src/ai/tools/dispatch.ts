@@ -288,22 +288,23 @@ export class ToolRegistry {
         }
         // Out-of-chat dispatches (tests, plugin-host calls) lack a
         // real adapter + registry. The persistence path requires both,
-        // so we fall back to a synthetic-UUID canonical string that
-        // matches ProposeCard's regex but is NOT queryable. Production
-        // callers always have adapter + registry set by the chat-runner,
-        // so this fallback only affects tests + edge cases where
-        // gating an out-of-chat action wouldn't have a UI surface
-        // anyway.
+        // so we emit a deliberately NON-canonical content string
+        // (no "Queued proposal <uuid>:" prefix) so ProposeCard's
+        // regex `/^Queued proposal ([0-9a-f-]{36}):/` skips it and
+        // never renders an Approve button that would 400 on click.
+        // Production callers always have adapter + registry set by the
+        // chat-runner, so this fallback only affects tests + plugin-
+        // host calls; plugin-host doesn't render through ProposeCard
+        // anyway, so the "no-button" outcome is fine.
         const hasContext =
           toolCtx.adapter !== undefined && toolCtx.registry !== undefined;
         if (!hasContext) {
-          const syntheticId = crypto.randomUUID();
           const previewSummary = JSON.stringify(preview).slice(0, 400);
           return {
             ok: true,
             content:
-              `Queued proposal ${syntheticId}: ${name} — needs Owner approval (${previewSummary}). ` +
-              `[non-persisted: out-of-chat dispatch, no Approve button]`,
+              `[needs-approval, non-persisted] ${name} would queue for Owner approval ` +
+              `(${previewSummary}). Out-of-chat dispatch — no Approve UI available.`,
           };
         }
         // Persist via the Query API so the Approve button has

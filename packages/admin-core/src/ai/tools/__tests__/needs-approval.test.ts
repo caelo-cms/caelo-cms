@@ -73,9 +73,13 @@ describe("ToolRegistry needsApproval gate (W5)", () => {
     const result = await reg.dispatch("gated_tool", { go: true }, ctx, toolCtx);
     expect(result.ok).toBe(true);
     // Test toolCtx has no adapter/registry → out-of-chat fallback
-    // (synthetic UUID, marked non-persisted). Production path uses
-    // tool_approvals.queue + emits the canonical pending-queue URL.
-    expect(result.content).toMatch(/^Queued proposal [0-9a-f-]{36}: gated_tool/);
+    // emits a deliberately NON-canonical string ("[needs-approval,
+    // non-persisted]") so ProposeCard's regex skips it. Production
+    // path goes through tool_approvals.queue + emits the canonical
+    // "Queued proposal <uuid>:" shape that ProposeCard renders.
+    expect(result.content).toContain("[needs-approval, non-persisted]");
+    expect(result.content).toContain("gated_tool");
+    expect(result.content).not.toMatch(/^Queued proposal/);
     expect(handlerRan).toBe(false);
   });
 
@@ -116,7 +120,7 @@ describe("ToolRegistry needsApproval gate (W5)", () => {
     handlerRan = false;
     const gated = await reg.dispatch("conditional_tool", { go: true }, ctx, toolCtx);
     expect(handlerRan).toBe(false);
-    expect(gated.content).toContain("Queued proposal");
+    expect(gated.content).toContain("[needs-approval, non-persisted]");
   });
 
   it("invokes buildApprovalPreview and surfaces it in the result content", async () => {
@@ -148,7 +152,7 @@ describe("ToolRegistry needsApproval gate (W5)", () => {
       }),
     );
     const result = await reg.dispatch("async_tool", { go: true }, ctx, toolCtx);
-    expect(result.content).toContain("Queued proposal");
+    expect(result.content).toContain("[needs-approval, non-persisted]");
   });
 
   it("lets the action through (no silent block) when the predicate throws", async () => {

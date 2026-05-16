@@ -65,6 +65,11 @@ export const listPagesTool: ToolDefinitionWithHandler<ListPagesInput> = {
     return {
       ok: true,
       content: `${pages.length} page${pages.length === 1 ? "" : "s"}:\n${lines.join("\n")}`,
+      // v0.6.0 alpha.3 — structured payload for the W3 retry path.
+      // A future nextAction.retryWithArgs={argName:"pageId",
+      // fromValuePath:"pages.0.id"} can rewrite a failed call with
+      // the first page's id without an extra AI round-trip.
+      value: { pages },
     };
   },
 };

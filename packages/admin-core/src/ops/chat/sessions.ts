@@ -357,6 +357,41 @@ export const getChatSessionOp = defineOperation({
  * other Anthropic surfaces (Claude.ai's "Extended thinking" toggle is
  * also user-facing only).
  */
+/**
+ * v0.6.0 alpha.3 — read the chat session's branch id WITHOUT the
+ * created_by filter that `chat.get_session` applies. The
+ * AI-callable revert_chat_changes tool needs to look up the branch
+ * id for a chat that the human user owns (the AI is not the
+ * creator). `chat.get_session` filters by `created_by = ctx.actorId`
+ * which silently returns null for AI callers; this op skips that
+ * filter for AI/system actors so the branch id is reachable.
+ *
+ * Returns ONLY the branch id and the creator — nothing sensitive.
+ * The full session record stays guarded by `chat.get_session`.
+ */
+export const getChatBranchIdOp = defineOperation({
+  name: "chat.get_branch_id",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ chatSessionId: z.string().uuid() }),
+  output: z.object({
+    chatBranchId: z.string().nullable(),
+    createdBy: z.string().nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT chat_branch_id::text AS chat_branch_id,
+             created_by::text AS created_by
+      FROM chat_sessions
+      WHERE id = ${input.chatSessionId}::uuid
+      LIMIT 1
+    `)) as unknown as { chat_branch_id: string | null; created_by: string | null }[];
+    const row = rows[0];
+    if (!row) return ok({ chatBranchId: null, createdBy: null });
+    return ok({ chatBranchId: row.chat_branch_id, createdBy: row.created_by });
+  },
+});
+
 export const setChatExtendedThinkingOp = defineOperation({
   name: "chat.set_extended_thinking",
   actorScope: ["human", "system"],

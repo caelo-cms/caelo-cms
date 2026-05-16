@@ -36,6 +36,7 @@
     { href: "/security/gateway/pending", label: "Rate-limit proposals", desc: "AI-proposed per-(plugin, op) rate-limit changes — Owner approves", icon: Inbox },
     { href: "/security/auth", label: "Visitor auth", desc: "Signup policy, password length, OAuth providers (P15)", icon: Lock },
     { href: "/security/auth/pending", label: "Auth proposals (queue)", desc: "AI-proposed auth_config changes — Owner approves or rejects", icon: Inbox },
+    { href: "/security/tool-approvals/pending", label: "Tool approvals (queue)", desc: "AI tool calls gated by needsApproval (v0.6.0) — generic Owner approval queue", icon: Inbox },
     { href: "/security/ai", label: "AI provider", desc: "Anthropic configuration + active provider", icon: Bot },
     { href: "/security/mcp", label: "MCP tokens", desc: "Bearer tokens for `bunx @caelo-cms/mcp-server` — drive your install from Claude Code / IDE", icon: Key },
     { href: "/security/deployments", label: "Deployments", desc: "Ops view — dev / staging / production + promote", icon: Rocket },

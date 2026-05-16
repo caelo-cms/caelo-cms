@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.6.0-alpha.3
+
+### Fixes
+- **A (critical):** Fix #2's `revert_chat_changes` migration to `chat.get_session` silently broke the tool for AI callers — that op filters by `created_by = ctx.actorId`, and the AI actor is never the chat's creator. New `chat.get_branch_id` op (AI scope, no creator filter) returns just the branch id + creator. Restored revert_chat_changes works against chats the human user owns.
+- **B (contract):** Approve route explicitly documents live-commit semantics — `chatSessionId` carries through to the audit log but `chatBranchId` is deliberately omitted so approved gated tools commit directly to main, not to the proposing chat's branch.
+- **C (constraint):** Approve route documents the built-in-tools-only constraint — `createDefaultToolRegistry()` doesn't include Tier-1 plugin tools, so any future plugin tool with `needsApproval` would queue fine but the Approve dispatch would 400. Plain comment, no behavior change.
+- **D:** Dispatcher out-of-chat fallback now emits a NON-canonical `[needs-approval, non-persisted] <tool> would queue …` string so ProposeCard's regex skips it. Prevents a confusing "click Approve → 400" UX in the (currently theoretical) case where the fallback ever reaches a chat surface.
+- **G:** Chat-runner validates the rewritten args against the original tool's Zod schema BEFORE re-dispatching. Misconfigured `nextAction.retryWithArgs` falls through to fold-into-content with a clear "[retry skipped — rewritten args failed schema]" marker instead of confusing the AI with an "invalid arguments" error.
+
+### Features
+- **F+H:** `list_pages`, `find_media`, `find_redirects` now populate `ToolResult.value` so the W3 retry path works for any `nextAction.retryWithArgs` pointing at them, not just `list_layouts` / `list_templates`.
+- **E:** New `tool-approvals.integration.test.ts` — 5 tests against real Postgres covering queue + atomic claim + result tracking + list-pending filter + reject. Locks in the contract that the W5 persistence layer actually works.
+- **I:** `/security/tool-approvals/pending` now linked from the Security control panel under "Tool approvals (queue)".
+- **K (skill body):** Migration 0084 appends a one-paragraph nudge to compose-page + bootstrap-site skills explaining the "Queued proposal <uuid>: ... needs Owner approval" pattern so the AI doesn't claim success on a gated tool.
+
+### Docs
+- `ToolDescribeState.actor` + `fetchedAt` now have explicit "future extension point" comments rather than appearing unused.
+
 ## v0.6.0-alpha.2
 
 ### Fixes
