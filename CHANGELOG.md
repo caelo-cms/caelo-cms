@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.3
+
+### Fixes
+- eebd339 Firebase Hosting headers REST shape — map<string,string>, not array-of-{key,value}
+
 ## v0.6.2
 
 ### Fixes
