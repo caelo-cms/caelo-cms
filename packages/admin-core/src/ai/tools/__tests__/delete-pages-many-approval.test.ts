@@ -18,7 +18,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { deletePagesManyTool } from "../bulk-pages-modules.js";
-import { ToolRegistry, type ToolContext } from "../dispatch.js";
+import { type ToolContext, ToolRegistry } from "../dispatch.js";
 
 const ctx: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-000000000001",
@@ -70,12 +70,7 @@ describe("delete_pages_many — W5 reference needsApproval gate", () => {
     // 6 pages → over threshold; dispatch should return the canonical
     // "Queued proposal" result WITHOUT calling the handler (no DB
     // adapter wired in toolCtx → handler would throw if reached).
-    const result = await reg.dispatch(
-      "delete_pages_many",
-      { pageIds: ids(6) },
-      ctx,
-      toolCtx,
-    );
+    const result = await reg.dispatch("delete_pages_many", { pageIds: ids(6) }, ctx, toolCtx);
     expect(result.ok).toBe(true);
     // Out-of-chat fallback shape (test doesn't wire a real adapter).
     // Production path goes through tool_approvals.queue + emits the
@@ -87,10 +82,7 @@ describe("delete_pages_many — W5 reference needsApproval gate", () => {
   });
 
   it("buildApprovalPreview surfaces the page count + sample IDs", async () => {
-    const preview = await deletePagesManyTool.buildApprovalPreview!(
-      { pageIds: ids(20) },
-      ctx,
-    );
+    const preview = await deletePagesManyTool.buildApprovalPreview!({ pageIds: ids(20) }, ctx);
     expect(preview.op).toBe("delete_pages_many");
     expect(preview.pageCount).toBe(20);
     expect(Array.isArray(preview.samplePageIds)).toBe(true);

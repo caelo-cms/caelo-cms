@@ -99,7 +99,7 @@ export async function tryAutoRecover(input: AutoRecoverInput): Promise<ToolResul
   const rewrittenArgs = { ...originalArgs, [retrySpec.argName]: extracted };
   const originalToolDef = tools.get(originalCall.name);
   const validation = originalToolDef?.schema.safeParse(rewrittenArgs);
-  if (!validation || !validation.success) {
+  if (!validation?.success) {
     console.error("[chat-runner.auto-recovery] retry rewritten args failed schema", {
       chatSessionId,
       tool: originalCall.name,

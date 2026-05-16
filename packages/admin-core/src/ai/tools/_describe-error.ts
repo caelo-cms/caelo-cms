@@ -40,7 +40,8 @@ export function describeError(error: unknown): string {
     const na = e.nextAction;
     const argsPart =
       na.args && Object.keys(na.args).length > 0 ? ` with args ${JSON.stringify(na.args)}` : "";
-    const reasonPart = typeof na.reason === "string" && na.reason.length > 0 ? ` — ${na.reason}` : "";
+    const reasonPart =
+      typeof na.reason === "string" && na.reason.length > 0 ? ` — ${na.reason}` : "";
     return `${primary} | next: call \`${na.tool}\`${argsPart}${reasonPart}`;
   }
   return primary;
@@ -81,7 +82,7 @@ function describePrimary(
     if (parts.length > 0) return parts.join(" — ").slice(0, 240);
   }
   const message = typeof e.message === "string" ? e.message : null;
-  if (message && message.startsWith("Failed query")) {
+  if (message?.startsWith("Failed query")) {
     const pgDetail = extractPgDetail(rawError);
     if (pgDetail) return pgDetail;
   }

@@ -16,14 +16,13 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { z } from "zod";
-
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { z } from "zod";
 import { extractAtPath, tryAutoRecover } from "../auto-recovery.js";
 import {
-  ToolRegistry,
   type ToolContext,
   type ToolDefinitionWithHandler,
+  ToolRegistry,
   type ToolResult,
 } from "../tools/dispatch.js";
 
@@ -34,7 +33,9 @@ const aiCtx: ExecutionContext = {
 };
 const toolCtx = {} as unknown as ToolContext;
 
-function fakeListLayoutsTool(returnedLayouts: { id: string; slug: string }[]): ToolDefinitionWithHandler<{}> {
+function fakeListLayoutsTool(
+  returnedLayouts: { id: string; slug: string }[],
+): ToolDefinitionWithHandler<Record<string, never>> {
   return {
     name: "list_layouts",
     description: "fake list_layouts",
@@ -83,12 +84,12 @@ describe("extractAtPath", () => {
   });
 
   it("resolves nested + array index paths", () => {
-    expect(
-      extractAtPath({ layouts: [{ id: "first" }, { id: "second" }] }, "layouts.0.id"),
-    ).toBe("first");
-    expect(
-      extractAtPath({ layouts: [{ id: "first" }, { id: "second" }] }, "layouts.1.id"),
-    ).toBe("second");
+    expect(extractAtPath({ layouts: [{ id: "first" }, { id: "second" }] }, "layouts.0.id")).toBe(
+      "first",
+    );
+    expect(extractAtPath({ layouts: [{ id: "first" }, { id: "second" }] }, "layouts.1.id")).toBe(
+      "second",
+    );
   });
 
   it("returns undefined when any segment misses", () => {
@@ -117,9 +118,7 @@ describe("tryAutoRecover", () => {
   it("happy path: recovery returns value, retry succeeds with rewritten args → clean success", async () => {
     const tools = new ToolRegistry();
     tools.register(
-      fakeListLayoutsTool([
-        { id: "11111111-1111-4111-8111-aaaaaaaaaaaa", slug: "site-default" },
-      ]),
+      fakeListLayoutsTool([{ id: "11111111-1111-4111-8111-aaaaaaaaaaaa", slug: "site-default" }]),
     );
     tools.register(fakeTemplatesCreateTool("fail-without-layoutId"));
 
@@ -174,7 +173,7 @@ describe("tryAutoRecover", () => {
     const tools = new ToolRegistry();
     // Register a write-shaped tool to ensure even if it's catalogued
     // we still refuse to call it from the auto-recovery path.
-    const writeTool: ToolDefinitionWithHandler<{}> = {
+    const writeTool: ToolDefinitionWithHandler<Record<string, never>> = {
       name: "delete_everything",
       description: "definitely not read-only",
       schema: z.object({}),

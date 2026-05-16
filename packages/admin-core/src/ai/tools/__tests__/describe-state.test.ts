@@ -23,12 +23,9 @@ import { addModuleToTemplateTool } from "../add-module-to-template.js";
 import { bootstrapSiteScaffoldTool } from "../bootstrap-site-scaffold.js";
 import { createPageTool } from "../create-page.js";
 import { createTemplateTool } from "../create-template.js";
-import { setSiteDefaultsTool } from "../set-site-defaults.js";
-import {
-  buildToolDescribeState,
-  type ToolDescribeState,
-} from "../describe-state.js";
+import { buildToolDescribeState, type ToolDescribeState } from "../describe-state.js";
 import { type ToolDefinitionWithHandler, ToolRegistry } from "../dispatch.js";
+import { setSiteDefaultsTool } from "../set-site-defaults.js";
 
 const FRESH: ToolDescribeState = buildToolDescribeState({
   actor: { actorId: "ai", actorKind: "ai" },

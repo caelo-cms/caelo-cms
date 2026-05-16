@@ -161,7 +161,8 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
     const createdModuleIds: string[] = [];
     const sectionResults: { idx: number; displayName: string; ok: boolean; reason?: string }[] = [];
     for (let i = 0; i < input.sections.length; i++) {
-      const section = input.sections[i]!;
+      const section = input.sections[i];
+      if (!section) continue;
       const slug = slugify(section.displayName, i);
       const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
         slug,

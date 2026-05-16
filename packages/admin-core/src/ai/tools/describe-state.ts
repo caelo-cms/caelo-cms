@@ -103,9 +103,7 @@ export function buildToolDescribeState(args: {
   const siteDefaults = extractSiteDefaults(args.siteDefaultsValue);
 
   const anyFetched =
-    args.layoutsValue !== null ||
-    args.templatesValue !== null ||
-    args.siteDefaultsValue !== null;
+    args.layoutsValue !== null || args.templatesValue !== null || args.siteDefaultsValue !== null;
 
   return {
     actor: args.actor,
@@ -130,20 +128,18 @@ function extractLayouts(value: unknown): ToolDescribeStateLayout[] {
     };
     if (typeof o.id !== "string" || typeof o.slug !== "string") return [];
     const blocks = Array.isArray(o.blocks)
-      ? o.blocks.flatMap(
-          (b, idx): { name: string; displayName: string; position: number }[] => {
-            if (!b || typeof b !== "object") return [];
-            const bo = b as { name?: unknown; displayName?: unknown; position?: unknown };
-            if (typeof bo.name !== "string") return [];
-            return [
-              {
-                name: bo.name,
-                displayName: typeof bo.displayName === "string" ? bo.displayName : bo.name,
-                position: typeof bo.position === "number" ? bo.position : idx,
-              },
-            ];
-          },
-        )
+      ? o.blocks.flatMap((b, idx): { name: string; displayName: string; position: number }[] => {
+          if (!b || typeof b !== "object") return [];
+          const bo = b as { name?: unknown; displayName?: unknown; position?: unknown };
+          if (typeof bo.name !== "string") return [];
+          return [
+            {
+              name: bo.name,
+              displayName: typeof bo.displayName === "string" ? bo.displayName : bo.name,
+              position: typeof bo.position === "number" ? bo.position : idx,
+            },
+          ];
+        })
       : [];
     return [
       {

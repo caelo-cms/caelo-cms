@@ -339,7 +339,8 @@ export const createPageOp = defineOperation({
         message: "template not found or deleted",
         nextAction: {
           tool: "list_templates",
-          reason: "fetch valid templateId values; the one you passed does not match a live template",
+          reason:
+            "fetch valid templateId values; the one you passed does not match a live template",
           autoExecute: true,
         },
       });

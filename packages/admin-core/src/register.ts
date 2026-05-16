@@ -328,13 +328,6 @@ import {
   proposeRevertTemplateOp,
   rejectSnapshotRevertProposalOp,
 } from "./ops/snapshot_pending.js";
-import {
-  listPendingToolApprovalsOp,
-  markToolApprovalResultOp,
-  queueToolApprovalOp,
-  readToolApprovalForExecuteOp,
-  rejectToolApprovalOp,
-} from "./ops/tool_approvals.js";
 import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
 import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
 import { moduleImpactOp } from "./ops/snapshots/impact.js";
@@ -358,6 +351,13 @@ import {
   getSubagentRunOp,
   listSubagentRunsOp,
 } from "./ops/subagents/runs.js";
+import {
+  listPendingToolApprovalsOp,
+  markToolApprovalResultOp,
+  queueToolApprovalOp,
+  readToolApprovalForExecuteOp,
+  rejectToolApprovalOp,
+} from "./ops/tool_approvals.js";
 import {
   deleteGlossaryEntryOp,
   listGlossaryOp,

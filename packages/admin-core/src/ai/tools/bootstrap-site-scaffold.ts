@@ -83,11 +83,9 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       );
     }
     if (!state.siteDefaults) {
-      return (
-        `Composite bootstrap — STAGE 2. Layout (${state.layouts.map((l) => l.slug).join(", ")}) and template (${state.templates
-          .map((t) => t.slug)
-          .join(", ")}) exist; this call will pin site_defaults directly.`
-      );
+      return `Composite bootstrap — STAGE 2. Layout (${state.layouts.map((l) => l.slug).join(", ")}) and template (${state.templates
+        .map((t) => t.slug)
+        .join(", ")}) exist; this call will pin site_defaults directly.`;
     }
     return "Bootstrap already complete — site_defaults is set, layout and template exist. Calling this tool is a no-op.";
   },
@@ -152,19 +150,13 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     const layouts = (layoutsR.value as { layouts: { id: string; slug: string }[] }).layouts;
     if (layouts.length === 0) {
       // STAGE 0 — propose the layout. Owner-gated.
-      const res = await execute(
-        toolCtx.registry,
-        toolCtx.adapter,
-        ctx,
-        "layouts.propose_create",
-        {
-          slug: layoutSlug,
-          displayName: layoutDisplayName,
-          html: DEFAULT_LAYOUT_HTML,
-          css: "",
-          blocks,
-        },
-      );
+      const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.propose_create", {
+        slug: layoutSlug,
+        displayName: layoutDisplayName,
+        html: DEFAULT_LAYOUT_HTML,
+        css: "",
+        blocks,
+      });
       if (!res.ok) {
         return {
           ok: false,
@@ -189,7 +181,12 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       return { ok: false, content: `templates.list failed: ${describeError(templatesR.error)}` };
     }
     const templates = (templatesR.value as { templates: { id: string; slug: string }[] }).templates;
-    const targetLayout = layouts.find((l) => l.slug === layoutSlug) ?? layouts[0]!;
+    // layouts.length > 0 was checked above (STAGE 0 returned early when
+    // empty); first-element access here is safe.
+    const targetLayout = layouts.find((l) => l.slug === layoutSlug) ?? layouts[0];
+    if (!targetLayout) {
+      return { ok: false, content: "bootstrap_site_scaffold: no layout available (unexpected)" };
+    }
 
     let createdTemplateId: string | null = null;
     if (templates.length === 0) {
@@ -246,8 +243,10 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     const finalTemplates: { id: string; slug: string }[] = createdTemplateId
       ? [...templates, { id: createdTemplateId, slug: templateSlug }]
       : templates;
-    const targetTemplate =
-      finalTemplates.find((t) => t.slug === templateSlug) ?? finalTemplates[0]!;
+    const targetTemplate = finalTemplates.find((t) => t.slug === templateSlug) ?? finalTemplates[0];
+    if (!targetTemplate) {
+      return { ok: false, content: "bootstrap_site_scaffold: no template available (unexpected)" };
+    }
 
     if (existingDefaults) {
       return {

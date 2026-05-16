@@ -233,7 +233,10 @@ export class ToolRegistry {
         try {
           description = t.describe(state);
         } catch (err) {
-          console.error(`[tool.describe] ${t.name} threw — falling back to static description`, err);
+          console.error(
+            `[tool.describe] ${t.name} threw — falling back to static description`,
+            err,
+          );
         }
       }
       return {
@@ -278,7 +281,10 @@ export class ToolRegistry {
         gated = false;
       }
       if (gated) {
-        let preview: Record<string, unknown> = { tool: name, args: parsed.data as Record<string, unknown> };
+        let preview: Record<string, unknown> = {
+          tool: name,
+          args: parsed.data as Record<string, unknown>,
+        };
         if (tool.buildApprovalPreview) {
           try {
             preview = await tool.buildApprovalPreview(parsed.data, ctx);
@@ -296,8 +302,7 @@ export class ToolRegistry {
         // chat-runner, so this fallback only affects tests + plugin-
         // host calls; plugin-host doesn't render through ProposeCard
         // anyway, so the "no-button" outcome is fine.
-        const hasContext =
-          toolCtx.adapter !== undefined && toolCtx.registry !== undefined;
+        const hasContext = toolCtx.adapter !== undefined && toolCtx.registry !== undefined;
         if (!hasContext) {
           const previewSummary = JSON.stringify(preview).slice(0, 400);
           return {

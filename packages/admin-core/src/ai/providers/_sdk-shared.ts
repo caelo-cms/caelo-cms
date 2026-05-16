@@ -192,9 +192,7 @@ export async function* translateSDKStream(
               inputTokens: u.inputTokens ?? usage.inputTokens,
               outputTokens: u.outputTokens ?? usage.outputTokens,
               cachedTokens:
-                u.inputTokenDetails?.cacheReadTokens ??
-                u.cachedInputTokens ??
-                usage.cachedTokens,
+                u.inputTokenDetails?.cacheReadTokens ?? u.cachedInputTokens ?? usage.cachedTokens,
             };
           }
           break;
@@ -213,9 +211,7 @@ export async function* translateSDKStream(
               inputTokens: tu.inputTokens ?? usage.inputTokens,
               outputTokens: tu.outputTokens ?? usage.outputTokens,
               cachedTokens:
-                tu.inputTokenDetails?.cacheReadTokens ??
-                tu.cachedInputTokens ??
-                usage.cachedTokens,
+                tu.inputTokenDetails?.cacheReadTokens ?? tu.cachedInputTokens ?? usage.cachedTokens,
             };
           }
           yield { kind: "usage", ...usage };
@@ -339,7 +335,9 @@ export async function* runSDKStream(args: {
     model,
     ...(systemAndMessages.system !== undefined ? { system: systemAndMessages.system } : {}),
     messages: systemAndMessages.messages,
-    ...(Object.keys(sdkTools).length > 0 ? { tools: sdkTools as Parameters<typeof streamText>[0]["tools"] } : {}),
+    ...(Object.keys(sdkTools).length > 0
+      ? { tools: sdkTools as Parameters<typeof streamText>[0]["tools"] }
+      : {}),
     maxOutputTokens: input.maxTokens ?? 32768,
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),

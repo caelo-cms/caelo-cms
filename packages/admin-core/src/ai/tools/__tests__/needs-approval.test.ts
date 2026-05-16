@@ -20,14 +20,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { z } from "zod";
-
-import {
-  type ToolDefinitionWithHandler,
-  ToolRegistry,
-  type ToolContext,
-} from "../dispatch.js";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { z } from "zod";
+import { type ToolContext, type ToolDefinitionWithHandler, ToolRegistry } from "../dispatch.js";
 
 const ctx: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-000000000001",

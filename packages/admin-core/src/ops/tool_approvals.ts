@@ -120,9 +120,7 @@ export const readToolApprovalForExecuteOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "tool_approvals.read_for_execute",
-        message: status
-          ? `proposal already ${status}`
-          : `proposal ${input.proposalId} not found`,
+        message: status ? `proposal already ${status}` : `proposal ${input.proposalId} not found`,
       });
     }
     const args = (typeof row.args === "string" ? JSON.parse(row.args) : row.args) as Record<
@@ -238,9 +236,7 @@ export const listPendingToolApprovalsOp = defineOperation({
   output: z.object({ proposals: z.array(toolApprovalRowSchema) }),
   handler: async (_ctx, input, tx) => {
     const limit = input.limit ?? 50;
-    const statusFilter = input.includeDecided
-      ? sql``
-      : sql`AND status = 'pending'`;
+    const statusFilter = input.includeDecided ? sql`` : sql`AND status = 'pending'`;
     const chatFilter = input.chatSessionId
       ? sql`AND chat_session_id = ${input.chatSessionId}::uuid`
       : sql``;

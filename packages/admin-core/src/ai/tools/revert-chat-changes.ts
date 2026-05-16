@@ -77,13 +77,9 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
     // creator (the human user is). chat.get_branch_id is a focused op
     // that returns only the branch id + creator, open to AI scope so
     // this tool can read what the human user wrote.
-    const branchRes = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      ctx,
-      "chat.get_branch_id",
-      { chatSessionId: input.chatSessionId },
-    );
+    const branchRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.get_branch_id", {
+      chatSessionId: input.chatSessionId,
+    });
     if (!branchRes.ok) {
       return {
         ok: false,
@@ -99,17 +95,11 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
     }
 
     // STEP 2 — enumerate the chat's snapshots.
-    const chatSnapshotsR = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      ctx,
-      "snapshots.list",
-      {
-        forChatBranchId: chatBranchId,
-        limit: 200,
-        includeArchived: true,
-      },
-    );
+    const chatSnapshotsR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "snapshots.list", {
+      forChatBranchId: chatBranchId,
+      limit: 200,
+      includeArchived: true,
+    });
     if (!chatSnapshotsR.ok) {
       return {
         ok: false,
@@ -142,7 +132,11 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
     // STEP 3 — find the pre-chat snapshot. snapshots.list returns
     // reverse-chronological, so the chat's first snapshot is the
     // tail. We then need the timeline entry IMMEDIATELY before it.
-    const firstChatSnapshot = chatSnapshots[chatSnapshots.length - 1]!;
+    // chatSnapshots.length > 0 is guaranteed by the empty-check above.
+    const firstChatSnapshot = chatSnapshots[chatSnapshots.length - 1];
+    if (!firstChatSnapshot) {
+      return { ok: false, content: "revert_chat_changes: snapshot lookup race (unexpected)" };
+    }
     const priorR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "snapshots.list", {
       before: firstChatSnapshot.createdAt,
       limit: 50,

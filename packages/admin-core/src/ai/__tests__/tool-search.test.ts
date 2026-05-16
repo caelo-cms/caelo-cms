@@ -40,9 +40,10 @@ function fakeTools(count: number): GenerateInput["tools"] {
   }));
 }
 
-function makeMockAndProvider(opts: {
-  toolSearch?: "off" | "bm25" | "regex";
-}): { mock: MockLanguageModelV3; provider: AnthropicProvider } {
+function makeMockAndProvider(opts: { toolSearch?: "off" | "bm25" | "regex" }): {
+  mock: MockLanguageModelV3;
+  provider: AnthropicProvider;
+} {
   const mock = new MockLanguageModelV3({
     doStream: async () => ({
       stream: streamOf([

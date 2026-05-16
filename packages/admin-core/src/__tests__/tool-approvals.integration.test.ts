@@ -27,9 +27,8 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { z } from "zod";
-
+import { type ToolDefinitionWithHandler, ToolRegistry } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
-import { ToolRegistry, type ToolDefinitionWithHandler } from "../ai/tools/dispatch.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -151,14 +150,18 @@ describe("W5 tool_approval_actions — end-to-end persistence + approve", () => 
     // caelo.actor_kind set).
     const pending = await execute(registry, adapter, humanCtx, "tool_approvals.list_pending", {});
     expect(pending.ok).toBe(true);
-    const row = (pending.value as { proposals: Array<{
-      id: string;
-      toolName: string;
-      args: Record<string, unknown>;
-      preview: Record<string, unknown>;
-      proposedBy: string;
-      status: string;
-    }> }).proposals.find((p) => p.id === proposalId);
+    const row = (
+      pending.value as {
+        proposals: Array<{
+          id: string;
+          toolName: string;
+          args: Record<string, unknown>;
+          preview: Record<string, unknown>;
+          proposedBy: string;
+          status: string;
+        }>;
+      }
+    ).proposals.find((p) => p.id === proposalId);
     expect(row).toBeDefined();
     expect(row!.toolName).toBe("integration_test_gated_tool");
     expect(row!.status).toBe("pending");
@@ -224,7 +227,9 @@ describe("W5 tool_approval_actions — end-to-end persistence + approve", () => 
     });
     expect(listRes.ok).toBe(true);
     const row = (
-      listRes.value as { proposals: Array<{ id: string; resultOk: boolean | null; resultSummary: string | null }> }
+      listRes.value as {
+        proposals: Array<{ id: string; resultOk: boolean | null; resultSummary: string | null }>;
+      }
     ).proposals.find((p) => p.id === proposalId);
     expect(row).toBeDefined();
     expect(row!.resultOk).toBe(true);
@@ -287,7 +292,9 @@ describe("W5 tool_approval_actions — end-to-end persistence + approve", () => 
     });
     expect(listRes.ok).toBe(true);
     const row = (
-      listRes.value as { proposals: Array<{ id: string; status: string; decisionReason: string | null }> }
+      listRes.value as {
+        proposals: Array<{ id: string; status: string; decisionReason: string | null }>;
+      }
     ).proposals.find((p) => p.id === proposalId);
     expect(row?.status).toBe("rejected");
     expect(row?.decisionReason).toBe("operator declined");
