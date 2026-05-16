@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.2
+
+### Fixes
+- f3d7efb position string-number coercion + chrome-block redirect + ToolCardRouter heuristic
+
 ## v0.6.1
 
 ### Features
