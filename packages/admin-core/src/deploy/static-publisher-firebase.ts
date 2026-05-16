@@ -94,6 +94,36 @@ async function walkBuildDir(buildDir: string): Promise<WalkedFile[]> {
 }
 
 /**
+ * v0.6.3 — per-path response headers attached to every Firebase
+ * Hosting version we publish. Exported so the regression test in
+ * __tests__/static-publisher-firebase-headers.test.ts can pin the
+ * shape WITHOUT needing to mock the entire Firebase REST surface.
+ *
+ * SCHEMA CONTRACT (critical — getting this wrong causes 400 at deploy):
+ * Firebase Hosting's REST API at sites.versions.create expects each
+ * entry's `headers` field as a map<string, string> (key → value).
+ * The Firebase CLI's firebase.json uses an array-of-{key,value}
+ * shape and translates internally — the REST API does NOT. Mixing
+ * the two shapes was the v0.3.1 → v0.6.2 staging-deploy bug
+ * ("Cannot bind a list to map for field 'headers'").
+ *
+ * Spec: https://firebase.google.com/docs/reference/hosting/rest/v1beta1/sites.versions#Header
+ *
+ * Hashed Vite assets get immutable; HTML gets short max-age + SWR
+ * (mirrors cacheControlForContentType in static-publisher-gcs.ts).
+ */
+export const VERSION_CONFIG_HEADERS = [
+  {
+    glob: "/_app/immutable/**",
+    headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+  },
+  {
+    glob: "/**/*.html",
+    headers: { "Cache-Control": "public, max-age=60, stale-while-revalidate=86400" },
+  },
+] as const;
+
+/**
  * Gzip a file's contents + compute the sha256 of the gzipped bytes.
  * Firebase Hosting's populateFiles API keys on this hash.
  */
@@ -239,22 +269,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
           run: { serviceId: gatewayService, region: gatewayRegion },
         },
       ],
-      // Per-path headers mirror the cacheControlForContentType
-      // helper in static-publisher-gcs. Firebase Hosting applies
-      // these as response headers. Hashed Vite assets get
-      // immutable; HTML gets short max-age + SWR.
-      headers: [
-        {
-          glob: "/_app/immutable/**",
-          headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],
-        },
-        {
-          glob: "/**/*.html",
-          headers: [
-            { key: "Cache-Control", value: "public, max-age=60, stale-while-revalidate=86400" },
-          ],
-        },
-      ],
+      headers: VERSION_CONFIG_HEADERS,
     };
     const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
       method: "POST",
