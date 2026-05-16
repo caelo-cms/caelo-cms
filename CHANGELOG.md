@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.6.0
+
+### Features
+- f098a0e deferred topics — compose_page_from_spec, revert_chat_changes, delete_pages_many needsApproval reference
+- 15691cd state-aware AI tools — describe(state), Tool Search, nextAction, composite bootstrap, needsApproval gate
+- b54d1e1 upgrade to AI SDK 6 + provider v3
+
+### Fixes
+- 49e4be3 close all alpha.3 loose ends — dispatch result propagation, retry helper extraction, cross-actor test
+- 5ef5256 close all alpha.2 loose ends — chat.get_branch_id, schema-validated retry, integration tests
+- 453cc8e close all alpha.1 loose ends — W5 persistence, raw-SQL fix, real W3 retry, nextAction coverage, skill bodies
+
+### Chores
+- 93bc715 v0.6.0-alpha.2
+- 103fd9c v0.6.0-alpha.1
+- ca5c723 v0.6.0-alpha.0
+
 ## v0.6.0-alpha.4
 
 ### Fixes
