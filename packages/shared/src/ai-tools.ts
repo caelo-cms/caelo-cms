@@ -14,6 +14,26 @@
 import { z } from "zod";
 import { MODULE_CSS_MAX, MODULE_HTML_MAX, MODULE_JS_MAX } from "./content.js";
 
+/**
+ * v0.6.2 — `position` argument shared across the three `add_module_to_*`
+ * tools. Accepts either the literal string `"top"` / `"bottom"` OR a
+ * 0..1000 integer index.
+ *
+ * The integer branch is `z.preprocess`-wrapped to coerce digit-only
+ * strings (`"0"`, `"42"`) to numbers before the int check. The AI
+ * recurrently passes JSON-quoted numbers (`"0"`) even though the tool
+ * description explicitly says to use bare integers; the coercion
+ * removes that ergonomic gotcha while still rejecting non-numeric
+ * strings (`"abc"` → still fails the int check cleanly).
+ */
+export const positionInputSchema = z.union([
+  z.enum(["top", "bottom"]),
+  z.preprocess(
+    (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
+    z.number().int().min(0).max(1000),
+  ),
+]);
+
 export const editModuleToolInput = z
   .object({
     moduleId: z.string().uuid(),
@@ -82,7 +102,7 @@ export const addModuleToPageToolInput = z
     pageId: z.string().uuid(),
     blockName: z.string().min(1).max(80),
     /** "top" | "bottom" | a 0-based integer index. */
-    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+    position: positionInputSchema,
     displayName: z.string().min(1).max(128),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
@@ -120,7 +140,7 @@ export const addModuleToTemplateToolInput = z
   .object({
     templateId: z.string().uuid(),
     blockName: z.string().min(1).max(80),
-    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+    position: positionInputSchema,
     displayName: z.string().min(1).max(128),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
@@ -158,7 +178,7 @@ export const addPluginToPageToolInput = z
     pluginSlug: z.string().min(1).max(80),
     blockName: z.string().min(1).max(80),
     /** "top" | "bottom" | a 0-based integer index. */
-    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+    position: positionInputSchema,
   })
   .strict();
 
@@ -449,7 +469,7 @@ export const addModuleToLayoutToolInput = z
   .object({
     layoutSlug: slugInputSchema,
     blockName: z.string().min(1).max(80),
-    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+    position: positionInputSchema,
     displayName: z.string().min(1).max(128),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
@@ -559,7 +579,7 @@ export const moveModuleToolInput = z
     moduleId: z.string().uuid(),
     toBlockName: z.string().min(1).max(80),
     /** "top" | "bottom" | a 0-based index inside the destination block. */
-    position: z.union([z.enum(["top", "bottom"]), z.number().int().min(0).max(1000)]),
+    position: positionInputSchema,
   })
   .strict();
 

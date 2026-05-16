@@ -383,6 +383,17 @@
     if (/^[a-z][a-z0-9_.]*\s+failed:/i.test(content)) return true;
     if (/^invalid arguments\b/i.test(content)) return true;
     if (/^validation failed\b/i.test(content)) return true;
+    // v0.6.2 — `add_module_to_template` and similar fan-out tools return
+    // ok=false when every per-page placement failed, but the SSE-side
+    // `ok` flag is currently dropped at chat.append_message persistence
+    // (proper fix: add `ok` column to chat_messages — tracked for
+    // v0.6.3). Until then, recognize these shapes by content:
+    //   "module <id> added to block "X" on 0 of <N> pages …\nfailed: …"
+    //   "<op> ran with 0 of <N> …\nfailed: …"
+    // Any content containing a `\nfailed: ` block with no "placed:"
+    // companion is a total-failure summary.
+    if (/\bon 0 of \d+\b/i.test(content)) return true;
+    if (/\nfailed:/i.test(content) && !/\nplaced:/i.test(content)) return true;
     return false;
   }
   // v0.2.54 — local mirror of session.extendedThinkingEnabled for

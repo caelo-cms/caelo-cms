@@ -264,6 +264,47 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
       .filter((s): s is string => s !== null)
       .join("\n");
 
+    // v0.6.2 Fix B — chrome-block redirect. When ALL per-page failures
+    // are "block X not on this page's template" AND the requested
+    // blockName is a well-known layout-level chrome block (header,
+    // footer, nav, navigation, sidebar, banner), the operator almost
+    // certainly intended `add_module_to_layout` instead. Surface a
+    // nextAction with the EXACT corrected call so the AI re-dispatches
+    // on the next turn rather than surfacing a "failed" caveat to the
+    // user.
+    //
+    // Not autoExecute — add_module_to_layout is a write op so the AI
+    // should see the hint, confirm, and dispatch on its own turn. The
+    // hint's `args` carry the same module payload + position the AI
+    // intended so it doesn't have to re-compose.
+    const CHROME_BLOCKS = new Set(["header", "footer", "nav", "navigation", "sidebar", "banner"]);
+    if (
+      placements.length === 0 &&
+      CHROME_BLOCKS.has(input.blockName.toLowerCase()) &&
+      failures.every((f) =>
+        f.reason.includes(`block "${input.blockName}" not on this page's template`),
+      )
+    ) {
+      return {
+        ok: false,
+        content: `${summary}\n[hint] "${input.blockName}" is layout-level chrome, not template-level. Use add_module_to_layout instead — see nextAction.`,
+        nextAction: {
+          tool: "add_module_to_layout",
+          args: {
+            layoutSlug: "site-default",
+            blockName: input.blockName,
+            position: input.position,
+            displayName: input.displayName,
+            html: input.html,
+            ...(input.css !== undefined ? { css: input.css } : {}),
+            ...(input.js !== undefined ? { js: input.js } : {}),
+            ...(input.fields !== undefined ? { fields: input.fields } : {}),
+          },
+          reason: `"${input.blockName}" is a layout-level chrome block (header/footer/nav). Re-dispatch the same payload via add_module_to_layout against layoutSlug="site-default" (or your actual layout slug — confirm via list_layouts if uncertain).`,
+        },
+      };
+    }
+
     return {
       ok: failures.length === 0,
       content: summary,
