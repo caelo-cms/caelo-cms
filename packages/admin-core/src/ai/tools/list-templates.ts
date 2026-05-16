@@ -57,6 +57,10 @@ export const listTemplatesTool: ToolDefinitionWithHandler<ListTemplatesInput> = 
     return {
       ok: true,
       content: `${templates.length} template${templates.length === 1 ? "" : "s"}:\n${lines.join("\n")}`,
+      // v0.6.0 alpha.2 — structured payload for the W3 retry path.
+      // Used by pages.create's nextAction.retryWithArgs to extract
+      // templates[0].id and re-dispatch the failed pages.create.
+      value: { templates },
     };
   },
 };

@@ -311,6 +311,11 @@ export const createPageOp = defineOperation({
             reason:
               "fetch the available templates so a UUID can be passed explicitly as templateId on the retry",
             autoExecute: true,
+            // v0.6.0 alpha.2 — declarative retry: chat-runner extracts
+            // templates[0].id from list_templates.value + re-dispatches
+            // pages.create with templateId set. AI never sees the
+            // original failure.
+            retryWithArgs: { argName: "templateId", fromValuePath: "templates.0.id" },
           },
         });
       }

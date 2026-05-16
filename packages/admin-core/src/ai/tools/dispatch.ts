@@ -12,6 +12,7 @@
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { execute } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 import type { z } from "zod";
 
@@ -105,18 +106,42 @@ export interface ToolResult {
    * output into `content` so the AI sees the failure + the data it
    * would have asked for on its next turn in one round-trip.
    *
+   * v0.6.0 alpha.2 — when `retryWithArgs` is also set AND the
+   * recovery returns a structured `value`, the chat-runner extracts
+   * the named field from `value` and re-dispatches the ORIGINAL
+   * tool with the argument injected. The AI never sees the failure
+   * (one round-trip vs. two). Bounded to one retry per call.
+   *
    * Tool handlers populate this by reading
    * `result.error.nextAction` from the failed QueryError and
    * copying the fields verbatim via `forwardNextAction(error)`.
-   * Tool handlers that don't use the Query API or that wrap
-   * non-recoverable failures leave it undefined.
    */
   readonly nextAction?: {
     readonly tool: string;
     readonly args?: Record<string, unknown>;
     readonly reason: string;
     readonly autoExecute?: boolean;
+    /**
+     * v0.6.0 alpha.2 — declarative arg-rewriter for the original-call
+     * retry. After the recovery succeeds, the chat-runner extracts
+     * `recovery.value` at `fromValuePath` (dot-separated, supports
+     * numeric indices like "layouts.0.id") and sets it as `argName`
+     * on the original tool's args, then re-dispatches once.
+     */
+    readonly retryWithArgs?: {
+      readonly argName: string;
+      readonly fromValuePath: string;
+    };
   };
+  /**
+   * v0.6.0 alpha.2 — optional structured payload alongside the prose
+   * `content`. Consumed by the chat-runner's W3 retry path: when the
+   * recovery returns this, the runner extracts a field via
+   * `nextAction.retryWithArgs.fromValuePath` and rewrites the
+   * original args. Tools that don't expect to be on a recovery path
+   * leave this undefined; list_* / *.get tools should populate it.
+   */
+  readonly value?: unknown;
 }
 
 export interface ToolDefinitionWithHandler<I> {
@@ -237,17 +262,13 @@ export class ToolRegistry {
       };
     }
     // v0.6.0 W5 — approval gate. When the tool declares
-    // `needsApproval(input, ctx) === true`, the dispatcher refuses to
-    // run the handler and instead returns a structured "Queued
-    // proposal …" result that the chat-runner / ChatPanel render as an
-    // inline approve/reject card. Tool authors implement needsApproval
-    // when they want the gate WITHOUT building a per-domain
-    // `*_pending_actions` table (the older propose/execute pattern).
-    //
-    // Note: actually persisting the pending approval + wiring the
-    // Approve button to a resume call still lives in the chat-runner /
-    // SSE layer; the dispatcher just declines to run, emits the
-    // structured result, and trusts the caller to surface it.
+    // `needsApproval(input, ctx) === true`, the dispatcher persists a
+    // pending row to `tool_approval_actions` (via the `tool_approvals.queue`
+    // op) and returns the canonical "Queued proposal <uuid>:" string
+    // so ChatPanel's existing ProposeCard renderer parses + renders
+    // the inline Approve / Reject buttons. The Approve action at
+    // /security/tool-approvals/pending atomically claims the row and
+    // dispatches the tool with the persisted args.
     if (tool.needsApproval) {
       let gated = false;
       try {
@@ -257,7 +278,7 @@ export class ToolRegistry {
         gated = false;
       }
       if (gated) {
-        let preview: Record<string, unknown> = { tool: name, args: parsed.data };
+        let preview: Record<string, unknown> = { tool: name, args: parsed.data as Record<string, unknown> };
         if (tool.buildApprovalPreview) {
           try {
             preview = await tool.buildApprovalPreview(parsed.data, ctx);
@@ -265,16 +286,72 @@ export class ToolRegistry {
             console.error(`[tool.buildApprovalPreview] ${name} threw — using default preview`, err);
           }
         }
-        // Canonical "Queued proposal …" prefix so ChatPanel's existing
-        // ProposeCard renderer parses + renders inline Approve / Reject
-        // buttons (same surface used by the propose/* tools).
-        return {
-          ok: true,
-          content:
-            `Queued proposal: ${name} — needs Owner approval. ` +
-            `Preview: ${JSON.stringify(preview).slice(0, 600)}. ` +
-            `Click Approve in the chat to apply.`,
-        };
+        // Out-of-chat dispatches (tests, plugin-host calls) lack a
+        // real adapter + registry. The persistence path requires both,
+        // so we fall back to a synthetic-UUID canonical string that
+        // matches ProposeCard's regex but is NOT queryable. Production
+        // callers always have adapter + registry set by the chat-runner,
+        // so this fallback only affects tests + edge cases where
+        // gating an out-of-chat action wouldn't have a UI surface
+        // anyway.
+        const hasContext =
+          toolCtx.adapter !== undefined && toolCtx.registry !== undefined;
+        if (!hasContext) {
+          const syntheticId = crypto.randomUUID();
+          const previewSummary = JSON.stringify(preview).slice(0, 400);
+          return {
+            ok: true,
+            content:
+              `Queued proposal ${syntheticId}: ${name} — needs Owner approval (${previewSummary}). ` +
+              `[non-persisted: out-of-chat dispatch, no Approve button]`,
+          };
+        }
+        // Persist via the Query API so the Approve button has
+        // something to look up.
+        try {
+          const queueRes = await execute(
+            toolCtx.registry,
+            toolCtx.adapter,
+            ctx,
+            "tool_approvals.queue",
+            {
+              toolName: name,
+              args: parsed.data as Record<string, unknown>,
+              preview,
+              ...(toolCtx.chatSessionId ? { chatSessionId: toolCtx.chatSessionId } : {}),
+            },
+          );
+          if (queueRes.ok) {
+            const proposalId = (queueRes.value as { proposalId: string }).proposalId;
+            const previewSummary = JSON.stringify(preview).slice(0, 400);
+            // Canonical "Queued proposal <uuid>: <summary>." shape so
+            // ProposeCard's PROPOSAL_CONTENT_PATTERN regex matches +
+            // renders the inline Approve / Reject card.
+            return {
+              ok: true,
+              content:
+                `Queued proposal ${proposalId}: ${name} — needs Owner approval (${previewSummary}). ` +
+                `An Owner must click Approve at /security/tool-approvals/pending to apply.`,
+            };
+          }
+          // Queue insert failed — emit a non-canonical fallback so the
+          // operator sees the failure rather than silently letting the
+          // gated action through.
+          console.error("[tool.needsApproval] tool_approvals.queue failed", {
+            tool: name,
+            error: queueRes.error,
+          });
+          return {
+            ok: false,
+            content: `tool ${name} needs approval but the proposal could not be queued; refusing to run. Try again later.`,
+          };
+        } catch (err) {
+          console.error("[tool.needsApproval] queue call threw", { tool: name, err });
+          return {
+            ok: false,
+            content: `tool ${name} needs approval and the queue path errored; refusing to run.`,
+          };
+        }
       }
     }
     return await tool.handler(ctx, parsed.data, toolCtx);

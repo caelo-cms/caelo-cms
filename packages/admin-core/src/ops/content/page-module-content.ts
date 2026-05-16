@@ -131,10 +131,18 @@ export const setPageModuleContentOp = defineOperation({
       LIMIT 1
     `)) as unknown as { exists: number }[];
     if (placement.length === 0) {
+      // v0.6.0 W3 — surface a recovery hint so the AI fetches the
+      // page's actual block placements instead of guessing again.
       return err({
         kind: "HandlerError",
         operation: "page_module_content.set",
         message: `no placement at (${input.blockName}, ${input.position}) on this page`,
+        nextAction: {
+          tool: "inspect_page_render",
+          args: { pageId: input.pageId },
+          reason:
+            "fetch the page's actual blocks + placements; pick a (blockName, position) pair that exists and retry",
+        },
       });
     }
 

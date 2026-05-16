@@ -72,9 +72,10 @@ describe("ToolRegistry needsApproval gate (W5)", () => {
     );
     const result = await reg.dispatch("gated_tool", { go: true }, ctx, toolCtx);
     expect(result.ok).toBe(true);
-    expect(result.content).toContain("Queued proposal");
-    expect(result.content).toContain("gated_tool");
-    expect(result.content).toContain("Click Approve");
+    // Test toolCtx has no adapter/registry → out-of-chat fallback
+    // (synthetic UUID, marked non-persisted). Production path uses
+    // tool_approvals.queue + emits the canonical pending-queue URL.
+    expect(result.content).toMatch(/^Queued proposal [0-9a-f-]{36}: gated_tool/);
     expect(handlerRan).toBe(false);
   });
 

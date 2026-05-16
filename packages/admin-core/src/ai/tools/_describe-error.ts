@@ -112,6 +112,7 @@ export function forwardNextAction(error: unknown):
       args?: Record<string, unknown>;
       reason: string;
       autoExecute?: boolean;
+      retryWithArgs?: { argName: string; fromValuePath: string };
     }
   | undefined {
   if (!error || typeof error !== "object") return undefined;
@@ -122,6 +123,7 @@ export function forwardNextAction(error: unknown):
       args?: unknown;
       reason?: unknown;
       autoExecute?: unknown;
+      retryWithArgs?: unknown;
     };
   };
   if (e.kind !== "HandlerError") return undefined;
@@ -132,9 +134,19 @@ export function forwardNextAction(error: unknown):
     args?: Record<string, unknown>;
     reason: string;
     autoExecute?: boolean;
+    retryWithArgs?: { argName: string; fromValuePath: string };
   } = { tool: na.tool, reason: na.reason };
   if (na.args && typeof na.args === "object") out.args = na.args as Record<string, unknown>;
   if (typeof na.autoExecute === "boolean") out.autoExecute = na.autoExecute;
+  if (
+    na.retryWithArgs &&
+    typeof na.retryWithArgs === "object" &&
+    typeof (na.retryWithArgs as { argName?: unknown }).argName === "string" &&
+    typeof (na.retryWithArgs as { fromValuePath?: unknown }).fromValuePath === "string"
+  ) {
+    const r = na.retryWithArgs as { argName: string; fromValuePath: string };
+    out.retryWithArgs = { argName: r.argName, fromValuePath: r.fromValuePath };
+  }
   return out;
 }
 

@@ -1349,7 +1349,12 @@ export async function* runChatTurn(
           args?: Record<string, unknown>;
           reason: string;
           autoExecute?: boolean;
+          retryWithArgs?: { argName: string; fromValuePath: string };
         };
+        // v0.6.0 alpha.2 — structured payload propagated from
+        // ToolResult.value. Consumed by the W3 retry path to
+        // extract a field at nextAction.retryWithArgs.fromValuePath.
+        value?: unknown;
       };
       if (cachedHit) {
         result = {
@@ -1391,7 +1396,10 @@ export async function* runChatTurn(
             args?: Record<string, unknown>;
             reason: string;
             autoExecute?: boolean;
+            retryWithArgs?: { argName: string; fromValuePath: string };
           };
+          // v0.6.0 alpha.2 — see ToolResult.value.
+          value?: unknown;
         };
         const dispatchPromise: Promise<DispatchValue> = pluginTool
           ? runPluginOperation({
@@ -1496,30 +1504,104 @@ export async function* runChatTurn(
             if (isReadOnly && inCatalogue) {
               try {
                 const recoveryArgs = result.nextAction.args ?? {};
+                const dispatchToolCtx = {
+                  adapter,
+                  registry,
+                  chatSessionId: input.chatSessionId,
+                  chatBranchId: session.session.chatBranchId,
+                  provider,
+                  tools,
+                  humanCtx,
+                };
                 const recovery = await tools.dispatch(
                   recoveryToolName,
                   recoveryArgs,
                   aiCtxWithBranch,
-                  {
-                    adapter,
-                    registry,
-                    chatSessionId: input.chatSessionId,
-                    chatBranchId: session.session.chatBranchId,
-                    provider,
-                    tools,
-                    humanCtx,
-                  },
+                  dispatchToolCtx,
                 );
                 const recoveryStatus = recovery.ok ? "ok" : "fail";
-                const combinedContent =
-                  `${result.content}\n\n[auto-recovery] ${recoveryToolName} (${recoveryStatus}): ${recovery.content}`.slice(
-                    0,
-                    8000,
-                  );
-                result = {
-                  ok: false,
-                  content: combinedContent,
-                };
+
+                // v0.6.0 alpha.2 — original-call retry. When the
+                // recovery succeeded AND nextAction declared a
+                // retryWithArgs spec, extract the named field from
+                // recovery.value and re-dispatch the ORIGINAL tool with
+                // the corrected args. AI never sees the original
+                // failure — sees a clean success on its next turn.
+                // Bounded to one retry; if the retry also fails we
+                // fall through to the legacy fold-into-content path.
+                const retrySpec = result.nextAction.retryWithArgs;
+                if (recovery.ok && retrySpec && recovery.value !== undefined) {
+                  const extracted = extractAtPath(recovery.value, retrySpec.fromValuePath);
+                  if (extracted !== undefined) {
+                    const originalArgs = (call.arguments ?? {}) as Record<string, unknown>;
+                    const rewrittenArgs = {
+                      ...originalArgs,
+                      [retrySpec.argName]: extracted,
+                    };
+                    try {
+                      const retried = await tools.dispatch(
+                        call.name,
+                        rewrittenArgs,
+                        aiCtxWithBranch,
+                        dispatchToolCtx,
+                      );
+                      if (retried.ok) {
+                        result = {
+                          ok: true,
+                          content:
+                            `${retried.content}\n[auto-recovered: list_* fetched ${retrySpec.argName}=${String(extracted).slice(0, 80)} and re-dispatched ${call.name}]`.slice(
+                              0,
+                              8000,
+                            ),
+                          ...(retried.image ? { image: retried.image } : {}),
+                        };
+                        // Skip the fold-into-content branch — retry succeeded.
+                      } else {
+                        // Retry failed — fall through to fold-into-content
+                        // so the AI sees what the corrected attempt did.
+                        result = {
+                          ok: false,
+                          content:
+                            `${result.content}\n\n[auto-recovery] ${recoveryToolName} (ok): ${recovery.content}\n[retry] ${call.name} with ${retrySpec.argName}=${String(extracted).slice(0, 80)} → ${retried.content}`.slice(
+                              0,
+                              8000,
+                            ),
+                        };
+                      }
+                    } catch (retryErr) {
+                      console.error("[chat-runner] retry dispatch threw", {
+                        chatSessionId: input.chatSessionId,
+                        originalTool: call.name,
+                        error: retryErr,
+                      });
+                      const combinedContent =
+                        `${result.content}\n\n[auto-recovery] ${recoveryToolName} (ok): ${recovery.content}`.slice(
+                          0,
+                          8000,
+                        );
+                      result = { ok: false, content: combinedContent };
+                    }
+                  } else {
+                    // Path didn't resolve (recovery returned empty / wrong
+                    // shape). Fall through to fold-into-content.
+                    const combinedContent =
+                      `${result.content}\n\n[auto-recovery] ${recoveryToolName} (${recoveryStatus}): ${recovery.content}`.slice(
+                        0,
+                        8000,
+                      );
+                    result = { ok: false, content: combinedContent };
+                  }
+                } else {
+                  // No retry spec OR recovery failed OR no structured
+                  // value to extract from. Fold the recovery output into
+                  // the failure content; AI handles retry on next turn.
+                  const combinedContent =
+                    `${result.content}\n\n[auto-recovery] ${recoveryToolName} (${recoveryStatus}): ${recovery.content}`.slice(
+                      0,
+                      8000,
+                    );
+                  result = { ok: false, content: combinedContent };
+                }
               } catch (recErr) {
                 console.error("[chat-runner] auto-recovery dispatch threw", {
                   chatSessionId: input.chatSessionId,
@@ -1664,4 +1746,35 @@ export async function* runChatTurn(
     yield { kind: "interrupted", messageId: lastAssistantMessageId };
   }
   yield { kind: "done" };
+}
+
+/**
+ * v0.6.0 alpha.2 — declarative path extraction for the W3 retry path.
+ * Resolves dot-separated paths against a structured `value` payload
+ * returned by a recovery tool. Supports numeric indices for arrays
+ * (e.g. "layouts.0.id" → value.layouts[0].id). Returns undefined when
+ * any segment misses; callers fall back to the legacy
+ * fold-into-content branch.
+ *
+ * Pure data extraction — no execution, no eval, no JSONPath. Each
+ * segment is a property name OR a non-negative integer index.
+ */
+function extractAtPath(value: unknown, path: string): unknown {
+  if (value === null || value === undefined) return undefined;
+  const segments = path.split(".").filter((s) => s.length > 0);
+  let current: unknown = value;
+  for (const segment of segments) {
+    if (current === null || current === undefined) return undefined;
+    if (Array.isArray(current)) {
+      const idx = Number.parseInt(segment, 10);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= current.length) return undefined;
+      current = current[idx];
+    } else if (typeof current === "object") {
+      current = (current as Record<string, unknown>)[segment];
+    } else {
+      // Primitive value mid-path — can't descend further.
+      return undefined;
+    }
+  }
+  return current;
 }

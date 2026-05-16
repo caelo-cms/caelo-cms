@@ -183,9 +183,18 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     const targetPages = allPages.filter((p) => p.templateId === input.templateId);
 
     if (targetPages.length === 0) {
+      // v0.6.0 W3 — when no pages use this template, nudge AI toward
+      // list_templates so it can confirm the templateId is right (or
+      // pick a different one). Not auto-execute since the result
+      // here is technically ok=true (module created, just unplaced).
       return {
         ok: true,
         content: `module ${newModuleId} (slug=${slug}) created; no pages currently use this template, so nothing was placed`,
+        nextAction: {
+          tool: "list_templates",
+          reason:
+            "verify templateId points at the intended template; if wrong, pages.set_modules can attach the new module manually",
+        },
       };
     }
 

@@ -28,7 +28,13 @@ export interface ToolDescribeStateLayout {
   readonly id: string;
   readonly slug: string;
   readonly displayName: string;
-  readonly blocks: readonly { readonly name: string; readonly displayName: string }[];
+  readonly blocks: readonly {
+    readonly name: string;
+    readonly displayName: string;
+    /** v0.6.0 alpha.2 — block ordering. Some describe() callbacks
+     * surface blocks in render order rather than insertion order. */
+    readonly position: number;
+  }[];
 }
 
 export interface ToolDescribeStateTemplate {
@@ -113,12 +119,20 @@ function extractLayouts(value: unknown): ToolDescribeStateLayout[] {
     };
     if (typeof o.id !== "string" || typeof o.slug !== "string") return [];
     const blocks = Array.isArray(o.blocks)
-      ? o.blocks.flatMap((b): { name: string; displayName: string }[] => {
-          if (!b || typeof b !== "object") return [];
-          const bo = b as { name?: unknown; displayName?: unknown };
-          if (typeof bo.name !== "string") return [];
-          return [{ name: bo.name, displayName: typeof bo.displayName === "string" ? bo.displayName : bo.name }];
-        })
+      ? o.blocks.flatMap(
+          (b, idx): { name: string; displayName: string; position: number }[] => {
+            if (!b || typeof b !== "object") return [];
+            const bo = b as { name?: unknown; displayName?: unknown; position?: unknown };
+            if (typeof bo.name !== "string") return [];
+            return [
+              {
+                name: bo.name,
+                displayName: typeof bo.displayName === "string" ? bo.displayName : bo.name,
+                position: typeof bo.position === "number" ? bo.position : idx,
+              },
+            ];
+          },
+        )
       : [];
     return [
       {

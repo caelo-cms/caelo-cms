@@ -71,6 +71,11 @@ export const listLayoutsTool: ToolDefinitionWithHandler<ListLayoutsInput> = {
     return {
       ok: true,
       content: `${layouts.length} layout${layouts.length === 1 ? "" : "s"}:\n${lines.join("\n")}`,
+      // v0.6.0 alpha.2 — structured payload for the chat-runner's W3
+      // retry path. nextAction.retryWithArgs={argName:"layoutId",
+      // fromValuePath:"layouts.0.id"} extracts the first layout's id
+      // and rewrites the failed templates.create call's args.
+      value: { layouts },
     };
   },
 };

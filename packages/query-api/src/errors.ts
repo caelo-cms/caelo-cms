@@ -64,6 +64,19 @@ export type QueryError =
          * original call once before yielding the failure. Defaults to
          * false (AI sees the hint and decides). */
         readonly autoExecute?: boolean;
+        /**
+         * v0.6.0 alpha.2 — declarative arg-rewriter. After the recovery
+         * succeeds, the chat-runner extracts `recovery.value` at
+         * `fromValuePath` (dot-separated; supports numeric indices) and
+         * sets it as `argName` on the ORIGINAL tool's args, then
+         * re-dispatches once. Eliminates the second AI round-trip the
+         * AI would otherwise need to call list_X + read + retry with
+         * corrected args.
+         */
+        readonly retryWithArgs?: {
+          readonly argName: string;
+          readonly fromValuePath: string;
+        };
       };
     }
   /**

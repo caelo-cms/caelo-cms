@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.6.0-alpha.2
+
+### Fixes
+- W5 persistence layer wired end-to-end: new `tool_approval_actions` table + `tool_approvals.{queue, read_for_execute, mark_result, reject_proposal, list_pending}` ops + `/security/tool-approvals/pending` route. Gated tools now emit canonical `Queued proposal <uuid>:` content; ChatPanel's ProposeCard renders the inline Approve / Reject buttons; Approve atomically claims the row and dispatches the tool with the persisted args via `createDefaultToolRegistry()`.
+- `revert_chat_changes` no longer uses raw `new SQL()` (CLAUDE.md §2 violation) — switched to `chat.get_session` op.
+- W3 auto-recovery now actually retries the original call. New `nextAction.retryWithArgs: {argName, fromValuePath}` declarative spec; tools populate `ToolResult.value` with structured payload; chat-runner extracts at the path and re-dispatches the original tool with corrected args. AI never sees the original failure when retry succeeds. Bounded to one retry per call.
+- `nextAction` extended to 4 more ops: `add_module_to_page` block-not-found (suggests `inspect_page_render`), `add_module_to_layout` layout/block-not-found (suggests `list_layouts`, autoExecute on layout-not-found), `add_module_to_template` no-pages-bound (suggests `list_templates`), `set_page_module_content` placement-not-found (suggests `inspect_page_render`).
+- Skill bodies updated: `bootstrap-site` now describes the idempotent `bootstrap_site_scaffold` flow; `compose-page` recommends `compose_page_from_spec` for multi-section pages.
+- Tool Search threshold tunable via `CAELO_ANTHROPIC_TOOL_SEARCH_THRESHOLD` env (default 10); `CAELO_DEBUG_TOOL_SEARCH=1` logs whether the transform engaged each turn.
+- `ToolDescribeStateLayout.blocks` now carries `position` (was dropped previously).
+- `revert_chat_changes` cap message clarified — counts entity-snapshot ROWS (each is a revert operation), not unique entities.
+
+## v0.6.0-alpha.1
+
+### Features
+- Composite tools: `compose_page_from_spec` (page + N section modules in one call), `revert_chat_changes` (one Approve undoes a whole chat).
+- W5 reference: `delete_pages_many` gates at 5+ pages via `needsApproval` predicate.
+
+## v0.6.0-alpha.0
+
+### Features
+- AI SDK 5 → 6 upgrade (`ai@6.0.183`, `@ai-sdk/anthropic@3.0.78`, `@ai-sdk/google@3.0.74`, `@ai-sdk/openai@3.0.64`).
+- W1: state-aware tool descriptions via `describe(state)` callback on `ToolDefinitionWithHandler`. 6 high-value tools migrated.
+- W2: Anthropic Tool Search (BM25 / regex) opt-in via `CAELO_ANTHROPIC_TOOL_SEARCH={bm25,regex}`.
+- W3: structured recovery via `HandlerError.nextAction`; chat-runner auto-executes read-only recoveries.
+- W4: `bootstrap_site_scaffold` composite — idempotent forward-progress across the Owner-approval gap.
+- W5 (foundation): `needsApproval` + `buildApprovalPreview` predicate on tool definitions; dispatcher gate.
+
 ## v0.3.6
 
 ### Fixes

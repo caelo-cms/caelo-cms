@@ -32,7 +32,6 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { revertChatChangesToolInput } from "@caelo-cms/shared";
-import { SQL } from "bun";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -72,34 +71,31 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const maxEntities = input.maxEntities ?? 20;
 
-    // STEP 1 — resolve the chat's branch_id. Bypass the Query API
-    // because chat_sessions doesn't have a public read op that exposes
-    // chat_branch_id by session id. Same SQL pattern as
-    // packages/admin-core/src/ops/chat/stage.ts:79.
-    const adminUrl = process.env.ADMIN_DATABASE_URL;
-    if (!adminUrl) {
+    // STEP 1 — resolve the chat's branch_id via chat.get_session.
+    // CLAUDE.md §2: all DB access goes through the Query API; the
+    // earlier draft of this tool used `new SQL(...)` directly which
+    // bypassed RLS, audit, validator, and pooling.
+    const sessionRes = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      ctx,
+      "chat.get_session",
+      { chatSessionId: input.chatSessionId },
+    );
+    if (!sessionRes.ok) {
       return {
         ok: false,
-        content: "revert_chat_changes: ADMIN_DATABASE_URL not set; cannot resolve chat branch.",
+        content: `revert_chat_changes: chat.get_session failed: ${describeError(sessionRes.error)}`,
       };
     }
-    let chatBranchId: string | null = null;
-    {
-      const sql = new SQL(adminUrl);
-      try {
-        const rows = (await sql.unsafe(
-          `SELECT chat_branch_id::text AS chat_branch_id FROM chat_sessions WHERE id = $1::uuid`,
-          [input.chatSessionId],
-        )) as unknown as { chat_branch_id: string | null }[];
-        chatBranchId = rows[0]?.chat_branch_id ?? null;
-      } finally {
-        await sql.end();
-      }
-    }
+    const sessionValue = sessionRes.value as {
+      session: { chatBranchId: string | null } | null;
+    };
+    const chatBranchId = sessionValue.session?.chatBranchId ?? null;
     if (!chatBranchId) {
       return {
         ok: false,
-        content: `revert_chat_changes: chat session ${input.chatSessionId} not found, or it has no branch_id (never wrote anything).`,
+        content: `revert_chat_changes: chat session ${input.chatSessionId} not found or has no branch_id (never wrote anything).`,
       };
     }
 
@@ -128,14 +124,19 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
         content: `revert_chat_changes: chat ${input.chatSessionId} (branch=${chatBranchId}) has no snapshots — nothing to revert. (If the chat is unpublished, discard it from the chat list instead.)`,
       };
     }
-    const totalEntityCount = chatSnapshots.reduce(
+    // v0.6.0 alpha.2 — count distinct entity-snapshots (sum across
+    // all the chat's snapshots) AND clearly label that's what the cap
+    // measures. The same entity touched in 3 snapshots counts as 3
+    // entity-snapshots (ie 3 revert operations needed); the cap
+    // bounds revert effort, not unique entity count.
+    const totalEntitySnapshotCount = chatSnapshots.reduce(
       (acc, s) => acc + s.moduleCount + s.templateCount + s.pageCount + s.pageLayoutCount,
       0,
     );
-    if (totalEntityCount > maxEntities) {
+    if (totalEntitySnapshotCount > maxEntities) {
       return {
         ok: false,
-        content: `revert_chat_changes: chat touched ${totalEntityCount} entity-snapshots across ${chatSnapshots.length} snapshots — exceeds the maxEntities cap (${maxEntities}). Use propose_revert_page / propose_revert_module per-entity, or re-call with maxEntities=${totalEntityCount} to override (NOT recommended without operator confirmation).`,
+        content: `revert_chat_changes: chat touched ${totalEntitySnapshotCount} entity-snapshot rows across ${chatSnapshots.length} snapshots — exceeds the maxEntities cap (${maxEntities}). The same entity touched in N snapshots counts as N (each is a revert operation). Use propose_revert_page / propose_revert_module per-entity, or re-call with maxEntities=${totalEntitySnapshotCount} to override (NOT recommended without operator confirmation).`,
       };
     }
 
@@ -180,11 +181,11 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
       };
     }
     const v = proposeR.value as { proposalId: string; preview?: { affectedEntityCount?: number } };
-    const affected = v.preview?.affectedEntityCount ?? totalEntityCount;
+    const affected = v.preview?.affectedEntityCount ?? totalEntitySnapshotCount;
     return {
       ok: true,
       content:
-        `Queued proposal ${v.proposalId}: revert_chat_changes — chat ${input.chatSessionId} (${chatSnapshots.length} snapshots, ${totalEntityCount} entity-snapshots) → rewinds site to pre-chat snapshot ${preChat.id} (${affected} entities will be restored). ` +
+        `Queued proposal ${v.proposalId}: revert_chat_changes — chat ${input.chatSessionId} (${chatSnapshots.length} snapshots, ${totalEntitySnapshotCount} entity-snapshot rows) → rewinds site to pre-chat snapshot ${preChat.id} (${affected} entities will be restored). ` +
         `WARNING: this also reverts any NON-chat edits between then and now. ` +
         `Owner clicks Approve at /security/snapshots/pending to apply.`,
     };

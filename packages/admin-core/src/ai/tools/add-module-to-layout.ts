@@ -126,7 +126,17 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     }
     const layout = (got.value as { layout: LayoutDetail | null }).layout;
     if (!layout) {
-      return { ok: false, content: `layout "${input.layoutSlug}" not found` };
+      // v0.6.0 W3 — autoExecute list_layouts so AI sees the actual
+      // available slugs without an extra round-trip.
+      return {
+        ok: false,
+        content: `layout "${input.layoutSlug}" not found`,
+        nextAction: {
+          tool: "list_layouts",
+          reason: "fetch the available layout slugs; the one passed does not match a live layout",
+          autoExecute: true,
+        },
+      };
     }
     const block = layout.blocks.find((b) => b.name === input.blockName);
     if (!block) {
@@ -134,6 +144,14 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
       return {
         ok: false,
         content: `block "${input.blockName}" not on layout "${input.layoutSlug}". Available: ${allowed}`,
+        // Recovery suggests calling layouts.get for this layoutSlug
+        // (the available block names came back in `allowed` already,
+        // but we hint the AI to introspect the layout deeper if it
+        // wants to choose a different block).
+        nextAction: {
+          tool: "list_layouts",
+          reason: `pick blockName from [${allowed}] and retry — the layout has no block named "${input.blockName}"`,
+        },
       };
     }
     const slug = slugify(input.displayName);

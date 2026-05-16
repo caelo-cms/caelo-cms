@@ -327,6 +327,13 @@ import {
   proposeRevertTemplateOp,
   rejectSnapshotRevertProposalOp,
 } from "./ops/snapshot_pending.js";
+import {
+  listPendingToolApprovalsOp,
+  markToolApprovalResultOp,
+  queueToolApprovalOp,
+  readToolApprovalForExecuteOp,
+  rejectToolApprovalOp,
+} from "./ops/tool_approvals.js";
 import { archiveOlderThanOp } from "./ops/snapshots/archive.js";
 import { getSnapshotWithEntitiesOp } from "./ops/snapshots/get.js";
 import { moduleImpactOp } from "./ops/snapshots/impact.js";
@@ -497,6 +504,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeSnapshotRevertProposalOp);
   registry.register(rejectSnapshotRevertProposalOp);
   registry.register(listPendingSnapshotRevertProposalsOp);
+  // v0.6.0 W5 — generic tool-approval gate (needsApproval predicate
+  // on ToolDefinitionWithHandler). Queue + atomic-claim execute +
+  // reject + list_pending — same shape as snapshot_pending but
+  // tool-name-keyed instead of domain-keyed.
+  registry.register(queueToolApprovalOp);
+  registry.register(readToolApprovalForExecuteOp);
+  registry.register(markToolApprovalResultOp);
+  registry.register(rejectToolApprovalOp);
+  registry.register(listPendingToolApprovalsOp);
   // P5 chat + AI memory + provider config + accounting
   registry.register(listChatSessionsOp);
   registry.register(createChatSessionOp);

@@ -157,10 +157,27 @@ export class AnthropicProvider implements AIProvider {
     // v0.6.0 W2 — Tool Search transform. Skip when (a) operator hasn't
     // opted in, OR (b) catalogue is below the threshold where Tool
     // Search wins (small catalogues lose more on the search-tool
-    // overhead than they gain on description token reduction). 10 is a
-    // conservative floor; once measurement confirms a cleaner break,
-    // raise/lower per real data.
-    const useToolSearch = this.#toolSearch !== "off" && input.tools.length >= 10;
+    // overhead than they gain on description token reduction).
+    // Threshold defaults to 10; tunable via
+    // CAELO_ANTHROPIC_TOOL_SEARCH_THRESHOLD env so deployments with
+    // catalog growth or shrinkage can adjust without a code change.
+    const thresholdRaw = process.env.CAELO_ANTHROPIC_TOOL_SEARCH_THRESHOLD;
+    const threshold =
+      thresholdRaw && Number.isFinite(Number(thresholdRaw))
+        ? Math.max(1, Number(thresholdRaw))
+        : 10;
+    const useToolSearch = this.#toolSearch !== "off" && input.tools.length >= threshold;
+    if (this.#toolSearch !== "off" && process.env.CAELO_DEBUG_TOOL_SEARCH === "1") {
+      // Telemetry: log whether the transform actually engaged this turn,
+      // so the operator can confirm BM25 fired (or didn't) without
+      // tracing the wire-level Anthropic request.
+      console.log("[anthropic.toolSearch]", {
+        mode: this.#toolSearch,
+        toolCount: input.tools.length,
+        threshold,
+        engaged: useToolSearch,
+      });
+    }
     const toolsTransform = useToolSearch
       ? (built: Record<string, unknown>): Record<string, unknown> => {
           // Mark every caelo tool as deferred so its description does

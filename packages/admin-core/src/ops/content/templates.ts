@@ -201,6 +201,11 @@ export const createTemplateOp = defineOperation({
             reason:
               "fetch the available layouts so a UUID can be passed explicitly as layoutId on the retry",
             autoExecute: true,
+            // v0.6.0 alpha.2 — declarative retry: chat-runner extracts
+            // the first layout's id from list_layouts.value and
+            // re-dispatches templates.create with layoutId set. AI
+            // never sees the original failure.
+            retryWithArgs: { argName: "layoutId", fromValuePath: "layouts.0.id" },
           },
         });
       }

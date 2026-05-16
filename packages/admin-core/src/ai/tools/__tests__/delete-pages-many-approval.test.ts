@@ -77,9 +77,12 @@ describe("delete_pages_many — W5 reference needsApproval gate", () => {
       toolCtx,
     );
     expect(result.ok).toBe(true);
-    expect(result.content).toContain("Queued proposal");
-    expect(result.content).toContain("delete_pages_many");
-    expect(result.content).toContain("Click Approve");
+    // Out-of-chat fallback shape (test doesn't wire a real adapter).
+    // Production path goes through tool_approvals.queue + emits the
+    // "Click Approve at /security/tool-approvals/pending" suffix
+    // instead — covered by an integration test once DB is wired.
+    expect(result.content).toMatch(/^Queued proposal [0-9a-f-]{36}: delete_pages_many/);
+    expect(result.content).toContain("non-persisted");
   });
 
   it("buildApprovalPreview surfaces the page count + sample IDs", async () => {
