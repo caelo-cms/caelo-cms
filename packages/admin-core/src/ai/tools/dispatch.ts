@@ -16,6 +16,7 @@ import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 import type { z } from "zod";
 
 import type { AIProvider } from "../provider.js";
+import type { ToolDescribeState } from "./describe-state.js";
 
 /**
  * P10.5 — the spawn_subagent tool handler invokes the SAME runChatTurn
@@ -94,11 +95,81 @@ export interface ToolResult {
     base64: string;
     mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
   };
+  /**
+   * v0.6.0 W3 — structured recovery hint propagated from
+   * `QueryError.HandlerError.nextAction`. When set with
+   * `autoExecute: true` AND the chat-runner recognises the suggested
+   * tool as read-only (catalogue prefix `list_*`, suffix `*.get`),
+   * the runner dispatches the recovery tool BEFORE yielding the
+   * failed tool-result to the AI and concatenates the recovery
+   * output into `content` so the AI sees the failure + the data it
+   * would have asked for on its next turn in one round-trip.
+   *
+   * Tool handlers populate this by reading
+   * `result.error.nextAction` from the failed QueryError and
+   * copying the fields verbatim via `forwardNextAction(error)`.
+   * Tool handlers that don't use the Query API or that wrap
+   * non-recoverable failures leave it undefined.
+   */
+  readonly nextAction?: {
+    readonly tool: string;
+    readonly args?: Record<string, unknown>;
+    readonly reason: string;
+    readonly autoExecute?: boolean;
+  };
 }
 
 export interface ToolDefinitionWithHandler<I> {
   readonly name: string;
+  /** Static fallback description. Used when `describe()` is absent, when
+   * state-builder fails, or for telemetry / non-AI surfaces (catalogue
+   * page, tests). */
   readonly description: string;
+  /** v0.6.0 W1 — optional state-aware description. When set AND a
+   * `ToolDescribeState` is passed to `catalogue()`, this callback's
+   * return value replaces the static description in the per-turn AI
+   * call. Lets tools surface live preconditions ("layoutId REQUIRED
+   * on fresh install", "block 'content' exists on this template")
+   * instead of stale general-purpose prose. The return string is
+   * sent to the model verbatim — keep it as concise as the static
+   * description. Throwing from `describe()` falls back to the static
+   * description silently. */
+  readonly describe?: (state: ToolDescribeState) => string;
+  /**
+   * v0.6.0 W5 — SDK-6-inspired approval gate. When set and returns
+   * `true` for the parsed args, the dispatcher emits a structured
+   * approval-required ToolResult instead of running the handler. The
+   * chat-runner surfaces this to the operator (via the existing
+   * ProposeCard render path) and the AI sees a "TWO-STEP — Owner must
+   * click Approve" result.
+   *
+   * This complements caelo's existing propose/execute pattern rather
+   * than replacing it. Use needsApproval for NEW tools where:
+   *   - the action is hard-to-revert (CLAUDE.md §11.A criteria), AND
+   *   - the propose/execute split adds more friction than the gate is
+   *     worth (no audit-history value, no preview-without-execute
+   *     value).
+   * Existing propose/* tools stay as-is — their `*_pending_actions`
+   * tables carry preview metadata + cross-chat audit history that a
+   * pure predicate-gate can't replicate.
+   *
+   * The predicate is sync OR async; throwing from it is treated as
+   * `false` (let the action through) + logs an error — never block
+   * silently on a faulty predicate.
+   */
+  readonly needsApproval?: (input: I, ctx: ExecutionContext) => boolean | Promise<boolean>;
+  /**
+   * v0.6.0 W5 — when needsApproval returns true, this builder produces
+   * the "blast-radius" preview shown to the operator alongside the
+   * approve/reject buttons. Falls back to `{ tool, args }` when
+   * absent. Use to surface the affected entity count, the diff, the
+   * downstream URLs that change, etc. — same shape as
+   * `*_pending_actions.preview` in the existing propose tables.
+   */
+  readonly buildApprovalPreview?: (
+    input: I,
+    ctx: ExecutionContext,
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   readonly schema: z.ZodType<I>;
   /** JSON Schema for the provider — Zod doesn't ship this directly so we
    * hand-author next to the schema. Easier to keep aligned than to install
@@ -118,13 +189,34 @@ export class ToolRegistry {
     return this.#tools.get(name);
   }
 
-  /** Provider-shaped tool catalogue for `GenerateInput.tools`. */
-  catalogue(): { name: string; description: string; inputSchema: Record<string, unknown> }[] {
-    return [...this.#tools.values()].map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    }));
+  /**
+   * Provider-shaped tool catalogue for `GenerateInput.tools`.
+   *
+   * v0.6.0 W1 — when `state` is supplied, each tool's optional
+   * `describe(state)` callback is invoked and its return value replaces
+   * the static description. Tools without `describe()` use the static
+   * description (backward-compatible). If `describe()` throws, the
+   * static description is used and a console.error is emitted — never
+   * propagates to the AI call.
+   */
+  catalogue(
+    state?: ToolDescribeState,
+  ): { name: string; description: string; inputSchema: Record<string, unknown> }[] {
+    return [...this.#tools.values()].map((t) => {
+      let description = t.description;
+      if (state && t.describe) {
+        try {
+          description = t.describe(state);
+        } catch (err) {
+          console.error(`[tool.describe] ${t.name} threw — falling back to static description`, err);
+        }
+      }
+      return {
+        name: t.name,
+        description,
+        inputSchema: t.inputSchema,
+      };
+    });
   }
 
   async dispatch(
@@ -143,6 +235,47 @@ export class ToolRegistry {
         ok: false,
         content: `invalid arguments for ${name}: ${JSON.stringify(parsed.error.issues)}`,
       };
+    }
+    // v0.6.0 W5 — approval gate. When the tool declares
+    // `needsApproval(input, ctx) === true`, the dispatcher refuses to
+    // run the handler and instead returns a structured "Queued
+    // proposal …" result that the chat-runner / ChatPanel render as an
+    // inline approve/reject card. Tool authors implement needsApproval
+    // when they want the gate WITHOUT building a per-domain
+    // `*_pending_actions` table (the older propose/execute pattern).
+    //
+    // Note: actually persisting the pending approval + wiring the
+    // Approve button to a resume call still lives in the chat-runner /
+    // SSE layer; the dispatcher just declines to run, emits the
+    // structured result, and trusts the caller to surface it.
+    if (tool.needsApproval) {
+      let gated = false;
+      try {
+        gated = await tool.needsApproval(parsed.data, ctx);
+      } catch (err) {
+        console.error(`[tool.needsApproval] ${name} threw — letting action through`, err);
+        gated = false;
+      }
+      if (gated) {
+        let preview: Record<string, unknown> = { tool: name, args: parsed.data };
+        if (tool.buildApprovalPreview) {
+          try {
+            preview = await tool.buildApprovalPreview(parsed.data, ctx);
+          } catch (err) {
+            console.error(`[tool.buildApprovalPreview] ${name} threw — using default preview`, err);
+          }
+        }
+        // Canonical "Queued proposal …" prefix so ChatPanel's existing
+        // ProposeCard renderer parses + renders inline Approve / Reject
+        // buttons (same surface used by the propose/* tools).
+        return {
+          ok: true,
+          content:
+            `Queued proposal: ${name} — needs Owner approval. ` +
+            `Preview: ${JSON.stringify(preview).slice(0, 600)}. ` +
+            `Click Approve in the chat to apply.`,
+        };
+      }
     }
     return await tool.handler(ctx, parsed.data, toolCtx);
   }

@@ -919,3 +919,45 @@ export const submitPluginToolInput = z
   })
   .strict();
 export type SubmitPluginToolInput = z.infer<typeof submitPluginToolInput>;
+
+/**
+ * v0.6.0 W4 — composite workflow tool. Bootstraps a fresh install in
+ * one tool call: creates a default layout (header/content/footer), a
+ * default template (single `content` block), and pins both via
+ * `site_defaults.set`. Replaces the 4-5 step bootstrap dance the AI
+ * currently has to orchestrate via the bootstrap-site skill.
+ *
+ * Every field is optional + has a sensible default — the AI can call
+ * with `{}` on the smallest case and get a working scaffold.
+ */
+export const bootstrapSiteScaffoldToolInput = z
+  .object({
+    /** Slug for the new layout. Defaults to `site-default`. */
+    layoutSlug: z.string().min(1).max(120).optional(),
+    /** Display name for the new layout. Defaults to `Site default`. */
+    layoutDisplayName: z.string().min(1).max(256).optional(),
+    /** Block names for the layout. Defaults to header/content/footer.
+     * The `content` block is REQUIRED (where the template renders);
+     * the validator inserts it if missing. */
+    layoutBlocks: z
+      .array(
+        z.object({
+          name: z
+            .string()
+            .min(1)
+            .max(64)
+            .regex(/^[a-z][a-z0-9-]*$/),
+          displayName: z.string().min(1).max(128),
+        }),
+      )
+      .max(8)
+      .optional(),
+    /** Slug for the new template. Defaults to `home`. */
+    templateSlug: z.string().min(1).max(120).optional(),
+    /** Display name for the new template. Defaults to `Home template`. */
+    templateDisplayName: z.string().min(1).max(256).optional(),
+    /** Whether to pin the new layout+template as site_defaults. Defaults to true. */
+    setAsDefaults: z.boolean().optional(),
+  })
+  .strict();
+export type BootstrapSiteScaffoldToolInput = z.infer<typeof bootstrapSiteScaffoldToolInput>;

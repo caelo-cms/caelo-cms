@@ -31,6 +31,40 @@ export type QueryError =
         readonly column?: string;
         readonly detail?: string;
       };
+      /**
+       * v0.6.0 W3 — structured recovery hint. Bootstrap-flow ops set
+       * this when the failure has a clear "AI should call X next" path:
+       *   - `templates.create` rejecting "no defaults configured" sets
+       *     `{ tool: "list_layouts", reason: "fetch a layoutId first",
+       *     autoExecute: true }` so the chat-runner pre-fetches the
+       *     missing data and retries the original call without
+       *     bothering the model.
+       *   - `add_module_to_page` rejecting "block 'content' does not
+       *     exist" sets `{ tool: "edit_template_blocks", args: {...},
+       *     reason: "..." }` — not autoExecute (write op), but the AI
+       *     sees the hint in its next-turn input and follows it.
+       *
+       * The chat-runner consumes `autoExecute: true` only when the
+       * suggested tool is a read-only list/get; write recoveries always
+       * surface to the AI for review. Auto-recovery is bounded to one
+       * retry per original call to prevent loops.
+       */
+      readonly nextAction?: {
+        /** Caelo tool name to call (e.g. `list_layouts`). The tool MUST
+         * be registered in the chat-runner's catalogue OR the recovery
+         * is silently skipped. */
+        readonly tool: string;
+        /** Suggested arguments. Omit to let the model fill them in. */
+        readonly args?: Record<string, unknown>;
+        /** Single-sentence human-readable explanation. Always rendered
+         * to the AI verbatim after the failure message. */
+        readonly reason: string;
+        /** When true AND the suggested tool is read-only, the
+         * chat-runner runs the recovery itself and retries the
+         * original call once before yielding the failure. Defaults to
+         * false (AI sees the hint and decides). */
+        readonly autoExecute?: boolean;
+      };
     }
   /**
    * v0.5.0 — per-entity write lock rejected the write. The named entity

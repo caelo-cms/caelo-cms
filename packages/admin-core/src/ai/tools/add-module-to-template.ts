@@ -82,6 +82,37 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     "For site-wide chrome (header / footer / nav across every page on every template), use add_module_to_layout. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
     'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+  // v0.6.0 W1 — state-aware: list the available template UUIDs +
+  // their slugs so the AI can pick a `templateId` without a separate
+  // templates.list round-trip. Block names live on the template's
+  // <caelo-slot> tags + the template_blocks rows; the per-page
+  // get_with_modules call inside the handler validates them, so we
+  // don't need to list block names here (they vary per template, and
+  // we don't want to fan out to template_blocks.get for every template
+  // every turn).
+  describe: (state) => {
+    const lines: string[] = [
+      "Create a new module and add it to EVERY page using the target template (template-wide change).",
+      'Use for "add a sidebar to every blog post". For a single page use add_module_to_page; for site-wide chrome use add_module_to_layout.',
+    ];
+    if (state.templates.length === 0) {
+      lines.push(
+        "NO templates exist on this site yet — this tool will fail. Bootstrap layouts + templates first.",
+      );
+    } else {
+      lines.push("Available templateId values (use the UUID, NOT the slug):");
+      for (const t of state.templates) {
+        lines.push(`- ${t.slug} → templateId=${t.id}`);
+      }
+      lines.push(
+        "Block names depend on the template's <caelo-slot> tags; if you guess the wrong blockName the handler returns the available set.",
+      );
+    }
+    lines.push(
+      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Quoted-string numbers like "0" fail validation.',
+    );
+    return lines.join(" ");
+  },
   schema: addModuleToTemplateToolInput,
   inputSchema: {
     type: "object",

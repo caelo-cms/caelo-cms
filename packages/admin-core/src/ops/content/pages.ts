@@ -296,11 +296,22 @@ export const createPageOp = defineOperation({
     if (templateId === undefined) {
       const defaults = await readSiteDefaults(tx);
       if (!defaults) {
+        // v0.6.0 W3 — autoExecute read-only list_templates so the
+        // chat-runner can self-correct without bothering the AI for a
+        // round-trip. If no templates exist at all, the recovery
+        // surfaces an empty list and the second attempt's clean error
+        // tells the AI to bootstrap first.
         return err({
           kind: "HandlerError",
           operation: "pages.create",
           message:
             "no templateId provided and site_defaults is empty — seed site_defaults via /security/site-defaults or pass an explicit templateId",
+          nextAction: {
+            tool: "list_templates",
+            reason:
+              "fetch the available templates so a UUID can be passed explicitly as templateId on the retry",
+            autoExecute: true,
+          },
         });
       }
       templateId = defaults.defaultTemplateId;
@@ -321,6 +332,11 @@ export const createPageOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.create",
         message: "template not found or deleted",
+        nextAction: {
+          tool: "list_templates",
+          reason: "fetch valid templateId values; the one you passed does not match a live template",
+          autoExecute: true,
+        },
       });
     }
     const dup = (await tx.execute(sql`

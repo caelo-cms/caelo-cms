@@ -27,7 +27,7 @@
  * (CLAUDE.md §4).
  */
 
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { anthropic as anthropicGlobal, createAnthropic } from "@ai-sdk/anthropic";
 import type { ModelMessage, SystemModelMessage } from "ai";
 
 import type {
@@ -41,10 +41,33 @@ import { runSDKStream, toSDKMessages } from "./_sdk-shared.js";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 
+/**
+ * v0.6.0 W2 — Anthropic Tool Search. When `toolSearch` is set to a
+ * non-"off" value, the provider tags every caelo tool with
+ * `providerOptions.anthropic.deferLoading: true` and injects the
+ * matching `anthropic.tools.toolSearchBm25_20251119()` (or regex
+ * variant) as a discovery surface. Claude calls the search tool
+ * server-side, the SDK loads the matching deferred tools into
+ * context, and Claude then emits a regular tool_use block — which
+ * caelo's chat-runner handles via its existing ToolRegistry path.
+ *
+ * Anthropic released this with Opus 4.5 / Sonnet 4.5 (Nov 2025); newer
+ * models inherit the capability. Off by default — operator opts in via
+ * `CAELO_ANTHROPIC_TOOL_SEARCH={bm25|regex}` after confirming the
+ * deployed model supports it.
+ */
+export type AnthropicToolSearchMode = "off" | "bm25" | "regex";
+
 interface AnthropicProviderOptions {
   readonly apiKey: string;
   readonly model: string;
   readonly baseUrl?: string;
+  /**
+   * v0.6.0 W2 — enable server-side Tool Search to drop per-turn
+   * tool-description tokens. Off by default; opt-in via
+   * `CAELO_ANTHROPIC_TOOL_SEARCH={bm25|regex}` env var.
+   */
+  readonly toolSearch?: AnthropicToolSearchMode;
   /**
    * Test hook — pre-resolved LanguageModel instance. When set, the
    * SDK's Anthropic-provider lookup is skipped and `streamText` runs
@@ -93,9 +116,11 @@ export class AnthropicProvider implements AIProvider {
   readonly name: ProviderName = "anthropic";
   readonly model: string;
   readonly #model: import("ai").LanguageModel;
+  readonly #toolSearch: AnthropicToolSearchMode;
 
   constructor(options: AnthropicProviderOptions) {
     this.model = options.model;
+    this.#toolSearch = options.toolSearch ?? "off";
     if (options._modelOverride) {
       this.#model = options._modelOverride;
       return;
@@ -129,11 +154,48 @@ export class AnthropicProvider implements AIProvider {
         },
       };
     }
+    // v0.6.0 W2 — Tool Search transform. Skip when (a) operator hasn't
+    // opted in, OR (b) catalogue is below the threshold where Tool
+    // Search wins (small catalogues lose more on the search-tool
+    // overhead than they gain on description token reduction). 10 is a
+    // conservative floor; once measurement confirms a cleaner break,
+    // raise/lower per real data.
+    const useToolSearch = this.#toolSearch !== "off" && input.tools.length >= 10;
+    const toolsTransform = useToolSearch
+      ? (built: Record<string, unknown>): Record<string, unknown> => {
+          // Mark every caelo tool as deferred so its description does
+          // NOT ship in the first request body — Claude has to call
+          // the search tool to discover it.
+          for (const def of Object.values(built)) {
+            if (def && typeof def === "object") {
+              const existing = (def as { providerOptions?: Record<string, unknown> })
+                .providerOptions;
+              (def as { providerOptions?: Record<string, unknown> }).providerOptions = {
+                ...(existing ?? {}),
+                anthropic: {
+                  ...((existing?.anthropic as Record<string, unknown> | undefined) ?? {}),
+                  deferLoading: true,
+                },
+              };
+            }
+          }
+          // Inject the search tool. Two algorithms: BM25 (natural-
+          // language scoring — default; better when descriptions are
+          // prose-y) and regex (exact-pattern; better when tools share
+          // a strict naming convention).
+          const searchTool =
+            this.#toolSearch === "regex"
+              ? anthropicGlobal.tools.toolSearchRegex_20251119()
+              : anthropicGlobal.tools.toolSearchBm25_20251119();
+          return { ...built, toolSearch: searchTool };
+        }
+      : undefined;
     yield* runSDKStream({
       model: this.#model,
       input,
       systemAndMessages,
       extraOptions,
+      ...(toolsTransform ? { toolsTransform } : {}),
     });
   }
 }

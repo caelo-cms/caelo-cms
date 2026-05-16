@@ -304,6 +304,13 @@ export function buildSDKTools(
  * `extraOptions` argument carries provider-specific bits
  * (Anthropic's `providerOptions.anthropic.thinking`, OpenAI's
  * `providerOptions.openai.*`, etc.).
+ *
+ * v0.6.0 W2 — `toolsTransform` lets a provider rewrite the tools
+ * dictionary before it ships to streamText. Anthropic uses this to
+ * (a) tag every caelo-defined tool with
+ * `providerOptions.anthropic.deferLoading: true` and (b) inject
+ * `anthropic.tools.toolSearchBm25_20251119()` as the discovery
+ * surface. Other providers leave it undefined.
  */
 export async function* runSDKStream(args: {
   model: import("ai").LanguageModel;
@@ -315,14 +322,24 @@ export async function* runSDKStream(args: {
    */
   systemAndMessages: { system?: string; messages: ModelMessage[] };
   extraOptions?: Record<string, unknown>;
+  /**
+   * v0.6.0 W2 — provider-specific transformer applied to the tools
+   * dictionary before streamText runs. Receives the built tools
+   * keyed by name (the shape produced by `buildSDKTools`) and
+   * returns a possibly-augmented dictionary that may contain
+   * additional named entries (e.g. provider-defined tools like
+   * Anthropic's `toolSearch`).
+   */
+  toolsTransform?: (built: Record<string, unknown>) => Record<string, unknown>;
 }): AsyncIterable<ProviderEvent> {
-  const { model, input, systemAndMessages, extraOptions } = args;
-  const sdkTools = buildSDKTools(input.tools);
+  const { model, input, systemAndMessages, extraOptions, toolsTransform } = args;
+  const builtTools = buildSDKTools(input.tools) as Record<string, unknown>;
+  const sdkTools = toolsTransform ? toolsTransform(builtTools) : builtTools;
   const result = streamText({
     model,
     ...(systemAndMessages.system !== undefined ? { system: systemAndMessages.system } : {}),
     messages: systemAndMessages.messages,
-    ...(Object.keys(sdkTools).length > 0 ? { tools: sdkTools } : {}),
+    ...(Object.keys(sdkTools).length > 0 ? { tools: sdkTools as Parameters<typeof streamText>[0]["tools"] } : {}),
     maxOutputTokens: input.maxTokens ?? 32768,
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),

@@ -63,6 +63,31 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
     "For chrome that should appear on every page, use add_module_to_layout instead; for every page on a template, use add_module_to_template. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
     'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+  // v0.6.0 W1 — state-aware: this tool takes a pageId (not pageSlug), and
+  // the per-page block set depends on the template the page is bound to.
+  // The system-prompt's `## Pages` block already lists every page +
+  // templateId, so we keep this describe focused on the routing decision
+  // (page vs template vs layout) + the position-format gotcha; per-page
+  // block enumeration is the handler's job and is delivered as a
+  // structured error if the AI guesses wrong.
+  describe: (state) => {
+    const lines: string[] = [
+      "Add a NEW module to ONE page's block. Use for one-off content; for site-wide chrome use add_module_to_layout, for template-wide use add_module_to_template.",
+    ];
+    if (state.templates.length === 0) {
+      lines.push(
+        "NO templates exist on this site yet — every page would also be missing. Bootstrap first via create_layout + create_template + create_page.",
+      );
+    } else {
+      lines.push(
+        "Pass `pageId` (UUID, see `## Pages` for the list). Block names come from the page's template <caelo-slot> tags — if you guess wrong, the failure surfaces the available block names.",
+      );
+    }
+    lines.push(
+      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Quoted-string numbers like "0" fail validation.',
+    );
+    return lines.join(" ");
+  },
   schema: addModuleToPageToolInput,
   inputSchema: {
     type: "object",

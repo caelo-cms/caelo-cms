@@ -23,7 +23,45 @@ export function describeError(error: unknown): string {
       column?: string;
       detail?: string;
     };
+    nextAction?: {
+      tool?: string;
+      args?: Record<string, unknown>;
+      reason?: string;
+      autoExecute?: boolean;
+    };
   };
+  const primary = describePrimary(e, error);
+  // v0.6.0 W3 — append the structured recovery hint after the primary
+  // message so the AI sees both "what went wrong" and "what to try
+  // next" in one tool-result string. The chat-runner consumes
+  // `nextAction.autoExecute` separately to drive automatic recovery;
+  // this rendering is what surfaces to the model regardless.
+  if (e.nextAction && typeof e.nextAction.tool === "string") {
+    const na = e.nextAction;
+    const argsPart =
+      na.args && Object.keys(na.args).length > 0 ? ` with args ${JSON.stringify(na.args)}` : "";
+    const reasonPart = typeof na.reason === "string" && na.reason.length > 0 ? ` — ${na.reason}` : "";
+    return `${primary} | next: call \`${na.tool}\`${argsPart}${reasonPart}`;
+  }
+  return primary;
+}
+
+function describePrimary(
+  e: {
+    kind?: string;
+    message?: string;
+    issues?: unknown[];
+    detail?: string;
+    pgDetail?: {
+      code?: string;
+      constraint?: string;
+      table?: string;
+      column?: string;
+      detail?: string;
+    };
+  },
+  rawError: unknown,
+): string {
   if (e.kind === "ValidationFailed" && Array.isArray(e.issues)) {
     return `validation: ${e.issues
       .slice(0, 3)
@@ -33,11 +71,6 @@ export function describeError(error: unknown): string {
       })
       .join("; ")}`;
   }
-  // v0.5.17 — adapter now extracts Postgres structured fields and
-  // attaches them as `pgDetail` on the HandlerError. When present,
-  // surface that as the primary message — it's the actual reason
-  // for the SQL throw (SQLSTATE + constraint + detail), not the
-  // truncated query text.
   if (e.pgDetail) {
     const parts: string[] = [];
     if (e.pgDetail.code) parts.push(`SQLSTATE ${e.pgDetail.code}`);
@@ -47,13 +80,9 @@ export function describeError(error: unknown): string {
     if (e.pgDetail.detail) parts.push(e.pgDetail.detail);
     if (parts.length > 0) return parts.join(" — ").slice(0, 240);
   }
-  // v0.5.16 — fallback: when the message contains Bun.SQL's "Failed
-  // query:" wrapper but pgDetail wasn't populated (caller built their
-  // own HandlerError without going through the adapter), walk the cause
-  // chain locally.
   const message = typeof e.message === "string" ? e.message : null;
   if (message && message.startsWith("Failed query")) {
-    const pgDetail = extractPgDetail(error);
+    const pgDetail = extractPgDetail(rawError);
     if (pgDetail) return pgDetail;
   }
   if (message) return message;
@@ -70,6 +99,45 @@ export function describeError(error: unknown): string {
  * Returns a compact one-liner — e.g.
  *   "FK violation: page_snapshots_page_id_fkey (Key (page_id)=(…) is not present in table pages)"
  */
+/**
+ * v0.6.0 W3 — pull the `nextAction` block off a `QueryError.HandlerError`
+ * so tool handlers can forward it onto their `ToolResult.nextAction`.
+ * Returns undefined when the error isn't a HandlerError, doesn't carry a
+ * nextAction, or carries a malformed one (the runtime contract requires
+ * `tool` + `reason` strings at minimum).
+ */
+export function forwardNextAction(error: unknown):
+  | {
+      tool: string;
+      args?: Record<string, unknown>;
+      reason: string;
+      autoExecute?: boolean;
+    }
+  | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const e = error as {
+    kind?: string;
+    nextAction?: {
+      tool?: unknown;
+      args?: unknown;
+      reason?: unknown;
+      autoExecute?: unknown;
+    };
+  };
+  if (e.kind !== "HandlerError") return undefined;
+  const na = e.nextAction;
+  if (!na || typeof na.tool !== "string" || typeof na.reason !== "string") return undefined;
+  const out: {
+    tool: string;
+    args?: Record<string, unknown>;
+    reason: string;
+    autoExecute?: boolean;
+  } = { tool: na.tool, reason: na.reason };
+  if (na.args && typeof na.args === "object") out.args = na.args as Record<string, unknown>;
+  if (typeof na.autoExecute === "boolean") out.autoExecute = na.autoExecute;
+  return out;
+}
+
 function extractPgDetail(error: unknown, depth = 0): string | null {
   if (!error || typeof error !== "object" || depth > 4) return null;
   const e = error as {

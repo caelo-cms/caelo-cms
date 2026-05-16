@@ -16,7 +16,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { createTemplateToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, forwardNextAction } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const createTemplateTool: ToolDefinitionWithHandler<
@@ -33,6 +33,41 @@ export const createTemplateTool: ToolDefinitionWithHandler<
     "NOT HTML comments like <!-- block:X -->. The composer ignores comment-style markers and the page " +
     "renders empty. Define block rows separately via the templates editor or " +
     "propose_update_template's `blocks` field — every block name needs a matching <caelo-slot> in html.",
+  // v0.6.0 W1 — state-aware: `layoutId` semantics depend on whether
+  // site_defaults is configured. On a fresh install where defaults is
+  // empty, omitting layoutId yields a "no defaults" structured error
+  // instead of falling back silently; the AI should bootstrap via
+  // create_layout + set_site_defaults first OR pass an explicit
+  // layoutId on every call. The static description lies in that state.
+  describe: (state) => {
+    const lines: string[] = [
+      "Create a new page-type template (a reusable HTML+CSS shell other pages bind to).",
+      "Use when the user wants a NEW page-type ('create a blog-post template', 'a landing-page layout').",
+      "Do NOT use to create a one-off page — use `create_page` instead.",
+    ];
+    if (state.siteDefaults && state.layouts.length > 0) {
+      lines.push(
+        `\`layoutId\` is optional: omit it to bind to the site default layout "${state.siteDefaults.defaultLayoutSlug}"; ` +
+          `pass a UUID from \`## Layouts on this site\` when the user asks for a non-default chrome (available slugs: ${state.layouts.map((l) => l.slug).join(", ")}).`,
+      );
+    } else if (state.layouts.length > 0) {
+      lines.push(
+        `\`layoutId\` is REQUIRED on this site — site_defaults has no default_layout configured. ` +
+          `Pick a UUID from \`## Layouts on this site\` (available slugs: ${state.layouts.map((l) => l.slug).join(", ")}). ` +
+          `Or call set_site_defaults first so future templates can omit layoutId.`,
+      );
+    } else {
+      lines.push(
+        "`layoutId` will fail validation on this site — there are NO layouts yet. " +
+          "Call create_layout first to make a layout with header/content/footer blocks, then create_template referencing it, then set_site_defaults.",
+      );
+    }
+    lines.push(
+      'CRITICAL — block syntax: render slots in `html` MUST be <caelo-slot name="X"></caelo-slot> tags, ' +
+        "NOT HTML comments like <!-- block:X -->. The composer ignores comment-style markers and the page renders empty.",
+    );
+    return lines.join(" ");
+  },
   schema: createTemplateToolInput,
   inputSchema: {
     type: "object",
@@ -48,7 +83,14 @@ export const createTemplateTool: ToolDefinitionWithHandler<
   },
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "templates.create", input);
-    if (!r.ok) return { ok: false, content: `templates.create failed: ${describeError(r.error)}` };
+    if (!r.ok) {
+      const next = forwardNextAction(r.error);
+      return {
+        ok: false,
+        content: `templates.create failed: ${describeError(r.error)}`,
+        ...(next ? { nextAction: next } : {}),
+      };
+    }
     const templateId = (r.value as { templateId: string }).templateId;
     return {
       ok: true,

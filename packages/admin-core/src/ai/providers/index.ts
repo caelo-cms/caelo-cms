@@ -10,7 +10,7 @@
  */
 
 import type { AIProvider, ProviderName } from "../provider.js";
-import { AnthropicProvider } from "./anthropic.js";
+import { AnthropicProvider, type AnthropicToolSearchMode } from "./anthropic.js";
 import { GeminiProvider } from "./gemini.js";
 import { OpenAiProvider } from "./openai.js";
 import { makeOpenAiCompatibleProvider } from "./openai-compatible.js";
@@ -23,6 +23,24 @@ export interface ProviderConfig {
   /** Display label — only used by openai-compatible to distinguish
    *  multiple local backends ("ollama-llama3.1" vs "lm-studio-qwen"). */
   readonly displayName?: string;
+  /** v0.6.0 W2 — Anthropic-only Tool Search opt-in. Defaults to
+   * `CAELO_ANTHROPIC_TOOL_SEARCH` env (`bm25` / `regex` / unset). Pass
+   * explicitly to override for a one-off provider instance. */
+  readonly anthropicToolSearch?: AnthropicToolSearchMode;
+}
+
+/**
+ * v0.6.0 W2 — read the Tool Search opt-in from the environment.
+ * Accepted values: "bm25", "regex". Anything else (or unset) → off.
+ * Exported so tests can stub the env without mutating process.env.
+ */
+export function resolveAnthropicToolSearchMode(
+  override?: AnthropicToolSearchMode,
+): AnthropicToolSearchMode {
+  if (override) return override;
+  const raw = (process.env.CAELO_ANTHROPIC_TOOL_SEARCH ?? "").toLowerCase().trim();
+  if (raw === "bm25" || raw === "regex") return raw;
+  return "off";
 }
 
 export function makeProvider(config: ProviderConfig): AIProvider {
@@ -32,6 +50,7 @@ export function makeProvider(config: ProviderConfig): AIProvider {
         apiKey: config.apiKey,
         model: config.model,
         baseUrl: config.baseUrl,
+        toolSearch: resolveAnthropicToolSearchMode(config.anthropicToolSearch),
       });
     case "openai":
       return new OpenAiProvider({

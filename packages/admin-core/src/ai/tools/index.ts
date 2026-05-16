@@ -5,6 +5,7 @@ import { addModuleToPageTool } from "./add-module-to-page.js";
 import { addModuleToTemplateTool } from "./add-module-to-template.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
 import { autofillPageSeoTool } from "./autofill-page-seo.js";
+import { bootstrapSiteScaffoldTool } from "./bootstrap-site-scaffold.js";
 import { bulkCreateRedirectsTool } from "./bulk-create-redirects.js";
 import { bulkDeleteRedirectsTool } from "./bulk-delete-redirects.js";
 import { bulkOptimizeSeoTool } from "./bulk-optimize-seo.js";
@@ -134,6 +135,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(setTemplateLayoutTool);
   registry.register(createLayoutTool);
   registry.register(setSiteDefaultsTool);
+  // v0.6.0 W4 — composite bootstrap. Wraps the layouts / templates /
+  // site_defaults chain. Idempotent — successive calls drive the
+  // bootstrap forward across the propose/execute Owner-approval gap.
+  registry.register(bootstrapSiteScaffoldTool);
   // P6.7.7 — content-ops follow-ups.
   registry.register(duplicatePageTool);
   registry.register(changeTemplateTool);

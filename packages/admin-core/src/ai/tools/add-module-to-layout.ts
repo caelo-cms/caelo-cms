@@ -48,6 +48,35 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     'layoutSlug is the slug you set on create_layout (often "default" or "site-default"). ' +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
     'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+  // v0.6.0 W1 — state-aware: enumerate the layouts that exist + each
+  // one's block names so the AI can pick a valid (layoutSlug, blockName)
+  // pair without guessing. Avoids the recurring "block 'content' does
+  // not exist" failure when the AI guesses a block name from prose
+  // instead of reading the live layout shape.
+  describe: (state) => {
+    const lines: string[] = [
+      "Create a new module and attach it to a LAYOUT block. The chrome reaches every page on every template bound to the layout.",
+      'Use for site-wide chrome ("a footer on every page", "a global header banner"). For one page use add_module_to_page; for one template use add_module_to_template.',
+    ];
+    if (state.layouts.length === 0) {
+      lines.push(
+        "NO layouts exist on this site yet — this tool will fail. Call create_layout first.",
+      );
+    } else {
+      lines.push("Available (layoutSlug, blockName) pairs:");
+      for (const l of state.layouts) {
+        const blocks = l.blocks.length > 0 ? l.blocks.map((b) => b.name).join("/") : "(no blocks)";
+        lines.push(`- ${l.slug} → blocks: ${blocks}`);
+      }
+      lines.push(
+        "Pick a (layoutSlug, blockName) pair from above — guessing a block name that doesn't appear in this list will fail validation.",
+      );
+    }
+    lines.push(
+      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+    );
+    return lines.join(" ");
+  },
   schema: addModuleToLayoutToolInput,
   inputSchema: {
     type: "object",

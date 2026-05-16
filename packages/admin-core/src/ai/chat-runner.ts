@@ -47,6 +47,7 @@ import {
 
 import type { AIProvider, ChatMessageInput } from "./provider.js";
 import { composeSystemPromptChunks } from "./system-prompt.js";
+import { buildToolDescribeState } from "./tools/describe-state.js";
 import type { ToolRegistry } from "./tools/index.js";
 
 export type ClientEvent =
@@ -943,12 +944,25 @@ export async function* runChatTurn(
     }
   }
 
+  // v0.6.0 W1 — assemble ToolDescribeState from the layouts/templates/
+  // site_defaults values we already fetched above for the system-prompt
+  // blocks. Tools with optional describe() callbacks use this to emit
+  // state-aware descriptions ("layoutId REQUIRED on fresh install"
+  // instead of "layoutId optional"). Tools without describe() ignore
+  // the state and use their static description.
+  const toolDescribeState = buildToolDescribeState({
+    actor: { actorId: aiCtx.actorId, actorKind: aiCtx.actorKind },
+    layoutsValue: layoutsR.ok ? layoutsR.value : null,
+    templatesValue: tplsR.ok ? tplsR.value : null,
+    siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,
+  });
+
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion. The
   // exclusion list is how the spawn handler enforces the depth cap (it
   // passes {spawn_subagent, spawn_subagents}); chat-runner itself
   // doesn't branch on "is this a subagent."
   const excluded = options.excludedToolNames;
-  const builtinTools = tools.catalogue().filter((t) => {
+  const builtinTools = tools.catalogue(toolDescribeState).filter((t) => {
     if (allowedToolNames && !allowedToolNames.has(t.name)) return false;
     if (excluded?.has(t.name)) return false;
     return true;
@@ -1328,6 +1342,14 @@ export async function* runChatTurn(
           base64: string;
           mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
         };
+        // v0.6.0 W3 — propagated from ToolResult.nextAction so the
+        // auto-recovery branch can inspect the structured recovery hint.
+        nextAction?: {
+          tool: string;
+          args?: Record<string, unknown>;
+          reason: string;
+          autoExecute?: boolean;
+        };
       };
       if (cachedHit) {
         result = {
@@ -1361,6 +1383,14 @@ export async function* runChatTurn(
           image?: {
             base64: string;
             mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+          };
+          // v0.6.0 W3 — propagated from ToolResult.nextAction so the
+          // auto-recovery branch below can read it without an extra cast.
+          nextAction?: {
+            tool: string;
+            args?: Record<string, unknown>;
+            reason: string;
+            autoExecute?: boolean;
           };
         };
         const dispatchPromise: Promise<DispatchValue> = pluginTool
@@ -1443,6 +1473,66 @@ export async function* runChatTurn(
         const settled = await finalDispatch;
         if (settled.ok) {
           result = settled.value;
+          // v0.6.0 W3 — auto-recover from structured failures. When a
+          // bootstrap-flow op fails with `nextAction.autoExecute=true`
+          // and the suggested tool is read-only by name (list_* / *.get),
+          // dispatch the recovery inline and fold its output into the
+          // tool-result content. The AI sees the original failure +
+          // the recovery data in ONE tool-result and retries with the
+          // right args on its next turn without an extra round-trip.
+          //
+          // Bounded: only fires when (a) result.ok===false, (b)
+          // nextAction.autoExecute, (c) isReadOnlyToolName(tool), (d)
+          // tool is in the catalogue. No recursion — the recovery
+          // itself does not get auto-recovery.
+          if (!result.ok && result.nextAction?.autoExecute) {
+            const recoveryToolName = result.nextAction.tool;
+            const isReadOnly =
+              recoveryToolName.startsWith("list_") ||
+              recoveryToolName.endsWith(".get") ||
+              recoveryToolName.endsWith("_get") ||
+              recoveryToolName.startsWith("get_");
+            const inCatalogue = tools.get(recoveryToolName) !== undefined;
+            if (isReadOnly && inCatalogue) {
+              try {
+                const recoveryArgs = result.nextAction.args ?? {};
+                const recovery = await tools.dispatch(
+                  recoveryToolName,
+                  recoveryArgs,
+                  aiCtxWithBranch,
+                  {
+                    adapter,
+                    registry,
+                    chatSessionId: input.chatSessionId,
+                    chatBranchId: session.session.chatBranchId,
+                    provider,
+                    tools,
+                    humanCtx,
+                  },
+                );
+                const recoveryStatus = recovery.ok ? "ok" : "fail";
+                const combinedContent =
+                  `${result.content}\n\n[auto-recovery] ${recoveryToolName} (${recoveryStatus}): ${recovery.content}`.slice(
+                    0,
+                    8000,
+                  );
+                result = {
+                  ok: false,
+                  content: combinedContent,
+                };
+              } catch (recErr) {
+                console.error("[chat-runner] auto-recovery dispatch threw", {
+                  chatSessionId: input.chatSessionId,
+                  recoveryTool: recoveryToolName,
+                  error: recErr,
+                });
+                // Recovery itself failed — leave the original result
+                // untouched. The AI sees just the original failure +
+                // the hint string; can call the recovery tool itself
+                // on the next turn if it wants.
+              }
+            }
+          }
         } else {
           // v0.2.52 — A tool handler rejected (Zod runtime, plugin error,
           // DB constraint, "Cannot read X of undefined"). Surface as a

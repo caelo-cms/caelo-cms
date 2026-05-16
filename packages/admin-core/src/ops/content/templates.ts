@@ -184,11 +184,24 @@ export const createTemplateOp = defineOperation({
     if (layoutId === undefined) {
       const defaults = await readSiteDefaults(tx);
       if (!defaults) {
+        // v0.6.0 W3 — autoExecute the read-only recovery so the chat-
+        // runner can self-correct without an extra AI round-trip. The
+        // runner calls list_layouts, picks the first id, and retries
+        // templates.create with that explicit layoutId. If no layouts
+        // exist at all, list_layouts returns empty and the second
+        // attempt surfaces a clean "no layouts on this site" message
+        // — the AI then knows to call create_layout first.
         return err({
           kind: "HandlerError",
           operation: "templates.create",
           message:
             "no layoutId provided and site_defaults is empty — seed site_defaults via /security/site-defaults or pass an explicit layoutId",
+          nextAction: {
+            tool: "list_layouts",
+            reason:
+              "fetch the available layouts so a UUID can be passed explicitly as layoutId on the retry",
+            autoExecute: true,
+          },
         });
       }
       layoutId = defaults.defaultLayoutId;
@@ -201,6 +214,11 @@ export const createTemplateOp = defineOperation({
           kind: "HandlerError",
           operation: "templates.create",
           message: "layout not found or deleted",
+          nextAction: {
+            tool: "list_layouts",
+            reason: "fetch valid layoutId values; the one you passed does not match a live layout",
+            autoExecute: true,
+          },
         });
       }
     }
