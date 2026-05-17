@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.6
+
+### Fixes
+- db7f53f Pulumi IAM hardening — telemetry roles + drop dead resend secret + stale comment
+
 ## v0.6.5
 
 ### Fixes
