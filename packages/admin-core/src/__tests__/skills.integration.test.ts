@@ -188,7 +188,7 @@ describe("seeded base skills", () => {
   // v0.5.12 — extended to also require the read-fallback tools so the
   // skill can self-fetch UUIDs after each step instead of asking the
   // operator.
-  it("bootstrap-site allowlists scaffold + list_* fetch tools", async () => {
+  it("bootstrap-site allowlists scaffold + list_* fetch + layout-chrome tools", async () => {
     const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
     if (!r.ok) return;
     const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
@@ -207,13 +207,22 @@ describe("seeded base skills", () => {
     // engaged catalog filters them out and AI reports "tool doesn't
     // exist" when asked to set meta-descriptions on a fresh build.
     expect(tools).toContain("set_page_seo");
+    // v0.7.5 — add_module_to_layout (migration 0088). Added by 0081,
+    // silently dropped by 0083, missed by 0085 + 0086. The header /
+    // footer / nav chrome lives at the layout level; without this
+    // tool in the allowlist the AI literally cannot see it when the
+    // bootstrap-site skill engages, and the only escape is the
+    // dead-end of stuffing chrome into a page's content block.
+    expect(tools).toContain("add_module_to_layout");
   });
 
   // v0.6.1 — compose-page is the most frequently engaged skill on
   // build prompts. Migration 0086 added the three SEO tools to its
   // allowlist so the AI never surfaces "I don't have a tool for that"
   // for SEO during a compose flow.
-  it("compose-page allowlists SEO tools (set_page_seo + autofill + optimize)", async () => {
+  // v0.7.5 — also requires add_module_to_layout (same regression as
+  // bootstrap-site, dropped by 0083, restored by 0088).
+  it("compose-page allowlists SEO + layout-chrome tools", async () => {
     const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
     if (!r.ok) return;
     const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
@@ -223,5 +232,6 @@ describe("seeded base skills", () => {
     expect(tools).toContain("set_page_seo");
     expect(tools).toContain("autofill_page_seo");
     expect(tools).toContain("optimize_page_seo");
+    expect(tools).toContain("add_module_to_layout");
   });
 });
