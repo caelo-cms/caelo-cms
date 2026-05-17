@@ -52,26 +52,28 @@
 
   let {
     pendingChanges,
+    branchChangeCount = 0,
     csrfToken,
     chatSessionId,
     activePageId = null,
     sessionPublished = false,
   }: {
     pendingChanges: PendingChangesView;
+    /**
+     * v0.7.3 — authoritative "is there anything in this branch" signal.
+     * Comes from chat.branch_change_count (unfiltered) + the local
+     * tool-result counter incremented as the AI streams writes. We gate
+     * the split-button on this rather than on pendingChanges-derived
+     * counts because pendingChanges drops entities with 'published'
+     * marks from prior chat.publish runs, which would hide the button
+     * even when the chat has fresh re-edits.
+     */
+    branchChangeCount?: number;
     csrfToken: string;
     chatSessionId: string;
     activePageId?: string | null;
     sessionPublished?: boolean;
   } = $props();
-
-  const pendingCount = $derived(
-    pendingChanges.pending.pages.length +
-      pendingChanges.pending.globals.length +
-      pendingChanges.pending.lists.length +
-      pendingChanges.staged.pages.length +
-      pendingChanges.staged.globals.length +
-      pendingChanges.staged.lists.length,
-  );
 
   /**
    * Per-kind change counts for the dropdown checkboxes. "Pages" lumps
@@ -121,7 +123,7 @@
 
 {#if sessionPublished}
   <span class="text-xs text-muted-foreground italic">Chat published</span>
-{:else if pendingCount === 0}
+{:else if branchChangeCount === 0}
   <span class="text-xs text-muted-foreground">No pending changes</span>
 {:else}
   <div class="inline-flex" data-testid="stage-deploy">
@@ -157,7 +159,7 @@
         title="Merge chat branch to main + rebuild staging"
         data-testid="stage-btn"
       >
-        {staging ? "Staging…" : `Stage (${pendingCount})`}
+        {staging ? "Staging…" : `Stage (${branchChangeCount})`}
       </Button>
     </form>
     <Button

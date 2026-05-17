@@ -83,6 +83,12 @@
     /** v0.7.0 — pending/staged view feeding the StageDeployButton's
      *  per-kind dropdown (Pages / Modules / Templates / Lists). */
     pendingChanges?: PendingChangesView;
+    /** v0.7.3 — branch-snapshot count (chat.branch_change_count). The
+     *  StageDeployButton gates its visibility on this rather than on
+     *  pendingChanges, because pendingChanges drops entities marked
+     *  'published' from prior chat.publish runs. branchChangeCount is
+     *  the unfiltered "is there anything in this branch" signal. */
+    branchChangeCount?: number;
     onToolResult?: (payload: ToolResultPayload) => void;
   }
   let {
@@ -98,6 +104,7 @@
       pending: { pages: [], globals: [], lists: [] },
       staged: { pages: [], globals: [], lists: [] },
     },
+    branchChangeCount = 0,
     onToolResult,
   }: Props = $props();
 
@@ -504,6 +511,7 @@
     <div class="px-3 pt-2 flex justify-end">
       <StageDeployButton
         {pendingChanges}
+        {branchChangeCount}
         {csrfToken}
         sessionPublished={!!session.publishedAt}
         chatSessionId={session.id}

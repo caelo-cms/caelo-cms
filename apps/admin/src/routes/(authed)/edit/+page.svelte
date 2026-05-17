@@ -426,6 +426,7 @@
     pageChats={data.pageChats}
     globalChats={data.globalChats}
     pendingChanges={data.pendingChanges}
+    branchChangeCount={pendingChanges}
     onToolResult={onAiToolResult}
   />
 
