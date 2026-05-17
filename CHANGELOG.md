@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.0
+
+### Features
+- 90b8158 Stage / Publish UX redesign — 1:1 staging preview + selective production publish
+
 ## v0.6.6
 
 ### Fixes
