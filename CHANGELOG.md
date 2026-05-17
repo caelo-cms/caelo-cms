@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.5
+
+### Fixes
+- 6385c65 grant admin SA roles/run.viewer on gateway for Firebase Hosting deploy
+
 ## v0.6.4
 
 ### Fixes
