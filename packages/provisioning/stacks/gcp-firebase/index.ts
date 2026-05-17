@@ -498,6 +498,32 @@ new gcp.cloudrunv2.ServiceIamMember(
   opts,
 );
 
+// v0.6.5 — `run.services.get` on the gateway for the admin runtime
+// SA. Required at DEPLOY TIME (not runtime): when the static
+// publisher creates a Firebase Hosting version with a Cloud Run
+// rewrite target, Firebase's REST API runs an authorization check
+// that the CALLER (the admin SA — see static-publisher-firebase.ts's
+// googleAuthToken via ADC) has read access on the rewrite target.
+// Without this, every Firebase Hosting deploy hits:
+//   403 PERMISSION_DENIED Permission 'run.services.get' denied on
+//   resource 'namespaces/<proj>/services/<gateway-svc>'
+//
+// Scope is the gateway service only (not project-wide). The admin
+// already has roles/run.developer on its own service via
+// run.serviceAccountUser earlier in this file; the gateway needs
+// the explicit cross-service grant.
+new gcp.cloudrunv2.ServiceIamMember(
+  `${namePrefix}-gateway-viewer-for-admin-sa`,
+  {
+    project,
+    location: region,
+    name: gatewaySvc.name,
+    role: "roles/run.viewer",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+
 // =========================================================================
 // Admin custom domain — Cloud Run domain mapping
 // =========================================================================
