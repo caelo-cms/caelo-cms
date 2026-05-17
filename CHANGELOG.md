@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.6.4
+
+### Fixes
+- ba8c2d6 queue approve-during-stream nudges + flush when streaming ends
+
 ## v0.6.3
 
 ### Fixes
