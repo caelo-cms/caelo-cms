@@ -24,7 +24,7 @@
   import { onDestroy, onMount } from "svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
   import ChatPanel from "$lib/components/chat/ChatPanel.svelte";
-  import StageSplitButton from "$lib/components/chat/StageSplitButton.svelte";
+  import StageDeployButton from "$lib/components/edit/StageDeployButton.svelte";
   import MediaPicker from "$lib/components/MediaPicker.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Card } from "$lib/components/ui/card/index.js";
@@ -494,21 +494,20 @@
       </div>
     </div>
 
-    <!-- v0.5.8 — chat-branch staging picker. Sits above the compact
-         ChatPanel so it's visible without losing real-estate inside the
-         message list. This is orthogonal to the /edit toolbar's
-         Stage / Confirm-publish strip — that drives the
-         static-generator pipeline (build → staging URL → prod);
-         StageSplitButton drives the chat-branch → main merge step. -->
-    <div class="px-3 pt-2">
-      <StageSplitButton
+    <!-- v0.7.0 — Stage / Publish split-button. Stage merges the chat
+         branch into main + rebuilds staging in one click so the staging
+         URL is a 1:1 preview of what production would see; the dropdown
+         opens a per-kind dialog for selective production deploys.
+         Replaces v0.5.8's pending/staged picker — that lives on
+         /content/chat as the formal-publish surface; /edit favors the
+         tight iterate-and-preview loop.  -->
+    <div class="px-3 pt-2 flex justify-end">
+      <StageDeployButton
         {pendingChanges}
         {csrfToken}
         sessionPublished={!!session.publishedAt}
         chatSessionId={session.id}
-        stageAction="?/chatStage"
-        unstageAction="?/chatUnstage"
-        publishAction="?/chatPublishStaged"
+        {activePageId}
       />
     </div>
 

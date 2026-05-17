@@ -635,4 +635,214 @@ export const actions: Actions = {
     if (!r.ok) return fail(400, { error: "Could not publish chat-branch staged changes." });
     return { ok: true };
   },
+  /**
+   * v0.7.0 — /edit's split-button Stage path. One click does the full
+   * "show me 1:1 what production would see" loop:
+   *
+   *   1. chat.merge_to_main — promote every branch-snapshot to main
+   *      live tables, WITHOUT closing the chat (no published_at stamp,
+   *      no lock release). Safe to call repeatedly as the operator
+   *      iterates; each call re-promotes whatever's currently latest.
+   *   2. deploy.trigger(staging) — full-site rebuild against the now-
+   *      merged main state. Filtering staging deploys to changedPageIds
+   *      would defeat the "1:1 preview" promise: chrome (header/footer)
+   *      lives in layouts, and a module-only re-bake misses pages whose
+   *      template references the changed module indirectly. The Stage
+   *      gesture says "make staging match main"; full rebuild does that
+   *      with the fewest gotchas. Selective filtering is the production
+   *      Publish path (?/publishToProduction) where minutes matter more
+   *      than precision.
+   *
+   * Returns `{ staged: { previewUrl, ... } }` so the same toast/iframe-
+   * reload pattern as ?/stage works unchanged.
+   */
+  stageAndDeployStaging: async ({ request, locals }) => {
+    requirePermission(locals, "deploy.trigger");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const chatSessionId = String(form.get("chatSessionId") ?? "");
+    if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
+    const pageId = String(form.get("pageId") ?? "");
+
+    const merged = await execute(registry, adapter, locals.ctx, "chat.merge_to_main", {
+      chatSessionId,
+    });
+    if (!merged.ok) {
+      return fail(500, { error: `Merge to main failed: ${describeError(merged.error)}` });
+    }
+
+    const stagingDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
+      targetName: "staging",
+    });
+    if (!stagingDeploy.ok) {
+      return fail(500, { error: `Staging build failed: ${describeError(stagingDeploy.error)}` });
+    }
+
+    const summary = stagingDeploy.value as {
+      pageCount: number;
+      fileCount: number;
+      buildId: string;
+      runId: string;
+      previewUrl?: string;
+    };
+    let previewUrl: string;
+    if (summary.previewUrl) {
+      previewUrl = summary.previewUrl;
+    } else if (process.env.CAELO_PROVIDER === "gcp" && pageId) {
+      const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
+      const localesR = await execute(registry, adapter, locals.ctx, "locales.list", {});
+      if (pageRow.ok && localesR.ok) {
+        const p = (pageRow.value as { page: { slug: string; locale: string } }).page;
+        const locales = (
+          localesR.value as {
+            locales: { code: string; urlStrategy: string; urlHost: string | null }[];
+          }
+        ).locales;
+        const cfg = locales.find((l) => l.code === p.locale);
+        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.slug, cfg)}`;
+      } else {
+        previewUrl = `/_staging-preview/${summary.runId}/`;
+      }
+    } else {
+      previewUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
+    }
+
+    const mergedSummary = merged.value as { entityCount: number };
+    return {
+      staged: {
+        pageId,
+        pageCount: summary.pageCount,
+        fileCount: summary.fileCount,
+        buildId: summary.buildId,
+        previewUrl,
+        mergedEntityCount: mergedSummary.entityCount,
+      },
+    };
+  },
+  /**
+   * v0.7.0 — production publish from the split-button dropdown. The
+   * operator picks which entity kinds graduate to production via
+   * checkboxes; we resolve those kinds to a precise page-id set and
+   * pass it to deploy.trigger so the static-generator re-bakes only
+   * the affected routes. Unchecked-kind pages keep their existing
+   * production HTML.
+   *
+   * Kind options surfaced in the picker:
+   *   - "pages"     — page metadata (slug, title, status) + per-page
+   *                   layout + per-placement content edits
+   *   - "modules"   — module HTML/CSS/JS/fields edits
+   *   - "templates" — template body / block layout changes
+   *   - "lists"     — structured-set blob promotion (menu, taxonomy)
+   *
+   * The "lists" kind today fans out to a full-site rebuild because
+   * templates reference menus implicitly (per snapshots.publish_impact_pages
+   * fast-path). That's the safe conservative behavior until we add a
+   * template_set_refs index — same posture as the existing Stage flow.
+   *
+   * Resolution path:
+   *   chat.branch_edited_entities (entity ids the chat touched)
+   *   → filter to ids whose kind is in the operator's checked set
+   *   → snapshots.publish_impact_pages (module/template/layout → pages)
+   *   → union with direct page edits (page + pageLayout snapshot rows)
+   *   → pass to deploy.trigger as changedPageIds.
+   *
+   * If every kind is checked OR no kinds are checked, the deploy runs
+   * unfiltered (full rebuild) so the operator can't accidentally ship
+   * an empty diff.
+   */
+  publishToProduction: async ({ request, locals }) => {
+    requirePermission(locals, "deploy.trigger");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const chatSessionId = String(form.get("chatSessionId") ?? "") || null;
+    const rawKinds = form.getAll("kind").map((k) => String(k));
+    type KindGroup = "pages" | "modules" | "templates" | "lists";
+    const allowed: ReadonlyArray<KindGroup> = ["pages", "modules", "templates", "lists"];
+    const checked = new Set<KindGroup>(
+      rawKinds.filter((k): k is KindGroup => (allowed as ReadonlyArray<string>).includes(k)),
+    );
+
+    let changedPageIds: string[] | undefined;
+    const fullRebuild =
+      checked.size === 0 || checked.size === allowed.length || checked.has("lists");
+
+    if (!fullRebuild && chatSessionId) {
+      const entitiesR = await execute(
+        registry,
+        adapter,
+        locals.ctx,
+        "chat.branch_edited_entities",
+        { chatSessionId },
+      );
+      if (entitiesR.ok) {
+        const entities = entitiesR.value as {
+          moduleIds: string[];
+          pageIds: string[];
+          templateIds: string[];
+          pageLayoutPageIds: string[];
+        };
+        const impactR = await execute(
+          registry,
+          adapter,
+          locals.ctx,
+          "snapshots.publish_impact_pages",
+          {
+            moduleIds: checked.has("modules") ? entities.moduleIds : [],
+            templateIds: checked.has("templates") ? entities.templateIds : [],
+            layoutIds: [],
+          },
+        );
+        const all = new Set<string>();
+        if (impactR.ok) {
+          const impact = impactR.value as { pageIds: string[]; fullSite: boolean };
+          if (impact.fullSite) {
+            // Defensive fallback — publish_impact_pages currently only
+            // returns fullSite for structured-set edits, which we routed
+            // through `fullRebuild` above. Reaching this branch means
+            // the impact op gained another fan-out we don't know about;
+            // skip the filter so the deploy is conservatively complete.
+            changedPageIds = undefined;
+          } else {
+            for (const id of impact.pageIds) all.add(id);
+          }
+        }
+        if (checked.has("pages")) {
+          for (const id of entities.pageIds) all.add(id);
+          for (const id of entities.pageLayoutPageIds) all.add(id);
+        }
+        if (changedPageIds === undefined && all.size > 0) {
+          changedPageIds = [...all];
+        }
+      }
+    }
+
+    const productionDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
+      targetName: "production",
+      ...(changedPageIds && changedPageIds.length > 0 ? { changedPageIds } : {}),
+    });
+    if (!productionDeploy.ok) {
+      return fail(500, {
+        error: `Production build failed: ${describeError(productionDeploy.error)}`,
+      });
+    }
+
+    const summary = productionDeploy.value as {
+      pageCount: number;
+      fileCount: number;
+      buildId: string;
+      runId: string;
+    };
+    return {
+      published: {
+        targetName: "production",
+        pageCount: summary.pageCount,
+        fileCount: summary.fileCount,
+        buildId: summary.buildId,
+        kinds: [...checked],
+        ...(changedPageIds ? { changedPageCount: changedPageIds.length } : {}),
+      },
+    };
+  },
 };

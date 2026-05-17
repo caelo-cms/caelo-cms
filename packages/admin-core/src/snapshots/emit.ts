@@ -46,6 +46,7 @@ export type SnapshotOpKind =
   | "snapshots.revert_template"
   | "snapshots.revert_page"
   | "chat.publish"
+  | "chat.merge_to_main"
   | "layout_modules.set"
   // v0.4.0 — page-placement content + globals revert kinds.
   | "page_module_content.set"

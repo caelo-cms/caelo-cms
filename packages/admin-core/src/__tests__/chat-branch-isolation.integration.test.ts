@@ -51,7 +51,7 @@ async function wipe(): Promise<void> {
       await tx`DELETE FROM chat_messages WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE 'p5-iso-%')`;
       await tx`DELETE FROM ai_calls WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE 'p5-iso-%')`;
       await tx`DELETE FROM chat_sessions WHERE title LIKE 'p5-iso-%'`;
-      await tx`DELETE FROM modules WHERE slug = ${MOD_SLUG}`;
+      await tx`DELETE FROM modules WHERE slug LIKE 'p5-isolation-mod%'`;
     });
   } finally {
     await sql.end();

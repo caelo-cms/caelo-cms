@@ -17,7 +17,7 @@ import {
   markChatMessageInterruptedOp,
   recordAiCallOp,
 } from "./ops/chat/messages.js";
-import { publishChatSessionOp } from "./ops/chat/publish.js";
+import { mergeChatToMainOp, publishChatSessionOp } from "./ops/chat/publish.js";
 import {
   archiveChatSessionOp,
   countBranchChangesOp,
@@ -527,6 +527,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(lookupToolResultOp);
   registry.register(recordAiCallOp);
   registry.register(publishChatSessionOp);
+  registry.register(mergeChatToMainOp);
   registry.register(listPendingChangesOp);
   registry.register(stageChatChangesOp);
   registry.register(unstageChatChangesOp);
