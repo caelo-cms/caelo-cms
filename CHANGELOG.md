@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.3
+
+### Fixes
+- 3a1d0cb StageDeployButton stayed hidden when chat had branch edits
+
 ## v0.7.2
 
 ### Chores

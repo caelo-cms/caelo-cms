@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/mcp-server",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "private": false,
   "license": "MPL-2.0",
   "description": "MCP server exposing the Caelo CMS chat-runner as a `caelo_chat` tool. Lets Claude Code (or any MCP-aware client) drive a Caelo install from outside the browser.",
