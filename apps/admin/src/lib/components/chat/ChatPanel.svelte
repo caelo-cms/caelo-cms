@@ -287,14 +287,21 @@
   }
 
   /**
-   * v0.2.75 — Post-approval signaling. Two effects:
+   * v0.2.75 / v0.6.4 — Post-approval signaling. Two effects:
    *   (a) Fire onToolResult so the /edit overlay's existing
    *       handler reloads the preview iframe (mirrors the
    *       iframe-reload that happens after every AI tool result).
    *   (b) Auto-send a follow-up message to the AI naming the
    *       approved proposal so it can continue immediately,
    *       without the operator typing "ok continue".
-   * Both are best-effort and safe outside an /edit context.
+   *
+   * v0.6.4 — when the AI is mid-stream at click time, queue the
+   * nudge in `pendingApprovalNudges` instead of dropping it. The
+   * `$effect` below fires the queued nudges (combined into one
+   * message when multiple landed) the moment streaming ends. Pre-
+   * v0.6.4 the nudge was silently dropped, forcing the operator to
+   * type "ok continue" themselves — the exact friction this signal
+   * was supposed to eliminate.
    */
   function onProposalApproved(kind: string | undefined, proposalId: string): void {
     // (a) iframe reload — same shape /edit's onAiToolResult expects.
@@ -303,15 +310,50 @@
       ok: true,
       content: "proposal applied",
     });
-    // (b) auto-send a system-ish nudge to the AI. Only fire when
-    // we're not already mid-stream (don't interrupt an in-flight
-    // turn — the AI saw the approval queue at last turn-start).
-    if (streaming) return;
+    if (streaming) {
+      // Queue for post-stream flush. The $effect below picks it up
+      // when streaming → false. Multiple approvals during the same
+      // turn batch into one combined nudge so the AI doesn't see N
+      // user messages for N clicks.
+      pendingApprovalNudges = [...pendingApprovalNudges, { kind, proposalId }];
+      return;
+    }
     const label = kind ? `${kind} proposal` : "proposal";
     void sendAutoMessage(
       `Approved: ${label} ${proposalId.slice(0, 8)} applied to the chat branch. Please continue with what you were doing.`,
     );
   }
+
+  // v0.6.4 — queue of approval nudges that landed while the AI was
+  // mid-stream. The $effect below flushes them as a single combined
+  // message when streaming ends.
+  let pendingApprovalNudges = $state<{ kind: string | undefined; proposalId: string }[]>([]);
+
+  $effect(() => {
+    // Track `streaming` + `pendingApprovalNudges` reactively. Fires
+    // when streaming transitions to false OR a new nudge is enqueued
+    // while NOT streaming (the latter is handled by onProposalApproved's
+    // inline path, but the effect is idempotent).
+    if (streaming) return;
+    if (pendingApprovalNudges.length === 0) return;
+    // Don't clobber a message the operator is typing. Keep the queue
+    // intact; flush on the next streaming-end transition (sendMessage
+    // sets streaming=true → false again).
+    if (composer.trim().length > 0) return;
+    const nudges = pendingApprovalNudges;
+    pendingApprovalNudges = [];
+    const text =
+      nudges.length === 1
+        ? (() => {
+            const n = nudges[0]!;
+            const label = n.kind ? `${n.kind} proposal` : "proposal";
+            return `Approved: ${label} ${n.proposalId.slice(0, 8)} applied to the chat branch. Please continue with what you were doing.`;
+          })()
+        : `Approved ${nudges.length} proposals (${nudges
+            .map((n) => `${n.kind ?? "proposal"}/${n.proposalId.slice(0, 8)}`)
+            .join(", ")}) — all applied to the chat branch. Please continue with what you were doing.`;
+    void sendAutoMessage(text);
+  });
 
   /**
    * v0.2.75 — Programmatic send for system-driven follow-ups
