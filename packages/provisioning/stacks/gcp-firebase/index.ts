@@ -141,7 +141,13 @@ const caeloSecretKek = pulumi.secret(kekBytes.hex);
 // Pre-v0.3.2 the wizard prompted for a key + Pulumi provisioned a
 // Secret + SecretVersion, but the Cloud Run service never read it
 // (no env-var mount existed). Dead code path removed.
-const resendApiKeyConfig = cfg.getSecret("resendApiKey");
+// v0.6.6 — resend-api-key secret + IAM binding removed. The Resend
+// API key now lives in the email_config DB row (set via the Owner UI
+// /security/email/pending flow per email_config_pending.ts), not in
+// Secret Manager. The Pulumi-managed secret + binding were scaffolded
+// in v0.3.0 but never wired to runtime (transport.ts reads from
+// cfg.config.apiKey, never from Secret Manager). Drop to reduce
+// surface area + monthly cost.
 
 interface MadeSecret {
   resource: gcp.secretmanager.Secret;
@@ -167,7 +173,6 @@ const pgSecret = makeSecret("postgres-password", postgresPassword);
 const csrfSecretRes = makeSecret("csrf-secret", csrfSecret);
 const cookieSecretRes = makeSecret("cookie-secret", cookieSecret);
 const kekSecret = makeSecret("secret-kek", caeloSecretKek);
-const resendSecretRes = makeSecret("resend-api-key", resendApiKeyConfig ?? null);
 
 // =========================================================================
 // Tier 4 — Cloud SQL Postgres (private IP only; HA configurable)
@@ -264,7 +269,6 @@ for (const made of [
   { name: "csrf-secret", made: csrfSecretRes },
   { name: "cookie-secret", made: cookieSecretRes },
   { name: "secret-kek", made: kekSecret },
-  { name: "resend-api-key", made: resendSecretRes },
 ]) {
   new gcp.secretmanager.SecretIamMember(
     `${namePrefix}-${made.name}-binding`,
@@ -295,6 +299,35 @@ new gcp.projects.IAMMember(
   {
     project,
     role: "roles/firebasehosting.admin",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+
+// v0.6.6 — Cloud Run telemetry IAM. When a Cloud Run service is
+// assigned a CUSTOM runtime SA (serviceAccount: runSa.email below),
+// Cloud Run does NOT automatically grant that SA the roles needed
+// for telemetry to flow:
+//   - roles/logging.logWriter: container stdout → Cloud Logging
+//   - roles/monitoring.metricWriter: CPU/memory metrics → autoscaler
+// The default Compute Engine SA gets these implicitly; our custom
+// runSa needs them explicit. Without these, logs vanish silently and
+// autoscaling decisions degrade. Project-scoped (telemetry endpoints
+// are project-level resources).
+new gcp.projects.IAMMember(
+  `${namePrefix}-run-log-writer`,
+  {
+    project,
+    role: "roles/logging.logWriter",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+new gcp.projects.IAMMember(
+  `${namePrefix}-run-metric-writer`,
+  {
+    project,
+    role: "roles/monitoring.metricWriter",
     member: pulumi.interpolate`serviceAccount:${runSa.email}`,
   },
   opts,
@@ -509,9 +542,13 @@ new gcp.cloudrunv2.ServiceIamMember(
 //   resource 'namespaces/<proj>/services/<gateway-svc>'
 //
 // Scope is the gateway service only (not project-wide). The admin
-// already has roles/run.developer on its own service via
-// run.serviceAccountUser earlier in this file; the gateway needs
-// the explicit cross-service grant.
+// runs on its own Cloud Run service AS runSa via the pod-identity
+// assignment below (`serviceAccount: runSa.email` on the service
+// spec) — Cloud Run handles self-invocation implicitly + does NOT
+// require an explicit roles/run.developer binding on the admin
+// service for the runSa to act as itself. The gateway needs the
+// explicit cross-service grant because the admin's runSa is a
+// DIFFERENT-resource caller from the gateway's perspective.
 new gcp.cloudrunv2.ServiceIamMember(
   `${namePrefix}-gateway-viewer-for-admin-sa`,
   {
