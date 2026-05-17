@@ -265,11 +265,24 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
         content: `bootstrap stage-2 (site_defaults.set) failed: ${describeError(setRes.error)}`,
       };
     }
+    // v0.7.4 — stronger continuation directive. Pre-v0.7.4 the message
+    // was "Bootstrap complete + you can omit templateId now", which the
+    // AI consistently read as "task done" and stopped, even when the
+    // user's original request was a multi-step "build me a site" ask.
+    // The new wording makes it explicit that bootstrap is the SETUP,
+    // not the goal — continue with create_page for whatever the user
+    // described.
     return {
       ok: true,
       content:
-        `Bootstrap complete — layout ${targetLayout.slug} (id=${targetLayout.id}), template ${targetTemplate.slug} (id=${targetTemplate.id}), site_defaults pinned. ` +
-        `Subsequent create_page calls can omit templateId.`,
+        `Site scaffold ready — layout ${targetLayout.slug} (id=${targetLayout.id}), template ${targetTemplate.slug} (id=${targetTemplate.id}), site_defaults pinned. ` +
+        `This was the SETUP step, not the deliverable. Continue with the user's original ask now: call create_page for each page they described (omit templateId — it's pinned), then add_module_to_page / set_page_module_content to fill them in. ` +
+        `Do not stop here unless the user only asked for the scaffold.`,
+      nextAction: {
+        tool: "create_page",
+        reason:
+          "bootstrap finished the SETUP; the user's deliverable usually starts with creating at least one page. Use the slug/locale/title they described in the original message. Skip ONLY if the user explicitly asked for the scaffold alone.",
+      },
     };
   },
 };
