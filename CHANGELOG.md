@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.5
+
+### Fixes
+- bd1162f restore add_module_to_layout to bootstrap-site + compose-page skill allowlists
+
 ## v0.7.4
 
 ### Fixes
