@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.4
+
+### Fixes
+- 0fb163f bootstrap_site_scaffold told AI to stop when it should continue
+
 ## v0.7.3
 
 ### Fixes
