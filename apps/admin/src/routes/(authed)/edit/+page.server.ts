@@ -201,10 +201,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     }
   }
 
-  // v0.5.8 — categorized pending/staged view for the StageSplitButton
-  // inside /edit's embedded ChatPanel. Same shape as the /content/chat
-  // route. Empty default when no chat is active (rare — auto-create
-  // above usually provides one).
+  // v0.7.0 — categorized pending/staged view feeding the per-kind
+  // dropdown on the overlay's StageDeployButton (Pages / Modules /
+  // Templates / Lists). Empty default when no chat is active (rare —
+  // auto-create above usually provides one).
   type PendingEntity = { kind: string; entityId: string; label: string; detail?: string };
   type PendingChangesView = {
     pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
@@ -306,155 +306,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 };
 
 /**
- * Stage / Confirm publish actions live on the /edit route itself so
- * submitting the overlay's publish strip keeps the user on /edit. Same
- * op chain as /content/pages?/stage and ?/confirmPublish — copied not
- * imported because SvelteKit's actions can't be re-exported across
- * routes (the wrapper would have to recreate the form-data parsing).
+ * /edit form actions. v0.7.1 dropped the legacy per-page `?/stage`
+ * + `?/confirmPublish` chain in favor of the chat-branch-aware
+ * `?/stageAndDeployStaging` + `?/publishToProduction` pair below —
+ * the toolbar Stage / Confirm-publish buttons were retired alongside
+ * those actions since the overlay's StageDeployButton is now the
+ * single Stage/Publish surface.
  */
 export const actions: Actions = {
-  stage: async ({ request, locals }) => {
-    requirePermission(locals, "deploy.trigger");
-    const { adapter, registry } = getQueryContext();
-    const form = await request.formData();
-    await assertCsrfToken(form, locals);
-
-    const pageId = String(form.get("pageId") ?? "");
-    const updateResult = await execute(registry, adapter, locals.ctx, "pages.update", {
-      pageId,
-      status: "published",
-    });
-    if (!updateResult.ok) return fail(400, { error: "Could not mark page as published." });
-
-    // v0.2.79 — derive the smallest possible changedPageIds from the
-    // chat branch's edited entities. Without the cascade expansion
-    // every Stage was a full-site rebuild — fine at dogfood scale,
-    // but at 10k pages × 8 locales = 80k routes a typical edit would
-    // re-bake 80k pages instead of the ~8 it actually affects.
-    //
-    // Lookup chain:
-    //   active chat → branch_edited_entities → publish_impact_pages
-    //   → union with the just-published pageId.
-    //
-    // Empty / no chat / fullSite → omit changedPageIds → triggerDeployOp
-    // does a full-site rebuild (preserves pre-v0.2.79 behaviour for
-    // non-chat-driven Stages).
-    const chatId = String(form.get("chatId") ?? "") || null;
-    let changedPageIds: string[] | undefined;
-    if (chatId) {
-      const entitiesR = await execute(
-        registry,
-        adapter,
-        locals.ctx,
-        "chat.branch_edited_entities",
-        { chatSessionId: chatId },
-      );
-      if (entitiesR.ok) {
-        const entities = entitiesR.value as {
-          moduleIds: string[];
-          pageIds: string[];
-          templateIds: string[];
-          pageLayoutPageIds: string[];
-        };
-        const impactR = await execute(
-          registry,
-          adapter,
-          locals.ctx,
-          "snapshots.publish_impact_pages",
-          {
-            moduleIds: entities.moduleIds,
-            templateIds: entities.templateIds,
-            // Per-page layout overrides surface as pageIds in the
-            // edited-entities op; collapse them into the layoutIds
-            // input position by passing them through as direct
-            // pageIds (they don't fan out further).
-            layoutIds: [],
-          },
-        );
-        if (impactR.ok) {
-          const impact = impactR.value as { pageIds: string[]; fullSite: boolean };
-          if (!impact.fullSite) {
-            const all = new Set<string>([
-              ...impact.pageIds,
-              ...entities.pageIds,
-              ...entities.pageLayoutPageIds,
-              pageId,
-            ]);
-            changedPageIds = [...all];
-          }
-        }
-      }
-    }
-
-    const stagingDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
-      targetName: "staging",
-      ...(changedPageIds && changedPageIds.length > 0 ? { changedPageIds } : {}),
-    });
-    if (!stagingDeploy.ok) {
-      // v0.2.77 — surface the underlying generator error to the
-      // operator instead of the previous opaque "Staging build
-      // failed." Without the real message there's nowhere to look —
-      // deploy_runs.error_message has the stderr but the toolbar
-      // alert never pointed there.
-      const reason = describeError(stagingDeploy.error);
-      return fail(500, { error: `Staging build failed: ${reason}` });
-    }
-
-    const summary = stagingDeploy.value as {
-      pageCount: number;
-      fileCount: number;
-      buildId: string;
-      runId: string;
-      previewUrl?: string;
-    };
-    // v0.2.78 — on GCP installs the staged build lives in the private
-    // staging bucket; the editor previews it through the IAP-gated
-    // /_staging-preview/<runId>/<page-path>/ proxy. Self-hosted keeps
-    // the existing CAELO_STAGING_BASE_URL (a separate Caddy serving
-    // the bind-mounted staging out_dir).
-    let previewUrl: string;
-    // v0.3.0 — gcp-firebase publishes to a Firebase preview channel
-    // and surfaces the URL through summary.previewUrl. Consume it
-    // verbatim — no admin-side proxying needed.
-    if (summary.previewUrl) {
-      previewUrl = summary.previewUrl;
-    } else if (process.env.CAELO_PROVIDER === "gcp") {
-      // v0.2.84 — the generator's pageOutputPath logic depends on
-      // the locale's url_strategy: 'none' emits bare `<slug>/index.html`,
-      // 'subdirectory' prepends `<locale>/`, 'subdomain' / 'domain'
-      // emit under `_hosts/<host>/`. Pre-v0.2.84 the form action
-      // hardcoded `<locale>/<slug>/` which 404'd on single-locale
-      // installs (the most common shape) — the bucket had
-      // `features/index.html` while the proxy was looking up
-      // `en/features/index.html`. Mirror the generator's logic so
-      // the URL points at what actually exists.
-      const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
-      const localesR = await execute(registry, adapter, locals.ctx, "locales.list", {});
-      if (pageRow.ok && localesR.ok) {
-        const p = (pageRow.value as { page: { slug: string; locale: string } }).page;
-        const locales = (
-          localesR.value as {
-            locales: { code: string; urlStrategy: string; urlHost: string | null }[];
-          }
-        ).locales;
-        const cfg = locales.find((l) => l.code === p.locale);
-        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.slug, cfg)}`;
-      } else {
-        previewUrl = `/_staging-preview/${summary.runId}/`;
-      }
-    } else {
-      previewUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
-    }
-    return {
-      staged: {
-        pageId,
-        pageCount: summary.pageCount,
-        fileCount: summary.fileCount,
-        buildId: summary.buildId,
-        previewUrl,
-      },
-    };
-  },
   /**
    * "+ New chat" creates a fresh page-bound OR global session and
    * redirects with `?chat=<id>` so the loader picks it up. An empty
@@ -503,137 +362,6 @@ export const actions: Actions = {
     // looking at a representative page).
     if (!isGlobal) next.searchParams.set("page", pageId);
     throw redirect(303, `${next.pathname}${next.search}`);
-  },
-  confirmPublish: async ({ request, locals }) => {
-    requirePermission(locals, "deploy.trigger");
-    const { adapter, registry } = getQueryContext();
-    const form = await request.formData();
-    await assertCsrfToken(form, locals);
-    const pageId = String(form.get("pageId") ?? "");
-
-    const promote = await execute(registry, adapter, locals.ctx, "deploy.promote", {
-      fromTarget: "staging",
-      toTarget: "production",
-    });
-    if (!promote.ok) return fail(500, { error: "Promotion to production failed." });
-    return {
-      published: {
-        pageId,
-        targetName: "production",
-      },
-    };
-  },
-  // v0.5.8 — chat-branch staging actions for the embedded StageSplitButton.
-  // Distinct from /edit's `?/stage` (static-generator pipeline) which
-  // builds + promotes to the staging environment URL. These three operate
-  // on chat_branch_publish_marks via the chat.stage / chat.unstage /
-  // chat.publish ops. Form expects:
-  //   - chatSessionId (hidden, sourced from data.activeChat.id)
-  //   - entity[] = kind:id (zero or more; empty = all pending / all staged)
-  chatStage: async ({ request, locals }) => {
-    requirePermission(locals, "content.write");
-    const { adapter, registry } = getQueryContext();
-    const form = await request.formData();
-    await assertCsrfToken(form, locals);
-    const chatSessionId = String(form.get("chatSessionId") ?? "");
-    if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
-    const rawEntities = form.getAll("entity");
-    type Kind =
-      | "module"
-      | "template"
-      | "page"
-      | "pageLayout"
-      | "pageModuleContent"
-      | "structuredSet";
-    const allowed = new Set<Kind>([
-      "module",
-      "template",
-      "page",
-      "pageLayout",
-      "pageModuleContent",
-      "structuredSet",
-    ]);
-    const entities: { kind: Kind; entityId: string }[] = [];
-    for (const e of rawEntities) {
-      const [k, id] = String(e).split(":");
-      if (k && id && allowed.has(k as Kind)) entities.push({ kind: k as Kind, entityId: id });
-    }
-    const r = await execute(registry, adapter, locals.ctx, "chat.stage", {
-      chatSessionId,
-      ...(entities.length > 0 ? { entities } : {}),
-    });
-    if (!r.ok) return fail(400, { error: "Could not stage changes." });
-    return { ok: true };
-  },
-  chatUnstage: async ({ request, locals }) => {
-    requirePermission(locals, "content.write");
-    const { adapter, registry } = getQueryContext();
-    const form = await request.formData();
-    await assertCsrfToken(form, locals);
-    const chatSessionId = String(form.get("chatSessionId") ?? "");
-    if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
-    const rawEntities = form.getAll("entity");
-    type Kind =
-      | "module"
-      | "template"
-      | "page"
-      | "pageLayout"
-      | "pageModuleContent"
-      | "structuredSet";
-    const allowed = new Set<Kind>([
-      "module",
-      "template",
-      "page",
-      "pageLayout",
-      "pageModuleContent",
-      "structuredSet",
-    ]);
-    const entities: { kind: Kind; entityId: string }[] = [];
-    for (const e of rawEntities) {
-      const [k, id] = String(e).split(":");
-      if (k && id && allowed.has(k as Kind)) entities.push({ kind: k as Kind, entityId: id });
-    }
-    const r = await execute(registry, adapter, locals.ctx, "chat.unstage", {
-      chatSessionId,
-      ...(entities.length > 0 ? { entities } : {}),
-    });
-    if (!r.ok) return fail(400, { error: "Could not unstage changes." });
-    return { ok: true };
-  },
-  chatPublishStaged: async ({ request, locals }) => {
-    requirePermission(locals, "content.write");
-    const { adapter, registry } = getQueryContext();
-    const form = await request.formData();
-    await assertCsrfToken(form, locals);
-    const chatSessionId = String(form.get("chatSessionId") ?? "");
-    if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
-    const rawEntities = form.getAll("entity");
-    type Kind =
-      | "module"
-      | "template"
-      | "page"
-      | "pageLayout"
-      | "pageModuleContent"
-      | "structuredSet";
-    const allowed = new Set<Kind>([
-      "module",
-      "template",
-      "page",
-      "pageLayout",
-      "pageModuleContent",
-      "structuredSet",
-    ]);
-    const entities: { kind: Kind; entityId: string }[] = [];
-    for (const e of rawEntities) {
-      const [k, id] = String(e).split(":");
-      if (k && id && allowed.has(k as Kind)) entities.push({ kind: k as Kind, entityId: id });
-    }
-    const r = await execute(registry, adapter, locals.ctx, "chat.publish", {
-      chatSessionId,
-      ...(entities.length > 0 ? { entities } : {}),
-    });
-    if (!r.ok) return fail(400, { error: "Could not publish chat-branch staged changes." });
-    return { ok: true };
   },
   /**
    * v0.7.0 — /edit's split-button Stage path. One click does the full

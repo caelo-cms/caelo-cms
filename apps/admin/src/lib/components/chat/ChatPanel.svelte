@@ -27,7 +27,6 @@
   import { Textarea } from "$lib/components/ui/textarea/index.js";
   import { cn } from "$lib/utils.js";
   import DebugPanel from "./DebugPanel.svelte";
-  import StageSplitButton from "./StageSplitButton.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import InlineDiff from "./InlineDiff.svelte";
   import { parseProposalContent } from "./proposal-parser.js";
@@ -62,27 +61,12 @@
     arguments?: { moduleId?: string; html?: string };
   };
 
-  interface PendingEntity {
-    kind: string;
-    entityId: string;
-    label: string;
-    detail?: string;
-  }
-  interface PendingChangesView {
-    pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
-    staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
-  }
-
   interface Props {
     session: ChatSession;
     initialMessages: ChatMessage[];
     modules: ChatModule[];
     csrfToken: string;
     formError?: string | null;
-    /** v0.5.5 — pending/staged view from chat.list_pending_changes for
-     *  the Stage picker. Optional — older callers pass nothing and the
-     *  picker collapses to "No pending changes". */
-    pendingChanges?: PendingChangesView;
     /**
      * Sized-by-parent variant for the live-edit overlay. The default
      * uses `h-[calc(100vh-12rem)]` which is right inside AppShell but
@@ -112,10 +96,6 @@
     modules,
     csrfToken,
     formError = null,
-    pendingChanges = {
-      pending: { pages: [], globals: [], lists: [] },
-      staged: { pages: [], globals: [], lists: [] },
-    },
     compact = false,
     activePageId = null,
     onToolResult,
@@ -367,11 +347,9 @@
     composer = text;
     await sendMessage();
   }
-  // v0.5.5 — renamed from `pendingChanges` to avoid name-clash with the
-  // new prop carrying the categorized {pending,staged} view from
-  // chat.list_pending_changes. This local counter tracks live tool-result
-  // signals during streaming; the prop is the authoritative server-load
-  // view re-fetched between turns.
+  // Live counter of pending changes during streaming — incremented per
+  // AI tool result + reset between turns. Drives the "N edits during
+  // this turn" hint banner.
   let pendingChangeCount = $state(0);
   /** P6.7.3 — surface SSE error events + failed tool results so users
    *  see a banner instead of a silent no-op when the AI stack errors. */
@@ -1720,9 +1698,10 @@
       </CardContent>
     </Card>
 
-    <!-- Sidebar: Publish + diff + rename. Hidden in compact (overlay)
-         mode — the overlay carries its own Stage/Confirm strip and the
-         diff view lives in the main /content/chat surface. -->
+    <!-- Sidebar: diff + rename. Hidden in compact (overlay) mode — the
+         overlay carries its own Stage/Publish split-button. v0.7.1
+         dropped the legacy per-entity Stage picker from this surface;
+         operators do all Stage + Publish work through /edit now. -->
     {#if !compact}
     <aside class="space-y-4">
       {#if debug}
@@ -1732,18 +1711,10 @@
           rawEvents={debugRawEvents}
         />
       {/if}
-      <!-- v0.5.5 — Stage & publish picker replaces the v0.4.0 publish
-           card. Uses chat.list_pending_changes data passed in by the
-           parent page server load. -->
-      <StageSplitButton
-        {pendingChanges}
-        {csrfToken}
-        sessionPublished={!!session.publishedAt}
-      />
       {#if pendingChangeCount > 0 && !session.publishedAt}
         <p class="text-xs text-muted-foreground">
-          {pendingChangeCount} edit{pendingChangeCount === 1 ? "" : "s"} during this turn — reload
-          to refresh the picker.
+          {pendingChangeCount} edit{pendingChangeCount === 1 ? "" : "s"} during this turn — open
+          /edit to stage + publish.
         </p>
       {/if}
 

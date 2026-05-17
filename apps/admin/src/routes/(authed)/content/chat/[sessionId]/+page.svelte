@@ -121,7 +121,6 @@
         modules={data.modules}
         csrfToken={data.csrfToken}
         formError={form?.error ?? null}
-        pendingChanges={data.pendingChanges}
         {debug}
         canDebug={data.canDebug}
         onToggleDebug={toggleDebug}

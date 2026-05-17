@@ -19,7 +19,6 @@
    * site.
    */
 
-  import { enhance } from "$app/forms";
   import { goto, invalidateAll } from "$app/navigation";
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import { onMount } from "svelte";
@@ -269,10 +268,10 @@
       data-testid="edit-url"
     >{urlText}</code>
 
-    <!-- P6.7.4 — pending-changes pill + Stage / Confirm publish forms.
-         Lives here in the toolbar (not in the chat overlay) so it's
-         visible regardless of the chat's pin mode and frees space in
-         the chat strip. -->
+    <!-- v0.7.1 — informational toolbar slot. Stage + Publish actions
+         moved entirely to the overlay's StageDeployButton; the toolbar
+         only surfaces status now (pending count + a persistent link
+         to the latest staging build after the operator clicks Stage). -->
     {#if activePageId}
       <div class="ml-auto flex items-center gap-2" data-testid="toolbar-publish">
         {#if stagedPreviewUrl}
@@ -285,53 +284,20 @@
               class="underline"
             >preview</a>
           </span>
-          <!-- use:enhance so the form submits via XHR. Without it,
-               SvelteKit posts to `/edit?page=X?/confirmPublish` and
-               the browser leaves that URL in the address bar — a
-               refresh re-fires the action and re-promotes a possibly
-               stale staging build. -->
-          <form method="post" action="?/confirmPublish" use:enhance>
-            <input type="hidden" name="_csrf" value={data.csrfToken} />
-            <input type="hidden" name="pageId" value={activePageId} />
-            <Button type="submit" size="sm" data-testid="confirm-publish-btn">
-              Confirm publish
-            </Button>
-          </form>
-        {:else}
-          <span
-            class={cn(
-              "rounded-full px-2 py-0.5 text-xs font-medium",
-              pendingChanges === 0
-                ? "bg-muted text-muted-foreground"
-                : "bg-amber-500/15 text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-400",
-            )}
-            data-testid="pending-pill"
-          >
-            {pendingChanges === 0
-              ? "No pending changes"
-              : `${pendingChanges} pending change${pendingChanges === 1 ? "" : "s"}`}
-          </span>
-          <!-- See note on confirmPublish above — use:enhance keeps the
-               URL clean so a refresh doesn't re-stage. -->
-          <form method="post" action="?/stage" use:enhance>
-            <input type="hidden" name="_csrf" value={data.csrfToken} />
-            <input type="hidden" name="pageId" value={activePageId} />
-            <!-- v0.2.79 — when a chat is active, the form submits the
-                 chat session id so the Stage handler derives the
-                 cascade-expanded changedPageIds (incremental rebuild).
-                 Without it: full-site rebuild. -->
-            {#if data.activeChat}
-              <input type="hidden" name="chatId" value={data.activeChat.id} />
-            {/if}
-            <Button
-              type="submit"
-              size="sm"
-              variant="outline"
-              disabled={pendingChanges === 0}
-              data-testid="stage-btn"
-            >Stage</Button>
-          </form>
         {/if}
+        <span
+          class={cn(
+            "rounded-full px-2 py-0.5 text-xs font-medium",
+            pendingChanges === 0
+              ? "bg-muted text-muted-foreground"
+              : "bg-amber-500/15 text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-400",
+          )}
+          data-testid="pending-pill"
+        >
+          {pendingChanges === 0
+            ? "No pending changes"
+            : `${pendingChanges} pending change${pendingChanges === 1 ? "" : "s"}`}
+        </span>
       </div>
     {:else}
       <div class="ml-auto"></div>

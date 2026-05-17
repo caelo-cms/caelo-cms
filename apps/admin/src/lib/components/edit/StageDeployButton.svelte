@@ -3,10 +3,12 @@
   /**
    * v0.7.0 — split-button Stage / Publish for the /edit overlay.
    *
-   * Different concept from chat/StageSplitButton.svelte (which manages
-   * per-entity pending → staged → published marks inside a chat). This
-   * one collapses the three concepts the operator actually cares about
-   * into two clicks:
+   * Caelo's only Stage/Publish surface (v0.7.1 dropped the legacy
+   * sidebar picker in /content/chat — the formal chat.publish op
+   * stays available programmatically, but operators do all Stage +
+   * Publish work through this component now).
+   *
+   * Two clicks cover the loop the operator actually cares about:
    *
    *   [Stage to staging]  → merges everything in the chat branch into
    *                         main (without closing the chat), then runs
@@ -23,15 +25,12 @@
    * The chat stays editable across Stage clicks — `chat.merge_to_main`
    * never sets `published_at` and never releases the chat's locks.
    * Production Publish does NOT call `chat.publish` either (the chat
-   * is the workspace, not the publish boundary in /edit); operators
-   * who need to formally close a chat go through /content/chat's
-   * existing publish UI.
+   * is the workspace, not the publish boundary in /edit).
    */
   import { enhance } from "$app/forms";
   import { Button } from "$lib/components/ui/button";
   import {
     Dialog,
-    DialogClose,
     DialogContent,
     DialogDescription,
     DialogFooter,
@@ -77,9 +76,10 @@
   /**
    * Per-kind change counts for the dropdown checkboxes. "Pages" lumps
    * direct page edits + per-page layout + per-placement content into
-   * one bucket because the operator's mental model is "the page"; we
-   * categorize finer in the impact resolver. "Modules" / "Templates" /
-   * "Lists" map 1:1 to entity kinds in the snapshot tables.
+   * one bucket because the operator's mental model is "the page"; the
+   * server-side impact resolver categorizes finer. "Modules" /
+   * "Templates" / "Lists" map 1:1 to entity kinds in the snapshot
+   * tables.
    */
   function countByKind(group: "pages" | "globals" | "lists", kinds: ReadonlyArray<string>): number {
     const buckets: PendingEntity[][] = [
@@ -92,9 +92,7 @@
     }
     return n;
   }
-  const pagesCount = $derived(
-    countByKind("pages", ["page", "pageLayout", "pageModuleContent"]),
-  );
+  const pagesCount = $derived(countByKind("pages", ["page", "pageLayout", "pageModuleContent"]));
   const modulesCount = $derived(countByKind("globals", ["module"]));
   const templatesCount = $derived(countByKind("globals", ["template"]));
   const listsCount = $derived(countByKind("lists", ["structuredSet"]));
@@ -102,10 +100,23 @@
   let dialogOpen = $state(false);
   let publishing = $state(false);
   let staging = $state(false);
-  let checkedPages = $state(true);
-  let checkedModules = $state(true);
-  let checkedTemplates = $state(true);
-  let checkedLists = $state(true);
+  let userPagesChoice = $state(true);
+  let userModulesChoice = $state(true);
+  let userTemplatesChoice = $state(true);
+  let userListsChoice = $state(true);
+  /**
+   * Effective checkbox state. When a kind has zero changes, force it
+   * off + non-submittable regardless of the user's last toggle.
+   * Avoids the earlier UX wart where a disabled-but-checked box would
+   * still send `kind=pages` on submit, causing the server-side impact
+   * resolver to no-op silently on the operator's behalf — the operator
+   * couldn't tell why their "I unchecked Pages" intent wasn't being
+   * honored.
+   */
+  const effectivePages = $derived(pagesCount > 0 && userPagesChoice);
+  const effectiveModules = $derived(modulesCount > 0 && userModulesChoice);
+  const effectiveTemplates = $derived(templatesCount > 0 && userTemplatesChoice);
+  const effectiveLists = $derived(listsCount > 0 && userListsChoice);
 </script>
 
 {#if sessionPublished}
@@ -113,7 +124,7 @@
 {:else if pendingCount === 0}
   <span class="text-xs text-muted-foreground">No pending changes</span>
 {:else}
-  <div class="inline-flex">
+  <div class="inline-flex" data-testid="stage-deploy">
     <form
       method="post"
       action="?/stageAndDeployStaging"
@@ -137,6 +148,7 @@
         disabled={staging || publishing}
         class="rounded-r-none border-r-0"
         title="Merge chat branch to main + rebuild staging"
+        data-testid="stage-btn"
       >
         {staging ? "Staging…" : `Stage (${pendingCount})`}
       </Button>
@@ -147,6 +159,7 @@
       disabled={staging || publishing}
       class="rounded-l-none px-2"
       aria-label="Open production publish options"
+      data-testid="publish-dropdown-btn"
       onclick={() => {
         dialogOpen = true;
       }}
@@ -161,8 +174,8 @@
     <DialogHeader>
       <DialogTitle>Publish to production</DialogTitle>
       <DialogDescription>
-        Pick which entity kinds graduate to production. Unchecked kinds keep their
-        current production HTML; checked kinds re-bake every page they touch.
+        Pick which entity kinds graduate to production. Unchecked kinds keep their current
+        production HTML; checked kinds re-bake every page they touch.
       </DialogDescription>
     </DialogHeader>
 
@@ -177,6 +190,7 @@
           dialogOpen = false;
         };
       }}
+      data-testid="publish-form"
     >
       <input type="hidden" name="_csrf" value={csrfToken} />
       <input type="hidden" name="chatSessionId" value={chatSessionId} />
@@ -189,8 +203,11 @@
               name="kind"
               value="pages"
               class="h-4 w-4 rounded border-input"
-              bind:checked={checkedPages}
+              checked={effectivePages}
               disabled={pagesCount === 0}
+              onchange={(e) => {
+                userPagesChoice = (e.currentTarget as HTMLInputElement).checked;
+              }}
             />
             <span class="font-medium">Pages</span>
             <span class="text-xs text-muted-foreground">({pagesCount} changed)</span>
@@ -203,8 +220,11 @@
               name="kind"
               value="modules"
               class="h-4 w-4 rounded border-input"
-              bind:checked={checkedModules}
+              checked={effectiveModules}
               disabled={modulesCount === 0}
+              onchange={(e) => {
+                userModulesChoice = (e.currentTarget as HTMLInputElement).checked;
+              }}
             />
             <span class="font-medium">Modules</span>
             <span class="text-xs text-muted-foreground">({modulesCount} changed)</span>
@@ -217,8 +237,11 @@
               name="kind"
               value="templates"
               class="h-4 w-4 rounded border-input"
-              bind:checked={checkedTemplates}
+              checked={effectiveTemplates}
               disabled={templatesCount === 0}
+              onchange={(e) => {
+                userTemplatesChoice = (e.currentTarget as HTMLInputElement).checked;
+              }}
             />
             <span class="font-medium">Templates</span>
             <span class="text-xs text-muted-foreground">({templatesCount} changed)</span>
@@ -231,8 +254,11 @@
               name="kind"
               value="lists"
               class="h-4 w-4 rounded border-input"
-              bind:checked={checkedLists}
+              checked={effectiveLists}
               disabled={listsCount === 0}
+              onchange={(e) => {
+                userListsChoice = (e.currentTarget as HTMLInputElement).checked;
+              }}
             />
             <span class="font-medium">Lists</span>
             <span class="text-xs text-muted-foreground">
@@ -243,10 +269,22 @@
       </ul>
 
       <DialogFooter>
-        <DialogClose>
-          <Button type="button" variant="outline" size="sm">Cancel</Button>
-        </DialogClose>
-        <Button type="submit" size="sm" disabled={publishing}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onclick={() => {
+            dialogOpen = false;
+          }}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={publishing}
+          data-testid="publish-submit-btn"
+        >
           {publishing ? "Publishing…" : "Publish to production"}
         </Button>
       </DialogFooter>

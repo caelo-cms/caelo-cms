@@ -80,8 +80,8 @@
     pageChats?: ChatRef[];
     /** v0.2.14 — global chats (`page_id IS NULL`) for cross-cutting work. */
     globalChats?: ChatRef[];
-    /** v0.5.8 — pending/staged view feeding the StageSplitButton inside
-     *  the embedded ChatPanel. Same shape + flow as /content/chat. */
+    /** v0.7.0 — pending/staged view feeding the StageDeployButton's
+     *  per-kind dropdown (Pages / Modules / Templates / Lists). */
     pendingChanges?: PendingChangesView;
     onToolResult?: (payload: ToolResultPayload) => void;
   }
@@ -518,7 +518,6 @@
       {modules}
       {csrfToken}
       {activePageId}
-      {pendingChanges}
       compact
       onToolResult={handleToolResult}
     />
