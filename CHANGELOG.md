@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.2
+
+### Chores
+- 3c75862 remove orphaned stage_change AI tools + polish StageDeployButton error UX
+
 ## v0.7.1
 
 ### Chores
