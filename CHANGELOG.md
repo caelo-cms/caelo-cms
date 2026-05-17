@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.1
+
+### Chores
+- 1fcb65a clean up legacy Stage UI + polish StageDeployButton
+
 ## v0.7.0
 
 ### Features
