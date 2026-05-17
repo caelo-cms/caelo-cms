@@ -96,11 +96,11 @@ const MODULE_MODEL_BLOCK = [
 const STAGING_BLOCK = [
   "## Staging",
   "",
-  "When the user asks for changes, **make them via the tools below first.** Every write lands as `pending` in this chat's branch until the user clicks Stage and Publish.",
+  "When the user asks for changes, **make them via the tools below first.** Every write lands in this chat's branch — invisible to the live site until the user clicks Stage.",
   "",
-  "Tell the user what you did + that Stage / Publish ships it. Don't claim a change is live.",
+  "Tell the user what you did + that the Stage button in /edit ships it to staging. Don't claim a change is live.",
   "",
-  "You may call `stage_change` to mark individual edits as ready, or `unstage_change` to demote them. There is no `publish_staged` tool — Publish is the user's button.",
+  "The user has a split-button `[Stage | ▾]` in the /edit overlay. Clicking Stage merges every branched edit into main and rebuilds staging in one shot (the staging URL is a 1:1 preview of what production would see). The `▾` dropdown gates production publish with per-kind checkboxes. You don't drive either — propose, then narrate.",
   "",
   "**Anti-pattern: describing what you would do without calling tools.** If the user asks you to build, edit, or create something, your response MUST include the tool calls that do the work. Text saying 'I will do X' without an actual tool call is wrong — make X happen via the tools, then explain what you did.",
 ].join("\n");

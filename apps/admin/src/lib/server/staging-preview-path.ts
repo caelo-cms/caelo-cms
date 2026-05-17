@@ -6,10 +6,10 @@
  * /_staging-preview/<runId>/ proxy should append. Strips the trailing
  * `index.html` so the operator sees a clean URL.
  *
- * Used by /edit?/stage and /content/pages?/stage to build the
- * "Preview" link in the post-Stage toast. Single source of truth
- * lives in apps/static-generator/src/generate.ts:121, but the admin
- * doesn't import from static-generator's source (the deploy
+ * Used by /edit?/stageAndDeployStaging and /content/pages?/stage to
+ * build the "Preview" link in the post-Stage toast. Single source of
+ * truth lives in apps/static-generator/src/generate.ts:121, but the
+ * admin doesn't import from static-generator's source (the deploy
  * subprocess does); duplicating the small switch here keeps the
  * dep graph tidy.
  */

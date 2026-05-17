@@ -86,13 +86,11 @@ import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
-import { stageChangeTool } from "./stage-change.js";
 import { submitPluginTool } from "./submit-plugin.js";
 // P11.5 — translate_page + start_translation_job moved to the translation
 // Tier-1 plugin (`packages/plugins/translation/`). The chat-runner discovers
 // them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
-import { unstageChangeTool } from "./unstage-change.js";
 import { updateThemeTool } from "./update-theme.js";
 
 /**
@@ -103,10 +101,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(editModuleTool);
   registry.register(setPageModuleContentTool);
-  // v0.5.5 — staging: AI may flag individual edits as ready-to-publish
-  // but never publishes (no publish_staged tool — that's the human's button).
-  registry.register(stageChangeTool);
-  registry.register(unstageChangeTool);
   // v0.5.12 — explicit read fallbacks for layouts / templates / pages.
   // Mirror the system-prompt `# Layouts on this site` / `# Templates →
   // layouts` / `# All pages` context blocks. Existed only as system-prompt

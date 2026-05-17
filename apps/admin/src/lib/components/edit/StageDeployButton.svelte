@@ -131,8 +131,15 @@
       use:enhance={() => {
         staging = true;
         return async ({ update }) => {
-          await update({ reset: false });
-          staging = false;
+          try {
+            await update({ reset: false });
+          } finally {
+            // Always reset the spinner — including when the action
+            // throws before the layout-level toast handler can fire.
+            // Without try/finally the button would stay disabled and
+            // the operator couldn't retry without a page reload.
+            staging = false;
+          }
         };
       }}
       class="contents"
@@ -184,10 +191,20 @@
       action="?/publishToProduction"
       use:enhance={() => {
         publishing = true;
-        return async ({ update }) => {
-          await update({ reset: false });
-          publishing = false;
-          dialogOpen = false;
+        return async ({ result, update }) => {
+          try {
+            await update({ reset: false });
+          } finally {
+            publishing = false;
+          }
+          // Only close on success — on failure (e.g. CAPTCHA failed,
+          // build error) the operator should see the picker still
+          // populated with their kind selections so they can retry
+          // without re-checking every box. The error itself surfaces
+          // via the layout-level sonner toast (form.error path).
+          if (result.type === "success") {
+            dialogOpen = false;
+          }
         };
       }}
       data-testid="publish-form"
