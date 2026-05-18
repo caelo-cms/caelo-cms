@@ -460,7 +460,18 @@ export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
   const sMig = spinner();
   sMig.start("Applying DB migrations (idempotent)...");
   const { runMigrationsViaCloudRunJob } = await import("./migration-runner.js");
-  const mig = await runMigrationsViaCloudRunJob({ projectId: meta.projectId, region });
+  // v0.9.2 — pass the NEW admin image as imageOverride. Pre-v0.9.2 the
+  // migration runner read the CURRENT admin image (the one being
+  // replaced) which didn't carry the new release's migration files,
+  // so new migrations were silently skipped. Production hit this on
+  // every upgrade that introduced schema changes — the symptom was
+  // post-rollout queries failing with "column does not exist".
+  const adminPlan = plans.find((p) => p.slug === "admin");
+  const mig = await runMigrationsViaCloudRunJob({
+    projectId: meta.projectId,
+    region,
+    ...(adminPlan ? { imageOverride: adminPlan.imageRef } : {}),
+  });
   if (!mig.ok) {
     sMig.stop(red(`Migrations failed (${mig.error ?? "unknown"}). Aborting upgrade.`));
     log.warn(

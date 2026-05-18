@@ -206,7 +206,20 @@ export async function truncateViaCloudRunJob(
 }
 
 export async function runMigrationsViaCloudRunJob(
-  opts: MigrationRunnerOpts,
+  opts: MigrationRunnerOpts & {
+    /**
+     * v0.9.2 — explicit image to run migrations against. When omitted,
+     * falls back to the admin Cloud Run's CURRENT image (pre-upgrade
+     * shape). The upgrade lifecycle MUST pass the NEW image being
+     * rolled to — otherwise migrations run with the old image, which
+     * doesn't carry the new migration files, so the bookkeeping
+     * silently reports "no new migrations to apply" and the new admin
+     * image then hits "column does not exist" on every query for new
+     * schema. Operator-side recovery: `gcloud run jobs update
+     * caelo-migrate-admin --image=<new-version>` then execute.
+     */
+    readonly imageOverride?: string;
+  },
 ): Promise<{ ok: boolean; error?: string }> {
   const sAdmin = spinner();
   sAdmin.start("Reading admin Cloud Run config for migration job...");
@@ -215,7 +228,16 @@ export async function runMigrationsViaCloudRunJob(
     sAdmin.stop(red("Couldn't resolve admin config — admin may not be deployed yet"));
     return { ok: false, error: "admin-config-unresolved" };
   }
-  sAdmin.stop(green(`Admin config resolved (${cfg.imageRef.slice(-19)})`));
+  const migrationImage = opts.imageOverride ?? cfg.imageRef;
+  if (opts.imageOverride && opts.imageOverride !== cfg.imageRef) {
+    sAdmin.stop(
+      green(
+        `Admin config resolved; migrating against NEW image (${migrationImage.slice(-19)}) instead of current (${cfg.imageRef.slice(-19)})`,
+      ),
+    );
+  } else {
+    sAdmin.stop(green(`Admin config resolved (${migrationImage.slice(-19)})`));
+  }
 
   for (const target of ["admin", "public"] as const) {
     const s = spinner();
@@ -238,7 +260,7 @@ export async function runMigrationsViaCloudRunJob(
       "jobs",
       "create",
       `caelo-migrate-${target}`,
-      `--image=${cfg.imageRef}`,
+      `--image=${migrationImage}`,
       "--region",
       opts.region,
       "--project",
