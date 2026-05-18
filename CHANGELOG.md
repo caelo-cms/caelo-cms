@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.3
+
+### Fixes
+- a1a6fe5 /edit page-load is now branch-aware — AI's branched-create pages were invisible
+
 ## v0.9.2
 
 ### Fixes
