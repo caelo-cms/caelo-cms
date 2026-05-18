@@ -448,7 +448,7 @@ export const updatePageOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!lock.permitted && lock.holder) {
-      return err(lockedError("pages.update", "page", input.pageId, lock.holder));
+      return err(await lockedError(tx, "pages.update", "page", input.pageId, lock.holder));
     }
     // v0.5.3 — branched update path. When ctx.chatBranchId is set we
     // skip the live UPDATE and emit a branched snapshot carrying the
@@ -598,7 +598,9 @@ export const setPageModulesOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!setModulesLock.permitted && setModulesLock.holder) {
-      return err(lockedError("pages.set_modules", "page", input.pageId, setModulesLock.holder));
+      return err(
+        await lockedError(tx, "pages.set_modules", "page", input.pageId, setModulesLock.holder),
+      );
     }
     const pageRows = (await tx.execute(sql`
       SELECT template_id::text AS template_id, version FROM pages
@@ -758,7 +760,7 @@ export const deletePageOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!deleteLock.permitted && deleteLock.holder) {
-      return err(lockedError("pages.delete", "page", input.pageId, deleteLock.holder));
+      return err(await lockedError(tx, "pages.delete", "page", input.pageId, deleteLock.holder));
     }
     const rows = (await tx.execute(sql`
       SELECT deleted_at FROM pages WHERE id = ${input.pageId}::uuid

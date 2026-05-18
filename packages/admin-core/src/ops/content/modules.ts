@@ -234,7 +234,7 @@ export const updateModuleOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!lock.permitted && lock.holder) {
-      return err(lockedError("modules.update", "module", input.moduleId, lock.holder));
+      return err(await lockedError(tx, "modules.update", "module", input.moduleId, lock.holder));
     }
     // Fetch the FULL prev row — we need it for both the usage-diff and
     // (v0.5.1) the branched-write path where we construct the new state
@@ -354,7 +354,7 @@ export const deleteModuleOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!lock.permitted && lock.holder) {
-      return err(lockedError("modules.delete", "module", input.moduleId, lock.holder));
+      return err(await lockedError(tx, "modules.delete", "module", input.moduleId, lock.holder));
     }
     const rows = (await tx.execute(sql`
       SELECT deleted_at, html FROM modules WHERE id = ${input.moduleId}::uuid

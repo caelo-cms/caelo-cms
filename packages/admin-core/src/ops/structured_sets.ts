@@ -247,7 +247,9 @@ export const setStructuredSetOp = defineOperation({
         chatBranchId: ctx.chatBranchId,
       });
       if (!lock.permitted && lock.holder) {
-        return err(lockedError("structured_sets.set", "structuredSet", existingId, lock.holder));
+        return err(
+          await lockedError(tx, "structured_sets.set", "structuredSet", existingId, lock.holder),
+        );
       }
     }
     // Capture prev items for ordered-list diff (nav-menu / taxonomy /

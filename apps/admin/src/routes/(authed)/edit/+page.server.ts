@@ -201,6 +201,62 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     }
   }
 
+  // v0.8.0 — cross-chat awareness: other open chats with pending
+  // edits. Surface in a thin banner above the toolbar so unstaged
+  // work on other pages doesn't get forgotten when navigating.
+  type OtherChat = {
+    chatSessionId: string;
+    title: string;
+    anchorPageId: string | null;
+    anchorPageSlug: string | null;
+    anchorPageLocale: string | null;
+    pendingCount: number;
+  };
+  let otherOpenChats: OtherChat[] = [];
+  if (activeChat) {
+    const othersR = await execute(registry, adapter, locals.ctx, "chat.list_open_with_pending", {
+      excludeChatSessionId: activeChat.id,
+    });
+    if (othersR.ok) {
+      otherOpenChats = (othersR.value as { chats: OtherChat[] }).chats;
+    }
+  }
+
+  // v0.8.0 — last successful staging deploy timestamp + preview URL,
+  // shown atop the Promote modal so the operator knows what they're
+  // about to push to production. Best-effort; missing data renders no
+  // header. We fetch a small recent window since deploy.list_runs
+  // doesn't filter by target — pick the newest staging+succeeded.
+  let lastStaged: { runId: string; finishedAt: string; previewUrl: string | null } | null = null;
+  try {
+    const recentR = await execute(registry, adapter, locals.ctx, "deploy.list_runs", {
+      limit: 20,
+    });
+    if (recentR.ok) {
+      const v = recentR.value as {
+        runs: {
+          id: string;
+          targetName: string;
+          status: string;
+          finishedAt: string | null;
+          publishSummary?: { previewUrl?: string };
+        }[];
+      };
+      const r = v.runs.find(
+        (row) => row.targetName === "staging" && row.status === "succeeded" && row.finishedAt,
+      );
+      if (r && r.finishedAt) {
+        lastStaged = {
+          runId: r.id,
+          finishedAt: r.finishedAt,
+          previewUrl: r.publishSummary?.previewUrl ?? null,
+        };
+      }
+    }
+  } catch {
+    // deploy.list_runs unregistered on some dev installs — fine.
+  }
+
   // v0.7.0 — categorized pending/staged view feeding the per-kind
   // dropdown on the overlay's StageDeployButton (Pages / Modules /
   // Templates / Lists). Empty default when no chat is active (rare —
@@ -302,6 +358,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       lastActiveAt: s.lastActiveAt,
       publishedAt: s.publishedAt,
     })),
+    /** v0.8.0 — other open chats with pending edits, for the cross-chat banner. */
+    otherOpenChats,
+    /** v0.8.0 — last successful staging deploy summary, for the Promote modal header. */
+    lastStaged,
   };
 };
 
@@ -486,15 +546,27 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const chatSessionId = String(form.get("chatSessionId") ?? "") || null;
     const rawKinds = form.getAll("kind").map((k) => String(k));
-    type KindGroup = "pages" | "modules" | "templates" | "lists";
-    const allowed: ReadonlyArray<KindGroup> = ["pages", "modules", "templates", "lists"];
+    type KindGroup = "pages" | "modules" | "templates" | "lists" | "layoutChrome";
+    const allowed: ReadonlyArray<KindGroup> = [
+      "pages",
+      "modules",
+      "templates",
+      "lists",
+      "layoutChrome",
+    ];
     const checked = new Set<KindGroup>(
       rawKinds.filter((k): k is KindGroup => (allowed as ReadonlyArray<string>).includes(k)),
     );
 
     let changedPageIds: string[] | undefined;
+    // v0.8.0 — layoutChrome edits affect every page using the layout
+    // (header/footer/nav cascade through templates), so checking it
+    // forces a full-site rebuild the same as the existing lists path.
     const fullRebuild =
-      checked.size === 0 || checked.size === allowed.length || checked.has("lists");
+      checked.size === 0 ||
+      checked.size === allowed.length ||
+      checked.has("lists") ||
+      checked.has("layoutChrome");
 
     if (!fullRebuild && chatSessionId) {
       const entitiesR = await execute(

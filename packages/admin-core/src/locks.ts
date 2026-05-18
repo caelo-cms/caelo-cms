@@ -137,26 +137,82 @@ export async function releaseChatLocks(
  * `err()` helper accepts a free-form shape; this returns the canonical
  * one so every locked-write returns the same error so the AI can
  * react uniformly.
+ *
+ * v0.8.0 — async + tx-aware. The helper does one extra read to look up
+ * the holder chat's title + anchor page (slug + locale) so the message
+ * names the *other chat the operator already knows about* instead of
+ * a raw session UUID. The AI then surfaces something like:
+ *   "module 'hero' is busy in another chat ('Build the docs site')
+ *   on /home — finish that chat or pick a different target"
+ * which the operator can act on without going to /security/locks.
+ *
+ * Failures during the enrich-read (deleted chat row, RLS surprise)
+ * fall back to the v0.5.x UUID wording so the original Locked error
+ * still surfaces. The lock check itself isn't affected.
  */
-export function lockedError(
+export async function lockedError(
+  tx: TransactionRunner,
   operation: string,
   kind: LockedEntityKind,
   entityId: string,
   holder: LockHolder,
-): {
+): Promise<{
   kind: "Locked";
   operation: string;
   message: string;
   entityKind: LockedEntityKind;
   entityId: string;
-  holder: LockHolder;
-} {
+  holder: LockHolder & {
+    title?: string;
+    anchorPageSlug?: string;
+    anchorPageLocale?: string;
+  };
+}> {
+  let title: string | undefined;
+  let anchorPageSlug: string | undefined;
+  let anchorPageLocale: string | undefined;
+  try {
+    const rows = (await tx.execute(sql`
+      SELECT cs.title,
+             p.slug   AS page_slug,
+             p.locale AS page_locale
+      FROM chat_sessions cs
+      LEFT JOIN pages p ON p.id = cs.page_id AND p.deleted_at IS NULL
+      WHERE cs.id = ${holder.chatSessionId}::uuid
+      LIMIT 1
+    `)) as unknown as {
+      title: string | null;
+      page_slug: string | null;
+      page_locale: string | null;
+    }[];
+    const r = rows[0];
+    if (r) {
+      if (typeof r.title === "string") title = r.title;
+      if (typeof r.page_slug === "string") anchorPageSlug = r.page_slug;
+      if (typeof r.page_locale === "string") anchorPageLocale = r.page_locale;
+    }
+  } catch {
+    // Enrich-read failed — keep the structural error, fall through to
+    // the UUID-only message below.
+  }
+
+  const titlePart = title ? ` ('${title}')` : "";
+  const pagePart = anchorPageSlug ? ` on /${anchorPageSlug}` : "";
+  const message = title
+    ? `${kind} ${entityId} is busy in another chat${titlePart}${pagePart} — finish that chat (Stage + Publish) or pick a different target`
+    : `${kind} ${entityId} is being edited in another chat (session ${holder.chatSessionId}); wait for that chat to publish or pick a different target`;
+
   return {
     kind: "Locked",
     operation,
-    message: `${kind} ${entityId} is being edited in another chat (session ${holder.chatSessionId}); wait for that chat to publish or pick a different target`,
+    message,
     entityKind: kind,
     entityId,
-    holder,
+    holder: {
+      ...holder,
+      ...(title !== undefined ? { title } : {}),
+      ...(anchorPageSlug !== undefined ? { anchorPageSlug } : {}),
+      ...(anchorPageLocale !== undefined ? { anchorPageLocale } : {}),
+    },
   };
 }

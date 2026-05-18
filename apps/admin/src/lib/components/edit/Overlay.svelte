@@ -24,7 +24,6 @@
   import { onDestroy, onMount } from "svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
   import ChatPanel from "$lib/components/chat/ChatPanel.svelte";
-  import StageDeployButton from "$lib/components/edit/StageDeployButton.svelte";
   import MediaPicker from "$lib/components/MediaPicker.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Card } from "$lib/components/ui/card/index.js";
@@ -58,17 +57,6 @@
     publishedAt: string | null;
   }
 
-  interface PendingEntity {
-    kind: string;
-    entityId: string;
-    label: string;
-    detail?: string;
-  }
-  interface PendingChangesView {
-    pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
-    staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
-  }
-
   interface Props {
     session: ChatSession;
     initialMessages: ChatMessage[];
@@ -80,15 +68,6 @@
     pageChats?: ChatRef[];
     /** v0.2.14 — global chats (`page_id IS NULL`) for cross-cutting work. */
     globalChats?: ChatRef[];
-    /** v0.7.0 — pending/staged view feeding the StageDeployButton's
-     *  per-kind dropdown (Pages / Modules / Templates / Lists). */
-    pendingChanges?: PendingChangesView;
-    /** v0.7.3 — branch-snapshot count (chat.branch_change_count). The
-     *  StageDeployButton gates its visibility on this rather than on
-     *  pendingChanges, because pendingChanges drops entities marked
-     *  'published' from prior chat.publish runs. branchChangeCount is
-     *  the unfiltered "is there anything in this branch" signal. */
-    branchChangeCount?: number;
     onToolResult?: (payload: ToolResultPayload) => void;
   }
   let {
@@ -100,11 +79,6 @@
     activePageId = null,
     pageChats = [],
     globalChats = [],
-    pendingChanges = {
-      pending: { pages: [], globals: [], lists: [] },
-      staged: { pages: [], globals: [], lists: [] },
-    },
-    branchChangeCount = 0,
     onToolResult,
   }: Props = $props();
 
@@ -499,24 +473,6 @@
           <Minimize2 class="size-3" />
         </Button>
       </div>
-    </div>
-
-    <!-- v0.7.0 — Stage / Publish split-button. Stage merges the chat
-         branch into main + rebuilds staging in one click so the staging
-         URL is a 1:1 preview of what production would see; the dropdown
-         opens a per-kind dialog for selective production deploys.
-         Replaces v0.5.8's pending/staged picker — that lives on
-         /content/chat as the formal-publish surface; /edit favors the
-         tight iterate-and-preview loop.  -->
-    <div class="px-3 pt-2 flex justify-end">
-      <StageDeployButton
-        {pendingChanges}
-        {branchChangeCount}
-        {csrfToken}
-        sessionPublished={!!session.publishedAt}
-        chatSessionId={session.id}
-        {activePageId}
-      />
     </div>
 
     <!-- Embedded chat panel -->

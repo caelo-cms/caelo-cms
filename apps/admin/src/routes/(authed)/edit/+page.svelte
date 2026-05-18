@@ -22,8 +22,10 @@
   import { goto, invalidateAll } from "$app/navigation";
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import { onMount } from "svelte";
+  import CrossChatBanner from "$lib/components/edit/CrossChatBanner.svelte";
   import DiffPanel from "$lib/components/edit/DiffPanel.svelte";
   import Overlay from "$lib/components/edit/Overlay.svelte";
+  import StageDeployButton from "$lib/components/edit/StageDeployButton.svelte";
   import {
     type CaeloMessage,
     isCaeloMessage,
@@ -65,13 +67,14 @@
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);
-  // v0.2.76 — initialize from server-loaded count of distinct
-  // entities edited on this chat branch. Pre-v0.2.76 this was a
-  // fresh `$state(0)` that incremented per AI tool result and reset
-  // to 0 on every reload — so the toolbar showed "10 pending
-  // changes" mid-session and "0 pending changes" after F5 even
-  // though real changes were still live on the branch.
-  let pendingChanges = $state(data.branchChangeCount ?? 0);
+  // v0.8.0 — derive directly from server-loaded chat.branch_change_count.
+  // The pre-v0.8 path kept a local mutable counter that incremented on
+  // every AI tool result (overcounting — tool calls != entity writes,
+  // and layout-module edits had no counter delta at all). v0.8 fixes
+  // branch_change_count to cover layout-module snapshots; invalidateAll
+  // in onAiToolResult re-runs the server load after each tool, so the
+  // derived value stays fresh without manual increments.
+  const pendingChanges = $derived(data.branchChangeCount ?? 0);
   let pendingSwitchTo = $state<string | null>(null);
   let dialogOpen = $state(false);
   // P6.7.3 — Edit mode toggle. ON: clicks in the iframe become chips.
@@ -134,7 +137,9 @@
 
   function dialogDiscard(): void {
     if (pendingSwitchTo) {
-      pendingChanges = 0;
+      // v0.8.0 — pendingChanges is $derived from data.branchChangeCount,
+      // so no manual reset needed; the goto below re-runs the server
+      // load against the destination page's chat.
       commitPageSwitch(pendingSwitchTo);
     }
     dialogOpen = false;
@@ -221,7 +226,8 @@
     ok: boolean;
     arguments?: Record<string, unknown>;
   }): void {
-    if (payload.ok) pendingChanges += 1;
+    // v0.8.0 — no manual counter increment; pendingChanges is $derived
+    // from data.branchChangeCount, which invalidateAll() below refreshes.
 
     // v0.3.22 — auto-follow the AI's edit target. When a tool's
     // arguments name a different pageId than what's currently
@@ -248,6 +254,10 @@
 </script>
 
 <div class="relative flex h-screen w-full flex-col">
+  <!-- v0.8.0 — cross-chat awareness strip. Renders nothing when there
+       are no other open chats with pending changes. -->
+  <CrossChatBanner chats={data.otherOpenChats ?? []} />
+
   <!-- Slim toolbar — wordmark + URL + page picker + back-to-admin. No
        sidebar, no breadcrumbs, no admin chrome. -->
   <header
@@ -268,12 +278,12 @@
       data-testid="edit-url"
     >{urlText}</code>
 
-    <!-- v0.7.1 — informational toolbar slot. Stage + Publish actions
-         moved entirely to the overlay's StageDeployButton; the toolbar
-         only surfaces status now (pending count + a persistent link
-         to the latest staging build after the operator clicks Stage). -->
-    {#if activePageId}
-      <div class="ml-auto flex items-center gap-2" data-testid="toolbar-publish">
+    <!-- v0.8.0 — Stage / Promote split-button lives in the toolbar
+         (per-page surface, per-chat semantics under the hood). The
+         (N) badge counts entities on the active chat's branch; the ▾
+         opens the Promote-to-production modal. -->
+    {#if activePageId && data.activeChat}
+      <div class="ml-auto flex items-center gap-3" data-testid="toolbar-publish">
         {#if stagedPreviewUrl}
           <span class="text-xs text-muted-foreground">
             Staged —
@@ -285,19 +295,15 @@
             >preview</a>
           </span>
         {/if}
-        <span
-          class={cn(
-            "rounded-full px-2 py-0.5 text-xs font-medium",
-            pendingChanges === 0
-              ? "bg-muted text-muted-foreground"
-              : "bg-amber-500/15 text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-400",
-          )}
-          data-testid="pending-pill"
-        >
-          {pendingChanges === 0
-            ? "No pending changes"
-            : `${pendingChanges} pending change${pendingChanges === 1 ? "" : "s"}`}
-        </span>
+        <StageDeployButton
+          pendingChanges={data.pendingChanges}
+          branchChangeCount={pendingChanges}
+          csrfToken={data.csrfToken}
+          chatSessionId={data.activeChat.id}
+          sessionPublished={!!data.activeChat.publishedAt}
+          {activePageId}
+          lastStaged={data.lastStaged ?? null}
+        />
       </div>
     {:else}
       <div class="ml-auto"></div>
@@ -425,8 +431,6 @@
     activePageId={activePageId || null}
     pageChats={data.pageChats}
     globalChats={data.globalChats}
-    pendingChanges={data.pendingChanges}
-    branchChangeCount={pendingChanges}
     onToolResult={onAiToolResult}
   />
 

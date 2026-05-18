@@ -625,14 +625,27 @@ export const countBranchChangesOp = defineOperation({
       pageLayouts: z.number().int().nonnegative(),
       /** v0.4.0 — per-placement content edits on this branch. */
       pageModuleContent: z.number().int().nonnegative(),
+      /**
+       * v0.8.0 — layout-module changes (add_module_to_layout etc).
+       * These write a site_snapshots row with `entities: []` — no
+       * entity-snapshot table covers them. Before v0.8.0 they were
+       * silently dropped from this count, so the toolbar pill said
+       * "no pending changes" while the chat branch actually held
+       * unstaged chrome edits. Counted as the number of distinct
+       * `site_snapshots` rows with `op_kind='layout_modules.set'`
+       * on the branch (each call IS the layout-level change).
+       */
+      layoutChrome: z.number().int().nonnegative(),
     }),
   }),
   handler: async (_ctx, input, tx) => {
-    // Single query, five sub-counts. Each kind dedupes by its
-    // entity column. site_snapshots scoped to the chat's branch.
+    // Single query, six sub-counts. Entity-bound kinds dedupe by their
+    // entity column. layoutChrome counts the site_snapshot rows
+    // themselves because layout-module writes don't populate any
+    // entity-snapshot table.
     const rows = (await tx.execute(sql`
       WITH branch AS (
-        SELECT ss.id AS snapshot_id
+        SELECT ss.id AS snapshot_id, ss.op_kind
         FROM site_snapshots ss
         JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
         WHERE cs.id = ${input.chatSessionId}::uuid
@@ -642,13 +655,15 @@ export const countBranchChangesOp = defineOperation({
         (SELECT COUNT(DISTINCT page_id)::int     FROM page_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch))     AS pages,
         (SELECT COUNT(DISTINCT template_id)::int FROM template_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS templates,
         (SELECT COUNT(DISTINCT page_id)::int     FROM page_layout_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_layouts,
-        (SELECT COUNT(DISTINCT page_module_content_id)::int FROM page_module_content_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_module_content
+        (SELECT COUNT(DISTINCT page_module_content_id)::int FROM page_module_content_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_module_content,
+        (SELECT COUNT(*)::int FROM branch WHERE op_kind = 'layout_modules.set') AS layout_chrome
     `)) as unknown as {
       modules: number;
       pages: number;
       templates: number;
       page_layouts: number;
       page_module_content: number;
+      layout_chrome: number;
     }[];
     const r = rows[0] ?? {
       modules: 0,
@@ -656,15 +671,23 @@ export const countBranchChangesOp = defineOperation({
       templates: 0,
       page_layouts: 0,
       page_module_content: 0,
+      layout_chrome: 0,
     };
     return ok({
-      count: r.modules + r.pages + r.templates + r.page_layouts + r.page_module_content,
+      count:
+        r.modules +
+        r.pages +
+        r.templates +
+        r.page_layouts +
+        r.page_module_content +
+        r.layout_chrome,
       byKind: {
         modules: r.modules,
         pages: r.pages,
         templates: r.templates,
         pageLayouts: r.page_layouts,
         pageModuleContent: r.page_module_content,
+        layoutChrome: r.layout_chrome,
       },
     });
   },
@@ -715,6 +738,102 @@ export const listActivePagesOp = defineOperation({
         chatSessionId: r.chat_session_id,
         chatTitle: r.chat_title,
         createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+      })),
+    });
+  },
+});
+
+/**
+ * v0.8.0 — Cross-chat awareness data for the /edit toolbar banner.
+ * Returns every open (unpublished, unarchived) chat session that has
+ * at least one branch-snapshot, excluding the chat the operator is
+ * currently in. Drives the "you also have pending changes on /home,
+ * /about" strip above the toolbar so unstaged work doesn't get
+ * forgotten when navigating between pages.
+ *
+ * Counts use the same six-kind sum as chat.branch_change_count
+ * (entity-snapshot tables + the layout_modules.set snapshot rows
+ * themselves) so the toolbar pill and the banner agree.
+ */
+export const listOpenChatsWithPendingOp = defineOperation({
+  name: "chat.list_open_with_pending",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      excludeChatSessionId: z.string().uuid().optional(),
+    })
+    .strict(),
+  output: z.object({
+    chats: z.array(
+      z
+        .object({
+          chatSessionId: z.string(),
+          title: z.string(),
+          anchorPageId: z.string().nullable(),
+          anchorPageSlug: z.string().nullable(),
+          anchorPageLocale: z.string().nullable(),
+          pendingCount: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const exclude = input.excludeChatSessionId ?? null;
+    const rows = (await tx.execute(sql`
+      WITH counts AS (
+        SELECT
+          cs.id::text  AS chat_session_id,
+          cs.title     AS title,
+          cs.page_id::text AS page_id,
+          p.slug       AS page_slug,
+          p.locale     AS page_locale,
+          (
+            (SELECT COUNT(DISTINCT module_id)::int   FROM module_snapshots ms
+              JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+            (SELECT COUNT(DISTINCT page_id)::int     FROM page_snapshots ps
+              JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+            (SELECT COUNT(DISTINCT template_id)::int FROM template_snapshots ts
+              JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
+              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+            (SELECT COUNT(DISTINCT page_id)::int     FROM page_layout_snapshots pls
+              JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+            (SELECT COUNT(DISTINCT page_module_content_id)::int FROM page_module_content_snapshots pmcs
+              JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
+              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+            (SELECT COUNT(*)::int FROM site_snapshots ss
+              WHERE ss.chat_branch_id = cs.chat_branch_id
+                AND ss.op_kind = 'layout_modules.set')
+          )::int AS pending_count
+        FROM chat_sessions cs
+        LEFT JOIN pages p ON p.id = cs.page_id AND p.deleted_at IS NULL
+        WHERE cs.published_at IS NULL
+          AND cs.archived_at IS NULL
+          AND (${exclude}::uuid IS NULL OR cs.id <> ${exclude}::uuid)
+      )
+      SELECT chat_session_id, title, page_id, page_slug, page_locale, pending_count
+      FROM counts
+      WHERE pending_count > 0
+      ORDER BY pending_count DESC, title ASC
+    `)) as unknown as {
+      chat_session_id: string;
+      title: string;
+      page_id: string | null;
+      page_slug: string | null;
+      page_locale: string | null;
+      pending_count: number;
+    }[];
+    return ok({
+      chats: rows.map((r) => ({
+        chatSessionId: r.chat_session_id,
+        title: r.title,
+        anchorPageId: r.page_id,
+        anchorPageSlug: r.page_slug,
+        anchorPageLocale: r.page_locale,
+        pendingCount: r.pending_count,
       })),
     });
   },

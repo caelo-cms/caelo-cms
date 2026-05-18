@@ -209,6 +209,30 @@ export const listPendingChangesOp = defineOperation({
        AND marks.entity_id::text = l.entity_id
     `)) as unknown as Row[];
 
+    // v0.8.0 — layout-chrome snapshots (op_kind='layout_modules.set').
+    // These write site_snapshots rows with `entities: []` so no
+    // entity-snapshot table covers them. Surface one entry per
+    // snapshot row, parsing the block name from the description
+    // (layouts.ts stamps "layout_modules.set block=<name>" / similar).
+    // Always stage_state='pending' for this kind — there's no
+    // per-layout publish-marks attribution to do.
+    const layoutChromeRows = (await tx.execute(sql`
+      SELECT
+        id::text AS entity_id,
+        op_kind,
+        description,
+        'pending' AS stage_state
+      FROM site_snapshots
+      WHERE chat_branch_id = ${branchId}::uuid
+        AND op_kind = 'layout_modules.set'
+      ORDER BY created_at DESC
+    `)) as unknown as {
+      entity_id: string;
+      op_kind: string;
+      description: string;
+      stage_state: string;
+    }[];
+
     // v0.5.3 — structured_set snapshots. Theme kind goes in `globals`;
     // ordered-list kinds (nav-menu / taxonomy / link-list) go in `lists`.
     const structuredSetRows = (await tx.execute(sql`
@@ -261,6 +285,21 @@ export const listPendingChangesOp = defineOperation({
     const modules = bucketize(moduleRows, "module");
     const templates = bucketize(templateRows, "template");
 
+    // v0.8.0 — layoutChromeRows always stage_state='pending'; bucket
+    // into globals so the Stage modal shows them alongside module /
+    // template / theme edits. Parse the block name from the
+    // description for the detail subtitle when present.
+    const layoutChromePending: EntityRef[] = layoutChromeRows.map((r) => {
+      const blockMatch = /block=([\w-]+)/.exec(r.description);
+      const blockDetail = blockMatch ? `block=${blockMatch[1]}` : r.op_kind;
+      return {
+        kind: "layout" as const,
+        entityId: r.entity_id,
+        label: "Layout chrome",
+        detail: blockDetail,
+      };
+    });
+
     // v0.5.3 — structured_set rows split between globals (theme) and
     // lists (nav-menu / taxonomy / link-list) based on `kind`.
     const ssPendingGlobals: EntityRef[] = [];
@@ -285,7 +324,12 @@ export const listPendingChangesOp = defineOperation({
     return ok({
       pending: {
         pages: [...content.pending, ...pages.pending, ...layouts.pending],
-        globals: [...modules.pending, ...templates.pending, ...ssPendingGlobals],
+        globals: [
+          ...modules.pending,
+          ...templates.pending,
+          ...ssPendingGlobals,
+          ...layoutChromePending,
+        ],
         lists: ssPendingLists,
       },
       staged: {

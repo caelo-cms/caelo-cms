@@ -303,7 +303,9 @@ export const updateTemplateOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!lock.permitted && lock.holder) {
-      return err(lockedError("templates.update", "template", input.templateId, lock.holder));
+      return err(
+        await lockedError(tx, "templates.update", "template", input.templateId, lock.holder),
+      );
     }
     const existing = (await tx.execute(sql`
       SELECT 1 FROM templates WHERE id = ${input.templateId}::uuid AND deleted_at IS NULL LIMIT 1
@@ -473,7 +475,9 @@ export const deleteTemplateOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!lock.permitted && lock.holder) {
-      return err(lockedError("templates.delete", "template", input.templateId, lock.holder));
+      return err(
+        await lockedError(tx, "templates.delete", "template", input.templateId, lock.holder),
+      );
     }
     const inUse = (await tx.execute(sql`
       SELECT 1 FROM pages WHERE template_id = ${input.templateId}::uuid AND deleted_at IS NULL LIMIT 1

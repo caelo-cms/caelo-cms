@@ -200,7 +200,9 @@ export const deleteRedirectOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!lock.permitted && lock.holder) {
-      return err(lockedError("redirects.delete", "redirect", input.redirectId, lock.holder));
+      return err(
+        await lockedError(tx, "redirects.delete", "redirect", input.redirectId, lock.holder),
+      );
     }
     await tx.execute(sql`DELETE FROM redirects WHERE id = ${input.redirectId}::uuid`);
     await recordAudit(tx, {
@@ -330,7 +332,7 @@ export const deleteRedirectsManyOp = defineOperation({
           chatBranchId: ctx.chatBranchId,
         });
         if (!lock.permitted && lock.holder) {
-          return err(lockedError("redirects.delete_many", "redirect", id, lock.holder));
+          return err(await lockedError(tx, "redirects.delete_many", "redirect", id, lock.holder));
         }
       }
       for (const id of input.redirectIds) {

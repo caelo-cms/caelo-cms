@@ -100,7 +100,13 @@ export const setSiteDefaultsOp = defineOperation({
     });
     if (!lock.permitted && lock.holder) {
       return err(
-        lockedError("site_defaults.set", "siteDefaults", SITE_DEFAULTS_LOCK_ID, lock.holder),
+        await lockedError(
+          tx,
+          "site_defaults.set",
+          "siteDefaults",
+          SITE_DEFAULTS_LOCK_ID,
+          lock.holder,
+        ),
       );
     }
     const layoutOk = (await tx.execute(sql`

@@ -239,7 +239,7 @@ export const updateLayoutOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!lock.permitted && lock.holder) {
-      return err(lockedError("layouts.update", "layout", input.layoutId, lock.holder));
+      return err(await lockedError(tx, "layouts.update", "layout", input.layoutId, lock.holder));
     }
     const sets: ReturnType<typeof sql>[] = [];
     if (input.displayName !== undefined) sets.push(sql`display_name = ${input.displayName}`);

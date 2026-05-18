@@ -28,6 +28,7 @@ import {
   listBranchEditedEntitiesOp,
   listBranchEditedModulesOp,
   listChatSessionsOp,
+  listOpenChatsWithPendingOp,
   renameChatSessionOp,
   setChatExtendedThinkingOp,
   setPinnedElementsOp,
@@ -727,6 +728,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(countBranchChangesOp);
   // v0.5.8 — per-page chat gate companion: list pages with an open chat.
   registry.register(listActivePagesOp);
+  // v0.8.0 — cross-chat awareness banner data for the /edit toolbar.
+  registry.register(listOpenChatsWithPendingOp);
   // v0.5.20 — per-chat completion view (powers /content/chat/[id]/summary).
   registry.register(summarizeChatOp);
   // P7 — media library.

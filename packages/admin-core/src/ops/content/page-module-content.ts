@@ -177,7 +177,9 @@ export const setPageModuleContentOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!lock.permitted && lock.holder) {
-      return err(lockedError("page_module_content.set", "page", input.pageId, lock.holder));
+      return err(
+        await lockedError(tx, "page_module_content.set", "page", input.pageId, lock.holder),
+      );
     }
     // v0.6.1 — branch-aware placement check. The earlier draft queried
     // live `page_modules` only. But `pages.set_modules` (called per-page

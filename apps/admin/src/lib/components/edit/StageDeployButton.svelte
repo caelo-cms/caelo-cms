@@ -1,31 +1,28 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   /**
-   * v0.7.0 — split-button Stage / Publish for the /edit overlay.
+   * v0.8.0 — split-button Stage / Publish in the /edit toolbar.
    *
-   * Caelo's only Stage/Publish surface (v0.7.1 dropped the legacy
-   * sidebar picker in /content/chat — the formal chat.publish op
-   * stays available programmatically, but operators do all Stage +
-   * Publish work through this component now).
+   * v0.7.x put this in the chat overlay (per-chat surface). v0.8.0 moves
+   * it to the toolbar so the gesture lives in page-mental-model context
+   * — chats stay the atomic revert unit under the hood, but the
+   * operator never has to think about them to ship work.
    *
-   * Two clicks cover the loop the operator actually cares about:
+   * Three gestures:
    *
-   *   [Stage to staging]  → merges everything in the chat branch into
-   *                         main (without closing the chat), then runs
-   *                         a full staging deploy. The staging URL is
-   *                         a 1:1 preview of what production would see.
-   *   [▾] (dropdown)      → opens a dialog with per-kind checkboxes
-   *                         (Pages / Modules / Templates / Lists) and
-   *                         a "Publish to production" button. The form
-   *                         action computes a precise changedPageIds
-   *                         set from the checked kinds so the
-   *                         production bake re-renders only the
-   *                         affected routes.
-   *
-   * The chat stays editable across Stage clicks — `chat.merge_to_main`
-   * never sets `published_at` and never releases the chat's locks.
-   * Production Publish does NOT call `chat.publish` either (the chat
-   * is the workspace, not the publish boundary in /edit).
+   *   [Stage to staging (N)]  → merges everything in the active chat's
+   *                             branch into main (without closing the
+   *                             chat), then runs a full staging deploy.
+   *                             The staging URL is a 1:1 preview of
+   *                             what production would see.
+   *   [▾] (dropdown)          → opens the Promote-to-production modal
+   *                             with per-kind checkboxes. Mentions the
+   *                             current staging build at the top so the
+   *                             operator knows what they're promoting.
+   *   Click the (N) badge     → opens a small popover listing the
+   *                             pages + entities the chat has touched.
+   *                             Preview of the Stage blast radius
+   *                             without triggering it.
    */
   import { enhance } from "$app/forms";
   import { Button } from "$lib/components/ui/button";
@@ -49,6 +46,11 @@
     pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
     staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
   }
+  interface LastStaged {
+    runId: string;
+    finishedAt: string;
+    previewUrl: string | null;
+  }
 
   let {
     pendingChanges,
@@ -57,22 +59,25 @@
     chatSessionId,
     activePageId = null,
     sessionPublished = false,
+    lastStaged = null,
   }: {
     pendingChanges: PendingChangesView;
     /**
-     * v0.7.3 — authoritative "is there anything in this branch" signal.
-     * Comes from chat.branch_change_count (unfiltered) + the local
-     * tool-result counter incremented as the AI streams writes. We gate
-     * the split-button on this rather than on pendingChanges-derived
-     * counts because pendingChanges drops entities with 'published'
-     * marks from prior chat.publish runs, which would hide the button
-     * even when the chat has fresh re-edits.
+     * v0.7.3 — authoritative branch-snapshot count (chat.branch_change_count).
+     * Drives the split-button visibility + badge. Independent from
+     * pendingChanges (which drops entities with 'published' marks from
+     * prior chat.publish runs).
      */
     branchChangeCount?: number;
     csrfToken: string;
     chatSessionId: string;
     activePageId?: string | null;
     sessionPublished?: boolean;
+    /**
+     * v0.8.0 — last successful staging deploy. Shown atop the Promote
+     * modal so the operator knows what they're about to push live.
+     */
+    lastStaged?: LastStaged | null;
   } = $props();
 
   /**
@@ -80,8 +85,9 @@
    * direct page edits + per-page layout + per-placement content into
    * one bucket because the operator's mental model is "the page"; the
    * server-side impact resolver categorizes finer. "Modules" /
-   * "Templates" / "Lists" map 1:1 to entity kinds in the snapshot
-   * tables.
+   * "Templates" / "Lists" / "Layout chrome" map 1:1 to entity kinds in
+   * the snapshot tables (layout chrome is the v0.8.0 addition for
+   * `layout_modules.set` snapshots that used to be invisible).
    */
   function countByKind(group: "pages" | "globals" | "lists", kinds: ReadonlyArray<string>): number {
     const buckets: PendingEntity[][] = [
@@ -97,28 +103,36 @@
   const pagesCount = $derived(countByKind("pages", ["page", "pageLayout", "pageModuleContent"]));
   const modulesCount = $derived(countByKind("globals", ["module"]));
   const templatesCount = $derived(countByKind("globals", ["template"]));
+  const layoutChromeCount = $derived(countByKind("globals", ["layout"]));
   const listsCount = $derived(countByKind("lists", ["structuredSet"]));
 
   let dialogOpen = $state(false);
+  let popoverOpen = $state(false);
   let publishing = $state(false);
   let staging = $state(false);
   let userPagesChoice = $state(true);
   let userModulesChoice = $state(true);
   let userTemplatesChoice = $state(true);
   let userListsChoice = $state(true);
+  let userLayoutChromeChoice = $state(true);
   /**
    * Effective checkbox state. When a kind has zero changes, force it
    * off + non-submittable regardless of the user's last toggle.
-   * Avoids the earlier UX wart where a disabled-but-checked box would
-   * still send `kind=pages` on submit, causing the server-side impact
-   * resolver to no-op silently on the operator's behalf — the operator
-   * couldn't tell why their "I unchecked Pages" intent wasn't being
-   * honored.
    */
   const effectivePages = $derived(pagesCount > 0 && userPagesChoice);
   const effectiveModules = $derived(modulesCount > 0 && userModulesChoice);
   const effectiveTemplates = $derived(templatesCount > 0 && userTemplatesChoice);
   const effectiveLists = $derived(listsCount > 0 && userListsChoice);
+  const effectiveLayoutChrome = $derived(layoutChromeCount > 0 && userLayoutChromeChoice);
+
+  function formatRelativeTime(iso: string): string {
+    const t = new Date(iso).getTime();
+    const dt = Math.max(0, Date.now() - t);
+    if (dt < 60_000) return "just now";
+    if (dt < 3_600_000) return `${Math.floor(dt / 60_000)}m ago`;
+    if (dt < 86_400_000) return `${Math.floor(dt / 3_600_000)}h ago`;
+    return `${Math.floor(dt / 86_400_000)}d ago`;
+  }
 </script>
 
 {#if sessionPublished}
@@ -126,7 +140,61 @@
 {:else if branchChangeCount === 0}
   <span class="text-xs text-muted-foreground">No pending changes</span>
 {:else}
-  <div class="inline-flex" data-testid="stage-deploy">
+  <div class="relative inline-flex items-center gap-1" data-testid="stage-deploy">
+    <!-- (N) badge: clickable popover with blast-radius preview. -->
+    <button
+      type="button"
+      class="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-500/40 hover:bg-amber-500/25 dark:text-amber-300"
+      onclick={() => {
+        popoverOpen = !popoverOpen;
+      }}
+      aria-expanded={popoverOpen}
+      data-testid="pending-pill"
+      title="Preview what Stage will ship"
+    >
+      {branchChangeCount} pending
+    </button>
+
+    {#if popoverOpen}
+      <div
+        class="absolute right-0 top-full z-40 mt-1 w-72 rounded-md border bg-background p-3 shadow-lg"
+        role="dialog"
+        aria-label="Pending-changes preview"
+      >
+        <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Will be staged ({branchChangeCount})
+        </h4>
+        <ul class="space-y-1 text-xs">
+          {#each pendingChanges.pending.pages as e (e.entityId)}
+            <li class="flex items-center gap-2">
+              <span class="rounded bg-blue-500/10 px-1 py-0.5 font-mono text-[10px] text-blue-700"
+                >page</span
+              >
+              <span class="truncate">{e.label}</span>
+            </li>
+          {/each}
+          {#each pendingChanges.pending.globals as e (e.entityId)}
+            <li class="flex items-center gap-2">
+              <span
+                class="rounded bg-purple-500/10 px-1 py-0.5 font-mono text-[10px] text-purple-700"
+                >{e.kind}</span
+              >
+              <span class="truncate">{e.label}</span>
+              {#if e.detail}<span class="text-muted-foreground truncate">— {e.detail}</span>{/if}
+            </li>
+          {/each}
+          {#each pendingChanges.pending.lists as e (e.entityId)}
+            <li class="flex items-center gap-2">
+              <span class="rounded bg-emerald-500/10 px-1 py-0.5 font-mono text-[10px] text-emerald-700"
+                >list</span
+              >
+              <span class="truncate">{e.label}</span>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+
     <form
       method="post"
       action="?/stageAndDeployStaging"
@@ -136,10 +204,6 @@
           try {
             await update({ reset: false });
           } finally {
-            // Always reset the spinner — including when the action
-            // throws before the layout-level toast handler can fire.
-            // Without try/finally the button would stay disabled and
-            // the operator couldn't retry without a page reload.
             staging = false;
           }
         };
@@ -159,7 +223,7 @@
         title="Merge chat branch to main + rebuild staging"
         data-testid="stage-btn"
       >
-        {staging ? "Staging…" : `Stage (${branchChangeCount})`}
+        {staging ? "Staging…" : "Stage to staging"}
       </Button>
     </form>
     <Button
@@ -181,12 +245,35 @@
 <Dialog bind:open={dialogOpen}>
   <DialogContent class="sm:max-w-md">
     <DialogHeader>
-      <DialogTitle>Publish to production</DialogTitle>
+      <DialogTitle>Promote staging to production</DialogTitle>
       <DialogDescription>
-        Pick which entity kinds graduate to production. Unchecked kinds keep their current
-        production HTML; checked kinds re-bake every page they touch.
+        Stage runs the staging build. This step promotes what's currently on staging to your live
+        site. Unchecked kinds keep their current production HTML; checked kinds re-bake every page
+        they touch.
       </DialogDescription>
     </DialogHeader>
+
+    {#if lastStaged}
+      <div
+        class="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+        data-testid="last-staged-banner"
+      >
+        Last staged {formatRelativeTime(lastStaged.finishedAt)}
+        {#if lastStaged.previewUrl}
+          — <a
+            href={lastStaged.previewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="underline">preview</a
+          >
+        {/if}
+      </div>
+    {:else}
+      <div class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+        No successful staging build yet. Click "Stage to staging" first so this Promote ships
+        something other than the previous production build.
+      </div>
+    {/if}
 
     <form
       method="post"
@@ -199,11 +286,6 @@
           } finally {
             publishing = false;
           }
-          // Only close on success — on failure (e.g. CAPTCHA failed,
-          // build error) the operator should see the picker still
-          // populated with their kind selections so they can retry
-          // without re-checking every box. The error itself surfaces
-          // via the layout-level sonner toast (form.error path).
           if (result.type === "success") {
             dialogOpen = false;
           }
@@ -267,6 +349,25 @@
           </label>
         </li>
         <li>
+          <label class="flex items-center gap-2 text-sm" class:opacity-50={layoutChromeCount === 0}>
+            <input
+              type="checkbox"
+              name="kind"
+              value="layoutChrome"
+              class="h-4 w-4 rounded border-input"
+              checked={effectiveLayoutChrome}
+              disabled={layoutChromeCount === 0}
+              onchange={(e) => {
+                userLayoutChromeChoice = (e.currentTarget as HTMLInputElement).checked;
+              }}
+            />
+            <span class="font-medium">Layout chrome</span>
+            <span class="text-xs text-muted-foreground">
+              ({layoutChromeCount} changed — triggers full rebuild)
+            </span>
+          </label>
+        </li>
+        <li>
           <label class="flex items-center gap-2 text-sm" class:opacity-50={listsCount === 0}>
             <input
               type="checkbox"
@@ -304,7 +405,7 @@
           disabled={publishing}
           data-testid="publish-submit-btn"
         >
-          {publishing ? "Publishing…" : "Publish to production"}
+          {publishing ? "Publishing…" : "Promote to production"}
         </Button>
       </DialogFooter>
     </form>
