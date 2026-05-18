@@ -17,6 +17,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { INJECT_SCRIPT } from "$lib/components/edit/inject-script.js";
 import { requirePermission } from "$lib/server/guards.js";
@@ -43,13 +44,22 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
   const path = (params.path ?? "").replace(/^\/+|\/+$/g, "");
   const slug = path.length === 0 ? "home" : path;
 
-  const pagesR = await execute(registry, adapter, locals.ctx, "pages.list", {});
+  // v0.9.6 — branch-aware ctx for the page lookup. Without this, a page
+  // the AI just created on a chat branch (chat_branch_id NOT NULL) is
+  // hidden by `branchVisibilityFilter` and the iframe sees a 404 — even
+  // though render_preview below was already being told the branch via
+  // `chatBranchId`. The render call was branch-aware; the LOOKUP wasn't.
+  const branch = url.searchParams.get("branch");
+  const ctxWithBranch: ExecutionContext = branch
+    ? { ...locals.ctx, chatBranchId: branch }
+    : locals.ctx;
+
+  const pagesR = await execute(registry, adapter, ctxWithBranch, "pages.list", {});
   if (!pagesR.ok) throw error(500, "Could not list pages");
   const pages = (pagesR.value as { pages: PageRow[] }).pages;
   const page = pages.find((p) => p.locale === locale && p.slug === slug);
   if (!page) throw error(404, `No page at ${locale}/${slug}`);
 
-  const branch = url.searchParams.get("branch");
   // P6.6b — `?exclude=<moduleId>,<moduleId>` lets the chat-side diff
   // panel render a partial-publish view: the right iframe excludes
   // specific module ids from the branch overlay so the user previews
@@ -58,7 +68,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
   const excludeBranchModules = excludeRaw
     ? excludeRaw.split(",").filter((id) => id.length > 0)
     : undefined;
-  const composed = await execute(registry, adapter, locals.ctx, "pages.render_preview", {
+  const composed = await execute(registry, adapter, ctxWithBranch, "pages.render_preview", {
     pageId: page.id,
     ...(branch ? { chatBranchId: branch } : {}),
     ...(excludeBranchModules ? { excludeBranchModules } : {}),
