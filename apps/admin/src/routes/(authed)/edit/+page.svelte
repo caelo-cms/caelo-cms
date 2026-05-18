@@ -193,17 +193,42 @@
     return () => window.removeEventListener("message", handler);
   });
 
-  // v0.3.22 — on fresh installs `data.pages` starts empty so
-  // `activePageId` is "" and the iframe has no src. The first time
-  // `data.pages` gets a page (from the AI creating one + the
-  // invalidateAll below), pick it as active so the iframe starts
-  // rendering. Prefer home/en; fall back to first.
+  // v0.9.3 — auto-switch the iframe when the AI creates a new home page
+  // mid-chat. The fresh-install fast path (activePageId === "") still
+  // works because the seen-set starts empty and the first refresh of
+  // data.pages adds every id as "new", so newHome wins. The
+  // operator-already-on-something path uses a diff against the
+  // previously-seen ids so we only switch when a HOME row newly
+  // appears (compose_page_from_spec / create_page with slug=home),
+  // never on every load. Operators who deliberately picked a non-home
+  // page keep that selection unless their pick was itself a previous
+  // home — that's the build-from-scratch flow taking over.
+  let seenPageIds = $state(new Set<string>());
   $effect(() => {
-    if (activePageId === "" && data.pages.length > 0) {
-      const home = data.pages.find((p) => p.slug === "home" && p.locale === "en");
-      const pick = home ?? data.pages[0];
-      if (pick) activePageId = pick.id;
+    const currentIds = new Set(data.pages.map((p) => p.id));
+    if (seenPageIds.size === 0) {
+      // Initial mount — record the baseline but still honor the
+      // fresh-install "no active page yet" case so the iframe gets a
+      // src instead of staying blank.
+      if (activePageId === "" && data.pages.length > 0) {
+        const home = data.pages.find((p) => p.slug === "home" && p.locale === "en");
+        const pick = home ?? data.pages[0];
+        if (pick) activePageId = pick.id;
+      }
+      seenPageIds = currentIds;
+      return;
     }
+    const newIds = [...currentIds].filter((id) => !seenPageIds.has(id));
+    if (newIds.length === 0) return;
+    const newPages = data.pages.filter((p) => newIds.includes(p.id));
+    const newHome = newPages.find((p) => p.slug === "home" && p.locale === "en");
+    if (newHome) {
+      const cur = data.pages.find((p) => p.id === activePageId);
+      if (!cur || cur.slug === "home" || activePageId === "") {
+        activePageId = newHome.id;
+      }
+    }
+    seenPageIds = currentIds;
   });
 
   // v0.3.22 — debounce rapid iframe reloads. Bulk tool variants

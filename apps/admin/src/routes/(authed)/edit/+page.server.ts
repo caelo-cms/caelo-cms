@@ -2,6 +2,7 @@
 
 import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { error, fail, redirect } from "@sveltejs/kit";
 import type { ChatMessage, ChatModule, ChatSession } from "$lib/components/chat/types.js";
 import {
@@ -38,14 +39,23 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // P6.7.2 — drop the `published` filter. The live-edit surface always
   // renders the latest editable composition; whether a page is `draft`
   // or `published` is irrelevant for previewing inside /edit.
-  const pages = pagesR.ok ? (pagesR.value as { pages: PageRow[] }).pages : [];
+  //
+  // v0.9.3 — `pages` / `activePage(Id)` are `let` so we can re-bind them
+  // after the chat-branch context is known. The initial main-only pass
+  // here is needed to scope the chat lookup by activePageId; a second
+  // pass below with `ctxWithBranch` brings in any pages the AI created
+  // on the chat's branch (compose_page_from_spec, create_page, ...).
+  let pages = pagesR.ok ? (pagesR.value as { pages: PageRow[] }).pages : [];
 
   // Pick the page to render in the iframe. URL param wins; otherwise
   // prefer the seeded `home` slug; otherwise the first page in the list.
   const queryPage = url.searchParams.get("page");
-  const home = pages.find((p) => p.slug === "home" && p.locale === "en");
-  const activePage = pages.find((p) => p.id === queryPage) ?? home ?? pages[0] ?? null;
-  const activePageId = activePage?.id ?? null;
+  let activePage =
+    pages.find((p) => p.id === queryPage) ??
+    pages.find((p) => p.slug === "home" && p.locale === "en") ??
+    pages[0] ??
+    null;
+  let activePageId = activePage?.id ?? null;
 
   // P6.7.4 / v0.2.14 — chats are scoped two ways:
   //   - page-bound (`pageId = <activePageId>`): "this page's chats",
@@ -159,6 +169,35 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     );
   }
 
+  // v0.9.3 — branch-aware ctx so every downstream entity read (pages,
+  // modules, translation-source lookup) includes rows the AI created on
+  // this chat's branch. v0.9.0 added `branchVisibilityFilter(ctx)` to
+  // every list/get op; without `chatBranchId` set, the filter hides
+  // branched rows. The chat-runner builds the equivalent `humanCtxWithBranch`
+  // for its catalog reads (chat-runner.ts:259); /edit's load needs the
+  // same overlay or branched-create pages are invisible in the picker.
+  const ctxWithBranch: ExecutionContext = {
+    ...locals.ctx,
+    chatBranchId: activeChat.chatBranchId,
+  };
+
+  // v0.9.3 — re-list pages with the branch-aware ctx. The first pass
+  // (line 32) used locals.ctx because activePageId needed to be known
+  // to scope the chat lookup; this pass picks up branched-create pages
+  // and re-resolves activePage so the iframe lands on the new home on
+  // fresh installs (URL has neither ?page= nor a queryPage match in
+  // main-only pages).
+  const branchPagesR = await execute(registry, adapter, ctxWithBranch, "pages.list", {});
+  if (branchPagesR.ok) {
+    pages = (branchPagesR.value as { pages: PageRow[] }).pages;
+    activePage =
+      pages.find((p) => p.id === queryPage) ??
+      pages.find((p) => p.slug === "home" && p.locale === "en") ??
+      pages[0] ??
+      null;
+    activePageId = activePage?.id ?? null;
+  }
+
   // Load the chat's messages + the modules list (powers the chip picker
   // inside the embedded ChatPanel).
   let messages: ChatMessage[] = [];
@@ -170,7 +209,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       messages = (sR.value as { messages: ChatMessage[] }).messages;
     }
   }
-  const modulesR = await execute(registry, adapter, locals.ctx, "modules.list", {});
+  const modulesR = await execute(registry, adapter, ctxWithBranch, "modules.list", {});
   const modules = modulesR.ok ? (modulesR.value as { modules: ChatModule[] }).modules : [];
 
   // P6.6 polish — module ids the AI has touched on this chat's branch.
@@ -296,7 +335,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     status: "up_to_date" | "needs_update" | "not_started" | null;
   } | null = null;
   if (activePage && activePageId) {
-    const fullR = await execute(registry, adapter, locals.ctx, "pages.get", {
+    const fullR = await execute(registry, adapter, ctxWithBranch, "pages.get", {
       pageId: activePageId,
     });
     if (fullR.ok) {
@@ -307,7 +346,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         // Find the source page row by slug + the default locale (the
         // matrix's `sourcePageId` is reusable here, but a single
         // pages.list lookup is cheaper than re-running the matrix).
-        const sourceR = await execute(registry, adapter, locals.ctx, "pages.list", {
+        const sourceR = await execute(registry, adapter, ctxWithBranch, "pages.list", {
           slug: p.slug,
         });
         if (sourceR.ok) {
