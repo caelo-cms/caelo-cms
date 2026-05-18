@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.5
+
+### Fixes
+- af76687 /edit seen-set effect looped forever when data.pages was empty
+
 ## v0.9.4
 
 ### Fixes
