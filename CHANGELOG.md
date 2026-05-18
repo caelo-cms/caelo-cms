@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.0
+
+### Features
+- 8cec2ca Stage to toolbar, accurate counter, cross-chat awareness, lock humanization
+
 ## v0.7.5
 
 ### Fixes
