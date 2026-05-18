@@ -108,8 +108,34 @@
 
   let dialogOpen = $state(false);
   let popoverOpen = $state(false);
+  let popoverRef = $state<HTMLDivElement | null>(null);
+  let pillRef = $state<HTMLButtonElement | null>(null);
   let publishing = $state(false);
   let staging = $state(false);
+
+  // v0.8.1 — popover dismissal. The pre-v0.8.1 popover stayed open
+  // until the operator clicked the pill again; missing Esc + click-
+  // outside handlers was an a11y issue and a UX surprise (opening
+  // the Promote modal left the popover hanging). Attached via
+  // $effect so listeners cleanly mount/unmount with the open state.
+  $effect(() => {
+    if (!popoverOpen) return;
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === "Escape") popoverOpen = false;
+    }
+    function onClick(e: MouseEvent): void {
+      const t = e.target as Node | null;
+      if (!t) return;
+      if (popoverRef?.contains(t) || pillRef?.contains(t)) return;
+      popoverOpen = false;
+    }
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onClick);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onClick);
+    };
+  });
   let userPagesChoice = $state(true);
   let userModulesChoice = $state(true);
   let userTemplatesChoice = $state(true);
@@ -137,12 +163,33 @@
 
 {#if sessionPublished}
   <span class="text-xs text-muted-foreground italic">Chat published</span>
-{:else if branchChangeCount === 0}
+{:else if branchChangeCount === 0 && !lastStaged}
   <span class="text-xs text-muted-foreground">No pending changes</span>
+{:else if branchChangeCount === 0}
+  <!-- v0.8.1 — chat has no fresh pending edits but staging holds
+       a build the operator hasn't promoted yet. Show only the
+       Promote dropdown so the operator can finish the loop. The
+       Stage half is omitted (nothing to stage) but the ▾ stays
+       reachable. Reuses the same Promote modal. -->
+  <div class="inline-flex items-center" data-testid="stage-deploy">
+    <Button
+      type="button"
+      size="sm"
+      onclick={() => {
+        dialogOpen = true;
+      }}
+      data-testid="promote-only-btn"
+      title="Promote the current staging build to production"
+    >
+      Promote staging
+      <ChevronDown class="ml-1 size-3" />
+    </Button>
+  </div>
 {:else}
   <div class="relative inline-flex items-center gap-1" data-testid="stage-deploy">
     <!-- (N) badge: clickable popover with blast-radius preview. -->
     <button
+      bind:this={pillRef}
       type="button"
       class="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-500/40 hover:bg-amber-500/25 dark:text-amber-300"
       onclick={() => {
@@ -157,6 +204,7 @@
 
     {#if popoverOpen}
       <div
+        bind:this={popoverRef}
         class="absolute right-0 top-full z-40 mt-1 w-72 rounded-md border bg-background p-3 shadow-lg"
         role="dialog"
         aria-label="Pending-changes preview"
@@ -234,6 +282,11 @@
       aria-label="Open production publish options"
       data-testid="publish-dropdown-btn"
       onclick={() => {
+        // Close the preview popover when entering the Promote modal —
+        // both being open at once is visually noisy and the popover
+        // wouldn't dismiss on the modal's backdrop click (different
+        // event-target tree).
+        popoverOpen = false;
         dialogOpen = true;
       }}
     >
