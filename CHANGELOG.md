@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.1
+
+### Chores
+- 57c0d38 biome lint cleanup (exclude claude-workflow + auto-fixes)
+
 ## v0.9.0
 
 ### Features
