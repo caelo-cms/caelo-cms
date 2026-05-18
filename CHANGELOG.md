@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.1
+
+### Fixes
+- 2edc572 StageDeployButton popover dismissal + Promote-only fallback
+
 ## v0.8.0
 
 ### Features
