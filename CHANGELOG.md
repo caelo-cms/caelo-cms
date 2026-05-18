@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.4
+
+### Fixes
+- 6d1af8e floating overlay drag/resize/Send broken — iframe ate the pointer-up
+
 ## v0.9.3
 
 ### Fixes
