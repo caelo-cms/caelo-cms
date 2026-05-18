@@ -69,6 +69,16 @@
     /** v0.2.14 — global chats (`page_id IS NULL`) for cross-cutting work. */
     globalChats?: ChatRef[];
     onToolResult?: (payload: ToolResultPayload) => void;
+    /**
+     * v0.9.4 — fires `true` when a drag or resize gesture starts and
+     * `false` when it ends (or is browser-cancelled). The parent uses
+     * this to disable `pointer-events` on the live-preview iframe for
+     * the gesture's duration — without it, the iframe's document
+     * hijacks the pointer-up event as soon as the cursor crosses into
+     * its rectangle, leaving setPointerCapture stuck and swallowing
+     * every subsequent click on the overlay.
+     */
+    onDragStateChange?: (active: boolean) => void;
   }
   let {
     session,
@@ -80,6 +90,7 @@
     pageChats = [],
     globalChats = [],
     onToolResult,
+    onDragStateChange,
   }: Props = $props();
 
   // Old persisted layouts may lack pinnedHeight/pinnedWidth — merge with
@@ -114,6 +125,7 @@
       origY: layout.y,
     };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    onDragStateChange?.(true);
   }
   function onPointerMoveTitle(e: PointerEvent): void {
     if (!dragState) return;
@@ -126,8 +138,14 @@
     };
   }
   function onPointerUpTitle(e: PointerEvent): void {
+    if (dragState === null) return;
     dragState = null;
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // Capture may already be gone (pointercancel path); ignore.
+    }
+    onDragStateChange?.(false);
   }
 
   // Resize handlers. SE corner in floating mode; top edge in
@@ -154,6 +172,7 @@
       origH: kind === "top" ? layout.pinnedHeight : layout.height,
     };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    onDragStateChange?.(true);
   }
   function onPointerMoveResize(e: PointerEvent): void {
     if (!resizeState) return;
@@ -182,8 +201,14 @@
     }
   }
   function onPointerUpResize(e: PointerEvent): void {
+    if (resizeState === null) return;
     resizeState = null;
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // Capture may already be gone (pointercancel path); ignore.
+    }
+    onDragStateChange?.(false);
   }
 
   // Position styles per pin mode.
@@ -280,6 +305,7 @@
         onpointerdown={(e) => startResize("top", e)}
         onpointermove={onPointerMoveResize}
         onpointerup={onPointerUpResize}
+        onpointercancel={onPointerUpResize}
       ></button>
     {/if}
 
@@ -294,6 +320,7 @@
         onpointerdown={(e) => startResize("left", e)}
         onpointermove={onPointerMoveResize}
         onpointerup={onPointerUpResize}
+        onpointercancel={onPointerUpResize}
       ></button>
     {/if}
 
@@ -309,6 +336,7 @@
       onpointerdown={onPointerDownTitle}
       onpointermove={onPointerMoveTitle}
       onpointerup={onPointerUpTitle}
+      onpointercancel={onPointerUpTitle}
     >
       <GripHorizontal class="size-4 text-muted-foreground" />
       <span class="text-xs font-medium text-muted-foreground">Live edit</span>
@@ -506,6 +534,7 @@
         onpointerdown={(e) => startResize("se", e)}
         onpointermove={onPointerMoveResize}
         onpointerup={onPointerUpResize}
+        onpointercancel={onPointerUpResize}
       ></button>
     {/if}
   </Card>

@@ -44,6 +44,12 @@
 
   let { data, form } = $props();
   let activePageId = $state(data.activePageId ?? "");
+  // v0.9.4 — true while the Overlay's title-bar drag or any resize
+  // handle is mid-gesture. Drives the iframe's pointer-events toggle
+  // below so the cursor crossing into the iframe area can't hijack the
+  // pointer-up — leaving setPointerCapture stuck and swallowing every
+  // subsequent click on the overlay (Resize, Collapse, Send, etc).
+  let overlayDragging = $state(false);
   // Active page metadata derived from activePageId — drives URL display.
   const activePage = $derived(data.pages.find((p) => p.id === activePageId) ?? null);
   // The path the iframe is currently showing (covers click-through nav
@@ -438,6 +444,7 @@
         title="Live preview"
         sandbox="allow-scripts allow-same-origin"
         class="h-full w-full border-0 bg-white"
+        style:pointer-events={overlayDragging ? "none" : "auto"}
       ></iframe>
     {:else}
       <div class="flex h-full items-center justify-center text-muted-foreground">
@@ -457,6 +464,7 @@
     pageChats={data.pageChats}
     globalChats={data.globalChats}
     onToolResult={onAiToolResult}
+    onDragStateChange={(active) => (overlayDragging = active)}
   />
 
   <!-- P6.6b — side-by-side iframe diff. Closes via the X button or
