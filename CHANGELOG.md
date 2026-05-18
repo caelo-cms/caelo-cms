@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.2
+
+### Fixes
+- d3b60fd upgrade lifecycle ran migrations against the OLD image
+
 ## v0.9.1
 
 ### Chores
