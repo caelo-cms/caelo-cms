@@ -200,22 +200,26 @@
   });
 
   // v0.9.3 — auto-switch the iframe when the AI creates a new home page
-  // mid-chat. The fresh-install fast path (activePageId === "") still
-  // works because the seen-set starts empty and the first refresh of
-  // data.pages adds every id as "new", so newHome wins. The
-  // operator-already-on-something path uses a diff against the
-  // previously-seen ids so we only switch when a HOME row newly
-  // appears (compose_page_from_spec / create_page with slug=home),
+  // mid-chat. The operator-already-on-something path uses a diff
+  // against the previously-seen ids so we only switch when a HOME row
+  // newly appears (compose_page_from_spec / create_page with slug=home),
   // never on every load. Operators who deliberately picked a non-home
   // page keep that selection unless their pick was itself a previous
   // home — that's the build-from-scratch flow taking over.
+  //
+  // v0.9.5 — `initialized` flag instead of `seenPageIds.size === 0` as
+  // the init gate. Without it, an empty `data.pages` on mount (fresh
+  // install before any AI activity) loops the effect forever: each run
+  // writes a NEW empty Set to seenPageIds, the size === 0 invariant
+  // stays true, Svelte triggers another run, infinite update depth.
+  let initialized = $state(false);
   let seenPageIds = $state(new Set<string>());
   $effect(() => {
     const currentIds = new Set(data.pages.map((p) => p.id));
-    if (seenPageIds.size === 0) {
-      // Initial mount — record the baseline but still honor the
-      // fresh-install "no active page yet" case so the iframe gets a
-      // src instead of staying blank.
+    if (!initialized) {
+      initialized = true;
+      // Fresh-install "no active page yet" — pick the home (or first)
+      // so the iframe gets a src instead of staying blank.
       if (activePageId === "" && data.pages.length > 0) {
         const home = data.pages.find((p) => p.slug === "home" && p.locale === "en");
         const pick = home ?? data.pages[0];
