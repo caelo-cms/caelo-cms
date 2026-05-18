@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.6
+
+### Fixes
+- 3543608 /edit preview iframe was 404ing for AI-branched pages
+
 ## v0.9.5
 
 ### Fixes
