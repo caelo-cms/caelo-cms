@@ -274,7 +274,20 @@ export const chatPublishInput = z
       .array(
         z
           .object({
-            kind: z.enum(["module", "template", "page", "pageLayout", "pageModuleContent"]),
+            // v0.9.0 — added "layout" + "structuredSet" to the enum so
+            // the Stage picker can include/exclude them. Pre-v0.9.0 the
+            // helper accepted "structuredSet" via the underlying SQL
+            // query but the input schema rejected it — minor gap closed
+            // alongside the branched-create work.
+            kind: z.enum([
+              "module",
+              "template",
+              "page",
+              "pageLayout",
+              "pageModuleContent",
+              "layout",
+              "structuredSet",
+            ]),
             entityId: z.string().uuid(),
           })
           .strict(),

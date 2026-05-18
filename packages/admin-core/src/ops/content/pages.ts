@@ -21,6 +21,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot, loadPageLayoutState, loadPageState } from "../../snapshots/index.js";
 import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
@@ -124,10 +125,16 @@ export const listPagesOp = defineOperation({
     locale: z.string().optional(),
   }),
   output: z.object({ pages: z.array(pageRowSchema) }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware: chats see main + their own branched creates.
     const filters = [];
     if (!input.includeDeleted) filters.push(sql`deleted_at IS NULL`);
     if (input.locale !== undefined) filters.push(sql`locale = ${input.locale}`);
+    if (ctx.chatBranchId) {
+      filters.push(sql`(chat_branch_id IS NULL OR chat_branch_id = ${ctx.chatBranchId}::uuid)`);
+    } else {
+      filters.push(sql`chat_branch_id IS NULL`);
+    }
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
              status, translation_status, version, created_at, updated_at, deleted_at
@@ -146,11 +153,15 @@ export const getPageOp = defineOperation({
   database: "cms_admin",
   input: z.object({ pageId: z.string().uuid() }),
   output: z.object({ page: pageRowSchema }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware read so chat sees its own branched-create
+    // pages immediately after pages.create returns the pageId
+    // (re-enables the v0.5.7 workflow that was reverted in v0.5.19).
+    const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
              status, translation_status, version, created_at, updated_at, deleted_at
-      FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
+      FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
     const row = rows[0];
     if (!row) {
@@ -173,11 +184,14 @@ export const getPageWithModulesOp = defineOperation({
   database: "cms_admin",
   input: z.object({ pageId: z.string().uuid() }),
   output: z.object({ page: pageWithModulesSchema }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware so create_page → add_module_to_page chain
+    // works inside the same chat without waiting for merge.
+    const branchFilter = branchVisibilityFilter(ctx);
     const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
              status, translation_status, version, created_at, updated_at, deleted_at
-      FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
+      FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
     const pageRow = pageRows[0];
     if (!pageRow) {
@@ -321,6 +335,22 @@ export const createPageOp = defineOperation({
       }
       templateId = defaults.defaultTemplateId;
     }
+    // v0.9.0 — cross-chat write-block: the templateId must be usable
+    // by the caller's branch (either main or branched to this chat).
+    // Rejects a chat-2 attempt to reference chat-1's branched
+    // template (defense-in-depth on top of the branch-aware reads).
+    const tplUsable = await requireUsableEntity(tx, ctx, "template", templateId, "pages.create");
+    if (!tplUsable.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "pages.create",
+        input,
+        succeeded: false,
+        resultSummary: "template-not-usable",
+      });
+      return err(tplUsable.error);
+    }
     const tplExists = (await tx.execute(sql`
       SELECT 1 FROM templates WHERE id = ${templateId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as { exists: number }[];
@@ -345,9 +375,15 @@ export const createPageOp = defineOperation({
         },
       });
     }
+    // v0.9.0 — same-branch slug uniqueness only.
+    const pageDupNamespace = ctx.chatBranchId ?? "00000000-0000-0000-0000-000000000000";
     const dup = (await tx.execute(sql`
       SELECT 1 FROM pages
-      WHERE slug = ${input.slug} AND locale = ${input.locale} AND deleted_at IS NULL LIMIT 1
+      WHERE slug = ${input.slug}
+        AND locale = ${input.locale}
+        AND deleted_at IS NULL
+        AND COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid) = ${pageDupNamespace}::uuid
+      LIMIT 1
     `)) as unknown as { exists: number }[];
     if (dup.length > 0) {
       await recordAudit(tx, {
@@ -383,15 +419,25 @@ export const createPageOp = defineOperation({
     // shows up in the chat's branch_change_count + appears in
     // /site-history; publish path's UPSERT no-ops on the create case
     // since the row already exists.
+    // v0.9.0 — re-enable branched create. The v0.5.19 reversal of
+    // v0.5.7's branched pages.create was because pages.get / pages.list
+    // / pages.get_with_modules queried only the live table; branched-
+    // only pages were invisible to every "create then operate on" AI
+    // workflow. v0.9.0 fixes that by retrofitting branchVisibilityFilter
+    // on those reads (lines ~127, ~149, ~177), so the create-then-read
+    // chain works again — this time WITH branch isolation as a side
+    // effect. Same-chat reads see the new page; cross-chat reads don't;
+    // chat.merge_to_main clears the tag to graduate.
     const rows = (await tx.execute(sql`
-      INSERT INTO pages (slug, locale, name, title, template_id, status)
+      INSERT INTO pages (slug, locale, name, title, template_id, status, chat_branch_id)
       VALUES (
         ${input.slug},
         ${input.locale},
         ${input.name ?? input.title},
         ${input.title},
         ${templateId}::uuid,
-        ${input.status}
+        ${input.status},
+        ${ctx.chatBranchId ?? null}::uuid
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -659,6 +705,14 @@ export const setPageModulesOp = defineOperation({
     // Verify every moduleId references a non-deleted module.
     const allModuleIds = [...new Set(input.blocks.flatMap((b) => b.moduleIds))];
     if (allModuleIds.length > 0) {
+      // v0.9.0 — cross-chat write-block: each moduleId must be on
+      // main or branched to the caller's chat. References to another
+      // chat's branched module get rejected here (defense-in-depth
+      // on top of the branch-aware reads above).
+      for (const mid of allModuleIds) {
+        const check = await requireUsableEntity(tx, ctx, "module", mid, "pages.set_modules");
+        if (!check.ok) return err(check.error);
+      }
       const liveRows = (await tx.execute(sql`
         SELECT id::text AS id FROM modules
         WHERE id IN (${sql.join(

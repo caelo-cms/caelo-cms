@@ -645,4 +645,38 @@ export const actions: Actions = {
       },
     };
   },
+  /**
+   * v0.9.0 — atomic staging → production promote. Replaces the v0.8
+   * `?/publishToProduction` re-bake-with-kind-filter path: a Promote is
+   * a sync, not a build. `deploy.promote(staging, production)` swaps
+   * the production target's symlink (self-hosted) or copies the staging
+   * tree (cloud) to point at the last-staged build. Atomic; production
+   * gets byte-identical HTML to what the operator reviewed on staging.
+   *
+   * No per-kind picker — Promote operates on whatever was last Staged.
+   * If the operator wants to selectively ship parts, they Stage those
+   * parts first, then Promote.
+   */
+  promoteToProduction: async ({ request, locals }) => {
+    requirePermission(locals, "deploy.trigger");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const promote = await execute(registry, adapter, locals.ctx, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+    });
+    if (!promote.ok) {
+      return fail(500, { error: `Promote failed: ${describeError(promote.error)}` });
+    }
+    const v = promote.value as { fromRunId: string; toRunId: string; buildId: string };
+    return {
+      published: {
+        targetName: "production",
+        fromRunId: v.fromRunId,
+        toRunId: v.toRunId,
+        buildId: v.buildId,
+      },
+    };
+  },
 };

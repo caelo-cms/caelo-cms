@@ -18,6 +18,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 
@@ -83,8 +84,12 @@ export const listLayoutsOp = defineOperation({
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }).strict(),
   output: z.object({ layouts: z.array(layoutRow) }),
-  handler: async (_ctx, input, tx) => {
-    const filter = input.includeDeleted ? sql`` : sql`WHERE deleted_at IS NULL`;
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware: chat sees its own branched creates + main.
+    const branchFilter = branchVisibilityFilter(ctx);
+    const filter = input.includeDeleted
+      ? sql`WHERE 1=1 ${branchFilter}`
+      : sql`WHERE deleted_at IS NULL ${branchFilter}`;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, display_name, html, css,
              created_at, updated_at, deleted_at
@@ -119,14 +124,16 @@ export const getLayoutOp = defineOperation({
       message: "either layoutId or slug is required",
     }),
   output: z.object({ layout: layoutRow.nullable() }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware read.
+    const branchFilter = branchVisibilityFilter(ctx);
     const where = input.layoutId
       ? sql`id = ${input.layoutId}::uuid`
       : sql`slug = ${input.slug ?? ""}`;
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, display_name, html, css,
              created_at, updated_at, deleted_at
-      FROM layouts WHERE ${where} LIMIT 1
+      FROM layouts WHERE ${where} ${branchFilter} LIMIT 1
     `)) as unknown as RawLayoutRow[];
     const r = rows[0];
     if (!r) return ok({ layout: null });
@@ -171,8 +178,15 @@ export const createLayoutOp = defineOperation({
     }),
   output: z.object({ layoutId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // v0.9.0 — same-branch uniqueness only (per migration 0089 each
+    // branch + main own their own slug namespace).
+    const dupNamespace = ctx.chatBranchId ?? "00000000-0000-0000-0000-000000000000";
     const dup = (await tx.execute(sql`
-      SELECT 1 FROM layouts WHERE slug = ${input.slug} AND deleted_at IS NULL LIMIT 1
+      SELECT 1 FROM layouts
+      WHERE slug = ${input.slug}
+        AND deleted_at IS NULL
+        AND COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid) = ${dupNamespace}::uuid
+      LIMIT 1
     `)) as unknown as { exists: number }[];
     if (dup.length > 0) {
       return err({
@@ -181,9 +195,17 @@ export const createLayoutOp = defineOperation({
         message: `layout slug "${input.slug}" already in use`,
       });
     }
+    // v0.9.0 — branched-create: tagged with chat_branch_id when in chat
+    // context; chat.merge_to_main clears the tag to graduate to main.
     const rows = (await tx.execute(sql`
-      INSERT INTO layouts (slug, display_name, html, css)
-      VALUES (${input.slug}, ${input.displayName}, ${input.html}, ${input.css})
+      INSERT INTO layouts (slug, display_name, html, css, chat_branch_id)
+      VALUES (
+        ${input.slug},
+        ${input.displayName},
+        ${input.html},
+        ${input.css},
+        ${ctx.chatBranchId ?? null}::uuid
+      )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const layoutId = rows[0]?.id;
@@ -395,6 +417,13 @@ export const setLayoutModulesOp = defineOperation({
       });
     }
     if (input.moduleIds.length > 0) {
+      // v0.9.0 — cross-chat write-block. Each moduleId must be on
+      // main or branched to the caller's chat; references to
+      // another chat's branched modules get rejected here.
+      for (const moduleId of input.moduleIds) {
+        const check = await requireUsableEntity(tx, ctx, "module", moduleId, "layout_modules.set");
+        if (!check.ok) return err(check.error);
+      }
       const live = (await tx.execute(sql`
         SELECT id::text AS id FROM modules
         WHERE id IN (${sql.join(

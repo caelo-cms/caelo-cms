@@ -234,6 +234,13 @@ export async function* runChatTurn(
       extendedThinkingEnabled: boolean;
       extendedThinkingBudgetTokens: number | null;
     };
+    // v0.9.0 — branched-create reads. The catalog fetches below
+    // (layouts.list / templates.list / pages.list) must include the
+    // chat's own branched-create entities, otherwise the AI's
+    // describe() state misses them and tools like bootstrap_site_scaffold
+    // re-propose a layout that's already mid-create on this chat.
+    // Constructed here right after the session lookup so it's
+    // available for every downstream catalog read.
     messages: {
       role: "user" | "assistant" | "tool";
       content: string;
@@ -241,6 +248,18 @@ export async function* runChatTurn(
       toolCallId: string | null;
       thinkingBlocks: { thinking: string; signature: string }[] | null;
     }[];
+  };
+
+  // v0.9.0 — branch-aware ctx for every downstream read so the AI's
+  // pages.list / layouts.list / templates.list / pages.get etc.
+  // include the chat's own branched-create entities (the v0.5.7-
+  // attempt that v0.5.19 reverted — now properly retrofitted with
+  // the read overlay in place). Defined right after sessionResult so
+  // every subsequent fetch below uses it.
+  const humanCtxWithBranch: ExecutionContext = {
+    ...humanCtx,
+    chatBranchId: session.session.chatBranchId,
+    chatTaskId: input.chatSessionId,
   };
 
   // v0.2.54 — Resolve extended-thinking config for THIS turn.
@@ -302,7 +321,7 @@ export async function* runChatTurn(
   // edit_module on the matching module-id).
   let pageContextBlock: string | undefined;
   if (input.activePageId) {
-    const pageR = await execute(registry, adapter, humanCtx, "pages.get_with_modules", {
+    const pageR = await execute(registry, adapter, humanCtxWithBranch, "pages.get_with_modules", {
       pageId: input.activePageId,
     });
     if (pageR.ok) {
@@ -388,7 +407,7 @@ export async function* runChatTurn(
   // chunks. Each is short and skipped when empty so a fresh install
   // doesn't drown in placeholders.
   let allPagesBlock: string | undefined;
-  const allPagesR = await execute(registry, adapter, humanCtx, "pages.list", {});
+  const allPagesR = await execute(registry, adapter, humanCtxWithBranch, "pages.list", {});
   if (allPagesR.ok) {
     const ps = (
       allPagesR.value as {
@@ -456,16 +475,18 @@ export async function* runChatTurn(
   // P6.7.6 — layouts (site-wide chrome) + site_defaults so the AI knows
   // which layout/template to use when creating a page and which tool
   // surface (page / template / layout) is appropriate for a given
-  // change request.
+  // change request. v0.9.0 — uses humanCtxWithBranch (defined above)
+  // so the AI sees its own in-flight branched-create layouts +
+  // templates.
   let layoutsBlock: string | undefined;
   let siteDefaultsBlock: string | undefined;
-  const layoutsR = await execute(registry, adapter, humanCtx, "layouts.list", {
+  const layoutsR = await execute(registry, adapter, humanCtxWithBranch, "layouts.list", {
     includeDeleted: false,
   });
-  const tplsR = await execute(registry, adapter, humanCtx, "templates.list", {
+  const tplsR = await execute(registry, adapter, humanCtxWithBranch, "templates.list", {
     includeDeleted: false,
   });
-  const defaultsR = await execute(registry, adapter, humanCtx, "site_defaults.get", {});
+  const defaultsR = await execute(registry, adapter, humanCtxWithBranch, "site_defaults.get", {});
   if (layoutsR.ok) {
     const layouts = (
       layoutsR.value as {

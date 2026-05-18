@@ -122,7 +122,18 @@ export const renderPagePreviewOp = defineOperation({
     pageSlug: z.string(),
     pageLocale: z.string(),
   }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware preview. The iframe shows the caller's
+    // branched-create pages / templates / layouts (in addition to
+    // main). Without this filter, a brand-new chat that just created
+    // its first page+template+layout would fail to render because
+    // the JOIN'd live rows are branched to the chat (invisible to
+    // an unfiltered query when chat_branch_id is set on this row).
+    const branchScope = ctx.chatBranchId
+      ? sql`AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)
+            AND (t.chat_branch_id IS NULL OR t.chat_branch_id = ${ctx.chatBranchId}::uuid)
+            AND (l.chat_branch_id IS NULL OR l.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+      : sql`AND p.chat_branch_id IS NULL AND t.chat_branch_id IS NULL AND l.chat_branch_id IS NULL`;
     const pageRows = (await tx.execute(sql`
       SELECT p.id::text AS page_id, p.slug AS slug, p.locale AS locale, p.title AS title,
              t.html AS template_html, t.css AS template_css,
@@ -131,7 +142,8 @@ export const renderPagePreviewOp = defineOperation({
       FROM pages p
       JOIN templates t ON t.id = p.template_id
       JOIN layouts l   ON l.id = t.layout_id
-      WHERE p.id = ${input.pageId}::uuid AND p.deleted_at IS NULL LIMIT 1
+      WHERE p.id = ${input.pageId}::uuid AND p.deleted_at IS NULL ${branchScope}
+      LIMIT 1
     `)) as unknown as {
       page_id: string;
       slug: string;
@@ -230,6 +242,11 @@ export const renderPagePreviewOp = defineOperation({
             modRows = [];
           } else {
             const byId = new Map<string, ModuleSourceRow>();
+            // v0.9.0 — branch-aware module fetch so chat sees its
+            // own branched-create modules in the iframe.
+            const moduleBranchScope = ctx.chatBranchId
+              ? sql`AND (m.chat_branch_id IS NULL OR m.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+              : sql`AND m.chat_branch_id IS NULL`;
             const fetched = (await tx.execute(sql`
               SELECT m.id::text AS module_id, m.slug AS slug, m.display_name AS display_name,
                      m.html AS html, m.css AS css, m.js AS js, m.fields AS fields
@@ -237,7 +254,7 @@ export const renderPagePreviewOp = defineOperation({
               WHERE m.id IN (${sql.join(
                 moduleIds.map((id) => sql`${id}::uuid`),
                 sql`, `,
-              )}) AND m.deleted_at IS NULL
+              )}) AND m.deleted_at IS NULL ${moduleBranchScope}
             `)) as unknown as Omit<ModuleSourceRow, "block_name" | "position">[];
             for (const m of fetched) {
               byId.set(m.module_id, { ...m, block_name: "", position: 0 });

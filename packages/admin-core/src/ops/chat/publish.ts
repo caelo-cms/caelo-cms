@@ -369,8 +369,10 @@ export async function mergeBranchSnapshotsToMain(
         WHERE id = ${e.entityId}::uuid
       `);
     } else if (e.kind === "page") {
+      // v0.9.0 — pages.create now branches; merge UPSERTs the live row
+      // AND clears chat_branch_id to graduate to main.
       await tx.execute(sql`
-        INSERT INTO pages (id, slug, locale, name, title, template_id, status, deleted_at, version)
+        INSERT INTO pages (id, slug, locale, name, title, template_id, status, deleted_at, version, chat_branch_id)
         VALUES (
           ${e.entityId}::uuid,
           ${e.state.slug},
@@ -380,16 +382,18 @@ export async function mergeBranchSnapshotsToMain(
           ${e.state.templateId}::uuid,
           ${e.state.status},
           ${e.state.deletedAt ? sql`now()` : sql`NULL`},
-          ${e.state.version}
+          ${e.state.version},
+          NULL
         )
         ON CONFLICT (id) DO UPDATE SET
-          slug        = EXCLUDED.slug,
-          title       = EXCLUDED.title,
-          template_id = EXCLUDED.template_id,
-          status      = EXCLUDED.status,
-          deleted_at  = EXCLUDED.deleted_at,
-          version     = pages.version + 1,
-          updated_at  = now()
+          slug           = EXCLUDED.slug,
+          title          = EXCLUDED.title,
+          template_id    = EXCLUDED.template_id,
+          status         = EXCLUDED.status,
+          deleted_at     = EXCLUDED.deleted_at,
+          chat_branch_id = NULL,
+          version        = pages.version + 1,
+          updated_at     = now()
       `);
     } else if (e.kind === "pageLayout") {
       await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${e.entityId}::uuid`);
@@ -408,6 +412,8 @@ export async function mergeBranchSnapshotsToMain(
         WHERE id = ${e.entityId}::uuid
       `);
     } else if (e.kind === "module") {
+      // v0.9.0 — also clears chat_branch_id so branched-create
+      // modules graduate to main on merge.
       await tx.execute(sql`
         UPDATE modules
         SET slug = ${e.state.slug},
@@ -417,10 +423,44 @@ export async function mergeBranchSnapshotsToMain(
             js = ${e.state.js},
             fields = ${JSON.stringify(e.state.fields)}::text::jsonb,
             deleted_at = ${e.state.deletedAt ? sql`now()` : sql`NULL`},
+            chat_branch_id = NULL,
+            updated_at = now()
+        WHERE id = ${e.entityId}::uuid
+      `);
+    } else if (e.kind === "template") {
+      // v0.9.0 — template entity merge case (previously silently
+      // dropped). TemplateState doesn't carry layout_id (the binding
+      // lives only on the live row); the live UPDATE / branched
+      // INSERT already set it, so merge just replays the editable
+      // fields + clears chat_branch_id.
+      await tx.execute(sql`
+        UPDATE templates
+        SET slug = ${e.state.slug},
+            display_name = ${e.state.displayName},
+            html = ${e.state.html},
+            css = ${e.state.css},
+            deleted_at = ${e.state.deletedAt ? sql`now()` : sql`NULL`},
+            chat_branch_id = NULL,
             updated_at = now()
         WHERE id = ${e.entityId}::uuid
       `);
     }
+  }
+
+  // v0.9.0 — bulk clear chat_branch_id for any branched-create layouts
+  // on this chat's branch. Layouts emit snapshots with entities=[] so
+  // the per-entity replay loop above never sees them; query the live
+  // table directly. Same for any layout entities the operator's filter
+  // doesn't already cover via the replay path.
+  if (includeAll) {
+    // Honor includeAll only — partial-merge with entities filter doesn't
+    // sweep layouts because we have no way to map a layout id into the
+    // entities[] filter today (layouts.create snapshot carries no
+    // entity row). Full-merge clears everything branched to this chat.
+    await tx.execute(sql`
+      UPDATE layouts SET chat_branch_id = NULL
+      WHERE chat_branch_id = ${session.chat_branch_id}::uuid
+    `);
   }
 
   if (options.recordPublishMarks) {

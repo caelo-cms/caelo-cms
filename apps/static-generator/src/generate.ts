@@ -245,6 +245,14 @@ export async function generateSite(args: {
       AND t.deleted_at IS NULL
       AND l.deleted_at IS NULL
       AND p.status = 'published'
+      -- v0.9.0 — main-only. Branched-create entities (pages /
+      -- templates / layouts tagged with chat_branch_id) are
+      -- chat-scoped previews and MUST NOT ship to production or
+      -- staging. The picker / chat.merge_to_main is the only path
+      -- that promotes branched entities to main.
+      AND p.chat_branch_id IS NULL
+      AND t.chat_branch_id IS NULL
+      AND l.chat_branch_id IS NULL
       ${incrementalFilter}
     ORDER BY p.slug ASC
   `)) as unknown as Array<PageRow & { content_hash: string | null }>;
@@ -283,6 +291,8 @@ export async function generateSite(args: {
            m.js          AS js
     FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
     WHERE m.deleted_at IS NULL
+      -- v0.9.0 — main-only; branched modules don't ship.
+      AND m.chat_branch_id IS NULL
     ORDER BY lm.layout_id, lm.block_name ASC, lm.position ASC
   `)) as unknown as {
     layout_id: string;
@@ -386,7 +396,10 @@ export async function generateSite(args: {
              NULL::uuid AS experiment_id,
              NULL::text AS variant_label
       FROM page_modules pm JOIN modules m ON m.id = pm.module_id
-      WHERE pm.page_id = ${page.page_id}::uuid AND m.deleted_at IS NULL
+      WHERE pm.page_id = ${page.page_id}::uuid
+        AND m.deleted_at IS NULL
+        -- v0.9.0 — main-only.
+        AND m.chat_branch_id IS NULL
       ORDER BY pm.block_name ASC, pm.position ASC
     `)) as unknown as ModuleRow[];
 

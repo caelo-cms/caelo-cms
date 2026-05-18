@@ -10,6 +10,7 @@ import { err, ok, templateCreateSchema, templateUpdateSchema } from "@caelo-cms/
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { branchVisibilityFilter } from "../../branch.js";
 import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot, loadTemplateState } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
@@ -84,20 +85,22 @@ export const listTemplatesOp = defineOperation({
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }),
   output: z.object({ templates: z.array(templateRowSchema) }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware: chats see main + their own branched creates.
+    const branchFilter = branchVisibilityFilter(ctx);
     const templates = (await tx.execute(
       input.includeDeleted
         ? sql`
             SELECT id::text AS id, slug, display_name, html, css,
                    layout_id::text AS layout_id,
                    created_at, updated_at, deleted_at
-            FROM templates ORDER BY created_at ASC
+            FROM templates WHERE 1=1 ${branchFilter} ORDER BY created_at ASC
           `
         : sql`
             SELECT id::text AS id, slug, display_name, html, css,
                    layout_id::text AS layout_id,
                    created_at, updated_at, deleted_at
-            FROM templates WHERE deleted_at IS NULL ORDER BY created_at ASC
+            FROM templates WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
           `,
     )) as unknown as RawTemplateRow[];
     const blocks = (await tx.execute(sql`
@@ -115,12 +118,14 @@ export const getTemplateOp = defineOperation({
   database: "cms_admin",
   input: z.object({ templateId: z.string().uuid() }),
   output: z.object({ template: templateRowSchema }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware read.
+    const branchFilter = branchVisibilityFilter(ctx);
     const templates = (await tx.execute(sql`
       SELECT id::text AS id, slug, display_name, html, css,
              layout_id::text AS layout_id,
              created_at, updated_at, deleted_at
-      FROM templates WHERE id = ${input.templateId}::uuid LIMIT 1
+      FROM templates WHERE id = ${input.templateId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawTemplateRow[];
     if (templates.length === 0) {
       return err({
@@ -159,8 +164,15 @@ export const createTemplateOp = defineOperation({
   input: templateCreateSchema,
   output: z.object({ templateId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // v0.9.0 — same-branch uniqueness only (each branch + main own their
+    // own slug namespace per migration 0089).
+    const dupNamespace = ctx.chatBranchId ?? "00000000-0000-0000-0000-000000000000";
     const dup = (await tx.execute(sql`
-      SELECT 1 FROM templates WHERE slug = ${input.slug} AND deleted_at IS NULL LIMIT 1
+      SELECT 1 FROM templates
+      WHERE slug = ${input.slug}
+        AND deleted_at IS NULL
+        AND COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid) = ${dupNamespace}::uuid
+      LIMIT 1
     `)) as unknown as { exists: number }[];
     if (dup.length > 0) {
       await recordAudit(tx, {
@@ -227,9 +239,18 @@ export const createTemplateOp = defineOperation({
         });
       }
     }
+    // v0.9.0 — branched-create: branched until chat.merge_to_main
+    // clears the chat_branch_id tag.
     const rows = (await tx.execute(sql`
-      INSERT INTO templates (slug, display_name, html, css, layout_id)
-      VALUES (${input.slug}, ${input.displayName}, ${input.html}, ${input.css}, ${layoutId}::uuid)
+      INSERT INTO templates (slug, display_name, html, css, layout_id, chat_branch_id)
+      VALUES (
+        ${input.slug},
+        ${input.displayName},
+        ${input.html},
+        ${input.css},
+        ${layoutId}::uuid,
+        ${ctx.chatBranchId ?? null}::uuid
+      )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const templateId = rows[0]?.id;
@@ -280,6 +301,8 @@ export const createTemplateOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "templates.create",
         description: `templates.create slug=${input.slug}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "template", entityId: templateId, state }],
       });
     }
@@ -389,6 +412,8 @@ export const updateTemplateOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "templates.update",
         description: `templates.update slug=${state.slug}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "template", entityId: input.templateId, state }],
       });
     }
@@ -453,6 +478,8 @@ export const setTemplateLayoutOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "templates.update",
         description: `templates.set_layout slug=${state.slug}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "template", entityId: input.templateId, state }],
       });
     }
@@ -539,6 +566,8 @@ export const deleteTemplateOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "templates.delete",
         description: `templates.delete slug=${state.slug}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "template", entityId: input.templateId, state }],
       });
     }

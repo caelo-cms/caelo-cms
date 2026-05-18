@@ -103,7 +103,10 @@
   const pagesCount = $derived(countByKind("pages", ["page", "pageLayout", "pageModuleContent"]));
   const modulesCount = $derived(countByKind("globals", ["module"]));
   const templatesCount = $derived(countByKind("globals", ["template"]));
-  const layoutChromeCount = $derived(countByKind("globals", ["layout"]));
+  // v0.9.0 — merged "Layout chrome" into "Layouts": one bucket counts both
+  // layout-the-entity edits + module placements on layout blocks. Operator
+  // doesn't have to disambiguate two flavors of "layout-y" change.
+  const layoutsCount = $derived(countByKind("globals", ["layout"]));
   const listsCount = $derived(countByKind("lists", ["structuredSet"]));
 
   let dialogOpen = $state(false);
@@ -140,7 +143,7 @@
   let userModulesChoice = $state(true);
   let userTemplatesChoice = $state(true);
   let userListsChoice = $state(true);
-  let userLayoutChromeChoice = $state(true);
+  let userLayoutsChoice = $state(true);
   /**
    * Effective checkbox state. When a kind has zero changes, force it
    * off + non-submittable regardless of the user's last toggle.
@@ -149,7 +152,7 @@
   const effectiveModules = $derived(modulesCount > 0 && userModulesChoice);
   const effectiveTemplates = $derived(templatesCount > 0 && userTemplatesChoice);
   const effectiveLists = $derived(listsCount > 0 && userListsChoice);
-  const effectiveLayoutChrome = $derived(layoutChromeCount > 0 && userLayoutChromeChoice);
+  const effectiveLayouts = $derived(layoutsCount > 0 && userLayoutsChoice);
 
   function formatRelativeTime(iso: string): string {
     const t = new Date(iso).getTime();
@@ -243,66 +246,62 @@
       </div>
     {/if}
 
+    <!-- v0.9.0 — Stage opens the modal (modal shows preview + submits
+         the stage form). Promote is now a separate primary button
+         calling the atomic deploy.promote. The ▾ split-button shape
+         from v0.7/v0.8 is gone — two clear buttons, no dropdown. -->
+    <Button
+      type="button"
+      size="sm"
+      disabled={staging || publishing}
+      data-testid="stage-btn"
+      onclick={() => {
+        popoverOpen = false;
+        dialogOpen = true;
+      }}
+    >
+      {staging ? "Staging…" : "Stage…"}
+    </Button>
     <form
       method="post"
-      action="?/stageAndDeployStaging"
+      action="?/promoteToProduction"
       use:enhance={() => {
-        staging = true;
+        publishing = true;
         return async ({ update }) => {
           try {
             await update({ reset: false });
           } finally {
-            staging = false;
+            publishing = false;
           }
         };
       }}
       class="contents"
     >
       <input type="hidden" name="_csrf" value={csrfToken} />
-      <input type="hidden" name="chatSessionId" value={chatSessionId} />
-      {#if activePageId}
-        <input type="hidden" name="pageId" value={activePageId} />
-      {/if}
       <Button
         type="submit"
         size="sm"
-        disabled={staging || publishing}
-        class="rounded-r-none border-r-0"
-        title="Merge chat branch to main + rebuild staging"
-        data-testid="stage-btn"
+        variant="outline"
+        disabled={staging || publishing || !lastStaged}
+        title={lastStaged
+          ? "Atomically copy the latest staging build to production"
+          : "Stage something first — production promotion needs a staging build to copy"}
+        data-testid="promote-btn"
       >
-        {staging ? "Staging…" : "Stage to staging"}
+        {publishing ? "Promoting…" : "Promote to production"}
       </Button>
     </form>
-    <Button
-      type="button"
-      size="sm"
-      disabled={staging || publishing}
-      class="rounded-l-none px-2"
-      aria-label="Open production publish options"
-      data-testid="publish-dropdown-btn"
-      onclick={() => {
-        // Close the preview popover when entering the Promote modal —
-        // both being open at once is visually noisy and the popover
-        // wouldn't dismiss on the modal's backdrop click (different
-        // event-target tree).
-        popoverOpen = false;
-        dialogOpen = true;
-      }}
-    >
-      <ChevronDown class="size-3" />
-    </Button>
   </div>
 {/if}
 
 <Dialog bind:open={dialogOpen}>
   <DialogContent class="sm:max-w-md">
     <DialogHeader>
-      <DialogTitle>Promote staging to production</DialogTitle>
+      <DialogTitle>Stage these changes</DialogTitle>
       <DialogDescription>
-        Stage runs the staging build. This step promotes what's currently on staging to your live
-        site. Unchecked kinds keep their current production HTML; checked kinds re-bake every page
-        they touch.
+        Stage merges this chat's changes into main and rebuilds staging. v0.9.0: the kind
+        checkboxes are an informational preview of what will ship; selective filtering arrives in
+        v0.9.1. To promote staging to production, use the Promote button (atomic, no rebuild).
       </DialogDescription>
     </DialogHeader>
 
@@ -330,7 +329,7 @@
 
     <form
       method="post"
-      action="?/publishToProduction"
+      action="?/stageAndDeployStaging"
       use:enhance={() => {
         publishing = true;
         return async ({ result, update }) => {
@@ -344,8 +343,12 @@
           }
         };
       }}
-      data-testid="publish-form"
+      data-testid="stage-form"
     >
+      <input type="hidden" name="chatSessionId" value={chatSessionId} />
+      {#if activePageId}
+        <input type="hidden" name="pageId" value={activePageId} />
+      {/if}
       <input type="hidden" name="_csrf" value={csrfToken} />
       <input type="hidden" name="chatSessionId" value={chatSessionId} />
 
@@ -364,7 +367,7 @@
               }}
             />
             <span class="font-medium">Pages</span>
-            <span class="text-xs text-muted-foreground">({pagesCount} changed)</span>
+            <span class="text-xs text-muted-foreground">({pagesCount} changes)</span>
           </label>
         </li>
         <li>
@@ -381,7 +384,7 @@
               }}
             />
             <span class="font-medium">Modules</span>
-            <span class="text-xs text-muted-foreground">({modulesCount} changed)</span>
+            <span class="text-xs text-muted-foreground">({modulesCount} changes)</span>
           </label>
         </li>
         <li>
@@ -398,25 +401,25 @@
               }}
             />
             <span class="font-medium">Templates</span>
-            <span class="text-xs text-muted-foreground">({templatesCount} changed)</span>
+            <span class="text-xs text-muted-foreground">({templatesCount} changes)</span>
           </label>
         </li>
         <li>
-          <label class="flex items-center gap-2 text-sm" class:opacity-50={layoutChromeCount === 0}>
+          <label class="flex items-center gap-2 text-sm" class:opacity-50={layoutsCount === 0}>
             <input
               type="checkbox"
               name="kind"
-              value="layoutChrome"
+              value="layouts"
               class="h-4 w-4 rounded border-input"
-              checked={effectiveLayoutChrome}
-              disabled={layoutChromeCount === 0}
+              checked={effectiveLayouts}
+              disabled={layoutsCount === 0}
               onchange={(e) => {
-                userLayoutChromeChoice = (e.currentTarget as HTMLInputElement).checked;
+                userLayoutsChoice = (e.currentTarget as HTMLInputElement).checked;
               }}
             />
-            <span class="font-medium">Layout chrome</span>
+            <span class="font-medium">Layouts</span>
             <span class="text-xs text-muted-foreground">
-              ({layoutChromeCount} changed — triggers full rebuild)
+              ({layoutsCount} changes — header/footer/nav + layout HTML)
             </span>
           </label>
         </li>
@@ -435,7 +438,7 @@
             />
             <span class="font-medium">Lists</span>
             <span class="text-xs text-muted-foreground">
-              ({listsCount} changed — triggers full rebuild)
+              ({listsCount} changes — triggers full rebuild)
             </span>
           </label>
         </li>
@@ -456,9 +459,9 @@
           type="submit"
           size="sm"
           disabled={publishing}
-          data-testid="publish-submit-btn"
+          data-testid="stage-submit-btn"
         >
-          {publishing ? "Publishing…" : "Promote to production"}
+          {publishing ? "Staging…" : "Stage to staging"}
         </Button>
       </DialogFooter>
     </form>

@@ -19,6 +19,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { branchVisibilityFilter } from "../../branch.js";
 import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import { emitSnapshot, loadModuleState } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
@@ -103,18 +104,21 @@ export const listModulesOp = defineOperation({
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }),
   output: z.object({ modules: z.array(moduleRowSchema) }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware: chats see main + their own branched
+    // creates; system actors / cross-chat reads see main only.
+    const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(
       input.includeDeleted
         ? sql`
             SELECT id::text AS id, slug, display_name, html, css, js, fields,
                    created_at, updated_at, deleted_at
-            FROM modules ORDER BY created_at ASC
+            FROM modules WHERE 1=1 ${branchFilter} ORDER BY created_at ASC
           `
         : sql`
             SELECT id::text AS id, slug, display_name, html, css, js, fields,
                    created_at, updated_at, deleted_at
-            FROM modules WHERE deleted_at IS NULL ORDER BY created_at ASC
+            FROM modules WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
           `,
     )) as unknown as Parameters<typeof rowToModule>[0][];
     return ok({ modules: rows.map(rowToModule) });
@@ -128,11 +132,14 @@ export const getModuleOp = defineOperation({
   database: "cms_admin",
   input: z.object({ moduleId: z.string().uuid() }),
   output: z.object({ module: moduleRowSchema }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-aware read so a chat can fetch its own
+    // branched-create modules immediately after creating them.
+    const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, display_name, html, css, js, fields,
              created_at, updated_at, deleted_at
-      FROM modules WHERE id = ${input.moduleId}::uuid LIMIT 1
+      FROM modules WHERE id = ${input.moduleId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as Parameters<typeof rowToModule>[0][];
     const row = rows[0];
     if (!row) {
@@ -152,8 +159,19 @@ export const createModuleOp = defineOperation({
   input: moduleCreateSchema,
   output: z.object({ moduleId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // v0.9.0 — branch-scoped uniqueness. Same-branch slug clash
+    // surfaces as the unique-index violation at INSERT below; check
+    // here narrows it to a clean error. We only check the caller's
+    // namespace (main if no branch; the caller's branch otherwise) —
+    // the per-branch UNIQUE INDEX from migration 0089 isolates
+    // cross-branch slugs.
+    const dupNamespace = ctx.chatBranchId ?? "00000000-0000-0000-0000-000000000000";
     const dup = (await tx.execute(sql`
-      SELECT 1 FROM modules WHERE slug = ${input.slug} AND deleted_at IS NULL LIMIT 1
+      SELECT 1 FROM modules
+      WHERE slug = ${input.slug}
+        AND deleted_at IS NULL
+        AND COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid) = ${dupNamespace}::uuid
+      LIMIT 1
     `)) as unknown as { exists: number }[];
     if (dup.length > 0) {
       await recordAudit(tx, {
@@ -170,15 +188,19 @@ export const createModuleOp = defineOperation({
         message: "slug already in use",
       });
     }
+    // v0.9.0 — branched-create. When ctx.chatBranchId is set, the row
+    // is invisible to other chats until chat.merge_to_main clears the
+    // tag. Same-chat reads see it via branchVisibilityFilter.
     const rows = (await tx.execute(sql`
-      INSERT INTO modules (slug, display_name, html, css, js, fields)
+      INSERT INTO modules (slug, display_name, html, css, js, fields, chat_branch_id)
       VALUES (
         ${input.slug},
         ${input.displayName},
         ${input.html},
         ${input.css},
         ${input.js},
-        ${JSON.stringify(input.fields)}::jsonb
+        ${JSON.stringify(input.fields)}::jsonb,
+        ${ctx.chatBranchId ?? null}::uuid
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -208,6 +230,8 @@ export const createModuleOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "modules.create",
         description: `modules.create slug=${input.slug}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "module", entityId: moduleId, state }],
       });
     }
@@ -399,6 +423,8 @@ export const deleteModuleOp = defineOperation({
         actorId: ctx.actorId,
         opKind: "modules.delete",
         description: `modules.delete slug=${state.slug}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "module", entityId: input.moduleId, state }],
       });
     }
@@ -453,6 +479,8 @@ export const deleteModulesManyOp = defineOperation({
           actorId: ctx.actorId,
           opKind: "modules.delete",
           description: `modules.delete_many slug=${state.slug}`,
+          chatTaskId: ctx.chatTaskId ?? null,
+          chatBranchId: ctx.chatBranchId ?? null,
           entities: [{ kind: "module", entityId: id, state }],
         });
       }
