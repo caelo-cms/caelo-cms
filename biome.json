@@ -15,7 +15,8 @@
       "!**/coverage",
       "!**/playwright-report",
       "!**/test-results",
-      "!**/output"
+      "!**/output",
+      "!claude-workflow"
     ]
   },
   "formatter": {

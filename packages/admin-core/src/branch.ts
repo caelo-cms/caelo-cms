@@ -33,7 +33,7 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { sql, type SQL } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 
 /**
  * SQL fragment for the WHERE clause of branch-aware reads.

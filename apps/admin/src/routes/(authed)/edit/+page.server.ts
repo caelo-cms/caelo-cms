@@ -245,7 +245,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       const r = v.runs.find(
         (row) => row.targetName === "staging" && row.status === "succeeded" && row.finishedAt,
       );
-      if (r && r.finishedAt) {
+      if (r?.finishedAt) {
         lastStaged = {
           runId: r.id,
           finishedAt: r.finishedAt,
