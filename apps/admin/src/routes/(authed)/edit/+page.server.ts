@@ -473,8 +473,16 @@ export const actions: Actions = {
    * editor can ship a page (draft→published) or pull one back
    * (published→draft) without touching `pages.update` directly.
    *
-   * Runs with branch-aware ctx so the status flip rides the active
-   * chat's branch like any other edit — merged to main at Stage.
+   * v0.9.11 — runs WITHOUT chatBranchId. `pages.update` with
+   * `ctx.chatBranchId` set goes the v0.5.3 branched path: emits a
+   * snapshot carrying the new status but leaves the live `pages` row
+   * untouched. `pages.list` reads from the live table, so the badge
+   * stayed "Draft" after the user clicked it. Status is a low-stakes
+   * per-page flag the user expects to flip immediately — making it
+   * branch-isolated would tie a one-click UI gesture to the Stage
+   * cycle for no benefit (status flips aren't part of "iterate via
+   * chat then commit at Stage"). Other edits in the chat still ride
+   * the branch normally.
    */
   setPageStatus: async ({ request, locals }) => {
     requirePermission(locals, "content.write");
@@ -483,13 +491,11 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const pageId = String(form.get("pageId") ?? "");
     const status = String(form.get("status") ?? "");
-    const chatBranchId = String(form.get("chatBranchId") ?? "");
     if (!pageId) return fail(400, { error: "missing pageId" });
     if (status !== "draft" && status !== "published") {
       return fail(400, { error: "status must be 'draft' or 'published'" });
     }
-    const ctx: ExecutionContext = chatBranchId ? { ...locals.ctx, chatBranchId } : locals.ctx;
-    const r = await execute(registry, adapter, ctx, "pages.update", {
+    const r = await execute(registry, adapter, locals.ctx, "pages.update", {
       pageId,
       status,
     });
