@@ -144,7 +144,22 @@ export const INJECT_SCRIPT = `
       var locale = ctx.locale || "en";
       var path = href === "/" ? "/home" : href;
       ev.preventDefault();
-      location.assign("/edit/preview-by-path/" + locale + path);
+      // v0.9.7 — preserve the iframe's own ?branch=<uuid> across
+      // click-through navigation. The iframe was loaded with the chat's
+      // branch in its URL; without re-attaching it here, preview-by-path
+      // would run main-only and 404 on every branched page. Using URL +
+      // URLSearchParams handles the rare case where \`path\` itself
+      // already carries a query string (preserved from the original
+      // link's u.search above).
+      var newUrl = "/edit/preview-by-path/" + locale + path;
+      var current = new URLSearchParams(location.search);
+      var branch = current.get("branch");
+      if (branch) {
+        var nu = new URL(newUrl, location.origin);
+        nu.searchParams.set("branch", branch);
+        newUrl = nu.pathname + nu.search + nu.hash;
+      }
+      location.assign(newUrl);
     },
     true,
   );
