@@ -506,6 +506,16 @@ export const actions: Actions = {
       status,
     });
     if (!r.ok) {
+      // v0.10.4 — log full error to stderr so the Cloud Run operator can
+      // see the underlying SQL/PG detail. The toast renders the stripped
+      // describeError() version, which loses pgDetail.message when only
+      // the bun-postgres `code` is set.
+      console.error("[setPageStatus] op failed", {
+        pageId,
+        status,
+        chatBranchId: chatBranchId || null,
+        error: r.error,
+      });
       return fail(500, { error: `Could not update status: ${describeError(r.error)}` });
     }
     // `ok` string is picked up by the (authed) layout's $effect to fire
