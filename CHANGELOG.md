@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.7
+
+### Fixes
+- 3508186 pages.set_status — bypass jsonb_set; write whole jsonb blob via ::jsonb cast
+
 ## v0.10.6
 
 ### Fixes
