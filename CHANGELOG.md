@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.1
+
+### Tests
+- a57dce0 surface modules.update error in chained-edits regression test
+
 ## v0.10.0
 
 ### Features
