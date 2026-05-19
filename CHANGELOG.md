@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.7
+
+### Fixes
+- adac131 iframe click-through dropped ?branch= → branched pages 404'd
+
 ## v0.9.6
 
 ### Fixes
