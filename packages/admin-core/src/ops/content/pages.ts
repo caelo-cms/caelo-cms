@@ -688,36 +688,39 @@ export const setPageStatusOp = defineOperation({
     }
 
     if (ctx.chatBranchId) {
-      // Patches the snapshot's `state` jsonb in place. No-op when the
-      // chat has no branched snapshots for this page (SELECT returns
-      // 0 rows, second query is skipped). That case is correct:
+      // v0.10.7 — read state, patch in JS, write the whole jsonb back.
+      // jsonb_set + to_jsonb on a parameterized text value hits a
+      // bun-sql query-prep failure (ERR_POSTGRES_SERVER_ERROR with no
+      // SQLSTATE / no PG response — see v0.10.5 / v0.10.6 history).
+      // Writing a JSON.stringify'd blob via `::jsonb` cast is the
+      // pattern `structured_sets.set` and every audit/proposal write
+      // already uses successfully.
+      //
+      // No-op when the chat has no branched snapshots for this page
+      // (SELECT returns 0 rows). That case is correct:
       // `chat.merge_to_main` won't UPSERT a page it has no snapshot
       // for, so the live row's new status stands.
-      //
-      // v0.10.6 — split into TWO simple queries (SELECT then UPDATE
-      // by id). Both v0.9.12's `WHERE id = (subquery)` and v0.10.5's
-      // `WITH latest AS (...) UPDATE` forms reliably hit a bun-sql
-      // query-prep failure on this combination (jsonb_set on a
-      // parameterized text value + same-table self-reference) —
-      // bun throws ERR_POSTGRES_SERVER_ERROR with no SQLSTATE / no PG
-      // response. Simple shapes (SELECT, UPDATE-by-id) are well-
-      // exercised across the codebase (emitSnapshot, the overlay
-      // loaders) and always work.
       const latest = (await tx.execute(sql`
-        SELECT ps.id::text AS id
+        SELECT ps.id::text AS id, ps.state
           FROM page_snapshots ps
           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
          WHERE ps.page_id = ${input.pageId}::uuid
            AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
          ORDER BY ss.created_at DESC
          LIMIT 1
-      `)) as unknown as { id: string }[];
-      const latestId = latest[0]?.id;
-      if (latestId) {
+      `)) as unknown as { id: string; state: unknown }[];
+      const row = latest[0];
+      if (row) {
+        const stateObj =
+          typeof row.state === "string"
+            ? (JSON.parse(row.state) as Record<string, unknown>)
+            : ((row.state ?? {}) as Record<string, unknown>);
+        stateObj.status = input.status;
+        const nextJson = JSON.stringify(stateObj);
         await tx.execute(sql`
           UPDATE page_snapshots
-             SET state = jsonb_set(state, '{status}'::text[], to_jsonb(${input.status}::text))
-           WHERE id = ${latestId}::uuid
+             SET state = ${nextJson}::text::jsonb
+           WHERE id = ${row.id}::uuid
         `);
       }
     }
@@ -777,23 +780,29 @@ export const setPagesStatusManyOp = defineOperation({
     }
 
     // Patch the latest branched snapshot for each updated page on this
-    // chat's branch. v0.10.6 — split into two queries (SELECT then
-    // UPDATE by id list) to dodge bun-sql's CTE+UPDATE prep failure
-    // documented on the singular variant above.
+    // chat's branch. v0.10.7 — read state, patch in JS, write whole
+    // blob back per-snapshot. See singular variant for why jsonb_set
+    // can't be used here.
     if (ctx.chatBranchId) {
       const latest = (await tx.execute(sql`
-        SELECT DISTINCT ON (ps.page_id) ps.id::text AS id
+        SELECT DISTINCT ON (ps.page_id) ps.id::text AS id, ps.state
           FROM page_snapshots ps
           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
          WHERE ps.page_id = ANY(${sql.raw(`ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
            AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
          ORDER BY ps.page_id, ss.created_at DESC
-      `)) as unknown as { id: string }[];
-      if (latest.length > 0) {
+      `)) as unknown as { id: string; state: unknown }[];
+      for (const row of latest) {
+        const stateObj =
+          typeof row.state === "string"
+            ? (JSON.parse(row.state) as Record<string, unknown>)
+            : ((row.state ?? {}) as Record<string, unknown>);
+        stateObj.status = input.status;
+        const nextJson = JSON.stringify(stateObj);
         await tx.execute(sql`
           UPDATE page_snapshots
-             SET state = jsonb_set(state, '{status}'::text[], to_jsonb(${input.status}::text))
-           WHERE id = ANY(${sql.raw(`ARRAY[${latest.map((r) => `'${r.id}'::uuid`).join(",")}]`)})
+             SET state = ${nextJson}::text::jsonb
+           WHERE id = ${row.id}::uuid
         `);
       }
     }
