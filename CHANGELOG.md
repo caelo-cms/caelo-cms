@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.3
+
+### Fixes
+- 6f1e766 pages.set_status referenced non-existent updated_by column
+
 ## v0.10.2
 
 ### Tests
