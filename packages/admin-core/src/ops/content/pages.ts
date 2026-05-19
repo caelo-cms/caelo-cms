@@ -689,21 +689,29 @@ export const setPageStatusOp = defineOperation({
 
     if (ctx.chatBranchId) {
       // Patches the snapshot's `state` jsonb in place. No-op when the
-      // chat has no branched snapshots for this page (LIMIT 1 returns
-      // nothing). That case is correct: `chat.merge_to_main` won't
-      // UPSERT a page it has no snapshot for, so the live row's new
-      // status stands.
+      // chat has no branched snapshots for this page (CTE returns 0
+      // rows; UPDATE matches none). That case is correct:
+      // `chat.merge_to_main` won't UPSERT a page it has no snapshot
+      // for, so the live row's new status stands.
+      //
+      // v0.10.5 — CTE form to dodge a bun-sql query-prep failure on
+      // `UPDATE T ... WHERE id = (SELECT id FROM T ps ...)` (same table
+      // referenced twice in one statement, outer-table un-aliased).
+      // The bulk variant `set_status_many` already uses this CTE shape
+      // and works; the singular now matches.
       await tx.execute(sql`
-        UPDATE page_snapshots
-           SET state = jsonb_set(state, '{status}', to_jsonb(${input.status}::text))
-         WHERE id = (
-           SELECT ps.id FROM page_snapshots ps
-           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+        WITH latest AS (
+          SELECT ps.id
+            FROM page_snapshots ps
+            JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
            WHERE ps.page_id = ${input.pageId}::uuid
              AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
            ORDER BY ss.created_at DESC
            LIMIT 1
-         )
+        )
+        UPDATE page_snapshots
+           SET state = jsonb_set(state, '{status}'::text[], to_jsonb(${input.status}::text))
+         WHERE id IN (SELECT id FROM latest)
       `);
     }
 
@@ -775,7 +783,7 @@ export const setPagesStatusManyOp = defineOperation({
            ORDER BY ps.page_id, ss.created_at DESC
         )
         UPDATE page_snapshots
-           SET state = jsonb_set(state, '{status}', to_jsonb(${input.status}::text))
+           SET state = jsonb_set(state, '{status}'::text[], to_jsonb(${input.status}::text))
          WHERE id IN (SELECT id FROM latest)
       `);
     }
