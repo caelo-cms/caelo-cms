@@ -19,6 +19,7 @@
    * site.
    */
 
+  import { enhance } from "$app/forms";
   import { goto, invalidateAll } from "$app/navigation";
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import { onMount } from "svelte";
@@ -391,6 +392,46 @@
           placeholder="Switch page…"
         />
       </div>
+      <!-- v0.9.9 — per-page status toggle. Drafts are LIVE-EDIT ONLY
+           (visible in iframe + picker); Stage and Production filter to
+           `status='published'`. Click to flip the active page's
+           status. Form action rides the chat branch so the flip
+           merges to main at Stage like any other edit. -->
+      {#if activePage}
+        {@const cur = activePage.status}
+        {@const next = cur === "published" ? "draft" : "published"}
+        <form
+          method="post"
+          action="?/setPageStatus"
+          use:enhance={() => async ({ update }) => {
+            await update({ reset: false });
+          }}
+          data-testid="page-status-toggle"
+        >
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <input type="hidden" name="pageId" value={activePage.id} />
+          <input type="hidden" name="status" value={next} />
+          <input type="hidden" name="chatBranchId" value={data.activeChat.chatBranchId} />
+          <button
+            type="submit"
+            title={`Click to switch to ${next}. Drafts stay in live-edit; only published pages ship to Stage / Production.`}
+            class={cn(
+              "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+              cur === "published"
+                ? "border-emerald-500/40 bg-emerald-50 text-emerald-900 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-200"
+                : "border-amber-500/40 bg-amber-50 text-amber-900 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-200",
+            )}
+          >
+            <span
+              class={cn(
+                "size-2 rounded-full",
+                cur === "published" ? "bg-emerald-500" : "bg-amber-500",
+              )}
+            ></span>
+            {cur === "published" ? "Published" : "Draft"}
+          </button>
+        </form>
+      {/if}
     {:else}
       <span class="text-muted-foreground">
         No pages yet —

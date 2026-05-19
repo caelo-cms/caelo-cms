@@ -228,16 +228,21 @@ export async function generateSite(args: {
     args.changedPageIds && args.changedPageIds.length > 0
       ? sql.raw(` AND p.id = ANY(${uuidArrayLiteral(args.changedPageIds)}::uuid[])`)
       : sql.raw("");
-  // v0.9.8 — staging (and dev) renders drafts + published so the
-  // editor's "Stage to preview" gesture actually shows the page they
-  // just built. Production stays published-only. Without this branch,
-  // the AI's compose_page_from_spec creates pages as draft (the
-  // pages.create default), chat.merge_to_main copies them to main as
-  // draft, and the static-gen's hardcoded `status = 'published'`
-  // filter returns zero rows → empty Firebase channel → 404 on every
-  // staging URL.
+  // v0.9.9 — Stage ≡ Production: both filter to status='published'.
+  // Drafts are a live-edit-only concept (visible in /edit's iframe +
+  // picker so the editor sees their WIP) and MUST NOT reach either
+  // deployed environment. The editor flips status via the top-bar
+  // toggle in /edit when a page is ready to ship.
+  //
+  // v0.9.8 briefly inverted this — staging rendered drafts so the
+  // operator could "preview before publish". That broke the Stage ≡
+  // Production invariant (deploy.promote symlinks staging's exact
+  // build to production, so drafts would leak to prod). Reverted.
+  //
+  // `dev` keeps the no-filter shape because dev is a debugging
+  // surface; it's never reachable from the editor's promote flow.
   const statusFilter =
-    target.env === "production" ? sql.raw(" AND p.status = 'published'") : sql.raw("");
+    target.env === "dev" ? sql.raw("") : sql.raw(" AND p.status = 'published'");
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id,
            p.slug, p.locale, p.title, p.status,
@@ -367,11 +372,11 @@ export async function generateSite(args: {
   // language-selector renderer can list cross-locale URLs without a
   // per-page round-trip. Same shape the seo-pass hreflang block uses.
   const seoSettings = await readSeoSettings(tx);
-  // v0.9.8 — same env-aware status gate as the main page query above,
-  // so the hreflang language-selector matrix on a staging preview
-  // includes drafts. Production keeps the published-only matrix.
+  // v0.9.9 — matches the main-query filter above. Stage ≡ Production
+  // so the hreflang language-selector matrix is also published-only on
+  // both deploy targets. Dev keeps the no-filter shape (debugging).
   const slugStatusFilter =
-    target.env === "production" ? sql.raw(" AND status = 'published'") : sql.raw("");
+    target.env === "dev" ? sql.raw("") : sql.raw(" AND status = 'published'");
   const slugLocaleRows = (await tx.execute(sql`
     SELECT slug, locale FROM pages
     WHERE deleted_at IS NULL ${slugStatusFilter}

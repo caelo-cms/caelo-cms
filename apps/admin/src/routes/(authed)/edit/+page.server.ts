@@ -373,6 +373,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       slug: p.slug,
       locale: p.locale,
       title: p.title,
+      // v0.9.9 — surfaces on the top-bar status toggle so the editor
+      // can flip draft↔published without leaving the live-edit surface.
+      status: p.status,
     })),
     activePageId,
     activeChat,
@@ -461,6 +464,48 @@ export const actions: Actions = {
     // looking at a representative page).
     if (!isGlobal) next.searchParams.set("page", pageId);
     throw redirect(303, `${next.pathname}${next.search}`);
+  },
+  /**
+   * v0.9.9 — flip the active page's `status` between `draft` and
+   * `published`. Drafts are LIVE-EDIT ONLY; Stage and Production
+   * deploys filter to `status='published'` (see static-generator's
+   * status filter). The toolbar toggle in /edit calls this so the
+   * editor can ship a page (draft→published) or pull one back
+   * (published→draft) without touching `pages.update` directly.
+   *
+   * Runs with branch-aware ctx so the status flip rides the active
+   * chat's branch like any other edit — merged to main at Stage.
+   */
+  setPageStatus: async ({ request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const pageId = String(form.get("pageId") ?? "");
+    const status = String(form.get("status") ?? "");
+    const chatBranchId = String(form.get("chatBranchId") ?? "");
+    if (!pageId) return fail(400, { error: "missing pageId" });
+    if (status !== "draft" && status !== "published") {
+      return fail(400, { error: "status must be 'draft' or 'published'" });
+    }
+    const ctx: ExecutionContext = chatBranchId
+      ? { ...locals.ctx, chatBranchId }
+      : locals.ctx;
+    const r = await execute(registry, adapter, ctx, "pages.update", {
+      pageId,
+      status,
+    });
+    if (!r.ok) {
+      return fail(500, { error: `Could not update status: ${describeError(r.error)}` });
+    }
+    // `ok` string is picked up by the (authed) layout's $effect to fire
+    // a toast; pageId + status are returned so per-route consumers
+    // could read them off `form` if needed.
+    return {
+      ok: status === "published" ? "Page published." : "Page set to draft.",
+      pageId,
+      status,
+    };
   },
   /**
    * v0.7.0 — /edit's split-button Stage path. One click does the full

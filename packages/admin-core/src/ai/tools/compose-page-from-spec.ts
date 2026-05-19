@@ -52,7 +52,11 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
     "then creates and attaches each section as a module on the `content` block (override with `blockName`). " +
     "Saves N+1 round-trips vs. orchestrating create_page + add_module_to_page individually. " +
     "Use for 'compose a homepage with hero / features / testimonials' or any multi-section page where you know all sections up front. " +
-    "Per-section failure: page is NOT rolled back; tool reports which sections landed + which didn't.",
+    "Per-section failure: page is NOT rolled back; tool reports which sections landed + which didn't. " +
+    "v0.9.9 `status` policy — Drafts are LIVE-EDIT ONLY; Stage and Production ship only `status: 'published'` pages. " +
+    "Set `status: 'published'` when bootstrapping the site (check `## All pages on this site` — if zero `status=published` rows, the user is building from scratch; ship the page live). " +
+    "Set `status: 'draft'` when adding a one-off page to a site that already has published content (user reviews before shipping). " +
+    "The user can flip status anytime via the top-bar toggle in /edit.",
   describe: (state) => {
     const lines: string[] = [
       "Composite — create page + attach N sections in one call.",
@@ -76,6 +80,12 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
     );
     lines.push(
       "v0.6.1: SEO auto-fills inline — caller does NOT need a separate set_page_seo call. Override with `seo.metaDescription`, or skip via `seo.skipSeo:true` (e.g. for stubs).",
+    );
+    lines.push(
+      "v0.9.9 `status` policy — Drafts are LIVE-EDIT ONLY; Stage and Production ship only published pages. " +
+        "Set `status: 'published'` when bootstrapping the site (zero published pages exist in `## All pages on this site`). " +
+        "Set `status: 'draft'` when adding one-off pages to a site that already has published content (let the user review first). " +
+        "The user can flip status via the top-bar toggle in /edit.",
     );
     return lines.join(" ");
   },

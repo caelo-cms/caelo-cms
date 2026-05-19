@@ -22,7 +22,11 @@ export const createPageTool: ToolDefinitionWithHandler<
     "Create a new page. Three identifiers — `name` (internal editor label), `title` (HTML <title> tag), `slug` (URL path). " +
     "Slug must match `[a-z0-9][a-z0-9-]*` — for the homepage use `home` (NOT `/` or empty). For 'About Us' use `about`. " +
     "If the user only mentions one identifier (e.g. 'create About Us'), default `title` and `name` to that value and slugify for the URL. " +
-    "`templateId` is OPTIONAL: omit it to use the site default template (see `## Site defaults` for the slug, `## Templates → layouts` for UUIDs of non-default templates).",
+    "`templateId` is OPTIONAL: omit it to use the site default template (see `## Site defaults` for the slug, `## Templates → layouts` for UUIDs of non-default templates). " +
+    "v0.9.9 `status` policy — Drafts are LIVE-EDIT ONLY; Stage and Production ship only `status: 'published'` pages. " +
+    "Set `status: 'published'` when the user is building the initial site (look at `## All pages on this site` — if it's empty or has zero `status=published` entries, the user is bootstrapping; ship the page live). " +
+    "Set `status: 'draft'` when the user is adding a one-off page to an existing site (other published pages already exist) so they can review before shipping. " +
+    "The user can flip status anytime via the top-bar toggle in /edit; this default is the AI's best guess of intent.",
   // v0.6.0 W1 — state-aware: `templateId` semantics mirror create_template.
   // Omitting it works only when site_defaults.default_template_id is set,
   // otherwise the op rejects. On a fresh install say so loudly so the AI
@@ -32,6 +36,10 @@ export const createPageTool: ToolDefinitionWithHandler<
       "Create a new page. Three identifiers — `name` (internal editor label), `title` (HTML <title> tag), `slug` (URL path).",
       "Slug must match `[a-z0-9][a-z0-9-]*` — for the homepage use `home` (NOT `/` or empty). For 'About Us' use `about`.",
       "If the user only mentions one identifier (e.g. 'create About Us'), default `title` and `name` to that value and slugify for the URL.",
+      "v0.9.9 `status` policy — Drafts are LIVE-EDIT ONLY; Stage and Production ship only published pages. " +
+        "Set `status: 'published'` when bootstrapping the site (zero published pages exist in `## All pages on this site`). " +
+        "Set `status: 'draft'` when adding one-off pages to a site that already has published content (let the user review first). " +
+        "The user can flip status via the top-bar toggle in /edit.",
     ];
     if (state.siteDefaults && state.templates.length > 0) {
       lines.push(
