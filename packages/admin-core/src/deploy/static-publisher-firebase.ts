@@ -141,6 +141,26 @@ async function gzipAndHash(absolutePath: string): Promise<{ body: Buffer; sha256
 }
 
 /**
+ * v0.10.11 — Same as `gzipAndHash` but for in-memory bytes. Used by
+ * `promoteToProduction` to patch robots.txt with the destination
+ * target's robotsDefault before re-releasing on the live channel.
+ */
+async function gzipAndHashBytes(input: Buffer): Promise<{ body: Buffer; sha256: string }> {
+  return await new Promise((resolve, reject) => {
+    const gz = createGzip({ level: 9 });
+    const chunks: Buffer[] = [];
+    gz.on("data", (c: Buffer) => chunks.push(c));
+    gz.on("end", () => {
+      const body = Buffer.concat(chunks);
+      const sha256 = createHash("sha256").update(body).digest("hex");
+      resolve({ body, sha256 });
+    });
+    gz.on("error", reject);
+    gz.end(input);
+  });
+}
+
+/**
  * Run `worker` over `items` with at most `parallelism` in flight.
  * Local copy of static-publisher-gcs's runBatched (kept independent
  * so changing one publisher doesn't ripple through the other).
@@ -348,7 +368,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return summary;
   },
 
-  async promoteToProduction({ sourceRunId, fromTarget: _from, toTarget: _to }) {
+  async promoteToProduction({ sourceRunId, fromTarget: _from, toTarget }) {
     const site = siteName();
     const token = await googleAuthToken();
     // Find the preview channel for the source runId + its latest
@@ -366,17 +386,88 @@ export const firebaseHostingPublisher: StaticPublisher = {
         `firebase publisher promote: no releases found on channel ${channelId}. Run Stage first.`,
       );
     }
-    // Release the version on the live channel.
-    await firebaseFetch(`sites/${site}/releases?versionName=${head.version.name}`, {
+
+    // v0.10.11 — patch robots.txt with the DESTINATION target's
+    // robotsDefault before releasing. The staging version was rendered
+    // with `noindex` (Disallow: /); without this patch production
+    // serves the staging body verbatim. Self-hosted + GCS publishers
+    // do the same patch — this brings Firebase parity.
+    const stagingVersionName = head.version.name;
+    const stagingVersionId = stagingVersionName.split("/").pop() ?? "";
+
+    const { buildRobotsTxt } = await import("@caelo-cms/static-generator");
+    const patchedBody = buildRobotsTxt(toTarget.robotsDefault);
+    const { body: patchedGzipped, sha256: patchedSha256 } = await gzipAndHashBytes(
+      Buffer.from(patchedBody, "utf-8"),
+    );
+
+    // Fetch the staging version's config so the new version keeps the
+    // same rewrites (gateway /api/**) + cache headers.
+    const stagingVersion = await firebaseFetch<{ config?: unknown }>(
+      `sites/${site}/versions/${stagingVersionId}`,
+      { token },
+    );
+
+    // List the staging version's full file manifest. Firebase paginates
+    // — walk until exhausted. We need every path so the new version is
+    // identical except for the patched robots.txt.
+    type FileEntry = { path: string; hash: string; status: string };
+    type ListFilesResponse = { files?: FileEntry[]; nextPageToken?: string };
+    const allFiles: FileEntry[] = [];
+    let pageToken: string | undefined;
+    do {
+      const url = `sites/${site}/versions/${stagingVersionId}/files${pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+      const page = await firebaseFetch<ListFilesResponse>(url, { token });
+      for (const f of page.files ?? []) allFiles.push(f);
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+
+    // Build new files map: every file from staging, robots.txt
+    // overridden with the patched hash.
+    const filesMap: Record<string, string> = {};
+    for (const f of allFiles) filesMap[f.path] = f.hash;
+    filesMap["/robots.txt"] = patchedSha256;
+
+    // Create a new version with the same config as staging.
+    const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
+      method: "POST",
+      body: JSON.stringify({ config: stagingVersion.config ?? {} }),
+      token,
+    });
+    const newVersionName = created.name;
+    const newVersionId = newVersionName.split("/").pop() ?? "";
+
+    // populateFiles — server returns which hashes still need upload.
+    // For the promote case that's just the patched robots.txt (every
+    // other file is already content-addressed in the site's storage
+    // from the staging upload).
+    const populate = await firebaseFetch<PopulateFilesResponse>(
+      `sites/${site}/versions/${newVersionId}:populateFiles`,
+      { method: "POST", body: JSON.stringify({ files: filesMap }), token },
+    );
+    const required = new Set(populate.uploadRequiredHashes ?? []);
+    if (required.has(patchedSha256)) {
+      await uploadGzippedFile(populate.uploadUrl, patchedSha256, patchedGzipped, token);
+    }
+
+    // Finalize the new version + release it to the live channel.
+    await firebaseFetch(`sites/${site}/versions/${newVersionId}?updateMask=status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "FINALIZED" }),
+      token,
+    });
+    await firebaseFetch(`sites/${site}/releases?versionName=${newVersionName}`, {
       method: "POST",
       body: JSON.stringify({}),
       token,
     });
+
     const summary: PromoteSummary = {
       provider: "gcp-firebase",
-      uploadedCount: 0, // Firebase server-side promotion; no client-side uploads.
-      skippedUnchangedCount: 0,
-      location: head.version.name,
+      uploadedCount: required.size,
+      skippedUnchangedCount:
+        allFiles.length - required.size + (required.has(patchedSha256) ? 0 : 1),
+      location: newVersionName,
       destinationBuildId: sourceRunId,
     };
     return summary;
