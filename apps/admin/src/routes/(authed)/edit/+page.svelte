@@ -337,6 +337,7 @@
           csrfToken={data.csrfToken}
           chatSessionId={data.activeChat.id}
           sessionPublished={!!data.activeChat.publishedAt}
+          sessionLastStagedAt={data.activeChat.lastStagedAt ?? null}
           {activePageId}
           lastStaged={data.lastStaged ?? null}
         />

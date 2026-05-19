@@ -59,6 +59,7 @@
     chatSessionId,
     activePageId = null,
     sessionPublished = false,
+    sessionLastStagedAt = null,
     lastStaged = null,
   }: {
     pendingChanges: PendingChangesView;
@@ -73,6 +74,14 @@
     chatSessionId: string;
     activePageId?: string | null;
     sessionPublished?: boolean;
+    /**
+     * v0.10.9 — `chat_sessions.last_staged_at`, set by chat.merge_to_main.
+     * Combined with `lastStaged` (most-recent staging deploy_run) to
+     * decide whether the count===0 branch shows "Promote staging" (chat
+     * has been Staged before, has something to promote) or "No pending
+     * changes" (fresh chat, never Staged, nothing to promote).
+     */
+    sessionLastStagedAt?: string | null;
     /**
      * v0.8.0 — last successful staging deploy. Shown atop the Promote
      * modal so the operator knows what they're about to push live.
@@ -166,7 +175,8 @@
 
 {#if sessionPublished}
   <span class="text-xs text-muted-foreground italic">Chat published</span>
-{:else if branchChangeCount === 0 && !lastStaged}
+{:else if branchChangeCount === 0 && !lastStaged && !sessionLastStagedAt}
+  <!-- v0.10.9 — truly fresh chat: no edits AND never Staged. -->
   <span class="text-xs text-muted-foreground">No pending changes</span>
 {:else if branchChangeCount === 0}
   <!-- v0.8.1 — chat has no fresh pending edits but staging holds

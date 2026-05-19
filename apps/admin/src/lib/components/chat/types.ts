@@ -19,6 +19,10 @@ export interface ChatSession {
   title: string;
   chatBranchId: string;
   publishedAt: string | null;
+  /** v0.10.8 — set by chat.merge_to_main on success; null until the
+   *  chat has been Staged. Drives the toolbar's "Promote staging" vs
+   *  "No pending changes" branch when branchChangeCount is 0. */
+  lastStagedAt?: string | null;
   /** ISO timestamp of the last interaction; drives the history dropdown's relative time. */
   lastActiveAt?: string;
   /**

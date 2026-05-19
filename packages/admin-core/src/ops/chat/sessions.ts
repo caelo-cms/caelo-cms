@@ -33,6 +33,10 @@ const sessionRow = z.object({
   createdAt: z.string(),
   lastActiveAt: z.string(),
   publishedAt: z.string().nullable(),
+  /** v0.10.8 — set by chat.merge_to_main on success; null until the
+   *  chat has been Staged. Drives the toolbar's "Promote staging" vs
+   *  "No pending changes" branch when branch_change_count is 0. */
+  lastStagedAt: z.string().nullable(),
   archivedAt: z.string().nullable(),
   pinnedElements: z.array(pinnedElement),
   /** P6.7.4 — when set, the chat is scoped to a single page. */
@@ -92,7 +96,7 @@ export const listChatSessionsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, title, created_by::text AS created_by,
              chat_branch_id::text AS chat_branch_id,
-             created_at, last_active_at, published_at, archived_at,
+             created_at, last_active_at, published_at, last_staged_at, archived_at,
              pinned_elements,
              page_id::text     AS page_id,
              template_id::text AS template_id,
@@ -112,6 +116,7 @@ export const listChatSessionsOp = defineOperation({
       created_at: string | Date;
       last_active_at: string | Date;
       published_at: string | Date | null;
+      last_staged_at: string | Date | null;
       archived_at: string | Date | null;
       pinned_elements: unknown;
       page_id: string | null;
@@ -132,6 +137,7 @@ export const listChatSessionsOp = defineOperation({
         createdAt: iso(r.created_at) ?? "",
         lastActiveAt: iso(r.last_active_at) ?? "",
         publishedAt: iso(r.published_at),
+        lastStagedAt: iso(r.last_staged_at),
         archivedAt: iso(r.archived_at),
         pinnedElements: parsePinnedElements(r.pinned_elements),
         pageId: r.page_id,
@@ -252,7 +258,7 @@ export const getChatSessionOp = defineOperation({
     const sessionRows = (await tx.execute(sql`
       SELECT id::text AS id, title, created_by::text AS created_by,
              chat_branch_id::text AS chat_branch_id,
-             created_at, last_active_at, published_at, archived_at,
+             created_at, last_active_at, published_at, last_staged_at, archived_at,
              pinned_elements,
              page_id::text     AS page_id,
              template_id::text AS template_id,
@@ -269,6 +275,7 @@ export const getChatSessionOp = defineOperation({
       created_at: string | Date;
       last_active_at: string | Date;
       published_at: string | Date | null;
+      last_staged_at: string | Date | null;
       archived_at: string | Date | null;
       pinned_elements: unknown;
       page_id: string | null;
@@ -314,6 +321,7 @@ export const getChatSessionOp = defineOperation({
         createdAt: iso(session.created_at) ?? "",
         lastActiveAt: iso(session.last_active_at) ?? "",
         publishedAt: iso(session.published_at),
+        lastStagedAt: iso(session.last_staged_at),
         archivedAt: iso(session.archived_at),
         pinnedElements: parsePinnedElements(session.pinned_elements),
         pageId: session.page_id,
