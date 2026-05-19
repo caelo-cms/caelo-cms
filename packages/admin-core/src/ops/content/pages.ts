@@ -704,6 +704,79 @@ export const setPageStatusOp = defineOperation({
 });
 
 /**
+ * v0.9.13 — Bulk variant of `pages.set_status`. Flips N pages' status in
+ * one transaction with the same dual-write contract per page:
+ *   1. UPDATE the live `pages` row.
+ *   2. PATCH the latest branched `page_snapshots.state.status` for this
+ *      page on the active chat's branch (if any).
+ *
+ * Per CLAUDE.md §11: ships alongside the singular form so the AI can
+ * "publish all drafts" in one tool call instead of N. All-or-nothing —
+ * the single tx rolls back if any one page fails.
+ */
+export const setPagesStatusManyOp = defineOperation({
+  name: "pages.set_status_many",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({
+    pageIds: z.array(z.string().uuid()).min(1).max(200),
+    status: z.enum(["draft", "published"]),
+  }),
+  output: z.object({ updatedCount: z.number().int().nonnegative() }),
+  handler: async (ctx, input, tx) => {
+    // Bulk UPDATE in one statement — PostgreSQL handles the N-row write
+    // in a single round trip vs N separate UPDATEs from a JS loop.
+    const updated = (await tx.execute(sql`
+      UPDATE pages
+         SET status     = ${input.status},
+             version    = version + 1,
+             updated_at = now(),
+             updated_by = ${ctx.actorId}::uuid
+       WHERE id = ANY(${sql.raw(`ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
+         AND deleted_at IS NULL
+       RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    if (updated.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.set_status_many",
+        message: "no matching pages found",
+      });
+    }
+
+    // Patch the latest branched snapshot for each updated page on this
+    // chat's branch. Single SQL with a CTE that picks the latest
+    // snapshot per page+chat (window function) — avoids an N+1 loop.
+    if (ctx.chatBranchId) {
+      await tx.execute(sql`
+        WITH latest AS (
+          SELECT DISTINCT ON (ps.page_id) ps.id
+            FROM page_snapshots ps
+            JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+           WHERE ps.page_id = ANY(${sql.raw(`ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
+             AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+           ORDER BY ps.page_id, ss.created_at DESC
+        )
+        UPDATE page_snapshots
+           SET state = jsonb_set(state, '{status}', to_jsonb(${input.status}::text))
+         WHERE id IN (SELECT id FROM latest)
+      `);
+    }
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "pages.set_status_many",
+      input,
+      succeeded: true,
+      resultSummary: `updated=${updated.length}`,
+    });
+
+    return ok({ updatedCount: updated.length });
+  },
+});
+
+/**
  * Atomic replace of a page's modules — DELETE all rows for this page, then
  * INSERT the new layout. Inside one transaction (handler tx) so a partial
  * failure leaves the existing layout intact.

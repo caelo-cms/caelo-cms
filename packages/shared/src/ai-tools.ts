@@ -760,6 +760,30 @@ export const bulkCreateRedirectsToolInput = z
   .strict();
 export type BulkCreateRedirectsToolInput = z.infer<typeof bulkCreateRedirectsToolInput>;
 
+/**
+ * v0.9.13 — Singular + bulk status-flip AI tool inputs.
+ *
+ * Wraps the `pages.set_status` and `pages.set_status_many` ops. Drafts
+ * are LIVE-EDIT ONLY; Stage and Production deploys filter to
+ * `status='published'`. Use the bulk form for "publish all drafts" or
+ * any N>1 flip — saves N round-trips + N snapshot writes + N audit rows.
+ */
+export const setPageStatusToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    status: z.enum(["draft", "published"]),
+  })
+  .strict();
+export type SetPageStatusToolInput = z.infer<typeof setPageStatusToolInput>;
+
+export const setPagesStatusManyToolInput = z
+  .object({
+    pageIds: z.array(z.string().uuid()).min(1).max(200),
+    status: z.enum(["draft", "published"]),
+  })
+  .strict();
+export type SetPagesStatusManyToolInput = z.infer<typeof setPagesStatusManyToolInput>;
+
 export const bulkDeleteRedirectsToolInput = z
   .object({
     redirectIds: z.array(z.string().uuid()).max(500).optional(),

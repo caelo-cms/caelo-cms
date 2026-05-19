@@ -80,7 +80,9 @@ import { setMediaAltTool } from "./set-media-alt.js";
 import { setNavMenuTool } from "./set-nav-menu.js";
 import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageSeoTool } from "./set-page-seo.js";
+import { setPageStatusTool } from "./set-page-status.js";
 import { setPageTitleTool } from "./set-page-title.js";
+import { setPagesStatusManyTool } from "./set-pages-status-many.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
@@ -171,6 +173,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(deletePagesManyTool);
   registry.register(updatePagesManyTool);
   registry.register(updateModulesManyTool);
+  // v0.9.13 — singular + bulk status flip. Drafts are LIVE-EDIT ONLY;
+  // only `published` pages ship to Stage / Production. Bulk variant
+  // saves N round-trips when the user asks to flip a batch.
+  registry.register(setPageStatusTool);
+  registry.register(setPagesStatusManyTool);
   // P9 — locale propose tools (CLAUDE.md §11.A two-step gate).
   registry.register(proposeAddLocaleTool);
   registry.register(proposeRemoveLocaleTool);
