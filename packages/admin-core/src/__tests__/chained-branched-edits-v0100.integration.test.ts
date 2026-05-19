@@ -201,6 +201,7 @@ describe("v0.10.0 chained branched edits", () => {
       moduleId,
       html: "<div>edited-html</div>",
     });
+    if (!e1.ok) console.error("e1.error", JSON.stringify(e1.error));
     expect(e1.ok).toBe(true);
 
     // Edit 2: css change on the SAME branch. Pre-v0.10.0 the snapshot
@@ -209,6 +210,7 @@ describe("v0.10.0 chained branched edits", () => {
       moduleId,
       css: ".b{}",
     });
+    if (!e2.ok) console.error("e2.error", JSON.stringify(e2.error));
     expect(e2.ok).toBe(true);
 
     // Merge — live module must reflect both edits.
