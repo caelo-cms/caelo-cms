@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.6
+
+### Fixes
+- ec3063e pages.set_status — split CTE+UPDATE into two simple queries (bun-sql workaround)
+
 ## v0.10.5
 
 ### Fixes
