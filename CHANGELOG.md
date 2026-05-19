@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.0
+
+### Features
+- f30e3b9 chained branched edits compose without losing intermediate state
+
 ## v0.9.13
 
 ### Features
