@@ -81,6 +81,7 @@ import {
   getPageWithModulesOp,
   listPagesOp,
   setPageModulesOp,
+  setPageStatusOp,
   updatePageOp,
   updatePagesManyOp,
 } from "./ops/content/pages.js";
@@ -473,6 +474,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getPageWithModulesOp);
   registry.register(createPageOp);
   registry.register(updatePageOp);
+  registry.register(setPageStatusOp);
   registry.register(setPageModulesOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);

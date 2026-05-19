@@ -473,16 +473,20 @@ export const actions: Actions = {
    * editor can ship a page (draft→published) or pull one back
    * (published→draft) without touching `pages.update` directly.
    *
-   * v0.9.11 — runs WITHOUT chatBranchId. `pages.update` with
-   * `ctx.chatBranchId` set goes the v0.5.3 branched path: emits a
-   * snapshot carrying the new status but leaves the live `pages` row
-   * untouched. `pages.list` reads from the live table, so the badge
-   * stayed "Draft" after the user clicked it. Status is a low-stakes
-   * per-page flag the user expects to flip immediately — making it
-   * branch-isolated would tie a one-click UI gesture to the Stage
-   * cycle for no benefit (status flips aren't part of "iterate via
-   * chat then commit at Stage"). Other edits in the chat still ride
-   * the branch normally.
+   * v0.9.12 — calls the dedicated `pages.set_status` op (not
+   * `pages.update`). The op does TWO writes in one tx:
+   *
+   *   1. UPDATE the live `pages` row so `pages.list` (and the toolbar
+   *      badge) reflects the new status immediately.
+   *   2. PATCH the latest branched `page_snapshots.state.status` for
+   *      this page on the active chat's branch — without this,
+   *      `chat.merge_to_main` UPSERTs from the stale snapshot at Stage
+   *      and reverts the status back to whatever the AI's create-time
+   *      snapshot had ('draft' by default).
+   *
+   * v0.9.11 only did (1) — the badge flipped but Stage reverted.
+   * v0.9.10 only did (2) (via pages.update branched path) — Stage
+   * worked but the badge stayed stale. The dedicated op covers both.
    */
   setPageStatus: async ({ request, locals }) => {
     requirePermission(locals, "content.write");
@@ -491,11 +495,13 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const pageId = String(form.get("pageId") ?? "");
     const status = String(form.get("status") ?? "");
+    const chatBranchId = String(form.get("chatBranchId") ?? "");
     if (!pageId) return fail(400, { error: "missing pageId" });
     if (status !== "draft" && status !== "published") {
       return fail(400, { error: "status must be 'draft' or 'published'" });
     }
-    const r = await execute(registry, adapter, locals.ctx, "pages.update", {
+    const ctx: ExecutionContext = chatBranchId ? { ...locals.ctx, chatBranchId } : locals.ctx;
+    const r = await execute(registry, adapter, ctx, "pages.set_status", {
       pageId,
       status,
     });

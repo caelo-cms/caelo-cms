@@ -622,6 +622,88 @@ export const updatePageOp = defineOperation({
 });
 
 /**
+ * v0.9.12 — Flip a page's `status` between `draft` and `published`.
+ *
+ * Different shape from `pages.update`'s branched path on purpose. Status
+ * is a per-page deploy-gate flag the user expects to flip immediately
+ * AND have stick through Stage, not a branched edit subject to the chat
+ * isolation pattern. `pages.update` with a chat branch only emits a
+ * snapshot (live row untouched); without a chat branch only updates the
+ * live row (snapshot stays stale). Neither alone survives Stage cleanly.
+ *
+ * This op does both writes in one transaction:
+ *   1. UPDATE the live `pages` row so `pages.list` (and the toolbar
+ *      badge) reflects the new status immediately.
+ *   2. PATCH the LATEST branched `page_snapshots.state.status` for this
+ *      page on the active chat's branch (when `ctx.chatBranchId` is
+ *      set). Without this patch, `chat.merge_to_main` would UPSERT the
+ *      live row from a stale snapshot at Stage and revert the status.
+ *
+ * Direct UPDATE of `page_snapshots` is intentional here — we're patching
+ * an existing snapshot's state, not emitting a new one. The Query API
+ * rule "all DB access through ops" still holds: this op IS the op.
+ */
+export const setPageStatusOp = defineOperation({
+  name: "pages.set_status",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({
+    pageId: z.string().uuid(),
+    status: z.enum(["draft", "published"]),
+  }),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const updated = (await tx.execute(sql`
+      UPDATE pages
+         SET status     = ${input.status},
+             version    = version + 1,
+             updated_at = now(),
+             updated_by = ${ctx.actorId}::uuid
+       WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL
+       RETURNING 1 AS ok
+    `)) as unknown as { ok: number }[];
+    if (updated.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.set_status",
+        message: "page not found",
+      });
+    }
+
+    if (ctx.chatBranchId) {
+      // Patches the snapshot's `state` jsonb in place. No-op when the
+      // chat has no branched snapshots for this page (LIMIT 1 returns
+      // nothing). That case is correct: `chat.merge_to_main` won't
+      // UPSERT a page it has no snapshot for, so the live row's new
+      // status stands.
+      await tx.execute(sql`
+        UPDATE page_snapshots
+           SET state = jsonb_set(state, '{status}', to_jsonb(${input.status}::text))
+         WHERE id = (
+           SELECT ps.id FROM page_snapshots ps
+           JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+           WHERE ps.page_id = ${input.pageId}::uuid
+             AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+           ORDER BY ss.created_at DESC
+           LIMIT 1
+         )
+      `);
+    }
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "pages.set_status",
+      input,
+      succeeded: true,
+      entityId: input.pageId,
+    });
+
+    return ok({});
+  },
+});
+
+/**
  * Atomic replace of a page's modules — DELETE all rows for this page, then
  * INSERT the new layout. Inside one transaction (handler tx) so a partial
  * failure leaves the existing layout intact.

@@ -411,6 +411,7 @@
           <input type="hidden" name="_csrf" value={data.csrfToken} />
           <input type="hidden" name="pageId" value={activePage.id} />
           <input type="hidden" name="status" value={next} />
+          <input type="hidden" name="chatBranchId" value={data.activeChat.chatBranchId} />
           <button
             type="submit"
             title={`Click to switch to ${next}. Drafts stay in live-edit; only published pages ship to Stage / Production.`}
