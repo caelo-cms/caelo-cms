@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.8
+
+### Fixes
+- 90da798 pending-changes badge resets to 0 after Stage (last_staged_at on chat_sessions)
+
 ## v0.10.7
 
 ### Fixes

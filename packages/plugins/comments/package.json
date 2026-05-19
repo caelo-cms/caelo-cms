@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/plugin-comments",
-  "version": "0.10.7",
+  "version": "0.10.8",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
