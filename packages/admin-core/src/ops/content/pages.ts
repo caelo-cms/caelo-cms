@@ -689,30 +689,37 @@ export const setPageStatusOp = defineOperation({
 
     if (ctx.chatBranchId) {
       // Patches the snapshot's `state` jsonb in place. No-op when the
-      // chat has no branched snapshots for this page (CTE returns 0
-      // rows; UPDATE matches none). That case is correct:
+      // chat has no branched snapshots for this page (SELECT returns
+      // 0 rows, second query is skipped). That case is correct:
       // `chat.merge_to_main` won't UPSERT a page it has no snapshot
       // for, so the live row's new status stands.
       //
-      // v0.10.5 — CTE form to dodge a bun-sql query-prep failure on
-      // `UPDATE T ... WHERE id = (SELECT id FROM T ps ...)` (same table
-      // referenced twice in one statement, outer-table un-aliased).
-      // The bulk variant `set_status_many` already uses this CTE shape
-      // and works; the singular now matches.
-      await tx.execute(sql`
-        WITH latest AS (
-          SELECT ps.id
-            FROM page_snapshots ps
-            JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-           WHERE ps.page_id = ${input.pageId}::uuid
-             AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
-           ORDER BY ss.created_at DESC
-           LIMIT 1
-        )
-        UPDATE page_snapshots
-           SET state = jsonb_set(state, '{status}'::text[], to_jsonb(${input.status}::text))
-         WHERE id IN (SELECT id FROM latest)
-      `);
+      // v0.10.6 — split into TWO simple queries (SELECT then UPDATE
+      // by id). Both v0.9.12's `WHERE id = (subquery)` and v0.10.5's
+      // `WITH latest AS (...) UPDATE` forms reliably hit a bun-sql
+      // query-prep failure on this combination (jsonb_set on a
+      // parameterized text value + same-table self-reference) —
+      // bun throws ERR_POSTGRES_SERVER_ERROR with no SQLSTATE / no PG
+      // response. Simple shapes (SELECT, UPDATE-by-id) are well-
+      // exercised across the codebase (emitSnapshot, the overlay
+      // loaders) and always work.
+      const latest = (await tx.execute(sql`
+        SELECT ps.id::text AS id
+          FROM page_snapshots ps
+          JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+         WHERE ps.page_id = ${input.pageId}::uuid
+           AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+         ORDER BY ss.created_at DESC
+         LIMIT 1
+      `)) as unknown as { id: string }[];
+      const latestId = latest[0]?.id;
+      if (latestId) {
+        await tx.execute(sql`
+          UPDATE page_snapshots
+             SET state = jsonb_set(state, '{status}'::text[], to_jsonb(${input.status}::text))
+           WHERE id = ${latestId}::uuid
+        `);
+      }
     }
 
     await recordAudit(tx, {
@@ -770,22 +777,25 @@ export const setPagesStatusManyOp = defineOperation({
     }
 
     // Patch the latest branched snapshot for each updated page on this
-    // chat's branch. Single SQL with a CTE that picks the latest
-    // snapshot per page+chat (window function) — avoids an N+1 loop.
+    // chat's branch. v0.10.6 — split into two queries (SELECT then
+    // UPDATE by id list) to dodge bun-sql's CTE+UPDATE prep failure
+    // documented on the singular variant above.
     if (ctx.chatBranchId) {
-      await tx.execute(sql`
-        WITH latest AS (
-          SELECT DISTINCT ON (ps.page_id) ps.id
-            FROM page_snapshots ps
-            JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-           WHERE ps.page_id = ANY(${sql.raw(`ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
-             AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
-           ORDER BY ps.page_id, ss.created_at DESC
-        )
-        UPDATE page_snapshots
-           SET state = jsonb_set(state, '{status}'::text[], to_jsonb(${input.status}::text))
-         WHERE id IN (SELECT id FROM latest)
-      `);
+      const latest = (await tx.execute(sql`
+        SELECT DISTINCT ON (ps.page_id) ps.id::text AS id
+          FROM page_snapshots ps
+          JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+         WHERE ps.page_id = ANY(${sql.raw(`ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
+           AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+         ORDER BY ps.page_id, ss.created_at DESC
+      `)) as unknown as { id: string }[];
+      if (latest.length > 0) {
+        await tx.execute(sql`
+          UPDATE page_snapshots
+             SET state = jsonb_set(state, '{status}'::text[], to_jsonb(${input.status}::text))
+           WHERE id = ANY(${sql.raw(`ARRAY[${latest.map((r) => `'${r.id}'::uuid`).join(",")}]`)})
+        `);
+      }
     }
 
     await recordAudit(tx, {
