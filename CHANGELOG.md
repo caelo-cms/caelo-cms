@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.8
+
+### Fixes
+- c34defb staging deploys were shipping zero pages because static-gen filtered out drafts
+
 ## v0.9.7
 
 ### Fixes
