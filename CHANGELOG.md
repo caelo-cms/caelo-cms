@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.10
+
+### Chores
+- 2457a38 biome auto-format on v0.9.9 changes
+
 ## v0.9.9
 
 ### Features
