@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.9
+
+### Features
+- 99daa4f Stage ≡ Production + per-page status toggle + AI status policy
+
 ## v0.9.8
 
 ### Fixes
