@@ -488,9 +488,7 @@ export const actions: Actions = {
     if (status !== "draft" && status !== "published") {
       return fail(400, { error: "status must be 'draft' or 'published'" });
     }
-    const ctx: ExecutionContext = chatBranchId
-      ? { ...locals.ctx, chatBranchId }
-      : locals.ctx;
+    const ctx: ExecutionContext = chatBranchId ? { ...locals.ctx, chatBranchId } : locals.ctx;
     const r = await execute(registry, adapter, ctx, "pages.update", {
       pageId,
       status,

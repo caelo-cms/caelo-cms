@@ -241,8 +241,7 @@ export async function generateSite(args: {
   //
   // `dev` keeps the no-filter shape because dev is a debugging
   // surface; it's never reachable from the editor's promote flow.
-  const statusFilter =
-    target.env === "dev" ? sql.raw("") : sql.raw(" AND p.status = 'published'");
+  const statusFilter = target.env === "dev" ? sql.raw("") : sql.raw(" AND p.status = 'published'");
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id,
            p.slug, p.locale, p.title, p.status,
