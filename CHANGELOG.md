@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.11
+
+### Fixes
+- 9e95e83 Firebase promote now patches robots.txt with destination env's robotsDefault
+
 ## v0.10.10
 
 ### Fixes
