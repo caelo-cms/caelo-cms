@@ -190,7 +190,9 @@ describe("v0.10.0 chained branched edits", () => {
     };
 
     const aiCtx: ExecutionContext = {
-      actorId: "00000000-0000-0000-0000-000000000a1b",
+      // Reuse the seeded test-AI actor (same id as the working pages-
+      // branching test) so the audit_events FK on actors.id resolves.
+      actorId: "00000000-0000-0000-0000-000000000a1a",
       actorKind: "ai",
       requestId: "v0100-chain-mod-ai",
       chatBranchId,
@@ -201,7 +203,6 @@ describe("v0.10.0 chained branched edits", () => {
       moduleId,
       html: "<div>edited-html</div>",
     });
-    if (!e1.ok) console.error("e1.error", JSON.stringify(e1.error));
     expect(e1.ok).toBe(true);
 
     // Edit 2: css change on the SAME branch. Pre-v0.10.0 the snapshot
@@ -210,7 +211,6 @@ describe("v0.10.0 chained branched edits", () => {
       moduleId,
       css: ".b{}",
     });
-    if (!e2.ok) console.error("e2.error", JSON.stringify(e2.error));
     expect(e2.ok).toBe(true);
 
     // Merge — live module must reflect both edits.
