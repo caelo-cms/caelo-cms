@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.5
+
+### Fixes
+- d7c78d1 pages.set_status — rewrite snapshot UPDATE as CTE so bun-sql parses it
+
 ## v0.10.4
 
 ### Chores
