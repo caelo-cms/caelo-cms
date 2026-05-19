@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.11
+
+### Fixes
+- 83bed9a status toggle badge didn't update — pages.update with branch ctx skips the live row
+
 ## v0.9.10
 
 ### Chores
