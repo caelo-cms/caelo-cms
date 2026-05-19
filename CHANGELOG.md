@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.4
+
+### Chores
+- 331ec5d log full pages.set_status error to stderr for Cloud Run diagnosis
+
 ## v0.10.3
 
 ### Fixes
