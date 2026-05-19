@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.2
+
+### Tests
+- ac1714a use the seeded test-AI actor id so audit FK resolves
+
 ## v0.10.1
 
 ### Tests
