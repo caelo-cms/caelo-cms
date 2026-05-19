@@ -669,12 +669,13 @@ export const setPageStatusOp = defineOperation({
   }),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // pages table has no `updated_by` column (see migration 0005); only
+    // `updated_at`. Trying to set updated_by hits "column does not exist".
     const updated = (await tx.execute(sql`
       UPDATE pages
          SET status     = ${input.status},
              version    = version + 1,
-             updated_at = now(),
-             updated_by = ${ctx.actorId}::uuid
+             updated_at = now()
        WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL
        RETURNING 1 AS ok
     `)) as unknown as { ok: number }[];
@@ -742,12 +743,12 @@ export const setPagesStatusManyOp = defineOperation({
   handler: async (ctx, input, tx) => {
     // Bulk UPDATE in one statement — PostgreSQL handles the N-row write
     // in a single round trip vs N separate UPDATEs from a JS loop.
+    // pages table has no `updated_by` column (see singular set_status above).
     const updated = (await tx.execute(sql`
       UPDATE pages
          SET status     = ${input.status},
              version    = version + 1,
-             updated_at = now(),
-             updated_by = ${ctx.actorId}::uuid
+             updated_at = now()
        WHERE id = ANY(${sql.raw(`ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
          AND deleted_at IS NULL
        RETURNING id::text AS id
