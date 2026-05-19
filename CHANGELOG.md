@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.9
+
+### Fixes
+- da19491 Promote button hidden after Stage — use chat.last_staged_at as 'has staged' signal
+
 ## v0.10.8
 
 ### Fixes
