@@ -228,6 +228,16 @@ export async function generateSite(args: {
     args.changedPageIds && args.changedPageIds.length > 0
       ? sql.raw(` AND p.id = ANY(${uuidArrayLiteral(args.changedPageIds)}::uuid[])`)
       : sql.raw("");
+  // v0.9.8 — staging (and dev) renders drafts + published so the
+  // editor's "Stage to preview" gesture actually shows the page they
+  // just built. Production stays published-only. Without this branch,
+  // the AI's compose_page_from_spec creates pages as draft (the
+  // pages.create default), chat.merge_to_main copies them to main as
+  // draft, and the static-gen's hardcoded `status = 'published'`
+  // filter returns zero rows → empty Firebase channel → 404 on every
+  // staging URL.
+  const statusFilter =
+    target.env === "production" ? sql.raw(" AND p.status = 'published'") : sql.raw("");
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id,
            p.slug, p.locale, p.title, p.status,
@@ -244,7 +254,7 @@ export async function generateSite(args: {
     WHERE p.deleted_at IS NULL
       AND t.deleted_at IS NULL
       AND l.deleted_at IS NULL
-      AND p.status = 'published'
+      ${statusFilter}
       -- v0.9.0 — main-only. Branched-create entities (pages /
       -- templates / layouts tagged with chat_branch_id) are
       -- chat-scoped previews and MUST NOT ship to production or
@@ -357,9 +367,14 @@ export async function generateSite(args: {
   // language-selector renderer can list cross-locale URLs without a
   // per-page round-trip. Same shape the seo-pass hreflang block uses.
   const seoSettings = await readSeoSettings(tx);
+  // v0.9.8 — same env-aware status gate as the main page query above,
+  // so the hreflang language-selector matrix on a staging preview
+  // includes drafts. Production keeps the published-only matrix.
+  const slugStatusFilter =
+    target.env === "production" ? sql.raw(" AND status = 'published'") : sql.raw("");
   const slugLocaleRows = (await tx.execute(sql`
     SELECT slug, locale FROM pages
-    WHERE deleted_at IS NULL AND status = 'published'
+    WHERE deleted_at IS NULL ${slugStatusFilter}
   `)) as unknown as { slug: string; locale: string }[];
   const localesBySlug = new Map<string, string[]>();
   for (const r of slugLocaleRows) {
