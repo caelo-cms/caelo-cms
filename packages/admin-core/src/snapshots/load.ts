@@ -152,6 +152,81 @@ export async function loadPageState(
   };
 }
 
+/**
+ * v0.10.0 — Branch-overlay variants of the live-state loaders.
+ *
+ * Branched-write op handlers (modules.update, pages.update, etc.) build
+ * a new snapshot's `state` by combining "current entity state" with
+ * "input patch". The pre-v0.10.0 implementation read "current state"
+ * from the LIVE row — which works for the FIRST branched edit but
+ * silently loses fields on chained ones:
+ *
+ *   1. Edit 1 (title='B'): live row has title='A'; snapshot 1 has
+ *      state.title='B'. Live stays at 'A'.
+ *   2. Edit 2 (slug='y'): live row still has title='A'; handler reads
+ *      `existing.title='A'`; snapshot 2 has state.title='A',
+ *      state.slug='y'. **Edit 1's 'B' is lost in snapshot 2.**
+ *   3. Stage runs merge_to_main → applies the LATEST snapshot →
+ *      live row.title='A'. The user's branched 'B' is gone.
+ *
+ * The overlay loaders fix this by preferring the LATEST branched
+ * snapshot's `state` (when `chatBranchId` is set and at least one
+ * branched snapshot for this entity+chat exists) over the live row.
+ * Chained edits compose correctly: each new snapshot is built on top
+ * of the previous branched snapshot, not the stale live row.
+ *
+ * When no branched snapshot exists for this entity in this chat (the
+ * common N=1 case), fall through to the live-row loader — same
+ * behavior as before v0.10.0.
+ */
+export async function loadModuleStateWithBranchOverlay(
+  tx: TransactionRunner,
+  moduleId: string,
+  chatBranchId: string | null | undefined,
+): Promise<ModuleState | null> {
+  if (chatBranchId) {
+    const rows = (await tx.execute(sql`
+      SELECT ms.state
+        FROM module_snapshots ms
+        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+       WHERE ms.module_id = ${moduleId}::uuid
+         AND ss.chat_branch_id = ${chatBranchId}::uuid
+       ORDER BY ss.created_at DESC
+       LIMIT 1
+    `)) as unknown as { state: unknown }[];
+    const row = rows[0];
+    if (row !== undefined) {
+      const raw = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
+      return raw as ModuleState;
+    }
+  }
+  return loadModuleState(tx, moduleId);
+}
+
+export async function loadPageStateWithBranchOverlay(
+  tx: TransactionRunner,
+  pageId: string,
+  chatBranchId: string | null | undefined,
+): Promise<PageState | null> {
+  if (chatBranchId) {
+    const rows = (await tx.execute(sql`
+      SELECT ps.state
+        FROM page_snapshots ps
+        JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+       WHERE ps.page_id = ${pageId}::uuid
+         AND ss.chat_branch_id = ${chatBranchId}::uuid
+       ORDER BY ss.created_at DESC
+       LIMIT 1
+    `)) as unknown as { state: unknown }[];
+    const row = rows[0];
+    if (row !== undefined) {
+      const raw = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
+      return raw as PageState;
+    }
+  }
+  return loadPageState(tx, pageId);
+}
+
 export async function loadPageLayoutState(
   tx: TransactionRunner,
   pageId: string,

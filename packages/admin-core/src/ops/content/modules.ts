@@ -21,7 +21,11 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
 import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
-import { emitSnapshot, loadModuleState } from "../../snapshots/index.js";
+import {
+  emitSnapshot,
+  loadModuleState,
+  loadModuleStateWithBranchOverlay,
+} from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
 
 /**
@@ -329,19 +333,32 @@ export const updateModuleOp = defineOperation({
         .join(",")}${branchId ? " (branch)" : ""}`,
     });
 
-    // For branched writes, construct the new state from prev + input;
-    // for live writes, re-load to capture defaults applied by the DB.
+    // For branched writes, construct the new state from the LATEST
+    // branched snapshot (if any) + input; for live writes, re-load to
+    // capture defaults applied by the DB.
+    //
+    // v0.10.0 — uses `loadModuleStateWithBranchOverlay` instead of the
+    // live row. Without the overlay, chained branched edits silently
+    // dropped each other's fields: edit 1 set html='B' (snapshot only,
+    // live still 'A'); edit 2 read live and emitted snapshot 2 with
+    // html='A' — edit 1 lost at Stage when merge applied snapshot 2.
     let state: import("../../snapshots/index.js").ModuleState | null;
     if (branchId) {
-      const prevFields = typeof prev.fields === "string" ? JSON.parse(prev.fields) : prev.fields;
+      const base = await loadModuleStateWithBranchOverlay(tx, input.moduleId, branchId);
+      if (!base) {
+        return err({
+          kind: "HandlerError",
+          operation: "modules.update",
+          message: "module not found while building branched state",
+        });
+      }
       state = {
-        schemaVersion: 1,
-        slug: prev.slug,
-        displayName: input.displayName ?? prev.display_name,
-        html: input.html ?? prev.html,
-        css: input.css ?? prev.css,
-        js: input.js ?? prev.js,
-        fields: input.fields ?? (Array.isArray(prevFields) ? (prevFields as unknown[]) : []),
+        ...base,
+        displayName: input.displayName ?? base.displayName,
+        html: input.html ?? base.html,
+        css: input.css ?? base.css,
+        js: input.js ?? base.js,
+        fields: input.fields ?? base.fields,
         deletedAt: null,
       };
     } else {

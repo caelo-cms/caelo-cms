@@ -23,7 +23,12 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
-import { emitSnapshot, loadPageLayoutState, loadPageState } from "../../snapshots/index.js";
+import {
+  emitSnapshot,
+  loadPageLayoutState,
+  loadPageState,
+  loadPageStateWithBranchOverlay,
+} from "../../snapshots/index.js";
 import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
 import { readSiteDefaults } from "../site_defaults.js";
 import { recomputePageContentHash } from "./content_hash.js";
@@ -573,14 +578,25 @@ export const updatePageOp = defineOperation({
 
     let state: import("../../snapshots/state.js").PageState | null;
     if (branched) {
-      // Build post-patch state in-memory; live row untouched.
+      // v0.10.0 — read base state from the LATEST branched snapshot
+      // (if one exists for this page+chat), not from the live row.
+      // Pre-v0.10.0 chained branched edits silently dropped each
+      // other's fields because `existing` came from live — see
+      // snapshots/load.ts header comment for the full trace.
+      const base = await loadPageStateWithBranchOverlay(tx, input.pageId, ctx.chatBranchId);
+      if (!base) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.update",
+          message: "page not found while building branched state",
+        });
+      }
       state = {
-        schemaVersion: 1,
-        slug: input.slug ?? existing.slug,
-        locale: existing.locale,
-        title: input.title ?? existing.title,
-        templateId: input.templateId ?? existing.template_id,
-        status: input.status ?? existing.status,
+        ...base,
+        slug: input.slug ?? base.slug,
+        title: input.title ?? base.title,
+        templateId: input.templateId ?? base.templateId,
+        status: input.status ?? base.status,
         version: currentVersion + 1,
         deletedAt: null,
       };
