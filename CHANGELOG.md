@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.10
+
+### Fixes
+- 2aadb32 post-Stage modal showed phantom layout-chrome + "Promote staging" opened Stage modal
+
 ## v0.10.9
 
 ### Fixes
