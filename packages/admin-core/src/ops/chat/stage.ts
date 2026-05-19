@@ -76,9 +76,11 @@ export const listPendingChangesOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const sessionRows = (await tx.execute(sql`
-      SELECT chat_branch_id::text AS chat_branch_id FROM chat_sessions
+      SELECT chat_branch_id::text AS chat_branch_id,
+             last_staged_at
+      FROM chat_sessions
       WHERE id = ${input.chatSessionId}::uuid LIMIT 1
-    `)) as unknown as { chat_branch_id: string }[];
+    `)) as unknown as { chat_branch_id: string; last_staged_at: string | Date | null }[];
     const branchId = sessionRows[0]?.chat_branch_id;
     if (!branchId) {
       return err({
@@ -87,6 +89,13 @@ export const listPendingChangesOp = defineOperation({
         message: "session not found",
       });
     }
+    // v0.10.8 — filter snapshots to those created after the last
+    // Stage (merge_to_main). Pre-v0.10.8 the dropdown showed every
+    // edit in the chat's lifetime, not edits since the last merge.
+    const lastStagedAt = sessionRows[0]?.last_staged_at ?? null;
+    const sinceFilter = lastStagedAt
+      ? sql` AND ss.created_at > ${lastStagedAt instanceof Date ? lastStagedAt.toISOString() : lastStagedAt}::timestamptz`
+      : sql``;
 
     /**
      * Walk every branched snapshot table once. For each entity, ask
@@ -106,7 +115,7 @@ export const listPendingChangesOp = defineOperation({
           pmcs.position
         FROM page_module_content_snapshots pmcs
         JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid
+        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
         ORDER BY pmcs.page_module_content_id, ss.created_at DESC
       )
       SELECT
@@ -128,7 +137,7 @@ export const listPendingChangesOp = defineOperation({
         SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS entity_id
         FROM page_snapshots ps
         JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid
+        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
         ORDER BY ps.page_id, ss.created_at DESC
       )
       SELECT
@@ -150,7 +159,7 @@ export const listPendingChangesOp = defineOperation({
         SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS entity_id
         FROM page_layout_snapshots pls
         JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid
+        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
         ORDER BY pls.page_id, ss.created_at DESC
       )
       SELECT
@@ -172,7 +181,7 @@ export const listPendingChangesOp = defineOperation({
         SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS entity_id
         FROM module_snapshots ms
         JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid
+        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
         ORDER BY ms.module_id, ss.created_at DESC
       )
       SELECT
@@ -193,7 +202,7 @@ export const listPendingChangesOp = defineOperation({
         SELECT DISTINCT ON (ts.template_id) ts.template_id::text AS entity_id
         FROM template_snapshots ts
         JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-        WHERE ss.chat_branch_id = ${branchId}::uuid
+        WHERE ss.chat_branch_id = ${branchId}::uuid${sinceFilter}
         ORDER BY ts.template_id, ss.created_at DESC
       )
       SELECT

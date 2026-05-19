@@ -607,6 +607,16 @@ export const mergeChatToMainOp = defineOperation({
 
     const { siteSnapshotId, entityCount, includeAll } = merged.value;
 
+    // v0.10.8 — stamp `last_staged_at` so chat.branch_change_count /
+    // branch_edited_entities / list_pending_changes can filter out
+    // already-merged snapshots. Without this, the toolbar's pending-
+    // changes pill stays at the chat's lifetime total after Stage
+    // instead of resetting to 0.
+    await tx.execute(sql`
+      UPDATE chat_sessions SET last_staged_at = now()
+      WHERE id = ${input.chatSessionId}::uuid
+    `);
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

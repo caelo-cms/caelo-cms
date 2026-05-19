@@ -578,6 +578,9 @@ export const listBranchEditedEntitiesOp = defineOperation({
         FROM site_snapshots ss
         JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
         WHERE cs.id = ${input.chatSessionId}::uuid
+          -- v0.10.8 — only snapshots since the last Stage. NULL means
+          -- "never staged" → -infinity → all snapshots count.
+          AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
       )
       SELECT 'module'::text AS kind, module_id::text AS entity_id
         FROM module_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)
@@ -649,6 +652,8 @@ export const countBranchChangesOp = defineOperation({
         FROM site_snapshots ss
         JOIN chat_sessions cs ON cs.chat_branch_id = ss.chat_branch_id
         WHERE cs.id = ${input.chatSessionId}::uuid
+          -- v0.10.8 — only snapshots since the last Stage (see sibling op).
+          AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)
       )
       SELECT
         (SELECT COUNT(DISTINCT module_id)::int   FROM module_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch))   AS modules,
