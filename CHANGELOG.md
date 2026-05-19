@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.13
+
+### Features
+- 02d107c AI status-flip tools (singular + bulk) wrapping pages.set_status
+
 ## v0.9.12
 
 ### Fixes
