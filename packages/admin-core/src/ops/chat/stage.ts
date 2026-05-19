@@ -227,14 +227,14 @@ export const listPendingChangesOp = defineOperation({
     // per-layout publish-marks attribution to do.
     const layoutChromeRows = (await tx.execute(sql`
       SELECT
-        id::text AS entity_id,
-        op_kind,
-        description,
+        ss.id::text AS entity_id,
+        ss.op_kind,
+        ss.description,
         'pending' AS stage_state
-      FROM site_snapshots
-      WHERE chat_branch_id = ${branchId}::uuid
-        AND op_kind = 'layout_modules.set'
-      ORDER BY created_at DESC
+      FROM site_snapshots ss
+      WHERE ss.chat_branch_id = ${branchId}::uuid
+        AND ss.op_kind = 'layout_modules.set'${sinceFilter}
+      ORDER BY ss.created_at DESC
     `)) as unknown as {
       entity_id: string;
       op_kind: string;

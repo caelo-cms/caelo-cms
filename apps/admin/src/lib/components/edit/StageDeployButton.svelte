@@ -34,7 +34,6 @@
     DialogHeader,
     DialogTitle,
   } from "$lib/components/ui/dialog";
-  import { ChevronDown } from "lucide-svelte";
 
   interface PendingEntity {
     kind: string;
@@ -179,25 +178,39 @@
   <!-- v0.10.9 — truly fresh chat: no edits AND never Staged. -->
   <span class="text-xs text-muted-foreground">No pending changes</span>
 {:else if branchChangeCount === 0}
-  <!-- v0.8.1 — chat has no fresh pending edits but staging holds
-       a build the operator hasn't promoted yet. Show only the
-       Promote dropdown so the operator can finish the loop. The
-       Stage half is omitted (nothing to stage) but the ▾ stays
-       reachable. Reuses the same Promote modal. -->
-  <div class="inline-flex items-center" data-testid="stage-deploy">
+  <!-- v0.10.10 — chat has no fresh pending edits but staging holds
+       a build the operator hasn't promoted yet. Show the direct
+       Promote-to-production submit. Pre-v0.10.10 this branch opened
+       the Stage modal, which confused operators ("I clicked Promote
+       and the modal says Stage these changes?"). Now it submits the
+       atomic `?/promoteToProduction` action directly. -->
+  <form
+    method="post"
+    action="?/promoteToProduction"
+    use:enhance={() => {
+      publishing = true;
+      return async ({ update }) => {
+        try {
+          await update({ reset: false });
+        } finally {
+          publishing = false;
+        }
+      };
+    }}
+    class="inline-flex items-center"
+    data-testid="stage-deploy"
+  >
+    <input type="hidden" name="_csrf" value={csrfToken} />
     <Button
-      type="button"
+      type="submit"
       size="sm"
-      onclick={() => {
-        dialogOpen = true;
-      }}
+      disabled={publishing}
       data-testid="promote-only-btn"
-      title="Promote the current staging build to production"
+      title="Atomically copy the latest staging build to production"
     >
-      Promote staging
-      <ChevronDown class="ml-1 size-3" />
+      {publishing ? "Promoting…" : "Promote to production"}
     </Button>
-  </div>
+  </form>
 {:else}
   <div class="relative inline-flex items-center gap-1" data-testid="stage-deploy">
     <!-- (N) badge: clickable popover with blast-radius preview. -->
