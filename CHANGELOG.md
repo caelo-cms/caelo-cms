@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.12
+
+### Fixes
+- 40d0b81 status toggle reverts on Stage — branched page_snapshot was never patched
+
 ## v0.9.11
 
 ### Fixes
