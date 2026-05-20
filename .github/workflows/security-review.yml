@@ -33,7 +33,10 @@ name: AI Security Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # `ready_for_review` covers the Draft → Ready-for-review transition;
+    # without it, a PR opened as Draft skips here (the `draft == false` guard
+    # below) and won't get a scan until the next push.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   pull-requests: write
