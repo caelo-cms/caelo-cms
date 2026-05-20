@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.22
+
+### Refactors
+- 02561c3 consolidate structured-sets to one unified CRUD surface
+
 ## v0.10.21
 
 ### Features
