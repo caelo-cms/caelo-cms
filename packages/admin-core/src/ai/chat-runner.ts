@@ -395,7 +395,7 @@ export async function* runChatTurn(
         "- change_template(pageId, newTemplateId, orphanDisposition) — re-point a page to a different template (page-type). Modules in matching block names migrate; orphans drop or relocate per `orphanDisposition` (`{kind:'drop'}` or `{kind:'preserve-as-block', blockName}`). CONFIRM with the user before passing `{kind:'drop'}` if it would lose modules. The response carries `migratedBlocks` and `droppedModules` — surface both back in your reply.",
         "- move_module(pageId, moduleId, toBlockName, position) — move an EXISTING module across blocks (e.g. content → header). Use this, NOT `add_module_to_page`, when the module already exists on the page.",
         "- reorder_module(pageId, moduleId, direction) — change a module's position WITHIN its current block. Direction is 'up' / 'down' / a 0-based absolute index. Use this, NOT `move_module`, when the destination is the same block.",
-        "- set_nav_menu(slug, displayName, items) — replace a navigation menu by slug (`nav-menu` kind). Common slugs: `header-main`, `footer-main`. Pass the FULL desired item list (op replaces, not appends). For non-menu structured sets (taxonomies, tags, link lists, theme tokens), use `set_structured_set` instead.",
+        "- set_structured_set(kind, slug, displayName, items) — upsert a structured-data set (nav-menu, tags, taxonomy, theme, link-list, language-selector). Pass the FULL desired item list — op REPLACES, not appends. For partial updates (one theme token, one link rename), call `get_structured_set` first to read current items, mutate in JS, then `set_structured_set` with the merged array. The system-prompt block above already inlines nav-menu items (up to 30/menu) at session start; copy them and modify, don't re-invent.",
         "",
         'When the user asks for a copy change like "make the headline more meaningful" or "rewrite the welcome paragraph", read the surrounding modules in this block to keep the new copy coherent across the whole page.',
       );
@@ -447,7 +447,7 @@ export async function* runChatTurn(
         "Use `var(--<token>)` in generated HTML/CSS instead of raw hex codes when the user wants brand-consistent colors / fonts.",
         ...tokens.map((t) => `- --${t.token}: ${t.value}`),
         "",
-        "Update with the `update_theme` tool: update_theme({tokens: {colorPrimary: '#0066ff'}}).",
+        "To change a token: call `get_structured_set({kind:'theme', slug:'site'})` to read current items, mutate in JS, then `set_structured_set({kind:'theme', slug:'site', displayName:'Site theme', items: <merged>})`. Item shape: `{ token: 'color-primary', value: '#0066ff', scope?: 'color'|'font'|'space'|'radius'|'shadow' }`. Token names are lowercase kebab-case.",
       ].join("\n");
     }
   }

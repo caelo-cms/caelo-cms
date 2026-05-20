@@ -455,19 +455,23 @@ export const removeModuleFromPageToolInput = z
 
 export const setStructuredSetToolInput = z
   .object({
-    kind: z.enum(["nav-menu", "taxonomy", "theme", "tags", "link-list"]),
+    // v0.10.22 — added "language-selector" to match @caelo-cms/shared
+    // structuredSetKind (the 6th kind that was previously unreachable
+    // from any AI tool — the kind-specific wrappers covered only
+    // nav-menu + theme).
+    kind: z.enum(["nav-menu", "taxonomy", "theme", "tags", "link-list", "language-selector"]),
     slug: slugInputSchema,
     displayName: z.string().min(1).max(200),
     items: z.array(z.unknown()),
   })
   .strict();
 
-export const updateThemeToolInput = z
-  .object({
-    /** Map of token name to value. Merges into the existing theme/site set. */
-    tokens: z.record(z.string(), z.string()),
-  })
-  .strict();
+// v0.10.22 — `updateThemeToolInput` removed. The kind-specific `update_theme`
+// wrapper was replaced by the unified `set_structured_set` surface.
+// Partial token updates (merge by token) are now expressed as the
+// two-step AI workflow: `get_structured_set({kind:'theme', slug:'site'})`
+// to read existing items, mutate in JS, then `set_structured_set` with
+// the merged array.
 
 /**
  * P6.7.6 — layout-layer tools. Layouts are site-wide chrome (header /
@@ -605,21 +609,6 @@ export const reorderModuleToolInput = z
      * target position within the same block.
      */
     direction: z.union([z.enum(["up", "down"]), z.number().int().min(0).max(1000)]),
-  })
-  .strict();
-
-/**
- * Convenience wrapper over `set_structured_set` for the `nav-menu`
- * kind specifically. Users say "edit the menu", not "set the
- * structured set kind=nav-menu" — this maps natural language to the
- * right tool. Items shape matches `navMenuItem` from
- * @caelo-cms/shared/structured-sets.
- */
-export const setNavMenuToolInput = z
-  .object({
-    slug: slugInputSchema,
-    displayName: z.string().min(1).max(200),
-    items: z.array(z.unknown()),
   })
   .strict();
 
@@ -823,7 +812,7 @@ export type ChangePageSlugToolInput = z.infer<typeof changePageSlugToolInput>;
 export type DeletePageToolInput = z.infer<typeof deletePageToolInput>;
 export type RemoveModuleFromPageToolInput = z.infer<typeof removeModuleFromPageToolInput>;
 export type SetStructuredSetToolInput = z.infer<typeof setStructuredSetToolInput>;
-export type UpdateThemeToolInput = z.infer<typeof updateThemeToolInput>;
+// v0.10.22 — `UpdateThemeToolInput` removed alongside `update_theme` tool.
 export type ChatCreateSessionInput = z.infer<typeof chatCreateSessionInput>;
 export type ChatSendMessageInput = z.infer<typeof chatSendMessageInput>;
 export type ChatRenameSessionInput = z.infer<typeof chatRenameSessionInput>;
@@ -841,7 +830,7 @@ export type DuplicatePageToolInput = z.infer<typeof duplicatePageToolInput>;
 export type ChangeTemplateToolInput = z.infer<typeof changeTemplateToolInput>;
 export type MoveModuleToolInput = z.infer<typeof moveModuleToolInput>;
 export type ReorderModuleToolInput = z.infer<typeof reorderModuleToolInput>;
-export type SetNavMenuToolInput = z.infer<typeof setNavMenuToolInput>;
+// v0.10.22 — `SetNavMenuToolInput` removed alongside `set_nav_menu` tool.
 
 /**
  * P9 — locales propose tool schemas. Per CLAUDE.md §11.A all four

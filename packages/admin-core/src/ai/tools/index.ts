@@ -23,16 +23,19 @@ import { createLayoutTool } from "./create-layout.js";
 import { createPageTool } from "./create-page.js";
 import { createTemplateTool } from "./create-template.js";
 import { deletePageTool } from "./delete-page.js";
+import { deleteStructuredSetTool } from "./delete-structured-set.js";
 import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { editModuleTool } from "./edit-module.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
 import { generateImageTool } from "./generate-image.js";
+import { getStructuredSetTool } from "./get-structured-set.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listLayoutsTool } from "./list-layouts.js";
 import { listPagesTool } from "./list-pages.js";
+import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
@@ -77,7 +80,6 @@ import { reorderModuleTool } from "./reorder-module.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotPageTool } from "./screenshot-page.js";
 import { setMediaAltTool } from "./set-media-alt.js";
-import { setNavMenuTool } from "./set-nav-menu.js";
 import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageSeoTool } from "./set-page-seo.js";
 import { setPageStatusTool } from "./set-page-status.js";
@@ -93,7 +95,6 @@ import { submitPluginTool } from "./submit-plugin.js";
 // Tier-1 plugin (`packages/plugins/translation/`). The chat-runner discovers
 // them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
-import { updateThemeTool } from "./update-theme.js";
 
 /**
  * Registers every shipped tool against a fresh ToolRegistry. Tests can
@@ -125,8 +126,15 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(changePageSlugTool);
   registry.register(deletePageTool);
   registry.register(removeModuleFromPageTool);
+  // v0.10.22 — unified structured-sets CRUD surface. Replaces the
+  // kind-specific wrappers `set_nav_menu` and `update_theme`. The AI
+  // discriminates by `kind` argument; the per-kind JSON Schema on
+  // `set_structured_set` enforces the right item shape at the
+  // tool-call boundary.
   registry.register(setStructuredSetTool);
-  registry.register(updateThemeTool);
+  registry.register(listStructuredSetsTool);
+  registry.register(getStructuredSetTool);
+  registry.register(deleteStructuredSetTool);
   // P6.7.6 — layout layer.
   registry.register(addModuleToLayoutTool);
   registry.register(removeModuleFromLayoutTool);
@@ -144,7 +152,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(changeTemplateTool);
   registry.register(moveModuleTool);
   registry.register(reorderModuleTool);
-  registry.register(setNavMenuTool);
   // P7 — media library.
   registry.register(findMediaTool);
   registry.register(setMediaAltTool);

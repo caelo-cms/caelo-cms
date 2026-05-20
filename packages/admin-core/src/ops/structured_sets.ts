@@ -191,8 +191,10 @@ function rowToOut(r: {
 
 export const setStructuredSetOp = defineOperation({
   name: "structured_sets.set",
-  // P6.7.5 — AI calls this via the `set_structured_set` and
-  // `update_theme` tools. Per-kind Zod validation runs in the handler.
+  // P6.7.5 — AI calls this via the `set_structured_set` tool
+  // (v0.10.22 unified surface; the prior kind-specific wrappers
+  // `set_nav_menu` and `update_theme` were removed). Per-kind Zod
+  // validation runs in the handler.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

@@ -50,15 +50,14 @@ export interface ToolCatalogueEntry {
  * exist on this install. Pre-v0.10.21 this returned `undefined` on an
  * empty list, so the AI didn't know structured-data sets existed as a
  * concept and fell back to editing the header module's HTML directly
- * when asked to "update the navigation." The primer teaches the AI
- * that nav-menus / tags / taxonomies / theme tokens / link-lists /
- * language-selectors are first-class typed lists, and that
- * `set_nav_menu` / `set_structured_set` are upsert — they CREATE the
- * set if the slug doesn't exist yet. The renderer auto-wires a module
- * with slug `nav-menu-<slug>` to the matching `nav-menu/<slug>` row,
- * so the AI's workflow for "add a header nav" is: (1) call
- * `set_nav_menu` to populate the items, (2) ensure a module with slug
- * `nav-menu-<slug>` is placed on the layout's header block.
+ * when asked to "update the navigation."
+ *
+ * v0.10.22 — primer rewritten to reference the unified CRUD surface
+ * (`list_structured_sets` / `get_structured_set` / `set_structured_set`
+ * / `delete_structured_set`). The kind-specific wrappers `set_nav_menu`
+ * and `update_theme` were removed; the AI uses `kind` as a discriminator
+ * argument and the per-kind JSON Schema on `set_structured_set`
+ * enforces the right item shape at the tool-call boundary.
  *
  * For `kind === "nav-menu"` (and only that kind), inline each item as
  * `{ label, href[, target, children: N] }` so the AI can copy-modify
@@ -74,15 +73,19 @@ export function formatStructuredSetsBlock(
     "# Structured-data sets you can edit",
     "Caelo has typed named lists for **global repeated content**: navigation menus, tags, taxonomies, theme tokens, link-lists, and language-selectors. When the user asks about any of these, prefer creating or editing a structured set over hardcoding values in module HTML — that's what these lists are for.",
     "",
-    "Kinds + tools:",
-    "- `nav-menu` (header/footer navigation) → use `set_nav_menu`. Item shape: { label, href, target?, children?, adSlotId? }.",
-    "- `tags`, `taxonomy`, `link-list`, `theme`, `language-selector` → use `set_structured_set` with the matching `kind`.",
+    "Kinds: `nav-menu`, `tags`, `taxonomy`, `theme`, `link-list`, `language-selector`. Item shape is per-kind and enforced by the JSON Schema on `set_structured_set` (a mismatch is rejected at the tool boundary with a structured error).",
     "",
-    "Both tools are **upsert** — they CREATE the set when the slug doesn't exist yet, so to bootstrap a new menu just call the tool with the desired slug + items. No separate `create` step.",
+    "Tools (one unified CRUD surface — `kind` is a discriminator argument):",
+    "- `list_structured_sets({ kind? })` — list sets; omit `kind` for all. Existing sets are already inlined below at session start; call this only after writes or if the listing was truncated.",
+    "- `get_structured_set({ kind, slug })` — fetch one set's items. Use before a partial update (e.g. tweak one theme token) so you can merge in JS.",
+    "- `set_structured_set({ kind, slug, displayName, items })` — UPSERT. Creates the set when the slug doesn't exist; REPLACES `items` if it does (NOT append — pass the full desired list).",
+    "- `delete_structured_set({ kind, slug })` — remove a set.",
     "",
-    "Renderer convention: a module with slug `nav-menu-<slug>` auto-renders the items of `nav-menu/<slug>`. To wire a brand-new menu onto a layout: (1) call `set_nav_menu` to create the items, (2) ensure a module named `nav-menu-<slug>` is on the layout's header (or footer) block — use `add_module_to_layout` if it doesn't exist yet. Same pattern for `language-selector-<slug>`.",
+    "Renderer convention: a module with slug `<kind>-<slug>` auto-renders the matching `<kind>/<slug>` set. Currently only `nav-menu-<slug>` and `language-selector-<slug>` auto-wire — for the other kinds, the rendering module's HTML/JS references the items directly via the structured-sets API. To wire a brand-new nav menu onto a layout: (1) `set_structured_set({ kind: 'nav-menu', slug: 'X', displayName: '…', items: [...] })` to create the items, (2) ensure a module named `nav-menu-X` is on the layout's header (or footer) block — use `add_module_to_layout` if it doesn't exist yet.",
     "",
-    'If the user mentions "navigation", "the nav", "the menu", "header links", "footer menu" — that\'s a nav-menu, NOT a module to edit. Reach for `set_nav_menu` first.',
+    'If the user mentions "navigation", "the nav", "the menu", "header links", "footer menu" — that\'s a nav-menu, NOT a module to edit. Reach for `set_structured_set` with `kind: "nav-menu"` first.',
+    "",
+    "Theme-token tweaks ('brighten the primary color', 'use Inter for headings') are a `theme/site` structured set. For partial updates, call `get_structured_set` first, mutate in JS, then `set_structured_set` with the merged array — DON'T overwrite the whole token list with just the changed tokens.",
   ].join("\n");
   if (sets.length === 0) {
     return [
