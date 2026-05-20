@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.12
+
+### Features
+- f5f132a "Publish live" + persistent staging link + live-matches-staging indicator
+
 ## v0.10.11
 
 ### Fixes
