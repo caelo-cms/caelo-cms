@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.16
+
+### Fixes
+- f5ace73 drop false-positive passive-response warning on legitimate question-asking turns
+
 ## v0.10.15
 
 ### Fixes
