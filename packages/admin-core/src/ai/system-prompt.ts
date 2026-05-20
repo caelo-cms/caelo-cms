@@ -41,6 +41,55 @@ export interface ToolCatalogueEntry {
   readonly description: string;
 }
 
+/**
+ * v0.10.20 — Build the `## Structured-data sets you can edit` block from
+ * the `structured_sets.list` result. Extracted from chat-runner.ts so
+ * the formatter is unit-testable without spinning up a chat session.
+ *
+ * For `kind === "nav-menu"` (and only that kind), inline each item as
+ * `{ label, href[, target, children: N] }` so the AI can copy-modify
+ * without a `structured_sets.get` round-trip. Other kinds (taxonomies,
+ * tag lists, theme tokens) carry larger / less-frequently-edited
+ * shapes and stay summarized to bound the prompt size. Cap nav-menu
+ * inlining at 30 items per menu; outliers fall back to count-only.
+ *
+ * Returns `undefined` when the input list is empty (no block to emit).
+ */
+export function formatStructuredSetsBlock(
+  sets: readonly { kind: string; slug: string; displayName: string; items: unknown }[],
+): string | undefined {
+  if (sets.length === 0) return undefined;
+  return [
+    "# Structured-data sets you can edit",
+    "Each is a typed named list. Use `set_structured_set` to replace a set's items.",
+    ...sets.map((s) => {
+      const items = Array.isArray(s.items) ? (s.items as unknown[]) : [];
+      const header = `- ${s.kind}/${s.slug} ("${s.displayName}") — ${items.length} item${items.length === 1 ? "" : "s"}`;
+      if (s.kind !== "nav-menu" || items.length === 0 || items.length > 30) {
+        return header;
+      }
+      const lines = (
+        items as Array<{
+          label?: unknown;
+          href?: unknown;
+          target?: unknown;
+          children?: unknown;
+        }>
+      ).map((it, i) => {
+        const label = typeof it.label === "string" ? it.label : "?";
+        const href = typeof it.href === "string" ? it.href : "?";
+        const target = it.target ? `, target: "${String(it.target)}"` : "";
+        const kids =
+          Array.isArray(it.children) && it.children.length > 0
+            ? `, children: ${it.children.length}`
+            : "";
+        return `    ${i + 1}. { label: ${JSON.stringify(label)}, href: ${JSON.stringify(href)}${target}${kids} }`;
+      });
+      return `${header}:\n${lines.join("\n")}`;
+    }),
+  ].join("\n");
+}
+
 // SystemPromptChunk is defined in ./provider.ts so adapters can import
 // it without pulling in the system-prompt composer; we re-use that type here.
 import type { SystemPromptChunk } from "./provider.js";

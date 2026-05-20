@@ -28,7 +28,9 @@ export const setNavMenuTool: ToolDefinitionWithHandler<
     "Replace a navigation menu's items by slug (kind = 'nav-menu'). " +
     "Use when the user says 'edit the header menu', 'add a Pricing link to the nav', or 'remove About from the footer menu'. " +
     "Pass the FULL desired item list — the op replaces the menu, not appends. " +
-    "Item shape: { label, href, target?, children?, adSlotId? }. " +
+    "The current items for each menu are inlined in the '# Structured-data sets you can edit' block above; copy them and modify, don't re-invent. " +
+    "If they're not inlined there (cap exceeded), call `structured_sets.get` first. " +
+    "Item shape: { label: string (1-120), href: string (1-500), target?: '_self'|'_blank', children?: NavItem[], adSlotId?: string }. " +
     "Common slugs: header-main, footer-main. " +
     "For non-menu structured sets (taxonomies, tags, link lists, theme tokens), use `set_structured_set` instead.",
   schema: setNavMenuToolInput,
@@ -39,7 +41,32 @@ export const setNavMenuTool: ToolDefinitionWithHandler<
     properties: {
       slug: { type: "string", minLength: 1, maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
-      items: { type: "array" },
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["label", "href"],
+          properties: {
+            label: { type: "string", minLength: 1, maxLength: 120 },
+            href: { type: "string", minLength: 1, maxLength: 500 },
+            target: { enum: ["_self", "_blank"] },
+            children: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["label", "href"],
+                properties: {
+                  label: { type: "string", minLength: 1, maxLength: 120 },
+                  href: { type: "string", minLength: 1, maxLength: 500 },
+                },
+              },
+            },
+            adSlotId: { type: "string", minLength: 1, maxLength: 100 },
+          },
+        },
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {

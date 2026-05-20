@@ -47,7 +47,7 @@ import {
 
 import { tryAutoRecover } from "./auto-recovery.js";
 import type { AIProvider, ChatMessageInput } from "./provider.js";
-import { composeSystemPromptChunks } from "./system-prompt.js";
+import { composeSystemPromptChunks, formatStructuredSetsBlock } from "./system-prompt.js";
 import { buildToolDescribeState } from "./tools/describe-state.js";
 import type { ToolRegistry } from "./tools/index.js";
 
@@ -460,16 +460,7 @@ export async function* runChatTurn(
         sets: { kind: string; slug: string; displayName: string; items: unknown }[];
       }
     ).sets.filter((s) => s.kind !== "theme");
-    if (sets.length > 0) {
-      structuredSetsBlock = [
-        "# Structured-data sets you can edit",
-        "Each is a typed named list. Use `set_structured_set` to replace a set's items.",
-        ...sets.map((s) => {
-          const items = Array.isArray(s.items) ? (s.items as unknown[]) : [];
-          return `- ${s.kind}/${s.slug} ("${s.displayName}") — ${items.length} item${items.length === 1 ? "" : "s"}`;
-        }),
-      ].join("\n");
-    }
+    structuredSetsBlock = formatStructuredSetsBlock(sets);
   }
 
   // P6.7.6 — layouts (site-wide chrome) + site_defaults so the AI knows
