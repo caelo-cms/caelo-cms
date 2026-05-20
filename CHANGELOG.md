@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.13
+
+### Fixes
+- 563c796 branched page-layout overlay — chained add_module_to_page → reorder_module no longer fails
+
 ## v0.10.12
 
 ### Features
