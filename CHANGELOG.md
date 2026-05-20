@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.18
+
+### Tests
+- 9b61050 align provider-fixture-replay with v0.10.17 done-event shape
+
 ## v0.10.17
 
 ### Other
