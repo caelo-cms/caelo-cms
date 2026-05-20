@@ -22,14 +22,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
-const WORKFLOW_PATH = resolve(
-  REPO_ROOT,
-  ".github/workflows/security-review.yml",
-);
-const CATEGORIES_PATH = resolve(
-  REPO_ROOT,
-  ".github/ai-review/caelo-security-categories.md",
-);
+const WORKFLOW_PATH = resolve(REPO_ROOT, ".github/workflows/security-review.yml");
+const CATEGORIES_PATH = resolve(REPO_ROOT, ".github/ai-review/caelo-security-categories.md");
 
 const workflow = readFileSync(WORKFLOW_PATH, "utf8");
 const categories = readFileSync(CATEGORIES_PATH, "utf8");
@@ -43,9 +37,7 @@ describe("AI security review workflow YAML", () => {
       .split(",")
       .map((t) => t.trim())
       .sort();
-    expect(types).toEqual(
-      ["opened", "ready_for_review", "reopened", "synchronize"].sort(),
-    );
+    expect(types).toEqual(["opened", "ready_for_review", "reopened", "synchronize"].sort());
   });
 
   it("U2: top-level permissions block is exactly pull-requests + contents", () => {
@@ -57,9 +49,7 @@ describe("AI security review workflow YAML", () => {
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-    expect(lines.sort()).toEqual(
-      ["contents: read", "pull-requests: write"].sort(),
-    );
+    expect(lines.sort()).toEqual(["contents: read", "pull-requests: write"].sort());
   });
 
   it("U3: concurrency block exists, keys on PR number, cancel-in-progress", () => {
@@ -69,9 +59,7 @@ describe("AI security review workflow YAML", () => {
   });
 
   it("U4: anthropics action is pinned by a 40-char SHA (no @main / @v1)", () => {
-    expect(workflow).toMatch(
-      /uses:\s*anthropics\/claude-code-security-review@[0-9a-f]{40}\b/,
-    );
+    expect(workflow).toMatch(/uses:\s*anthropics\/claude-code-security-review@[0-9a-f]{40}\b/);
   });
 
   it("U5: a `# pinned <YYYY-MM-DD>` comment is on or above the action ref", () => {
@@ -83,9 +71,7 @@ describe("AI security review workflow YAML", () => {
     const window = lines.slice(Math.max(0, refIndex - 3), refIndex + 1);
     // Comment line carries the date with a `pinned` marker anywhere on it
     // — gives some prose-flexibility in the surrounding comment.
-    const hasDateComment = window.some((l) =>
-      /#.*\bpinned\b.*\d{4}-\d{2}-\d{2}/i.test(l),
-    );
+    const hasDateComment = window.some((l) => /#.*\bpinned\b.*\d{4}-\d{2}-\d{2}/i.test(l));
     expect(hasDateComment).toBe(true);
   });
 
@@ -105,22 +91,16 @@ describe("AI security review workflow YAML", () => {
     const ifMatch = workflow.match(/^\s{4}if:\s*>-?\s*\n([\s\S]+?)\n\s{4}\S/m);
     expect(ifMatch).not.toBeNull();
     const expression = ifMatch?.[1] ?? "";
-    expect(expression).toContain(
-      "github.event.pull_request.user.type != 'Bot'",
-    );
+    expect(expression).toContain("github.event.pull_request.user.type != 'Bot'");
     expect(expression).toContain("github.event.pull_request.draft == false");
     expect(expression).toContain(
       "!contains(github.event.pull_request.labels.*.name, 'skip-ai-review')",
     );
-    expect(expression).toContain(
-      "github.event.pull_request.changed_files <= 200",
-    );
+    expect(expression).toContain("github.event.pull_request.changed_files <= 200");
   });
 
   it("U10: API key references secrets.CLAUDE_SECURITY_REVIEW only — no literal", () => {
-    expect(workflow).toMatch(
-      /claude-api-key:\s*\$\{\{\s*secrets\.CLAUDE_SECURITY_REVIEW\s*\}\}/,
-    );
+    expect(workflow).toMatch(/claude-api-key:\s*\$\{\{\s*secrets\.CLAUDE_SECURITY_REVIEW\s*\}\}/);
     expect(workflow).not.toMatch(/claude-api-key:\s*['"][A-Za-z0-9_-]{20,}/);
   });
 
@@ -169,13 +149,7 @@ describe("Caelo security categories file", () => {
   });
 
   it("U16: carries the canonical Caelo guardrail phrases", () => {
-    for (const phrase of [
-      "no raw SQL",
-      "Query API",
-      "RLS",
-      "propose_",
-      "Tier 2",
-    ]) {
+    for (const phrase of ["no raw SQL", "Query API", "RLS", "propose_", "Tier 2"]) {
       expect(categories).toContain(phrase);
     }
   });
