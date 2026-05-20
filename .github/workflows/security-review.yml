@@ -30,6 +30,14 @@ name: AI Security Review
 # together when re-validating. scripts/security-review-workflow.test.ts
 # asserts on the SHA-pin format so accidental floating-tag regressions fail
 # `bun test`.
+#
+# Prompt-injection hardening: the action's `custom-security-scan-instructions`
+# file is read from the **base ref** (a separate trusted checkout into
+# `.base-review-config/`), NOT from the PR-head checkout. A malicious PR
+# author who edits `.github/ai-review/caelo-security-categories.md` in their
+# own PR cannot rewrite the reviewer's system prompt — the workflow always
+# reads the base-branch version. The PR-head checkout remains the diff
+# source the action scans.
 
 on:
   pull_request:
@@ -60,10 +68,26 @@ jobs:
       github.event.pull_request.changed_files <= 200
 
     steps:
-      - uses: actions/checkout@v4
+      # PR head first — this is the diff the action scans. It checks out
+      # into $GITHUB_WORKSPACE and runs `git clean -ffdx`, so it must precede
+      # the base-config checkout (which lives in a subdir).
+      - name: Checkout PR head for the diff to scan
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 2
+
+      # Trusted copy of the prompt-extension file. Sourced from the PR's base
+      # ref so it cannot be rewritten by adversarial PR content. See the
+      # header comment for the prompt-injection mitigation rationale. The
+      # `path:` subdir scopes this checkout's clean step, so the PR-head
+      # working tree at $GITHUB_WORKSPACE is untouched.
+      - name: Checkout base ref for trusted prompt config
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: .base-review-config
+          fetch-depth: 1
 
       # anthropics/claude-code-security-review — pinned to commit on `main`
       # (no releases). pinned 2026-02-11.
@@ -86,4 +110,7 @@ jobs:
           exclude-directories: node_modules,dist,.svelte-kit,build,docs-site/.astro,packages/migrations/sql,coverage,.turbo,test-results,playwright-report
           # Caelo house rules appended to the action's default audit prompt.
           # Teaches the reviewer to cite CLAUDE.md §2 / §4 / §7 / §11.A.
-          custom-security-scan-instructions: .github/ai-review/caelo-security-categories.md
+          # Read from the BASE ref's trusted copy (not the PR head) so a
+          # malicious PR editing this file can't rewrite the reviewer's own
+          # system prompt to suppress findings.
+          custom-security-scan-instructions: .base-review-config/.github/ai-review/caelo-security-categories.md

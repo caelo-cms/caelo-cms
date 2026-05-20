@@ -124,9 +124,13 @@ describe("AI security review workflow YAML", () => {
     }
   });
 
-  it("U12: custom-security-scan-instructions points at the categories file", () => {
+  it("U12: custom-security-scan-instructions points at the base-ref trusted copy", () => {
+    // Path lives under `.base-review-config/` (the trusted base-ref checkout),
+    // NOT the repo root. Reading the prompt-extension file from the PR head
+    // would be a prompt-injection vector — a PR could rewrite its own
+    // reviewer's system prompt.
     expect(workflow).toContain(
-      "custom-security-scan-instructions: .github/ai-review/caelo-security-categories.md",
+      "custom-security-scan-instructions: .base-review-config/.github/ai-review/caelo-security-categories.md",
     );
   });
 });
