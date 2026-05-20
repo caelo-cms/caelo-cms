@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.15
+
+### Fixes
+- a51389a cross-chat banner counted already-merged work as pending
+
 ## v0.10.14
 
 ### Tests
