@@ -10,6 +10,7 @@ export {
   loadModuleState,
   loadModuleStateWithBranchOverlay,
   loadPageLayoutState,
+  loadPageLayoutStateWithBranchOverlay,
   loadPageModuleContentState,
   loadPageState,
   loadPageStateWithBranchOverlay,

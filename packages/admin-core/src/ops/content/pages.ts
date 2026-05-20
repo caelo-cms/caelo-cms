@@ -26,6 +26,7 @@ import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
 import {
   emitSnapshot,
   loadPageLayoutState,
+  loadPageLayoutStateWithBranchOverlay,
   loadPageState,
   loadPageStateWithBranchOverlay,
 } from "../../snapshots/index.js";
@@ -211,31 +212,20 @@ export const getPageWithModulesOp = defineOperation({
     // them and the layout looks empty for no apparent reason. Each row
     // carries `isDeleted` so the UI can mark the chip and the user can
     // explicitly remove or replace it.
-    const modRows = (await tx.execute(sql`
-      SELECT pm.block_name AS block_name,
-             pm.position AS position,
-             m.id::text AS module_id,
-             m.slug AS slug,
-             m.display_name AS display_name,
-             m.html AS html,
-             m.css AS css,
-             m.js AS js,
-             (m.deleted_at IS NOT NULL) AS is_deleted
-      FROM page_modules pm
-      JOIN modules m ON m.id = pm.module_id
-      WHERE pm.page_id = ${input.pageId}::uuid
-      ORDER BY pm.block_name ASC, pm.position ASC
-    `)) as unknown as {
-      block_name: string;
-      position: number;
-      module_id: string;
-      slug: string;
-      display_name: string;
-      html: string;
-      css: string;
-      js: string;
-      is_deleted: boolean;
-    }[];
+    //
+    // v0.10.13 — branch-aware layout read. Without the overlay, an AI
+    // chain like add_module_to_page → reorder_module on the same chat
+    // branch fails ("module X is not on page Y") because
+    // `pages.set_modules` in branched mode writes to
+    // `page_layout_snapshots` only — the live `page_modules` table
+    // stays stale. The overlay returns the latest snapshot's blocks
+    // (when present) so chained edits compose; fetches module details
+    // separately from `modules` so we still get slug/html/css/js/etc.
+    const layoutState = await loadPageLayoutStateWithBranchOverlay(
+      tx,
+      input.pageId,
+      ctx.chatBranchId,
+    );
     const grouped = new Map<
       string,
       {
@@ -248,18 +238,56 @@ export const getPageWithModulesOp = defineOperation({
         isDeleted: boolean;
       }[]
     >();
-    for (const r of modRows) {
-      const arr = grouped.get(r.block_name) ?? [];
-      arr.push({
-        moduleId: r.module_id,
-        slug: r.slug,
-        displayName: r.display_name,
-        html: r.html,
-        css: r.css,
-        js: r.js,
-        isDeleted: r.is_deleted,
-      });
-      grouped.set(r.block_name, arr);
+    const allModuleIds: string[] = [];
+    for (const block of layoutState.blocks) {
+      for (const id of block.moduleIds) allModuleIds.push(id);
+    }
+    if (allModuleIds.length > 0) {
+      // Fetch module details for the moduleIds referenced by the
+      // layout. Branch-aware so modules created on this chat's branch
+      // (chat_branch_id = X) are visible alongside main modules.
+      const branchFilter2 = branchVisibilityFilter(ctx);
+      const modDetailRows = (await tx.execute(sql`
+        SELECT id::text AS module_id, slug, display_name, html, css, js,
+               (deleted_at IS NOT NULL) AS is_deleted
+        FROM modules
+        WHERE id = ANY(${sql.raw(`ARRAY[${allModuleIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
+          ${branchFilter2}
+      `)) as unknown as {
+        module_id: string;
+        slug: string;
+        display_name: string;
+        html: string;
+        css: string;
+        js: string;
+        is_deleted: boolean;
+      }[];
+      const detailById = new Map(modDetailRows.map((r) => [r.module_id, r]));
+      for (const block of layoutState.blocks) {
+        const arr: {
+          moduleId: string;
+          slug: string;
+          displayName: string;
+          html: string;
+          css: string;
+          js: string;
+          isDeleted: boolean;
+        }[] = [];
+        for (const id of block.moduleIds) {
+          const d = detailById.get(id);
+          if (!d) continue; // module not visible to this actor — skip
+          arr.push({
+            moduleId: id,
+            slug: d.slug,
+            displayName: d.display_name,
+            html: d.html,
+            css: d.css,
+            js: d.js,
+            isDeleted: d.is_deleted,
+          });
+        }
+        if (arr.length > 0) grouped.set(block.blockName, arr);
+      }
     }
     // v0.2.65 — Surface ALL template blocks, even those the page hasn't
     // assigned modules to yet. Pre-v0.2.65 this op only returned blocks

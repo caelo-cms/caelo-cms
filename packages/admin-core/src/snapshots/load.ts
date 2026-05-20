@@ -227,6 +227,42 @@ export async function loadPageStateWithBranchOverlay(
   return loadPageState(tx, pageId);
 }
 
+/**
+ * v0.10.13 — Branch-overlay variant of `loadPageLayoutState`. Returns
+ * the LATEST `page_layout_snapshot` for this page on the caller's
+ * chat branch if one exists, else falls through to the live
+ * `page_modules` reader. Same shape as `loadPageLayoutState`.
+ *
+ * Why this exists: `pages.set_modules` in branched mode emits a
+ * `page_layout_snapshot` and skips the live `page_modules` write. Any
+ * subsequent read that doesn't union the snapshot sees STALE layout
+ * — manifesting as "module X is not on page Y" when the AI chains
+ * add_module_to_page → reorder_module on the same branched page.
+ */
+export async function loadPageLayoutStateWithBranchOverlay(
+  tx: TransactionRunner,
+  pageId: string,
+  chatBranchId: string | null | undefined,
+): Promise<PageLayoutState> {
+  if (chatBranchId) {
+    const rows = (await tx.execute(sql`
+      SELECT pls.state
+        FROM page_layout_snapshots pls
+        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+       WHERE pls.page_id = ${pageId}::uuid
+         AND ss.chat_branch_id = ${chatBranchId}::uuid
+       ORDER BY ss.created_at DESC
+       LIMIT 1
+    `)) as unknown as { state: unknown }[];
+    const row = rows[0];
+    if (row !== undefined) {
+      const raw = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
+      return raw as PageLayoutState;
+    }
+  }
+  return loadPageLayoutState(tx, pageId);
+}
+
 export async function loadPageLayoutState(
   tx: TransactionRunner,
   pageId: string,
