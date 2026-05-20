@@ -802,24 +802,35 @@ export const listOpenChatsWithPendingOp = defineOperation({
           p.slug       AS page_slug,
           p.locale     AS page_locale,
           (
+            -- v0.10.15 — only snapshots since each chat's last Stage.
+            -- v0.10.8 fixed branch_change_count + branch_edited_entities
+            -- + list_pending_changes; this 4th op was missed, so the
+            -- cross-chat banner kept showing "N pending changes" for
+            -- chats whose work had already been Staged + Promoted.
             (SELECT COUNT(DISTINCT module_id)::int   FROM module_snapshots ms
               JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+              WHERE ss.chat_branch_id = cs.chat_branch_id
+                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
             (SELECT COUNT(DISTINCT page_id)::int     FROM page_snapshots ps
               JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+              WHERE ss.chat_branch_id = cs.chat_branch_id
+                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
             (SELECT COUNT(DISTINCT template_id)::int FROM template_snapshots ts
               JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+              WHERE ss.chat_branch_id = cs.chat_branch_id
+                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
             (SELECT COUNT(DISTINCT page_id)::int     FROM page_layout_snapshots pls
               JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+              WHERE ss.chat_branch_id = cs.chat_branch_id
+                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
             (SELECT COUNT(DISTINCT page_module_content_id)::int FROM page_module_content_snapshots pmcs
               JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-              WHERE ss.chat_branch_id = cs.chat_branch_id) +
+              WHERE ss.chat_branch_id = cs.chat_branch_id
+                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz)) +
             (SELECT COUNT(*)::int FROM site_snapshots ss
               WHERE ss.chat_branch_id = cs.chat_branch_id
-                AND ss.op_kind = 'layout_modules.set')
+                AND ss.op_kind = 'layout_modules.set'
+                AND ss.created_at > COALESCE(cs.last_staged_at, '-infinity'::timestamptz))
           )::int AS pending_count
         FROM chat_sessions cs
         LEFT JOIN pages p ON p.id = cs.page_id AND p.deleted_at IS NULL
