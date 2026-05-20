@@ -69,10 +69,12 @@ Docs are dogfooded — `caelo-cms.com` is itself a Caelo install whose content l
 
 ## Pull request mechanics
 
+- **All changes to `main` go through a pull request.** Direct pushes, force pushes, and branch deletion are rejected by the `main-protection` ruleset on the GitHub repo. The ruleset's source-of-truth lives in `.github/rulesets/main.json` and is applied by `bun run rulesets:apply` (maintainers only). Edit the JSON via PR — do not edit the ruleset in the GitHub UI; the next apply run reverts it. Run `bun run rulesets:check` to confirm the live state matches the committed spec.
 - **Conventional commits.** `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`. Scope by phase when applicable: `feat(phase-17): …`.
 - **One coherent change per PR.** Mixed unrelated changes are rejected on review — open them separately.
 - **Use the PR template.** It asks for *what changed*, *why* (with `CMS_REQUIREMENTS.md` section reference if applicable), *how it was verified*, *new dependencies + their licenses*. The template is at `.github/PULL_REQUEST_TEMPLATE.md`.
 - **No `--no-verify`.** No force-push to `main`. No `--no-gpg-sign` workarounds. If a hook is blocking you, fix the underlying issue.
+- **Required CI checks must pass before merge.** The ruleset requires `Lockfile freshness` and `Lint, Typecheck, Migrate, Test, License` (the latter rolls up Biome lint + SPDX + audit-callsites, version lockstep, tsc, `bun test`, and MPL-2.0 license compatibility). The branch must be up to date with `main` and all review threads resolved before merge. Squash or rebase only — no merge commits.
 - **Tests with every change.** Bug fixes get a regression test that would have caught the bug. New features get unit + integration + (where user-visible) Playwright E2E coverage. CI blocks merges that drop below declared coverage.
 
 Reviewers check (per CLAUDE.md §9):

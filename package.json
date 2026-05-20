@@ -20,7 +20,9 @@
     "license:check": "license-checker-rseidelsohn --production --onlyAllow 'MPL-2.0;Apache-2.0;MIT;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0' --excludePackages 'caelo-cms'",
     "db:generate": "bun run --filter=@caelo-cms/migrations generate:admin && bun run --filter=@caelo-cms/migrations generate:public",
     "db:migrate": "bun run packages/migrations/src/migrate.ts admin && bun run packages/migrations/src/migrate.ts public",
-    "plugins:sign": "bun run apps/admin/scripts/sign-tier1-manifest.ts"
+    "plugins:sign": "bun run apps/admin/scripts/sign-tier1-manifest.ts",
+    "rulesets:apply": "bun run scripts/apply-rulesets.ts",
+    "rulesets:check": "bun run scripts/apply-rulesets.ts --check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.13",
