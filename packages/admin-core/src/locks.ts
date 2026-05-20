@@ -15,7 +15,8 @@
  * (one chat per page), which is enforced at chat-session-create time.
  *
  * System writes (`ctx.chatBranchId === null/undefined`) bypass locks.
- * Locks are released on `chat.publish` or chat discard / archive.
+ * Locks are released on `chat.publish`, `chat.merge_to_main` (Stage —
+ * v0.10.19), or chat discard / archive.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";

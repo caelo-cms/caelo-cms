@@ -617,6 +617,20 @@ export const mergeChatToMainOp = defineOperation({
       WHERE id = ${input.chatSessionId}::uuid
     `);
 
+    // v0.10.19 — release per-entity locks at Stage. Pre-v0.10.19 only
+    // chat.publish + chat.archive_session released locks; chat.merge_to_main
+    // didn't. After Stage, branched edits are in main and the chat's
+    // pending-count drops to 0 — the Stage button + Publish button both
+    // disappear from the UI. But the lock persisted, so other chats
+    // editing the same page hit "page X is busy in another chat
+    // ('Live edit')" with no way to release it through the UI
+    // (nothing left to publish). Stage is the merge-to-main boundary;
+    // post-merge, the lock's purpose (prevent divergent unmerged
+    // edits) no longer applies. Re-acquisition is automatic if the
+    // same chat keeps editing the entity afterward (atomic upsert
+    // in checkAndAcquireEntityLock).
+    await releaseChatLocks(tx, input.chatSessionId);
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
