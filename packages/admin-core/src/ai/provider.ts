@@ -131,7 +131,28 @@ export type ProviderEvent =
       outputTokens: number;
       cachedTokens: number;
     }
-  | { kind: "done"; stopReason: "end_turn" | "tool_use" | "max_tokens" | "error" }
+  | {
+      kind: "done";
+      stopReason: "end_turn" | "tool_use" | "max_tokens" | "error";
+      /**
+       * v0.10.17 — diagnostic payload for the empty-response root-cause
+       * hunt. Optional; only Vercel-SDK-backed adapters populate it.
+       * `rawFinishReason` is the SDK's pre-mapping reason ("stop",
+       * "tool-calls", "length", "content-filter", "other", "unknown",
+       * "error"). `providerMetadata` carries provider-specific stop
+       * info — for Anthropic, that's the raw `stop_reason`
+       * ("end_turn" | "tool_use" | "stop_sequence" | "max_tokens" |
+       * "refusal" | "pause_turn"). Chat-runner logs all of this when
+       * it sees the empty-response shape.
+       */
+      stoppingDiagnostics?: {
+        rawFinishReason: string | null;
+        warnings: unknown;
+        providerMetadata: unknown;
+        responseMessageId: string | null;
+        responseModelId: string | null;
+      };
+    }
   | { kind: "error"; message: string }
   /**
    * v0.2.54 — extended-thinking text increment. Streamed character-by-

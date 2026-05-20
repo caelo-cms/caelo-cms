@@ -1159,6 +1159,16 @@ export async function* runChatTurn(
     let loopStop: StopReason = "end_turn";
 
     let providerErr = false;
+    // v0.10.17 — populated by the `done` event when the underlying
+    // adapter forwards provider stop metadata. Read by the empty-
+    // response detector below to log Anthropic's raw stop_reason etc.
+    let stoppingDiagnostics: {
+      rawFinishReason: string | null;
+      warnings: unknown;
+      providerMetadata: unknown;
+      responseMessageId: string | null;
+      responseModelId: string | null;
+    } | null = null;
     for await (const ev of provider.generate({
       systemPrompt: systemChunks,
       messages,
@@ -1203,6 +1213,13 @@ export async function* runChatTurn(
         }
       } else if (ev.kind === "done") {
         loopStop = ev.stopReason;
+        // v0.10.17 — stash provider diagnostics so the empty-response
+        // detector below can include them in stderr. These are the
+        // ONLY fields that explain why the model returned empty
+        // (Anthropic's stop_reason, SDK warnings, finishReason).
+        if (ev.stoppingDiagnostics) {
+          stoppingDiagnostics = ev.stoppingDiagnostics;
+        }
       } else if (ev.kind === "error") {
         providerErr = true;
         succeeded = false;
@@ -1329,10 +1346,23 @@ export async function* runChatTurn(
         0,
       );
       if (textChars + thinkingChars === 0) {
+        // v0.10.17 — log provider-side stop diagnostics so we can
+        // identify why the model returned empty. Without this we see
+        // only loopStop='end_turn' + zero output, which is ambiguous:
+        //   - Anthropic stop_reason 'refusal' → safety filter
+        //   - Anthropic stop_reason 'pause_turn' → 200k context exhausted mid-turn
+        //   - Vercel SDK finishReason 'content-filter' → blocked
+        //   - SDK warnings about malformed messages → history bug
+        //   - All four together null → genuine provider hiccup (retry)
         console.error("[chat-runner] empty-response", {
           chatSessionId: input.chatSessionId,
           tokensIn: totalIn,
           tokensOut: totalOut,
+          rawFinishReason: stoppingDiagnostics?.rawFinishReason ?? null,
+          providerMetadata: stoppingDiagnostics?.providerMetadata ?? null,
+          warnings: stoppingDiagnostics?.warnings ?? null,
+          responseMessageId: stoppingDiagnostics?.responseMessageId ?? null,
+          responseModelId: stoppingDiagnostics?.responseModelId ?? null,
         });
         yield {
           kind: "warning",

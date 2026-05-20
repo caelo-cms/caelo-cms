@@ -216,6 +216,28 @@ export async function* translateSDKStream(
           }
           yield { kind: "usage", ...usage };
           const reason = e.finishReason as string | undefined;
+          // v0.10.17 — diagnostic capture for empty-response root-cause
+          // hunt. When the model emits 0 text + 0 tools + 0 thinking
+          // BUT the stream still yields a finish event, the answer
+          // for "why was the response empty?" lives in providerMetadata
+          // (Anthropic's raw stop_reason: "refusal" | "pause_turn" |
+          // "end_turn" | …), the SDK's `warnings` array, and any
+          // response.body. Capture all of them at the finish site —
+          // chat-runner reads stoppingDiagnostics from `done` and
+          // logs them when the empty-response branch fires.
+          const eventAny = e as {
+            finishReason?: string;
+            warnings?: unknown;
+            providerMetadata?: unknown;
+            response?: { body?: unknown; messageId?: string; modelId?: string };
+          };
+          const stoppingDiagnostics = {
+            rawFinishReason: eventAny.finishReason ?? null,
+            warnings: eventAny.warnings ?? null,
+            providerMetadata: eventAny.providerMetadata ?? null,
+            responseMessageId: eventAny.response?.messageId ?? null,
+            responseModelId: eventAny.response?.modelId ?? null,
+          };
           yield {
             kind: "done",
             stopReason:
@@ -226,7 +248,8 @@ export async function* translateSDKStream(
                   : reason === "length"
                     ? "max_tokens"
                     : "error",
-          };
+            stoppingDiagnostics,
+          } as ProviderEvent;
           yieldedDone = true;
           break;
         }
