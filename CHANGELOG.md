@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.21
+
+### Features
+- 3a8441c teach the AI structured-data sets as a first-class concept
+
 ## v0.10.20
 
 ### Fixes
