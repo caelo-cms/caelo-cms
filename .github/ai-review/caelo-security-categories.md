@@ -8,7 +8,7 @@ finding's explanation — for example *"violates CLAUDE.md §2 invariant: raw
 SQL detected"*. Contributors learn this codebase's rules from the citations,
 so they matter as much as the finding itself.
 
-**Caelo data-access invariants (CLAUDE.md §2):**
+**Caelo data-access invariants (CLAUDE.md §2 — "no raw SQL anywhere"):**
 - Raw SQL outside the Query API is a CRITICAL finding. All database access
   in this repo MUST flow through the Query API → Validator → Adapter chain.
   Flag any direct `pg.query`, `client.query`, `db.execute`, or `sql\`...\``
