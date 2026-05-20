@@ -147,7 +147,37 @@ describe("v0.10.20 — formatStructuredSetsBlock inlines nav-menu items", () => 
     expect(block).not.toContain("    1. {");
   });
 
-  it("returns undefined when there are no sets", () => {
-    expect(formatStructuredSetsBlock([])).toBeUndefined();
+  it("emits the v0.10.21 concept primer even when there are no sets", () => {
+    // Pre-v0.10.21: returned undefined → the AI didn't know structured
+    // sets existed as a concept on a fresh install and fell back to
+    // editing the header module's HTML.
+    const block = formatStructuredSetsBlock([]);
+    expect(block).toBeDefined();
+    // Primer covers: concept name, kinds + tool mapping, upsert
+    // semantics, renderer convention, synonym hints.
+    expect(block).toContain("Structured-data sets you can edit");
+    expect(block).toContain("global repeated content");
+    expect(block).toContain("set_nav_menu");
+    expect(block).toContain("set_structured_set");
+    expect(block).toContain("upsert");
+    expect(block).toContain("nav-menu-<slug>");
+    expect(block).toContain("No sets exist yet");
+  });
+});
+
+describe("v0.10.21 — primer accompanies existing sets too", () => {
+  it("prepends the primer to the existing-sets listing", () => {
+    const block = formatStructuredSetsBlock([
+      {
+        kind: "nav-menu",
+        slug: "header-main",
+        displayName: "Header menu",
+        items: [],
+      },
+    ]);
+    // Both the primer AND the row listing are present.
+    expect(block).toContain("global repeated content");
+    expect(block).toContain("Existing sets on this install:");
+    expect(block).toContain('- nav-menu/header-main ("Header menu") — 0 items');
   });
 });

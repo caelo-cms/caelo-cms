@@ -46,22 +46,55 @@ export interface ToolCatalogueEntry {
  * the `structured_sets.list` result. Extracted from chat-runner.ts so
  * the formatter is unit-testable without spinning up a chat session.
  *
+ * v0.10.21 — Always emits the **concept primer**, even when no sets
+ * exist on this install. Pre-v0.10.21 this returned `undefined` on an
+ * empty list, so the AI didn't know structured-data sets existed as a
+ * concept and fell back to editing the header module's HTML directly
+ * when asked to "update the navigation." The primer teaches the AI
+ * that nav-menus / tags / taxonomies / theme tokens / link-lists /
+ * language-selectors are first-class typed lists, and that
+ * `set_nav_menu` / `set_structured_set` are upsert — they CREATE the
+ * set if the slug doesn't exist yet. The renderer auto-wires a module
+ * with slug `nav-menu-<slug>` to the matching `nav-menu/<slug>` row,
+ * so the AI's workflow for "add a header nav" is: (1) call
+ * `set_nav_menu` to populate the items, (2) ensure a module with slug
+ * `nav-menu-<slug>` is placed on the layout's header block.
+ *
  * For `kind === "nav-menu"` (and only that kind), inline each item as
  * `{ label, href[, target, children: N] }` so the AI can copy-modify
- * without a `structured_sets.get` round-trip. Other kinds (taxonomies,
- * tag lists, theme tokens) carry larger / less-frequently-edited
- * shapes and stay summarized to bound the prompt size. Cap nav-menu
- * inlining at 30 items per menu; outliers fall back to count-only.
- *
- * Returns `undefined` when the input list is empty (no block to emit).
+ * without a `structured_sets.get` round-trip. Other kinds carry
+ * larger / less-frequently-edited shapes and stay summarized to
+ * bound the prompt size. Cap nav-menu inlining at 30 items per menu;
+ * outliers fall back to count-only.
  */
 export function formatStructuredSetsBlock(
   sets: readonly { kind: string; slug: string; displayName: string; items: unknown }[],
-): string | undefined {
-  if (sets.length === 0) return undefined;
-  return [
+): string {
+  const primer = [
     "# Structured-data sets you can edit",
-    "Each is a typed named list. Use `set_structured_set` to replace a set's items.",
+    "Caelo has typed named lists for **global repeated content**: navigation menus, tags, taxonomies, theme tokens, link-lists, and language-selectors. When the user asks about any of these, prefer creating or editing a structured set over hardcoding values in module HTML — that's what these lists are for.",
+    "",
+    "Kinds + tools:",
+    "- `nav-menu` (header/footer navigation) → use `set_nav_menu`. Item shape: { label, href, target?, children?, adSlotId? }.",
+    "- `tags`, `taxonomy`, `link-list`, `theme`, `language-selector` → use `set_structured_set` with the matching `kind`.",
+    "",
+    "Both tools are **upsert** — they CREATE the set when the slug doesn't exist yet, so to bootstrap a new menu just call the tool with the desired slug + items. No separate `create` step.",
+    "",
+    "Renderer convention: a module with slug `nav-menu-<slug>` auto-renders the items of `nav-menu/<slug>`. To wire a brand-new menu onto a layout: (1) call `set_nav_menu` to create the items, (2) ensure a module named `nav-menu-<slug>` is on the layout's header (or footer) block — use `add_module_to_layout` if it doesn't exist yet. Same pattern for `language-selector-<slug>`.",
+    "",
+    'If the user mentions "navigation", "the nav", "the menu", "header links", "footer menu" — that\'s a nav-menu, NOT a module to edit. Reach for `set_nav_menu` first.',
+  ].join("\n");
+  if (sets.length === 0) {
+    return [
+      primer,
+      "",
+      "_No sets exist yet on this install — create one with the tool above._",
+    ].join("\n");
+  }
+  return [
+    primer,
+    "",
+    "Existing sets on this install:",
     ...sets.map((s) => {
       const items = Array.isArray(s.items) ? (s.items as unknown[]) : [];
       const header = `- ${s.kind}/${s.slug} ("${s.displayName}") — ${items.length} item${items.length === 1 ? "" : "s"}`;

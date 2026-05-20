@@ -1362,9 +1362,36 @@ export async function* runChatTurn(
             "The AI returned an empty response — likely a provider transient (rate limit, safety filter, or internal error). Resend your last message; if it persists, start a fresh chat.",
         };
       }
-      // else: AI replied with substantive text (a question, a
-      // summary, an explanation). That's not a bug worth warning
-      // about. Silent.
+      // v0.10.21 — widened diagnostic. When the AI emitted SOME text
+      // but still zero tool calls on loop 0, log stoppingDiagnostics
+      // anyway. No user-facing warning (that's the v0.10.16 noise
+      // we deliberately removed) — just stderr so the next time an
+      // operator reports "the AI said 'I'll look up X' and then
+      // stopped," we have Anthropic's raw stop_reason in Cloud Run
+      // logs to distinguish:
+      //   - end_turn after intent text → model gave up planning
+      //     (usually fixable by improving the system prompt)
+      //   - refusal → safety filter triggered mid-stream
+      //   - pause_turn → context window exhausted
+      //   - SDK warnings → message-array shape bug
+      else if (textChars > 0) {
+        console.error("[chat-runner] passive-response-diag", {
+          chatSessionId: input.chatSessionId,
+          tokensIn: totalIn,
+          tokensOut: totalOut,
+          textChars,
+          thinkingChars,
+          rawFinishReason: stoppingDiagnostics?.rawFinishReason ?? null,
+          providerMetadata: stoppingDiagnostics?.providerMetadata ?? null,
+          warnings: stoppingDiagnostics?.warnings ?? null,
+          responseMessageId: stoppingDiagnostics?.responseMessageId ?? null,
+          responseModelId: stoppingDiagnostics?.responseModelId ?? null,
+        });
+      }
+      // else: AI replied with thinking-only or empty + thinking >0
+      // — covered by the empty branch above (textChars + thinking
+      // === 0 captures the all-zero case; mixed cases are rare and
+      // not worth a third branch).
     }
 
     if (aborted()) break;
