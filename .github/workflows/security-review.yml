@@ -1,0 +1,116 @@
+name: AI Security Review
+
+# Runs anthropics/claude-code-security-review on every PR. Posts inline +
+# summary review comments. INFORMATIONAL — not blocking. The branch-protection
+# ruleset (.github/rulesets/main.json) does NOT require this check; this is the
+# deliberate design called out in issue #24 ("does not block merge").
+#
+# Skip rules (job-level `if:` — zero token spend on skip):
+#   * PR author type is Bot (Dependabot / Renovate land via #25; this is the
+#     pre-wired hook so the bot PRs don't burn tokens when they arrive).
+#   * PR is in Draft state (mark Ready for Review to trigger the scan).
+#   * PR carries the `skip-ai-review` label.
+#   * PR diff > 200 changed files (runaway-spend guard per AC #4 layer 1).
+#
+# Cost cap layers (in order of effect):
+#   1. The diff-size guard above.
+#   2. `claudecode-timeout: 15` — wall-clock ceiling on the analysis step.
+#   3. `run-every-commit: false` (action default) — the action's marker-file
+#      cache reuses results within the same PR cache key; re-runs of the same
+#      SHA are no-ops.
+# `concurrency: cancel-in-progress` drops in-flight runs when a contributor
+# fast-follows with a new commit.
+#
+# When an inline comment doesn't render but the workflow ran, the raw findings
+# live on the workflow run's `security-review-results` artifact (7-day
+# retention): findings.json + claudecode-results.json + claudecode-error.log.
+#
+# Supply chain: the upstream action has no releases, so we pin by commit SHA
+# of `main` (not @main / @v1). Bump the SHA and the inline date comment
+# together when re-validating. scripts/security-review-workflow.test.ts
+# asserts on the SHA-pin format so accidental floating-tag regressions fail
+# `bun test`.
+#
+# Prompt-injection hardening: the action's `custom-security-scan-instructions`
+# file is read from the **base ref** (a separate trusted checkout into
+# `.base-review-config/`), NOT from the PR-head checkout. A malicious PR
+# author who edits `.github/ai-review/caelo-security-categories.md` in their
+# own PR cannot rewrite the reviewer's system prompt — the workflow always
+# reads the base-branch version. The PR-head checkout remains the diff
+# source the action scans.
+
+on:
+  pull_request:
+    # `ready_for_review` covers the Draft → Ready-for-review transition;
+    # without it, a PR opened as Draft skips here (the `draft == false` guard
+    # below) and won't get a scan until the next push.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+concurrency:
+  group: ai-security-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  security-review:
+    name: Claude Code Security Reviewer
+    runs-on: ubuntu-latest
+    # Belt-and-suspenders above the action's internal claudecode-timeout
+    # (which only governs the analysis step, not install / comment-post).
+    timeout-minutes: 20
+    if: >-
+      github.event.pull_request.user.type != 'Bot' &&
+      github.event.pull_request.draft == false &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-ai-review') &&
+      github.event.pull_request.changed_files <= 200
+
+    steps:
+      # PR head first — this is the diff the action scans. It checks out
+      # into $GITHUB_WORKSPACE and runs `git clean -ffdx`, so it must precede
+      # the base-config checkout (which lives in a subdir).
+      - name: Checkout PR head for the diff to scan
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+
+      # Trusted copy of the prompt-extension file. Sourced from the PR's base
+      # ref so it cannot be rewritten by adversarial PR content. See the
+      # header comment for the prompt-injection mitigation rationale. The
+      # `path:` subdir scopes this checkout's clean step, so the PR-head
+      # working tree at $GITHUB_WORKSPACE is untouched.
+      - name: Checkout base ref for trusted prompt config
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: .base-review-config
+          fetch-depth: 1
+
+      # anthropics/claude-code-security-review — pinned to commit on `main`
+      # (no releases). pinned 2026-02-11.
+      - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+        with:
+          claude-api-key: ${{ secrets.CLAUDE_SECURITY_REVIEW }}
+          # Sonnet 4.6 is current-gen and materially cheaper than the action
+          # default (opus-4-1) for diff-scoped review. Bump to an Opus model
+          # if quality proves insufficient — one-line change.
+          claude-model: claude-sonnet-4-6
+          # Wall-clock ceiling on the analysis subprocess.
+          claudecode-timeout: 15
+          comment-pr: true
+          upload-results: true
+          # Generated / vendored paths — nothing security-relevant here and
+          # including them inflates token spend + comment noise. Directory-
+          # scoped only; root files (bun.lock, package.json, tsconfig*) fall
+          # through, which is acceptable because the action's diff-aware
+          # scanner has nothing to flag on routine lockfile updates.
+          exclude-directories: node_modules,dist,.svelte-kit,build,docs-site/.astro,packages/migrations/sql,coverage,.turbo,test-results,playwright-report
+          # Caelo house rules appended to the action's default audit prompt.
+          # Teaches the reviewer to cite CLAUDE.md §2 / §4 / §7 / §11.A.
+          # Read from the BASE ref's trusted copy (not the PR head) so a
+          # malicious PR editing this file can't rewrite the reviewer's own
+          # system prompt to suppress findings.
+          custom-security-scan-instructions: .base-review-config/.github/ai-review/caelo-security-categories.md

@@ -131,6 +131,7 @@ This project is largely AI-authored. AI contributions are held to a *higher*, no
 - **Match the permission layer** — a change to the Page Layer cannot add raw HTML; a Plugin Layer change cannot reach the DB directly.
 - **Prefer existing modules/utilities** — grep the repo before creating new primitives.
 - **Preview diffs must be minimal.** Unrelated formatting churn blocks review.
+- **Every PR runs through an automated AI security review** (`.github/workflows/security-review.yml`). It posts inline + summary review comments and cites the rule it's checking against. See *CONTRIBUTING.md → "AI security review"* for the skip rules, the `skip-ai-review` label, and where to find the raw findings artifact when a comment doesn't render.
 
 ---
 

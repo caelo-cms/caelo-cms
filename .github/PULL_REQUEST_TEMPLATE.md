@@ -32,6 +32,11 @@ The full reviewer checklist lives in CONTRIBUTING.md and CLAUDE.md §9.
    If no new dependencies: write "None".
 -->
 
+<!-- An automated AI security review runs on every PR (CONTRIBUTING.md → "AI
+     security review"). Add the `skip-ai-review` label if this PR should
+     bypass it (e.g. a docs-only mass rename). The review is informational —
+     human approval is still required for merge. -->
+
 ## Reviewer checklist
 
 - [ ] Permission layer respected (no AI tool reaches a write op the AI actor can't dispatch)
