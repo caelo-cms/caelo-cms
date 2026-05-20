@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.17
+
+### Other
+- 6e9e47d capture provider stop_reason + warnings on empty-response (root-cause hunt)
+
 ## v0.10.16
 
 ### Fixes
