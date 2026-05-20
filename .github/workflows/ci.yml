@@ -127,9 +127,11 @@ jobs:
     timeout-minutes: 15
     # Playwright admin shell smoke. Runs against the production build under
     # `vite preview` via the adapter-bun output, matching the configuration
-    # that ships. A regression here now blocks CI — the previous
-    # `continue-on-error: true` mask was removed once the SSR-import path
-    # was fixed (see #36).
+    # that ships. #36 fixed the original SSR module-not-found by building
+    # @caelo-cms/shared (the step below); an unrelated Bun 1.3.13 / Rollup
+    # native-binding SIGILL still crashes the admin Vite build on linux
+    # runners (tracked in #52). The mask below stays until #52 lands.
+    continue-on-error: true
 
     env:
       POSTGRES_USER: caelo
