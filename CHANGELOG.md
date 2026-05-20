@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.19
+
+### Fixes
+- 682d14e release per-entity locks at chat.merge_to_main (Stage), not just publish
+
 ## v0.10.18
 
 ### Tests
