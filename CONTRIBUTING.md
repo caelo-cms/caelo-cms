@@ -77,6 +77,18 @@ Docs are dogfooded — `caelo-cms.com` is itself a Caelo install whose content l
 - **Required CI checks must pass before merge.** The ruleset requires `Lockfile freshness` and `Lint, Typecheck, Migrate, Test, License` (the latter rolls up Biome lint + SPDX + audit-callsites, version lockstep, tsc, `bun test`, and MPL-2.0 license compatibility). The branch must be up to date with `main` and all review threads resolved before merge. Squash or rebase only — no merge commits.
 - **Tests with every change.** Bug fixes get a regression test that would have caught the bug. New features get unit + integration + (where user-visible) Playwright E2E coverage. CI blocks merges that drop below declared coverage.
 
+### AI security review
+
+Every PR is reviewed by an automated AI security pass — the workflow is at `.github/workflows/security-review.yml` and runs Anthropic's [`claude-code-security-review`](https://github.com/anthropics/claude-code-security-review) action. It posts a summary comment plus inline comments on findings, typically within ~3 minutes of PR open.
+
+The review is **informational, not blocking** — human reviews remain required for merge. Findings cite the rule they violate (e.g. *"violates CLAUDE.md §2 invariant: raw SQL detected"*); address each one in your next push, or rebut in the PR discussion. When an inline comment doesn't render but the workflow ran, the raw `findings.json` + error log live on the workflow run's `security-review-results` artifact (7-day retention) — open the Actions tab on the PR.
+
+The review is skipped (and no Claude call is made) when:
+- the PR author is a bot (Dependabot / Renovate when those land via #25),
+- the PR is in Draft state,
+- the PR carries the `skip-ai-review` label, or
+- the PR changes more than 200 files (token-spend guard — split the PR, or add the `skip-ai-review` label if the large diff is intentional).
+
 Reviewers check (per CLAUDE.md §9):
 - Permission layer respected
 - Query API only (no raw SQL)
