@@ -125,11 +125,11 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Best-effort smoke against the built admin shell. Integration tests in
-    # `check` cover the same flows at the Query API boundary and are
-    # authoritative; the browser layer can remain in flux while we tighten
-    # the build pipeline (see follow-up issue).
-    continue-on-error: true
+    # Playwright admin shell smoke. Runs against the production build under
+    # `vite preview` via the adapter-bun output, matching the configuration
+    # that ships. A regression here now blocks CI — the previous
+    # `continue-on-error: true` mask was removed once the SSR-import path
+    # was fixed (see #36).
 
     env:
       POSTGRES_USER: caelo
@@ -169,6 +169,17 @@ jobs:
 
       - name: Install dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
+
+      # `@caelo-cms/shared` publishes a compiled `dist/` (its package.json
+      # `main` points there) and the admin app's Vite SSR build can't
+      # resolve it otherwise. Narrowly building only this package — other
+      # dist-shipping workspaces (`mcp-server`, `provisioning`) are not on
+      # any admin SSR import path, and broadening to `@caelo-cms/*` would
+      # also rebuild `@caelo-cms/admin`, duplicating the Vite build that
+      # Playwright's webServer runs immediately after.
+      # Mirrors the side-effect of `bun run typecheck` in the `check` job.
+      - name: Build @caelo-cms/shared (admin SSR dep)
+        run: bun run --filter '@caelo-cms/shared' build
 
       - name: Bootstrap databases
         env:
