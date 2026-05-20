@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.14
+
+### Tests
+- c6fdf06 seed template_blocks in chained-branched-page-layout test
+
 ## v0.10.13
 
 ### Fixes
