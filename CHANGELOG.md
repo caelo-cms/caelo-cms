@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.20
+
+### Fixes
+- 034ad9d set_nav_menu — full per-item JSON Schema + inline items in system prompt
+
 ## v0.10.19
 
 ### Fixes
