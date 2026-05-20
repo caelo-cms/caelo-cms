@@ -60,6 +60,7 @@
     sessionPublished = false,
     sessionLastStagedAt = null,
     lastStaged = null,
+    productionMatchesStaging = null,
   }: {
     pendingChanges: PendingChangesView;
     /**
@@ -86,6 +87,14 @@
      * modal so the operator knows what they're about to push live.
      */
     lastStaged?: LastStaged | null;
+    /**
+     * v0.10.12 — whether the last succeeded production deploy was
+     * sourced from the current `lastStaged` runId (i.e. live ===
+     * staging). `null` means unknown (no production deploy yet or no
+     * staging build to compare). Drives the inline "Live matches
+     * staging" / "Newer staged build" indicator next to Publish live.
+     */
+    productionMatchesStaging?: boolean | null;
   } = $props();
 
   /**
@@ -172,6 +181,45 @@
   }
 </script>
 
+<!-- v0.10.12 — shared inline status: persistent link to the latest
+     staging preview + a colored-dot indicator answering "is live in
+     sync with the latest staged build?". Rendered next to both the
+     Publish-live and Stage actions so the operator sees the deploy
+     state without opening a modal. -->
+{#snippet stagingStatus()}
+  {#if lastStaged?.previewUrl}
+    <a
+      href={lastStaged.previewUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      class="text-xs text-muted-foreground underline hover:text-foreground"
+      title={`Open the latest staging preview (staged ${formatRelativeTime(lastStaged.finishedAt)})`}
+      data-testid="staging-preview-link"
+    >
+      Preview staging ↗
+    </a>
+  {/if}
+  {#if productionMatchesStaging === true}
+    <span
+      class="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-300"
+      title="Live serves the same build as the current staging preview"
+      data-testid="live-sync-indicator"
+    >
+      <span class="size-1.5 rounded-full bg-emerald-500"></span>
+      Live matches staging
+    </span>
+  {:else if productionMatchesStaging === false}
+    <span
+      class="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300"
+      title="A newer staging build hasn't been Published live yet"
+      data-testid="live-sync-indicator"
+    >
+      <span class="size-1.5 rounded-full bg-amber-500"></span>
+      Newer staged build not yet live
+    </span>
+  {/if}
+{/snippet}
+
 {#if sessionPublished}
   <span class="text-xs text-muted-foreground italic">Chat published</span>
 {:else if branchChangeCount === 0 && !lastStaged && !sessionLastStagedAt}
@@ -179,38 +227,39 @@
   <span class="text-xs text-muted-foreground">No pending changes</span>
 {:else if branchChangeCount === 0}
   <!-- v0.10.10 — chat has no fresh pending edits but staging holds
-       a build the operator hasn't promoted yet. Show the direct
-       Promote-to-production submit. Pre-v0.10.10 this branch opened
-       the Stage modal, which confused operators ("I clicked Promote
-       and the modal says Stage these changes?"). Now it submits the
-       atomic `?/promoteToProduction` action directly. -->
-  <form
-    method="post"
-    action="?/promoteToProduction"
-    use:enhance={() => {
-      publishing = true;
-      return async ({ update }) => {
-        try {
-          await update({ reset: false });
-        } finally {
-          publishing = false;
-        }
-      };
-    }}
-    class="inline-flex items-center"
-    data-testid="stage-deploy"
-  >
-    <input type="hidden" name="_csrf" value={csrfToken} />
-    <Button
-      type="submit"
-      size="sm"
-      disabled={publishing}
-      data-testid="promote-only-btn"
-      title="Atomically copy the latest staging build to production"
+       a build the operator hasn't promoted yet. Direct Publish-live
+       submit, no modal. v0.10.12 — adds the persistent staging preview
+       link + the live-matches-staging indicator inline. -->
+  <div class="inline-flex items-center gap-3" data-testid="stage-deploy">
+    {@render stagingStatus()}
+    <form
+      method="post"
+      action="?/promoteToProduction"
+      use:enhance={() => {
+        publishing = true;
+        return async ({ update }) => {
+          try {
+            await update({ reset: false });
+          } finally {
+            publishing = false;
+          }
+        };
+      }}
     >
-      {publishing ? "Promoting…" : "Promote to production"}
-    </Button>
-  </form>
+      <input type="hidden" name="_csrf" value={csrfToken} />
+      <Button
+        type="submit"
+        size="sm"
+        disabled={publishing || productionMatchesStaging === true}
+        data-testid="promote-only-btn"
+        title={productionMatchesStaging === true
+          ? "Live already matches the current staging build — nothing to publish"
+          : "Publish the latest staging build live (atomic, no rebuild)"}
+      >
+        {publishing ? "Publishing…" : "Publish live"}
+      </Button>
+    </form>
+  </div>
 {:else}
   <div class="relative inline-flex items-center gap-1" data-testid="stage-deploy">
     <!-- (N) badge: clickable popover with blast-radius preview. -->
@@ -270,9 +319,9 @@
     {/if}
 
     <!-- v0.9.0 — Stage opens the modal (modal shows preview + submits
-         the stage form). Promote is now a separate primary button
-         calling the atomic deploy.promote. The ▾ split-button shape
-         from v0.7/v0.8 is gone — two clear buttons, no dropdown. -->
+         the stage form). Publish-live is a separate primary button
+         calling atomic deploy.promote. v0.10.12 — adds the persistent
+         staging preview link + live-matches-staging indicator inline. -->
     <Button
       type="button"
       size="sm"
@@ -285,6 +334,7 @@
     >
       {staging ? "Staging…" : "Stage…"}
     </Button>
+    {@render stagingStatus()}
     <form
       method="post"
       action="?/promoteToProduction"
@@ -305,13 +355,15 @@
         type="submit"
         size="sm"
         variant="outline"
-        disabled={staging || publishing || !lastStaged}
-        title={lastStaged
-          ? "Atomically copy the latest staging build to production"
-          : "Stage something first — production promotion needs a staging build to copy"}
+        disabled={staging || publishing || !lastStaged || productionMatchesStaging === true}
+        title={!lastStaged
+          ? "Stage something first — Publish live needs a staging build to copy"
+          : productionMatchesStaging === true
+            ? "Live already matches the current staging build — nothing to publish"
+            : "Publish the latest staging build live (atomic, no rebuild)"}
         data-testid="promote-btn"
       >
-        {publishing ? "Promoting…" : "Promote to production"}
+        {publishing ? "Publishing…" : "Publish live"}
       </Button>
     </form>
   </div>

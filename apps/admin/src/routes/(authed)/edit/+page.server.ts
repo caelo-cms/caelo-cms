@@ -267,6 +267,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // header. We fetch a small recent window since deploy.list_runs
   // doesn't filter by target — pick the newest staging+succeeded.
   let lastStaged: { runId: string; finishedAt: string; previewUrl: string | null } | null = null;
+  // v0.10.12 — surface the latest succeeded production deploy + a derived
+  // "is live up-to-date with staging?" flag so the toolbar can render
+  // a Live-matches-staging indicator next to the Publish-live button.
+  // `productionMatchesStaging` is true when the latest production run's
+  // build_id matches the latest staging run's id (deploy.promote stamps
+  // the source staging runId into the production run's build_id; see
+  // packages/admin-core/src/ops/deploy.ts).
+  let lastPublishedLive: { runId: string; finishedAt: string; fromRunId: string | null } | null =
+    null;
+  let productionMatchesStaging: boolean | null = null;
   try {
     const recentR = await execute(registry, adapter, locals.ctx, "deploy.list_runs", {
       limit: 20,
@@ -278,6 +288,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
           targetName: string;
           status: string;
           finishedAt: string | null;
+          buildId: string | null;
           publishSummary?: { previewUrl?: string };
         }[];
       };
@@ -290,6 +301,24 @@ export const load: PageServerLoad = async ({ locals, url }) => {
           finishedAt: r.finishedAt,
           previewUrl: r.publishSummary?.previewUrl ?? null,
         };
+      }
+      // v0.10.12 — latest production deploy. build_id points back to
+      // the staging runId when this run was created by deploy.promote;
+      // for direct production triggers (rebake from main) it's a fresh
+      // build_id. We compare against lastStaged.runId to decide whether
+      // live is currently in sync with the latest staged build.
+      const p = v.runs.find(
+        (row) => row.targetName === "production" && row.status === "succeeded" && row.finishedAt,
+      );
+      if (p?.finishedAt) {
+        lastPublishedLive = {
+          runId: p.id,
+          finishedAt: p.finishedAt,
+          fromRunId: p.buildId ?? null,
+        };
+        if (lastStaged && p.buildId) {
+          productionMatchesStaging = p.buildId === lastStaged.runId;
+        }
       }
     }
   } catch {
@@ -404,6 +433,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     otherOpenChats,
     /** v0.8.0 — last successful staging deploy summary, for the Promote modal header. */
     lastStaged,
+    /** v0.10.12 — latest succeeded production deploy + sync indicator for the toolbar. */
+    lastPublishedLive,
+    productionMatchesStaging,
   };
 };
 

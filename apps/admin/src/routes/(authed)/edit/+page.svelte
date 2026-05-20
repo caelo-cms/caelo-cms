@@ -340,6 +340,7 @@
           sessionLastStagedAt={data.activeChat.lastStagedAt ?? null}
           {activePageId}
           lastStaged={data.lastStaged ?? null}
+          productionMatchesStaging={data.productionMatchesStaging ?? null}
         />
       </div>
     {:else}
