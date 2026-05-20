@@ -81,6 +81,15 @@ describe("v0.10.13 branched page-layout overlay", () => {
     if (!tpl.ok) throw new Error("tpl");
     const templateId = (tpl.value as { templateId: string }).templateId;
 
+    // pages.set_modules validates blockName against template_blocks —
+    // seed a 'content' block so the test page's layout writes are
+    // accepted.
+    const blocks = await execute(registry, adapter, HUMAN, "template_blocks.set", {
+      templateId,
+      blocks: [{ name: "content", displayName: "Content", position: 0 }],
+    });
+    if (!blocks.ok) throw new Error(`blocks seed: ${JSON.stringify(blocks.error)}`);
+
     const page = await execute(registry, adapter, HUMAN, "pages.create", {
       slug: PAGE_SLUG,
       locale: "en",
