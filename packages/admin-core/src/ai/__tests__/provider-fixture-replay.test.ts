@@ -72,8 +72,17 @@ describe("AnthropicProvider — SDK-event translation", () => {
       { kind: "text-delta", text: "Hello" },
       { kind: "text-delta", text: " world" },
       { kind: "usage", inputTokens: 50, outputTokens: 12, cachedTokens: 0 },
-      { kind: "done", stopReason: "end_turn" },
+      // v0.10.17 — `done` now carries optional `stoppingDiagnostics`
+      // (provider stop_reason + SDK warnings) for the empty-response
+      // root-cause hunt. Existence is asserted separately below; the
+      // shape varies with the underlying SDK version so we don't
+      // pin it here.
+      expect.objectContaining({ kind: "done", stopReason: "end_turn" }),
     ]);
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.stoppingDiagnostics).toBeDefined();
+    }
   });
 
   it("emits one tool-call event with parsed args + done(tool_use)", async () => {
