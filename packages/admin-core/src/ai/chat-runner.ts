@@ -1308,27 +1308,42 @@ export async function* runChatTurn(
       tokensOut: totalOut,
     });
 
-    // v0.5.9 — passive-response detection. When the very first loop
-    // iteration ends without any tool calls AND the AI ended its own
-    // turn, surface a non-fatal warning. Catches the production
-    // symptom where the AI describes what it would do in prose
-    // instead of calling tools (root cause traced to a too-passive
-    // STAGING_BLOCK; warning here as defence-in-depth). Sometimes
-    // text-only IS the right answer (the user asked a question, not
-    // a build request) — the warning is informational, not blocking.
+    // v0.10.16 — narrow the v0.5.9 passive-response detector to the
+    // genuinely-broken case only. Original v0.5.9 surfaced a warning
+    // whenever the AI ended its first loop without calling any tool —
+    // intended to catch "AI describes work but doesn't do it." But
+    // text-only is ALSO the right answer when the AI asks a
+    // clarifying question ("Want me to build out sections 01-05?")
+    // or summarizes findings; the warning then fired as a false
+    // positive on every legitimate question-asking turn and trained
+    // operators to ignore it.
+    //
+    // New rule: only warn when the AI returned NOTHING — 0 text +
+    // 0 thinking + 0 tools. That's the actual broken case (provider
+    // glitch, rate-limit, internal filter) and worth surfacing.
+    // Legitimate text-only replies pass through silently.
     if (loop === 0 && accumulatedToolCalls.length === 0 && loopStop === "end_turn" && !aborted()) {
       const textChars = accumulatedText.join("").length;
-      console.error("[chat-runner] passive-response", {
-        chatSessionId: input.chatSessionId,
-        textChars,
-        tokensOut: totalOut,
-      });
-      yield {
-        kind: "warning",
-        code: "passive-response",
-        message:
-          "AI responded with text only — no tools were called. If you expected changes, reply asking the AI to use its tools to make them.",
-      };
+      const thinkingChars = accumulatedThinking.reduce(
+        (sum, t) => sum + (t.thinking?.length ?? 0),
+        0,
+      );
+      if (textChars + thinkingChars === 0) {
+        console.error("[chat-runner] empty-response", {
+          chatSessionId: input.chatSessionId,
+          tokensIn: totalIn,
+          tokensOut: totalOut,
+        });
+        yield {
+          kind: "warning",
+          code: "empty-response",
+          message:
+            "The AI returned an empty response — likely a provider transient (rate limit, safety filter, or internal error). Resend your last message; if it persists, start a fresh chat.",
+        };
+      }
+      // else: AI replied with substantive text (a question, a
+      // summary, an explanation). That's not a bug worth warning
+      // about. Silent.
     }
 
     if (aborted()) break;
