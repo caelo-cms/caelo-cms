@@ -87,6 +87,11 @@ const OXC_PARSER_NATIVE_ENTRY = createRequire(import.meta.url).resolve(
  * Regression contract: `scripts/oxc-parser-bundle.test.ts` (U1-U6 +
  * B1-B3). Editing this hook without re-reading those assertions will
  * break the build at PR time.
+ *
+ * As of this writing the only workspace consumer of `oxc-parser` is
+ * `packages/plugin-sandbox/src/validate.ts`. A second consumer
+ * arriving would broaden the surface this hook gates — confirm the
+ * resolveId redirect still applies and bump the count here.
  */
 function forceOxcParserNativeEntry(): Plugin {
   return {
