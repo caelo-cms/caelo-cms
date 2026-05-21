@@ -139,6 +139,67 @@ const onBlock = extractOnBlock(workflow);
 const concurrencyBlock = extractConcurrencyBlock(workflow);
 const headerComment = extractHeaderComment(workflow);
 
+// ---------------------------------------------------------------------------
+// Parsed-shape view (used by W0 + W6).
+//
+// `yaml.load` returns `unknown`; we cast to a minimal shape that names
+// only the fields we actually read. A malformed file fails W0 at parse;
+// a parseable-but-shape-broken file fails W6 with a clear TypeError
+// pointing at the missing `jobs.build.steps` walk.
+// ---------------------------------------------------------------------------
+
+interface WorkflowStep {
+  readonly name?: string;
+  readonly uses?: string;
+  readonly if?: string;
+}
+
+interface WorkflowDoc {
+  readonly jobs: {
+    readonly build: {
+      readonly steps: readonly WorkflowStep[];
+    };
+  };
+}
+
+/**
+ * Actions whose presence indicates the step needs registry / secret
+ * credentials. A new entry here forces W6 to assert the gate on every
+ * step that uses it — the right place to extend when AWS/Azure mirror
+ * steps land (P15).
+ */
+const CREDENTIAL_ACTION_PREFIXES = [
+  "docker/login-action",
+  "sigstore/cosign-installer",
+  "google-github-actions/auth",
+] as const;
+
+/**
+ * A step "needs the gate" if it uses a known credential-providing
+ * action, OR references `secrets.<NAME>` anywhere in its body. The
+ * second case catches a future contributor adding an inline
+ * `password: ${{ secrets.NEW_TOKEN }}` without using a known action.
+ */
+function stepNeedsGate(step: WorkflowStep): boolean {
+  if (step.uses) {
+    for (const prefix of CREDENTIAL_ACTION_PREFIXES) {
+      if (step.uses.startsWith(prefix)) return true;
+    }
+  }
+  // Re-serialize the step and scan for `secrets.<NAME>` refs anywhere
+  // in its fields (with:, env:, run:, …). JSON.stringify is sufficient
+  // — we don't need to introspect the structure, just text-search the
+  // serialized body for the literal token.
+  if (/secrets\.[A-Z_]+/.test(JSON.stringify(step))) return true;
+  return false;
+}
+
+function collectCredentialSteps(doc: WorkflowDoc): readonly WorkflowStep[] {
+  return doc.jobs.build.steps.filter(stepNeedsGate);
+}
+
+const workflowDoc = yaml.load(workflow) as WorkflowDoc;
+
 describe("release-images.yml — issue #54 PR-gate contract", () => {
   it("W0: workflow YAML parses cleanly", () => {
     // Defense-in-depth: every other W-assertion is substring matching,
@@ -202,6 +263,26 @@ describe("release-images.yml — issue #54 PR-gate contract", () => {
     const lowered = headerComment.toLowerCase();
     const mentionsPrs = lowered.includes("runs on prs") || lowered.includes("pull_request");
     expect(mentionsPrs).toBe(true);
+  });
+
+  // W6 — defense in depth against future credential-touching steps that
+  // a contributor might add without the gate. W2 enumerates today's
+  // steps by name; W6 parses the YAML and auto-flags any step that uses
+  // a known credential-providing action OR references `secrets.<name>`
+  // in any field, asserting the gate token is present in its `if:`.
+  it("W6 (defense in depth): every credential-bearing step carries the PR gate", () => {
+    const credentialSteps = collectCredentialSteps(workflowDoc);
+    // Guard against a refactor that hides every step behind some
+    // indirection and silently makes the assertion vacuously pass.
+    expect(credentialSteps.length).toBeGreaterThan(0);
+    for (const step of credentialSteps) {
+      const label = step.name ?? step.uses ?? "(unnamed step)";
+      const ifClause = step.if ?? "";
+      expect(
+        ifClause,
+        `step \`${label}\` is credential-bearing but its \`if:\` does not contain the PR gate`,
+      ).toContain(PR_GATE_TOKEN);
+    }
   });
 });
 
