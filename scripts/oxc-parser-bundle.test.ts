@@ -24,6 +24,11 @@
  *     `createRequire`. Without that record, the trade-off (dispatcher
  *     inlined, runtime walks up from the chunk to find the platform
  *     binding) is invisible at review time.
+ * U6: resolveId return references the module-level
+ *     `OXC_PARSER_NATIVE_ENTRY` symbol — not a hardcoded absolute path.
+ *     Catches a future "simplification" that inlines a host-specific
+ *     path (would break any contributor whose node_modules sits
+ *     elsewhere) or replaces createRequire with something less robust.
  *
  * The bundle-level B1 / B2 contract is registered below, conditional
  * on `apps/admin/build/server/chunks/` existing. See the block-level
@@ -125,6 +130,13 @@ describe("apps/admin/vite.config.ts — issue #53 regression contract", () => {
   it("U5: doc-comment records the inline-dispatcher trade-off (mentions `inline` + `createRequire`)", () => {
     expect(docComment.toLowerCase()).toContain("inline");
     expect(docComment).toContain("createRequire");
+  });
+
+  it("U6: resolveId return references `OXC_PARSER_NATIVE_ENTRY` (forces the createRequire indirection)", () => {
+    // The return shape MUST be `{ id: OXC_PARSER_NATIVE_ENTRY }` — the
+    // symbol points at the module-level pre-resolved absolute path. A
+    // hardcoded literal here would make the build host-specific.
+    expect(resolveIdReturn).toContain("OXC_PARSER_NATIVE_ENTRY");
   });
 });
 
