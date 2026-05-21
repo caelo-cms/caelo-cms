@@ -25,7 +25,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: 1.3.14
 
       - name: Install without frozen lockfile
         run: bun install
@@ -79,7 +79,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: 1.3.14
 
       - name: Install dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
@@ -125,11 +125,17 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Best-effort smoke against the built admin shell. Integration tests in
-    # `check` cover the same flows at the Query API boundary and are
-    # authoritative; the browser layer can remain in flux while we tighten
-    # the build pipeline (see follow-up issue).
-    continue-on-error: true
+    # Playwright admin shell smoke. Runs against the production build under
+    # `vite preview` via the adapter-bun output, matching the configuration
+    # that ships. #36 fixed the original SSR module-not-found by building
+    # @caelo-cms/shared (the step below); #52 fixed the follow-on Bun /
+    # Rollup native-binding SIGILL via two root-cause changes (no
+    # job-local workaround): `bunfig.toml` set `linker = "hoisted"`
+    # project-wide so Rollup's native binding lands on its resolution path,
+    # and `apps/admin/vite.config.ts` externalized `playwright-core` /
+    # `@playwright/test` / `@axe-core/playwright` from the SSR build so
+    # Vite stops walking those (test-only) trees during `bun run build`.
+    # This job is no longer masked — a failure here blocks merging.
 
     env:
       POSTGRES_USER: caelo
@@ -165,10 +171,21 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.13
+          bun-version: 1.3.14
 
       - name: Install dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
+
+      # `@caelo-cms/shared` publishes a compiled `dist/` (its package.json
+      # `main` points there) and the admin app's Vite SSR build can't
+      # resolve it otherwise. Narrowly building only this package — other
+      # dist-shipping workspaces (`mcp-server`, `provisioning`) are not on
+      # any admin SSR import path, and broadening to `@caelo-cms/*` would
+      # also rebuild `@caelo-cms/admin`, duplicating the Vite build that
+      # Playwright's webServer runs immediately after.
+      # Mirrors the side-effect of `bun run typecheck` in the `check` job.
+      - name: Build @caelo-cms/shared (admin SSR dep)
+        run: bun run --filter '@caelo-cms/shared' build
 
       - name: Bootstrap databases
         env:

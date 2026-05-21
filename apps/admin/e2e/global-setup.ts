@@ -77,14 +77,19 @@ const SETUP_SCRIPT = `
       actorId = actor[0].id;
       await tx\`
         INSERT INTO users (id, email, password_hash, is_first_owner, onboarded_at)
-        VALUES (\${actorId}::uuid, \${email}, \${passwordHash}, false, now())
+        VALUES (\${actorId}::uuid, \${email}, \${passwordHash}, true, now())
       \`;
     }
     // Defensive: existing dev-owner from prior runs may have null
     // onboarded_at after migration 0022; bump it so the post-login
-    // redirect to /onboarding doesn't intercept the sweep.
+    // redirect to /onboarding doesn't intercept the sweep. Also flip
+    // is_first_owner = true so specs that fixture-up state by querying
+    // \`WHERE is_first_owner = true LIMIT 1\` (e.g. propose-execute-flow,
+    // content-reviewer-readonly) find the dev-owner.
     await tx\`
-      UPDATE users SET onboarded_at = COALESCE(onboarded_at, now())
+      UPDATE users
+      SET onboarded_at = COALESCE(onboarded_at, now()),
+          is_first_owner = true
       WHERE email = \${email}
     \`;
     await tx\`
@@ -94,6 +99,29 @@ const SETUP_SCRIPT = `
     \`;
 
     await tx\`DELETE FROM rate_limit_buckets WHERE key LIKE 'login:%'\`;
+
+    // Seed an active AI provider so the post-login first-run gate at
+    // /(authed)/+layout.server.ts (which calls ai_providers.any_configured)
+    // doesn't redirect every test off / to /security/ai?firstRun=1. The
+    // encryption triplet is dummy bytea/text — the e2e suite uses the
+    // in-memory test provider registered via POST /__test/providers, so
+    // these bytes are never actually decrypted. All three encryption
+    // fields must travel together (ai_providers_key_triplet_consistent
+    // check constraint added in migration 0052), hence the NOT NULL set.
+    await tx\`
+      INSERT INTO ai_providers (name, display_name, is_active,
+                                api_key_encrypted, api_key_iv, api_key_kek_fp,
+                                api_key_set_at)
+      VALUES ('anthropic', 'Anthropic (e2e seed)', true,
+              decode('00', 'hex'), decode('00', 'hex'), 'e2e-seed',
+              now())
+      ON CONFLICT (name) DO UPDATE SET
+        is_active = EXCLUDED.is_active,
+        api_key_encrypted = EXCLUDED.api_key_encrypted,
+        api_key_iv = EXCLUDED.api_key_iv,
+        api_key_kek_fp = EXCLUDED.api_key_kek_fp,
+        api_key_set_at = EXCLUDED.api_key_set_at
+    \`;
   });
   await sql.end();
 `;

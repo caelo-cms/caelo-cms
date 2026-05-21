@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MPL-2.0
+
+# Project-wide Bun config. Applied to every `bun install` invocation —
+# local development, CI, and the release workflow.
+
+[install]
+# `hoisted` (npm-style flat node_modules) instead of bun's default
+# `isolated` linker. The isolated linker nests every package under
+# `.bun/<pkg>@<version>/node_modules/...`, which puts Rollup's
+# platform-specific native bindings (e.g. `@rollup/rollup-linux-x64-gnu`)
+# outside the resolution path Rollup's loader walks. Result: `vite build`
+# of the admin app crashes with `Cannot find native binding` → SIGILL →
+# exit 132 on every platform, including local dev — only `bun run dev`
+# (vite dev server, no Rollup bundle) hides the bug. The hoisted layout
+# puts the binding directly at `node_modules/@rollup/...`, which is on
+# Rollup's lookup path.
+#
+# This is a workaround for oven-sh/bun#25543, scoped to the install
+# topology rather than to any single CI job, so local + CI + release
+# all build the same way. Revisit when Bun fixes #25543; the version
+# pin in `apps/admin/package.json` engines + ci.yml setup-bun makes
+# that upgrade reviewable.
+linker = "hoisted"
