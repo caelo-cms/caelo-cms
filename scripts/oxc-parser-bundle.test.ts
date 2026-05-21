@@ -25,9 +25,9 @@
  *     inlined, runtime walks up from the chunk to find the platform
  *     binding) is invisible at review time.
  *
- * No build-output assertions — that would require a 30s+ `bun run
- * build` in the `check` job. The e2e job (`bun run build` inside
- * Playwright's webServer) is the bundle-level regression catcher.
+ * The bundle-level B1 / B2 contract is registered below, conditional
+ * on `apps/admin/build/server/chunks/` existing. See the block-level
+ * comment there.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -90,7 +90,8 @@ function extractResolveIdReturn(src: string): string {
   const returnStart = src.indexOf("return {", branchStart);
   if (returnStart === -1) throw new Error("no `return { … }` in `oxc-parser` resolveId branch");
   const returnEnd = src.indexOf("};", returnStart);
-  if (returnEnd === -1) throw new Error("unterminated `return { … };` in `oxc-parser` resolveId branch");
+  if (returnEnd === -1)
+    throw new Error("unterminated `return { … };` in `oxc-parser` resolveId branch");
   return src.slice(returnStart, returnEnd + 2);
 }
 
@@ -165,7 +166,7 @@ if (buildChunks) {
       expect(hits.length).toBeGreaterThan(0);
     });
 
-    it("B2: no chunk leaves an unresolved `from \"oxc-parser…\"` import (the #53 failure mode)", () => {
+    it('B2: no chunk leaves an unresolved `from "oxc-parser…"` import (the #53 failure mode)', () => {
       // Match `from "oxc-parser"` or `from "oxc-parser/<subpath>"` — the
       // exact shape `external: true` would leave behind. Single + double
       // quotes both — Rollup usually emits double-quoted strings, but
