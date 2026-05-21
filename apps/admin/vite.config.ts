@@ -1,4 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
+//
+// Issue trail for `forceOxcParserNativeEntry` below — read the chain
+// before touching the hook:
+//   #51 added the hook to pin `oxc-parser` to its native NAPI
+//       dispatcher entry (`src-js/index.js`).
+//   #52 was the original wasm-wasi startup crash that motivated the
+//       hook: Vite's default resolution followed
+//       `"browser": "src-js/wasm.js"` and inlined a static import of
+//       `@oxc-parser/binding-wasm32-wasi` — a binding bun doesn't
+//       install on native hosts.
+//   #53 was the Docker-build crash from the hook's first cut
+//       returning `external: true`; fixed by inlining the dispatcher
+//       via an absolute-path redirect (see `OXC_PARSER_NATIVE_ENTRY`
+//       below).
+// The detailed in-line doc-comments below explain the why; this header
+// just orients a cold reader on the issue numbers worth grepping.
 
 import { createRequire } from "node:module";
 import { sveltekit } from "@sveltejs/kit/vite";
