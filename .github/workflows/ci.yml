@@ -212,6 +212,14 @@ jobs:
     needs: lockfile
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Least-privilege GITHUB_TOKEN scope. The job only checks out the
+    # repo, builds the admin image locally, and `docker run`s it — no
+    # registry writes, no PR comments, no issue updates. Explicitly
+    # scoping to `contents: read` shrinks the blast radius if a
+    # transitive third-party action (checkout, setup-buildx,
+    # build-push-action) is ever compromised.
+    permissions:
+      contents: read
     # A rapid `git push` to a PR branch supersedes the prior boot-smoke
     # run's relevance; cancelling the in-flight job saves ~60-90s of CI
     # per push iteration. Push-to-main runs keep `cancel-in-progress:
