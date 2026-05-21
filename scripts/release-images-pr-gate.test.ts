@@ -57,13 +57,25 @@ const RULESET_PATH = resolve(REPO_ROOT, ".github/rulesets/main.json");
 
 const workflow = readFileSync(WORKFLOW_PATH, "utf8");
 
-const PR_GATE_TOKEN = "github.event_name != 'pull_request'";
+/**
+ * The positive-form gate that protects publish side-effects: the step
+ * runs only on `push` (to main), `workflow_call` (from release.yml on
+ * tag), and `workflow_dispatch` (manual). `pull_request` AND
+ * `merge_group` are EXCLUDED so PRs build-only and merge-queue
+ * speculative runs don't publish `gh-readonly-queue/...` images to
+ * GHCR / GCP AR. Listing the publish events positively means a future
+ * GitHub event type added accidentally defaults to build-only — the
+ * safer direction.
+ */
+const PUBLISH_EVENT_GATE =
+  "github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'";
 
 /**
- * Names of every step that must NOT run on `pull_request` events. A
- * step rename forces a single-line edit here AND fails this test with
- * a pointer at the rename — much clearer than the rename quietly
- * dropping coverage. Order matches the workflow file top-to-bottom.
+ * Names of every step whose publish side-effect must be gated by
+ * `PUBLISH_EVENT_GATE`. A step rename forces a single-line edit here
+ * AND fails this test with a pointer at the rename — much clearer than
+ * the rename quietly dropping coverage. Order matches the workflow
+ * file top-to-bottom.
  */
 const GATED_STEP_NAMES = [
   "Log in to GHCR",
@@ -186,11 +198,14 @@ function stepNeedsGate(step: WorkflowStep): boolean {
       if (step.uses.startsWith(prefix)) return true;
     }
   }
-  // Re-serialize the step and scan for `secrets.<NAME>` refs anywhere
+  // Re-serialize the step and scan for `secrets.<name>` refs anywhere
   // in its fields (with:, env:, run:, …). JSON.stringify is sufficient
   // — we don't need to introspect the structure, just text-search the
-  // serialized body for the literal token.
-  if (/secrets\.[A-Z_]+/.test(JSON.stringify(step))) return true;
+  // serialized body for the literal token. The identifier class admits
+  // letters, digits, and underscores (GitHub secret name rules) so
+  // `secrets.npmToken` and `secrets.NPM_TOKEN_V2` are detected, not
+  // just the all-caps shape.
+  if (/secrets\.[A-Za-z0-9_]+/.test(JSON.stringify(step))) return true;
   return false;
 }
 
@@ -218,26 +233,34 @@ describe("release-images.yml — issue #54 PR-gate contract", () => {
 
   it.each(
     GATED_STEP_NAMES.map((name) => [name]),
-  )("W2: step `%s` carries `github.event_name != 'pull_request'` in an `if:`", (name) => {
+  )("W2: step `%s` gates its `if:` on the positive publish-event list", (name) => {
     const body = extractStepBody(workflow, name);
-    // The gate must appear inside an `if:` line specifically, not in
-    // a comment or env-var. A literal `if:` substring followed (on
-    // the same line) by the token is enough.
+    // The gate must appear inside an `if:` line specifically (not in a
+    // comment or env-var). Assert the step's `if:` contains the
+    // PUBLISH_EVENT_GATE substring — that excludes BOTH `pull_request`
+    // and `merge_group` and admits only `push` / `workflow_call` /
+    // `workflow_dispatch`.
     const ifLineRegex = new RegExp(
-      `\\bif:\\s.*${PR_GATE_TOKEN.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}`,
+      `\\bif:\\s.*${PUBLISH_EVENT_GATE.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}`,
     );
     expect(body).toMatch(ifLineRegex);
+    // Also explicitly assert the old negative-form gate is GONE — a
+    // regression that reintroduces `!= 'pull_request'` would silently
+    // publish merge-queue images.
+    expect(body).not.toMatch(/\bif:\s.*github\.event_name\s*!=\s*'pull_request'/);
   });
 
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: ${{ ... }} is GitHub Actions expression syntax, not a JS template placeholder
-  it("W3: `Build + push` step uses `push: ${{ github.event_name != 'pull_request' }}`", () => {
+  it("W3: `Build + push` step's `push:` uses the positive publish-event expression", () => {
     const body = extractStepBody(workflow, "Build + push");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we're matching against
-    expect(body).toContain("push: ${{ github.event_name != 'pull_request' }}");
+    expect(body).toContain(`push: \${{ ${PUBLISH_EVENT_GATE} }}`);
     // And specifically does NOT carry the old unconditional `push: true`
-    // or a regression to `push: false`.
+    // (the pre-#54 shape), a regression to `push: false`, or the older
+    // negative-form `!= 'pull_request'` gate that wrongly included
+    // merge_group as a publish event.
     expect(body).not.toMatch(/\bpush:\s*true\b/);
     expect(body).not.toMatch(/\bpush:\s*false\b/);
+    expect(body).not.toMatch(/push:\s*\${{\s*github\.event_name\s*!=\s*'pull_request'/);
   });
 
   it("W4: top-level `concurrency:` block groups by PR number / ref and cancels on PR events only", () => {
@@ -269,8 +292,9 @@ describe("release-images.yml — issue #54 PR-gate contract", () => {
   // a contributor might add without the gate. W2 enumerates today's
   // steps by name; W6 parses the YAML and auto-flags any step that uses
   // a known credential-providing action OR references `secrets.<name>`
-  // in any field, asserting the gate token is present in its `if:`.
-  it("W6 (defense in depth): every credential-bearing step carries the PR gate", () => {
+  // in any field, asserting the publish-event gate is present in its
+  // `if:`.
+  it("W6 (defense in depth): every credential-bearing step carries the publish-event gate", () => {
     const credentialSteps = collectCredentialSteps(workflowDoc);
     // Guard against a refactor that hides every step behind some
     // indirection and silently makes the assertion vacuously pass.
@@ -280,8 +304,8 @@ describe("release-images.yml — issue #54 PR-gate contract", () => {
       const ifClause = step.if ?? "";
       expect(
         ifClause,
-        `step \`${label}\` is credential-bearing but its \`if:\` does not contain the PR gate`,
-      ).toContain(PR_GATE_TOKEN);
+        `step \`${label}\` is credential-bearing but its \`if:\` does not contain the publish-event gate`,
+      ).toContain(PUBLISH_EVENT_GATE);
     }
   });
 });
