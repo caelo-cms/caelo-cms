@@ -83,6 +83,10 @@ const OXC_PARSER_NATIVE_ENTRY = createRequire(import.meta.url).resolve(
  * `parseSync(filename, source)`, so those code paths are dead in our
  * build. If a future caller needs raw transfer, re-evaluate this
  * trade-off then.
+ *
+ * Regression contract: `scripts/oxc-parser-bundle.test.ts` (U1-U6 +
+ * B1-B3). Editing this hook without re-reading those assertions will
+ * break the build at PR time.
  */
 function forceOxcParserNativeEntry(): Plugin {
   return {
