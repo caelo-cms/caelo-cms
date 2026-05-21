@@ -49,6 +49,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import yaml from "js-yaml";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const WORKFLOW_PATH = resolve(REPO_ROOT, ".github/workflows/release-images.yml");
@@ -139,6 +140,16 @@ const concurrencyBlock = extractConcurrencyBlock(workflow);
 const headerComment = extractHeaderComment(workflow);
 
 describe("release-images.yml — issue #54 PR-gate contract", () => {
+  it("W0: workflow YAML parses cleanly", () => {
+    // Defense-in-depth: every other W-assertion is substring matching,
+    // which can pass against a malformed YAML file whose corruption
+    // doesn't touch the substrings we check. A YAML parse failure is
+    // catastrophic at GitHub Actions load time, but we want it to fail
+    // here too so a contributor sees the structural error before the
+    // workflow ever uploads.
+    expect(() => yaml.load(workflow)).not.toThrow();
+  });
+
   it("W1: triggers include both `pull_request:` and `merge_group:`", () => {
     expect(onBlock).toMatch(/\n\s+pull_request:\s*\n/);
     expect(onBlock).toMatch(/\n\s+merge_group:\s*(\n|$)/);
