@@ -11,6 +11,18 @@
 # return as a P17.x follow-up once Bun's QEMU SIGILL on arm64 is fixed
 # upstream (https://github.com/oven-sh/bun/issues/15044).
 #
+# Also runs build-only on every pull_request against main + every
+# merge_group speculative run (issue #54) — catches Dockerfile
+# regressions that the post-merge push trigger only surfaces after they
+# ship (the bug class #53 fixed). The push / sign / mirror steps gate
+# POSITIVELY on `push || workflow_call || workflow_dispatch` so
+# pull_request + merge_group events build the image but never publish
+# (no fork-PR-secrets failures, no `gh-readonly-queue/...` unmerged-
+# image clutter in registries); the build-push-action's `push:` flag
+# follows the same positive condition. The two matrix jobs are also
+# required status checks on the `main-protection` ruleset, so a PR
+# whose Docker build fails cannot be merged.
+#
 # CLAUDE.md §11.C: end-users never build these images. They consume
 # pre-built mirrors per provider:
 #   - GHCR (ghcr.io/caelo-cms/<service>) — canonical, used by Compose.
@@ -30,6 +42,12 @@ on:
     # the lint/typecheck/test gate passes. That makes the full release
     # atomic: if Docker fails, npm doesn't publish + no GitHub Release
     # is created. Push-to-main still emits :main + :main-<sha7>.
+  pull_request:
+    branches: [main]
+  merge_group:
+    # GitHub's native merge queue (when #34 enables it) re-runs required
+    # checks on the merge group; without this trigger the new PR gate
+    # would silently skip the queue. Zero cost to include now.
   workflow_call:
   workflow_dispatch:
 
@@ -38,6 +56,14 @@ permissions:
   contents: read
   packages: write
   id-token: write
+
+# A rapid `git push` to a PR branch supersedes the prior build's
+# relevance; cancelling the in-flight job saves ~6 min of CI per push.
+# Push-to-main builds keep `cancel-in-progress: false` so a release-
+# bound build is never interrupted by a follow-up commit.
+concurrency:
+  group: release-images-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -72,6 +98,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -105,7 +132,13 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: true
+          # PRs + merge-queue speculative runs build the image but do not
+          # push. Only push (to main), workflow_call (from release.yml on
+          # tag), and workflow_dispatch (manual) publish — listing those
+          # positively means a future event type added by GitHub defaults
+          # to build-only, not publish (so we never accidentally publish
+          # unmerged or read-only-queue images).
+          push: ${{ github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
@@ -114,9 +147,11 @@ jobs:
           sbom: true
 
       - name: Install cosign
+        if: github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'
         uses: sigstore/cosign-installer@v3
 
       - name: Sign image with cosign (keyless / OIDC)
+        if: github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
@@ -129,6 +164,7 @@ jobs:
           done
 
       - name: Verify the signed image (sanity check)
+        if: github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}
@@ -143,18 +179,18 @@ jobs:
       # before Caelo team sets up the mirror project).
       # ──────────────────────────────────────────────────────────────
       - name: Authenticate to GCP via Workload Identity Federation
-        if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_PUBLIC_REGISTRY_SA_EMAIL }}
 
       - name: Configure docker for GCP AR push
-        if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         run: gcloud auth configure-docker ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}-docker.pkg.dev --quiet
 
       - name: Mirror image (+ signatures) to GCP public AR
-        if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           GHCR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}

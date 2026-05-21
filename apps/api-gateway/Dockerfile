@@ -14,7 +14,10 @@ FROM oven/bun:1.3 AS builder
 
 WORKDIR /repo
 
-COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
+# bunfig.toml pins `linker = "hoisted"` (see admin Dockerfile for the
+# load-bearing reason). Both images install the same workspace topology;
+# both need the file in place before `bun install` runs.
+COPY package.json bun.lock bunfig.toml tsconfig.base.json tsconfig.json ./
 COPY apps/api-gateway/package.json apps/api-gateway/
 COPY apps/admin/package.json apps/admin/
 COPY apps/static-generator/package.json apps/static-generator/

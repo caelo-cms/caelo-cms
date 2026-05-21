@@ -39,7 +39,15 @@
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           { "context": "Lockfile freshness" },
-          { "context": "Lint, Typecheck, Migrate, Test, License" }
+          { "context": "Lint, Typecheck, Migrate, Test, License" },
+          {
+            "context": "build + push (admin)",
+            "_note": "Matrix job in .github/workflows/release-images.yml. Added in #54 to catch regressions that only surface in the lean production Docker image (the bug class #53 fixed)."
+          },
+          {
+            "context": "build + push (gateway)",
+            "_note": "Matrix job in .github/workflows/release-images.yml. Added in #54 alongside the admin job for the same reason."
+          }
         ]
       }
     }

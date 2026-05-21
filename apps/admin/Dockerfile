@@ -21,9 +21,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends npm && rm -rf /
 
 WORKDIR /repo
 
-# Copy lockfile + every workspace package.json first so `bun install`
-# is layer-cached against actual dependency changes, not source edits.
-COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
+# Copy lockfile + bunfig + every workspace package.json first so `bun
+# install` is layer-cached against actual dependency changes, not source
+# edits. `bunfig.toml` pins `linker = "hoisted"` — without it Bun falls
+# back to the default `isolated` linker inside the container, transitive
+# deps like `oxc-parser` land only under `node_modules/.bun/<pkg>@<ver>/`
+# instead of `node_modules/<pkg>/`, and `apps/admin/vite.config.ts`'s
+# `createRequire(import.meta.url).resolve("oxc-parser/src-js/index.js")`
+# at config-load time throws `MODULE_NOT_FOUND`. Local dev hides this
+# because the file is read on the host where it lives.
+COPY package.json bun.lock bunfig.toml tsconfig.base.json tsconfig.json ./
 COPY apps/admin/package.json apps/admin/
 COPY apps/api-gateway/package.json apps/api-gateway/
 COPY apps/static-generator/package.json apps/static-generator/
