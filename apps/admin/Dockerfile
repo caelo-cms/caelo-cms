@@ -52,11 +52,20 @@ RUN bun install
 # Patch up missing native bindings via npm. Bun has a documented gap
 # installing transitive optionalDependencies (oven-sh/bun#14918), which
 # affects every package that ships per-platform native binaries:
-#   @rollup/rollup-linux-x64-gnu, @oxc-parser/binding-linux-x64-gnu,
-#   @tailwindcss/oxide-linux-x64-gnu, @rolldown/binding-linux-x64-gnu,
-#   lightningcss-linux-x64-gnu. Discover them all from bun.lock, install
-#   in an isolated /tmp dir (so npm doesn't see workspace:* protocol),
-#   then copy each into apps/admin/node_modules/.
+#   @rollup/rollup-linux-x64-gnu       — required by Vite/Rollup at build time.
+#   @oxc-parser/binding-linux-x64-gnu  — required at RUNTIME by the inlined
+#                                        oxc-parser dispatcher (see
+#                                        apps/admin/vite.config.ts
+#                                        forceOxcParserNativeEntry and #53).
+#                                        Do NOT narrow this block away from
+#                                        oxc-parser — dropping the binding
+#                                        re-breaks the admin Docker image.
+#   @tailwindcss/oxide-linux-x64-gnu   — required by Tailwind 4 at build time.
+#   @rolldown/binding-linux-x64-gnu    — required by Rolldown at build time.
+#   lightningcss-linux-x64-gnu         — required by Tailwind/Vite at build time.
+# Discover them all from bun.lock, install in an isolated /tmp dir (so npm
+# doesn't see workspace:* protocol), then copy each into
+# apps/admin/node_modules/.
 # Bun's transitive optionalDependencies gap (oven-sh/bun#14918) skips
 # the per-platform native bindings. Scan bun.lock for every package
 # whose resolved spec contains "linux-x64" (matches both -linux-x64-gnu

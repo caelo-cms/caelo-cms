@@ -32,6 +32,14 @@
  */
 
 import { type PluginManifest, pluginManifest as pluginManifestSchema } from "@caelo-cms/plugin-sdk";
+// The bare `"oxc-parser"` import path here is load-bearing for the admin
+// SSR build — `apps/admin/vite.config.ts` registers a `resolveId` hook
+// (`forceOxcParserNativeEntry`) that intercepts this exact id, redirects
+// to the native dispatcher (`src-js/index.js`), and lets Vite inline it.
+// Importing a subpath (e.g. `oxc-parser/src-js/index.js`) directly would
+// bypass the hook and resurrect the `"browser": "src-js/wasm.js"` crash
+// from #52, or the externalization regression from #53. See those issues
+// + the comment block above forceOxcParserNativeEntry for the full chain.
 import { parseSync } from "oxc-parser";
 
 // ---------------------------------------------------------------------------
