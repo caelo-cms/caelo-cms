@@ -31,6 +31,7 @@ function forceOxcParserNativeEntry(): Plugin {
       if (id === "oxc-parser") {
         return { id: "oxc-parser/src-js/index.js", external: true };
       }
+      return null;
     },
   };
 }
