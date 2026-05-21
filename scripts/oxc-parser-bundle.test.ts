@@ -30,9 +30,9 @@
  *     path (would break any contributor whose node_modules sits
  *     elsewhere) or replaces createRequire with something less robust.
  *
- * The bundle-level B1 / B2 contract is registered below, conditional
- * on `apps/admin/build/server/chunks/` existing. See the block-level
- * comment there.
+ * The bundle-level B1 / B2 / B3 contract is registered below,
+ * conditional on `apps/admin/build/server/chunks/` existing. See the
+ * block-level comment there.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -190,6 +190,21 @@ if (buildChunks) {
       // pin both for robustness.
       const importRegex = /from\s*["']oxc-parser(?:["']|\/)/;
       const leftover = buildChunks.filter((c) => importRegex.test(c.content));
+      expect(leftover.map((c) => c.path)).toEqual([]);
+    });
+
+    it('B3: no chunk has a static `from "@oxc-parser/binding-wasm32-wasi"` ESM import (the #52 failure mode)', () => {
+      // The inlined dispatcher's `bindings.js` loads the wasm-wasi binding
+      // lazily inside a try/catch — `require("@oxc-parser/binding-wasm32-wasi")`
+      // (string-literal require — fine, never executes on a host with the
+      // native binding installed). A STATIC ESM import is the shape Vite
+      // would emit if `enforce: "pre"` got reordered out and the
+      // `"browser": "src-js/wasm.js"` field won — `wasm.js`'s
+      // `import * from "@oxc-parser/binding-wasm32-wasi"` lands in the
+      // chunk verbatim and the bundled server crashes at startup. Regex
+      // matches only the `from "<pkg>"` shape, not the require-call shape.
+      const staticImportRegex = /from\s*["']@oxc-parser\/binding-wasm32-wasi["']/;
+      const leftover = buildChunks.filter((c) => staticImportRegex.test(c.content));
       expect(leftover.map((c) => c.path)).toEqual([]);
     });
   });
