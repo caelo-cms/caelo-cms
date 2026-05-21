@@ -129,9 +129,9 @@ jobs:
     # `vite preview` via the adapter-bun output, matching the configuration
     # that ships. #36 fixed the original SSR module-not-found by building
     # @caelo-cms/shared (the step below); #52 fixed the follow-on Bun /
-    # Rollup native-binding SIGILL by dropping --frozen-lockfile on the
-    # install step (see the comment there). This job is no longer masked —
-    # a failure here blocks merging.
+    # Rollup native-binding SIGILL by explicitly installing the linux-x64-gnu
+    # binding (see the bun#25543 workaround step below). This job is no
+    # longer masked — a failure here blocks merging.
 
     env:
       POSTGRES_USER: caelo
@@ -169,18 +169,24 @@ jobs:
         with:
           bun-version: 1.3.13
 
-      # Non-frozen by design — workaround for oven-sh/bun#25543 with
-      # bun@1.3.13: `--frozen-lockfile` doesn't materialize platform-specific
-      # entries in `optionalDependencies` (here, `@rollup/rollup-linux-x64-gnu`)
-      # when the lockfile was generated on a different host platform, so the
-      # admin's `vite build` then crashes with a Rollup `Cannot find native
-      # binding` → Bun SIGILL on ubuntu runners. The `lockfile` job above
-      # already gates lockfile freshness on every PR via `git diff
-      # --exit-code`, so the verification contract isn't lost by dropping the
-      # flag here. Revisit when Bun is bumped past the version that fixes
-      # #25543; the comment + version pin makes future upgrades reviewable.
-      - name: Install dependencies
-        run: bun install
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      # Workaround for oven-sh/bun#25543 with bun@1.3.13: neither
+      # `bun install --frozen-lockfile` nor non-frozen `bun install`
+      # materializes the linux-x64-gnu Rollup native binding into
+      # `node_modules` on ubuntu runners when the lockfile was generated on a
+      # different host platform, even though the lockfile records the entry
+      # (apps/admin/package.json `optionalDependencies`). Without the binding
+      # the admin's `vite build` crashes with `Cannot find native binding` →
+      # SIGILL → exit 132 inside Playwright's `webServer`. `bun add --no-save`
+      # installs the package without touching `package.json` or `bun.lock`,
+      # so the lockfile-freshness gate in the `lockfile` job above is
+      # preserved. Revisit when Bun is bumped past the version that fixes
+      # #25543; the version pin in setup-bun keeps that upgrade reviewable.
+      - name: Install Rollup linux-x64-gnu native binding (bun#25543 workaround)
+        working-directory: apps/admin
+        run: bun add --no-save @rollup/rollup-linux-x64-gnu
 
       # `@caelo-cms/shared` publishes a compiled `dist/` (its package.json
       # `main` points there) and the admin app's Vite SSR build can't
