@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Issue #53 regression contract over `apps/admin/vite.config.ts`.
+ *
+ * The `forceOxcParserNativeEntry` `resolveId` hook in that file is
+ * load-bearing for the production admin build. Two regressions are
+ * gated here, and a third (the comment block that records why) is gated
+ * because the failure mode of dropping it is "the next contributor
+ * re-adds `external: true` thinking it's a cleanup". U-numbers track
+ * plan §8 / `## Test strategy` Tier 1.
+ *
+ * U1: hook still present — otherwise the `"browser": "src-js/wasm.js"`
+ *     resolution from #52 returns and the SSR bundle crashes at startup
+ *     with `Cannot find module '@oxc-parser/binding-wasm32-wasi'`.
+ * U2: hook does NOT set `external: true` — the #53 regression. Leaving
+ *     the import external tanks the SvelteKit adapter Worker on the lean
+ *     production Docker layout.
+ * U3: redirect target stays `oxc-parser/src-js/index.js`. Flipping it
+ *     to `src-js/wasm.js` resurrects #52.
+ * U4: `enforce: "pre"` retained on the plugin. Without it, whichever
+ *     resolver runs first wins and the wasm browser field comes back.
+ * U5: doc-comment block above the plugin mentions `inline` +
+ *     `createRequire`. Without that record, the trade-off (dispatcher
+ *     inlined, runtime walks up from the chunk to find the platform
+ *     binding) is invisible at review time.
+ *
+ * No build-output assertions — that would require a 30s+ `bun run
+ * build` in the `check` job. The e2e job (`bun run build` inside
+ * Playwright's webServer) is the bundle-level regression catcher.
+ */
+
+import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const REPO_ROOT = resolve(import.meta.dir, "..");
+const CONFIG_PATH = resolve(REPO_ROOT, "apps/admin/vite.config.ts");
+const config = readFileSync(CONFIG_PATH, "utf8");
+
+const PLUGIN_NAME = "forceOxcParserNativeEntry";
+
+/**
+ * Slice the source of the resolveId-hook function body so per-region
+ * assertions don't false-positive on unrelated parts of the file —
+ * notably `ssr.external: [...]` which legitimately contains `external`,
+ * and any future Vite config that might also use `enforce` / `pre` for
+ * a different plugin.
+ */
+function extractPluginBody(src: string): string {
+  const start = src.indexOf(`function ${PLUGIN_NAME}`);
+  if (start === -1) throw new Error(`no \`${PLUGIN_NAME}\` plugin in vite.config.ts`);
+  // The body runs to the closing `}\n}` of the wrapper function. Match the
+  // first `\n}\n` after the function header — the inner plugin object closes
+  // with `};\n` (note the semicolon), so the brace-newline-brace-newline
+  // pattern uniquely identifies the wrapper's terminator.
+  const end = src.indexOf("\n}\n", start);
+  if (end === -1) throw new Error(`unterminated \`${PLUGIN_NAME}\` body`);
+  return src.slice(start, end);
+}
+
+/**
+ * Extract the `/** … *\/` doc-comment that immediately precedes the
+ * plugin function definition, so U5 only inspects the explanatory block
+ * and not, say, a future unrelated comment elsewhere in the file.
+ */
+function extractDocComment(src: string): string {
+  const fnStart = src.indexOf(`function ${PLUGIN_NAME}`);
+  if (fnStart === -1) throw new Error(`no \`${PLUGIN_NAME}\` plugin in vite.config.ts`);
+  const commentEnd = src.lastIndexOf("*/", fnStart);
+  if (commentEnd === -1) throw new Error(`no doc-comment before \`${PLUGIN_NAME}\``);
+  const commentStart = src.lastIndexOf("/**", commentEnd);
+  if (commentStart === -1) throw new Error(`no /** opener for \`${PLUGIN_NAME}\` doc-comment`);
+  return src.slice(commentStart, commentEnd + 2);
+}
+
+const pluginBody = extractPluginBody(config);
+const docComment = extractDocComment(config);
+
+describe("apps/admin/vite.config.ts — issue #53 regression contract", () => {
+  it("U1: forceOxcParserNativeEntry hook is present (resolves the #52 wasm-wasi crash)", () => {
+    expect(pluginBody).toContain(`id === "oxc-parser"`);
+  });
+
+  it("U2: resolveId hook does NOT set `external: true` (issue #53 regression)", () => {
+    expect(pluginBody).not.toMatch(/external\s*:\s*true/);
+  });
+
+  it("U3: redirect target stays the native dispatcher entry, not the wasm field", () => {
+    expect(pluginBody).toContain(`"oxc-parser/src-js/index.js"`);
+    expect(pluginBody).not.toContain(`"oxc-parser/src-js/wasm.js"`);
+  });
+
+  it('U4: `enforce: "pre"` is retained on the plugin', () => {
+    expect(pluginBody).toContain(`enforce: "pre"`);
+  });
+
+  it("U5: doc-comment records the inline-dispatcher trade-off (mentions `inline` + `createRequire`)", () => {
+    expect(docComment.toLowerCase()).toContain("inline");
+    expect(docComment).toContain("createRequire");
+  });
+});
