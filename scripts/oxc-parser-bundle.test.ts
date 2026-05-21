@@ -31,7 +31,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
@@ -121,3 +121,58 @@ describe("apps/admin/vite.config.ts — issue #53 regression contract", () => {
     expect(docComment).toContain("createRequire");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bundle-level contract (B1 / B2).
+//
+// U1-U5 above are source-string assertions: they catch a deliberate
+// revert in vite.config.ts, but not behavioural drift in Vite / Rollup
+// (e.g., a Vite version bump that changes `enforce: "pre"` ordering, or
+// a different plugin reordering ahead of forceOxcParserNativeEntry).
+// The build-output assertions below close that gap.
+//
+// They run only when `apps/admin/build/server/chunks/` exists — i.e.,
+// after `bun run build` in `apps/admin/`. The `check` CI job has no
+// build artifact and skips the block transparently; the `e2e` job's
+// Playwright webServer runs `bun run build` before any spec, so this
+// block fires there too. Local devs see the assertions on any post-build
+// `bun test` run.
+// ---------------------------------------------------------------------------
+
+const BUILD_CHUNKS_DIR = resolve(REPO_ROOT, "apps/admin/build/server/chunks");
+
+interface BuildChunk {
+  readonly path: string;
+  readonly content: string;
+}
+
+function readBuildChunks(): readonly BuildChunk[] | null {
+  if (!existsSync(BUILD_CHUNKS_DIR)) return null;
+  const jsFiles = readdirSync(BUILD_CHUNKS_DIR).filter((f) => f.endsWith(".js"));
+  if (jsFiles.length === 0) return null;
+  return jsFiles.map((f) => {
+    const p = resolve(BUILD_CHUNKS_DIR, f);
+    return { path: p, content: readFileSync(p, "utf8") };
+  });
+}
+
+const buildChunks = readBuildChunks();
+
+if (buildChunks) {
+  describe("apps/admin/build/server/chunks — bundle-level regression contract", () => {
+    it("B1: at least one chunk references `@oxc-parser/binding-` (dispatcher inlined, not externalized)", () => {
+      const hits = buildChunks.filter((c) => c.content.includes("@oxc-parser/binding-"));
+      expect(hits.length).toBeGreaterThan(0);
+    });
+
+    it("B2: no chunk leaves an unresolved `from \"oxc-parser…\"` import (the #53 failure mode)", () => {
+      // Match `from "oxc-parser"` or `from "oxc-parser/<subpath>"` — the
+      // exact shape `external: true` would leave behind. Single + double
+      // quotes both — Rollup usually emits double-quoted strings, but
+      // pin both for robustness.
+      const importRegex = /from\s*["']oxc-parser(?:["']|\/)/;
+      const leftover = buildChunks.filter((c) => importRegex.test(c.content));
+      expect(leftover.map((c) => c.path)).toEqual([]);
+    });
+  });
+}
