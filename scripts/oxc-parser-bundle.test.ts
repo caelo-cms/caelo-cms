@@ -74,16 +74,37 @@ function extractDocComment(src: string): string {
   return src.slice(commentStart, commentEnd + 2);
 }
 
+/**
+ * Extract the `return { ... };` object literal inside the
+ * `if (id === "oxc-parser")` branch of the resolveId hook. Scoping U2
+ * to just this object — instead of the whole plugin body — eliminates
+ * the false-positive surface against any future legitimate
+ * `external: [...]` array literal elsewhere in the plugin (e.g., a
+ * nested `build.rollupOptions.external` block) and the inverse
+ * false-negative: a misplaced `external: true` on a sibling field
+ * inside the same plugin object would slip past a body-wide regex.
+ */
+function extractResolveIdReturn(src: string): string {
+  const branchStart = src.indexOf(`if (id === "oxc-parser")`);
+  if (branchStart === -1) throw new Error("no `oxc-parser` resolveId branch");
+  const returnStart = src.indexOf("return {", branchStart);
+  if (returnStart === -1) throw new Error("no `return { … }` in `oxc-parser` resolveId branch");
+  const returnEnd = src.indexOf("};", returnStart);
+  if (returnEnd === -1) throw new Error("unterminated `return { … };` in `oxc-parser` resolveId branch");
+  return src.slice(returnStart, returnEnd + 2);
+}
+
 const pluginBody = extractPluginBody(config);
 const docComment = extractDocComment(config);
+const resolveIdReturn = extractResolveIdReturn(config);
 
 describe("apps/admin/vite.config.ts — issue #53 regression contract", () => {
   it("U1: forceOxcParserNativeEntry hook is present (resolves the #52 wasm-wasi crash)", () => {
     expect(pluginBody).toContain(`id === "oxc-parser"`);
   });
 
-  it("U2: resolveId hook does NOT set `external: true` (issue #53 regression)", () => {
-    expect(pluginBody).not.toMatch(/external\s*:\s*true/);
+  it("U2: resolveId return value does NOT set `external: true` (issue #53 regression)", () => {
+    expect(resolveIdReturn).not.toMatch(/external\s*:\s*true/);
   });
 
   it("U3: redirect target stays the native dispatcher entry, not the wasm field", () => {
