@@ -109,8 +109,13 @@ describe("apps/admin/vite.config.ts — issue #53 regression contract", () => {
   });
 
   it("U3: redirect target stays the native dispatcher entry, not the wasm field", () => {
-    expect(pluginBody).toContain(`"oxc-parser/src-js/index.js"`);
-    expect(pluginBody).not.toContain(`"oxc-parser/src-js/wasm.js"`);
+    // The `oxc-parser/src-js/index.js` string lives in the module-level
+    // `createRequire(...).resolve(...)` call above the plugin (not in
+    // `pluginBody`), so this assertion runs against the full config text.
+    // The negative — no redirect to the wasm fallback — must hold
+    // anywhere in the file.
+    expect(config).toContain(`"oxc-parser/src-js/index.js"`);
+    expect(config).not.toContain(`"oxc-parser/src-js/wasm.js"`);
   });
 
   it('U4: `enforce: "pre"` is retained on the plugin', () => {

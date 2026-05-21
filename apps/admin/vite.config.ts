@@ -1,8 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { createRequire } from "node:module";
 import { sveltekit } from "@sveltejs/kit/vite";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, type Plugin } from "vite";
+
+/**
+ * Absolute path to oxc-parser's native NAPI dispatcher entry, pre-resolved
+ * at config-load time. The `resolveId` hook below redirects the bare
+ * `"oxc-parser"` import to this path. Rolldown (Vite 8's bundler) does
+ * NOT re-resolve a subpath spec like `"oxc-parser/src-js/index.js"`
+ * through `node_modules`; it tries to open the literal path and fails
+ * with `os error 2`. An absolute path skips that walk entirely. If the
+ * dep is missing, `require.resolve` throws here — at config load —
+ * instead of mid-bundling, which is the cheaper failure signal.
+ */
+const OXC_PARSER_NATIVE_ENTRY = createRequire(import.meta.url).resolve(
+  "oxc-parser/src-js/index.js",
+);
 
 /**
  * Force `oxc-parser` to resolve to its native NAPI dispatcher entry
@@ -30,7 +45,11 @@ import { defineConfig, type Plugin } from "vite";
  *    adapter Worker then ESM-resolved that import from
  *    `.svelte-kit/output/server/chunks/src.js` — which fails in the
  *    lean production Docker layout and tanks the release-images
- *    workflow's admin build. The fix: drop `external: true`. Vite then
+ *    workflow's admin build. The fix: drop `external: true` so Vite
+ *    inlines the dispatcher, and return the *absolute* path to
+ *    `src-js/index.js` (see `OXC_PARSER_NATIVE_ENTRY` above) — Rolldown
+ *    won't re-resolve a subpath spec via node_modules and would error
+ *    `Could not load oxc-parser/src-js/index.js` otherwise. Vite then
  *    follows the redirect and inlines the dispatcher (`src-js/index.js`
  *    + `src-js/bindings.js`) directly into the SSR chunk. The inlined
  *    `bindings.js` uses `createRequire(import.meta.url)` for the
@@ -55,7 +74,7 @@ function forceOxcParserNativeEntry(): Plugin {
     enforce: "pre",
     resolveId(id) {
       if (id === "oxc-parser") {
-        return { id: "oxc-parser/src-js/index.js" };
+        return { id: OXC_PARSER_NATIVE_ENTRY };
       }
       return null;
     },
