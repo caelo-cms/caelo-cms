@@ -173,26 +173,41 @@ jobs:
         run: bun install --frozen-lockfile
 
       # Workaround for oven-sh/bun#25543 with bun@1.3.13: neither
-      # `bun install --frozen-lockfile` nor non-frozen `bun install`
-      # materializes the linux-x64-gnu Rollup native binding into
-      # `apps/admin/node_modules` on ubuntu runners when the lockfile was
-      # generated on darwin, even though the lockfile records the entry
-      # (apps/admin/package.json `optionalDependencies`). `bun add --no-save`
-      # also failed to place it where Rollup's loader looks (workspace
-      # hoist + a version drift to 4.60.4 vs the lockfile-pinned 4.60.2).
-      # npm's handling of platform-specific optional deps is the gold
-      # standard for this exact case (npm IS what Rollup's docs tell users
-      # to retry with). `--no-save --no-package-lock --prefix apps/admin`
-      # writes only into `apps/admin/node_modules/@rollup/...` — no edits to
-      # `apps/admin/package.json`, no top-level lockfile change, no
-      # `package-lock.json` generated, and the bun lockfile-freshness gate
-      # in the `lockfile` job above is preserved. Version is pinned to the
-      # `@4.60.2` that bun.lock resolves; bump it together with bun.lock when
-      # Rollup is upgraded. Revisit when Bun is bumped past the version that
-      # fixes #25543; the bun version pin in setup-bun above keeps that
-      # upgrade reviewable.
+      # `bun install --frozen-lockfile` nor non-frozen `bun install` nor
+      # `bun add --no-save` materializes the linux-x64-gnu Rollup native
+      # binding into `apps/admin/node_modules/@rollup/...` on ubuntu runners
+      # when the lockfile was generated on darwin. Without it the admin's
+      # `vite build` crashes with `Cannot find native binding` → SIGILL →
+      # exit 132 inside Playwright's `webServer`.
+      #
+      # Earlier attempts and why they failed:
+      #   - `bun install --frozen-lockfile`: bun#25543 skips the binding even
+      #     though `bun.lock` records it under `optionalDependencies`.
+      #   - non-frozen `bun install`: bun still skips it (the bug isn't
+      #     scoped to `--frozen-lockfile`).
+      #   - `bun add --no-save @rollup/rollup-linux-x64-gnu`: installed but
+      #     resolved to 4.60.4 (latest) instead of the lockfile-pinned
+      #     4.60.2, and was hoisted somewhere Rollup's loader couldn't find.
+      #   - `npm install --prefix apps/admin`: npm rejects `workspace:*`
+      #     specs that bun/yarn use throughout this monorepo's package.json.
+      #
+      # The tarball-direct approach below sidesteps both package managers
+      # entirely: download the exact 4.60.2 release straight from the npm
+      # registry and untar it into the location Rollup's loader checks
+      # (`node_modules/@rollup/rollup-linux-x64-gnu`). Verify the
+      # `package.json` is present after extraction so a flaky tarball or a
+      # registry hiccup fails this step loudly rather than the downstream
+      # `vite build`. Bump the version together with bun.lock when Rollup is
+      # upgraded; revisit the whole step when Bun is past the #25543 fix
+      # (`oven-sh/setup-bun` version pin above gates that upgrade).
       - name: Install Rollup linux-x64-gnu native binding (bun#25543 workaround)
-        run: npm install --prefix apps/admin --no-save --no-package-lock --no-audit --no-fund @rollup/rollup-linux-x64-gnu@4.60.2
+        run: |
+          set -euo pipefail
+          dest=apps/admin/node_modules/@rollup/rollup-linux-x64-gnu
+          mkdir -p "$dest"
+          curl -fsSL https://registry.npmjs.org/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.60.2.tgz \
+            | tar -xzf - -C "$dest" --strip-components=1
+          test -f "$dest/package.json"
 
       # `@caelo-cms/shared` publishes a compiled `dist/` (its package.json
       # `main` points there) and the admin app's Vite SSR build can't
