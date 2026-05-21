@@ -3,18 +3,18 @@
 /**
  * Asserts on the `e2e` job in `.github/workflows/ci.yml`. The workflow itself
  * is CI-only and has no runtime code to integration-test; these pure-string
- * checks are the test surface for issue #36's contract.
+ * checks are the test surface for issue #36's contract (and the #52 follow-up
+ * that removed the mask).
  *
  * Failures here are regressions in: the `Build @caelo-cms/shared (admin SSR
  * dep)` step (presence, exact filter form, exact name, ordering relative to
- * `Bootstrap databases`), the retained `continue-on-error: true` mask
- * (deferred to #52 — see acceptance criterion #3 there), the dropped
- * "best-effort" wording, or the retained `needs: check`.
+ * `Bootstrap databases`), the removed `continue-on-error: true` mask (issue
+ * #52 — a failure must block merging), the dropped "best-effort" wording, or
+ * the retained `needs: check`. U-numbers track plan §8.1.
  *
- * Numbered to match `.workflow-plan.md` §8.1 (U1–U8) so a failure cites the
- * row that fired. No YAML parser dependency by design — plan §8.1 commits to
- * pure-string assertions so this stays in `bun test` without dragging in
- * `js-yaml` or `actionlint`.
+ * No YAML parser dependency by design — plan §8.1 commits to pure-string
+ * assertions so this stays in `bun test` without dragging in `js-yaml` or
+ * `actionlint`.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -56,14 +56,14 @@ describe("e2e job — issue #36 contract", () => {
     expect(e2e).toContain("- name: Build @caelo-cms/shared (admin SSR dep)");
   });
 
-  it("U3: retains the `continue-on-error: true` mask pending the #52 Bun/Rollup SIGILL fix", () => {
-    // The plan removed this mask, but the deferred Bun 1.3.13 + Rollup
-    // native-binding SIGILL (issue #52) still crashes the admin's Vite build
-    // on linux runners. The mask stays until #52 lands; this assertion
-    // documents that contract so the mask isn't silently dropped before then.
-    // Line-start match so we're asserting on the actual YAML key, not a
-    // prose mention inside the `#` comment block.
-    expect(e2e).toMatch(/^\s*continue-on-error:\s+true\b/m);
+  it("U3: no `continue-on-error: true` mask — #52 fixed the Rollup SIGILL at root, failures must block merging", () => {
+    // Earlier revisions of this job tolerated failures with
+    // `continue-on-error: true` while the Bun 1.3.13 / Rollup native-binding
+    // SIGILL was unresolved. #52's fix (non-frozen `bun install` in the e2e
+    // job, see ci.yml ~line 173) removes the SIGILL at root, so the mask is
+    // gone — and must stay gone. Line-start match so we're asserting on the
+    // actual YAML key, not a prose mention inside the `#` comment block.
+    expect(e2e).not.toMatch(/^\s*continue-on-error:\s+true\b/m);
   });
 
   it("U4: retains `needs: check` so ordering after the typecheck/test job holds", () => {
@@ -83,14 +83,13 @@ describe("e2e job — issue #36 contract", () => {
     expect(buildIdx).toBeLessThan(bootstrapIdx);
   });
 
-  it("U7: exactly one `continue-on-error:` key in the e2e job — guards against duplicate / per-step mask drift", () => {
-    // The job-level mask is the only place `continue-on-error:` should appear
-    // in this job. A second occurrence (e.g. accidentally added under a
-    // step's keys) would silently flip the failure-tolerance contract.
+  it("U7: zero `continue-on-error:` keys in the e2e job — guards against the mask being silently re-added", () => {
+    // With #52 fixed at root, no `continue-on-error:` YAML key should appear
+    // anywhere in the e2e job — neither at job level nor under any step.
     // Line-start match — the global flag with the multiline regex counts
     // YAML-key occurrences only, not the prose mention in the `#` comment.
     const matches = e2e.match(/^\s*continue-on-error:/gm) ?? [];
-    expect(matches).toHaveLength(1);
+    expect(matches).toHaveLength(0);
   });
 
   it("U8: filter uses the quoted space-separated form, not the `=` form", () => {
