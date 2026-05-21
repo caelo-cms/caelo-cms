@@ -35,6 +35,20 @@
  *     curl poll with a bare `sleep` false-positives on slow boots.
  * C6: A step's `run:` body contains `docker logs smoke`. Removing
  *     the log dump makes future flakes opaque.
+ * C7: The build step's `tags:` pins `caelo-admin:smoke`. The next
+ *     step references that exact tag; a rename without updating the
+ *     `docker run` reference would break boot at runtime but not at
+ *     build time. Catches that drift class.
+ * C8: The build step's `cache-from` reads from BOTH
+ *     `type=gha,scope=admin` (release-images' admin matrix cache)
+ *     AND `type=gha,scope=admin-smoke` (our own scope). A regression
+ *     that drops `scope=admin` triples cold-build time when our scope
+ *     is empty; dropping `scope=admin-smoke` does the same on a fresh
+ *     branch where release-images hasn't yet warmed `scope=admin`.
+ * C9: The boot-smoke run block starts with `set -euo pipefail`.
+ *     Without it, a failing curl, docker inspect, or docker logs
+ *     silently exits 0 and passes the job. The hygiene token is the
+ *     load-bearing guard for AC #2 (fails closed on errors).
  * R1: The ruleset's required-status-checks list contains
  *     `Admin production image — boot smoke`. Removing it means a
  *     broken boot no longer blocks merge — AC #5 fails.
@@ -72,6 +86,7 @@ interface WithBlock {
   readonly push?: boolean | string;
   readonly load?: boolean | string;
   readonly tags?: string;
+  readonly "cache-from"?: string;
 }
 
 interface WorkflowStep {
@@ -157,6 +172,49 @@ describe("ci.yml — issue #55 admin-prod-image boot-smoke contract", () => {
       matching,
       "expected `docker logs smoke` somewhere in the job's run blocks for failure-path debuggability",
     ).toBeDefined();
+  });
+
+  it("C7: build step's `tags:` pins `caelo-admin:smoke` (must match the `docker run` reference)", () => {
+    const buildStep = (job.steps ?? []).find((s) =>
+      s.uses?.startsWith("docker/build-push-action@"),
+    );
+    expect(buildStep?.with?.tags).toBe("caelo-admin:smoke");
+  });
+
+  it("C8: build step's `cache-from` reads from BOTH release-images' admin cache AND our own scope", () => {
+    const buildStep = (job.steps ?? []).find((s) =>
+      s.uses?.startsWith("docker/build-push-action@"),
+    );
+    const cacheFrom = buildStep?.with?.["cache-from"];
+    expect(typeof cacheFrom).toBe("string");
+    if (typeof cacheFrom !== "string") return;
+    // Multi-line `|` block scalar lands as `\n`-joined; split + trim so a
+    // future formatter change (extra blank line, trailing spaces) doesn't
+    // false-fail the contract. Each entry must be a distinct list item —
+    // `scope=admin` is a substring of `scope=admin-smoke`, so a bare
+    // toContain on the raw text would let a regression that drops the
+    // shorter scope go undetected.
+    const lines = cacheFrom
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    expect(lines).toContain("type=gha,scope=admin");
+    expect(lines).toContain("type=gha,scope=admin-smoke");
+  });
+
+  it("C9: boot-smoke run block starts with `set -euo pipefail`", () => {
+    const bootStep = runSteps(job).find(
+      (s) => s.run.includes("docker run") && s.run.includes("--name smoke"),
+    );
+    expect(bootStep).toBeDefined();
+    if (!bootStep || typeof bootStep.run !== "string") return;
+    // Match the first non-blank line so the assertion survives a future
+    // leading blank line or comment.
+    const firstNonBlank = bootStep.run
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0);
+    expect(firstNonBlank).toBe("set -euo pipefail");
   });
 });
 
