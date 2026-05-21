@@ -206,3 +206,96 @@ jobs:
       - name: Run Playwright smoke tests
         run: bun run e2e
         working-directory: apps/admin
+
+  admin-prod-image:
+    name: Admin production image — boot smoke
+    needs: lockfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Issue #55 — complements release-images.yml's PR build gate (#54)
+    # with a boot smoke. release-images builds + publishes; this job
+    # builds the admin image alone (no push, no sign, no mirror) and
+    # `docker run`s it to confirm the SvelteKit + adapter-bun server
+    # actually boots. The bug class #53 fixed (Cannot find module
+    # "oxc-parser") succeeds at Docker build time and only crashes on
+    # `docker run` — release-images alone cannot catch it.
+    #
+    # Fake DB URLs are intentional: the lazy query context
+    # (apps/admin/src/lib/server/query.ts) and the `.catch`-wrapped
+    # bootstraps in hooks.server.ts mean the server binds PORT without
+    # touching the database, so a successful port-bind is a sufficient
+    # signal that the JS bundle loaded correctly. MODULE_NOT_FOUND
+    # crashes happen at module load BEFORE the port binds and surface
+    # here as a never-bound port.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build admin image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/admin/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: caelo-admin:smoke
+          # Read from BOTH release-images' admin matrix-job cache scope
+          # AND this job's own scope. Write only to our own scope so we
+          # never thrash release-images' cache. Buildx supports multiple
+          # cache-from entries.
+          cache-from: |
+            type=gha,scope=admin
+            type=gha,scope=admin-smoke
+          cache-to: type=gha,scope=admin-smoke,mode=max
+
+      - name: Boot smoke (port wait + alive check)
+        run: |
+          set -euo pipefail
+
+          docker run -d --name smoke -p 3000:3000 \
+            -e PORT=3000 \
+            -e ORIGIN=http://localhost:3000 \
+            -e ADMIN_DATABASE_URL=postgres://nobody:nothing@127.0.0.1:9/nope \
+            -e PUBLIC_DATABASE_URL=postgres://nobody:nothing@127.0.0.1:9/nope \
+            caelo-admin:smoke
+
+          # Wait up to 30s for any HTTP response on /. A 3-digit status
+          # code (even 5xx) means the JS bundle loaded and the listener
+          # attached — that's the load-bearing signal.
+          start=$SECONDS
+          deadline=$((SECONDS + 30))
+          connected=0
+          while [ $SECONDS -lt $deadline ]; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+              http://localhost:3000/ || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then
+              echo "Boot OK: GET / returned HTTP $code after $((SECONDS - start))s"
+              connected=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$connected" -ne 1 ]; then
+            echo "::error::Admin image did not boot within 30s — likely Cannot-find-module-class regression"
+            docker logs smoke || true
+            docker rm -f smoke || true
+            exit 1
+          fi
+
+          # Catches the rare "bound the port then crashed mid-boot" case.
+          running=$(docker inspect -f '{{.State.Running}}' smoke)
+          if [ "$running" != "true" ]; then
+            echo "::error::Admin container exited after binding port"
+            docker logs smoke || true
+            docker rm -f smoke || true
+            exit 1
+          fi
+
+          echo "--- container log tail (success path) ---"
+          docker logs smoke 2>&1 | head -50 || true
+          docker rm -f smoke
