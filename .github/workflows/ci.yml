@@ -212,6 +212,14 @@ jobs:
     needs: lockfile
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # A rapid `git push` to a PR branch supersedes the prior boot-smoke
+    # run's relevance; cancelling the in-flight job saves ~60-90s of CI
+    # per push iteration. Push-to-main runs keep `cancel-in-progress:
+    # false` so a main-bound build is never interrupted by a follow-up
+    # commit. Mirrors release-images.yml's workflow-level pattern.
+    concurrency:
+      group: admin-prod-image-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     # Issue #55 — complements release-images.yml's PR build gate (#54)
     # with a boot smoke. release-images builds + publishes; this job
     # builds the admin image alone (no push, no sign, no mirror) and
