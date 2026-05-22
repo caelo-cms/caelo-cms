@@ -187,6 +187,25 @@ bun run e2e-livedit
 PR description records the green local run output. CI is the
 secondary guard — local pass is the primary one.
 
+### CI secret gate
+
+`.github/workflows/e2e-livedit.yml` starts with a one-step `preflight`
+job that reads `secrets.ANTHROPIC_API_KEY_E2E` into an env var and
+emits `enabled=true|false`. The main `e2e-livedit` job's `if:` keys
+off that output:
+
+- **Secret set →** main job runs normally; failure is real and blocks the
+  PR check.
+- **Secret unset →** main job is `SKIPPED` with a workflow notice
+  pointing the operator at repo Settings → Secrets and variables →
+  Actions. The PR check goes neutral, not red.
+
+This means a fresh fork or a PR opened before the operator has
+configured the secret doesn't fail CI on a config gap — the suite
+just stays dormant until the secret arrives. Once configured, every
+subsequent PR + push:main + workflow_dispatch run executes the full
+real-AI flow without code changes.
+
 ## Suggested next scenarios (v0.13.1+)
 
 - **Scenario 2** — `/hosting` page + nav-menu update. Covers v0.10.20

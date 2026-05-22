@@ -27,8 +27,38 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # Gate the suite on secret presence. Without ANTHROPIC_API_KEY_E2E the
+  # global-setup throws loudly (AC #8) — correct behaviour locally, but
+  # in CI it would block every PR before an operator has had a chance
+  # to add the secret. This preflight job emits `enabled=true` only when
+  # the secret is non-empty; the suite job conditions its `if:` on that
+  # output, so the missing-secret case shows up as a clean SKIPPED
+  # check rather than a FAILURE.
+  preflight:
+    name: Preflight (secret check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    env:
+      # Secrets cannot be referenced inside `if:` expressions; pipe
+      # into env, then test the env var in the script.
+      ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY_E2E" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY_E2E secret detected; running e2e-livedit suite."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY_E2E secret not configured; skipping e2e-livedit suite. Add the secret in repo Settings → Secrets and variables → Actions to enable it on subsequent runs."
+          fi
+
   e2e-livedit:
     name: Real-AI live-edit scenario
+    needs: preflight
+    if: needs.preflight.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     # The full chat → Stage → Publish → re-edit loop runs ~5 min at
     # Sonnet 4.6 plus compose spin-up + admin build. 20 min is the
