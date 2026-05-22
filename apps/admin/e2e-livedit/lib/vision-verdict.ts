@@ -19,6 +19,8 @@
  * the parser + retry + structured-error surface from `bun test`.
  */
 
+import { z } from "zod";
+
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
 
@@ -27,14 +29,24 @@ const ANTHROPIC_API_VERSION = "2023-06-01";
 export const DEFAULT_VISION_MODEL = "claude-haiku-4-5-20251001";
 
 /**
+ * Zod schema for the verdict JSON the rubric prompt asks the model to
+ * emit. `.strict()` rejects extra fields so a model drift towards
+ * `{ ok, reason, confidence }` (or similar) surfaces immediately
+ * rather than getting silently truncated.
+ */
+const VisionVerdictSchema = z
+  .object({
+    ok: z.boolean(),
+    reason: z.string(),
+  })
+  .strict();
+
+/**
  * Final verdict returned to the scenario. `ok=true` ⇒ the scenario
  * passes the vision check; `ok=false` ⇒ the test fails with `reason`
  * surfaced in the Playwright error message.
  */
-export interface VisionVerdict {
-  readonly ok: boolean;
-  readonly reason: string;
-}
+export type VisionVerdict = z.infer<typeof VisionVerdictSchema>;
 
 export class VisionVerdictRequestError extends Error {
   readonly status: number;
@@ -58,14 +70,29 @@ export class VisionVerdictParseError extends Error {
 
 export class VisionVerdictSchemaError extends Error {
   readonly raw: unknown;
-  constructor(field: string, raw: unknown) {
-    super(
-      `Vision verdict JSON is missing or invalid field "${field}". Got: ${JSON.stringify(raw)}`,
-    );
+  readonly issues: readonly z.core.$ZodIssue[];
+  constructor(issues: readonly z.core.$ZodIssue[], raw: unknown) {
+    const summary = issues
+      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+      .join("; ");
+    super(`Vision verdict JSON failed schema validation: ${summary}. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
     this.name = "VisionVerdictSchemaError";
     this.raw = raw;
+    this.issues = issues;
   }
 }
+
+/** Zod schema for the relevant subset of Anthropic's response shape. */
+const AnthropicMessagesResponseSchema = z.object({
+  content: z
+    .array(
+      z.union([
+        z.object({ type: z.literal("text"), text: z.string() }),
+        z.object({ type: z.string() }).passthrough(), // ignore non-text blocks
+      ]),
+    )
+    .min(1),
+});
 
 /**
  * Parse a raw Anthropic `/v1/messages` response into a typed verdict.
@@ -77,26 +104,22 @@ export class VisionVerdictSchemaError extends Error {
  * object `{"ok": <bool>, "reason": "<string>"}` — but the model
  * occasionally wraps it in ```json ... ``` fences or prefixes a
  * sentence. We extract the first JSON object in the text, then
- * validate the shape strictly.
+ * validate the shape strictly via Zod.
  */
 export function parseVisionVerdict(responseJson: unknown): VisionVerdict {
-  if (!responseJson || typeof responseJson !== "object") {
-    throw new VisionVerdictSchemaError("(root)", responseJson);
+  const responseParse = AnthropicMessagesResponseSchema.safeParse(responseJson);
+  if (!responseParse.success) {
+    throw new VisionVerdictSchemaError(responseParse.error.issues, responseJson);
   }
-  const root = responseJson as { content?: unknown };
-  if (!Array.isArray(root.content)) {
-    throw new VisionVerdictSchemaError("content[]", responseJson);
-  }
-  const text = root.content
-    .filter((b): b is { type: "text"; text: string } => {
-      if (!b || typeof b !== "object") return false;
-      const block = b as { type?: unknown; text?: unknown };
-      return block.type === "text" && typeof block.text === "string";
-    })
+  const text = responseParse.data.content
+    .filter((b): b is { type: "text"; text: string } => b.type === "text" && "text" in b)
     .map((b) => b.text)
     .join("\n");
   if (text.length === 0) {
-    throw new VisionVerdictSchemaError("content[].text", responseJson);
+    throw new VisionVerdictSchemaError(
+      [{ code: "custom", path: ["content"], message: "no text blocks in Anthropic response" } as z.core.$ZodIssue],
+      responseJson,
+    );
   }
   return parseVerdictJsonText(text);
 }
@@ -119,17 +142,11 @@ export function parseVerdictJsonText(text: string): VisionVerdict {
   } catch {
     throw new VisionVerdictParseError(text);
   }
-  if (!parsed || typeof parsed !== "object") {
-    throw new VisionVerdictSchemaError("(root)", parsed);
+  const verdict = VisionVerdictSchema.safeParse(parsed);
+  if (!verdict.success) {
+    throw new VisionVerdictSchemaError(verdict.error.issues, parsed);
   }
-  const obj = parsed as { ok?: unknown; reason?: unknown };
-  if (typeof obj.ok !== "boolean") {
-    throw new VisionVerdictSchemaError("ok", parsed);
-  }
-  if (typeof obj.reason !== "string") {
-    throw new VisionVerdictSchemaError("reason", parsed);
-  }
-  return { ok: obj.ok, reason: obj.reason };
+  return verdict.data;
 }
 
 /**
