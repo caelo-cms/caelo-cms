@@ -35,7 +35,8 @@ import {
 } from "./helpers.js";
 
 const HOMEPAGE_PROMPT =
-  "Create a homepage for an AI-first CMS called Caelo. Include a hero section with a headline, " +
+  "Create a homepage for an AI-first CMS called Caelo. Include a header module with " +
+  "the Caelo brand and a simple top navigation, a hero section with a headline, " +
   "a 3-column feature grid below the hero with three features about branched edits, plugin sandbox, " +
   "and snapshot revert, and a footer module with copyright text mentioning Caelo and MPL 2.0.";
 
@@ -198,10 +199,37 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     expect(chatSessionId, "Expected the SSE tracker to capture a chat session id").not.toBeNull();
     if (!chatSessionId) throw new Error("unreachable");
 
-    // ── Step 3: Structural assertions (AC #2) ──────────────────────
-    // DB: the AI must have created a fresh page with ≥3 placements
-    // and a footer-shaped placement whose content_values JSON
-    // contains "Caelo" and "MPL 2.0" as substrings.
+    // ── Step 3: DOM assertions (chat-branch state visible in iframe) ──
+    // Chat-branch writes are visible in the preview iframe immediately
+    // (the chat session renders against its own branch). The DB-level
+    // assertions run AFTER awaitStageComplete because, per
+    // CLAUDE.md §2, chat-branch writes don't hit the main `pages` /
+    // `page_modules` tables until Stage merges them.
+    const previewFrame = page.frameLocator("iframe").first();
+    // ≥1 <h1>, not exactly 1: a hero + sub-section heading shouldn't flake
+    // the test. Asserting the first <h1> is visible covers both cases.
+    await expect(
+      previewFrame.locator("h1").first(),
+      "Expected the preview iframe to render at least one <h1>",
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      previewFrame.locator("footer").first(),
+      "Expected the preview iframe to render a <footer> element",
+    ).toBeVisible({ timeout: 30_000 });
+
+    // ── Step 4: Stage (AC #2, #7) ──────────────────────────────────
+    await awaitStageComplete(page);
+    // Stage triggers a real static-generator run AND merges the chat
+    // session's preview branch into the main DB. The DB structural
+    // assertions below now read the merged state. Browser-side
+    // navigation isn't required; the action synchronously awaits
+    // deploy.trigger.
+
+    // ── Step 5: DB structural assertions (AC #2) ───────────────────
+    // The AI must have created a fresh page with ≥4 placements
+    // (header + hero + features + footer) and a footer-shaped
+    // placement whose content_values JSON contains "Caelo" and
+    // "MPL 2.0" as substrings.
     const snapshot = snapshotMostRecentPage(startTimestamp);
     expect(
       snapshot,
@@ -210,8 +238,8 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     if (!snapshot) throw new Error("unreachable");
     expect(
       snapshot.placements.length,
-      `Expected ≥3 page_modules for ${snapshot.pageId}`,
-    ).toBeGreaterThanOrEqual(3);
+      `Expected ≥4 page_modules for ${snapshot.pageId} (header + hero + features + footer)`,
+    ).toBeGreaterThanOrEqual(4);
     expect(
       snapshot.footerContentText,
       `Expected footer module's content_values JSON to contain "Caelo". Got: ${snapshot.footerContentText.slice(0, 500)}`,
@@ -230,28 +258,7 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
       `Expected ≥1 chat_messages row with role=assistant AND tool_calls non-empty for ${chatSessionId}`,
     ).toBeGreaterThanOrEqual(1);
 
-    // DOM: assert the preview iframe rendered the page shape. The
-    // preview iframe is the chat panel's right-side rail; the test
-    // uses Playwright's frameLocator on whichever iframe is loaded.
-    const previewFrame = page.frameLocator("iframe").first();
-    // ≥1 <h1>, not exactly 1: a hero + sub-section heading shouldn't flake
-    // the test. Asserting the first <h1> is visible covers both cases.
-    await expect(
-      previewFrame.locator("h1").first(),
-      "Expected the preview iframe to render at least one <h1>",
-    ).toBeVisible({ timeout: 30_000 });
-    await expect(
-      previewFrame.locator("footer").first(),
-      "Expected the preview iframe to render a <footer> element",
-    ).toBeVisible({ timeout: 30_000 });
-
-    // ── Step 4: Stage + verify staging build (AC #2, #7) ───────────
-    await awaitStageComplete(page);
-    // Stage triggers a real static-generator run. Browser-side
-    // navigation isn't required for this assertion; the action
-    // synchronously awaits deploy.trigger.
-
-    // ── Step 5: Publish + vision verdict + regression guards ───────
+    // ── Step 6: Publish + vision verdict + regression guards ───────
     await awaitPublishComplete(page);
 
     const productionUrl = getProductionUrl();
@@ -271,17 +278,33 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     const verdict = await verifyPublishedPageWithVision(page);
     expect(verdict.ok, `Vision verdict failed: ${verdict.reason}`).toBe(true);
 
+    // Final-state screenshot of the published production view — picked
+    // up by the workflow's "Push screenshots…" step (see
+    // .github/workflows/e2e-livedit.yml) and embedded in the sticky
+    // PR comment on green runs. Path sits under the artifact-upload
+    // root (apps/admin/test-results/livedit/) so it survives in CI.
+    await page.screenshot({
+      fullPage: true,
+      path: "test-results/livedit/final-state/scenario-homepage.png",
+    });
+
     // Regression guards (AC #7).
     assertNoOrphanLocks(chatSessionId);
     assertNoChatRunnerDiagWarnings();
 
-    // ── Step 6: Re-edit the hero headline (AC #2 part 2) ───────────
+    // ── Step 7: Re-edit the hero headline (AC #2 part 2) ───────────
     const preReeditSnapshot = snapshotMostRecentPage(startTimestamp);
     expect(preReeditSnapshot, "snapshot pre-reedit").not.toBeNull();
     if (!preReeditSnapshot) throw new Error("unreachable");
 
     await page.goto("/edit");
     await sendChatPromptAndWait(page, HERO_REEDIT_PROMPT);
+
+    // Merge the re-edit chat-branch into main so the post-reedit
+    // snapshot reads the updated content_values. Publish is not
+    // required here — the assertion is pure DB shape (placement
+    // identity + updated_at advance), not a production URL check.
+    await awaitStageComplete(page);
 
     const postReeditSnapshot = snapshotMostRecentPage(startTimestamp);
     expect(postReeditSnapshot, "snapshot post-reedit").not.toBeNull();

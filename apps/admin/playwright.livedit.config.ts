@@ -58,6 +58,10 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:4173",
     trace: "retain-on-failure",
-    screenshot: "only-on-failure",
+    // Full-page on failure — the failing /edit screen has the chat
+    // panel + live-edit overlay above the fold; without `fullPage`
+    // the rendered hero/features/footer below the toolbar are clipped
+    // out of the PR comment screenshot.
+    screenshot: { mode: "only-on-failure", fullPage: true },
   },
 });

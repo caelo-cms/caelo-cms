@@ -183,13 +183,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # Push the latest-attempt screenshot(s) to a long-lived orphan
-      # branch so the PR comment can embed them inline. We use the
-      # Playwright `playwright-report/data/*.png` outputs because the
-      # HTML reporter de-duplicates per-test attempts and gives us
-      # stable hashed filenames (one PNG per failing attempt). Runs
-      # always() so a successful run posts a "no failures" comment
-      # (overwrites the prior sticky comment with green status).
+      # Push screenshots to a long-lived orphan branch so the PR
+      # comment can embed them inline via raw.githubusercontent.com.
+      # Collects shots from two sources:
+      #   - playwright-report/data/*.png — Playwright's failure
+      #     screenshots (one per failing attempt, hashed filename).
+      #   - final-state/*.png — explicit page.screenshot() calls
+      #     scenarios make at end-of-test, embedded on passing runs.
+      # Runs always() so green runs replace the prior sticky comment
+      # with their final-state shot.
       - name: Push screenshots to side branch and post PR comment
         if: always() && github.event_name == 'pull_request'
         env:
@@ -200,18 +202,23 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
 
-          SHOT_DIR="apps/admin/test-results/livedit/playwright-report/data"
+          FAIL_DIR="apps/admin/test-results/livedit/playwright-report/data"
+          FINAL_DIR="apps/admin/test-results/livedit/final-state"
           BRANCH="screenshots/e2e-livedit"
           DEST_REL="pr-${PR_NUMBER}/run-${RUN_ID}"
 
-          # On success we still post a sticky comment, but with no
-          # screenshots — Playwright doesn't emit failure screenshots
-          # for passing runs. Skip the branch push in that case.
-          if [ ! -d "$SHOT_DIR" ] || [ -z "$(find "$SHOT_DIR" -name '*.png' -print -quit 2>/dev/null)" ]; then
-            COMMENT_BODY=$(printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\nNo failure screenshots were produced.' \
-              "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS")
-            echo "$COMMENT_BODY" > /tmp/e2e-livedit-comment.md
+          FAIL_SHOTS=("${GITHUB_WORKSPACE}/${FAIL_DIR}"/*.png)
+          FINAL_SHOTS=("${GITHUB_WORKSPACE}/${FINAL_DIR}"/*.png)
+
+          # Defensive fallback — only fires if both dirs are empty
+          # (e.g. the test step never ran). Healthy passing runs always
+          # emit a final-state shot; healthy failing runs emit attempt
+          # shots; both populate at least one of the two dirs.
+          if [ ${#FAIL_SHOTS[@]} -eq 0 ] && [ ${#FINAL_SHOTS[@]} -eq 0 ]; then
+            printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\nNo screenshots were produced.\n' \
+              "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS" > /tmp/e2e-livedit-comment.md
             gh pr comment "$PR_NUMBER" --edit-last --create-if-none --body-file /tmp/e2e-livedit-comment.md
             exit 0
           fi
@@ -226,35 +233,52 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
 
-          # Fetch the branch if it exists; create orphan otherwise.
           if git fetch -q origin "$BRANCH" 2>/dev/null; then
             git checkout -q "$BRANCH"
           else
             git checkout -q --orphan "$BRANCH"
             git rm -rfq . 2>/dev/null || true
-            printf 'e2e-livedit failure screenshots — see workflow .github/workflows/e2e-livedit.yml for layout.\n' > README.md
+            printf 'e2e-livedit screenshots — see workflow .github/workflows/e2e-livedit.yml for layout.\n' > README.md
             git add README.md
             git commit -qm "Initialize e2e-livedit screenshots branch"
           fi
 
-          mkdir -p "$DEST_REL"
-          cp "${GITHUB_WORKSPACE}/${SHOT_DIR}"/*.png "$DEST_REL/"
+          mkdir -p "${DEST_REL}/failure" "${DEST_REL}/final-state"
+          for src in "${FAIL_SHOTS[@]}"; do
+            cp "$src" "${DEST_REL}/failure/"
+          done
+          for src in "${FINAL_SHOTS[@]}"; do
+            cp "$src" "${DEST_REL}/final-state/"
+          done
           git add "$DEST_REL"
           git commit -qm "e2e-livedit: PR #${PR_NUMBER} run ${RUN_ID} screenshots"
           git push -q origin "$BRANCH"
 
-          # Build the comment with embedded images.
           {
             printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\n' \
               "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS"
-            printf 'Playwright failure screenshots from this run (commit `%s`):\n\n' "${GITHUB_SHA::7}"
-            i=1
-            for png in "$DEST_REL"/*.png; do
-              name=$(basename "$png")
-              url="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${png}"
-              printf '### Attempt %d\n\n![%s](%s)\n\n' "$i" "$name" "$url"
-              i=$((i + 1))
-            done
+            printf 'Screenshots from this run (commit `%s`):\n\n' "${GITHUB_SHA::7}"
+
+            if [ ${#FINAL_SHOTS[@]} -gt 0 ]; then
+              printf '### Final state after publish\n\n'
+              for src in "${FINAL_SHOTS[@]}"; do
+                name=$(basename "$src")
+                url="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${DEST_REL}/final-state/${name}"
+                printf '![%s](%s)\n\n' "$name" "$url"
+              done
+            fi
+
+            if [ ${#FAIL_SHOTS[@]} -gt 0 ]; then
+              printf '### Failure attempts\n\n'
+              i=1
+              for src in "${FAIL_SHOTS[@]}"; do
+                name=$(basename "$src")
+                url="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${DEST_REL}/failure/${name}"
+                printf '**Attempt %d:**\n\n![%s](%s)\n\n' "$i" "$name" "$url"
+                i=$((i + 1))
+              done
+            fi
+
             printf '_Auto-posted by `.github/workflows/e2e-livedit.yml`. The full Playwright HTML report + admin.log + DB dump are in the run’s artifact bundle._\n'
           } > /tmp/e2e-livedit-comment.md
 
