@@ -22,7 +22,8 @@
     "db:migrate": "bun run packages/migrations/src/migrate.ts admin && bun run packages/migrations/src/migrate.ts public",
     "plugins:sign": "bun run apps/admin/scripts/sign-tier1-manifest.ts",
     "rulesets:apply": "bun run scripts/apply-rulesets.ts",
-    "rulesets:check": "bun run scripts/apply-rulesets.ts --check"
+    "rulesets:check": "bun run scripts/apply-rulesets.ts --check",
+    "e2e-livedit": "bun run --filter '@caelo-cms/admin' e2e-livedit"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.13",

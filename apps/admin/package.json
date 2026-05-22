@@ -11,7 +11,8 @@
     "build": "svelte-kit sync && bun --bun vite build",
     "preview": "bun --bun vite preview",
     "seed:dev": "bun --env-file=../../.env run scripts/seed-dev-owner.ts",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e-livedit": "svelte-kit sync && bun --bun vite build && playwright test --config playwright.livedit.config.ts"
   },
   "dependencies": {
     "@caelo-cms/admin-core": "workspace:*",
