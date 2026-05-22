@@ -45,6 +45,12 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 2,
+  // Playwright per-test artifact dir — kept SIBLING (not parent) of
+  // the HTML reporter dir below so Playwright's "HTML reporter output
+  // folder clashes with tests output folder" guard doesn't fire.
+  // global-setup writes admin.log under `test-results/livedit/` which
+  // is also a sibling.
+  outputDir: "test-results/livedit-tests",
   reporter: [
     ["list"],
     ["html", { outputFolder: "test-results/livedit/playwright-report", open: "never" }],

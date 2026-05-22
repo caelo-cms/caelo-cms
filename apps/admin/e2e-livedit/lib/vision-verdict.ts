@@ -72,10 +72,10 @@ export class VisionVerdictSchemaError extends Error {
   readonly raw: unknown;
   readonly issues: readonly z.core.$ZodIssue[];
   constructor(issues: readonly z.core.$ZodIssue[], raw: unknown) {
-    const summary = issues
-      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-      .join("; ");
-    super(`Vision verdict JSON failed schema validation: ${summary}. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
+    const summary = issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+    super(
+      `Vision verdict JSON failed schema validation: ${summary}. Raw: ${JSON.stringify(raw).slice(0, 500)}`,
+    );
     this.name = "VisionVerdictSchemaError";
     this.raw = raw;
     this.issues = issues;
@@ -117,7 +117,13 @@ export function parseVisionVerdict(responseJson: unknown): VisionVerdict {
     .join("\n");
   if (text.length === 0) {
     throw new VisionVerdictSchemaError(
-      [{ code: "custom", path: ["content"], message: "no text blocks in Anthropic response" } as z.core.$ZodIssue],
+      [
+        {
+          code: "custom",
+          path: ["content"],
+          message: "no text blocks in Anthropic response",
+        } as z.core.$ZodIssue,
+      ],
       responseJson,
     );
   }

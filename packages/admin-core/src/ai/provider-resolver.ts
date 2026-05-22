@@ -137,10 +137,16 @@ function readTemperatureOverride(name: ProviderName): number | undefined {
 function warnOnProductionEnvHookLeak(): void {
   if (process.env.NODE_ENV !== "production") return;
   const leaked: string[] = [];
-  if (typeof process.env.CAELO_CHAT_MODEL_OVERRIDE === "string" && process.env.CAELO_CHAT_MODEL_OVERRIDE.length > 0) {
+  if (
+    typeof process.env.CAELO_CHAT_MODEL_OVERRIDE === "string" &&
+    process.env.CAELO_CHAT_MODEL_OVERRIDE.length > 0
+  ) {
     leaked.push("CAELO_CHAT_MODEL_OVERRIDE");
   }
-  if (typeof process.env.CAELO_CHAT_TEMPERATURE === "string" && process.env.CAELO_CHAT_TEMPERATURE.length > 0) {
+  if (
+    typeof process.env.CAELO_CHAT_TEMPERATURE === "string" &&
+    process.env.CAELO_CHAT_TEMPERATURE.length > 0
+  ) {
     leaked.push("CAELO_CHAT_TEMPERATURE");
   }
   if (leaked.length > 0) {
