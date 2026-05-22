@@ -9,14 +9,10 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Page, Response } from "@playwright/test";
 import { expect } from "@playwright/test";
+import { ADMIN_LOG_PATH } from "./global-setup.js";
 import { fetchVisionVerdict, type VisionVerdict } from "./lib/vision-verdict.js";
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const ADMIN_LOG_PATH = resolve(HERE, "test-results/livedit/admin.log");
 
 // Re-export for spec convenience (parallel to apps/admin/e2e/helpers.ts).
 export const DEV_OWNER_EMAIL = "dev-owner@example.com";
