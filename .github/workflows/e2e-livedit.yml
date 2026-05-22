@@ -65,7 +65,15 @@ jobs:
     # ceiling so a stuck job fails clearly instead of burning CI hours.
     timeout-minutes: 20
     permissions:
-      contents: read
+      # `contents: write` is required for the "Push screenshots…" step
+      # below — it pushes failure screenshots to the `screenshots/
+      # e2e-livedit` orphan branch so the PR comment can embed them
+      # via raw.githubusercontent.com. Fork PRs get a read-only token
+      # regardless of this block (and the test is skipped on forks
+      # anyway because the secret isn't injected into fork contexts),
+      # so the write privilege is scoped to same-repo branches only.
+      contents: write
+      pull-requests: write
 
     env:
       # Compose isolation — the existing `e2e` job in ci.yml may run
@@ -174,6 +182,84 @@ jobs:
             apps/admin/test-results/livedit/
           if-no-files-found: warn
           retention-days: 14
+
+      # Push the latest-attempt screenshot(s) to a long-lived orphan
+      # branch so the PR comment can embed them inline. We use the
+      # Playwright `playwright-report/data/*.png` outputs because the
+      # HTML reporter de-duplicates per-test attempts and gives us
+      # stable hashed filenames (one PNG per failing attempt). Runs
+      # always() so a successful run posts a "no failures" comment
+      # (overwrites the prior sticky comment with green status).
+      - name: Push screenshots to side branch and post PR comment
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+
+          SHOT_DIR="apps/admin/test-results/livedit/playwright-report/data"
+          BRANCH="screenshots/e2e-livedit"
+          DEST_REL="pr-${PR_NUMBER}/run-${RUN_ID}"
+
+          # On success we still post a sticky comment, but with no
+          # screenshots — Playwright doesn't emit failure screenshots
+          # for passing runs. Skip the branch push in that case.
+          if [ ! -d "$SHOT_DIR" ] || [ -z "$(find "$SHOT_DIR" -name '*.png' -print -quit 2>/dev/null)" ]; then
+            COMMENT_BODY=$(printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\nNo failure screenshots were produced.' \
+              "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS")
+            echo "$COMMENT_BODY" > /tmp/e2e-livedit-comment.md
+            gh pr comment "$PR_NUMBER" --edit-last --create-if-none --body-file /tmp/e2e-livedit-comment.md
+            exit 0
+          fi
+
+          # Push screenshots to the orphan branch. Clone-fresh into a
+          # tmp dir so we don't disturb the runner's working tree.
+          mkdir -p /tmp/screenshots-wt
+          cd /tmp/screenshots-wt
+
+          git init -q
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+          # Fetch the branch if it exists; create orphan otherwise.
+          if git fetch -q origin "$BRANCH" 2>/dev/null; then
+            git checkout -q "$BRANCH"
+          else
+            git checkout -q --orphan "$BRANCH"
+            git rm -rfq . 2>/dev/null || true
+            printf 'e2e-livedit failure screenshots — see workflow .github/workflows/e2e-livedit.yml for layout.\n' > README.md
+            git add README.md
+            git commit -qm "Initialize e2e-livedit screenshots branch"
+          fi
+
+          mkdir -p "$DEST_REL"
+          cp "${GITHUB_WORKSPACE}/${SHOT_DIR}"/*.png "$DEST_REL/"
+          git add "$DEST_REL"
+          git commit -qm "e2e-livedit: PR #${PR_NUMBER} run ${RUN_ID} screenshots"
+          git push -q origin "$BRANCH"
+
+          # Build the comment with embedded images.
+          {
+            printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\n' \
+              "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS"
+            printf 'Playwright failure screenshots from this run (commit `%s`):\n\n' "${GITHUB_SHA::7}"
+            i=1
+            for png in "$DEST_REL"/*.png; do
+              name=$(basename "$png")
+              url="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${png}"
+              printf '### Attempt %d\n\n![%s](%s)\n\n' "$i" "$name" "$url"
+              i=$((i + 1))
+            done
+            printf '_Auto-posted by `.github/workflows/e2e-livedit.yml`. The full Playwright HTML report + admin.log + DB dump are in the run’s artifact bundle._\n'
+          } > /tmp/e2e-livedit-comment.md
+
+          cd "$GITHUB_WORKSPACE"
+          gh pr comment "$PR_NUMBER" --edit-last --create-if-none --body-file /tmp/e2e-livedit-comment.md
 
       - name: Teardown compose
         if: always()
