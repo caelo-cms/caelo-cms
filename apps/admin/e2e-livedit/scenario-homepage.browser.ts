@@ -235,7 +235,14 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // ── Step 6: Publish + vision verdict + regression guards ───────
     await awaitPublishComplete(page);
 
-    const productionUrl = getProductionUrl();
+    // The AI picks the slug; `getProductionUrl()` returns just the
+    // origin (http://localhost:8082 in CI). Compose the URL from the
+    // snapshot's slug so we fetch the page the AI actually published,
+    // not the root which is 404 unless the AI happened to pick the
+    // empty-slug home. Strip leading slashes the AI sometimes adds.
+    const productionOrigin = getProductionUrl().replace(/\/+$/, "");
+    const slugPath = snapshot.slug.replace(/^\/+/, "");
+    const productionUrl = slugPath ? `${productionOrigin}/${slugPath}` : productionOrigin;
     const productionResponse = await page.request.get(productionUrl);
     expect(productionResponse.status(), `GET ${productionUrl}`).toBeGreaterThanOrEqual(200);
     expect(productionResponse.status(), `GET ${productionUrl}`).toBeLessThan(400);
