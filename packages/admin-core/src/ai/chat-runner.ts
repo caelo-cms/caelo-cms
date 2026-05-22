@@ -135,6 +135,15 @@ export interface ChatRunnerOptions {
    * operator hasn't tuned it.
    */
   readonly maxOutputTokens?: number;
+  /**
+   * Per-turn sampling temperature. SSE handler reads this from
+   * `getActiveProvider().temperature` (currently sourced from the
+   * test-only `CAELO_CHAT_TEMPERATURE` env hook in provider-resolver).
+   * Undefined ⇒ provider default (Anthropic ≈ 1.0). The
+   * e2e-livedit suite pins `0` for determinism; production callers
+   * pass nothing and behaviour is unchanged.
+   */
+  readonly temperature?: number;
 }
 
 const DEFAULT_INPUT_COST_PER_M = 15; // Opus 4.7 input rate, USD per 1M tokens
@@ -1166,6 +1175,7 @@ export async function* runChatTurn(
       tools: filteredTools,
       abortSignal,
       maxTokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS_DEFAULT,
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
       ...(thinkingBudget !== null ? { thinking: { budgetTokens: thinkingBudget } } : {}),
     })) {
       if (aborted()) break;
