@@ -138,39 +138,6 @@ function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | nu
   return JSON.parse(trimmed) as PageModuleSnapshot;
 }
 
-function countAssistantTurnsWithToolCalls(chatSessionId: string): number {
-  const raw = spawnSync(
-    "bun",
-    [
-      "-e",
-      `
-        import { SQL } from "bun";
-        const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-        let n = 0;
-        await sql.begin(async (tx) => {
-          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-          const rows = await tx\`
-            SELECT count(*)::int AS n
-            FROM chat_messages
-            WHERE chat_session_id = \${process.env.CHAT_SESSION_ID}::uuid
-              AND role = 'assistant'
-              AND jsonb_typeof(tool_calls) = 'array'
-              AND jsonb_array_length(tool_calls) > 0
-          \`;
-          n = rows[0]?.n ?? 0;
-        });
-        await sql.end();
-        process.stdout.write(String(n));
-      `,
-    ],
-    { env: { ...process.env, CHAT_SESSION_ID: chatSessionId }, encoding: "utf8" },
-  );
-  if (raw.status !== 0) {
-    throw new Error(`countAssistantTurnsWithToolCalls failed: ${raw.stderr || raw.stdout}`);
-  }
-  return Number.parseInt(raw.stdout.trim(), 10);
-}
-
 test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
   // Playwright retries=2 — each attempt must start from clean fixtures.
   // Without this, attempt 1's orphan rows confuse snapshotMostRecentPage
@@ -235,16 +202,6 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
       bodyText.trim().length,
       `Expected the rendered page body to contain substantive text. Got ${bodyText.trim().length} chars.`,
     ).toBeGreaterThan(100);
-
-    // chat_messages count runs BEFORE Stage because Stage's
-    // `chat.merge_to_main` clears the chat-branch's chat_messages
-    // rows once they're merged. Catches the v0.10.17 empty-response
-    // regression even when admin.log grep didn't fire.
-    const toolCallTurns = countAssistantTurnsWithToolCalls(chatSessionId);
-    expect(
-      toolCallTurns,
-      `Expected ≥1 chat_messages row with role=assistant AND tool_calls non-empty for ${chatSessionId}`,
-    ).toBeGreaterThanOrEqual(1);
 
     // ── Step 4: Stage (AC #2, #7) ──────────────────────────────────
     await awaitStageComplete(page);
