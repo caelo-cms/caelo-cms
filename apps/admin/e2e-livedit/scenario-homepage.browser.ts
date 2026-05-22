@@ -236,6 +236,16 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
       `Expected the rendered page body to contain substantive text. Got ${bodyText.trim().length} chars.`,
     ).toBeGreaterThan(100);
 
+    // chat_messages count runs BEFORE Stage because Stage's
+    // `chat.merge_to_main` clears the chat-branch's chat_messages
+    // rows once they're merged. Catches the v0.10.17 empty-response
+    // regression even when admin.log grep didn't fire.
+    const toolCallTurns = countAssistantTurnsWithToolCalls(chatSessionId);
+    expect(
+      toolCallTurns,
+      `Expected ≥1 chat_messages row with role=assistant AND tool_calls non-empty for ${chatSessionId}`,
+    ).toBeGreaterThanOrEqual(1);
+
     // ── Step 4: Stage (AC #2, #7) ──────────────────────────────────
     await awaitStageComplete(page);
     // Stage triggers a real static-generator run AND merges the chat
@@ -264,15 +274,6 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
       snapshot.placements.length,
       `Expected ≥2 page_modules for ${snapshot.pageId}`,
     ).toBeGreaterThanOrEqual(2);
-
-    // The runner must have produced at least one assistant turn with
-    // tool calls — guards against the empty-response class even
-    // when log-grep didn't fire.
-    const toolCallTurns = countAssistantTurnsWithToolCalls(chatSessionId);
-    expect(
-      toolCallTurns,
-      `Expected ≥1 chat_messages row with role=assistant AND tool_calls non-empty for ${chatSessionId}`,
-    ).toBeGreaterThanOrEqual(1);
 
     // ── Step 6: Publish + vision verdict + regression guards ───────
     await awaitPublishComplete(page);
