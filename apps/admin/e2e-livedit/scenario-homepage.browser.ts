@@ -29,6 +29,7 @@ import {
   awaitStageComplete,
   getProductionUrl,
   loginAsDevOwner,
+  resetLiveditFixtures,
   sendChatPromptAndWait,
   verifyPublishedPageWithVision,
 } from "./helpers.js";
@@ -170,6 +171,13 @@ function countAssistantTurnsWithToolCalls(chatSessionId: string): number {
 }
 
 test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
+  // Playwright retries=2 — each attempt must start from clean fixtures.
+  // Without this, attempt 1's orphan rows confuse snapshotMostRecentPage
+  // on attempt 2 (per plan §6 open question 4).
+  test.beforeEach(() => {
+    resetLiveditFixtures();
+  });
+
   test("AI creates a homepage, stages, publishes, re-edits hero — vision verdict + regression guards", async ({
     page,
   }) => {

@@ -35,6 +35,39 @@ function runBunInline(script: string, extraEnv: Record<string, string> = {}): st
 }
 
 /**
+ * Truncate the fixtures the real-AI scenarios create so Playwright's
+ * `retries: 2` doesn't trip over orphan rows from a prior attempt.
+ *
+ * Deletes (system context, in one tx):
+ *   - chat_entity_locks  — orphan-lock test would see stale rows
+ *   - chat_tool_results  — child of chat_messages
+ *   - chat_messages      — assistant turn count would over-report
+ *   - chat_sessions      — the per-page chat the AI ran
+ *   - pages              — CASCADE drops page_modules + page_module_content
+ *   - chat_branch_publish_marks (FK to chat_sessions)
+ *
+ * Safe because the e2e seed (apps/admin/e2e/_seed.ts) does not insert
+ * any of these — only users/roles/ai_providers. Each test starts from
+ * a known empty content/chat state.
+ */
+export function resetLiveditFixtures(): void {
+  runBunInline(`
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx\`DELETE FROM chat_entity_locks\`;
+      await tx\`DELETE FROM chat_tool_results\`;
+      await tx\`DELETE FROM chat_branch_publish_marks\`;
+      await tx\`DELETE FROM chat_messages\`;
+      await tx\`DELETE FROM chat_sessions\`;
+      await tx\`DELETE FROM pages\`;
+    });
+    await sql.end();
+  `);
+}
+
+/**
  * Logs into the admin as dev-owner via the form on `/login`. Leaves
  * the page on whichever route the post-login redirect lands on.
  */
