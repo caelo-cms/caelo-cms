@@ -239,10 +239,13 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // origin (http://localhost:8082 in CI). Compose the URL from the
     // snapshot's slug so we fetch the page the AI actually published,
     // not the root which is 404 unless the AI happened to pick the
-    // empty-slug home. Strip leading slashes the AI sometimes adds.
+    // empty-slug home. Trailing slash is mandatory — the static-gen
+    // writes `<slug>/index.html` and Caddy resolves that file only
+    // when the request path ends in `/`. Strip leading slashes the
+    // AI sometimes adds to the slug.
     const productionOrigin = getProductionUrl().replace(/\/+$/, "");
     const slugPath = snapshot.slug.replace(/^\/+/, "");
-    const productionUrl = slugPath ? `${productionOrigin}/${slugPath}` : productionOrigin;
+    const productionUrl = slugPath ? `${productionOrigin}/${slugPath}/` : `${productionOrigin}/`;
     const productionResponse = await page.request.get(productionUrl);
     expect(productionResponse.status(), `GET ${productionUrl}`).toBeGreaterThanOrEqual(200);
     expect(productionResponse.status(), `GET ${productionUrl}`).toBeLessThan(400);
