@@ -40,9 +40,7 @@ export class VisionVerdictRequestError extends Error {
   readonly status: number;
   readonly bodyExcerpt: string;
   constructor(status: number, bodyExcerpt: string) {
-    super(
-      `Anthropic vision API returned ${status}. Body (first 500 chars): ${bodyExcerpt}`,
-    );
+    super(`Anthropic vision API returned ${status}. Body (first 500 chars): ${bodyExcerpt}`);
     this.name = "VisionVerdictRequestError";
     this.status = status;
     this.bodyExcerpt = bodyExcerpt;
@@ -52,9 +50,7 @@ export class VisionVerdictRequestError extends Error {
 export class VisionVerdictParseError extends Error {
   readonly raw: string;
   constructor(raw: string) {
-    super(
-      `Vision verdict could not be parsed as JSON: ${raw.slice(0, 500)}`,
-    );
+    super(`Vision verdict could not be parsed as JSON: ${raw.slice(0, 500)}`);
     this.name = "VisionVerdictParseError";
     this.raw = raw;
   }

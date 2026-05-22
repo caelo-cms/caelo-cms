@@ -13,10 +13,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page, Response } from "@playwright/test";
 import { expect } from "@playwright/test";
-import {
-  type VisionVerdict,
-  fetchVisionVerdict,
-} from "./lib/vision-verdict.js";
+import { fetchVisionVerdict, type VisionVerdict } from "./lib/vision-verdict.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ADMIN_LOG_PATH = resolve(HERE, "test-results/livedit/admin.log");
@@ -65,11 +62,9 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
 export async function waitForChatTurnIdle(page: Page, timeoutMs = 240_000): Promise<void> {
   // The status element is `hidden`; assert against the attribute, not
   // visibility.
-  await expect(page.getByTestId("chat-turn-status")).toHaveAttribute(
-    "data-turn-state",
-    "idle",
-    { timeout: timeoutMs },
-  );
+  await expect(page.getByTestId("chat-turn-status")).toHaveAttribute("data-turn-state", "idle", {
+    timeout: timeoutMs,
+  });
 }
 
 /**
@@ -85,11 +80,9 @@ export async function sendChatPromptAndWait(page: Page, prompt: string): Promise
   // the turn has started; otherwise a fast first-event arrival can
   // make us think the turn is already idle.
   await Promise.all([
-    expect(page.getByTestId("chat-turn-status")).toHaveAttribute(
-      "data-turn-state",
-      "streaming",
-      { timeout: 30_000 },
-    ),
+    expect(page.getByTestId("chat-turn-status")).toHaveAttribute("data-turn-state", "streaming", {
+      timeout: 30_000,
+    }),
     page.getByTestId("chat-send").click(),
   ]);
   await waitForChatTurnIdle(page);

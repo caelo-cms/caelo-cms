@@ -23,8 +23,8 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadEnvFile, runBun, SETUP_SCRIPT } from "../e2e/_seed.js";
 import { E2E_LIVEDIT_MODEL } from "../playwright.livedit.config.js";
-import { SETUP_SCRIPT, loadEnvFile, runBun } from "../e2e/_seed.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ADMIN_ROOT = resolve(HERE, "..");

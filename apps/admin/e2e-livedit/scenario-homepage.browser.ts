@@ -40,21 +40,6 @@ const HOMEPAGE_PROMPT =
 
 const HERO_REEDIT_PROMPT = "Change the hero headline.";
 
-/**
- * Wraps a Bun subprocess query so the spec can read structured
- * results out of stdout as JSON.
- */
-function bunQueryJson<T>(script: string, env: Record<string, string> = {}): T {
-  const result = spawnSync("bun", ["-e", script], {
-    env: { ...process.env, ...env },
-    encoding: "utf8",
-  });
-  if (result.status !== 0) {
-    throw new Error(`bunQueryJson failed (status ${result.status}): ${result.stderr || result.stdout}`);
-  }
-  return JSON.parse(result.stdout) as T;
-}
-
 interface PageModuleSnapshot {
   readonly pageId: string;
   readonly title: string;
@@ -215,7 +200,10 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
       "Expected the AI to create a page via add_page tool calls — no pages.updated_at > scenario start. Likely a v0.10.17-class empty-response regression.",
     ).not.toBeNull();
     if (!snapshot) throw new Error("unreachable");
-    expect(snapshot.placements.length, `Expected ≥3 page_modules for ${snapshot.pageId}`).toBeGreaterThanOrEqual(3);
+    expect(
+      snapshot.placements.length,
+      `Expected ≥3 page_modules for ${snapshot.pageId}`,
+    ).toBeGreaterThanOrEqual(3);
     expect(
       snapshot.footerContentText,
       `Expected footer module's content_values JSON to contain "Caelo". Got: ${snapshot.footerContentText.slice(0, 500)}`,
@@ -261,7 +249,9 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     expect(productionResponse.status(), `GET ${productionUrl}`).toBeGreaterThanOrEqual(200);
     expect(productionResponse.status(), `GET ${productionUrl}`).toBeLessThan(400);
     const productionBody = await productionResponse.text();
-    expect(productionBody, `Production HTML at ${productionUrl} missing "Caelo"`).toContain("Caelo");
+    expect(productionBody, `Production HTML at ${productionUrl} missing "Caelo"`).toContain(
+      "Caelo",
+    );
     expect(productionBody, `Production HTML at ${productionUrl} missing "MPL 2.0"`).toContain(
       "MPL 2.0",
     );
@@ -309,7 +299,8 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
       };
     });
     const changed = updatedAtPairs.filter(
-      (p) => p.preUpdatedAt !== null && p.postUpdatedAt !== null && p.postUpdatedAt > p.preUpdatedAt,
+      (p) =>
+        p.preUpdatedAt !== null && p.postUpdatedAt !== null && p.postUpdatedAt > p.preUpdatedAt,
     );
     expect(
       changed.length,

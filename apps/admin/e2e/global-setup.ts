@@ -14,7 +14,7 @@
  * dev-owner seed.
  */
 
-import { SETUP_SCRIPT, loadEnvFile, runBun } from "./_seed.js";
+import { loadEnvFile, runBun, SETUP_SCRIPT } from "./_seed.js";
 
 export default async function globalSetup(): Promise<void> {
   loadEnvFile();
