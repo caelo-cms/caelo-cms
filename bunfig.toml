@@ -21,3 +21,17 @@
 # pin in `apps/admin/package.json` engines + ci.yml setup-bun makes
 # that upgrade reviewable.
 linker = "hoisted"
+
+[test]
+# Run a per-file Postgres reset (TRUNCATE non-seed tables) before every
+# integration test file, and bump Bun's default hook/test timeout from
+# 5s to 30s. The reset prevents cross-file state pollution that was
+# producing intermittent flakes in chat / locales / rate-limit
+# integration tests as the suite progressed. See scripts/test-preload.ts
+# for the full rationale + the curated PRESERVE allowlist.
+#
+# Paired with `bun test --isolate` in package.json's `test` script —
+# `--isolate` gives every file a fresh global, which re-runs the
+# preload's `beforeAll` registration, so the reset fires per file.
+preload = ["./scripts/test-preload.ts"]
+timeout = 30000
