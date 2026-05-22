@@ -122,6 +122,35 @@ function readTemperatureOverride(name: ProviderName): number | undefined {
   return parsed;
 }
 
+/**
+ * One-shot boot-time warning: if production has been deployed with the
+ * test-only env hooks still set in its environment (env-file copy from
+ * a test env, leftover container env, etc.), the hooks are silently
+ * ignored — but the operator likely thinks they configured something.
+ * Surface it loudly per CLAUDE.md §2 so the misconfiguration shows up
+ * in production logs at boot instead of being invisible.
+ *
+ * Module-level so it runs exactly once at admin bootstrap. No effect
+ * outside production: the test environment expects these vars to be
+ * honoured and shouldn't see the warn.
+ */
+function warnOnProductionEnvHookLeak(): void {
+  if (process.env.NODE_ENV !== "production") return;
+  const leaked: string[] = [];
+  if (typeof process.env.CAELO_CHAT_MODEL_OVERRIDE === "string" && process.env.CAELO_CHAT_MODEL_OVERRIDE.length > 0) {
+    leaked.push("CAELO_CHAT_MODEL_OVERRIDE");
+  }
+  if (typeof process.env.CAELO_CHAT_TEMPERATURE === "string" && process.env.CAELO_CHAT_TEMPERATURE.length > 0) {
+    leaked.push("CAELO_CHAT_TEMPERATURE");
+  }
+  if (leaked.length > 0) {
+    console.warn(
+      `[provider-resolver] test-only env hook(s) set under NODE_ENV=production: ${leaked.join(", ")}. These are IGNORED in production by design; unset them in this environment to silence this warning.`,
+    );
+  }
+}
+warnOnProductionEnvHookLeak();
+
 interface CacheEntry {
   readonly resolved: ResolvedProvider;
   /** Wall-clock ms when this entry expires. */
