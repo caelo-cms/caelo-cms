@@ -1566,12 +1566,24 @@
           }}
           ondrop={(e) => void onComposerDrop(e)}
         >
+          <!-- e2e-livedit hook (issue #47). Always-present element whose
+               data-turn-state attribute flips between "streaming" and
+               "idle" so real-AI Playwright specs can wait on the AI
+               turn deterministically without scraping copy. Two states
+               are sufficient; the test only waits for "idle". -->
+          <span
+            hidden
+            aria-hidden="true"
+            data-testid="chat-turn-status"
+            data-turn-state={streaming ? "streaming" : "idle"}
+          ></span>
           <Textarea
             bind:value={composer}
             bind:ref={composerEl}
             rows={1}
             placeholder="Tell the AI what to change… (try / for shortcuts, @ for module references)"
             class={cn("resize-none", dragOver && "border-primary ring-2 ring-primary/30")}
+            data-testid="chat-composer"
             oninput={() => {
               autoSizeComposer();
               detectMention();
@@ -1690,6 +1702,7 @@
               type="submit"
               size="sm"
               disabled={streaming || composer.trim().length === 0}
+              data-testid="chat-send"
             >
               {streaming ? "…" : "Send"}
             </Button>
