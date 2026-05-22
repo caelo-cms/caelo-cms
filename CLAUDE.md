@@ -93,6 +93,7 @@ These cannot be violated by any change, AI-generated or human:
 - **Tests run under `bun test`** — Bun's native test runner. Import `describe` / `it` / `expect` / etc. from `bun:test`. Do not add Vitest (or Jest) back — we deliberately standardised on Bun to cut the dep tree and match contributor instinct. Coverage: `bun test --coverage`.
 - **No mocked PostgreSQL for Query API tests** — run against a real Postgres in the compose stack. Mocks diverge from prod; we've committed to two real databases, tests exercise both.
 - **Playwright runs against the real compose stack**, not a dev server in isolation. Every phase adding a screen adds a Playwright flow.
+- **Real-AI Playwright suite (issue #47):** `apps/admin/e2e-livedit/` drives the chat through the live Anthropic API to catch the regression classes the mock-AI suite cannot (v0.10.17 empty response, v0.10.19 orphan locks, v0.10.20 schema drift, v0.10.21 missing primers). See [`docs/internal/e2e-livedit.md`](./docs/internal/e2e-livedit.md) for local setup, the assertion-class → regression-class table, the add-a-scenario template, and the 10× determinism recipe.
 - **Plugin sandbox tests include adversarial cases** — attempts to escape the sandbox must be in the test suite and must fail.
 - **Skill behaviour tests:** each base skill has a fixture-driven integration test verifying the skill's output shape (tool calls made, fields populated) against a recorded AI response; also a live test (gated, opt-in, not in PR CI) against the real provider.
 
