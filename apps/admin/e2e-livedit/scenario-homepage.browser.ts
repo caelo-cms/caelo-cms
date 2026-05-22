@@ -234,12 +234,14 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // preview iframe is the chat panel's right-side rail; the test
     // uses Playwright's frameLocator on whichever iframe is loaded.
     const previewFrame = page.frameLocator("iframe").first();
+    // ≥1 <h1>, not exactly 1: a hero + sub-section heading shouldn't flake
+    // the test. Asserting the first <h1> is visible covers both cases.
     await expect(
-      previewFrame.locator("h1"),
+      previewFrame.locator("h1").first(),
       "Expected the preview iframe to render at least one <h1>",
-    ).toHaveCount(1, { timeout: 30_000 });
+    ).toBeVisible({ timeout: 30_000 });
     await expect(
-      previewFrame.locator("footer"),
+      previewFrame.locator("footer").first(),
       "Expected the preview iframe to render a <footer> element",
     ).toBeVisible({ timeout: 30_000 });
 

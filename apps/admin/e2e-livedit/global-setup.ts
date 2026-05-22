@@ -85,7 +85,7 @@ export default async function globalSetup(): Promise<void> {
   if (!apiKey || apiKey.trim().length === 0) {
     throw new Error(
       "e2e-livedit: ANTHROPIC_API_KEY_E2E is not set.\n" +
-        "  • Local: add it to apps/admin/.env.test or the repo-root .env.test\n" +
+        "  • Local: add it to the repo-root .env.test file (gitignored)\n" +
         "  • CI: configure the ANTHROPIC_API_KEY_E2E GitHub Actions secret\n" +
         "This suite drives the real Anthropic API; no key, no run.",
     );

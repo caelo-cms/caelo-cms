@@ -70,8 +70,8 @@ export class VisionVerdictParseError extends Error {
 
 export class VisionVerdictSchemaError extends Error {
   readonly raw: unknown;
-  readonly issues: readonly z.core.$ZodIssue[];
-  constructor(issues: readonly z.core.$ZodIssue[], raw: unknown) {
+  readonly issues: readonly z.ZodIssue[];
+  constructor(issues: readonly z.ZodIssue[], raw: unknown) {
     const summary = issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
     super(
       `Vision verdict JSON failed schema validation: ${summary}. Raw: ${JSON.stringify(raw).slice(0, 500)}`,
@@ -116,24 +116,23 @@ export function parseVisionVerdict(responseJson: unknown): VisionVerdict {
     .map((b) => b.text)
     .join("\n");
   if (text.length === 0) {
-    throw new VisionVerdictSchemaError(
-      [
-        {
-          code: "custom",
-          path: ["content"],
-          message: "no text blocks in Anthropic response",
-        } as z.core.$ZodIssue,
-      ],
-      responseJson,
-    );
+    const issue: z.ZodIssue = {
+      code: "custom",
+      path: ["content"],
+      message: "no text blocks in Anthropic response",
+    };
+    throw new VisionVerdictSchemaError([issue], responseJson);
   }
   return parseVerdictJsonText(text);
 }
 
 /**
  * Extract + validate the verdict JSON object out of the model's text
- * response. Handles ```json fences and a leading sentence by greedily
- * scanning for the first `{` … balanced `}`.
+ * response. Handles ```json fences and a leading sentence by slicing
+ * from the first `{` to the LAST `}`. This is intentionally not a
+ * balanced-brace parser — the rubric prompt asks for a flat
+ * `{ ok, reason }` object so the literal first-`{` / last-`}` window
+ * is sufficient and rejects any wrapper text via `JSON.parse`.
  */
 export function parseVerdictJsonText(text: string): VisionVerdict {
   const start = text.indexOf("{");
