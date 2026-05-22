@@ -47,6 +47,10 @@
           {
             "context": "build + push (gateway)",
             "_note": "Matrix job in .github/workflows/release-images.yml. Added in #54 alongside the admin job for the same reason."
+          },
+          {
+            "context": "Admin production image — boot smoke",
+            "_note": "Job in .github/workflows/ci.yml (admin-prod-image). Added in #55 — release-images catches build-time regressions; this catches boot-time `Cannot find module` regressions that the build-only matrix can't (the bug class #53 fixed crashes on `docker run`, not on `docker build`)."
           }
         ]
       }
