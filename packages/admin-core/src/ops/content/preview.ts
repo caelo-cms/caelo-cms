@@ -42,14 +42,6 @@ interface ModuleSourceRow {
   fields: unknown;
 }
 
-/**
- * v0.4.0 — Per-placement content row (live or branch-overlay).
- */
-interface ContentSourceRow {
-  block_name: string;
-  position: number;
-  content_values: unknown;
-}
 
 /**
  * v0.4.0 — Substitute `{{fieldName}}` placeholders in module HTML using
@@ -377,54 +369,119 @@ export const renderPagePreviewOp = defineOperation({
       }
     }
 
-    // v0.4.0 — module CONTENT (per-placement values) is also branched.
-    // Load live content rows first, then overlay branch snapshots for the
-    // active chat.
-    const contentRows = (await tx.execute(sql`
-      SELECT block_name, position, content_values
-      FROM page_module_content
+    // v0.12.0 — module CONTENT lives in content_instances now, joined
+    // via page_modules.content_instance_id. Read the live binding +
+    // values for each placement; for branched callers, also overlay any
+    // page_layout_snapshots (rebound placements via placement.set_content
+    // / fork_placement_content) AND content_instance_snapshots (values
+    // edits via content_instances.set_values).
+    //
+    // The lookup is keyed by content_instance_id (not by block+position
+    // as it was pre-v0.12) so re-using the same instance across pages
+    // and forking diverging copies both compose correctly.
+    const placementBindings = new Map<
+      string, // `${block_name}#${position}`
+      { contentInstanceId: string }
+    >();
+    const liveBindings = (await tx.execute(sql`
+      SELECT block_name, position, content_instance_id::text AS content_instance_id
+      FROM page_modules
       WHERE page_id = ${input.pageId}::uuid
-    `)) as unknown as ContentSourceRow[];
-    const contentByKey = new Map<string, Record<string, unknown>>();
-    for (const r of contentRows) {
-      const raw =
-        typeof r.content_values === "string" ? JSON.parse(r.content_values) : r.content_values;
-      contentByKey.set(`${r.block_name}#${r.position}`, (raw ?? {}) as Record<string, unknown>);
+    `)) as unknown as { block_name: string; position: number; content_instance_id: string }[];
+    for (const r of liveBindings) {
+      placementBindings.set(`${r.block_name}#${r.position}`, {
+        contentInstanceId: r.content_instance_id,
+      });
     }
-
     if (input.chatBranchId) {
-      const branchContentRows = (await tx.execute(sql`
-        SELECT DISTINCT ON (pmcs.block_name, pmcs.position)
-               pmcs.block_name AS block_name,
-               pmcs.position AS position,
-               pmcs.state AS state
-        FROM page_module_content_snapshots pmcs
-        JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-        WHERE ss.chat_branch_id = ${input.chatBranchId}::uuid
-          AND pmcs.page_id = ${input.pageId}::uuid
-        ORDER BY pmcs.block_name, pmcs.position, ss.created_at DESC
-      `)) as unknown as {
-        block_name: string;
-        position: number;
-        state: unknown;
-      }[];
-      for (const r of branchContentRows) {
-        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-        const state = (raw ?? {}) as { contentValues?: Record<string, unknown> };
-        if (state.contentValues) {
-          contentByKey.set(
-            `${r.block_name}#${r.position}`,
-            state.contentValues as Record<string, unknown>,
-          );
+      // Branched page_layout_snapshots authoritatively replace live
+      // bindings for the active chat. Re-read the layout state below.
+      const layoutSnapForBindings = (await tx.execute(sql`
+        SELECT state FROM page_layout_snapshots pls
+        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+        WHERE pls.page_id = ${input.pageId}::uuid
+          AND ss.chat_branch_id = ${input.chatBranchId}::uuid
+        ORDER BY ss.created_at DESC
+        LIMIT 1
+      `)) as unknown as { state: unknown }[];
+      const raw = layoutSnapForBindings[0]?.state;
+      if (raw) {
+        const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
+          blocks?: {
+            blockName: string;
+            placements?: { moduleId: string; contentInstanceId: string; syncMode: string }[];
+          }[];
+        };
+        if (parsed.blocks) {
+          placementBindings.clear();
+          for (const b of parsed.blocks) {
+            const placements = b.placements ?? [];
+            for (let i = 0; i < placements.length; i += 1) {
+              const p = placements[i];
+              if (p) {
+                placementBindings.set(`${b.blockName}#${i}`, {
+                  contentInstanceId: p.contentInstanceId,
+                });
+              }
+            }
+          }
         }
       }
     }
 
-    // v0.4.0 — substitute {{fieldName}} placeholders in module HTML using
-    // resolved content (branch overlay → live row → module field default).
+    // Load values for every referenced content_instance_id.
+    const allInstanceIds = [...new Set([...placementBindings.values()].map((b) => b.contentInstanceId))];
+    const valuesByInstance = new Map<string, Record<string, unknown>>();
+    if (allInstanceIds.length > 0) {
+      const valueRows = (await tx.execute(sql`
+        SELECT id::text AS id, "values" AS values
+        FROM content_instances
+        WHERE id IN (${sql.join(
+          allInstanceIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})
+          AND deleted_at IS NULL
+      `)) as unknown as { id: string; values: unknown }[];
+      for (const r of valueRows) {
+        const raw = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+        valuesByInstance.set(r.id, (raw ?? {}) as Record<string, unknown>);
+      }
+      // Branch overlay — content_instance_snapshots tagged with this
+      // chat's branch_id supersede live values for the same instance.
+      if (input.chatBranchId) {
+        const branchRows = (await tx.execute(sql`
+          SELECT DISTINCT ON (cis.content_instance_id)
+                 cis.content_instance_id::text AS id,
+                 cis.state AS state
+          FROM content_instance_snapshots cis
+          JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
+          WHERE ss.chat_branch_id = ${input.chatBranchId}::uuid
+            AND cis.content_instance_id IN (${sql.join(
+              allInstanceIds.map((id) => sql`${id}::uuid`),
+              sql`, `,
+            )})
+          ORDER BY cis.content_instance_id, ss.created_at DESC
+        `)) as unknown as { id: string; state: unknown }[];
+        for (const r of branchRows) {
+          const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+          const state = (raw ?? {}) as { values?: Record<string, unknown>; deletedAt?: string | null };
+          if (state.deletedAt) continue;
+          if (state.values) {
+            valuesByInstance.set(r.id, state.values);
+          }
+        }
+      }
+    }
+
+    // v0.12.0 — substitute {{fieldName}} placeholders in module HTML using
+    // resolved content (branch content_instance overlay → live row →
+    // module field default).
     for (const m of modRows) {
       const fields = parseFields(m.fields);
-      const contentValues = contentByKey.get(`${m.block_name}#${m.position}`) ?? {};
+      const binding = placementBindings.get(`${m.block_name}#${m.position}`);
+      const contentValues = binding
+        ? (valuesByInstance.get(binding.contentInstanceId) ?? {})
+        : {};
       m.html = substituteFields(m.html, fields, contentValues);
     }
 

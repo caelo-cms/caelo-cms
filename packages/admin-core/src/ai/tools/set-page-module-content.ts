@@ -27,12 +27,13 @@ export const setPageModuleContentTool: ToolDefinitionWithHandler<
   name: "set_page_module_content",
   description:
     "Set the content values for one module placement on a specific page. " +
-    "v0.4.0 — page CONTENT is page-bound and branch-isolated to this chat until publish. " +
-    "Use this when the operator says 'change the hero heading on /home to X' or 'set the about " +
-    "page subtitle to Y'. Use `edit_module` (NOT this tool) when the change should affect every " +
-    "page using the module (structural / styling / field-schema change). " +
-    "`contentValues` is keyed by the module's declared field names (`{{fieldName}}` placeholders " +
-    "in the module HTML). Missing fields fall back to the module field's `default`. " +
+    "v0.12.0 — page CONTENT lives in a content_instance bound to the placement. " +
+    "For UNSYNCED placements (the default) this tool routes through content_instances.set_values and edits stay local to this page. " +
+    "For SYNCED placements (sharing content with other pages) this tool refuses and points you at fork_placement_content (to detach first) or set_content_instance_values (to commit to the propagate-everywhere blast radius). " +
+    "Use this when the operator says 'change the hero heading on /home to X' or 'set the about page subtitle to Y'. " +
+    "Use `edit_module` (NOT this tool) when the change should affect every page using the module (structural / styling / field-schema change). " +
+    "`contentValues` is keyed by the module's declared field names (`{{fieldName}}` placeholders). " +
+    "Missing fields fall back to the module field's `default`. " +
     "Pass an empty object to reset a placement to all defaults.",
   schema: setPageModuleContentToolInput,
   inputSchema: {

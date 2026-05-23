@@ -22,9 +22,16 @@ import { composePageFromSpecTool } from "./compose-page-from-spec.js";
 import { createLayoutTool } from "./create-layout.js";
 import { createPageTool } from "./create-page.js";
 import { createTemplateTool } from "./create-template.js";
+import { createContentInstanceTool } from "./create-content-instance.js";
+import { deleteContentInstanceTool } from "./delete-content-instance.js";
 import { deletePageTool } from "./delete-page.js";
 import { deleteStructuredSetTool } from "./delete-structured-set.js";
 import { ToolRegistry } from "./dispatch.js";
+import { forkPlacementContentTool } from "./fork-placement-content.js";
+import { getContentInstanceTool } from "./get-content-instance.js";
+import { listContentInstancesTool } from "./list-content-instances.js";
+import { setContentInstanceValuesTool } from "./set-content-instance-values.js";
+import { setPlacementContentTool } from "./set-placement-content.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { editModuleTool } from "./edit-module.js";
 import { findMediaTool } from "./find-media.js";
@@ -104,6 +111,14 @@ export function createDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(editModuleTool);
   registry.register(setPageModuleContentTool);
+  // v0.12.0 — content_instances + placement binding tools.
+  registry.register(listContentInstancesTool);
+  registry.register(getContentInstanceTool);
+  registry.register(createContentInstanceTool);
+  registry.register(setContentInstanceValuesTool);
+  registry.register(deleteContentInstanceTool);
+  registry.register(setPlacementContentTool);
+  registry.register(forkPlacementContentTool);
   // v0.5.12 — explicit read fallbacks for layouts / templates / pages.
   // Mirror the system-prompt `# Layouts on this site` / `# Templates →
   // layouts` / `# All pages` context blocks. Existed only as system-prompt
