@@ -147,6 +147,57 @@ async function validateNestedRefs(
     );
   }
 
+  // v0.12.1 — per-primitive-kind shape checks. Catches AI shape errors
+  // at write time (e.g. number field gets a non-numeric string) instead
+  // of letting the renderer silently String()-coerce them. We only
+  // validate kinds where the right shape is unambiguous — `text` /
+  // `richtext` / `image` / `link` accept varied legitimate values
+  // (objects, strings) and over-validating would block valid edits.
+  for (const f of fields) {
+    if (f.kind !== "number" && f.kind !== "boolean" && f.kind !== "url") continue;
+    const v = values[f.name];
+    if (v === undefined || v === null) continue; // optional — falls back to default
+    if (f.kind === "number") {
+      const ok =
+        typeof v === "number" ||
+        (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)));
+      if (!ok) {
+        return {
+          ok: false,
+          message: `field "${f.name}" (kind=number) expects a number or numeric string; got ${JSON.stringify(v)}`,
+        };
+      }
+    } else if (f.kind === "boolean") {
+      const ok =
+        typeof v === "boolean" || (typeof v === "string" && (v === "true" || v === "false"));
+      if (!ok) {
+        return {
+          ok: false,
+          message: `field "${f.name}" (kind=boolean) expects true|false or "true"|"false"; got ${JSON.stringify(v)}`,
+        };
+      }
+    } else if (f.kind === "url") {
+      // Permissive URL shape — paths, absolute URLs, mailto/tel, and
+      // fragment-only links all legitimate. Reject only obviously-not-
+      // a-URL primitives (numbers, booleans, empty strings).
+      const ok =
+        typeof v === "string" &&
+        v.length > 0 &&
+        (v.startsWith("/") ||
+          v.startsWith("http://") ||
+          v.startsWith("https://") ||
+          v.startsWith("mailto:") ||
+          v.startsWith("tel:") ||
+          v.startsWith("#"));
+      if (!ok) {
+        return {
+          ok: false,
+          message: `field "${f.name}" (kind=url) expects a relative path, absolute URL, mailto:, tel:, or #-fragment string; got ${JSON.stringify(v)}`,
+        };
+      }
+    }
+  }
+
   // Collect every (moduleId, contentInstanceId) pair the values declare
   // so we can batch-fetch existence + module-match in one query each.
   const refsToCheck: {
