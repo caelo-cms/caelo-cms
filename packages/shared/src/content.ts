@@ -253,10 +253,30 @@ export const moduleUpdateSchema = z
   })
   .strict();
 
+/**
+ * v0.12.0 — page-type tag pages inherit from their template.
+ * Constrained by templates_kind_check in migration 0096. Surfaced
+ * in the AI's `## Pages` block so the AI sees three modules-on-
+ * product-pages as a pattern. See CLAUDE.md §1A.
+ */
+export const TEMPLATE_KINDS = [
+  "home",
+  "landing",
+  "product",
+  "blog",
+  "doc",
+  "content",
+  "utility",
+] as const;
+export const templateKindSchema = z.enum(TEMPLATE_KINDS);
+export type TemplateKind = (typeof TEMPLATE_KINDS)[number];
+
 export const templateCreateSchema = z
   .object({
     slug: slugSchema,
     displayName: displayNameSchema,
+    /** v0.12.0 — what kind of page binds to this template. */
+    kind: templateKindSchema.default("content"),
     html: z.string().max(TEMPLATE_HTML_MAX, `html exceeds ${TEMPLATE_HTML_MAX} bytes`),
     css: z.string().max(TEMPLATE_CSS_MAX, `css exceeds ${TEMPLATE_CSS_MAX} bytes`).default(""),
     /**
@@ -280,6 +300,8 @@ export const templateUpdateSchema = z
   .object({
     templateId: z.string().uuid(),
     displayName: displayNameSchema.optional(),
+    /** v0.12.0 — re-classify the template's page-type kind. */
+    kind: templateKindSchema.optional(),
     html: z.string().max(TEMPLATE_HTML_MAX).optional(),
     css: z.string().max(TEMPLATE_CSS_MAX).optional(),
     /** P6.7.6 — re-point the template to a different layout. */

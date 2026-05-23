@@ -42,6 +42,13 @@ const pageRowSchema = z.object({
   name: z.string(),
   title: z.string(),
   templateId: z.string(),
+  /**
+   * v0.12.0 — page-type kind inherited from the page's template.
+   * Surfaced in `## Pages` so the AI sees three modules-on-product-
+   * pages as a pattern. Optional on the wire (templates predating
+   * migration 0096 don't have it).
+   */
+  kind: z.enum(["home", "landing", "product", "blog", "doc", "content", "utility"]).optional(),
   status: z.enum(["draft", "published"]),
   /** P9 — populated for source rows; tracks variant freshness. */
   translationStatus: z.enum(["source", "up_to_date", "needs_update", "not_started"]),
@@ -86,6 +93,8 @@ type RawPageRow = {
   name: string | null;
   title: string;
   template_id: string;
+  /** v0.12.0 — joined from `templates.kind`. */
+  template_kind?: string | null;
   status: "draft" | "published";
   translation_status: "source" | "up_to_date" | "needs_update" | "not_started";
   version: number | string;
@@ -103,6 +112,19 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
   // overflow JS number — for our version counter (will not approach 2^53)
   // both shapes are safe to coerce.
   const version = typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version;
+  // v0.12.0 — template_kind comes from the LEFT JOIN; defaults to
+  // 'content' for templates that pre-date migration 0096.
+  const kindRaw = r.template_kind ?? null;
+  const kind: "home" | "landing" | "product" | "blog" | "doc" | "content" | "utility" | undefined =
+    kindRaw === "home" ||
+    kindRaw === "landing" ||
+    kindRaw === "product" ||
+    kindRaw === "blog" ||
+    kindRaw === "doc" ||
+    kindRaw === "content" ||
+    kindRaw === "utility"
+      ? kindRaw
+      : undefined;
   return {
     id: r.id,
     slug: r.slug,
@@ -114,6 +136,7 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
     name: r.name ?? r.title,
     title: r.title,
     templateId: r.template_id,
+    ...(kind !== undefined ? { kind } : {}),
     status: r.status,
     translationStatus: r.translation_status,
     version,
@@ -136,20 +159,28 @@ export const listPagesOp = defineOperation({
   output: z.object({ pages: z.array(pageRowSchema) }),
   handler: async (ctx, input, tx) => {
     // v0.9.0 — branch-aware: chats see main + their own branched creates.
+    // Filters reference `pages` columns; the LEFT JOIN to templates
+    // adds template_kind for the AI's `## Pages` block.
     const filters = [];
-    if (!input.includeDeleted) filters.push(sql`deleted_at IS NULL`);
-    if (input.locale !== undefined) filters.push(sql`locale = ${input.locale}`);
+    if (!input.includeDeleted) filters.push(sql`pages.deleted_at IS NULL`);
+    if (input.locale !== undefined) filters.push(sql`pages.locale = ${input.locale}`);
     if (ctx.chatBranchId) {
-      filters.push(sql`(chat_branch_id IS NULL OR chat_branch_id = ${ctx.chatBranchId}::uuid)`);
+      filters.push(
+        sql`(pages.chat_branch_id IS NULL OR pages.chat_branch_id = ${ctx.chatBranchId}::uuid)`,
+      );
     } else {
-      filters.push(sql`chat_branch_id IS NULL`);
+      filters.push(sql`pages.chat_branch_id IS NULL`);
     }
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
-             status, translation_status, version, created_at, updated_at, deleted_at
+      SELECT pages.id::text AS id, pages.slug, pages.locale, pages.name, pages.title,
+             pages.template_id::text AS template_id,
+             templates.kind AS template_kind,
+             pages.status, pages.translation_status, pages.version,
+             pages.created_at, pages.updated_at, pages.deleted_at
       FROM pages
+      LEFT JOIN templates ON templates.id = pages.template_id
       ${buildWhere(filters)}
-      ORDER BY created_at ASC
+      ORDER BY pages.created_at ASC
     `)) as unknown as RawPageRow[];
     return ok({ pages: rows.map(rowToPage) });
   },
