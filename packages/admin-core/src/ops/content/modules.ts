@@ -113,6 +113,83 @@ function rowToModule(r: {
   };
 }
 
+/**
+ * v0.12.0 — module usage signal for the AI's `## Modules`
+ * decision-support block. Per CLAUDE.md §1A every domain object the
+ * AI might reach for ships with usage context, not just identity —
+ * so the AI sees "this header is on every product page" rather than
+ * three coincidences.
+ *
+ * Returns one row per module that has at least one placement:
+ *   - placementCount: total live placements on undeleted pages
+ *   - sampleSlugs: top-3 page slugs (alphabetic for determinism)
+ *
+ * Modules with zero placements are omitted; the formatter renders
+ * them as "unplaced". Branch isolation matches modules.list — main
+ * + the caller's own branched pages.
+ */
+export const listModulesUsageOp = defineOperation({
+  name: "modules.list_usage",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({}),
+  output: z.object({
+    usage: z.array(
+      z.object({
+        moduleId: z.string(),
+        placementCount: z.number().int().nonnegative(),
+        sampleSlugs: z.array(z.string()),
+      }),
+    ),
+  }),
+  handler: async (ctx, _input, tx) => {
+    // Branch filter on pages — chats see their own branched pages'
+    // placements alongside main; system actors see main only.
+    const branchFilter = ctx.chatBranchId
+      ? sql` AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+      : sql` AND p.chat_branch_id IS NULL`;
+    const rows = (await tx.execute(sql`
+      SELECT
+        pm.module_id::text AS module_id,
+        COUNT(*)::int AS placement_count,
+        (
+          SELECT array_agg(DISTINCT p2.slug ORDER BY p2.slug ASC)
+          FROM (
+            SELECT DISTINCT p3.slug
+            FROM page_modules pm3
+            JOIN pages p3 ON p3.id = pm3.page_id AND p3.deleted_at IS NULL
+            WHERE pm3.module_id = pm.module_id
+            ${
+              ctx.chatBranchId
+                ? sql`AND (p3.chat_branch_id IS NULL OR p3.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+                : sql`AND p3.chat_branch_id IS NULL`
+            }
+            ORDER BY p3.slug ASC
+            LIMIT 3
+          ) p2
+        ) AS sample_slugs
+      FROM page_modules pm
+      JOIN pages p ON p.id = pm.page_id AND p.deleted_at IS NULL
+      WHERE 1=1 ${branchFilter}
+      GROUP BY pm.module_id
+    `)) as unknown as {
+      module_id: string;
+      placement_count: number | string;
+      sample_slugs: string[] | null;
+    }[];
+    return ok({
+      usage: rows.map((r) => ({
+        moduleId: r.module_id,
+        placementCount:
+          typeof r.placement_count === "string"
+            ? Number.parseInt(r.placement_count, 10)
+            : r.placement_count,
+        sampleSlugs: Array.isArray(r.sample_slugs) ? r.sample_slugs : [],
+      })),
+    });
+  },
+});
+
 export const listModulesOp = defineOperation({
   name: "modules.list",
   // CLAUDE.md §11: read surfaces are open to AI. The AI uses this

@@ -168,6 +168,31 @@ function microcents(usd: number): number {
   return Math.round(usd * 1e8);
 }
 
+/**
+ * v0.12.0 — pull the module usage signal that the `## Modules`
+ * decision-support block consumes. Wraps `modules.list_usage` and
+ * returns the Map shape formatModulesBlock expects. Tolerates a
+ * read failure (returns empty map; block renders modules as
+ * "unplaced") so a flake here doesn't block the chat turn.
+ */
+async function loadModuleUsageSignal(
+  registry: import("@caelo-cms/query-api").OperationRegistry,
+  adapter: import("@caelo-cms/query-api").DatabaseAdapter,
+  ctx: ExecutionContext,
+): Promise<ReadonlyMap<string, { placementCount: number; sampleSlugs: readonly string[] }>> {
+  const r = await execute(registry, adapter, ctx, "modules.list_usage", {});
+  if (!r.ok) return new Map();
+  const { usage } = r.value as {
+    usage: { moduleId: string; placementCount: number; sampleSlugs: string[] }[];
+  };
+  return new Map(
+    usage.map((u) => [
+      u.moduleId,
+      { placementCount: u.placementCount, sampleSlugs: u.sampleSlugs },
+    ]),
+  );
+}
+
 export async function* runChatTurn(
   options: ChatRunnerOptions,
   input: ChatSendMessageInput,
@@ -432,18 +457,49 @@ export async function* runChatTurn(
           name: string;
           title: string;
           status: string;
+          // v0.12.0 — joined from templates.kind so the AI groups pages
+          // by intent. Optional because pre-0096 templates have NULL.
+          kind?: "home" | "landing" | "product" | "blog" | "doc" | "content" | "utility";
         }[];
       }
     ).pages;
     if (ps.length > 0) {
-      allPagesBlock = [
+      // v0.12.0 — group pages by kind so the AI scans intent-first
+      // ("which product pages already exist?"). Pages without a kind
+      // (templates pre-0096) fall under `content`.
+      const KIND_ORDER = [
+        "home",
+        "landing",
+        "product",
+        "blog",
+        "doc",
+        "content",
+        "utility",
+      ] as const;
+      const byKind = new Map<(typeof KIND_ORDER)[number], typeof ps>();
+      for (const k of KIND_ORDER) byKind.set(k, [] as unknown as typeof ps);
+      for (const p of ps) {
+        const k = (p.kind ?? "content") as (typeof KIND_ORDER)[number];
+        const bucket = byKind.get(k) as unknown as (typeof ps)[number][];
+        bucket.push(p);
+      }
+      const lines: string[] = [
         "# All pages on this site",
+        "Pages grouped by `kind` (inherited from the template). Treat repetition within a group as a pattern — e.g. three modules on three `product` pages = a product-page convention you should follow, not a coincidence.",
         "Use these (slug, locale) pairs as link targets — never invent a URL.",
-        ...ps.map(
-          (p) =>
+        "",
+      ];
+      for (const k of KIND_ORDER) {
+        const bucket = byKind.get(k) as unknown as (typeof ps)[number][];
+        if (bucket.length === 0) continue;
+        lines.push(`### kind=${k}`);
+        for (const p of bucket) {
+          lines.push(
             `- id=${p.id} name="${p.name}" title="${p.title}" url=${p.locale === "en" ? `/${p.slug}` : `/${p.locale}/${p.slug}`} status=${p.status}`,
-        ),
-      ].join("\n");
+          );
+        }
+      }
+      allPagesBlock = lines.join("\n");
     }
   }
 
@@ -479,11 +535,10 @@ export async function* runChatTurn(
 
   // v0.12.0 — `## Modules` decision-support catalog. Per CLAUDE.md §1A
   // the AI picks modules by intent (kind + description), so this
-  // block sorts by kind and surfaces description + placement usage
-  // + a short field summary per module.
+  // block sorts by kind and surfaces description + REAL placement
+  // usage + a short field summary per module.
   let modulesBlock: string | undefined;
   const modulesR = await execute(registry, adapter, humanCtxWithBranch, "modules.list", {});
-  let moduleIdToSlug: Map<string, string> | undefined;
   if (modulesR.ok) {
     const { modules: mods } = modulesR.value as {
       modules: {
@@ -495,32 +550,12 @@ export async function* runChatTurn(
         fields: { name: string; kind: string }[];
       }[];
     };
-    moduleIdToSlug = new Map(mods.map((m) => [m.id, m.slug]));
-    // Usage signal: placement count + top-3 sample page slugs per
-    // module. One pages.list call resolves both. We tolerate read
-    // failure here — the block still renders with placements=0 hints
-    // if the lookup didn't return.
-    const usageByModuleId = new Map<
-      string,
-      { placementCount: number; sampleSlugs: readonly string[] }
-    >();
-    const usagePagesR = await execute(registry, adapter, humanCtxWithBranch, "pages.list", {});
-    if (usagePagesR.ok) {
-      const usagePages = (usagePagesR.value as { pages: { id: string; slug: string }[] }).pages;
-      // Cheap n×m walk; the cap on each is small enough this is fine.
-      // (A future pages.list variant could return module-id usage inline.)
-      for (const m of mods) {
-        const placedOn: string[] = [];
-        for (const p of usagePages) {
-          if (placedOn.length >= 3) break;
-          // Best-effort: we'd need page_modules to know exactly which
-          // pages reference this module. Without that we leave samples
-          // empty; the placementCount comes from a separate query.
-          void p;
-        }
-        usageByModuleId.set(m.id, { placementCount: 0, sampleSlugs: placedOn });
-      }
-    }
+    // Real usage signal: one query joins page_modules → pages,
+    // groups by module_id, returns count + a deterministic top-3
+    // page slugs per module. The result is a Map the block formatter
+    // consumes; modules with zero placements stay out of the map and
+    // the formatter renders them as "unplaced".
+    const usageByModuleId = await loadModuleUsageSignal(registry, adapter, humanCtxWithBranch);
     modulesBlock = formatModulesBlock(mods, usageByModuleId);
   }
 
@@ -550,7 +585,6 @@ export async function* runChatTurn(
       }[];
     };
     contentLibraryBlock = formatContentLibraryBlock(instances);
-    void moduleIdToSlug;
   }
 
   // P6.7.6 — layouts (site-wide chrome) + site_defaults so the AI knows

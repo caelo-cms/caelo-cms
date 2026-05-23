@@ -73,6 +73,7 @@ import {
   deleteModulesManyOp,
   getModuleOp,
   listModulesOp,
+  listModulesUsageOp,
   updateModuleOp,
   updateModulesManyOp,
 } from "./ops/content/modules.js";
@@ -457,6 +458,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPendingRoleProposalsOp);
   // P3 content layer
   registry.register(listModulesOp);
+  registry.register(listModulesUsageOp);
   registry.register(getModuleOp);
   registry.register(createModuleOp);
   registry.register(updateModuleOp);
