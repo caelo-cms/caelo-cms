@@ -59,6 +59,10 @@ const moduleRowSchema = z.object({
   id: z.string(),
   slug: z.string(),
   displayName: z.string(),
+  /** v0.12.0 — operator/AI rationale; what this module is for. */
+  description: z.string(),
+  /** v0.12.0 — coarse role tag for the AI's `## Modules` catalog. */
+  kind: z.enum(["chrome", "hero", "content", "cta", "utility"]),
   html: z.string(),
   css: z.string(),
   js: z.string(),
@@ -73,6 +77,8 @@ function rowToModule(r: {
   id: string;
   slug: string;
   display_name: string;
+  description?: string | null;
+  kind?: string | null;
   html: string;
   css: string;
   js: string;
@@ -86,10 +92,22 @@ function rowToModule(r: {
   // defensively for the (unlikely) string case.
   const rawFields = typeof r.fields === "string" ? JSON.parse(r.fields) : r.fields;
   const fields = Array.isArray(rawFields) ? (rawFields as ModuleField[]) : [];
+  // v0.12.0 — description / kind default for legacy rows that pre-date
+  // migration 0095. The migration backfills both columns NOT NULL so
+  // this only matters for in-flight branched rows whose snapshot was
+  // taken before the column existed.
+  const kindRaw = (r.kind ?? "content") as
+    | "chrome"
+    | "hero"
+    | "content"
+    | "cta"
+    | "utility";
   return {
     id: r.id,
     slug: r.slug,
     displayName: r.display_name,
+    description: r.description ?? "",
+    kind: kindRaw,
     html: r.html,
     css: r.css,
     js: r.js,
@@ -116,12 +134,12 @@ export const listModulesOp = defineOperation({
     const rows = (await tx.execute(
       input.includeDeleted
         ? sql`
-            SELECT id::text AS id, slug, display_name, html, css, js, fields,
+            SELECT id::text AS id, slug, display_name, description, kind, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules WHERE 1=1 ${branchFilter} ORDER BY created_at ASC
           `
         : sql`
-            SELECT id::text AS id, slug, display_name, html, css, js, fields,
+            SELECT id::text AS id, slug, display_name, description, kind, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
           `,
@@ -252,11 +270,18 @@ export const createModuleOp = defineOperation({
     // v0.9.0 — branched-create. When ctx.chatBranchId is set, the row
     // is invisible to other chats until chat.merge_to_main clears the
     // tag. Same-chat reads see it via branchVisibilityFilter.
+    // v0.12.0 — description + kind persisted alongside core columns.
+    // Schema defaults ("" + "content") let the 82+ legacy callers keep
+    // working; AI tool descriptions push the AI to pass them
+    // explicitly so the `## Modules` block can render decision-support
+    // context (CLAUDE.md §1A).
     const rows = (await tx.execute(sql`
-      INSERT INTO modules (slug, display_name, html, css, js, fields, chat_branch_id)
+      INSERT INTO modules (slug, display_name, description, kind, html, css, js, fields, chat_branch_id)
       VALUES (
         ${input.slug},
         ${input.displayName},
+        ${input.description},
+        ${input.kind},
         ${persistedHtml},
         ${input.css},
         ${input.js},
@@ -338,11 +363,13 @@ export const updateModuleOp = defineOperation({
     // (v0.5.1) the branched-write path where we construct the new state
     // in-memory without touching the live `modules` row.
     const prevRows = (await tx.execute(sql`
-      SELECT slug, display_name, html, css, js, fields, deleted_at
+      SELECT slug, display_name, description, kind, html, css, js, fields, deleted_at
       FROM modules WHERE id = ${input.moduleId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as {
       slug: string;
       display_name: string;
+      description: string;
+      kind: string;
       html: string;
       css: string;
       js: string;
@@ -412,6 +439,8 @@ export const updateModuleOp = defineOperation({
       // v0.4.0 — `fields` is jsonb; cast via SQL fragment.
       const sets = buildPatchSet({
         display_name: input.displayName,
+        description: input.description,
+        kind: input.kind,
         html: persistedHtml,
         css: input.css,
         js: input.js,

@@ -62,8 +62,13 @@ const contentInstanceRowSchema = z.object({
   moduleId: z.string(),
   moduleSlug: z.string(),
   moduleDisplayName: z.string(),
+  /** v0.12.0 — module's coarse role tag; lets the AI's content-library
+   *  block group instances by what they represent (chrome vs hero etc). */
+  moduleKind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
   slug: z.string().nullable(),
   displayName: z.string().nullable(),
+  /** v0.12.0 — why this row exists as a shared instance. */
+  purpose: z.string().nullable(),
   values: z.record(z.string(), z.unknown()),
   version: z.number().int().nonnegative(),
   placementCount: z.number().int().nonnegative(),
@@ -77,8 +82,10 @@ type ContentInstanceRowSql = {
   module_id: string;
   module_slug: string;
   module_display_name: string;
+  module_kind?: string | null;
   slug: string | null;
   display_name: string | null;
+  purpose?: string | null;
   values: unknown;
   version: number | string;
   placement_count: number | string;
@@ -317,13 +324,23 @@ async function validateNestedRefs(
 
 function rowToContentInstance(r: ContentInstanceRowSql): z.infer<typeof contentInstanceRowSchema> {
   const rawValues = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+  const moduleKindRaw =
+    r.module_kind === "chrome" ||
+    r.module_kind === "hero" ||
+    r.module_kind === "content" ||
+    r.module_kind === "cta" ||
+    r.module_kind === "utility"
+      ? r.module_kind
+      : undefined;
   return {
     id: r.id,
     moduleId: r.module_id,
     moduleSlug: r.module_slug,
     moduleDisplayName: r.module_display_name,
+    moduleKind: moduleKindRaw,
     slug: r.slug,
     displayName: r.display_name,
+    purpose: r.purpose ?? null,
     values: (rawValues ?? {}) as Record<string, unknown>,
     version: typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version,
     placementCount:
@@ -377,8 +394,10 @@ export const listContentInstancesOp = defineOperation({
         ci.module_id::text AS module_id,
         m.slug AS module_slug,
         m.display_name AS module_display_name,
+        m.kind AS module_kind,
         ci.slug,
         ci.display_name,
+        ci.purpose,
         ci."values" AS values,
         ci.version,
         ci.created_at,
@@ -414,15 +433,22 @@ export const getContentInstanceOp = defineOperation({
     placements: z.array(contentInstancePlacementSchema),
   }),
   handler: async (ctx, input, tx) => {
-    const branchFilter = branchVisibilityFilter(ctx);
+    // v0.12.2 — ci ⨝ modules both have chat_branch_id; qualify with `ci.`
+    // to avoid the planner ambiguity that the shared helper triggers.
+    // Same pattern as content_instances.list.
+    const branchFilter = ctx.chatBranchId
+      ? sql` AND (ci.chat_branch_id IS NULL OR ci.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+      : sql` AND ci.chat_branch_id IS NULL`;
     const rows = (await tx.execute(sql`
       SELECT
         ci.id::text AS id,
         ci.module_id::text AS module_id,
         m.slug AS module_slug,
         m.display_name AS module_display_name,
+        m.kind AS module_kind,
         ci.slug,
         ci.display_name,
+        ci.purpose,
         ci."values" AS values,
         ci.version,
         ci.created_at,
@@ -558,11 +584,12 @@ export const createContentInstanceOp = defineOperation({
     const valuesJson = JSON.stringify(input.values);
     const rows = (await tx.execute(sql`
       INSERT INTO content_instances
-        (module_id, slug, display_name, "values", updated_by, chat_branch_id)
+        (module_id, slug, display_name, purpose, "values", updated_by, chat_branch_id)
       VALUES (
         ${input.moduleId}::uuid,
         ${input.slug ?? null},
         ${input.displayName ?? null},
+        ${input.purpose ?? null},
         ${valuesJson}::jsonb,
         ${ctx.actorId}::uuid,
         ${ctx.chatBranchId ?? null}::uuid
@@ -722,6 +749,10 @@ export const setContentInstanceValuesOp = defineOperation({
       const slugSet = input.slug !== undefined ? sql`, slug = ${input.slug}` : sql``;
       const displayNameSet =
         input.displayName !== undefined ? sql`, display_name = ${input.displayName}` : sql``;
+      // v0.12.0 — purpose may be set or cleared (null) by the operator
+      // when they want to repurpose a shared instance.
+      const purposeSet =
+        input.purpose !== undefined ? sql`, purpose = ${input.purpose}` : sql``;
       await tx.execute(sql`
         UPDATE content_instances
         SET "values" = ${valuesJson}::jsonb,
@@ -730,6 +761,7 @@ export const setContentInstanceValuesOp = defineOperation({
             updated_by = ${ctx.actorId}::uuid
             ${slugSet}
             ${displayNameSet}
+            ${purposeSet}
         WHERE id = ${input.id}::uuid
       `);
     }
