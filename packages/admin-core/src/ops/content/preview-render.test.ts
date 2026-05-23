@@ -202,6 +202,144 @@ describe("renderModuleWithContent — nested module slots", () => {
   });
 });
 
+describe("renderModuleWithContent — list-of-primitive slots", () => {
+  it("text-list iterates {{.}} per string element", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "tag-cloud",
+          html: "<div>{{#tags}}<span>{{.}}</span>{{/tags}}</div>",
+          css: "",
+          js: "",
+          fields: [{ name: "tags", kind: "text-list" }],
+        },
+      ],
+      [
+        {
+          id: PARENT_CI_ID,
+          moduleId: PARENT_MOD_ID,
+          values: { tags: ["alpha", "beta", "gamma"] },
+          deletedAt: null,
+        },
+      ],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toBe("<div><span>alpha</span><span>beta</span><span>gamma</span></div>");
+    expect(r.missingSlots).toEqual([]);
+  });
+
+  it("text-list also accepts the {{item}} alias", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "bullets",
+          html: "<ul>{{#bullets}}<li>{{item}}</li>{{/bullets}}</ul>",
+          css: "",
+          js: "",
+          fields: [{ name: "bullets", kind: "text-list" }],
+        },
+      ],
+      [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: { bullets: ["one", "two"] }, deletedAt: null }],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toBe("<ul><li>one</li><li>two</li></ul>");
+  });
+
+  it("text-list falls back to field.default when values entry is absent", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "tag-cloud",
+          html: "<div>{{#tags}}<span>{{.}}</span>{{/tags}}</div>",
+          css: "",
+          js: "",
+          fields: [
+            {
+              name: "tags",
+              kind: "text-list",
+              default: ["alpha", "beta"],
+            },
+          ],
+        },
+      ],
+      [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null }],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toBe("<div><span>alpha</span><span>beta</span></div>");
+  });
+
+  it("link-list iterates {{label}} + {{href}} per element", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "primary-nav",
+          html: '<nav>{{#menu}}<a href="{{href}}">{{label}}</a>{{/menu}}</nav>',
+          css: "",
+          js: "",
+          fields: [{ name: "menu", kind: "link-list" }],
+        },
+      ],
+      [
+        {
+          id: PARENT_CI_ID,
+          moduleId: PARENT_MOD_ID,
+          values: {
+            menu: [
+              { label: "Home", href: "/" },
+              { label: "About", href: "/about" },
+              { label: "Contact", href: "/contact" },
+            ],
+          },
+          deletedAt: null,
+        },
+      ],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toBe(
+      '<nav><a href="/">Home</a><a href="/about">About</a><a href="/contact">Contact</a></nav>',
+    );
+    expect(r.missingSlots).toEqual([]);
+  });
+
+  it("link-list malformed element gets a per-element marker, others render", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "primary-nav",
+          html: '<nav>{{#menu}}<a href="{{href}}">{{label}}</a>{{/menu}}</nav>',
+          css: "",
+          js: "",
+          fields: [{ name: "menu", kind: "link-list" }],
+        },
+      ],
+      [
+        {
+          id: PARENT_CI_ID,
+          moduleId: PARENT_MOD_ID,
+          values: {
+            menu: [
+              { label: "Home", href: "/" },
+              { label: "missing-href" }, // malformed
+              { label: "About", href: "/about" },
+            ],
+          },
+          deletedAt: null,
+        },
+      ],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toContain('<a href="/">Home</a>');
+    expect(r.html).toContain('<a href="/about">About</a>');
+    expect(r.html).toContain("link-list-malformed");
+    expect(r.missingSlots.some((s) => s.startsWith("link-list-malformed"))).toBe(true);
+  });
+});
+
 describe("renderModuleWithContent — safety invariants", () => {
   it("emits depth-limit comment when recursion exceeds MAX_RECURSION_DEPTH=8", () => {
     // Build a chain of 12 modules each referencing the next, blowing

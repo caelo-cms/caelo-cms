@@ -181,9 +181,19 @@ function substituteWithRecursion(
 ): string {
   let html = mod.html;
 
-  // 1. module-list slots: {{#fieldName}}…{{/fieldName}}.
+  // 1. Iteration slots: {{#fieldName}}…inner…{{/fieldName}}.
   // Process before single-module + primitive so the inner template
   // doesn't get touched twice. Non-greedy match; supports any inner.
+  //
+  // Three kinds dispatch through this branch by field.kind:
+  //   module-list — array of {moduleId, contentInstanceId} refs;
+  //                 each element renders its nested module's HTML
+  //                 (inner template text is ignored — wrappers
+  //                 belong inside the nested module).
+  //   text-list   — array of strings; inner template substitutes
+  //                 {{.}} or {{item}} with the current element.
+  //   link-list   — array of {label, href}; inner template
+  //                 substitutes {{label}} + {{href}} per iteration.
   html = html.replace(
     /\{\{#\s*([a-z][a-z0-9_]*)\s*\}\}([\s\S]*?)\{\{\/\s*\1\s*\}\}/g,
     (_full, name: string, inner: string) => {
@@ -192,26 +202,86 @@ function substituteWithRecursion(
         ctx.missing.push(`field-not-declared:${name}`);
         return comment(`field-not-declared ${name}`);
       }
-      if (field.kind !== "module-list") {
-        ctx.missing.push(`kind-mismatch:${name} expected=module-list actual=${field.kind}`);
+      if (
+        field.kind !== "module-list" &&
+        field.kind !== "text-list" &&
+        field.kind !== "link-list"
+      ) {
+        ctx.missing.push(
+          `kind-mismatch:${name} expected=module-list|text-list|link-list actual=${field.kind}`,
+        );
         return comment(`kind-mismatch ${name}`);
       }
-      const list = ci.values[name];
-      if (!Array.isArray(list)) {
+      // Resolve the list values — prefer ci.values, fall back to the
+      // field's `default` so module authors can ship a sensible list
+      // that renders before the first content-instance edit.
+      const raw = Object.hasOwn(ci.values, name)
+        ? ci.values[name]
+        : "default" in field
+          ? field.default
+          : undefined;
+      if (!Array.isArray(raw)) {
         // Empty list / unset is fine — render nothing.
         return "";
       }
+
+      if (field.kind === "text-list") {
+        // Inner template references {{.}} or {{item}} per iteration.
+        // Element type: string. We coerce to string defensively so
+        // numbers / booleans don't blow up rendering.
+        const parts: string[] = [];
+        for (let i = 0; i < raw.length; i += 1) {
+          const el = raw[i];
+          if (typeof el !== "string" && typeof el !== "number" && typeof el !== "boolean") {
+            ctx.missing.push(`text-list-malformed:${name}[${i}]`);
+            parts.push(comment(`text-list-malformed ${name}[${i}]`));
+            continue;
+          }
+          const value = String(el);
+          parts.push(
+            inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => value),
+          );
+        }
+        return parts.join("");
+      }
+
+      if (field.kind === "link-list") {
+        // Inner template references {{label}} + {{href}} per iteration.
+        const parts: string[] = [];
+        for (let i = 0; i < raw.length; i += 1) {
+          const el = raw[i];
+          if (
+            typeof el !== "object" ||
+            el === null ||
+            typeof (el as { label?: unknown }).label !== "string" ||
+            typeof (el as { href?: unknown }).href !== "string"
+          ) {
+            ctx.missing.push(`link-list-malformed:${name}[${i}]`);
+            parts.push(comment(`link-list-malformed ${name}[${i}]`));
+            continue;
+          }
+          const { label, href } = el as { label: string; href: string };
+          parts.push(
+            inner
+              .replace(/\{\{\s*label\s*\}\}/g, () => label)
+              .replace(/\{\{\s*href\s*\}\}/g, () => href),
+          );
+        }
+        return parts.join("");
+      }
+
+      // module-list: each element renders its nested module's HTML
+      // (recursing through renderInner). Inner template text is
+      // ignored — per-element wrappers belong inside the nested
+      // module's own HTML, not in the outer iterator block.
       const parts: string[] = [];
-      for (let i = 0; i < list.length; i += 1) {
-        const el = list[i];
+      for (let i = 0; i < raw.length; i += 1) {
+        const el = raw[i];
         if (!isNestedRef(el)) {
           ctx.missing.push(`module-list-malformed:${name}[${i}]`);
           parts.push(comment(`module-list-malformed ${name}[${i}]`));
           continue;
         }
-        // Render the inner template with the nested module's content as
-        // the active context. The inner can itself contain {{>x}} +
-        // {{fieldName}} refs (relative to the NESTED module's fields).
         const nestedMod = ctx.resolver.getModule(el.moduleId);
         const nestedCi = ctx.resolver.getContentInstance(el.contentInstanceId);
         if (!nestedMod) {
@@ -224,15 +294,8 @@ function substituteWithRecursion(
           parts.push(comment(`content-instance-missing ${el.contentInstanceId}`));
           continue;
         }
-        // For module-list, the inner template renders the NESTED module's
-        // own HTML — substitute against the nested ci's values, recursing.
-        const rendered = renderInner(el.moduleId, el.contentInstanceId, ctx);
-        // The `inner` text from the outer template is ignored here per
-        // the issue's v0.1 design — module-list slots simply render each
-        // nested module in order. A future v0.2 could templatise `inner`
-        // to support per-element wrappers (e.g. `<li>{{>item}}</li>`).
+        parts.push(renderInner(el.moduleId, el.contentInstanceId, ctx));
         void inner;
-        parts.push(rendered);
       }
       return parts.join("");
     },
