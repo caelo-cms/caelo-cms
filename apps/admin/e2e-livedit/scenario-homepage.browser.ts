@@ -40,7 +40,13 @@ const HOMEPAGE_PROMPT =
   "a 3-column feature grid below the hero with three features about branched edits, plugin sandbox, " +
   "and snapshot revert, and a footer module with copyright text mentioning Caelo and MPL 2.0.";
 
-const HERO_REEDIT_PROMPT = "Change the hero headline.";
+// Concrete enough to avoid the chat-runner's `passive-response-diag`
+// warning, which fires when the AI returns a short text-only response
+// to a vague follow-up under high accumulated context. The target
+// headline is short + unique so the post-reedit content_values diff
+// is unambiguous.
+const HERO_REEDIT_PROMPT =
+  "Update the hero headline to 'Ship faster with Caelo'. Keep all other modules unchanged.";
 
 interface PageModuleSnapshot {
   readonly pageId: string;

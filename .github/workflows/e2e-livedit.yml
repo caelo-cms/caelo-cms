@@ -244,7 +244,7 @@ jobs:
           if [ ${#FAIL_SHOTS[@]} -eq 0 ] && [ ${#FINAL_SHOTS[@]} -eq 0 ]; then
             printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\nNo screenshots were produced.\n' \
               "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS" > /tmp/e2e-livedit-comment.md
-            gh pr comment "$PR_NUMBER" --edit-last --create-if-none --body-file /tmp/e2e-livedit-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/e2e-livedit-comment.md
             exit 0
           fi
 
@@ -308,7 +308,7 @@ jobs:
           } > /tmp/e2e-livedit-comment.md
 
           cd "$GITHUB_WORKSPACE"
-          gh pr comment "$PR_NUMBER" --edit-last --create-if-none --body-file /tmp/e2e-livedit-comment.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/e2e-livedit-comment.md
 
       - name: Teardown compose
         if: always()
