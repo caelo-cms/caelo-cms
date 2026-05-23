@@ -28,6 +28,13 @@ import {
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import {
+  collectNestedRefs,
+  type ContentInstanceResource,
+  type ModuleResource,
+  type RenderResolver,
+  renderModuleWithContent,
+} from "./preview-render.js";
 
 interface ModuleSourceRow {
   block_name: string;
@@ -43,47 +50,25 @@ interface ModuleSourceRow {
 }
 
 
-/**
- * v0.4.0 — Substitute `{{fieldName}}` placeholders in module HTML using
- * the resolved content values for one placement. Missing keys fall back to
- * the module field's `default` (then empty string).
- *
- * Only handles top-level fields; nested objects / arrays are surfaced as
- * JSON-stringified text for visibility (rare in practice — `richtext` /
- * `image` / `link` values are strings/objects depending on the kind, but
- * stringification gives a non-empty default render).
- */
-function substituteFields(
-  html: string,
-  fields: { name: string; default?: unknown }[],
-  contentValues: Record<string, unknown>,
-): string {
-  if (fields.length === 0) return html;
-  return html.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/gi, (full, name: string) => {
-    if (Object.hasOwn(contentValues, name)) {
-      const v = contentValues[name];
-      return v === null || v === undefined ? "" : String(v);
-    }
-    const field = fields.find((f) => f.name === name);
-    if (field && field.default !== undefined && field.default !== null) {
-      return String(field.default);
-    }
-    // Unknown / unresolved placeholder — leave the literal so the operator
-    // notices it visually. Pre-v1 fail-loud per CLAUDE.md §2.
-    return full;
-  });
-}
+// v0.12.1 — `substituteFields` was replaced by the recursive renderer
+// in `./preview-render.ts`. The new renderer subsumes the v0.4.0 flat
+// behaviour AND handles {{>field}} / {{#field}}…{{/field}} slots for
+// nested module / module-list field kinds.
 
-function parseFields(raw: unknown): { name: string; default?: unknown }[] {
+function parseFields(raw: unknown): { name: string; kind: string; default?: unknown }[] {
   const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
   if (!Array.isArray(arr)) return [];
   return arr
-    .filter((f): f is { name: string; default?: unknown } => {
+    .filter((f): f is { name: string; kind?: unknown; default?: unknown } => {
       return (
         typeof f === "object" && f !== null && typeof (f as { name: unknown }).name === "string"
       );
     })
-    .map((f) => ({ name: f.name, default: (f as { default?: unknown }).default }));
+    .map((f) => ({
+      name: f.name,
+      kind: typeof (f as { kind?: unknown }).kind === "string" ? ((f as { kind: string }).kind) : "text",
+      default: (f as { default?: unknown }).default,
+    }));
 }
 
 export const renderPagePreviewOp = defineOperation({
@@ -429,22 +414,24 @@ export const renderPagePreviewOp = defineOperation({
       }
     }
 
-    // Load values for every referenced content_instance_id.
+    // Load values + module_id for every referenced content_instance_id.
     const allInstanceIds = [...new Set([...placementBindings.values()].map((b) => b.contentInstanceId))];
     const valuesByInstance = new Map<string, Record<string, unknown>>();
+    const instanceModuleIdById = new Map<string, string>();
     if (allInstanceIds.length > 0) {
       const valueRows = (await tx.execute(sql`
-        SELECT id::text AS id, "values" AS values
+        SELECT id::text AS id, module_id::text AS module_id, "values" AS values
         FROM content_instances
         WHERE id IN (${sql.join(
           allInstanceIds.map((id) => sql`${id}::uuid`),
           sql`, `,
         )})
           AND deleted_at IS NULL
-      `)) as unknown as { id: string; values: unknown }[];
+      `)) as unknown as { id: string; module_id: string; values: unknown }[];
       for (const r of valueRows) {
         const raw = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
         valuesByInstance.set(r.id, (raw ?? {}) as Record<string, unknown>);
+        instanceModuleIdById.set(r.id, r.module_id);
       }
       // Branch overlay — content_instance_snapshots tagged with this
       // chat's branch_id supersede live values for the same instance.
@@ -473,16 +460,135 @@ export const renderPagePreviewOp = defineOperation({
       }
     }
 
-    // v0.12.0 — substitute {{fieldName}} placeholders in module HTML using
-    // resolved content (branch content_instance overlay → live row →
-    // module field default).
+    // v0.12.1 — recursive renderer. Walk every loaded instance's values
+    // to find transitive nested-module references; batch-fetch them so
+    // the renderer never blocks on I/O. Mirrors the v0.4.0 substitution
+    // for the flat case (modules with primitive fields only); recurses
+    // into module / module-list fields.
+    const moduleByIdResource = new Map<string, ModuleResource>();
+    const instanceByIdResource = new Map<string, ContentInstanceResource>();
     for (const m of modRows) {
-      const fields = parseFields(m.fields);
+      moduleByIdResource.set(m.module_id, {
+        moduleId: m.module_id,
+        slug: m.slug,
+        html: m.html,
+        css: m.css,
+        js: m.js,
+        fields: parseFields(m.fields).map((f) => ({ name: f.name, kind: f.kind, default: f.default })),
+      });
+    }
+    for (const [id, values] of valuesByInstance) {
+      const moduleId = (instanceModuleIdById.get(id) ?? "");
+      instanceByIdResource.set(id, { id, moduleId, values, deletedAt: null });
+    }
+
+    // BFS expand transitively referenced (moduleId, contentInstanceId)
+    // pairs. Bounded by the depth limit baked into the renderer; the
+    // explicit batch-load avoids N+1 during recursion.
+    {
+      let pendingModuleIds = new Set<string>();
+      let pendingInstanceIds = new Set<string>();
+      const enqueueRefs = (values: Record<string, unknown>) => {
+        for (const ref of collectNestedRefs(values)) {
+          if (!moduleByIdResource.has(ref.moduleId)) pendingModuleIds.add(ref.moduleId);
+          if (!instanceByIdResource.has(ref.contentInstanceId))
+            pendingInstanceIds.add(ref.contentInstanceId);
+        }
+      };
+      for (const r of instanceByIdResource.values()) enqueueRefs(r.values);
+
+      // Cap BFS rounds; the renderer enforces depth at substitute time
+      // and 8 levels is the absolute max so 8 rounds is the ceiling.
+      for (let round = 0; round < 8; round += 1) {
+        if (pendingModuleIds.size === 0 && pendingInstanceIds.size === 0) break;
+        if (pendingModuleIds.size > 0) {
+          const fetched = (await tx.execute(sql`
+            SELECT id::text AS id, slug, display_name, html, css, js, fields
+            FROM modules
+            WHERE id IN (${sql.join(
+              [...pendingModuleIds].map((id) => sql`${id}::uuid`),
+              sql`, `,
+            )})
+              AND deleted_at IS NULL
+          `)) as unknown as ModuleSourceRow[];
+          for (const f of fetched) {
+            moduleByIdResource.set(f.module_id, {
+              moduleId: f.module_id,
+              slug: f.slug,
+              html: f.html,
+              css: f.css,
+              js: f.js,
+              fields: parseFields(f.fields).map((p) => ({
+                name: p.name,
+                kind: p.kind,
+                default: p.default,
+              })),
+            });
+          }
+          pendingModuleIds = new Set();
+        }
+        const justLoadedInstances: Record<string, unknown>[] = [];
+        if (pendingInstanceIds.size > 0) {
+          const fetched = (await tx.execute(sql`
+            SELECT id::text AS id, module_id::text AS module_id, "values" AS values
+            FROM content_instances
+            WHERE id IN (${sql.join(
+              [...pendingInstanceIds].map((id) => sql`${id}::uuid`),
+              sql`, `,
+            )})
+              AND deleted_at IS NULL
+          `)) as unknown as { id: string; module_id: string; values: unknown }[];
+          for (const f of fetched) {
+            const raw = typeof f.values === "string" ? JSON.parse(f.values) : f.values;
+            const v = (raw ?? {}) as Record<string, unknown>;
+            instanceByIdResource.set(f.id, {
+              id: f.id,
+              moduleId: f.module_id,
+              values: v,
+              deletedAt: null,
+            });
+            justLoadedInstances.push(v);
+          }
+          pendingInstanceIds = new Set();
+        }
+        for (const v of justLoadedInstances) enqueueRefs(v);
+      }
+    }
+
+    const resolver: RenderResolver = {
+      getModule: (id) => moduleByIdResource.get(id) ?? null,
+      getContentInstance: (id) => instanceByIdResource.get(id) ?? null,
+    };
+
+    // Collect CSS/JS from every nested module touched during recursion
+    // so the page's <style>/<script> tags include them. Dedup by
+    // moduleId; the composer further dedupes by slug.
+    const nestedCssJsByModuleId = new Map<string, ModuleResource>();
+    for (const m of modRows) {
       const binding = placementBindings.get(`${m.block_name}#${m.position}`);
-      const contentValues = binding
-        ? (valuesByInstance.get(binding.contentInstanceId) ?? {})
-        : {};
-      m.html = substituteFields(m.html, fields, contentValues);
+      if (!binding) {
+        m.html = "";
+        continue;
+      }
+      const result = renderModuleWithContent(m.module_id, binding.contentInstanceId, resolver);
+      m.html = result.html;
+      // CSS/JS dedup: emit CSS/JS for every module the recursion touched
+      // (in addition to this top-level module). The existing composer
+      // dedupes by slug, so we just need to ensure every nested module's
+      // CSS/JS is staged. The grouped[] structure below collects unique
+      // slugs already; we extend it by injecting touched-but-not-placed
+      // modules as zero-placement entries in a virtual "__nested__" block
+      // — the composer ignores blockName for CSS/JS dedup, so this is
+      // safe (the HTML output is already inline via renderModuleWithContent).
+      for (const touchedId of result.touchedModuleIds) {
+        if (touchedId === m.module_id) continue;
+        const mod = moduleByIdResource.get(touchedId);
+        if (!mod || (!mod.css && !mod.js)) continue;
+        // Will be added to the grouped[] payload below.
+        if (!nestedCssJsByModuleId.has(touchedId)) {
+          nestedCssJsByModuleId.set(touchedId, mod);
+        }
+      }
     }
 
     const grouped = new Map<
@@ -507,6 +613,24 @@ export const renderPagePreviewOp = defineOperation({
         js: r.js,
       });
       grouped.set(r.block_name, arr);
+    }
+    // v0.12.1 — fold nested-module CSS/JS into a virtual block so the
+    // composer's <style> + script tags include them. HTML for these is
+    // already inlined by renderModuleWithContent, so we set html='' to
+    // avoid double-rendering.
+    if (nestedCssJsByModuleId.size > 0) {
+      const arr = grouped.get("__nested__") ?? [];
+      for (const m of nestedCssJsByModuleId.values()) {
+        arr.push({
+          moduleId: m.moduleId,
+          slug: m.slug,
+          displayName: m.slug,
+          html: "",
+          css: m.css,
+          js: m.js,
+        });
+      }
+      grouped.set("__nested__", arr);
     }
     const blocks = [...grouped.entries()].map(([blockName, modules]) => ({
       blockName,
