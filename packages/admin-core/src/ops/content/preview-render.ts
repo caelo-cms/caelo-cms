@@ -14,13 +14,21 @@
  *                                        (field kind = 'module').
  *                                        values[fieldName] is
  *                                        { moduleId, contentInstanceId }.
- *   {{#fieldName}}…inner…{{/fieldName}} — repeated nested module slot
+ *   {{#fieldName}}{{/fieldName}}        — repeated nested module slot
  *                                        (field kind = 'module-list').
  *                                        values[fieldName] is an array
  *                                        of { moduleId, contentInstanceId };
- *                                        `inner` is rendered once per
- *                                        element with that element as the
- *                                        active context.
+ *                                        each nested module is rendered
+ *                                        in order against its own
+ *                                        content_instance. NOTE: any
+ *                                        `inner` template text between
+ *                                        the open + close tags is
+ *                                        currently IGNORED in v0.12 —
+ *                                        per-element wrappers
+ *                                        (e.g. `<li>{{>item}}</li>`)
+ *                                        are a future v0.x extension.
+ *                                        Author the wrapper inside the
+ *                                        nested module's own HTML.
  *
  * Pre-1.0 fail-loud (CLAUDE.md §2):
  *   - Depth limit 8 — beyond that, emit an HTML comment naming the

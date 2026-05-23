@@ -258,7 +258,16 @@
                   onfinalize={(e: CustomEvent<DndEvent<DraggableModule>>) =>
                     onDndFinalize(block.blockName, e)}
                 >
-                  {#each withDragIds(block.modules, block.blockName) as m (m.id)}
+                  {#each withDragIds(block.modules, block.blockName) as m, i (m.id)}
+                    <!-- v0.12.2 — pass the #each index `i` as position.
+                         Previous code derived position via
+                         findIndex(moduleId === m.moduleId) which returns
+                         the FIRST occurrence when the same module is
+                         placed multiple times in a block — the toggle
+                         would then fork/bind the wrong placement, and
+                         the ↑/× buttons would move/remove the wrong
+                         row. The list is rendered in placement-position
+                         order so `i` IS the placement position. -->
                     <li
                       class="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1"
                       data-id={m.id}
@@ -279,7 +288,7 @@
                         <PlacementSyncToggle
                           pageId={page.id}
                           blockName={block.blockName}
-                          position={block.modules.findIndex((x) => x.moduleId === m.moduleId)}
+                          position={i}
                           syncMode={m.syncMode ?? "unsynced"}
                           contentInstanceId={m.contentInstanceId}
                           csrfToken={data.csrfToken}
@@ -290,22 +299,14 @@
                         variant="ghost"
                         size="sm"
                         aria-label="Move up"
-                        onclick={() =>
-                          moveUp(
-                            block.blockName,
-                            block.modules.findIndex((x) => x.moduleId === m.moduleId),
-                          )}>↑</Button
+                        onclick={() => moveUp(block.blockName, i)}>↑</Button
                       >
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
                         aria-label="Remove"
-                        onclick={() =>
-                          removeAt(
-                            block.blockName,
-                            block.modules.findIndex((x) => x.moduleId === m.moduleId),
-                          )}>×</Button
+                        onclick={() => removeAt(block.blockName, i)}>×</Button
                       >
                     </li>
                   {/each}

@@ -72,23 +72,40 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
 
     // Reconstruct the values object from form fields. Each value
-    // arrives as `value.<fieldName>` per the input naming in the
-    // edit view. Missing fields are dropped (empty form value -> no
-    // override → module field default at render time).
+    // arrives as `value.<fieldName>` per the input naming in the edit
+    // view.
+    //
+    // v0.12.2 — `content_instances.set_values` fully REPLACES the
+    // stored values jsonb, so an empty submitted string would persist
+    // as `""` and the renderer would treat the key as present (and
+    // emit ""), masking the module's `field.default` fallback. Drop
+    // empty-string entries from the patch so clearing an input truly
+    // removes the override.
     const values: Record<string, unknown> = {};
     for (const [k, v] of form.entries()) {
       if (!k.startsWith("value.")) continue;
       const name = k.slice("value.".length);
-      values[name] = typeof v === "string" ? v : "";
+      if (typeof v !== "string" || v === "") continue;
+      values[name] = v;
     }
-    const displayName = form.get("displayName");
-    const slug = form.get("slug");
+    const displayNameRaw = form.get("displayName");
+    const slugRaw = form.get("slug");
+    // v0.12.2 — map empty string to null so the operator can clear
+    // an existing slug / displayName via the UI. The op schema
+    // accepts `null` for these fields and treats it as "clear".
+    const displayName =
+      typeof displayNameRaw === "string"
+        ? displayNameRaw.length > 0
+          ? displayNameRaw
+          : null
+        : undefined;
+    const slug = typeof slugRaw === "string" ? (slugRaw.length > 0 ? slugRaw : null) : undefined;
 
     const r = await execute(registry, adapter, locals.ctx, "content_instances.set_values", {
       id: params.id,
       values,
-      ...(typeof displayName === "string" && displayName.length > 0 ? { displayName } : {}),
-      ...(typeof slug === "string" && slug.length > 0 ? { slug } : {}),
+      ...(displayName !== undefined ? { displayName } : {}),
+      ...(slug !== undefined ? { slug } : {}),
     });
     if (!r.ok) {
       const msg = (r.error as { message?: string }).message ?? "could not save";

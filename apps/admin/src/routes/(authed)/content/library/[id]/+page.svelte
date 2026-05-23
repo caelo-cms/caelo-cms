@@ -114,9 +114,16 @@
                     value={asString(data.instance.values[f.name])}
                   />
                 {:else if f.kind === "module" || f.kind === "module-list"}
+                  <!-- v0.12.2 — display-only. Nested-module refs are
+                       `{moduleId, contentInstanceId}` objects (or arrays
+                       of them); a readonly textarea with `name` is still
+                       submitted, so saving would overwrite the structured
+                       ref with `JSON.stringify(...)` and corrupt it.
+                       Omit `name` so the form action never sees this
+                       field — the existing ref stays intact. Edit via
+                       the AI chat surface. -->
                   <Textarea
                     id={`value.${f.name}`}
-                    name={`value.${f.name}`}
                     rows={3}
                     readonly
                     value={asString(data.instance.values[f.name])}
