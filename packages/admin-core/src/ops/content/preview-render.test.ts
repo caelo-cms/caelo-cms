@@ -20,18 +20,15 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-  collectNestedRefs,
   type ContentInstanceResource,
+  collectNestedRefs,
   type ModuleResource,
   type NestedRefValue,
   type RenderResolver,
   renderModuleWithContent,
 } from "./preview-render.js";
 
-function buildResolver(
-  modules: ModuleResource[],
-  cis: ContentInstanceResource[],
-): RenderResolver {
+function buildResolver(modules: ModuleResource[], cis: ContentInstanceResource[]): RenderResolver {
   const modByIdx = new Map(modules.map((m) => [m.moduleId, m]));
   const ciByIdx = new Map(cis.map((c) => [c.id, c]));
   return {

@@ -16,10 +16,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import {
-  extractModuleStructure,
-  validateTemplatizedModule,
-} from "./extract-module-structure.js";
+import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
 
 describe("extractModuleStructure — heading inference", () => {
   it("h1 mints `title` (singular)", () => {
@@ -137,18 +134,14 @@ describe("extractModuleStructure — idempotency + skip rules", () => {
   });
 
   it("does not extract from <style> contents", () => {
-    const out = extractModuleStructure(
-      "<style>.foo{color:red}</style><h1>Title</h1>",
-    );
+    const out = extractModuleStructure("<style>.foo{color:red}</style><h1>Title</h1>");
     // Only the <h1> text should mint a field.
     expect(out.fields).toHaveLength(1);
     expect(out.fields[0]?.name).toBe("title");
   });
 
   it("does not extract from <script> contents", () => {
-    const out = extractModuleStructure(
-      '<script>const x = "leak";</script><p>Real copy.</p>',
-    );
+    const out = extractModuleStructure('<script>const x = "leak";</script><p>Real copy.</p>');
     expect(out.fields).toHaveLength(1);
     expect(out.fields[0]?.name).toBe("body");
   });
