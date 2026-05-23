@@ -173,6 +173,31 @@ jobs:
               > apps/admin/test-results/livedit/db-dump/${table}.csv 2>/dev/null || true
           done
 
+      # Dump a directory listing of the static-gen output dirs so we
+      # can diagnose publish-side issues (e.g. why production/current
+      # is empty) post-hoc. Cheap; no actual files included in the
+      # listing — just `find` output. The full output dirs aren't
+      # uploaded because they can be sizeable and contain the same
+      # HTML the test already exercises via the production fetch.
+      - name: Dump static-gen output dir listings on failure
+        if: failure()
+        run: |
+          mkdir -p apps/admin/test-results/livedit/output-listing
+          {
+            echo "=== staging ===" ;
+            find apps/admin/output/staging -maxdepth 5 -printf '%p (%s bytes)\n' 2>/dev/null || true ;
+            echo "" ;
+            echo "=== production ===" ;
+            find apps/admin/output/production -maxdepth 5 -printf '%p (%s bytes)\n' 2>/dev/null || true ;
+          } > apps/admin/test-results/livedit/output-listing/find-output.txt
+          {
+            echo "=== production/current/routing-manifest.json ===" ;
+            cat apps/admin/output/production/current/routing-manifest.json 2>/dev/null || echo "(not found)" ;
+            echo "" ;
+            echo "=== production/current/index.html (first 1000 chars) ===" ;
+            head -c 1000 apps/admin/output/production/current/index.html 2>/dev/null || echo "(not found)" ;
+          } > apps/admin/test-results/livedit/output-listing/production-current.txt
+
       - name: Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
