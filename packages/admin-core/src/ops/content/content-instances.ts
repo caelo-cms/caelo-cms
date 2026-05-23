@@ -30,6 +30,7 @@ import {
   contentInstanceUpdateSchema,
   err,
   forkPlacementContentSchema,
+  moduleRefSchema,
   ok,
   setPlacementContentSchema,
 } from "@caelo-cms/shared";
@@ -138,15 +139,6 @@ async function validateNestedRefs(
       typeof (f as { kind?: unknown }).kind === "string",
   );
 
-  function isRef(v: unknown): v is { moduleId: string; contentInstanceId: string } {
-    return (
-      typeof v === "object" &&
-      v !== null &&
-      typeof (v as { moduleId?: unknown }).moduleId === "string" &&
-      typeof (v as { contentInstanceId?: unknown }).contentInstanceId === "string"
-    );
-  }
-
   // v0.12.1 — per-primitive-kind shape checks. Catches AI shape errors
   // at write time (e.g. number field gets a non-numeric string) instead
   // of letting the renderer silently String()-coerce them. We only
@@ -209,13 +201,14 @@ async function validateNestedRefs(
     if (f.kind === "module") {
       const v = values[f.name];
       if (v === undefined || v === null) continue; // optional — render emits comment
-      if (!isRef(v)) {
+      const parsed = moduleRefSchema.safeParse(v);
+      if (!parsed.success) {
         return {
           ok: false,
           message: `field "${f.name}" (kind=module) expects { moduleId, contentInstanceId }; got ${JSON.stringify(v)}`,
         };
       }
-      refsToCheck.push({ fieldName: f.name, index: null, ref: v });
+      refsToCheck.push({ fieldName: f.name, index: null, ref: parsed.data });
     } else if (f.kind === "module-list") {
       const v = values[f.name];
       if (v === undefined || v === null) {
@@ -247,13 +240,14 @@ async function validateNestedRefs(
       }
       for (let i = 0; i < v.length; i += 1) {
         const el = v[i];
-        if (!isRef(el)) {
+        const parsed = moduleRefSchema.safeParse(el);
+        if (!parsed.success) {
           return {
             ok: false,
             message: `field "${f.name}"[${i}] expects { moduleId, contentInstanceId }; got ${JSON.stringify(el)}`,
           };
         }
-        refsToCheck.push({ fieldName: f.name, index: i, ref: el });
+        refsToCheck.push({ fieldName: f.name, index: i, ref: parsed.data });
       }
     }
   }
