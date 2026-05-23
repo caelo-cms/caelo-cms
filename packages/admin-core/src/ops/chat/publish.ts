@@ -124,7 +124,14 @@ export async function mergeBranchSnapshotsToMain(
 
   type Row = { entity_id: string; state: unknown };
   const filterByKind = (
-    kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent" | "structuredSet",
+    kind:
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "pageModuleContent"
+      | "structuredSet"
+      | "contentInstance",
   ) => input.entities?.filter((e) => e.kind === kind).map((e) => e.entityId) ?? null;
   const wantModules = filterByKind("module");
   const wantTemplates = filterByKind("template");
@@ -132,6 +139,7 @@ export async function mergeBranchSnapshotsToMain(
   const wantLayouts = filterByKind("pageLayout");
   const wantContent = filterByKind("pageModuleContent");
   const wantStructuredSets = filterByKind("structuredSet");
+  const wantContentInstances = filterByKind("contentInstance");
   const includeAll = input.entities === undefined;
 
   const inFilter = (ids: readonly string[] | null) =>
@@ -142,7 +150,14 @@ export async function mergeBranchSnapshotsToMain(
           sql`, `,
         )})`;
   const notYetPublished = (
-    kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent" | "structuredSet",
+    kind:
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "pageModuleContent"
+      | "structuredSet"
+      | "contentInstance",
   ) =>
     options.skipAlreadyPublished
       ? sql`
@@ -161,7 +176,14 @@ export async function mergeBranchSnapshotsToMain(
   `)) as unknown as { n: number }[];
   const hasStagedMarks = (stagedCountRows[0]?.n ?? 0) > 0;
   const stageFilter = (
-    kind: "module" | "template" | "page" | "pageLayout" | "pageModuleContent" | "structuredSet",
+    kind:
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "pageModuleContent"
+      | "structuredSet"
+      | "contentInstance",
   ) =>
     options.honourStageFilter && includeAll && hasStagedMarks
       ? sql`
@@ -261,13 +283,32 @@ export async function mergeBranchSnapshotsToMain(
     WHERE 1=1 ${notYetPublished("structuredSet")} ${stageFilter("structuredSet")} ${inFilter(includeAll ? null : (wantStructuredSets ?? []))}
   `)) as unknown as Row[]);
 
+  // v0.12.0 — content_instances merge.
+  const contentInstanceRows =
+    !includeAll && (wantContentInstances?.length ?? 0) === 0
+      ? []
+      : ((await tx.execute(sql`
+    SELECT entity_id, state FROM (
+      SELECT DISTINCT ON (cis.content_instance_id)
+             cis.content_instance_id::text AS entity_id,
+             cis.state,
+             cis.content_instance_id::text AS entity_id_text
+      FROM content_instance_snapshots cis
+      JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      ORDER BY cis.content_instance_id, ss.created_at DESC
+    ) sub
+    WHERE 1=1 ${notYetPublished("contentInstance")} ${stageFilter("contentInstance")} ${inFilter(includeAll ? null : (wantContentInstances ?? []))}
+  `)) as unknown as Row[]);
+
   const total =
     moduleRows.length +
     templateRows.length +
     pageRows.length +
     layoutRows.length +
     contentRows.length +
-    structuredSetRows.length;
+    structuredSetRows.length +
+    contentInstanceRows.length;
   if (total === 0) {
     return { ok: true, value: { siteSnapshotId: null, entityCount: 0, session, includeAll } };
   }
@@ -324,6 +365,18 @@ export async function mergeBranchSnapshotsToMain(
           deletedAt: string | null;
         };
         return { kind: "structuredSet", entityId: r.entity_id, state: raw };
+      }),
+      ...contentInstanceRows.map((r): SnapshotEntity => {
+        const raw = parseSnapshotState(r.state) as {
+          schemaVersion: 1;
+          moduleId: string;
+          slug: string | null;
+          displayName: string | null;
+          values: Record<string, unknown>;
+          version: number;
+          deletedAt: string | null;
+        };
+        return { kind: "contentInstance", entityId: r.entity_id, state: raw };
       }),
     ];
   } catch (e) {
@@ -396,15 +449,61 @@ export async function mergeBranchSnapshotsToMain(
           updated_at     = now()
       `);
     } else if (e.kind === "pageLayout") {
+      // v0.12.0 — page_modules now carries content_instance_id (NOT NULL)
+      // and sync_mode. Producers (pages.set_modules) write the placement
+      // metadata into state.blocks[i].placements. Older snapshots
+      // (pre-v0.12, replay only) carry only moduleIds — for those, mint
+      // fresh unsynced content_instances per placement so the FK is
+      // satisfied; the content stays at module field defaults.
       await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${e.entityId}::uuid`);
       for (const b of e.state.blocks) {
-        let pos = 0;
-        for (const mid of b.moduleIds) {
-          await tx.execute(sql`
-            INSERT INTO page_modules (page_id, block_name, position, module_id)
-            VALUES (${e.entityId}::uuid, ${b.blockName}, ${pos}, ${mid}::uuid)
-          `);
-          pos += 1;
+        if (b.placements && b.placements.length > 0) {
+          let pos = 0;
+          for (const p of b.placements) {
+            await tx.execute(sql`
+              INSERT INTO page_modules
+                (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+              VALUES (
+                ${e.entityId}::uuid,
+                ${b.blockName},
+                ${pos},
+                ${p.moduleId}::uuid,
+                ${p.contentInstanceId}::uuid,
+                ${p.syncMode}
+              )
+            `);
+            pos += 1;
+          }
+        } else {
+          // Pre-v0.12 snapshot fallback — mint fresh content_instances
+          // for replay so the new FK is satisfied.
+          let pos = 0;
+          for (const mid of b.moduleIds) {
+            const minted = (await tx.execute(sql`
+              INSERT INTO content_instances (module_id, "values")
+              VALUES (${mid}::uuid, '{}'::jsonb)
+              RETURNING id::text AS id
+            `)) as unknown as { id: string }[];
+            const newCiId = minted[0]?.id;
+            if (!newCiId) {
+              throw new Error(
+                `publish: failed to mint content_instance for legacy pageLayout snapshot (page=${e.entityId} block=${b.blockName} pos=${pos})`,
+              );
+            }
+            await tx.execute(sql`
+              INSERT INTO page_modules
+                (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+              VALUES (
+                ${e.entityId}::uuid,
+                ${b.blockName},
+                ${pos},
+                ${mid}::uuid,
+                ${newCiId}::uuid,
+                'unsynced'
+              )
+            `);
+            pos += 1;
+          }
         }
       }
       await tx.execute(sql`
@@ -443,6 +542,37 @@ export async function mergeBranchSnapshotsToMain(
             chat_branch_id = NULL,
             updated_at = now()
         WHERE id = ${e.entityId}::uuid
+      `);
+    } else if (e.kind === "contentInstance") {
+      // v0.12.0 — content_instances merge: UPSERT the live row + clear
+      // chat_branch_id so branched-create rows graduate to main. Mirrors
+      // the modules merge shape. The content_instances row may already
+      // exist on main (the chat edited a shared row) OR have been
+      // branched-created by this chat (the row is new and currently tagged
+      // with chat_branch_id).
+      const valuesJson = JSON.stringify(e.state.values);
+      await tx.execute(sql`
+        INSERT INTO content_instances
+          (id, module_id, slug, display_name, "values", version, deleted_at, chat_branch_id)
+        VALUES (
+          ${e.entityId}::uuid,
+          ${e.state.moduleId}::uuid,
+          ${e.state.slug},
+          ${e.state.displayName},
+          ${valuesJson}::jsonb,
+          ${e.state.version},
+          ${e.state.deletedAt ? sql`now()` : sql`NULL`},
+          NULL
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          slug = EXCLUDED.slug,
+          display_name = EXCLUDED.display_name,
+          "values" = EXCLUDED."values",
+          version = EXCLUDED.version,
+          deleted_at = EXCLUDED.deleted_at,
+          chat_branch_id = NULL,
+          updated_at = now(),
+          updated_by = ${ctx.actorId}::uuid
       `);
     }
   }

@@ -967,29 +967,128 @@ export const setPageModulesOp = defineOperation({
       }
     }
 
+    // v0.12.0 — page_modules requires content_instance_id NOT NULL.
+    // Read the current state so we can preserve content bindings for
+    // placements that survive (same blockName, position, moduleId) and
+    // mint fresh unsynced content_instances for net-new placements.
+    const priorRows = (await tx.execute(sql`
+      SELECT block_name, position, module_id::text AS module_id,
+             content_instance_id::text AS content_instance_id, sync_mode
+      FROM page_modules WHERE page_id = ${input.pageId}::uuid
+    `)) as unknown as {
+      block_name: string;
+      position: number;
+      module_id: string;
+      content_instance_id: string;
+      sync_mode: "synced" | "unsynced";
+    }[];
+    const priorByKey = new Map<
+      string,
+      { moduleId: string; contentInstanceId: string; syncMode: "synced" | "unsynced" }
+    >();
+    for (const r of priorRows) {
+      priorByKey.set(`${r.block_name}#${r.position}`, {
+        moduleId: r.module_id,
+        contentInstanceId: r.content_instance_id,
+        syncMode: r.sync_mode,
+      });
+    }
+
+    // Resolve `(moduleId, contentInstanceId, syncMode)` for every new
+    // placement. Mint fresh unsynced content_instances where needed —
+    // this happens in BOTH branched and live paths so the snapshot's
+    // `placements` array carries authoritative bindings.
+    type ResolvedPlacement = {
+      blockName: string;
+      position: number;
+      moduleId: string;
+      contentInstanceId: string;
+      syncMode: "synced" | "unsynced";
+    };
+    const resolved: ResolvedPlacement[] = [];
+    for (const block of input.blocks) {
+      let position = 0;
+      for (const moduleId of block.moduleIds) {
+        const prior = priorByKey.get(`${block.blockName}#${position}`);
+        let contentInstanceId: string;
+        let syncMode: "synced" | "unsynced";
+        if (prior && prior.moduleId === moduleId) {
+          // Same module survives at the same slot — preserve binding.
+          contentInstanceId = prior.contentInstanceId;
+          syncMode = prior.syncMode;
+        } else {
+          // New placement or module swap — mint fresh unsynced content_instance.
+          const minted = (await tx.execute(sql`
+            INSERT INTO content_instances
+              (module_id, "values", updated_by, chat_branch_id)
+            VALUES (
+              ${moduleId}::uuid,
+              '{}'::jsonb,
+              ${ctx.actorId}::uuid,
+              ${ctx.chatBranchId ?? null}::uuid
+            )
+            RETURNING id::text AS id
+          `)) as unknown as { id: string }[];
+          const newId = minted[0]?.id;
+          if (!newId) {
+            return err({
+              kind: "HandlerError",
+              operation: "pages.set_modules",
+              message: "failed to mint content_instance for new placement",
+            });
+          }
+          contentInstanceId = newId;
+          syncMode = "unsynced";
+        }
+        resolved.push({
+          blockName: block.blockName,
+          position,
+          moduleId,
+          contentInstanceId,
+          syncMode,
+        });
+        position += 1;
+      }
+    }
+
     // v0.5.3 — branched: skip live page_modules write; build the
     // layout state in-memory and emit branched snapshot.
     const branched = !!ctx.chatBranchId;
     let layoutState: import("../../snapshots/state.js").PageLayoutState;
     if (branched) {
+      const byBlock = new Map<string, ResolvedPlacement[]>();
+      for (const p of resolved) {
+        const arr = byBlock.get(p.blockName) ?? [];
+        arr.push(p);
+        byBlock.set(p.blockName, arr);
+      }
       layoutState = {
         schemaVersion: 1,
         blocks: input.blocks.map((b) => ({
           blockName: b.blockName,
           moduleIds: [...b.moduleIds],
+          placements: (byBlock.get(b.blockName) ?? []).map((p) => ({
+            moduleId: p.moduleId,
+            contentInstanceId: p.contentInstanceId,
+            syncMode: p.syncMode,
+          })),
         })),
       };
     } else {
       await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${input.pageId}::uuid`);
-      for (const block of input.blocks) {
-        let position = 0;
-        for (const moduleId of block.moduleIds) {
-          await tx.execute(sql`
-            INSERT INTO page_modules (page_id, block_name, position, module_id)
-            VALUES (${input.pageId}::uuid, ${block.blockName}, ${position}, ${moduleId}::uuid)
-          `);
-          position += 1;
-        }
+      for (const p of resolved) {
+        await tx.execute(sql`
+          INSERT INTO page_modules
+            (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+          VALUES (
+            ${input.pageId}::uuid,
+            ${p.blockName},
+            ${p.position},
+            ${p.moduleId}::uuid,
+            ${p.contentInstanceId}::uuid,
+            ${p.syncMode}
+          )
+        `);
       }
       await tx.execute(sql`
         UPDATE pages SET updated_at = now(), version = version + 1

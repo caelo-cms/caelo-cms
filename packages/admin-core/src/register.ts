@@ -68,6 +68,15 @@ import {
   updateModulesManyOp,
 } from "./ops/content/modules.js";
 import {
+  createContentInstanceOp,
+  deleteContentInstanceOp,
+  forkPlacementContentOp,
+  getContentInstanceOp,
+  listContentInstancesOp,
+  setContentInstanceValuesOp,
+  setPlacementContentOp,
+} from "./ops/content/content-instances.js";
+import {
   getPageModuleContentOp,
   setPageModuleContentOp,
 } from "./ops/content/page-module-content.js";
@@ -480,6 +489,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setPageModulesOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
+  // v0.12.0 — content_instances + placement binding ops.
+  registry.register(listContentInstancesOp);
+  registry.register(getContentInstanceOp);
+  registry.register(createContentInstanceOp);
+  registry.register(setContentInstanceValuesOp);
+  registry.register(deleteContentInstanceOp);
+  registry.register(setPlacementContentOp);
+  registry.register(forkPlacementContentOp);
   registry.register(duplicatePageOp);
   registry.register(changeTemplateOp);
   registry.register(deletePageOp);

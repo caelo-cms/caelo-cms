@@ -340,18 +340,40 @@ export async function loadPageLayoutState(
   pageId: string,
 ): Promise<PageLayoutState> {
   const rows = (await tx.execute(sql`
-    SELECT block_name, position, module_id::text AS module_id
+    SELECT block_name,
+           position,
+           module_id::text AS module_id,
+           content_instance_id::text AS content_instance_id,
+           sync_mode
     FROM page_modules WHERE page_id = ${pageId}::uuid
     ORDER BY block_name ASC, position ASC
-  `)) as unknown as { block_name: string; position: number; module_id: string }[];
-  const grouped = new Map<string, string[]>();
+  `)) as unknown as {
+    block_name: string;
+    position: number;
+    module_id: string;
+    content_instance_id: string;
+    sync_mode: "synced" | "unsynced";
+  }[];
+  const grouped = new Map<
+    string,
+    { moduleIds: string[]; placements: { moduleId: string; contentInstanceId: string; syncMode: "synced" | "unsynced" }[] }
+  >();
   for (const r of rows) {
-    const arr = grouped.get(r.block_name) ?? [];
-    arr.push(r.module_id);
-    grouped.set(r.block_name, arr);
+    const bucket = grouped.get(r.block_name) ?? { moduleIds: [], placements: [] };
+    bucket.moduleIds.push(r.module_id);
+    bucket.placements.push({
+      moduleId: r.module_id,
+      contentInstanceId: r.content_instance_id,
+      syncMode: r.sync_mode,
+    });
+    grouped.set(r.block_name, bucket);
   }
   return {
     schemaVersion: 1,
-    blocks: [...grouped.entries()].map(([blockName, moduleIds]) => ({ blockName, moduleIds })),
+    blocks: [...grouped.entries()].map(([blockName, b]) => ({
+      blockName,
+      moduleIds: b.moduleIds,
+      placements: b.placements,
+    })),
   };
 }

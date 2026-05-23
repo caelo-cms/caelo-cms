@@ -63,11 +63,34 @@ export interface PageState {
   readonly deletedAt: string | null;
 }
 
+/**
+ * Page layout state — the ordered (block, module) tuples that make up
+ * a page's main content slot.
+ *
+ * v0.4.0–v0.11.x carried only `{ blockName, moduleIds }`. v0.12.0 adds
+ * `placements` carrying the full `(moduleId, contentInstanceId, syncMode)`
+ * triple so chat.publish can re-insert page_modules rows with the new
+ * NOT NULL content_instance_id column populated.
+ *
+ * `moduleIds` is retained for backward-compatibility with pre-v0.12
+ * snapshots: when reverting an old snapshot, `placements` is undefined,
+ * the merger falls back to `moduleIds`, and mints a fresh unsynced
+ * content_instance per placement.
+ */
+export interface PageLayoutPlacement {
+  readonly moduleId: string;
+  readonly contentInstanceId: string;
+  readonly syncMode: "synced" | "unsynced";
+}
+
 export interface PageLayoutState {
   readonly schemaVersion: StateSchemaVersion;
   readonly blocks: readonly {
     readonly blockName: string;
+    /** Pre-v0.12 shape. Always present so old snapshots can be reverted. */
     readonly moduleIds: readonly string[];
+    /** v0.12.0+ — full placement metadata. Producers ALWAYS set this. */
+    readonly placements?: readonly PageLayoutPlacement[];
   }[];
 }
 
