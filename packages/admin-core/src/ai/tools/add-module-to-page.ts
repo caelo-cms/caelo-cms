@@ -227,9 +227,22 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
         content: `pages.set_modules failed: ${describeError(setRes.error)}`,
       };
     }
+    // v0.12.0 — surface the extractor's inferred fields when the AI
+    // didn't supply `fields[]` so the AI sees the heuristic names
+    // it'll need to live with (or rename via edit_module).
+    const createdValue = created.value as { extractedFields?: { name: string; kind: string }[] };
+    const extracted = createdValue.extractedFields ?? [];
+    const extractedHint =
+      extracted.length > 0
+        ? ` ⚠️ Extractor fallback used — minted heuristic field names: ${extracted.map((f) => `${f.name} (${f.kind})`).join(", ")}. **Next time, author HTML + fields together** with semantic snake_case names so \`## Modules\` stays useful.`
+        : "";
+    const missingMetaHint =
+      input.description === undefined || input.kind === undefined
+        ? ` ⚠️ Missing \`description\` / \`kind\` — \`## Modules\` shows this module as "(no description)" which hurts your future self's picks. Patch via edit_module.`
+        : "";
     return {
       ok: true,
-      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}`,
+      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}.${extractedHint}${missingMetaHint}`,
     };
   },
 };

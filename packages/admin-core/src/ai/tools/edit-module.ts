@@ -98,7 +98,13 @@ export const editModuleTool: ToolDefinitionWithHandler<
         const list = extracted.map((f) => `${f.name} (${f.kind})`).join(", ");
         return {
           ok: true,
-          content: `module ${input.moduleId} updated. Extractor inferred ${extracted.length} field(s): ${list}. Rename via a follow-up edit_module with explicit \`fields\`.`,
+          // v0.12.0 — AI-visible deprecation hint per CLAUDE.md §1A.
+          // The extractor fired because the caller didn't supply
+          // `fields[]`. Heuristic names like `spanText` or `cta2label2`
+          // pollute the `## Modules` block — the AI's future self
+          // will struggle to pick the right module if the catalog is
+          // full of garbage. Tell the AI to author next time.
+          content: `⚠️ Extractor fallback used — module ${input.moduleId} updated with heuristic field names: ${list}. **Next time, author HTML + fields together** with semantic snake_case names (e.g. \`hero_title\`, \`primary_cta_href\`) so the \`## Modules\` block stays useful. Rename via a follow-up edit_module with explicit \`fields\` if these names are confusing.`,
         };
       }
       return { ok: true, content: `module ${input.moduleId} updated` };
