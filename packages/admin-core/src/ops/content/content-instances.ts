@@ -353,7 +353,14 @@ export const listContentInstancesOp = defineOperation({
     .strict(),
   output: z.object({ instances: z.array(contentInstanceRowSchema) }),
   handler: async (ctx, input, tx) => {
-    const branchFilter = branchVisibilityFilter(ctx);
+    // v0.12.2 — `chat_branch_id` exists on BOTH content_instances and
+    // modules; this query joins both so the helper's unqualified
+    // `chat_branch_id` filter is ambiguous to the planner. Inline the
+    // ci-qualified equivalent here rather than touching the shared
+    // helper (other callers don't join modules).
+    const branchFilter = ctx.chatBranchId
+      ? sql` AND (ci.chat_branch_id IS NULL OR ci.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+      : sql` AND ci.chat_branch_id IS NULL`;
     const moduleFilter = input.moduleId ? sql`AND ci.module_id = ${input.moduleId}::uuid` : sql``;
     const slugFilter = input.slug ? sql`AND ci.slug = ${input.slug}` : sql``;
     const searchFilter = input.search
