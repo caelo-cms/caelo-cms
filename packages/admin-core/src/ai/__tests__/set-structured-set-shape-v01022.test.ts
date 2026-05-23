@@ -18,10 +18,17 @@
  *  - `set_structured_set({ kind, slug, displayName, items })`
  *  - `delete_structured_set({ kind, slug })`
  *
- * The kind-specific wrappers are deleted. `set_structured_set`'s
- * JSON Schema branches per `kind` so the AI's tool-call validator
- * catches per-item shape mismatches at generation time across ALL
- * six kinds (not just nav-menu, as v0.10.20 narrowly covered).
+ * The kind-specific wrappers are deleted. v0.10.22 originally added a
+ * top-level `allOf: [{ if, then }, …]` discriminator on the
+ * `set_structured_set` tool's JSON Schema so the AI's tool-call
+ * validator could catch per-item shape mismatches at generation time
+ * across all six kinds. The issue #47 real-AI e2e suite caught that
+ * Anthropic's Messages API rejects that shape — the request lands
+ * with `tools.N.custom.input_schema: input_schema does not support
+ * oneOf, allOf, or anyOf at the top level`. Reverted to keeping the
+ * input_schema flat and letting Zod (`validateStructuredSetItems` at
+ * handler time) be the per-kind enforcer. This test now also
+ * regression-guards the `allOf` removal.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -48,68 +55,27 @@ describe("v0.10.22 — set_structured_set unified surface + per-kind JSON Schema
     expect(schema.properties.kind.enum.sort()).toEqual([...allKinds].sort());
   });
 
-  it("has an allOf branch for each kind discriminating items", () => {
-    const schema = setStructuredSetTool.inputSchema as {
-      allOf: Array<{ if: { properties: { kind: { const: string } } } }>;
-    };
-    const branchedKinds = schema.allOf.map((b) => b.if.properties.kind.const).sort();
-    expect(branchedKinds).toEqual([...allKinds].sort());
+  it("input_schema does NOT use top-level allOf / oneOf / anyOf (Anthropic API rejects)", () => {
+    // Regression guard for the issue #47 finding: Anthropic's Messages
+    // API returns `tools.N.custom.input_schema: input_schema does not
+    // support oneOf, allOf, or anyOf at the top level`. Per-kind item
+    // validation lives at `structured_sets.set`'s handler via
+    // `validateStructuredSetItems(kind, items)` instead.
+    const schema = setStructuredSetTool.inputSchema as Record<string, unknown>;
+    expect(schema.allOf).toBeUndefined();
+    expect(schema.oneOf).toBeUndefined();
+    expect(schema.anyOf).toBeUndefined();
   });
 
-  it("nav-menu branch requires label + href on each item", () => {
+  it("items is a plain array — per-kind shape enforced at handler time", () => {
+    // The flat `items: { type: "array" }` shape (vs the v0.10.22-pre
+    // per-kind branches) is what makes the input_schema accepted by
+    // Anthropic. Per-kind item validation happens server-side; a bad
+    // shape returns a structured tool error from `describeError`.
     const schema = setStructuredSetTool.inputSchema as {
-      allOf: Array<{
-        if: { properties: { kind: { const: string } } };
-        then: { properties: { items: { items: { required: string[] } } } };
-      }>;
+      properties: { items: { type: string } };
     };
-    const navBranch = schema.allOf.find((b) => b.if.properties.kind.const === "nav-menu");
-    expect(navBranch?.then.properties.items.items.required).toEqual(["label", "href"]);
-  });
-
-  it("tags branch requires slug + displayName (NOT label/href — the v0.10.20 nav-menu shape)", () => {
-    const schema = setStructuredSetTool.inputSchema as {
-      allOf: Array<{
-        if: { properties: { kind: { const: string } } };
-        then: { properties: { items: { items: { required: string[] } } } };
-      }>;
-    };
-    const tagBranch = schema.allOf.find((b) => b.if.properties.kind.const === "tags");
-    expect(tagBranch?.then.properties.items.items.required).toEqual(["slug", "displayName"]);
-  });
-
-  it("theme branch requires token + value + pins the lowercase-kebab-case pattern", () => {
-    const schema = setStructuredSetTool.inputSchema as {
-      allOf: Array<{
-        if: { properties: { kind: { const: string } } };
-        then: {
-          properties: {
-            items: {
-              items: {
-                required: string[];
-                properties: { token: { pattern: string } };
-              };
-            };
-          };
-        };
-      }>;
-    };
-    const themeBranch = schema.allOf.find((b) => b.if.properties.kind.const === "theme");
-    expect(themeBranch?.then.properties.items.items.required).toEqual(["token", "value"]);
-    expect(themeBranch?.then.properties.items.items.properties.token.pattern).toBe(
-      "^[a-z][a-z0-9-]*$",
-    );
-  });
-
-  it("language-selector branch requires locale (the previously-unreachable kind)", () => {
-    const schema = setStructuredSetTool.inputSchema as {
-      allOf: Array<{
-        if: { properties: { kind: { const: string } } };
-        then: { properties: { items: { items: { required: string[] } } } };
-      }>;
-    };
-    const langBranch = schema.allOf.find((b) => b.if.properties.kind.const === "language-selector");
-    expect(langBranch?.then.properties.items.items.required).toEqual(["locale"]);
+    expect(schema.properties.items.type).toBe("array");
   });
 
   it("description references the unified surface, not the removed wrappers", () => {
