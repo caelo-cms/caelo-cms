@@ -12,7 +12,18 @@
  */
 
 import { z } from "zod";
-import { MODULE_CSS_MAX, MODULE_HTML_MAX, MODULE_JS_MAX } from "./content.js";
+import {
+  contentInstanceCreateSchema,
+  contentInstanceDeleteSchema,
+  contentInstanceRenameSchema,
+  contentInstanceUpdateSchema,
+  forkPlacementContentSchema,
+  MODULE_CSS_MAX,
+  MODULE_HTML_MAX,
+  MODULE_JS_MAX,
+  moduleFieldSchema,
+  setPlacementContentSchema,
+} from "./content.js";
 
 /**
  * v0.6.2 — `position` argument shared across the three `add_module_to_*`
@@ -47,19 +58,7 @@ export const editModuleToolInput = z
      * fill these via `set_page_module_content`. Optional on edits — pass
      * to replace the declared schema.
      */
-    fields: z
-      .array(
-        z
-          .object({
-            name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
-            kind: z.enum(["text", "richtext", "url", "image", "number", "boolean", "link"]),
-            label: z.string().min(1).max(128),
-            default: z.unknown().optional(),
-          })
-          .strict(),
-      )
-      .max(64)
-      .optional(),
+    fields: z.array(moduleFieldSchema).max(64).optional(),
   })
   .strict();
 
@@ -114,19 +113,7 @@ export const addModuleToPageToolInput = z
      * `set_page_module_content` later. Optional — modules with no
      * field schema are static HTML.
      */
-    fields: z
-      .array(
-        z
-          .object({
-            name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
-            kind: z.enum(["text", "richtext", "url", "image", "number", "boolean", "link"]),
-            label: z.string().min(1).max(128),
-            default: z.unknown().optional(),
-          })
-          .strict(),
-      )
-      .max(64)
-      .optional(),
+    fields: z.array(moduleFieldSchema).max(64).optional(),
   })
   .strict();
 
@@ -146,19 +133,7 @@ export const addModuleToTemplateToolInput = z
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
     /** v0.5.21 — see addModuleToPageToolInput.fields for context. */
-    fields: z
-      .array(
-        z
-          .object({
-            name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
-            kind: z.enum(["text", "richtext", "url", "image", "number", "boolean", "link"]),
-            label: z.string().min(1).max(128),
-            default: z.unknown().optional(),
-          })
-          .strict(),
-      )
-      .max(64)
-      .optional(),
+    fields: z.array(moduleFieldSchema).max(64).optional(),
   })
   .strict();
 
@@ -181,6 +156,37 @@ export const addPluginToPageToolInput = z
     position: positionInputSchema,
   })
   .strict();
+
+// ─── v0.12.0 — content_instances + placement AI tools ─────────────────
+
+/**
+ * `list_content_instances` — browse the content library. The `placementCount`
+ * returned per row is a blast-radius affordance: the AI can decide whether
+ * to edit a shared instance (propagates everywhere) or fork it first.
+ */
+export const listContentInstancesToolInput = z
+  .object({
+    moduleId: z.string().uuid().optional(),
+    slug: z.string().min(1).max(64).optional(),
+    /** Free-text matches against displayName + slug. Case-insensitive substring. */
+    search: z.string().min(1).max(128).optional(),
+    /** Narrow to "instances referenced from this page" for chat-runner planning. */
+    pageId: z.string().uuid().optional(),
+  })
+  .strict();
+
+export const getContentInstanceToolInput = z
+  .object({
+    id: z.string().uuid(),
+  })
+  .strict();
+
+export const createContentInstanceToolInput = contentInstanceCreateSchema;
+export const setContentInstanceValuesToolInput = contentInstanceUpdateSchema;
+export const renameContentInstanceToolInput = contentInstanceRenameSchema;
+export const deleteContentInstanceToolInput = contentInstanceDeleteSchema;
+export const setPlacementContentToolInput = setPlacementContentSchema;
+export const forkPlacementContentToolInput = forkPlacementContentSchema;
 
 export const AI_TOOLS = [
   "edit_module",
@@ -206,11 +212,28 @@ export const AI_TOOLS = [
   "reorder_module",
   "set_nav_menu",
   "add_plugin_to_page",
+  // v0.12.0 — content_instances + placement binding
+  "list_content_instances",
+  "get_content_instance",
+  "create_content_instance",
+  "set_content_instance_values",
+  "rename_content_instance",
+  "delete_content_instance",
+  "set_placement_content",
+  "fork_placement_content",
 ] as const;
 export type AiToolName = (typeof AI_TOOLS)[number];
 export type AddModuleToPageToolInput = z.infer<typeof addModuleToPageToolInput>;
 export type AddModuleToTemplateToolInput = z.infer<typeof addModuleToTemplateToolInput>;
 export type AddPluginToPageToolInput = z.infer<typeof addPluginToPageToolInput>;
+export type ListContentInstancesToolInput = z.infer<typeof listContentInstancesToolInput>;
+export type GetContentInstanceToolInput = z.infer<typeof getContentInstanceToolInput>;
+export type CreateContentInstanceToolInput = z.infer<typeof createContentInstanceToolInput>;
+export type SetContentInstanceValuesToolInput = z.infer<typeof setContentInstanceValuesToolInput>;
+export type RenameContentInstanceToolInput = z.infer<typeof renameContentInstanceToolInput>;
+export type DeleteContentInstanceToolInput = z.infer<typeof deleteContentInstanceToolInput>;
+export type SetPlacementContentToolInput = z.infer<typeof setPlacementContentToolInput>;
+export type ForkPlacementContentToolInput = z.infer<typeof forkPlacementContentToolInput>;
 
 /** Chat ops input shapes — used by the SvelteKit form actions. */
 export const chatCreateSessionInput = z
@@ -492,19 +515,7 @@ export const addModuleToLayoutToolInput = z
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
     /** v0.5.21 — see addModuleToPageToolInput.fields for context. */
-    fields: z
-      .array(
-        z
-          .object({
-            name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
-            kind: z.enum(["text", "richtext", "url", "image", "number", "boolean", "link"]),
-            label: z.string().min(1).max(128),
-            default: z.unknown().optional(),
-          })
-          .strict(),
-      )
-      .max(64)
-      .optional(),
+    fields: z.array(moduleFieldSchema).max(64).optional(),
   })
   .strict();
 

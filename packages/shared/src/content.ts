@@ -41,9 +41,26 @@ const moduleJs = z.string().max(MODULE_JS_MAX, `js exceeds ${MODULE_JS_MAX} byte
 /**
  * v0.4.0 — module field schema. Each field declares one substitution slot in
  * the module's templated HTML (`{{fieldName}}`) and the kind of content it
- * holds. Field values live on each page placement in `page_module_content`.
+ * holds. Field values live on each page placement (v0.4.0: in
+ * `page_module_content.content_values`; v0.12.0 onward: in
+ * `content_instances.values`).
+ *
+ * v0.12.0 — extended to nine kinds. Primitive kinds (text/richtext/url/
+ * image/number/boolean/link) substitute via `{{fieldName}}` placeholders.
+ * The two new nested kinds reference another module by id + content_instance:
+ *
+ *   - `module` — single nested module reference. HTML slot syntax: `{{>fieldName}}`.
+ *     Value shape: `{ moduleId, contentInstanceId }`.
+ *   - `module-list` — ordered array of nested module references. HTML slot
+ *     syntax: `{{#fieldName}}…inner…{{/fieldName}}` — `inner` renders once
+ *     per element. Value shape: `Array<{ moduleId, contentInstanceId }>`.
+ *
+ * Schema is a discriminated union by `kind` so the validator rejects, e.g., a
+ * `text` kind that carries `allowedModuleSlugs` (which only nested kinds use)
+ * or a `module-list` that carries a `default` (nested kinds populate from
+ * referenced content_instances, not from defaults).
  */
-export const MODULE_FIELD_KINDS = [
+export const MODULE_FIELD_PRIMITIVE_KINDS = [
   "text",
   "richtext",
   "url",
@@ -52,18 +69,75 @@ export const MODULE_FIELD_KINDS = [
   "boolean",
   "link",
 ] as const;
-export const moduleFieldSchema = z
+
+export const MODULE_FIELD_NESTED_KINDS = ["module", "module-list"] as const;
+
+/** All nine v0.12.0 kinds. */
+export const MODULE_FIELD_KINDS = [
+  ...MODULE_FIELD_PRIMITIVE_KINDS,
+  ...MODULE_FIELD_NESTED_KINDS,
+] as const;
+
+const moduleFieldName = z
+  .string()
+  .regex(/^[a-z][a-z0-9_]{0,63}$/, "name must be snake_case");
+const moduleFieldLabel = z.string().min(1).max(128);
+
+const moduleFieldPrimitiveSchema = z
   .object({
-    /** Identifier referenced inside module HTML as `{{name}}`. */
-    name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/, "name must be snake_case"),
-    kind: z.enum(MODULE_FIELD_KINDS),
-    /** Human-readable label shown in the content editor. */
-    label: z.string().min(1).max(128),
-    /** Default value used when a placement has no override. */
+    name: moduleFieldName,
+    kind: z.enum(MODULE_FIELD_PRIMITIVE_KINDS),
+    label: moduleFieldLabel,
+    /** Default value used when a placement's content_instance has no override. */
     default: z.unknown().optional(),
   })
   .strict();
+
+const moduleFieldModuleSchema = z
+  .object({
+    name: moduleFieldName,
+    kind: z.literal("module"),
+    label: moduleFieldLabel,
+    /**
+     * Optional whitelist of module slugs that may fill this slot. When
+     * absent, any module is permitted. The op-layer validator enforces
+     * the whitelist at `set_content_instance_values` time.
+     */
+    allowedModuleSlugs: z.array(slugSchema).max(32).optional(),
+  })
+  .strict();
+
+const moduleFieldModuleListSchema = z
+  .object({
+    name: moduleFieldName,
+    kind: z.literal("module-list"),
+    label: moduleFieldLabel,
+    allowedModuleSlugs: z.array(slugSchema).max(32).optional(),
+    /** Minimum count of elements. Validator enforces at write time. */
+    min: z.number().int().nonnegative().optional(),
+    /** Maximum count of elements. Validator enforces at write time. */
+    max: z.number().int().positive().max(256).optional(),
+  })
+  .strict();
+
+export const moduleFieldSchema = z.discriminatedUnion("kind", [
+  moduleFieldPrimitiveSchema,
+  moduleFieldModuleSchema,
+  moduleFieldModuleListSchema,
+]);
 export type ModuleField = z.infer<typeof moduleFieldSchema>;
+
+/**
+ * The shape of a single nested-module reference inside `content_instances.values`
+ * when the field's kind is `module` or — repeated inside an array — `module-list`.
+ */
+export const moduleRefSchema = z
+  .object({
+    moduleId: z.string().uuid(),
+    contentInstanceId: z.string().uuid(),
+  })
+  .strict();
+export type ModuleRef = z.infer<typeof moduleRefSchema>;
 
 const moduleFieldsArray = z
   .array(moduleFieldSchema)
@@ -221,3 +295,81 @@ export type TemplateBlocksSetInput = z.infer<typeof templateBlocksSetSchema>;
 export type PageCreateInput = z.infer<typeof pageCreateSchema>;
 export type PageUpdateInput = z.infer<typeof pageUpdateSchema>;
 export type PageSetModulesInput = z.infer<typeof pageSetModulesSchema>;
+
+// ─── v0.12.0 — content_instances ops ─────────────────────────────────
+
+/**
+ * v0.12.0 — content sync mode on a placement.
+ *
+ * `synced`   — editing the placement's content_instance propagates to
+ *              every other placement bound to the same row.
+ * `unsynced` — placement holds a private row. Default.
+ */
+export const syncModeSchema = z.enum(["synced", "unsynced"]);
+export type SyncMode = z.infer<typeof syncModeSchema>;
+
+/**
+ * `values` jsonb shape — keyed by module field name. Values are arbitrary
+ * jsonb. For nested-module field kinds, the value satisfies `moduleRefSchema`
+ * (single) or `moduleRefSchema[]` (list); the renderer + write-side validator
+ * enforces shape against the module's declared `fields[]`.
+ */
+const contentValuesSchema = z.record(z.string(), z.unknown());
+
+export const contentInstanceCreateSchema = z
+  .object({
+    moduleId: z.string().uuid(),
+    slug: slugSchema.optional(),
+    displayName: z.string().min(1).max(128).optional(),
+    values: contentValuesSchema.default({}),
+  })
+  .strict();
+
+export const contentInstanceUpdateSchema = z
+  .object({
+    id: z.string().uuid(),
+    /** Fully replaces existing values. */
+    values: contentValuesSchema,
+    /** Optional optimistic-concurrency token; mirrors pages.update. */
+    expectedVersion: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+export const contentInstanceRenameSchema = z
+  .object({
+    id: z.string().uuid(),
+    slug: slugSchema.nullable().optional(),
+    displayName: z.string().min(1).max(128).nullable().optional(),
+  })
+  .strict();
+
+export const contentInstanceDeleteSchema = z
+  .object({
+    id: z.string().uuid(),
+  })
+  .strict();
+
+export const setPlacementContentSchema = z
+  .object({
+    pageId: z.string().uuid(),
+    blockName: z.string().min(1).max(80),
+    position: z.number().int().nonnegative(),
+    contentInstanceId: z.string().uuid(),
+    syncMode: syncModeSchema,
+  })
+  .strict();
+
+export const forkPlacementContentSchema = z
+  .object({
+    pageId: z.string().uuid(),
+    blockName: z.string().min(1).max(80),
+    position: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type ContentInstanceCreateInput = z.infer<typeof contentInstanceCreateSchema>;
+export type ContentInstanceUpdateInput = z.infer<typeof contentInstanceUpdateSchema>;
+export type ContentInstanceRenameInput = z.infer<typeof contentInstanceRenameSchema>;
+export type ContentInstanceDeleteInput = z.infer<typeof contentInstanceDeleteSchema>;
+export type SetPlacementContentInput = z.infer<typeof setPlacementContentSchema>;
+export type ForkPlacementContentInput = z.infer<typeof forkPlacementContentSchema>;
