@@ -159,9 +159,17 @@ export function formatContentLibraryBlock(
       "_0 content_instances on this install — call `create_content_instance` to mint reusable content, or just edit per-page via `set_page_module_content` (auto-mints an unsynced instance per placement)._",
     ].join("\n");
   }
+  // v0.12.2 — sort by placementCount DESC before grouping so the 30-row
+  // cap surfaces the highest-blast-radius instances first. The op's
+  // default ORDER BY created_at ASC otherwise hides heavily-placed
+  // shared content (which is exactly what the AI most needs to see for
+  // edit-impact reasoning) behind older orphan rows. Map preserves
+  // insertion order — the first module-slug bucket encountered + its
+  // first row stay at the top.
+  const sortedInstances = [...instances].sort((a, b) => b.placementCount - a.placementCount);
   // Group by module slug for legibility.
   const byModule = new Map<string, typeof instances>();
-  for (const i of instances) {
+  for (const i of sortedInstances) {
     const arr = byModule.get(i.moduleSlug) ?? ([] as typeof instances);
     (
       arr as unknown as {
