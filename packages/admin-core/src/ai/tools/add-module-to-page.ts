@@ -57,11 +57,11 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
 > = {
   name: "add_module_to_page",
   description:
-    "Create a new module (HTML, optional CSS/JS) and place it in one of the page's blocks at the chosen position. " +
-    "v0.12.2 — pass module HTML with content baked in if that's natural; the server extracts content into `{{fieldName}}` placeholders + auto-mints fields (see edit_module for the inference rules). " +
-    "Alternatively pre-templatise with explicit `{{fieldName}}` references + a `fields` array for control. Mixing is fine. " +
-    "Use when the user asks to add NEW content (a button, a banner, a menu, a section) — not when they want to change an existing module (use edit_module for that). " +
-    "For chrome that should appear on every page, use add_module_to_layout instead; for every page on a template, use add_module_to_template. " +
+    "Mint a NEW module and place it on ONE page's block. **Always check `## Modules` first** — if a module with the right `kind` + `description` already exists, do not re-create it; place the existing one via `pages.set_modules` or use this tool but check the catalog first to avoid duplicates. " +
+    "**Required v0.12.0 inputs for new modules:** `description` (what this module is for + when to use it — surfaced in `## Modules` so YOUR future self can pick the right module without asking the operator), `kind` (one of `chrome`|`hero`|`content`|`cta`|`utility`), `html` with `{{fieldName}}` placeholders, and explicit `fields[]` with semantic snake_case names. " +
+    "**Author HTML + fields together.** Field names must describe the value (`hero_title`, `primary_cta_href`, `nav_items`), never the tag (`spanText`, `cta2label`). Lists are list-shaped fields (`text-list` for tag chips, `link-list` for nav menus, `module-list` for cards) — never numbered scalars. " +
+    "**Server-side extractor fallback** still exists when you pass HTML without fields, but the names it mints are heuristic — relying on it pollutes `## Modules` with garbage. Author explicitly. " +
+    "Use when the operator describes adding new content (a button, a banner, a menu, a section). For site-wide chrome use add_module_to_layout; for template-wide use add_module_to_template. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
     'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
   // v0.6.0 W1 — state-aware: this tool takes a pageId (not pageSlug), and
@@ -104,11 +104,14 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
         ],
       },
       displayName: { type: "string", minLength: 1, maxLength: 128 },
+      description: { type: "string", maxLength: 1000 },
+      kind: {
+        type: "string",
+        enum: ["chrome", "hero", "content", "cta", "utility"],
+      },
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
       js: { type: "string", maxLength: 50_000 },
-      // v0.5.21 — module field schema (v0.4.0 split). See edit_module
-      // for the per-field shape; same validation rules apply here.
       fields: {
         type: "array",
         maxItems: 64,
@@ -120,10 +123,25 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
             name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
             kind: {
               type: "string",
-              enum: ["text", "richtext", "url", "image", "number", "boolean", "link"],
+              enum: [
+                "text",
+                "richtext",
+                "url",
+                "image",
+                "number",
+                "boolean",
+                "link",
+                "text-list",
+                "link-list",
+                "module",
+                "module-list",
+              ],
             },
             label: { type: "string", minLength: 1, maxLength: 128 },
             default: {},
+            allowedModuleSlugs: { type: "array", items: { type: "string" } },
+            min: { type: "integer", minimum: 0 },
+            max: { type: "integer", minimum: 1 },
           },
         },
       },
@@ -134,6 +152,12 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
     const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
       slug,
       displayName: input.displayName,
+      // v0.12.0 — plumb the AI-supplied description + kind so the
+      // `## Modules` catalog can render decision-support context.
+      // Defaults to "" + "content" if the AI omits — see CLAUDE.md §1A
+      // for why the AI SHOULD pass them.
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
       html: input.html,
       css: input.css ?? "",
       js: input.js ?? "",

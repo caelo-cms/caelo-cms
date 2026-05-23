@@ -16,10 +16,11 @@ export const createContentInstanceTool: ToolDefinitionWithHandler<
 > = {
   name: "create_content_instance",
   description:
-    "Create a new content_instance for a module. Use this when you want CONTENT to be reusable across multiple placements — bind the new instance to each placement via `set_placement_content({syncMode:'synced'})`. " +
-    "For one-off page content, prefer set_page_module_content which auto-mints a private (unsynced) instance. " +
-    "`values` is keyed by the module's declared field names ({{fieldName}} placeholders). " +
-    "Optional `slug` gives the instance a human-readable handle (e.g. 'primary-cta') — must be kebab-case and unique per module.",
+    "Mint a SHARED, reusable content_instance for a module — used when the same content should appear identically on N pages (the site footer's copyright, a brand banner across product pages, a repeated CTA in the blog). The new row is then bindable to N placements via `set_placement_content({syncMode:'synced'})` so editing it propagates everywhere bound. " +
+    '**Required v0.12.0 input:** `purpose` — a one-line rationale for why this is a shared row ("The brand footer used across the whole marketing site", "Pricing CTA — appears at the bottom of every pricing-adjacent page"). The `## Content Library` block surfaces this so your future self can decide reuse vs fork without asking the operator. ' +
+    "**When NOT to use:** for one-off per-page content, prefer `set_page_module_content` — that path auto-mints an unsynced (private) instance per placement, no shared semantics, no decision needed. Only mint a shared instance when reuse is the actual intent. " +
+    "**Decision rule before calling:** check `## Content Library` first. If a row with the matching purpose + module + appropriate placement pattern already exists, BIND to it via `set_placement_content` instead of minting a new one. Duplicate shared rows defeat the point. " +
+    "`values` keys are the module's declared field names (`{{fieldName}}` placeholders); `slug` is an optional kebab-case handle (must be unique per module) for easy AI-side reference.",
   schema: createContentInstanceToolInput,
   inputSchema: {
     type: "object",
@@ -29,6 +30,7 @@ export const createContentInstanceTool: ToolDefinitionWithHandler<
       moduleId: { type: "string", format: "uuid" },
       slug: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
       displayName: { type: "string", minLength: 1, maxLength: 128 },
+      purpose: { type: "string", maxLength: 1000 },
       values: { type: "object", additionalProperties: true },
     },
   },

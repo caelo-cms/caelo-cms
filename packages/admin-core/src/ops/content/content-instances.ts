@@ -751,8 +751,7 @@ export const setContentInstanceValuesOp = defineOperation({
         input.displayName !== undefined ? sql`, display_name = ${input.displayName}` : sql``;
       // v0.12.0 — purpose may be set or cleared (null) by the operator
       // when they want to repurpose a shared instance.
-      const purposeSet =
-        input.purpose !== undefined ? sql`, purpose = ${input.purpose}` : sql``;
+      const purposeSet = input.purpose !== undefined ? sql`, purpose = ${input.purpose}` : sql``;
       await tx.execute(sql`
         UPDATE content_instances
         SET "values" = ${valuesJson}::jsonb,

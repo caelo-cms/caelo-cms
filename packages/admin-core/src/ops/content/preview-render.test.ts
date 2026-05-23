@@ -241,7 +241,14 @@ describe("renderModuleWithContent — list-of-primitive slots", () => {
           fields: [{ name: "bullets", kind: "text-list" }],
         },
       ],
-      [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: { bullets: ["one", "two"] }, deletedAt: null }],
+      [
+        {
+          id: PARENT_CI_ID,
+          moduleId: PARENT_MOD_ID,
+          values: { bullets: ["one", "two"] },
+          deletedAt: null,
+        },
+      ],
     );
     const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
     expect(r.html).toBe("<ul><li>one</li><li>two</li></ul>");

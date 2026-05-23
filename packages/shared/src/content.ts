@@ -170,9 +170,7 @@ const moduleFieldLinkListSchema = z
     label: moduleFieldLabel,
     min: z.number().int().nonnegative().optional(),
     max: z.number().int().positive().max(256).optional(),
-    default: z
-      .array(z.object({ label: z.string(), href: z.string() }).strict())
-      .optional(),
+    default: z.array(z.object({ label: z.string(), href: z.string() }).strict()).optional(),
   })
   .strict();
 

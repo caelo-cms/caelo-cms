@@ -20,11 +20,10 @@ export const setContentInstanceValuesTool: ToolDefinitionWithHandler<
 > = {
   name: "set_content_instance_values",
   description:
-    "Edit a content_instance's values. BLAST RADIUS: this update propagates to EVERY placement bound to this content_instance with sync_mode='synced'. " +
-    "Confirm placementCount via get_content_instance or list_content_instances BEFORE calling this if you're unsure. " +
-    "For 'edit only this page's text', use set_page_module_content or fork_placement_content+set_page_module_content instead. " +
-    "`values` fully replaces existing values (zero-merge); read first via get_content_instance if you need to preserve other fields. " +
-    "Optional `slug` and `displayName` rename the instance in the same write.",
+    "Edit a content_instance's values. **BLAST RADIUS = placementCount in `## Content Library`** — this propagates to EVERY placement bound with sync_mode='synced'. " +
+    "**Read `## Content Library` first** to see the row's `purpose` + sample pages + placement count before editing. If the operator described an edit that should ONLY affect one page, this is the WRONG tool — use `set_page_module_content` (unsynced placements) or `fork_placement_content` first (synced placements that need to be detached). " +
+    "`values` fully replaces existing values (zero-merge); read first via `get_content_instance` if you need to preserve other fields. " +
+    "Optional metadata edits in the same write: `slug` + `displayName` (pass `null` to clear), and v0.12.0 `purpose` (rewrite the rationale when the operator's intent for this shared row has shifted — keeps `## Content Library` accurate for your future self).",
   schema: setContentInstanceValuesToolInput,
   inputSchema: {
     type: "object",
@@ -39,6 +38,7 @@ export const setContentInstanceValuesTool: ToolDefinitionWithHandler<
         pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
       },
       displayName: { type: ["string", "null"], minLength: 1, maxLength: 128 },
+      purpose: { type: ["string", "null"], maxLength: 1000 },
     },
   },
   handler: async (ctx, input, toolCtx) => {

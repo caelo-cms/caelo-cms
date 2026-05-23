@@ -158,7 +158,7 @@ export function formatModulesBlock(
   const primer = [
     "## Modules",
     "",
-    "The full module catalog on this install. Pick modules by **kind** + **description** — the operator describes outcomes (\"add a footer to the blog\"), you decide which module fits.",
+    'The full module catalog on this install. Pick modules by **kind** + **description** — the operator describes outcomes ("add a footer to the blog"), you decide which module fits.',
     "",
     "Tools: `list_modules` (full set), `add_module_to_page` (place existing), `create_module` (mint new; REQUIRES `description` + `kind` + semantic snake_case field names), `edit_module` (modify HTML/fields/description).",
     "",
@@ -176,13 +176,13 @@ export function formatModulesBlock(
   const byKind = new Map<(typeof KIND_ORDER)[number], typeof modules>();
   for (const k of KIND_ORDER) byKind.set(k, [] as unknown as typeof modules);
   for (const m of modules) {
-    const bucket = byKind.get(m.kind) as unknown as typeof modules[number][];
+    const bucket = byKind.get(m.kind) as unknown as (typeof modules)[number][];
     bucket.push(m);
   }
   const lines: string[] = [primer, ""];
   let emitted = 0;
   for (const k of KIND_ORDER) {
-    const bucket = byKind.get(k) as unknown as typeof modules[number][];
+    const bucket = byKind.get(k) as unknown as (typeof modules)[number][];
     if (bucket.length === 0) continue;
     if (emitted >= 40) break;
     lines.push(`### kind=${k}`);
@@ -196,7 +196,10 @@ export function formatModulesBlock(
         u && u.placementCount > 0
           ? ` — placements=${u.placementCount}${
               u.sampleSlugs.length > 0
-                ? ` (e.g. ${u.sampleSlugs.slice(0, 3).map((s) => `/${s}`).join(", ")})`
+                ? ` (e.g. ${u.sampleSlugs
+                    .slice(0, 3)
+                    .map((s) => `/${s}`)
+                    .join(", ")})`
                 : ""
             }`
           : " — unplaced";
@@ -271,7 +274,7 @@ export function formatContentLibraryBlock(
   for (const k of KIND_ORDER) byKind.set(k, [] as unknown as typeof sortedInstances);
   for (const inst of sortedInstances) {
     const k = (inst.moduleKind ?? "content") as (typeof KIND_ORDER)[number];
-    const bucket = byKind.get(k) as unknown as typeof sortedInstances[number][];
+    const bucket = byKind.get(k) as unknown as (typeof sortedInstances)[number][];
     bucket.push(inst);
   }
   const lines: string[] = [
@@ -281,21 +284,21 @@ export function formatContentLibraryBlock(
   ];
   let emitted = 0;
   for (const k of KIND_ORDER) {
-    const bucket = byKind.get(k) as unknown as typeof sortedInstances[number][];
+    const bucket = byKind.get(k) as unknown as (typeof sortedInstances)[number][];
     if (bucket.length === 0) continue;
     if (emitted >= 30) break;
     lines.push(`### kind=${k}`);
     for (const r of bucket) {
       if (emitted >= 30) break;
       const label = r.displayName ?? r.slug ?? r.id;
-      const purpose =
-        r.purpose && r.purpose.trim() !== "" ? r.purpose.trim() : "(no purpose set)";
+      const purpose = r.purpose && r.purpose.trim() !== "" ? r.purpose.trim() : "(no purpose set)";
       const usage = usageByCiId?.get(r.id);
       const samples =
         usage && usage.sampleSlugs.length > 0
-          ? ` on ${usage.sampleSlugs.slice(0, 3).map((s) => `/${s}`).join(", ")}${
-              r.placementCount > usage.sampleSlugs.length ? ", …" : ""
-            }`
+          ? ` on ${usage.sampleSlugs
+              .slice(0, 3)
+              .map((s) => `/${s}`)
+              .join(", ")}${r.placementCount > usage.sampleSlugs.length ? ", …" : ""}`
           : "";
       lines.push(
         `- ${r.id} module=\`${r.moduleSlug}\` "${label}" — placements=${r.placementCount}${samples}`,

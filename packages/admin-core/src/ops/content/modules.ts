@@ -96,12 +96,7 @@ function rowToModule(r: {
   // migration 0095. The migration backfills both columns NOT NULL so
   // this only matters for in-flight branched rows whose snapshot was
   // taken before the column existed.
-  const kindRaw = (r.kind ?? "content") as
-    | "chrome"
-    | "hero"
-    | "content"
-    | "cta"
-    | "utility";
+  const kindRaw = (r.kind ?? "content") as "chrome" | "hero" | "content" | "cta" | "utility";
   return {
     id: r.id,
     slug: r.slug,

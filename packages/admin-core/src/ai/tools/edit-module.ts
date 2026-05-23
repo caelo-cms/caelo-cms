@@ -23,16 +23,15 @@ export const editModuleTool: ToolDefinitionWithHandler<
 > = {
   name: "edit_module",
   description:
-    "Edit ONE module's structure: HTML template, CSS, JS, displayName, or field schema. " +
-    "v0.12.2 — pass module HTML with content baked in if that's natural (e.g. `<h1>Welcome</h1>`); " +
-    "the server runs an extractor that walks the HTML, replaces literal content with `{{fieldName}}` placeholders, " +
-    "and mints fields (h1->title, p->body, a->ctaHref+ctaLabel, img->image+imageAlt, button->buttonLabel). " +
-    "The op result carries `extractedFields[]` so you can see the inferred names. " +
-    "Alternatively, pre-templatise with `{{fieldName}}` placeholders + explicit `fields` array for control over field names. Mixing is fine — existing placeholders are preserved verbatim. " +
-    "Field kinds now include `module` (single nested module ref, slot `{{>fieldName}}`) and `module-list` (array, slot `{{#fieldName}}…{{/fieldName}}`); values for those fields are `{ moduleId, contentInstanceId }` records. " +
+    "Edit ONE module's structure: HTML template, fields, CSS, JS, displayName, description, or kind. " +
+    "**AUTHOR EXPLICITLY (v0.12.0+):** pass `html` with `{{fieldName}}` placeholders + an explicit `fields[]` array with semantic snake_case names (`hero_title`, `primary_cta_href`, `nav_items`), NOT a literal-content fallback. The operator says 'fix the homepage hero copy'; YOU translate that to the right field names. Field names like `cta2label2` or `spanText` are wrong — they leak the extractor heuristic. " +
+    "**Field kinds (v0.12.0):** `text`, `richtext`, `url`, `image`, `number`, `boolean`, `link` (primitives); `text-list` (array of strings, slot `{{#field}}…{{.}}…{{/field}}`); `link-list` (array of `{label, href}`, slot `{{#field}}…{{label}}…{{href}}…{{/field}}` — use for menus, footer columns); `module` (single nested module, slot `{{>field}}`); `module-list` (array of nested modules, slot `{{#field}}…{{/field}}`). " +
+    "**Lists are lists, not numbered scalars.** A menu with 10 items is ONE `link-list` field with 10 elements — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `text-list`. Cards with rich per-item structure use `module-list` pointing at a sub-module. " +
+    "**Update description + kind when the module's purpose drifts.** The `## Modules` block exposes them to your future self; stale descriptions hurt your own decision-making. " +
+    "**Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `## Modules` block. Treat it as a fallback, not the default path. " +
     "Edits are CHAT-BRANCHED until publish. " +
-    "Use this when changing structure, styling, layout, or the list of fields a module exposes. " +
-    "DO NOT use this to change what a specific page shows in a field — use `set_page_module_content` for that. " +
+    "Use this for structure, styling, fields list, or `description`/`kind` updates. " +
+    "DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. " +
     "Prefer `update_modules_many` when targeting > 1 module. " +
     "DO NOT use for page metadata (`update_pages_many` / `set_page_title` / `change_page_slug`) or template-level edits (`propose_update_template`).",
   schema: editModuleToolInput,
@@ -43,6 +42,11 @@ export const editModuleTool: ToolDefinitionWithHandler<
     properties: {
       moduleId: { type: "string", format: "uuid" },
       displayName: { type: "string", minLength: 1, maxLength: 128 },
+      description: { type: "string", maxLength: 1000 },
+      kind: {
+        type: "string",
+        enum: ["chrome", "hero", "content", "cta", "utility"],
+      },
       html: { type: "string" },
       css: { type: "string" },
       js: { type: "string" },
@@ -57,10 +61,25 @@ export const editModuleTool: ToolDefinitionWithHandler<
             name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
             kind: {
               type: "string",
-              enum: ["text", "richtext", "url", "image", "number", "boolean", "link"],
+              enum: [
+                "text",
+                "richtext",
+                "url",
+                "image",
+                "number",
+                "boolean",
+                "link",
+                "text-list",
+                "link-list",
+                "module",
+                "module-list",
+              ],
             },
             label: { type: "string", minLength: 1, maxLength: 128 },
             default: {},
+            allowedModuleSlugs: { type: "array", items: { type: "string" } },
+            min: { type: "integer", minimum: 0 },
+            max: { type: "integer", minimum: 1 },
           },
         },
       },

@@ -238,9 +238,7 @@ function substituteWithRecursion(
             continue;
           }
           const value = String(el);
-          parts.push(
-            inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => value),
-          );
+          parts.push(inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => value));
         }
         return parts.join("");
       }

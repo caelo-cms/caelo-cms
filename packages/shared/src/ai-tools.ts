@@ -48,6 +48,13 @@ export const editModuleToolInput = z
   .object({
     moduleId: z.string().uuid(),
     displayName: z.string().min(1).max(128).optional(),
+    /**
+     * v0.12.0 — rewrite the module's purpose. Optional; passing it
+     * updates the `## Modules` block your future self will read.
+     */
+    description: z.string().max(1000).optional(),
+    /** v0.12.0 — re-classify the module's role tag. */
+    kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
     html: z.string().max(MODULE_HTML_MAX).optional(),
     css: z.string().max(MODULE_CSS_MAX).optional(),
     js: z.string().max(MODULE_JS_MAX).optional(),
@@ -102,6 +109,16 @@ export const addModuleToPageToolInput = z
     /** "top" | "bottom" | a 0-based integer index. */
     position: positionInputSchema,
     displayName: z.string().min(1).max(128),
+    /**
+     * v0.12.0 — what this module is for + when to use it. Surfaced in
+     * the AI's `## Modules` block; passing a meaningful value lets the
+     * AI's future self pick the right module by intent. Optional at
+     * the Zod boundary so legacy callers keep working; the tool
+     * description requires it for new modules.
+     */
+    description: z.string().max(1000).optional(),
+    /** v0.12.0 — coarse role tag for the `## Modules` block. */
+    kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
