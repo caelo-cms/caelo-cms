@@ -141,7 +141,51 @@ export const setPageModuleContentOp = defineOperation({
       sync_mode: "synced" | "unsynced";
       version: number | string;
     }[];
-    const placement = placementRows[0];
+    let placement = placementRows[0];
+    // v0.12.0 — branch-aware placement-exists fallback. The chat
+    // branched-create flow writes the placement only to
+    // page_layout_snapshots and skips live page_modules (see
+    // pages.set_modules). When the AI follows up with
+    // set_page_module_content on the SAME chat branch, the live join
+    // above misses the placement. Consult the latest branched layout
+    // snapshot for the placement's content_instance_id + sync_mode
+    // when ctx.chatBranchId is set. Mirrors the v0.6.1 fix shape on
+    // the pre-v0.12 branchAwarePlacementExists helper.
+    if (!placement && ctx.chatBranchId) {
+      const snap = (await tx.execute(sql`
+        SELECT pls.state
+        FROM page_layout_snapshots pls
+        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+        WHERE pls.page_id = ${input.pageId}::uuid
+          AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+        ORDER BY ss.created_at DESC
+        LIMIT 1
+      `)) as unknown as { state: unknown }[];
+      const raw = snap[0]?.state;
+      if (raw) {
+        const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
+          blocks?: {
+            blockName: string;
+            placements?: { contentInstanceId: string; syncMode: "synced" | "unsynced" }[];
+          }[];
+        };
+        const block = parsed.blocks?.find((b) => b.blockName === input.blockName);
+        const p = block?.placements?.[input.position];
+        if (p) {
+          // Branched-placement found. Look up its version to satisfy the
+          // type shape — branched content_instances exist in the DB
+          // tagged with chat_branch_id, so this join works.
+          const branchedCiRows = (await tx.execute(sql`
+            SELECT version FROM content_instances WHERE id = ${p.contentInstanceId}::uuid LIMIT 1
+          `)) as unknown as { version: number | string }[];
+          placement = {
+            content_instance_id: p.contentInstanceId,
+            sync_mode: p.syncMode,
+            version: branchedCiRows[0]?.version ?? 0,
+          };
+        }
+      }
+    }
     if (!placement) {
       return err({
         kind: "HandlerError",
