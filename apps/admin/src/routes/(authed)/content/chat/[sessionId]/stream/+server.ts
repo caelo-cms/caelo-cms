@@ -52,6 +52,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   // `ai_providers.config.maxOutputTokens`. Threads to runChatTurn which
   // hands it to provider.generate. undefined = chat-runner default.
   let maxOutputTokens: number | undefined;
+  // Test-only temperature pin (e2e-livedit). Sourced from the resolver
+  // which only honours it under NODE_ENV != production; production
+  // callers see undefined and the chat-runner skips the field.
+  let temperature: number | undefined;
   const testProviderName = request.headers.get(TEST_PROVIDER_HEADER);
   if (testProviderName) {
     aiProvider = resolveTestProvider(testProviderName);
@@ -73,6 +77,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     }
     aiProvider = resolved.provider;
     maxOutputTokens = resolved.maxOutputTokens;
+    temperature = resolved.temperature;
   }
   const { createDefaultToolRegistry } = await import("@caelo-cms/admin-core");
   const tools = createDefaultToolRegistry();
@@ -147,6 +152,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             humanCtx: locals.ctx,
             abortSignal,
             ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+            ...(temperature !== undefined ? { temperature } : {}),
           },
           {
             chatSessionId: params.sessionId,

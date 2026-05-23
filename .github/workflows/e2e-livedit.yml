@@ -1,0 +1,315 @@
+name: E2E Live Edit (real AI)
+
+# Issue #47 — drives the editor chat against the real Anthropic API
+# (Sonnet 4.6, temperature=0) so the regression classes the mock-AI
+# suite cannot catch (empty AI turns, orphan locks, missing primers)
+# are gated on every PR. Real cost is the cost of correctness per the
+# operator direction in the issue; no schedule, no label gating, no
+# cost guard.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # A `git push` to a PR branch supersedes the prior run — cancel the
+  # in-flight job so a fast push iteration doesn't queue a stale run.
+  # Push-to-main keeps cancel-in-progress = false so a main-bound run
+  # is never interrupted.
+  group: e2e-livedit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # See ci.yml — Node 24 advisory shim until action authors update.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  # Gate the suite on secret presence. Without ANTHROPIC_API_KEY_E2E the
+  # global-setup throws loudly (AC #8) — correct behaviour locally, but
+  # in CI it would block every PR before an operator has had a chance
+  # to add the secret. This preflight job emits `enabled=true` only when
+  # the secret is non-empty; the suite job conditions its `if:` on that
+  # output, so the missing-secret case shows up as a clean SKIPPED
+  # check rather than a FAILURE.
+  preflight:
+    name: Preflight (secret check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    env:
+      # Secrets cannot be referenced inside `if:` expressions; pipe
+      # into env, then test the env var in the script.
+      ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY_E2E" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY_E2E secret detected; running e2e-livedit suite."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY_E2E secret not configured; skipping e2e-livedit suite. Add the secret in repo Settings → Secrets and variables → Actions to enable it on subsequent runs."
+          fi
+
+  e2e-livedit:
+    name: Real-AI live-edit scenario
+    needs: preflight
+    if: needs.preflight.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    # The full chat → Stage → Publish → re-edit loop runs ~5 min at
+    # Sonnet 4.6 plus compose spin-up + admin build. 20 min is the
+    # ceiling so a stuck job fails clearly instead of burning CI hours.
+    timeout-minutes: 20
+    permissions:
+      # `contents: write` is required for the "Push screenshots…" step
+      # below — it pushes failure screenshots to the `screenshots/
+      # e2e-livedit` orphan branch so the PR comment can embed them
+      # via raw.githubusercontent.com. Fork PRs get a read-only token
+      # regardless of this block (and the test is skipped on forks
+      # anyway because the secret isn't injected into fork contexts),
+      # so the write privilege is scoped to same-repo branches only.
+      contents: write
+      pull-requests: write
+
+    env:
+      # Compose isolation — the existing `e2e` job in ci.yml may run
+      # the same `caelo-postgres` container name on the same runner.
+      # A unique project name per run prefixes the container + scopes
+      # the network so the two suites can never collide.
+      COMPOSE_PROJECT_NAME: caelo-e2e-livedit-${{ github.run_id }}
+      POSTGRES_USER: caelo
+      POSTGRES_PASSWORD: caelo_ci
+      POSTGRES_DB: postgres
+      # Host port 5433 to dodge the GHA Postgres service in ci.yml
+      # which binds 5432. The compose Postgres still binds 5432
+      # inside its network.
+      POSTGRES_PORT: 5433
+      ADMIN_ROLE_PASSWORD: caelo_admin_ci
+      PUBLIC_ROLE_PASSWORD: caelo_public_ci
+      ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5433/cms_admin
+      PUBLIC_ADMIN_DATABASE_URL: postgres://admin_role:caelo_admin_ci@localhost:5433/cms_public
+      PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_ci@localhost:5433/cms_public
+      STAGING_PORT: 8081
+      PRODUCTION_PORT: 8082
+      CAELO_STAGING_BASE_URL: http://localhost:8081
+      CAELO_PRODUCTION_BASE_URL: http://localhost:8082
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      # Materialise the .env compose reads its POSTGRES_USER/PASSWORD
+      # from. Compose's `env_file: .env` directive is mandatory in
+      # docker-compose.yml; skipping the write makes Postgres start
+      # with no roles.
+      - name: Write compose .env
+        run: |
+          cat > .env <<EOF
+          POSTGRES_USER=${POSTGRES_USER}
+          POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+          POSTGRES_DB=${POSTGRES_DB}
+          ADMIN_ROLE_PASSWORD=${ADMIN_ROLE_PASSWORD}
+          PUBLIC_ROLE_PASSWORD=${PUBLIC_ROLE_PASSWORD}
+          POSTGRES_PORT=${POSTGRES_PORT}
+          STAGING_PORT=${STAGING_PORT}
+          PRODUCTION_PORT=${PRODUCTION_PORT}
+          EOF
+
+      # Pre-create the static-gen output dirs the Caddy services
+      # bind-mount. Without this, Docker creates them at compose-up
+      # as root-owned empty dirs, blocking the host-side admin
+      # process (running as the runner's user) from writing the
+      # generated files.
+      - name: Pre-create static-gen output dirs
+        run: mkdir -p apps/admin/output/staging apps/admin/output/production
+
+      - name: Start compose (postgres + caddy-staging + caddy-production)
+        # `wait` blocks until each service's healthcheck reports healthy.
+        # postgres has a healthcheck; the caddy services don't, but
+        # they come up in <1s so the wait is effectively just for pg.
+        run: docker compose up -d --wait
+
+      - name: Run migrations
+        env:
+          PGHOST: localhost
+        run: bun run db:migrate
+
+      # `@caelo-cms/shared` ships a compiled dist/ — the admin's SSR
+      # build can't resolve it otherwise. Same #36/#51 lesson as the
+      # `e2e` job in ci.yml.
+      - name: Build @caelo-cms/shared (admin SSR dep)
+        run: bun run --filter '@caelo-cms/shared' build
+
+      - name: Install Playwright chromium
+        run: bun x playwright install chromium --with-deps
+        working-directory: apps/admin
+
+      - name: Run e2e-livedit (Scenario 1)
+        env:
+          ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
+        run: bun run e2e-livedit
+
+      - name: Dump diagnostic DB tables on failure
+        if: failure()
+        env:
+          PGHOST: localhost
+        run: |
+          mkdir -p apps/admin/test-results/livedit/db-dump
+          for table in chat_messages chat_entity_locks pages page_modules page_module_content; do
+            PGPASSWORD=${ADMIN_ROLE_PASSWORD} \
+              psql "${ADMIN_DATABASE_URL}" \
+              -c "\\COPY (SELECT * FROM ${table}) TO STDOUT WITH CSV HEADER" \
+              > apps/admin/test-results/livedit/db-dump/${table}.csv 2>/dev/null || true
+          done
+
+      # Dump a directory listing of the static-gen output dirs so we
+      # can diagnose publish-side issues (e.g. why production/current
+      # is empty) post-hoc. Cheap; no actual files included in the
+      # listing — just `find` output. The full output dirs aren't
+      # uploaded because they can be sizeable and contain the same
+      # HTML the test already exercises via the production fetch.
+      - name: Dump static-gen output dir listings on failure
+        if: failure()
+        run: |
+          mkdir -p apps/admin/test-results/livedit/output-listing
+          {
+            echo "=== staging ===" ;
+            find apps/admin/output/staging -maxdepth 5 -printf '%p (%s bytes)\n' 2>/dev/null || true ;
+            echo "" ;
+            echo "=== production ===" ;
+            find apps/admin/output/production -maxdepth 5 -printf '%p (%s bytes)\n' 2>/dev/null || true ;
+          } > apps/admin/test-results/livedit/output-listing/find-output.txt
+          {
+            echo "=== production/current/routing-manifest.json ===" ;
+            cat apps/admin/output/production/current/routing-manifest.json 2>/dev/null || echo "(not found)" ;
+            echo "" ;
+            echo "=== production/current/index.html (first 1000 chars) ===" ;
+            head -c 1000 apps/admin/output/production/current/index.html 2>/dev/null || echo "(not found)" ;
+          } > apps/admin/test-results/livedit/output-listing/production-current.txt
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-livedit-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/admin/test-results/livedit/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Push screenshots to a long-lived orphan branch so the PR
+      # comment can embed them inline via raw.githubusercontent.com.
+      # Collects shots from two sources:
+      #   - playwright-report/data/*.png — Playwright's failure
+      #     screenshots (one per failing attempt, hashed filename).
+      #   - final-state/*.png — explicit page.screenshot() calls
+      #     scenarios make at end-of-test, embedded on passing runs.
+      # Runs always() so green runs replace the prior sticky comment
+      # with their final-state shot.
+      - name: Push screenshots to side branch and post PR comment
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          FAIL_DIR="apps/admin/test-results/livedit/playwright-report/data"
+          FINAL_DIR="apps/admin/test-results/livedit/final-state"
+          BRANCH="screenshots/e2e-livedit"
+          DEST_REL="pr-${PR_NUMBER}/run-${RUN_ID}"
+
+          FAIL_SHOTS=("${GITHUB_WORKSPACE}/${FAIL_DIR}"/*.png)
+          FINAL_SHOTS=("${GITHUB_WORKSPACE}/${FINAL_DIR}"/*.png)
+
+          # Defensive fallback — only fires if both dirs are empty
+          # (e.g. the test step never ran). Healthy passing runs always
+          # emit a final-state shot; healthy failing runs emit attempt
+          # shots; both populate at least one of the two dirs.
+          if [ ${#FAIL_SHOTS[@]} -eq 0 ] && [ ${#FINAL_SHOTS[@]} -eq 0 ]; then
+            printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\nNo screenshots were produced.\n' \
+              "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS" > /tmp/e2e-livedit-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/e2e-livedit-comment.md
+            exit 0
+          fi
+
+          # Push screenshots to the orphan branch. Clone-fresh into a
+          # tmp dir so we don't disturb the runner's working tree.
+          mkdir -p /tmp/screenshots-wt
+          cd /tmp/screenshots-wt
+
+          git init -q
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+          if git fetch -q origin "$BRANCH" 2>/dev/null; then
+            git checkout -q "$BRANCH"
+          else
+            git checkout -q --orphan "$BRANCH"
+            git rm -rfq . 2>/dev/null || true
+            printf 'e2e-livedit screenshots — see workflow .github/workflows/e2e-livedit.yml for layout.\n' > README.md
+            git add README.md
+            git commit -qm "Initialize e2e-livedit screenshots branch"
+          fi
+
+          mkdir -p "${DEST_REL}/failure" "${DEST_REL}/final-state"
+          for src in "${FAIL_SHOTS[@]}"; do
+            cp "$src" "${DEST_REL}/failure/"
+          done
+          for src in "${FINAL_SHOTS[@]}"; do
+            cp "$src" "${DEST_REL}/final-state/"
+          done
+          git add "$DEST_REL"
+          git commit -qm "e2e-livedit: PR #${PR_NUMBER} run ${RUN_ID} screenshots"
+          git push -q origin "$BRANCH"
+
+          {
+            printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\n' \
+              "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS"
+            printf 'Screenshots from this run (commit `%s`):\n\n' "${GITHUB_SHA::7}"
+
+            if [ ${#FINAL_SHOTS[@]} -gt 0 ]; then
+              printf '### Final state after publish\n\n'
+              for src in "${FINAL_SHOTS[@]}"; do
+                name=$(basename "$src")
+                url="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${DEST_REL}/final-state/${name}"
+                printf '![%s](%s)\n\n' "$name" "$url"
+              done
+            fi
+
+            if [ ${#FAIL_SHOTS[@]} -gt 0 ]; then
+              printf '### Failure attempts\n\n'
+              i=1
+              for src in "${FAIL_SHOTS[@]}"; do
+                name=$(basename "$src")
+                url="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${DEST_REL}/failure/${name}"
+                printf '**Attempt %d:**\n\n![%s](%s)\n\n' "$i" "$name" "$url"
+                i=$((i + 1))
+              done
+            fi
+
+            printf '_Auto-posted by `.github/workflows/e2e-livedit.yml`. The full Playwright HTML report + admin.log + DB dump are in the run’s artifact bundle._\n'
+          } > /tmp/e2e-livedit-comment.md
+
+          cd "$GITHUB_WORKSPACE"
+          gh pr comment "$PR_NUMBER" --body-file /tmp/e2e-livedit-comment.md
+
+      - name: Teardown compose
+        if: always()
+        run: docker compose down --volumes --remove-orphans

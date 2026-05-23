@@ -69,7 +69,93 @@ interface ResolvedProvider {
    * [1024, 200000] at config-write time.
    */
   readonly maxOutputTokens?: number;
+  /**
+   * Per-call temperature override sourced from `CAELO_CHAT_TEMPERATURE`.
+   * Only populated when `NODE_ENV !== "production"` and the env var is
+   * set + finite — guarded so a test-only knob can never alter
+   * production resolution. The chat-runner threads this into
+   * `provider.generate({ temperature })`; chat-stream callers can
+   * override per-request via `ChatRunnerOptions.temperature`.
+   */
+  readonly temperature?: number;
 }
+
+/**
+ * `NODE_ENV !== "production"` guard for the test-only env hooks below.
+ * Centralised so the test for AC #16 can prove no production code path
+ * touches these reads when `NODE_ENV=production`.
+ */
+function isTestEnvHookActive(): boolean {
+  return process.env.NODE_ENV !== "production";
+}
+
+/**
+ * Test-only model override (e2e-livedit pins Sonnet 4.6 dated id).
+ * Restricted to the Anthropic provider so it cannot accidentally point
+ * an OpenAI / Gemini install at a Claude id.
+ */
+function readModelOverride(name: ProviderName): string | undefined {
+  if (!isTestEnvHookActive()) return undefined;
+  if (name !== "anthropic") return undefined;
+  const v = process.env.CAELO_CHAT_MODEL_OVERRIDE;
+  if (typeof v !== "string" || v.length === 0) return undefined;
+  return v;
+}
+
+/**
+ * Test-only temperature override (e2e-livedit pins `0` for determinism).
+ * Same anthropic-only + non-production guards as `readModelOverride`.
+ * Fails loudly per CLAUDE.md §2 when the env var is set to a
+ * non-finite value — never silently falls back to the model default.
+ */
+function readTemperatureOverride(name: ProviderName): number | undefined {
+  if (!isTestEnvHookActive()) return undefined;
+  if (name !== "anthropic") return undefined;
+  const raw = process.env.CAELO_CHAT_TEMPERATURE;
+  if (raw === undefined || raw === "") return undefined;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(
+      `[provider-resolver] CAELO_CHAT_TEMPERATURE is not a valid finite number: ${JSON.stringify(raw)}. Expected a float (e.g. "0", "0.7"). Unset the env var or set NODE_ENV=production to disable.`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * One-shot boot-time warning: if production has been deployed with the
+ * test-only env hooks still set in its environment (env-file copy from
+ * a test env, leftover container env, etc.), the hooks are silently
+ * ignored — but the operator likely thinks they configured something.
+ * Surface it loudly per CLAUDE.md §2 so the misconfiguration shows up
+ * in production logs at boot instead of being invisible.
+ *
+ * Module-level so it runs exactly once at admin bootstrap. No effect
+ * outside production: the test environment expects these vars to be
+ * honoured and shouldn't see the warn.
+ */
+function warnOnProductionEnvHookLeak(): void {
+  if (process.env.NODE_ENV !== "production") return;
+  const leaked: string[] = [];
+  if (
+    typeof process.env.CAELO_CHAT_MODEL_OVERRIDE === "string" &&
+    process.env.CAELO_CHAT_MODEL_OVERRIDE.length > 0
+  ) {
+    leaked.push("CAELO_CHAT_MODEL_OVERRIDE");
+  }
+  if (
+    typeof process.env.CAELO_CHAT_TEMPERATURE === "string" &&
+    process.env.CAELO_CHAT_TEMPERATURE.length > 0
+  ) {
+    leaked.push("CAELO_CHAT_TEMPERATURE");
+  }
+  if (leaked.length > 0) {
+    console.warn(
+      `[provider-resolver] test-only env hook(s) set under NODE_ENV=production: ${leaked.join(", ")}. These are IGNORED in production by design; unset them in this environment to silence this warning.`,
+    );
+  }
+}
+warnOnProductionEnvHookLeak();
 
 interface CacheEntry {
   readonly resolved: ResolvedProvider;
@@ -266,13 +352,18 @@ async function resolveProvider(
   if (!deps) {
     throw new Error("provider-resolver not configured — call configureProviderResolver() at boot");
   }
+  // Test-only overrides (anthropic + NODE_ENV != production). Read once
+  // per call so the unit test for AC #16 can flip env vars in-process.
+  const effectiveModel = readModelOverride(name) ?? meta.model;
+  const temperature = readTemperatureOverride(name);
   const cached = cache.get(name);
   const now = Date.now();
   if (
     cached &&
     cached.expiresAt > now &&
-    cached.resolved.model === meta.model &&
-    cached.resolved.maxOutputTokens === meta.maxOutputTokens
+    cached.resolved.model === effectiveModel &&
+    cached.resolved.maxOutputTokens === meta.maxOutputTokens &&
+    cached.resolved.temperature === temperature
   ) {
     return cached.resolved;
   }
@@ -319,7 +410,7 @@ async function resolveProvider(
 
   const provider = makeProvider({
     name,
-    model: meta.model,
+    model: effectiveModel,
     apiKey,
     ...(meta.baseUrl ? { baseUrl: meta.baseUrl } : {}),
   });
@@ -328,9 +419,10 @@ async function resolveProvider(
     provider,
     source,
     providerName: name,
-    model: meta.model,
+    model: effectiveModel,
     keyFingerprint,
     ...(meta.maxOutputTokens !== undefined ? { maxOutputTokens: meta.maxOutputTokens } : {}),
+    ...(temperature !== undefined ? { temperature } : {}),
   };
   cache.set(name, { resolved, expiresAt: now + TTL_MS });
   return resolved;
