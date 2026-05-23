@@ -60,10 +60,16 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.enabled == 'true'
     runs-on: ubuntu-latest
-    # The full chat → Stage → Publish → re-edit loop runs ~5 min at
-    # Sonnet 4.6 plus compose spin-up + admin build. 20 min is the
-    # ceiling so a stuck job fails clearly instead of burning CI hours.
-    timeout-minutes: 20
+    # The full chat → Stage → Publish → re-edit loop runs ~5 min per
+    # scenario at Sonnet 4.6 plus compose spin-up + admin build. The
+    # suite now runs 6 scenarios (the v0.12 PR added 5 — extract-
+    # fields, nested-modules, content-library-shared-edit, placement-
+    # sync-toggle, ai-nested-cta — on top of the pre-existing
+    # homepage scenario), so the prior 20-min ceiling started timing
+    # out runs that were genuinely working. 45 min covers the 6-
+    # scenario worst case (~30 min run + ~10 min spin-up + buffer)
+    # while still failing a stuck job in bounded time.
+    timeout-minutes: 45
     permissions:
       # `contents: write` is required for the "Push screenshots…" step
       # below — it pushes failure screenshots to the `screenshots/
