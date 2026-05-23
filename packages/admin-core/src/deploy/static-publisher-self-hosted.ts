@@ -14,7 +14,7 @@
  */
 
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 export const selfHostedStaticPublisher: StaticPublisher = {
@@ -44,12 +44,31 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     // robots.txt + routing-manifest values. Then sync that overlay
     // into the destination's `current/` so Caddy serves it.
     //
-    // sourceBuildDir is `<repoRoot>/<from.outDir>/builds/<runId>`.
-    // Walk up two levels to get the deploy ops' shared repo root,
-    // then resolve the destination's outDir under it. Avoids
-    // depending on process.cwd() which may not match the test's
-    // repoRoot.
-    const sharedRoot = dirname(dirname(dirname(sourceBuildDir)));
+    // sourceBuildDir is `<sharedRoot>/<from.outDir>/builds/<runId>`.
+    // Derive toDir by splitting on `/builds/` and substituting the
+    // destination's outDir for the source's. This handles any
+    // `out_dir` shape (single segment, nested segments like
+    // `output/staging`, or absolute paths) without assuming a
+    // particular number of dirname() calls. Caught by the issue #47
+    // real-AI e2e suite: with the seeded `out_dir = 'output/staging'`
+    // / `out_dir = 'output/production'`, the previous
+    // `dirname(dirname(dirname(...)))` walked one segment too few
+    // and the `join(sharedRoot, toTarget.outDir)` produced
+    // `<root>/output/output/production`. Caddy read from the
+    // unpopulated `<root>/output/production` and served 404.
+    const buildsIdx = sourceBuildDir.lastIndexOf(`${sep}builds${sep}`);
+    if (buildsIdx < 0) {
+      throw new Error(
+        `selfHostedStaticPublisher.promoteToProduction: sourceBuildDir does not contain '/builds/' segment: ${sourceBuildDir}`,
+      );
+    }
+    const sourceRootDir = sourceBuildDir.substring(0, buildsIdx);
+    if (!sourceRootDir.endsWith(fromTarget.outDir)) {
+      throw new Error(
+        `selfHostedStaticPublisher.promoteToProduction: sourceBuildDir prefix (${sourceRootDir}) does not end with fromTarget.outDir (${fromTarget.outDir}). Cannot derive destination path.`,
+      );
+    }
+    const sharedRoot = sourceRootDir.substring(0, sourceRootDir.length - fromTarget.outDir.length);
     const toDir = join(sharedRoot, toTarget.outDir);
     const toBuildsDir = join(toDir, "builds");
     const toCurrent = join(toDir, "current");
