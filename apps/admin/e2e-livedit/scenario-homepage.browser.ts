@@ -338,8 +338,7 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // (a) is the common path on the re-edit.
     const changed = updatedAtPairs.filter(
       (p) =>
-        p.postUpdatedAt !== null &&
-        (p.preUpdatedAt === null || p.postUpdatedAt > p.preUpdatedAt),
+        p.postUpdatedAt !== null && (p.preUpdatedAt === null || p.postUpdatedAt > p.preUpdatedAt),
     );
     expect(
       changed.length,
