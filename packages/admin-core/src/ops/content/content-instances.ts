@@ -864,10 +864,18 @@ export const setPlacementContentOp = defineOperation({
 
     // Verify the target content_instance exists, isn't deleted, and is
     // for the same module as the placement (FK + business-rule check).
+    // v0.12.0+ — apply branchVisibilityFilter so the caller can only
+    // bind to content_instances on main OR their own chat branch. Without
+    // this, a chat could bind one of its placements to another chat's
+    // branched-create content_instance — which would materialise on the
+    // OTHER chat's publish and surprise that chat's operator. Mirror
+    // the read-side guard already used by content_instances.get +
+    // create's module-id check.
+    const branchFilter = branchVisibilityFilter(ctx);
     const ciRows = (await tx.execute(sql`
       SELECT module_id::text AS module_id, deleted_at
       FROM content_instances
-      WHERE id = ${input.contentInstanceId}::uuid
+      WHERE id = ${input.contentInstanceId}::uuid ${branchFilter}
       LIMIT 1
     `)) as unknown as { module_id: string; deleted_at: Date | null }[];
     const ci = ciRows[0];
