@@ -611,6 +611,30 @@ async function countPlacements(
   return typeof n === "string" ? Number.parseInt(n, 10) : n;
 }
 
+/**
+ * v0.12.2 — fetch up to `limit` distinct pages that reference this
+ * content_instance via a placement, so the delete-refusal error body
+ * can name them inline (saves the AI a discovery round-trip per
+ * CLAUDE.md §11 "failure surfaces are AI-actionable"). Deduped on
+ * page_id because one page can carry multiple placements of the same
+ * shared instance.
+ */
+async function listAffectedPagesForCi(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  contentInstanceId: string,
+  limit: number,
+): Promise<{ slug: string; title: string }[]> {
+  const rows = (await tx.execute(sql`
+    SELECT DISTINCT p.slug, p.title
+    FROM page_modules pm
+    JOIN pages p ON p.id = pm.page_id
+    WHERE pm.content_instance_id = ${contentInstanceId}::uuid
+    ORDER BY p.slug ASC
+    LIMIT ${limit}
+  `)) as unknown as { slug: string; title: string }[];
+  return rows;
+}
+
 export const setContentInstanceValuesOp = defineOperation({
   name: "content_instances.set_values",
   actorScope: ["human", "ai", "system"],
@@ -793,6 +817,14 @@ export const deleteContentInstanceOp = defineOperation({
       // lands in v0.12.0.1; for now, surface the blast radius + the
       // recovery path. The AI's tool description carries the same
       // contract.
+      //
+      // v0.12.2 — name the top-3 affected pages inline so the AI can
+      // discover the placements without a follow-up
+      // get_content_instance call (CLAUDE.md §11 "failure surfaces are
+      // AI-actionable").
+      const affectedPages = await listAffectedPagesForCi(tx, input.id, 3);
+      const samples = affectedPages.map((p) => `/${p.slug}`).join(", ");
+      const moreSuffix = placementCount > affectedPages.length ? `, …` : "";
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -805,7 +837,7 @@ export const deleteContentInstanceOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "content_instances.delete",
-        message: `cannot delete: ${placementCount} placement(s) reference this content_instance. Detach each placement first via fork_placement_content, OR (v0.12.0.1+) submit a propose_delete_content_instance proposal so the Owner can approve the cascade.`,
+        message: `cannot delete: ${placementCount} placement(s) reference this content_instance${samples ? ` (on ${samples}${moreSuffix})` : ""}. Detach each placement first via fork_placement_content, OR (v0.12.0.1+) submit a propose_delete_content_instance proposal so the Owner can approve the cascade.`,
         nextAction: {
           tool: "fork_placement_content",
           args: {},
