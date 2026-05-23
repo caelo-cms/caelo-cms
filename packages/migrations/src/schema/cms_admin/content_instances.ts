@@ -31,6 +31,17 @@ export const contentInstances = pgTable("content_instances", {
   /** Shown in the content library list view. */
   displayName: text("display_name"),
   /**
+   * v0.12.0 — why this row exists as a shared/reusable instance.
+   * Surfaced in the `## Content Library` system-prompt block so the
+   * AI can decide *reuse the synced row* vs *fork to unsynced* vs
+   * *mint new* without a tool round-trip. Nullable: legacy rows
+   * (one private CI per existing placement, minted by migration
+   * 0093) intentionally carry no shared-reuse purpose. The AI tool
+   * descriptions require it on create_content_instance for new
+   * shared rows. See CLAUDE.md §1A.
+   */
+  purpose: text("purpose"),
+  /**
    * Object mapping module field name → value. For fields of kind
    * `module` / `module-list`, the value is `{ moduleId, contentInstanceId }`
    * or an array thereof (the nested-module reference shape).

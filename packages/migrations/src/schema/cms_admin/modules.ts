@@ -20,6 +20,20 @@ export const modules = pgTable("modules", {
   id: uuid("id").primaryKey().defaultRandom(),
   slug: text("slug").notNull().unique(),
   displayName: text("display_name").notNull(),
+  /**
+   * v0.12.0 — what this module is for + when to use it. Surfaced in
+   * the `## Modules` system-prompt block so the AI can pick the right
+   * module without round-tripping back to the operator. See
+   * CLAUDE.md §1A for the load-bearing principle. Empty string is the
+   * legacy-row default; the AI tool description requires it explicitly.
+   */
+  description: text("description").notNull().default(""),
+  /**
+   * v0.12.0 — coarse role tag. Constrained at the SQL layer to
+   * `chrome | hero | content | cta | utility`. Surfaced in the
+   * `## Modules` block as the primary grouping key.
+   */
+  kind: text("kind").notNull().default("content"),
   html: text("html").notNull(),
   css: text("css").notNull().default(""),
   js: text("js").notNull().default(""),
