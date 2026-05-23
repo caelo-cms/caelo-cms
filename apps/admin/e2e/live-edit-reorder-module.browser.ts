@@ -29,10 +29,15 @@ test.beforeAll(() => {
       const b = ((await tx\`INSERT INTO modules (slug, display_name, html) VALUES (\${process.env.MOD_B}, 'b', '<p>B</p>') RETURNING id::text AS id\`)[0])?.id;
       const cc = ((await tx\`INSERT INTO modules (slug, display_name, html) VALUES (\${process.env.MOD_C}, 'c', '<p>C</p>') RETURNING id::text AS id\`)[0])?.id;
       const pg = ((await tx\`INSERT INTO pages (slug, locale, name, title, template_id, status) VALUES (\${process.env.PAGE_SLUG}, 'en', 'RO', 'RO', \${tplId}::uuid, 'draft') RETURNING id::text AS id\`)[0])?.id;
-      await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id) VALUES
-        (\${pg}::uuid, 'content', 0, \${a}::uuid),
-        (\${pg}::uuid, 'content', 1, \${b}::uuid),
-        (\${pg}::uuid, 'content', 2, \${cc}::uuid)\`;
+      // v0.12.0 — page_modules.content_instance_id is NOT NULL. Mint
+      // one unsynced content_instance per placement before inserting.
+      const ciA = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${a}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;
+      const ciB = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${b}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;
+      const ciC = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${cc}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;
+      await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id) VALUES
+        (\${pg}::uuid, 'content', 0, \${a}::uuid, \${ciA}::uuid),
+        (\${pg}::uuid, 'content', 1, \${b}::uuid, \${ciB}::uuid),
+        (\${pg}::uuid, 'content', 2, \${cc}::uuid, \${ciC}::uuid)\`;
     });
     await c.end();
     `,

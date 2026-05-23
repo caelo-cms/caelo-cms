@@ -38,7 +38,8 @@ test.beforeAll(() => {
         (\${tpl}::uuid, 'sidebar', 'Sidebar', 1)\`;
       const m = ((await tx\`INSERT INTO modules (slug, display_name, html) VALUES (\${process.env.MOD_SLUG}, 'mv', '<p>MV</p>') RETURNING id::text AS id\`)[0])?.id;
       const pg = ((await tx\`INSERT INTO pages (slug, locale, name, title, template_id, status) VALUES (\${process.env.PAGE_SLUG}, 'en', 'MV', 'MV', \${tpl}::uuid, 'draft') RETURNING id::text AS id\`)[0])?.id;
-      await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id) VALUES (\${pg}::uuid, 'content', 0, \${m}::uuid)\`;
+      const ci = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${m}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;
+      await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id) VALUES (\${pg}::uuid, 'content', 0, \${m}::uuid, \${ci}::uuid)\`;
     });
     await c.end();
     `,

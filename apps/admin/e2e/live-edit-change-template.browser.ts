@@ -49,7 +49,9 @@ test.beforeAll(() => {
         INSERT INTO pages (slug, locale, name, title, template_id, status)
         VALUES (\${process.env.TEST_PAGE}, 'en', 'CT', 'CT', \${oldTpl}::uuid, 'draft')
         RETURNING id::text AS id\`)[0])?.id;
-      await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id) VALUES (\${pg}::uuid, 'content', 0, \${kept}::uuid), (\${pg}::uuid, 'sidebar', 0, \${orphan}::uuid)\`;
+      const ciKept = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${kept}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;
+      const ciOrphan = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${orphan}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;
+      await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id) VALUES (\${pg}::uuid, 'content', 0, \${kept}::uuid, \${ciKept}::uuid), (\${pg}::uuid, 'sidebar', 0, \${orphan}::uuid, \${ciOrphan}::uuid)\`;
     });
     await c.end();
     `,
