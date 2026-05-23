@@ -327,9 +327,19 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
         postUpdatedAt: post?.contentUpdatedAt ?? null,
       };
     });
+    // A placement counts as "changed" by the re-edit if EITHER:
+    //  (a) it previously had no page_module_content row (preUpdatedAt
+    //      null) and now does (postUpdatedAt non-null) — i.e. the AI
+    //      customised content_values for the first time, or
+    //  (b) it already had a row and its updated_at advanced.
+    // The AI's initial homepage build creates page_modules placements
+    // without necessarily writing page_module_content rows (placements
+    // use the module's default HTML until content is customized), so
+    // (a) is the common path on the re-edit.
     const changed = updatedAtPairs.filter(
       (p) =>
-        p.preUpdatedAt !== null && p.postUpdatedAt !== null && p.postUpdatedAt > p.preUpdatedAt,
+        p.postUpdatedAt !== null &&
+        (p.preUpdatedAt === null || p.postUpdatedAt > p.preUpdatedAt),
     );
     expect(
       changed.length,
