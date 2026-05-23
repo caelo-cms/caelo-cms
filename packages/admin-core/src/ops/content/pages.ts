@@ -70,6 +70,9 @@ const pageWithModulesSchema = pageRowSchema.extend({
            * (CMS_REQUIREMENTS §3.1, P3 plan §"Risks").
            */
           isDeleted: z.boolean(),
+          /** v0.12.0 — placement → content_instance binding. */
+          contentInstanceId: z.string().nullable(),
+          syncMode: z.enum(["synced", "unsynced"]),
         }),
       ),
     }),
@@ -236,6 +239,8 @@ export const getPageWithModulesOp = defineOperation({
         css: string;
         js: string;
         isDeleted: boolean;
+        contentInstanceId: string | null;
+        syncMode: "synced" | "unsynced";
       }[]
     >();
     const allModuleIds: string[] = [];
@@ -263,6 +268,44 @@ export const getPageWithModulesOp = defineOperation({
         is_deleted: boolean;
       }[];
       const detailById = new Map(modDetailRows.map((r) => [r.module_id, r]));
+      // v0.12.0 — placement metadata. Index by (block, position) so
+      // the loop below can hand the per-placement sync_mode +
+      // content_instance_id to the UI.
+      type PlacementMeta = { contentInstanceId: string; syncMode: "synced" | "unsynced" };
+      const placementByKey = new Map<string, PlacementMeta>();
+      // First check the layout snapshot for per-placement metadata
+      // (branched callers get this via layoutState.blocks[i].placements).
+      for (const b of layoutState.blocks) {
+        const placements = b.placements ?? [];
+        for (let i = 0; i < placements.length; i += 1) {
+          const p = placements[i];
+          if (!p) continue;
+          placementByKey.set(`${b.blockName}#${i}`, {
+            contentInstanceId: p.contentInstanceId,
+            syncMode: p.syncMode,
+          });
+        }
+      }
+      // Fall back to live page_modules for any placement the layout
+      // snapshot didn't carry (covers pre-v0.12 snapshots + live reads).
+      if (placementByKey.size === 0) {
+        const liveBindings = (await tx.execute(sql`
+          SELECT block_name, position, content_instance_id::text AS content_instance_id, sync_mode
+          FROM page_modules
+          WHERE page_id = ${input.pageId}::uuid
+        `)) as unknown as {
+          block_name: string;
+          position: number;
+          content_instance_id: string;
+          sync_mode: "synced" | "unsynced";
+        }[];
+        for (const r of liveBindings) {
+          placementByKey.set(`${r.block_name}#${r.position}`, {
+            contentInstanceId: r.content_instance_id,
+            syncMode: r.sync_mode,
+          });
+        }
+      }
       for (const block of layoutState.blocks) {
         const arr: {
           moduleId: string;
@@ -272,10 +315,17 @@ export const getPageWithModulesOp = defineOperation({
           css: string;
           js: string;
           isDeleted: boolean;
+          contentInstanceId: string | null;
+          syncMode: "synced" | "unsynced";
         }[] = [];
+        let position = 0;
         for (const id of block.moduleIds) {
           const d = detailById.get(id);
-          if (!d) continue; // module not visible to this actor — skip
+          if (!d) {
+            position += 1;
+            continue;
+          }
+          const binding = placementByKey.get(`${block.blockName}#${position}`);
           arr.push({
             moduleId: id,
             slug: d.slug,
@@ -284,7 +334,10 @@ export const getPageWithModulesOp = defineOperation({
             css: d.css,
             js: d.js,
             isDeleted: d.is_deleted,
+            contentInstanceId: binding?.contentInstanceId ?? null,
+            syncMode: binding?.syncMode ?? "unsynced",
           });
+          position += 1;
         }
         if (arr.length > 0) grouped.set(block.blockName, arr);
       }

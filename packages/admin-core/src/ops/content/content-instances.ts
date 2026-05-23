@@ -119,9 +119,8 @@ async function validateNestedRefs(
     SELECT fields FROM modules WHERE id = ${moduleId}::uuid LIMIT 1
   `)) as unknown as { fields: unknown }[];
   if (modRows.length === 0) return { ok: true };
-  const rawFields = typeof modRows[0]?.fields === "string"
-    ? JSON.parse(modRows[0].fields)
-    : modRows[0]?.fields;
+  const rawFields =
+    typeof modRows[0]?.fields === "string" ? JSON.parse(modRows[0].fields) : modRows[0]?.fields;
   if (!Array.isArray(rawFields)) return { ok: true };
 
   type Field = {
@@ -150,7 +149,11 @@ async function validateNestedRefs(
 
   // Collect every (moduleId, contentInstanceId) pair the values declare
   // so we can batch-fetch existence + module-match in one query each.
-  const refsToCheck: { fieldName: string; index: number | null; ref: { moduleId: string; contentInstanceId: string } }[] = [];
+  const refsToCheck: {
+    fieldName: string;
+    index: number | null;
+    ref: { moduleId: string; contentInstanceId: string };
+  }[] = [];
   for (const f of fields) {
     if (f.kind === "module") {
       const v = values[f.name];

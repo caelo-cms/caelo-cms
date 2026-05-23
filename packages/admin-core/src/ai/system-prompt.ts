@@ -163,10 +163,22 @@ export function formatContentLibraryBlock(
   const byModule = new Map<string, typeof instances>();
   for (const i of instances) {
     const arr = byModule.get(i.moduleSlug) ?? ([] as typeof instances);
-    (arr as unknown as { id: string; moduleSlug: string; slug: string | null; displayName: string | null; placementCount: number }[]).push(i);
+    (
+      arr as unknown as {
+        id: string;
+        moduleSlug: string;
+        slug: string | null;
+        displayName: string | null;
+        placementCount: number;
+      }[]
+    ).push(i);
     byModule.set(i.moduleSlug, arr);
   }
-  const lines: string[] = [primer, "", "Active instances (truncated to 30 rows; call `list_content_instances` for more):"];
+  const lines: string[] = [
+    primer,
+    "",
+    "Active instances (truncated to 30 rows; call `list_content_instances` for more):",
+  ];
   let emitted = 0;
   for (const [moduleSlug, rows] of byModule) {
     if (emitted >= 30) break;
@@ -174,7 +186,9 @@ export function formatContentLibraryBlock(
     for (const r of rows) {
       if (emitted >= 30) break;
       const label = r.displayName ?? r.slug ?? r.id;
-      lines.push(`    - ${r.id}${r.slug ? ` slug=${r.slug}` : ""} "${label}" — placements=${r.placementCount}`);
+      lines.push(
+        `    - ${r.id}${r.slug ? ` slug=${r.slug}` : ""} "${label}" — placements=${r.placementCount}`,
+      );
       emitted += 1;
     }
   }

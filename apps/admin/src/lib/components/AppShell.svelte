@@ -10,6 +10,7 @@
     LogOut,
     MessageSquare,
     Moon,
+    Package,
     Rocket,
     Sailboat,
     ShieldCheck,
@@ -45,6 +46,12 @@
       { href: "/edit", label: "Live edit", icon: Wand2, show: has("content.write") },
       { href: "/content/pages", label: "Pages", icon: FileText, show: has("content.read") },
       { href: "/content/modules", label: "Modules", icon: Layers, show: has("content.read") },
+      {
+        href: "/content/library",
+        label: "Content library",
+        icon: Package,
+        show: has("content.read"),
+      },
       { href: "/content/media", label: "Media", icon: ImageIcon, show: has("content.read") },
       {
         href: "/content/templates",

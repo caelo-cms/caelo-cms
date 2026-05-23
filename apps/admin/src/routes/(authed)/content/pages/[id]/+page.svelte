@@ -2,6 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { GripVertical } from "lucide-svelte";
   import { dndzone, type DndEvent } from "svelte-dnd-action";
+  import PlacementSyncToggle from "$lib/components/edit/PlacementSyncToggle.svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import {
@@ -36,7 +37,18 @@
       typeof form?.error === "string" &&
       form.error.toLowerCase().includes("conflict"),
   );
-  type Module = { moduleId: string; slug: string; displayName: string; isDeleted?: boolean };
+  type Module = {
+    moduleId: string;
+    slug: string;
+    displayName: string;
+    isDeleted?: boolean;
+    // v0.12.0 — placement binding metadata. The toggle renders against
+    // these. Null contentInstanceId means a pre-v0.12 placement that
+    // didn't get backfilled (shouldn't happen post-migration, but the
+    // toggle gracefully hides itself in that case).
+    contentInstanceId?: string | null;
+    syncMode?: "synced" | "unsynced";
+  };
   type Block = { blockName: string; modules: Module[] };
   const page = data.page as {
     id: string;
@@ -263,6 +275,16 @@
                           <span class="text-destructive">(deleted)</span>
                         {/if}
                       </span>
+                      {#if m.contentInstanceId}
+                        <PlacementSyncToggle
+                          pageId={page.id}
+                          blockName={block.blockName}
+                          position={block.modules.findIndex((x) => x.moduleId === m.moduleId)}
+                          syncMode={m.syncMode ?? "unsynced"}
+                          contentInstanceId={m.contentInstanceId}
+                          csrfToken={data.csrfToken}
+                        />
+                      {/if}
                       <Button
                         type="button"
                         variant="ghost"

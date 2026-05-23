@@ -396,7 +396,9 @@ export const updateModuleOp = defineOperation({
         css: input.css,
         js: input.js,
         fields:
-          persistedFields !== undefined ? sql`${JSON.stringify(persistedFields)}::jsonb` : undefined,
+          persistedFields !== undefined
+            ? sql`${JSON.stringify(persistedFields)}::jsonb`
+            : undefined,
       });
       await tx.execute(sql`
         UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid
