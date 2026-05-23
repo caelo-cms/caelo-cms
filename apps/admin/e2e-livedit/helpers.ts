@@ -62,6 +62,11 @@ export function resetLiveditFixtures(): void {
       await tx\`DELETE FROM chat_messages\`;
       await tx\`DELETE FROM chat_sessions\`;
       await tx\`DELETE FROM pages\`;
+      // Login bucket gets consumed by every loginAsDevOwner() call;
+      // global-setup only clears it once at suite start, so after 5+
+      // tests the rate limiter starts rejecting and loginAsDevOwner's
+      // waitForURL times out at the /login page. Clear it per-reset.
+      await tx\`DELETE FROM rate_limit_buckets WHERE key LIKE 'login:%'\`;
     });
     await sql.end();
   `);
