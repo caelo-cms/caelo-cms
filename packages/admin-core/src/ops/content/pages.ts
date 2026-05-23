@@ -1389,12 +1389,55 @@ export const duplicatePageOp = defineOperation({
       typeof sourceCounts[0]?.live === "string"
         ? Number.parseInt(sourceCounts[0].live, 10)
         : (sourceCounts[0]?.live ?? 0);
+    // v0.12.0 — duplicate must clone the source's content_instances too,
+    // not just rebind to them. A true "duplicate" lets the operator
+    // diverge the clone's content without affecting the source — so for
+    // each source placement we mint a fresh unsynced content_instance
+    // with the source's values copied, then bind the clone's
+    // page_modules row to the new ci. (Shared-synced semantics are
+    // available via set_placement_content after duplicate completes.)
     await tx.execute(sql`
-      INSERT INTO page_modules (page_id, block_name, position, module_id)
-      SELECT ${newPageId}::uuid, pm.block_name, pm.position, pm.module_id
-      FROM page_modules pm
-      JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
-      WHERE pm.page_id = ${input.sourcePageId}::uuid
+      WITH source_placements AS (
+        SELECT pm.block_name, pm.position, pm.module_id, pm.content_instance_id, pm.sync_mode
+        FROM page_modules pm
+        JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
+        WHERE pm.page_id = ${input.sourcePageId}::uuid
+      ),
+      cloned_cis AS (
+        INSERT INTO content_instances (module_id, slug, display_name, "values", updated_by, chat_branch_id)
+        SELECT
+          sp.module_id,
+          NULL,
+          NULL,
+          COALESCE(ci."values", '{}'::jsonb),
+          ${ctx.actorId}::uuid,
+          ${ctx.chatBranchId ?? null}::uuid
+        FROM source_placements sp
+        LEFT JOIN content_instances ci ON ci.id = sp.content_instance_id
+        RETURNING id, module_id
+      ),
+      indexed_sources AS (
+        SELECT
+          sp.*,
+          ROW_NUMBER() OVER (PARTITION BY sp.module_id ORDER BY sp.block_name, sp.position) AS rn
+        FROM source_placements sp
+      ),
+      indexed_clones AS (
+        SELECT
+          cc.id, cc.module_id,
+          ROW_NUMBER() OVER (PARTITION BY cc.module_id ORDER BY cc.id) AS rn
+        FROM cloned_cis cc
+      )
+      INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+      SELECT
+        ${newPageId}::uuid,
+        s.block_name,
+        s.position,
+        s.module_id,
+        c.id,
+        'unsynced'
+      FROM indexed_sources s
+      JOIN indexed_clones c ON c.module_id = s.module_id AND c.rn = s.rn
     `);
     // P7 review-pass: bump media usage_count for every distinct asset
     // referenced from the cloned modules' HTML. A duplicated page adds
@@ -1537,15 +1580,34 @@ export const changeTemplateOp = defineOperation({
       });
     }
 
+    // v0.12.0 — preserve content_instance_id + sync_mode through the
+    // re-bind. change_template is a chrome change; the page's content
+    // should ride through unchanged.
     const pmRows = (await tx.execute(sql`
-      SELECT block_name, position, module_id::text AS module_id
+      SELECT
+        block_name,
+        position,
+        module_id::text AS module_id,
+        content_instance_id::text AS content_instance_id,
+        sync_mode
       FROM page_modules WHERE page_id = ${input.pageId}::uuid
       ORDER BY block_name ASC, position ASC
-    `)) as unknown as { block_name: string; position: number; module_id: string }[];
+    `)) as unknown as {
+      block_name: string;
+      position: number;
+      module_id: string;
+      content_instance_id: string;
+      sync_mode: "synced" | "unsynced";
+    }[];
 
     const migratedBlocks = new Set<string>();
     const droppedModules: { moduleId: string; formerBlock: string }[] = [];
-    const survivors: { block_name: string; module_id: string }[] = [];
+    const survivors: {
+      block_name: string;
+      module_id: string;
+      content_instance_id: string;
+      sync_mode: "synced" | "unsynced";
+    }[] = [];
     const orphanBlock =
       input.orphanDisposition.kind === "preserve-as-block"
         ? input.orphanDisposition.blockName
@@ -1553,9 +1615,19 @@ export const changeTemplateOp = defineOperation({
     for (const r of pmRows) {
       if (newBlockNames.has(r.block_name)) {
         migratedBlocks.add(r.block_name);
-        survivors.push({ block_name: r.block_name, module_id: r.module_id });
+        survivors.push({
+          block_name: r.block_name,
+          module_id: r.module_id,
+          content_instance_id: r.content_instance_id,
+          sync_mode: r.sync_mode,
+        });
       } else if (orphanBlock !== null) {
-        survivors.push({ block_name: orphanBlock, module_id: r.module_id });
+        survivors.push({
+          block_name: orphanBlock,
+          module_id: r.module_id,
+          content_instance_id: r.content_instance_id,
+          sync_mode: r.sync_mode,
+        });
       } else {
         droppedModules.push({ moduleId: r.module_id, formerBlock: r.block_name });
       }
@@ -1566,8 +1638,8 @@ export const changeTemplateOp = defineOperation({
     for (const s of survivors) {
       const pos = positionByBlock.get(s.block_name) ?? 0;
       await tx.execute(sql`
-        INSERT INTO page_modules (page_id, block_name, position, module_id)
-        VALUES (${input.pageId}::uuid, ${s.block_name}, ${pos}, ${s.module_id}::uuid)
+        INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        VALUES (${input.pageId}::uuid, ${s.block_name}, ${pos}, ${s.module_id}::uuid, ${s.content_instance_id}::uuid, ${s.sync_mode})
       `);
       positionByBlock.set(s.block_name, pos + 1);
     }

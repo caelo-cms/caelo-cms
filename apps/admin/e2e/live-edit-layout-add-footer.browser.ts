@@ -135,7 +135,7 @@ test("add_module_to_layout reaches every page on the layout", async ({ context, 
       await c.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
         const rows = await tx\`
-          SELECT m.html FROM layout_modules lm
+          SELECT m.html, m.fields::text AS fields FROM layout_modules lm
           JOIN modules m ON m.id = lm.module_id
           JOIN layouts l ON l.id = lm.layout_id
           WHERE l.slug = 'site-default' AND lm.block_name = 'footer'
@@ -148,7 +148,12 @@ test("add_module_to_layout reaches every page on the layout", async ({ context, 
     { env: process.env, encoding: "utf8" },
   );
   if (r.status !== 0) throw new Error(r.stderr);
-  const rows = JSON.parse(r.stdout || "[]") as { html: string }[];
+  const rows = JSON.parse(r.stdout || "[]") as { html: string; fields: string | null }[];
   expect(rows.length, `expected at least one footer module on site-default`).toBeGreaterThan(0);
-  expect(rows.some((row) => row.html.includes(FOOTER_TEXT))).toBe(true);
+  // v0.12.2 — the extractor templatises literal copy at modules.create
+  // so FOOTER_TEXT now lives in a field default, not the raw html.
+  // Check both surfaces.
+  expect(
+    rows.some((row) => row.html.includes(FOOTER_TEXT) || (row.fields ?? "").includes(FOOTER_TEXT)),
+  ).toBe(true);
 });

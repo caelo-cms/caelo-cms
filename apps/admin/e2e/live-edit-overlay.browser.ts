@@ -75,9 +75,17 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
           RETURNING id::text AS id\`;
         out.tpl = tpl[0].id;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${out.tpl}::uuid, 'content', 'Content', 0)\`;
+        // v0.12.2 — pre-declare a fields row so modules.update's
+        // conservative extractor SKIPS extraction on the AI's edit
+        // (otherwise the update would rewrite the AI-supplied literal
+        // into a templatised form and the test'd see "{{title}}" in
+        // the rendered h1 since the existing content_instance values
+        // don't include the freshly-extracted field). With a non-empty
+        // fields array on the live row, the update stores the AI's
+        // HTML literal as-is.
         const mod = await tx\`
-          INSERT INTO modules (slug, display_name, html)
-          VALUES (\${process.env.MOD_SLUG}, 'le mod', '<h1>HERO_BEFORE</h1>')
+          INSERT INTO modules (slug, display_name, html, fields)
+          VALUES (\${process.env.MOD_SLUG}, 'le mod', '<h1>HERO_BEFORE</h1>', '[{"name":"hero","kind":"text","label":"Hero","default":"HERO_BEFORE"}]'::jsonb)
           RETURNING id::text AS id\`;
         out.mod = mod[0].id;
         const pg = await tx\`
