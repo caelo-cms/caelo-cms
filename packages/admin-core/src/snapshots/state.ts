@@ -85,3 +85,21 @@ export interface StructuredSetState {
   readonly items: readonly unknown[];
   readonly deletedAt: string | null;
 }
+
+/**
+ * v0.12.0 — content_instance state. One row per identity-bearing content
+ * instance. Reverting copies back into the live `content_instances` row;
+ * for branch overlays, the renderer reads this state via
+ * `loadContentInstanceStateWithBranchOverlay` so chained branched edits
+ * compose correctly (same pattern as `loadModuleStateWithBranchOverlay`
+ * fixed for modules in v0.10.0).
+ */
+export interface ContentInstanceState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly moduleId: string;
+  readonly slug: string | null;
+  readonly displayName: string | null;
+  readonly values: Record<string, unknown>;
+  readonly version: number;
+  readonly deletedAt: string | null;
+}

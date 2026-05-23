@@ -8,7 +8,13 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
-import type { ModuleState, PageLayoutState, PageState, TemplateState } from "./state.js";
+import type {
+  ContentInstanceState,
+  ModuleState,
+  PageLayoutState,
+  PageState,
+  TemplateState,
+} from "./state.js";
 
 function iso(v: string | Date | null): string | null {
   if (v === null) return null;
@@ -261,6 +267,72 @@ export async function loadPageLayoutStateWithBranchOverlay(
     }
   }
   return loadPageLayoutState(tx, pageId);
+}
+
+/**
+ * v0.12.0 — Load content_instance current state for snapshot emission.
+ * Mirrors `loadModuleState`'s shape; the branch-overlay variant below
+ * fixes the chained-edit regression class for the new entity kind.
+ */
+export async function loadContentInstanceState(
+  tx: TransactionRunner,
+  contentInstanceId: string,
+): Promise<ContentInstanceState | null> {
+  const rows = (await tx.execute(sql`
+    SELECT module_id::text AS module_id, slug, display_name, "values", version, deleted_at
+    FROM content_instances
+    WHERE id = ${contentInstanceId}::uuid
+    LIMIT 1
+  `)) as unknown as {
+    module_id: string;
+    slug: string | null;
+    display_name: string | null;
+    values: unknown;
+    version: number | string;
+    deleted_at: string | Date | null;
+  }[];
+  const r = rows[0];
+  if (!r) return null;
+  const rawValues = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+  return {
+    schemaVersion: 1,
+    moduleId: r.module_id,
+    slug: r.slug,
+    displayName: r.display_name,
+    values: (rawValues ?? {}) as Record<string, unknown>,
+    version: typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version,
+    deletedAt: iso(r.deleted_at),
+  };
+}
+
+/**
+ * v0.12.0 — Branch-overlay variant. Mirrors `loadModuleStateWithBranchOverlay`
+ * so chained branched edits to the same content_instance don't silently drop
+ * each other's values (the v0.10.0 regression class for `modules`, applied
+ * here pre-emptively).
+ */
+export async function loadContentInstanceStateWithBranchOverlay(
+  tx: TransactionRunner,
+  contentInstanceId: string,
+  chatBranchId: string | null | undefined,
+): Promise<ContentInstanceState | null> {
+  if (chatBranchId) {
+    const rows = (await tx.execute(sql`
+      SELECT cis.state
+        FROM content_instance_snapshots cis
+        JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
+       WHERE cis.content_instance_id = ${contentInstanceId}::uuid
+         AND ss.chat_branch_id = ${chatBranchId}::uuid
+       ORDER BY ss.created_at DESC
+       LIMIT 1
+    `)) as unknown as { state: unknown }[];
+    const row = rows[0];
+    if (row !== undefined) {
+      const raw = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
+      return raw as ContentInstanceState;
+    }
+  }
+  return loadContentInstanceState(tx, contentInstanceId);
 }
 
 export async function loadPageLayoutState(
