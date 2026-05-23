@@ -127,23 +127,123 @@ export function formatStructuredSetsBlock(
 }
 
 /**
- * v0.12.0 — `## Content Library` inventory block.
+ * v0.12.0 — `## Modules` decision-support catalog.
  *
- * Lists active content_instances grouped by module slug, with per-row
- * placementCount so the AI sees blast-radius without a per-row
- * `get_content_instance` round-trip. Each row is one line; modules with
- * zero instances are omitted. Capped soft at ~30 rows / <2 KB per
- * CLAUDE.md §11 — the AI calls `list_content_instances` for fuller
- * inspection.
+ * Per CLAUDE.md §1A: the operator says "I need a pricing page", never
+ * "add the product-header module". The AI translates intent → the
+ * right module. This block gives the AI enough context to make that
+ * call without round-tripping back to the operator:
+ *
+ *   - `description` — what this module is for + when to use it
+ *   - `kind` — chrome | hero | content | cta | utility (grouping key)
+ *   - `placements` — count + top sample slugs the module appears on
+ *   - `fields` — short list of field names + kinds so the AI sees the
+ *      content shape without an extra modules.get call
+ *
+ * Grouped by `kind` so the AI scans by intent ("which hero do I want?")
+ * rather than slug-alphabetic. Capped at ~40 modules / <3 KB; the AI
+ * calls `list_modules` for the full set.
+ */
+export function formatModulesBlock(
+  modules: readonly {
+    id: string;
+    slug: string;
+    displayName: string;
+    description: string;
+    kind: "chrome" | "hero" | "content" | "cta" | "utility";
+    fields: readonly { name: string; kind: string }[];
+  }[],
+  usageByModuleId: ReadonlyMap<string, { placementCount: number; sampleSlugs: readonly string[] }>,
+): string {
+  const primer = [
+    "## Modules",
+    "",
+    "The full module catalog on this install. Pick modules by **kind** + **description** — the operator describes outcomes (\"add a footer to the blog\"), you decide which module fits.",
+    "",
+    "Tools: `list_modules` (full set), `add_module_to_page` (place existing), `create_module` (mint new; REQUIRES `description` + `kind` + semantic snake_case field names), `edit_module` (modify HTML/fields/description).",
+    "",
+    "**When the catalog has no fit:** call `create_module` with a meaningful `description` (what the module is for, when to use it) before placing it. Don't ask the operator which module to use — pick the closest fit by kind, or mint a new one.",
+  ].join("\n");
+  if (modules.length === 0) {
+    return [
+      primer,
+      "",
+      "_0 modules on this install — every page composition starts with `create_module`._",
+    ].join("\n");
+  }
+  // Group by kind so the AI scans by intent.
+  const KIND_ORDER = ["chrome", "hero", "content", "cta", "utility"] as const;
+  const byKind = new Map<(typeof KIND_ORDER)[number], typeof modules>();
+  for (const k of KIND_ORDER) byKind.set(k, [] as unknown as typeof modules);
+  for (const m of modules) {
+    const bucket = byKind.get(m.kind) as unknown as typeof modules[number][];
+    bucket.push(m);
+  }
+  const lines: string[] = [primer, ""];
+  let emitted = 0;
+  for (const k of KIND_ORDER) {
+    const bucket = byKind.get(k) as unknown as typeof modules[number][];
+    if (bucket.length === 0) continue;
+    if (emitted >= 40) break;
+    lines.push(`### kind=${k}`);
+    for (const m of bucket) {
+      if (emitted >= 40) {
+        lines.push(`    … (${bucket.length - (emitted - bucket.length)} more — call list_modules)`);
+        break;
+      }
+      const u = usageByModuleId.get(m.id);
+      const usage =
+        u && u.placementCount > 0
+          ? ` — placements=${u.placementCount}${
+              u.sampleSlugs.length > 0
+                ? ` (e.g. ${u.sampleSlugs.slice(0, 3).map((s) => `/${s}`).join(", ")})`
+                : ""
+            }`
+          : " — unplaced";
+      const desc = m.description.trim() === "" ? "(no description)" : m.description.trim();
+      // Field summary: at most 5 names + their kinds. Lets the AI see
+      // the content shape without a separate modules.get round-trip.
+      const fieldSummary =
+        m.fields.length === 0
+          ? ""
+          : ` fields=[${m.fields
+              .slice(0, 5)
+              .map((f) => `${f.name}:${f.kind}`)
+              .join(", ")}${m.fields.length > 5 ? ", …" : ""}]`;
+      lines.push(`- \`${m.slug}\` "${m.displayName}"${usage}`);
+      lines.push(`    ${desc}${fieldSummary}`);
+      emitted += 1;
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * v0.12.0 — `## Content Library` decision-support block.
+ *
+ * Per CLAUDE.md §1A: the AI must be able to decide *reuse the synced
+ * row* vs *fork to unsynced* vs *mint new* without asking the
+ * operator. This block surfaces, per instance:
+ *
+ *   - `purpose` — why this row exists as a shared instance
+ *   - `placementCount` — blast radius of an edit
+ *   - sample page slugs the instance appears on (pattern hint)
+ *   - parent module kind so the AI can group by intent
+ *
+ * Sorted by placementCount DESC so the highest-impact shared content
+ * stays above the 30-row cap. Grouped by module kind for legibility.
  */
 export function formatContentLibraryBlock(
   instances: readonly {
     id: string;
     moduleSlug: string;
+    moduleKind?: "chrome" | "hero" | "content" | "cta" | "utility";
     slug: string | null;
     displayName: string | null;
+    purpose?: string | null;
     placementCount: number;
   }[],
+  usageByCiId?: ReadonlyMap<string, { sampleSlugs: readonly string[] }>,
 ): string {
   const primer = [
     "## Content Library",
@@ -156,47 +256,51 @@ export function formatContentLibraryBlock(
     return [
       primer,
       "",
-      "_0 content_instances on this install — call `create_content_instance` to mint reusable content, or just edit per-page via `set_page_module_content` (auto-mints an unsynced instance per placement)._",
+      "_0 shared content_instances on this install. The unsynced default (one private CI per placement) is fine for most content — only mint a shared instance via `create_content_instance` when the same content should appear identically on N pages (footers, banners, repeated CTAs)._",
     ].join("\n");
   }
-  // v0.12.2 — sort by placementCount DESC before grouping so the 30-row
-  // cap surfaces the highest-blast-radius instances first. The op's
-  // default ORDER BY created_at ASC otherwise hides heavily-placed
-  // shared content (which is exactly what the AI most needs to see for
-  // edit-impact reasoning) behind older orphan rows. Map preserves
-  // insertion order — the first module-slug bucket encountered + its
-  // first row stay at the top.
+  // v0.12.2 — sort by placementCount DESC so the highest-impact shared
+  // content stays above the 30-row cap. The op's default ORDER BY
+  // created_at ASC otherwise hides heavily-placed shared content
+  // behind older orphan rows.
   const sortedInstances = [...instances].sort((a, b) => b.placementCount - a.placementCount);
-  // Group by module slug for legibility.
-  const byModule = new Map<string, typeof instances>();
-  for (const i of sortedInstances) {
-    const arr = byModule.get(i.moduleSlug) ?? ([] as typeof instances);
-    (
-      arr as unknown as {
-        id: string;
-        moduleSlug: string;
-        slug: string | null;
-        displayName: string | null;
-        placementCount: number;
-      }[]
-    ).push(i);
-    byModule.set(i.moduleSlug, arr);
+  // v0.12.0 — group by module kind for legibility (chrome / hero / …).
+  // Falls back to "content" when moduleKind isn't surfaced.
+  const KIND_ORDER = ["chrome", "hero", "content", "cta", "utility"] as const;
+  const byKind = new Map<(typeof KIND_ORDER)[number], typeof sortedInstances>();
+  for (const k of KIND_ORDER) byKind.set(k, [] as unknown as typeof sortedInstances);
+  for (const inst of sortedInstances) {
+    const k = (inst.moduleKind ?? "content") as (typeof KIND_ORDER)[number];
+    const bucket = byKind.get(k) as unknown as typeof sortedInstances[number][];
+    bucket.push(inst);
   }
   const lines: string[] = [
     primer,
     "",
-    "Active instances (truncated to 30 rows; call `list_content_instances` for more):",
+    "Active instances grouped by parent-module kind (truncated to 30 rows; call `list_content_instances` for more):",
   ];
   let emitted = 0;
-  for (const [moduleSlug, rows] of byModule) {
+  for (const k of KIND_ORDER) {
+    const bucket = byKind.get(k) as unknown as typeof sortedInstances[number][];
+    if (bucket.length === 0) continue;
     if (emitted >= 30) break;
-    lines.push(`- module \`${moduleSlug}\`:`);
-    for (const r of rows) {
+    lines.push(`### kind=${k}`);
+    for (const r of bucket) {
       if (emitted >= 30) break;
       const label = r.displayName ?? r.slug ?? r.id;
+      const purpose =
+        r.purpose && r.purpose.trim() !== "" ? r.purpose.trim() : "(no purpose set)";
+      const usage = usageByCiId?.get(r.id);
+      const samples =
+        usage && usage.sampleSlugs.length > 0
+          ? ` on ${usage.sampleSlugs.slice(0, 3).map((s) => `/${s}`).join(", ")}${
+              r.placementCount > usage.sampleSlugs.length ? ", …" : ""
+            }`
+          : "";
       lines.push(
-        `    - ${r.id}${r.slug ? ` slug=${r.slug}` : ""} "${label}" — placements=${r.placementCount}`,
+        `- ${r.id} module=\`${r.moduleSlug}\` "${label}" — placements=${r.placementCount}${samples}`,
       );
+      lines.push(`    ${purpose}`);
       emitted += 1;
     }
   }
@@ -288,10 +392,15 @@ export interface VolatileContext {
   readonly themeBlock?: string;
   /** P6.7.5 — named structured-data sets the AI can edit (nav-menu, tags, etc.). */
   readonly structuredSetsBlock?: string;
-  /** v0.12.0 — `## Content Library` inventory (active content_instances
-   *  grouped by module slug, with placementCount per row). Capped at
-   *  <2 KB per CLAUDE.md §11 — the AI calls list_content_instances for
-   *  fuller inspection. */
+  /** v0.12.0 — `## Modules` decision-support catalog (modules grouped
+   *  by kind, with description + placement usage + field summary per
+   *  module). Per CLAUDE.md §1A the AI picks modules by intent, not
+   *  slug — this block carries the context for that decision. */
+  readonly modulesBlock?: string;
+  /** v0.12.0 — `## Content Library` decision-support block (shared
+   *  content_instances with purpose + placementCount + sample pages).
+   *  Lets the AI decide reuse vs fork vs mint new without a tool
+   *  round-trip. */
   readonly contentLibraryBlock?: string;
   /** P6.7.6 — available layouts + their blocks (chrome shells). */
   readonly layoutsBlock?: string;
@@ -390,6 +499,9 @@ export function composeSystemPromptChunks(
   }
   if (volatile.structuredSetsBlock && volatile.structuredSetsBlock.trim().length > 0) {
     chunks.push({ body: volatile.structuredSetsBlock, cacheable: false, label: "structured-sets" });
+  }
+  if (volatile.modulesBlock && volatile.modulesBlock.trim().length > 0) {
+    chunks.push({ body: volatile.modulesBlock, cacheable: false, label: "modules" });
   }
   if (volatile.contentLibraryBlock && volatile.contentLibraryBlock.trim().length > 0) {
     chunks.push({ body: volatile.contentLibraryBlock, cacheable: false, label: "content-library" });

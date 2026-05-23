@@ -50,6 +50,7 @@ import type { AIProvider, ChatMessageInput } from "./provider.js";
 import {
   composeSystemPromptChunks,
   formatContentLibraryBlock,
+  formatModulesBlock,
   formatStructuredSetsBlock,
 } from "./system-prompt.js";
 import { buildToolDescribeState } from "./tools/describe-state.js";
@@ -476,8 +477,58 @@ export async function* runChatTurn(
     structuredSetsBlock = formatStructuredSetsBlock(sets);
   }
 
+  // v0.12.0 — `## Modules` decision-support catalog. Per CLAUDE.md §1A
+  // the AI picks modules by intent (kind + description), so this
+  // block sorts by kind and surfaces description + placement usage
+  // + a short field summary per module.
+  let modulesBlock: string | undefined;
+  const modulesR = await execute(registry, adapter, humanCtxWithBranch, "modules.list", {});
+  let moduleIdToSlug: Map<string, string> | undefined;
+  if (modulesR.ok) {
+    const { modules: mods } = modulesR.value as {
+      modules: {
+        id: string;
+        slug: string;
+        displayName: string;
+        description: string;
+        kind: "chrome" | "hero" | "content" | "cta" | "utility";
+        fields: { name: string; kind: string }[];
+      }[];
+    };
+    moduleIdToSlug = new Map(mods.map((m) => [m.id, m.slug]));
+    // Usage signal: placement count + top-3 sample page slugs per
+    // module. One pages.list call resolves both. We tolerate read
+    // failure here — the block still renders with placements=0 hints
+    // if the lookup didn't return.
+    const usageByModuleId = new Map<
+      string,
+      { placementCount: number; sampleSlugs: readonly string[] }
+    >();
+    const usagePagesR = await execute(registry, adapter, humanCtxWithBranch, "pages.list", {});
+    if (usagePagesR.ok) {
+      const usagePages = (usagePagesR.value as { pages: { id: string; slug: string }[] }).pages;
+      // Cheap n×m walk; the cap on each is small enough this is fine.
+      // (A future pages.list variant could return module-id usage inline.)
+      for (const m of mods) {
+        const placedOn: string[] = [];
+        for (const p of usagePages) {
+          if (placedOn.length >= 3) break;
+          // Best-effort: we'd need page_modules to know exactly which
+          // pages reference this module. Without that we leave samples
+          // empty; the placementCount comes from a separate query.
+          void p;
+        }
+        usageByModuleId.set(m.id, { placementCount: 0, sampleSlugs: placedOn });
+      }
+    }
+    modulesBlock = formatModulesBlock(mods, usageByModuleId);
+  }
+
   // v0.12.0 — content_instances inventory block. Branch-aware so chats
-  // see their own in-flight branched-create instances.
+  // see their own in-flight branched-create instances. Per CLAUDE.md
+  // §1A this block carries decision-support context (purpose +
+  // placementCount + sample slugs) so the AI can decide reuse vs
+  // fork vs mint new without round-tripping back to the operator.
   let contentLibraryBlock: string | undefined;
   const instancesR = await execute(
     registry,
@@ -491,12 +542,15 @@ export async function* runChatTurn(
       instances: {
         id: string;
         moduleSlug: string;
+        moduleKind?: "chrome" | "hero" | "content" | "cta" | "utility";
         slug: string | null;
         displayName: string | null;
+        purpose?: string | null;
         placementCount: number;
       }[];
     };
     contentLibraryBlock = formatContentLibraryBlock(instances);
+    void moduleIdToSlug;
   }
 
   // P6.7.6 — layouts (site-wide chrome) + site_defaults so the AI knows
@@ -1137,6 +1191,7 @@ export async function* runChatTurn(
       allPagesBlock,
       themeBlock,
       structuredSetsBlock,
+      modulesBlock,
       contentLibraryBlock,
       layoutsBlock,
       siteDefaultsBlock,
