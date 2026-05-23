@@ -27,6 +27,7 @@ import {
   loadModuleStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
+import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
 
 /**
  * Diff media references between two HTML strings and apply usage-count
@@ -161,8 +162,44 @@ export const createModuleOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: moduleCreateSchema,
-  output: z.object({ moduleId: z.string() }),
+  output: z.object({
+    moduleId: z.string(),
+    /**
+     * v0.12.2 — fields the extractor inferred from the input HTML. When
+     * the AI passed un-templatised HTML (`<h1>Welcome</h1>`), the
+     * extractor inserts placeholders + mints field names; the result
+     * here lets the AI see what it got so a follow-up rename is one
+     * call, not a guess.
+     */
+    extractedFields: z.array(moduleFieldSchema).optional(),
+  }),
   handler: async (ctx, input, tx) => {
+    // v0.12.2 — auto-templatise hardcoded content. Runs BEFORE persist.
+    // When the AI passes explicit `fields`, those names are preserved
+    // via existingFields; net-new content gets fresh inferred names.
+    // The extractor is idempotent on already-templatised input.
+    const extracted = extractModuleStructure(input.html, input.fields);
+    const validation = validateTemplatizedModule(extracted.templatizedHtml, extracted.fields);
+    if (!validation.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "modules.create",
+        input,
+        succeeded: false,
+        resultSummary: `validation-failed: ${validation.message}`,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "modules.create",
+        message: validation.message,
+      });
+    }
+    const persistedHtml = extracted.templatizedHtml;
+    // Cast readonly→mutable: zod schemas downstream accept mutable arrays.
+    const extractedMutable = [...extracted.fields] as ModuleField[];
+    const persistedFields =
+      input.fields && input.fields.length > 0 ? input.fields : extractedMutable;
     // v0.9.0 — branch-scoped uniqueness. Same-branch slug clash
     // surfaces as the unique-index violation at INSERT below; check
     // here narrows it to a clean error. We only check the caller's
@@ -200,10 +237,10 @@ export const createModuleOp = defineOperation({
       VALUES (
         ${input.slug},
         ${input.displayName},
-        ${input.html},
+        ${persistedHtml},
         ${input.css},
         ${input.js},
-        ${JSON.stringify(input.fields)}::jsonb,
+        ${JSON.stringify(persistedFields)}::jsonb,
         ${ctx.chatBranchId ?? null}::uuid
       )
       RETURNING id::text AS id
@@ -218,7 +255,7 @@ export const createModuleOp = defineOperation({
     }
     // P7 usage-tracker: a fresh module's HTML may already reference
     // existing media (AI tool, paste-from-template, etc.).
-    await applyMediaUsageDelta(tx, "", input.html);
+    await applyMediaUsageDelta(tx, "", persistedHtml);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -226,7 +263,7 @@ export const createModuleOp = defineOperation({
       input,
       succeeded: true,
       entityId: moduleId,
-      resultSummary: `slug=${input.slug}`,
+      resultSummary: `slug=${input.slug} extractedFields=${extracted.fields.length}`,
     });
     const state = await loadModuleState(tx, moduleId);
     if (state) {
@@ -239,7 +276,13 @@ export const createModuleOp = defineOperation({
         entities: [{ kind: "module", entityId: moduleId, state }],
       });
     }
-    return ok({ moduleId });
+    // v0.12.2 — surface the inferred field shape so the AI's next turn
+    // sees the auto-minted names. Only when the AI didn't supply fields
+    // explicitly (explicit fields = AI knows what it wants; extracted
+    // would be redundant + confusing).
+    const extractedForCaller =
+      input.fields && input.fields.length > 0 ? undefined : extractedMutable;
+    return ok({ moduleId, extractedFields: extractedForCaller });
   },
 });
 
@@ -251,7 +294,14 @@ export const updateModuleOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: moduleUpdateSchema,
-  output: z.object({}),
+  output: z.object({
+    /**
+     * v0.12.2 — same shape as modules.create — when the AI passed
+     * un-templatised HTML, the extractor minted fields and we hand them
+     * back so the AI's next turn can use the inferred names verbatim.
+     */
+    extractedFields: z.array(moduleFieldSchema).optional(),
+  }),
   handler: async (ctx, input, tx) => {
     // v0.5.0 — per-entity lock. When the caller is in a chat,
     // acquire the lock for this module; reject if another chat holds
@@ -288,6 +338,48 @@ export const updateModuleOp = defineOperation({
       });
     }
 
+    // v0.12.2 — auto-extract content from the new HTML if supplied. The
+    // existingFields hint comes from the explicit input first; otherwise
+    // from the live module's prior `fields`. The extractor is idempotent
+    // so callers who pre-templatise get a no-op pass.
+    const rawPrevFields = typeof prev.fields === "string" ? JSON.parse(prev.fields) : prev.fields;
+    const prevFields = Array.isArray(rawPrevFields) ? (rawPrevFields as ModuleField[]) : [];
+    const existingFieldsHint = input.fields ?? prevFields;
+    let extractedHtml = input.html;
+    let extractedFields: ModuleField[] | undefined;
+    let extractedSurfacedToCaller: ModuleField[] | undefined;
+    if (input.html !== undefined) {
+      const extracted = extractModuleStructure(input.html, existingFieldsHint);
+      const validation = validateTemplatizedModule(extracted.templatizedHtml, extracted.fields);
+      if (!validation.ok) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "modules.update",
+          input,
+          succeeded: false,
+          resultSummary: `validation-failed: ${validation.message}`,
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "modules.update",
+          message: validation.message,
+        });
+      }
+      extractedHtml = extracted.templatizedHtml;
+      // If the caller supplied explicit fields, those win. Otherwise
+      // adopt the extractor's inferred shape (which already preserves
+      // existing names from existingFieldsHint). Cast readonly→mutable
+      // since extractor returns readonly arrays + downstream zod schemas
+      // accept the mutable form.
+      const extractedMutable = [...extracted.fields] as ModuleField[];
+      extractedFields = input.fields ?? extractedMutable;
+      extractedSurfacedToCaller =
+        input.fields && input.fields.length > 0 ? undefined : extractedMutable;
+    }
+    const persistedHtml = extractedHtml;
+    const persistedFields = extractedFields ?? input.fields;
+
     const branchId = ctx.chatBranchId ?? null;
 
     // v0.5.1 — branched writes skip the live UPDATE. Module code stays
@@ -300,19 +392,19 @@ export const updateModuleOp = defineOperation({
       // v0.4.0 — `fields` is jsonb; cast via SQL fragment.
       const sets = buildPatchSet({
         display_name: input.displayName,
-        html: input.html,
+        html: persistedHtml,
         css: input.css,
         js: input.js,
         fields:
-          input.fields !== undefined ? sql`${JSON.stringify(input.fields)}::jsonb` : undefined,
+          persistedFields !== undefined ? sql`${JSON.stringify(persistedFields)}::jsonb` : undefined,
       });
       await tx.execute(sql`
         UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid
       `);
       // P7 usage-tracker: only diff when html changed AND we wrote live.
       // For branched writes, usage delta is applied at publish time.
-      if (input.html !== undefined) {
-        await applyMediaUsageDelta(tx, prev.html, input.html);
+      if (persistedHtml !== undefined) {
+        await applyMediaUsageDelta(tx, prev.html, persistedHtml);
       }
     }
 
@@ -355,10 +447,10 @@ export const updateModuleOp = defineOperation({
       state = {
         ...base,
         displayName: input.displayName ?? base.displayName,
-        html: input.html ?? base.html,
+        html: persistedHtml ?? base.html,
         css: input.css ?? base.css,
         js: input.js ?? base.js,
-        fields: input.fields ?? base.fields,
+        fields: persistedFields ?? base.fields,
         deletedAt: null,
       };
     } else {
@@ -375,7 +467,7 @@ export const updateModuleOp = defineOperation({
         entities: [{ kind: "module", entityId: input.moduleId, state }],
       });
     }
-    return ok({});
+    return ok({ extractedFields: extractedSurfacedToCaller });
   },
 });
 

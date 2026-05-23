@@ -25,6 +25,17 @@
  *
  * Idempotent — calling after stage 3 returns the no-op message;
  * never tramples existing state.
+ *
+ * v0.12.0 note — the post-bootstrap guidance string still mentions
+ * `set_page_module_content`. That tool is now a routing SHIM: it
+ * resolves the placement's content_instance_id + sync_mode and
+ * forwards to `content_instances.set_values` for unsynced placements
+ * (the default after pages.set_modules mints a fresh unsynced
+ * content_instance per net-new placement). For synced placements the
+ * shim returns a structured error pointing at `fork_placement_content`
+ * / `set_content_instance_values`. Fresh installs never see synced
+ * placements until the operator explicitly opts in, so the bootstrap
+ * recovery path stays simple.
  */
 
 import { execute } from "@caelo-cms/query-api";

@@ -91,6 +91,182 @@ function iso(v: string | Date | null | undefined): string | null {
   return v instanceof Date ? v.toISOString() : String(v);
 }
 
+/**
+ * v0.12.1 — validate nested-module-ref shapes in `values` against the
+ * module's declared `fields[]`. Catches:
+ *
+ *   - A `module` / `module-list` field whose value isn't the expected
+ *     `{ moduleId, contentInstanceId }` shape.
+ *   - A nested ref pointing at a non-existent or soft-deleted module
+ *     or content_instance.
+ *   - A nested ref whose content_instance is for a different module
+ *     than the field/list element declares.
+ *   - A `module-list` whose array size violates declared min/max.
+ *   - A `module` field whose value is missing entirely (required).
+ *
+ * Returns `{ ok: true }` if every nested ref is valid (or no nested
+ * fields exist); otherwise `{ ok: false, message }` naming the
+ * offending field so the AI's recovery is one round-trip.
+ */
+async function validateNestedRefs(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  moduleId: string,
+  values: Record<string, unknown>,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  // Read the owning module's fields schema. Skip if module not found —
+  // the caller already validated that.
+  const modRows = (await tx.execute(sql`
+    SELECT fields FROM modules WHERE id = ${moduleId}::uuid LIMIT 1
+  `)) as unknown as { fields: unknown }[];
+  if (modRows.length === 0) return { ok: true };
+  const rawFields = typeof modRows[0]?.fields === "string"
+    ? JSON.parse(modRows[0].fields)
+    : modRows[0]?.fields;
+  if (!Array.isArray(rawFields)) return { ok: true };
+
+  type Field = {
+    name: string;
+    kind: string;
+    allowedModuleSlugs?: string[];
+    min?: number;
+    max?: number;
+  };
+  const fields: Field[] = rawFields.filter(
+    (f): f is Field =>
+      typeof f === "object" &&
+      f !== null &&
+      typeof (f as { name?: unknown }).name === "string" &&
+      typeof (f as { kind?: unknown }).kind === "string",
+  );
+
+  function isRef(v: unknown): v is { moduleId: string; contentInstanceId: string } {
+    return (
+      typeof v === "object" &&
+      v !== null &&
+      typeof (v as { moduleId?: unknown }).moduleId === "string" &&
+      typeof (v as { contentInstanceId?: unknown }).contentInstanceId === "string"
+    );
+  }
+
+  // Collect every (moduleId, contentInstanceId) pair the values declare
+  // so we can batch-fetch existence + module-match in one query each.
+  const refsToCheck: { fieldName: string; index: number | null; ref: { moduleId: string; contentInstanceId: string } }[] = [];
+  for (const f of fields) {
+    if (f.kind === "module") {
+      const v = values[f.name];
+      if (v === undefined || v === null) continue; // optional — render emits comment
+      if (!isRef(v)) {
+        return {
+          ok: false,
+          message: `field "${f.name}" (kind=module) expects { moduleId, contentInstanceId }; got ${JSON.stringify(v)}`,
+        };
+      }
+      refsToCheck.push({ fieldName: f.name, index: null, ref: v });
+    } else if (f.kind === "module-list") {
+      const v = values[f.name];
+      if (v === undefined || v === null) {
+        if (f.min !== undefined && f.min > 0) {
+          return {
+            ok: false,
+            message: `field "${f.name}" (kind=module-list) is missing; declared min=${f.min}`,
+          };
+        }
+        continue;
+      }
+      if (!Array.isArray(v)) {
+        return {
+          ok: false,
+          message: `field "${f.name}" (kind=module-list) expects an array; got ${typeof v}`,
+        };
+      }
+      if (f.min !== undefined && v.length < f.min) {
+        return {
+          ok: false,
+          message: `field "${f.name}" has ${v.length} item(s); declared min=${f.min}`,
+        };
+      }
+      if (f.max !== undefined && v.length > f.max) {
+        return {
+          ok: false,
+          message: `field "${f.name}" has ${v.length} item(s); declared max=${f.max}`,
+        };
+      }
+      for (let i = 0; i < v.length; i += 1) {
+        const el = v[i];
+        if (!isRef(el)) {
+          return {
+            ok: false,
+            message: `field "${f.name}"[${i}] expects { moduleId, contentInstanceId }; got ${JSON.stringify(el)}`,
+          };
+        }
+        refsToCheck.push({ fieldName: f.name, index: i, ref: el });
+      }
+    }
+  }
+  if (refsToCheck.length === 0) return { ok: true };
+
+  // Verify every referenced module + content_instance exists, isn't
+  // soft-deleted, and the content_instance.module_id matches the
+  // referenced module_id.
+  const allInstanceIds = [...new Set(refsToCheck.map((r) => r.ref.contentInstanceId))];
+  const ciRows = (await tx.execute(sql`
+    SELECT id::text AS id, module_id::text AS module_id, deleted_at
+    FROM content_instances
+    WHERE id IN (${sql.join(
+      allInstanceIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )})
+  `)) as unknown as { id: string; module_id: string; deleted_at: Date | null }[];
+  const ciMap = new Map(ciRows.map((r) => [r.id, r]));
+
+  const allModuleIds = [...new Set(refsToCheck.map((r) => r.ref.moduleId))];
+  const modRows2 = (await tx.execute(sql`
+    SELECT id::text AS id, slug, deleted_at
+    FROM modules
+    WHERE id IN (${sql.join(
+      allModuleIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )})
+  `)) as unknown as { id: string; slug: string; deleted_at: Date | null }[];
+  const moduleMap = new Map(modRows2.map((r) => [r.id, r]));
+
+  for (const c of refsToCheck) {
+    const m = moduleMap.get(c.ref.moduleId);
+    const where = c.index === null ? c.fieldName : `${c.fieldName}[${c.index}]`;
+    if (!m || m.deleted_at !== null) {
+      return {
+        ok: false,
+        message: `field "${where}" references module ${c.ref.moduleId} which does not exist or is deleted`,
+      };
+    }
+    const ci = ciMap.get(c.ref.contentInstanceId);
+    if (!ci || ci.deleted_at !== null) {
+      return {
+        ok: false,
+        message: `field "${where}" references content_instance ${c.ref.contentInstanceId} which does not exist or is deleted`,
+      };
+    }
+    if (ci.module_id !== c.ref.moduleId) {
+      return {
+        ok: false,
+        message: `field "${where}" content_instance ${c.ref.contentInstanceId} is for module ${ci.module_id}, but the ref declares module ${c.ref.moduleId}`,
+      };
+    }
+    // allowedModuleSlugs whitelist (when present, the renderer enforces
+    // at runtime but we mirror it at write time for the AI's benefit).
+    const declared = fields.find((f) => f.name === c.fieldName);
+    if (declared?.allowedModuleSlugs && declared.allowedModuleSlugs.length > 0) {
+      if (!declared.allowedModuleSlugs.includes(m.slug)) {
+        return {
+          ok: false,
+          message: `field "${where}" module slug "${m.slug}" is not in allowedModuleSlugs [${declared.allowedModuleSlugs.join(", ")}]`,
+        };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 function rowToContentInstance(r: ContentInstanceRowSql): z.infer<typeof contentInstanceRowSchema> {
   const rawValues = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
   return {
@@ -304,6 +480,26 @@ export const createContentInstanceOp = defineOperation({
       }
     }
 
+    // v0.12.1 — validate nested-module-ref shapes against the module's
+    // declared fields[] BEFORE persisting so bad refs fail at write time
+    // with an actionable error (not at render time as missingSlots).
+    const refValidation = await validateNestedRefs(tx, input.moduleId, input.values);
+    if (!refValidation.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "content_instances.create",
+        input,
+        succeeded: false,
+        resultSummary: `nested-ref-validation: ${refValidation.message}`,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "content_instances.create",
+        message: refValidation.message,
+      });
+    }
+
     const valuesJson = JSON.stringify(input.values);
     const rows = (await tx.execute(sql`
       INSERT INTO content_instances
@@ -414,6 +610,26 @@ export const setContentInstanceValuesOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.set_values",
         message: `Conflict: expected version ${input.expectedVersion}, found ${prev.version}`,
+      });
+    }
+
+    // v0.12.1 — validate nested-module-ref shapes against the owning
+    // module's fields[] so bad refs fail at write time, not render time.
+    const refValidation = await validateNestedRefs(tx, prev.moduleId, input.values);
+    if (!refValidation.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "content_instances.set_values",
+        input,
+        succeeded: false,
+        entityId: input.id,
+        resultSummary: `nested-ref-validation: ${refValidation.message}`,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "content_instances.set_values",
+        message: refValidation.message,
       });
     }
 

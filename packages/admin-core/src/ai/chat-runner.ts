@@ -47,7 +47,11 @@ import {
 
 import { tryAutoRecover } from "./auto-recovery.js";
 import type { AIProvider, ChatMessageInput } from "./provider.js";
-import { composeSystemPromptChunks, formatStructuredSetsBlock } from "./system-prompt.js";
+import {
+  composeSystemPromptChunks,
+  formatContentLibraryBlock,
+  formatStructuredSetsBlock,
+} from "./system-prompt.js";
 import { buildToolDescribeState } from "./tools/describe-state.js";
 import type { ToolRegistry } from "./tools/index.js";
 
@@ -470,6 +474,29 @@ export async function* runChatTurn(
       }
     ).sets.filter((s) => s.kind !== "theme");
     structuredSetsBlock = formatStructuredSetsBlock(sets);
+  }
+
+  // v0.12.0 — content_instances inventory block. Branch-aware so chats
+  // see their own in-flight branched-create instances.
+  let contentLibraryBlock: string | undefined;
+  const instancesR = await execute(
+    registry,
+    adapter,
+    humanCtxWithBranch,
+    "content_instances.list",
+    {},
+  );
+  if (instancesR.ok) {
+    const { instances } = instancesR.value as {
+      instances: {
+        id: string;
+        moduleSlug: string;
+        slug: string | null;
+        displayName: string | null;
+        placementCount: number;
+      }[];
+    };
+    contentLibraryBlock = formatContentLibraryBlock(instances);
   }
 
   // P6.7.6 — layouts (site-wide chrome) + site_defaults so the AI knows
@@ -1110,6 +1137,7 @@ export async function* runChatTurn(
       allPagesBlock,
       themeBlock,
       structuredSetsBlock,
+      contentLibraryBlock,
       layoutsBlock,
       siteDefaultsBlock,
       mediaBlock,

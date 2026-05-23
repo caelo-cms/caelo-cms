@@ -126,6 +126,61 @@ export function formatStructuredSetsBlock(
   ].join("\n");
 }
 
+/**
+ * v0.12.0 — `## Content Library` inventory block.
+ *
+ * Lists active content_instances grouped by module slug, with per-row
+ * placementCount so the AI sees blast-radius without a per-row
+ * `get_content_instance` round-trip. Each row is one line; modules with
+ * zero instances are omitted. Capped soft at ~30 rows / <2 KB per
+ * CLAUDE.md §11 — the AI calls `list_content_instances` for fuller
+ * inspection.
+ */
+export function formatContentLibraryBlock(
+  instances: readonly {
+    id: string;
+    moduleSlug: string;
+    slug: string | null;
+    displayName: string | null;
+    placementCount: number;
+  }[],
+): string {
+  const primer = [
+    "## Content Library",
+    "",
+    "Reusable `content_instances` rows on this install. Each row is a typed bag of values for one module, bindable to N placements via `set_placement_content({ syncMode: 'synced' })` so edits propagate everywhere bound.",
+    "",
+    "Tools: `list_content_instances` (browse), `get_content_instance` (one + placements), `create_content_instance` (mint reusable), `set_content_instance_values` (edit; placementCount = blast radius), `delete_content_instance` (orphans only), `set_placement_content` (bind placement -> instance + sync_mode), `fork_placement_content` (detach synced -> private).",
+  ].join("\n");
+  if (instances.length === 0) {
+    return [
+      primer,
+      "",
+      "_0 content_instances on this install — call `create_content_instance` to mint reusable content, or just edit per-page via `set_page_module_content` (auto-mints an unsynced instance per placement)._",
+    ].join("\n");
+  }
+  // Group by module slug for legibility.
+  const byModule = new Map<string, typeof instances>();
+  for (const i of instances) {
+    const arr = byModule.get(i.moduleSlug) ?? ([] as typeof instances);
+    (arr as unknown as { id: string; moduleSlug: string; slug: string | null; displayName: string | null; placementCount: number }[]).push(i);
+    byModule.set(i.moduleSlug, arr);
+  }
+  const lines: string[] = [primer, "", "Active instances (truncated to 30 rows; call `list_content_instances` for more):"];
+  let emitted = 0;
+  for (const [moduleSlug, rows] of byModule) {
+    if (emitted >= 30) break;
+    lines.push(`- module \`${moduleSlug}\`:`);
+    for (const r of rows) {
+      if (emitted >= 30) break;
+      const label = r.displayName ?? r.slug ?? r.id;
+      lines.push(`    - ${r.id}${r.slug ? ` slug=${r.slug}` : ""} "${label}" — placements=${r.placementCount}`);
+      emitted += 1;
+    }
+  }
+  return lines.join("\n");
+}
+
 // SystemPromptChunk is defined in ./provider.ts so adapters can import
 // it without pulling in the system-prompt composer; we re-use that type here.
 import type { SystemPromptChunk } from "./provider.js";
@@ -211,6 +266,11 @@ export interface VolatileContext {
   readonly themeBlock?: string;
   /** P6.7.5 — named structured-data sets the AI can edit (nav-menu, tags, etc.). */
   readonly structuredSetsBlock?: string;
+  /** v0.12.0 — `## Content Library` inventory (active content_instances
+   *  grouped by module slug, with placementCount per row). Capped at
+   *  <2 KB per CLAUDE.md §11 — the AI calls list_content_instances for
+   *  fuller inspection. */
+  readonly contentLibraryBlock?: string;
   /** P6.7.6 — available layouts + their blocks (chrome shells). */
   readonly layoutsBlock?: string;
   /** P6.7.6 — site_defaults singleton + per-template layout binding. */
@@ -308,6 +368,9 @@ export function composeSystemPromptChunks(
   }
   if (volatile.structuredSetsBlock && volatile.structuredSetsBlock.trim().length > 0) {
     chunks.push({ body: volatile.structuredSetsBlock, cacheable: false, label: "structured-sets" });
+  }
+  if (volatile.contentLibraryBlock && volatile.contentLibraryBlock.trim().length > 0) {
+    chunks.push({ body: volatile.contentLibraryBlock, cacheable: false, label: "content-library" });
   }
   if (volatile.layoutsBlock && volatile.layoutsBlock.trim().length > 0) {
     chunks.push({ body: volatile.layoutsBlock, cacheable: false, label: "layouts" });
