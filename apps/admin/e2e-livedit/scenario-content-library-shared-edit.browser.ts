@@ -32,46 +32,56 @@ function seedSharedContentInstance(): SeedResult {
       `
         import { SQL } from "bun";
         const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+        // Wrap the raw INSERTs in a transaction that flips
+        // caelo.actor_kind to 'system' — without it, RLS rejects
+        // every write with "new row violates row-level security
+        // policy for table 'modules'". The same pattern as
+        // resetLiveditFixtures + the rest of the e2e seeds.
+        let result;
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
 
-        // Create a module with one text field.
-        const mod = await sql\`
-          INSERT INTO modules (slug, display_name, html, css, js, fields)
-          VALUES ('shared-hero-' || floor(random()*100000)::text,
-                  'Shared hero',
-                  '<h1>{{title}}</h1>',
-                  '', '',
-                  '[{"name":"title","kind":"text","label":"Title","default":"Original"}]'::jsonb)
-          RETURNING id::text AS id
-        \`;
-        const moduleId = mod[0].id;
-
-        // Create the shared content_instance.
-        const ci = await sql\`
-          INSERT INTO content_instances (module_id, slug, display_name, "values")
-          VALUES (\${moduleId}::uuid, 'shared-hero-content', 'Shared hero text',
-                  '{"title":"Original"}'::jsonb)
-          RETURNING id::text AS id
-        \`;
-        const contentInstanceId = ci[0].id;
-
-        // Find / create three pages on the default template.
-        const tpl = await sql\`SELECT id::text AS id FROM templates WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1\`;
-        const templateId = tpl[0].id;
-        const pageIds = [];
-        for (const slug of ['shared-1','shared-2','shared-3']) {
-          const p = await sql\`
-            INSERT INTO pages (slug, locale, name, title, template_id, status)
-            VALUES (\${slug}, 'en', \${slug}, \${slug}, \${templateId}::uuid, 'published')
+          // Create a module with one text field.
+          const mod = await tx\`
+            INSERT INTO modules (slug, display_name, html, css, js, fields)
+            VALUES ('shared-hero-' || floor(random()*100000)::text,
+                    'Shared hero',
+                    '<h1>{{title}}</h1>',
+                    '', '',
+                    '[{"name":"title","kind":"text","label":"Title","default":"Original"}]'::jsonb)
             RETURNING id::text AS id
           \`;
-          pageIds.push(p[0].id);
-          await sql\`
-            INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
-            VALUES (\${p[0].id}::uuid, 'content', 0, \${moduleId}::uuid, \${contentInstanceId}::uuid, 'synced')
-          \`;
-        }
+          const moduleId = mod[0].id;
 
-        console.log(JSON.stringify({ contentInstanceId, pageIds, oldTitle: 'Original' }));
+          // Create the shared content_instance.
+          const ci = await tx\`
+            INSERT INTO content_instances (module_id, slug, display_name, "values")
+            VALUES (\${moduleId}::uuid, 'shared-hero-content', 'Shared hero text',
+                    '{"title":"Original"}'::jsonb)
+            RETURNING id::text AS id
+          \`;
+          const contentInstanceId = ci[0].id;
+
+          // Find / create three pages on the default template.
+          const tpl = await tx\`SELECT id::text AS id FROM templates WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1\`;
+          const templateId = tpl[0].id;
+          const pageIds = [];
+          for (const slug of ['shared-1','shared-2','shared-3']) {
+            const p = await tx\`
+              INSERT INTO pages (slug, locale, name, title, template_id, status)
+              VALUES (\${slug}, 'en', \${slug}, \${slug}, \${templateId}::uuid, 'published')
+              RETURNING id::text AS id
+            \`;
+            pageIds.push(p[0].id);
+            await tx\`
+              INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+              VALUES (\${p[0].id}::uuid, 'content', 0, \${moduleId}::uuid, \${contentInstanceId}::uuid, 'synced')
+            \`;
+          }
+
+          result = { contentInstanceId, pageIds, oldTitle: 'Original' };
+        });
+        console.log(JSON.stringify(result));
         await sql.end();
       `,
     ],

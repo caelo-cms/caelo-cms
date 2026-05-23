@@ -110,6 +110,10 @@ test("AC #9: AI composes a CTA-teaser embedding a Button via the `module` field 
   await resetLiveditFixtures();
   await attachChatSessionTracker(page);
   await loginAsDevOwner(page);
+  // ChatPanel only mounts on /edit. After login the page is /,
+  // which has no chat — sendChatPromptAndWait times out trying to
+  // find chat-turn-status. Navigate before sending.
+  await page.goto("/edit");
 
   await sendChatPromptAndWait(page, PROMPT);
 

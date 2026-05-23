@@ -75,6 +75,10 @@ test("AC #2 + #5: CTA-teaser renders its embedded Button via the {{>cta}} slot",
   await resetLiveditFixtures();
   await attachChatSessionTracker(page);
   await loginAsDevOwner(page);
+  // ChatPanel only mounts on /edit. After login the page is /,
+  // which has no chat — sendChatPromptAndWait times out trying to
+  // find chat-turn-status. Navigate before sending.
+  await page.goto("/edit");
 
   await sendChatPromptAndWait(page, NESTED_PROMPT);
 

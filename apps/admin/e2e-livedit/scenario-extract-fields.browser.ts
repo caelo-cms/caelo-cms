@@ -83,6 +83,12 @@ test("AC #1: extractor produces {{title}} + {{ctaHref}} + {{ctaLabel}} for hardc
   await attachChatSessionTracker(page);
   await loginAsDevOwner(page);
 
+  // The ChatPanel test-id only mounts on /edit (and a few other
+  // chat-bearing surfaces). After login Playwright lands on / which
+  // has no chat — sendChatPromptAndWait would then time out trying
+  // to find chat-turn-status. Navigate to /edit explicitly.
+  await page.goto("/edit");
+
   await sendChatPromptAndWait(page, EXTRACT_PROMPT);
 
   const snap = snapshotWelcomeHeroModule();
