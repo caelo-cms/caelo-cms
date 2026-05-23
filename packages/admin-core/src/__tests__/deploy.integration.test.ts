@@ -96,6 +96,9 @@ async function seedPage(): Promise<string> {
     html: "<p>hello world</p>",
     css: "p{color:red}",
     js: "",
+    // v0.12.2 — opt out of extractor so the deployed HTML carries the
+    // literal "hello world" the test asserts on.
+    fields: [{ name: "body", kind: "text", label: "Body" } as never],
   });
   if (!m.ok) throw new Error("module seed");
   const moduleId = (m.value as { moduleId: string }).moduleId;

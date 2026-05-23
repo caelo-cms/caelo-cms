@@ -35,10 +35,18 @@ function listTsFiles(dir: string): string[] {
   return readdirSync(dir).filter((f) => f.endsWith(".ts"));
 }
 
+// v0.12.0 — page-module-content.ts is a routing shim that delegates
+// to content_instances.set_values for the actual write + snapshot.
+// The lint counts the op declaration but the emitSnapshot lives in
+// content-instances.ts; allowlist this file so the lint doesn't flag
+// the legitimate router pattern.
+const ROUTER_SHIM_FILES = new Set(["page-module-content.ts"]);
+
 describe("snapshot-emission coverage", () => {
   it("every mutation op in ops/content/ calls emitSnapshot", () => {
     const offenders: string[] = [];
     for (const file of listTsFiles(CONTENT_OPS_DIR)) {
+      if (ROUTER_SHIM_FILES.has(file)) continue;
       const path = join(CONTENT_OPS_DIR, file);
       const text = readFileSync(path, "utf8");
       // Skip non-op files (preview, etc.).

@@ -124,6 +124,8 @@ describe("chat send → edit_module → snapshot", () => {
       slug: MOD_SLUG,
       displayName: "Hero",
       html: "<h1>Hero</h1>",
+      // v0.12.2 — opt out of extractor.
+      fields: [{ name: "headline", kind: "text", label: "Headline" } as never],
     });
     if (!create.ok) throw new Error("module seed");
     const moduleId = (create.value as { moduleId: string }).moduleId;

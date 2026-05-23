@@ -66,10 +66,13 @@ afterAll(async () => {
 describe("revert_module", () => {
   it("restores one module's state and leaves siblings alone; emits revert snapshot", async () => {
     // Create two modules so we can verify the second is unaffected by the first's revert.
+    // v0.12.2 — pass explicit (empty) fields so the extractor doesn't
+    // templatise the test's literal HTML before snapshotting.
     const m1 = await execute(registry, adapter, systemCtx, "modules.create", {
       slug: MOD_SLUG,
       displayName: "Hero",
       html: "<p>v1</p>",
+      fields: [{ name: "body", kind: "text", label: "Body" } as never],
     });
     if (!m1.ok) throw new Error("m1");
     const moduleId = (m1.value as { moduleId: string }).moduleId;
@@ -78,6 +81,7 @@ describe("revert_module", () => {
       slug: MOD_SLUG_2,
       displayName: "Untouched",
       html: "<p>untouched-original</p>",
+      fields: [{ name: "body", kind: "text", label: "Body" } as never],
     });
     if (!m2.ok) throw new Error("m2");
     const sideModuleId = (m2.value as { moduleId: string }).moduleId;

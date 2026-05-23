@@ -66,9 +66,18 @@ beforeAll(async () => {
         INSERT INTO template_blocks (template_id, name, display_name, position)
         VALUES (${seededTemplateId}::uuid, 'content', 'Content', 0)
       `;
+      // v0.12.0 — mint a content_instance per placement so the new NOT
+      // NULL FK on page_modules.content_instance_id is satisfied.
+      const ci = (await tx`
+        INSERT INTO content_instances (module_id, "values")
+        VALUES (${seededModuleId}::uuid, '{}'::jsonb)
+        RETURNING id::text AS id
+      `) as unknown as { id: string }[];
+      const seededCiId = ci[0]?.id ?? "";
       await tx`
-        INSERT INTO page_modules (page_id, block_name, position, module_id)
-        VALUES (${seededPageId}::uuid, 'content', 0, ${seededModuleId}::uuid)
+        INSERT INTO page_modules
+          (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        VALUES (${seededPageId}::uuid, 'content', 0, ${seededModuleId}::uuid, ${seededCiId}::uuid, 'unsynced')
       `;
     });
   } finally {

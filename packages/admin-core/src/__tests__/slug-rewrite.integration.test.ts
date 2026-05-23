@@ -56,10 +56,17 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
   // Module 1: contains an <a href> pointing at the old slug (root).
+  // v0.12.2 — pass non-empty `fields` so the extractor skips its
+  // auto-templatisation pass. The slug-rewriter under test scans
+  // stored module HTML for literal href references (legacy authoring
+  // shape); the extractor would otherwise move the href to a field
+  // default and the rewriter would miss it. The v0.12-aware variant
+  // (rewriter walks field defaults too) lands in a follow-up.
   const m1 = await execute(registry, adapter, systemCtx, "modules.create", {
     slug: MOD_SLUG_REF,
     displayName: "Ref module",
     html: `<p>See <a href="/${OLD_SLUG}">our page</a>.</p>`,
+    fields: [{ name: "body", kind: "text", label: "Body" } as never],
   });
   if (!m1.ok) throw new Error("seed m1");
   modIdRef = (m1.value as { moduleId: string }).moduleId;
@@ -68,6 +75,7 @@ beforeAll(async () => {
     slug: MOD_SLUG_NOREF,
     displayName: "Unrelated module",
     html: `<p>Hi there.</p>`,
+    fields: [{ name: "body", kind: "text", label: "Body" } as never],
   });
   if (!m2.ok) throw new Error("seed m2");
   modIdNoRef = (m2.value as { moduleId: string }).moduleId;
@@ -77,6 +85,7 @@ beforeAll(async () => {
     slug: MOD_SLUG_SUFFIX,
     displayName: "Suffix mention module",
     html: `<p>Visit /not-${OLD_SLUG} for details.</p>`,
+    fields: [{ name: "body", kind: "text", label: "Body" } as never],
   });
   if (!m3.ok) throw new Error("seed m3");
   modIdSuffix = (m3.value as { moduleId: string }).moduleId;

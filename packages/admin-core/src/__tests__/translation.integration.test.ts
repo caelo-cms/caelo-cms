@@ -140,9 +140,18 @@ async function seedSourcePage(
         `) as unknown as { id: string }[];
         const mid = moduleRows[0]?.id ?? "";
         moduleIds.push(mid);
+        // v0.12.0 — mint a content_instance per placement so page_modules
+        // satisfies the new NOT NULL FK.
+        const ciRows = (await tx`
+          INSERT INTO content_instances (module_id, "values")
+          VALUES (${mid}::uuid, '{}'::jsonb)
+          RETURNING id::text AS id
+        `) as unknown as { id: string }[];
+        const ciId = ciRows[0]?.id ?? "";
         await tx`
-          INSERT INTO page_modules (page_id, block_name, position, module_id)
-          VALUES (${pageId}::uuid, 'content', ${position}, ${mid}::uuid)
+          INSERT INTO page_modules
+            (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+          VALUES (${pageId}::uuid, 'content', ${position}, ${mid}::uuid, ${ciId}::uuid, 'unsynced')
         `;
         position += 1;
       }
