@@ -25,7 +25,7 @@ export const contentInstances = pgTable("content_instances", {
   id: uuid("id").primaryKey().defaultRandom(),
   moduleId: uuid("module_id")
     .notNull()
-    .references(() => modules.id),
+    .references(() => modules.id, { onDelete: "cascade" }),
   /** Optional human-readable label ("primary-cta", "homepage-hero"). */
   slug: text("slug"),
   /** Shown in the content library list view. */
