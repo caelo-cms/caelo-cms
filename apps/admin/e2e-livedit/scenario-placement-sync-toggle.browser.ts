@@ -35,43 +35,57 @@ function seedThreePagesSynced(): SeedResult {
       `
         import { SQL } from "bun";
         const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+        let result;
+        await sql.begin(async (tx) => {
+          // RLS gates all writes; flip actor_kind to 'system' for the
+          // duration of the seed (same pattern as resetLiveditFixtures
+          // and the rest of the e2e seeds).
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
 
-        const mod = await sql\`
-          INSERT INTO modules (slug, display_name, html, css, js, fields)
-          VALUES ('toggle-hero-' || floor(random()*100000)::text,
-                  'Toggle hero',
-                  '<h1>{{title}}</h1>',
-                  '', '',
-                  '[{"name":"title","kind":"text","label":"Title","default":"Shared"}]'::jsonb)
-          RETURNING id::text AS id
-        \`;
-        const moduleId = mod[0].id;
+          // Wipe prior runs' fixtures so retries don't accumulate
+          // (resetLiveditFixtures clears chat_* + pages; modules and
+          // content_instances are left to a per-scenario sweep).
+          await tx\`DELETE FROM content_instances WHERE display_name = 'Toggle hero text'\`;
+          await tx\`DELETE FROM modules WHERE display_name = 'Toggle hero'\`;
 
-        const ci = await sql\`
-          INSERT INTO content_instances (module_id, slug, display_name, "values")
-          VALUES (\${moduleId}::uuid, 'toggle-hero-content', 'Toggle hero text',
-                  '{"title":"Original shared title"}'::jsonb)
-          RETURNING id::text AS id
-        \`;
-        const contentInstanceId = ci[0].id;
-
-        const tpl = await sql\`SELECT id::text AS id FROM templates WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1\`;
-        const templateId = tpl[0].id;
-
-        const pageIds = {};
-        for (const slug of ['toggle-a','toggle-b','toggle-c']) {
-          const p = await sql\`
-            INSERT INTO pages (slug, locale, name, title, template_id, status)
-            VALUES (\${slug}, 'en', \${slug}, \${slug}, \${templateId}::uuid, 'published')
+          const mod = await tx\`
+            INSERT INTO modules (slug, display_name, html, css, js, fields)
+            VALUES ('toggle-hero-' || floor(random()*100000)::text,
+                    'Toggle hero',
+                    '<h1>{{title}}</h1>',
+                    '', '',
+                    '[{"name":"title","kind":"text","label":"Title","default":"Shared"}]'::jsonb)
             RETURNING id::text AS id
           \`;
-          pageIds[slug.slice(-1)] = p[0].id;
-          await sql\`
-            INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
-            VALUES (\${p[0].id}::uuid, 'content', 0, \${moduleId}::uuid, \${contentInstanceId}::uuid, 'synced')
+          const moduleId = mod[0].id;
+
+          const ci = await tx\`
+            INSERT INTO content_instances (module_id, slug, display_name, "values")
+            VALUES (\${moduleId}::uuid, 'toggle-hero-content', 'Toggle hero text',
+                    '{"title":"Original shared title"}'::jsonb)
+            RETURNING id::text AS id
           \`;
-        }
-        console.log(JSON.stringify({ moduleId, contentInstanceId, pageIds }));
+          const contentInstanceId = ci[0].id;
+
+          const tpl = await tx\`SELECT id::text AS id FROM templates WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1\`;
+          const templateId = tpl[0].id;
+
+          const pageIds = {};
+          for (const slug of ['toggle-a','toggle-b','toggle-c']) {
+            const p = await tx\`
+              INSERT INTO pages (slug, locale, name, title, template_id, status)
+              VALUES (\${slug}, 'en', \${slug}, \${slug}, \${templateId}::uuid, 'published')
+              RETURNING id::text AS id
+            \`;
+            pageIds[slug.slice(-1)] = p[0].id;
+            await tx\`
+              INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+              VALUES (\${p[0].id}::uuid, 'content', 0, \${moduleId}::uuid, \${contentInstanceId}::uuid, 'synced')
+            \`;
+          }
+          result = { moduleId, contentInstanceId, pageIds };
+        });
+        console.log(JSON.stringify(result));
         await sql.end();
       `,
     ],
@@ -89,14 +103,19 @@ function placementContentInstanceId(pageId: string, blockName: string, position:
       `
         import { SQL } from "bun";
         const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-        const r = await sql\`
-          SELECT content_instance_id::text AS id, sync_mode
-          FROM page_modules
-          WHERE page_id=\${process.env.PAGE_ID}::uuid
-            AND block_name=\${process.env.BLOCK_NAME}
-            AND position=\${parseInt(process.env.POS)}
-        \`;
-        console.log(JSON.stringify({ id: r[0]?.id, syncMode: r[0]?.sync_mode }));
+        let payload = '{}';
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          const r = await tx\`
+            SELECT content_instance_id::text AS id, sync_mode
+            FROM page_modules
+            WHERE page_id=\${process.env.PAGE_ID}::uuid
+              AND block_name=\${process.env.BLOCK_NAME}
+              AND position=\${parseInt(process.env.POS)}
+          \`;
+          payload = JSON.stringify({ id: r[0]?.id, syncMode: r[0]?.sync_mode });
+        });
+        console.log(payload);
         await sql.end();
       `,
     ],
@@ -105,6 +124,7 @@ function placementContentInstanceId(pageId: string, blockName: string, position:
       encoding: "utf8",
     },
   );
+  if (raw.status !== 0) throw new Error(`placementContentInstanceId failed: ${raw.stderr}`);
   return raw.stdout;
 }
 

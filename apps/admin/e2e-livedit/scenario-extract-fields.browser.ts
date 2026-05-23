@@ -22,13 +22,16 @@ import {
   attachChatSessionTracker,
   loginAsDevOwner,
   resetLiveditFixtures,
+  seedMinimalSite,
   sendChatPromptAndWait,
 } from "./helpers.js";
 
 const EXTRACT_PROMPT =
-  "Please create a new module called 'welcome-hero' on the homepage's hero block with this exact HTML: " +
-  '`<h1>Welcome to Caelo</h1><a href="/get-started">Get started</a>`. ' +
-  "Do not pre-templatise — pass the HTML as-is and let the server extract fields.";
+  "Please add a new module to the homepage's content block at position 0. " +
+  "Slug: `welcome-hero`. Display name: Welcome hero. " +
+  "Description: Standalone marketing hero. Kind: hero. " +
+  "HTML — pass it AS-IS (no pre-templatising; no fields[] array) so the server-side " +
+  'extractor runs and shows what it produces: `<h1>Welcome to Caelo</h1><a href="/get-started">Get started</a>`';
 
 interface ExtractedModuleSnapshot {
   moduleId: string | null;
@@ -45,26 +48,49 @@ function snapshotWelcomeHeroModule(): ExtractedModuleSnapshot {
       `
         import { SQL } from "bun";
         const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-        const rows = await sql\`
-          SELECT id::text AS id, slug, html, fields
-          FROM modules
-          WHERE slug LIKE 'welcome-hero%'
-            AND deleted_at IS NULL
-          ORDER BY created_at DESC
-          LIMIT 1
-        \`;
-        const r = rows[0];
-        if (!r) {
-          console.log(JSON.stringify({ moduleId: null, slug: null, html: null, fields: [] }));
-        } else {
-          const fields = typeof r.fields === 'string' ? JSON.parse(r.fields) : r.fields;
-          console.log(JSON.stringify({
-            moduleId: r.id,
-            slug: r.slug,
-            html: r.html,
-            fields: Array.isArray(fields) ? fields : [],
-          }));
-        }
+        let payload = JSON.stringify({ moduleId: null, slug: null, html: null, fields: [] });
+        await sql.begin(async (tx) => {
+          // RLS gates module reads; flip actor_kind to 'system' for
+          // the duration of the select (the rest of the e2e seeds
+          // use this pattern).
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          const rows = await tx\`
+            SELECT id::text AS id, slug, html, fields::text AS fields_text
+            FROM modules
+            WHERE slug LIKE 'welcome-hero%'
+              AND deleted_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+          \`;
+          const r = rows[0];
+          if (r) {
+            // The codebase's jsonb writes (interpolating a JSON-string
+            // parameter cast with ::jsonb through drizzle's bun:SQL
+            // adapter) store as a JSON-string scalar
+            // (jsonb_typeof = "string"), not as an array. The
+            // production read path in rowToModule compensates with a
+            // string-typeof JSON.parse, but a raw SELECT here lands
+            // the double-encoded form. Parse iteratively until we hit
+            // a non-string value or run out of passes.
+            let parsed = r.fields_text;
+            for (let i = 0; i < 3 && typeof parsed === "string"; i += 1) {
+              try {
+                parsed = JSON.parse(parsed);
+              } catch {
+                parsed = [];
+                break;
+              }
+            }
+            const fields = Array.isArray(parsed) ? parsed : [];
+            payload = JSON.stringify({
+              moduleId: r.id,
+              slug: r.slug,
+              html: r.html,
+              fields,
+            });
+          }
+        });
+        console.log(payload);
         await sql.end();
       `,
     ],
@@ -80,6 +106,7 @@ test("AC #1: extractor produces {{title}} + {{ctaHref}} + {{ctaLabel}} for hardc
   page,
 }) => {
   await resetLiveditFixtures();
+  seedMinimalSite();
   await attachChatSessionTracker(page);
   await loginAsDevOwner(page);
 

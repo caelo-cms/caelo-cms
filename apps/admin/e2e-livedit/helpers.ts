@@ -68,6 +68,103 @@ export function resetLiveditFixtures(): void {
 }
 
 /**
+ * v0.12.0 — seed a minimal layout/template/page scaffold so the
+ * AI-driven scenarios have a target to add modules to.
+ *
+ * `resetLiveditFixtures` deletes `pages` but leaves layouts +
+ * templates intact, so we only re-create what's missing. Returns
+ * the seeded page id so the spec can reference it in the AI prompt.
+ *
+ * Uses the `homepage` slug + `home` template kind so the AI's
+ * `## Pages` block surfaces the page under `### kind=home` and the
+ * AI knows which template to keep using on follow-up adds.
+ */
+export function seedMinimalSite(): { pageId: string; templateId: string } {
+  const out = runBunInline(`
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    let result;
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+
+      // Layout: reuse the existing site-default if present; mint one
+      // otherwise. layouts.html carries a single <caelo-layout-content>
+      // marker so the rendered page slots its template chrome inside.
+      const existingLayout = await tx\`
+        SELECT id::text AS id FROM layouts
+        WHERE slug = 'site-default' AND deleted_at IS NULL LIMIT 1
+      \`;
+      let layoutId;
+      if (existingLayout[0]) {
+        layoutId = existingLayout[0].id;
+      } else {
+        const lay = await tx\`
+          INSERT INTO layouts (slug, display_name, html, css)
+          VALUES ('site-default', 'Site default',
+                  '<!doctype html><html><head><title>{{title}}</title></head><body><caelo-layout-content></caelo-layout-content></body></html>',
+                  '')
+          RETURNING id::text AS id
+        \`;
+        layoutId = lay[0].id;
+      }
+
+      // Template: home-template with a single 'content' block.
+      const existingTpl = await tx\`
+        SELECT id::text AS id FROM templates
+        WHERE slug = 'home-template' AND deleted_at IS NULL LIMIT 1
+      \`;
+      let templateId;
+      if (existingTpl[0]) {
+        templateId = existingTpl[0].id;
+      } else {
+        const tpl = await tx\`
+          INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
+          VALUES ('home-template', 'Home template', 'home',
+                  '<main><caelo-slot name="content">_</caelo-slot></main>',
+                  '', \${layoutId}::uuid)
+          RETURNING id::text AS id
+        \`;
+        templateId = tpl[0].id;
+        await tx\`
+          INSERT INTO template_blocks (template_id, name, display_name, position)
+          VALUES (\${templateId}::uuid, 'content', 'Content', 0)
+          ON CONFLICT (template_id, name) DO NOTHING
+        \`;
+      }
+
+      // Page: 'home' (matches the seed-dev-owner.ts convention +
+      // every scenario helper that queries WHERE slug='home').
+      // Idempotent: resetLiveditFixtures wipes pages, but if a prior
+      // step left a 'home' row behind (e.g. AI-branched create that
+      // outran the cleanup), reuse it rather than tripping the
+      // pages_slug_locale_branch_uidx constraint.
+      const existing = await tx\`
+        SELECT id::text AS id FROM pages
+        WHERE slug = 'home' AND locale = 'en'
+          AND deleted_at IS NULL
+          AND chat_branch_id IS NULL
+        LIMIT 1
+      \`;
+      let pageId;
+      if (existing[0]) {
+        pageId = existing[0].id;
+      } else {
+        const pg = await tx\`
+          INSERT INTO pages (slug, locale, name, title, template_id, status)
+          VALUES ('home', 'en', 'Home', 'Home', \${templateId}::uuid, 'draft')
+          RETURNING id::text AS id
+        \`;
+        pageId = pg[0].id;
+      }
+      result = { pageId, templateId };
+    });
+    console.log(JSON.stringify(result));
+    await sql.end();
+  `);
+  return JSON.parse(out) as { pageId: string; templateId: string };
+}
+
+/**
  * Logs into the admin as dev-owner via the form on `/login`. Leaves
  * the page on whichever route the post-login redirect lands on.
  */
