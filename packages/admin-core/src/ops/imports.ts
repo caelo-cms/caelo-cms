@@ -608,9 +608,26 @@ export const acceptImportedPageOp = defineOperation({
       `)) as unknown as Array<{ id: string }>;
       const moduleId = modRows[0]?.id;
       if (!moduleId) continue;
+      // v0.12.0 — mint a fresh unsynced content_instance per placement
+      // so page_modules.content_instance_id NOT NULL is satisfied.
+      const ciRow = (await tx.execute(sql`
+        INSERT INTO content_instances (module_id, "values")
+        VALUES (${moduleId}::uuid, '{}'::jsonb)
+        RETURNING id::text AS id
+      `)) as unknown as Array<{ id: string }>;
+      const newCiId = ciRow[0]?.id;
+      if (!newCiId) continue;
       await tx.execute(sql`
-        INSERT INTO page_modules (page_id, block_name, position, module_id)
-        VALUES (${pageId}::uuid, ${m.blockName}, ${m.position}, ${moduleId}::uuid)
+        INSERT INTO page_modules
+          (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        VALUES (
+          ${pageId}::uuid,
+          ${m.blockName},
+          ${m.position},
+          ${moduleId}::uuid,
+          ${newCiId}::uuid,
+          'unsynced'
+        )
       `);
     }
     await tx.execute(sql`
@@ -950,9 +967,26 @@ export const composeFromImportRunOp = defineOperation({
         `)) as unknown as { id: string }[];
         const moduleId = modInsert[0]?.id;
         if (!moduleId) continue;
+        // v0.12.0 — mint a fresh unsynced content_instance per placement
+        // so page_modules.content_instance_id NOT NULL is satisfied.
+        const ciInsert = (await tx.execute(sql`
+          INSERT INTO content_instances (module_id, "values")
+          VALUES (${moduleId}::uuid, '{}'::jsonb)
+          RETURNING id::text AS id
+        `)) as unknown as { id: string }[];
+        const newCiId = ciInsert[0]?.id;
+        if (!newCiId) continue;
         await tx.execute(sql`
-          INSERT INTO page_modules (page_id, block_name, position, module_id)
-          VALUES (${pageId}::uuid, ${blockName}, ${m.position}, ${moduleId}::uuid)
+          INSERT INTO page_modules
+            (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+          VALUES (
+            ${pageId}::uuid,
+            ${blockName},
+            ${m.position},
+            ${moduleId}::uuid,
+            ${newCiId}::uuid,
+            'unsynced'
+          )
         `);
       }
       // Mark the staging row as accepted.

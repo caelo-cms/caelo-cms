@@ -402,9 +402,34 @@ export const translationModeOneOp = defineOperation({
         });
       }
       newModuleIds.push(newModuleId);
+      // v0.12.0 — page_modules.content_instance_id is NOT NULL. Mint a
+      // fresh unsynced content_instance per cloned placement; values
+      // start empty so the renderer falls back to the cloned module's
+      // field defaults at preview time.
+      const ciRow = (await tx.execute(sql`
+        INSERT INTO content_instances (module_id, "values")
+        VALUES (${newModuleId}::uuid, '{}'::jsonb)
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+      const newCiId = ciRow[0]?.id;
+      if (!newCiId) {
+        return err({
+          kind: "HandlerError",
+          operation: "translation.mode_1",
+          message: `failed to mint content_instance for cloned module ${newModuleId}`,
+        });
+      }
       await tx.execute(sql`
-        INSERT INTO page_modules (page_id, block_name, position, module_id)
-        VALUES (${variantPageId}::uuid, ${s.blockName}, ${s.position}, ${newModuleId}::uuid)
+        INSERT INTO page_modules
+          (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        VALUES (
+          ${variantPageId}::uuid,
+          ${s.blockName},
+          ${s.position},
+          ${newModuleId}::uuid,
+          ${newCiId}::uuid,
+          'unsynced'
+        )
       `);
     }
 

@@ -152,9 +152,20 @@ try {
       const pgId = pg[0]?.id;
       if (!pgId) throw new Error("seed home page returned no row");
 
+      // v0.12.0 — page_modules.content_instance_id is NOT NULL. Mint a
+      // fresh unsynced content_instance for the seed placement.
+      const seedCi = (await tx`
+        INSERT INTO content_instances (module_id, "values")
+        VALUES (${modId}::uuid, '{}'::jsonb)
+        RETURNING id::text AS id
+      `) as unknown as { id: string }[];
+      const seedCiId = seedCi[0]?.id;
+      if (!seedCiId) throw new Error("seed home content_instance returned no row");
+
       await tx`
-        INSERT INTO page_modules (page_id, block_name, position, module_id)
-        VALUES (${pgId}::uuid, 'content', 0, ${modId}::uuid)
+        INSERT INTO page_modules
+          (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        VALUES (${pgId}::uuid, 'content', 0, ${modId}::uuid, ${seedCiId}::uuid, 'unsynced')
       `;
     }
 
