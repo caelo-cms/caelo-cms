@@ -36,8 +36,8 @@
  * extracted (structural).
  */
 
-import { Parser } from "htmlparser2";
 import type { ModuleField } from "@caelo-cms/shared";
+import { Parser } from "htmlparser2";
 
 export interface ExtractResult {
   readonly templatizedHtml: string;
@@ -47,14 +47,7 @@ export interface ExtractResult {
 
 const PLACEHOLDER_RE = /^\s*\{\{\s*[a-z][a-z0-9_]*\s*\}\}\s*$/;
 
-const EXTRACT_ATTRS = new Set([
-  "href",
-  "src",
-  "alt",
-  "aria-label",
-  "title",
-  "placeholder",
-]);
+const EXTRACT_ATTRS = new Set(["href", "src", "alt", "aria-label", "title", "placeholder"]);
 
 const RICHTEXT_INLINES = new Set(["strong", "em", "a", "code", "i", "b", "u", "small", "mark"]);
 
@@ -84,11 +77,7 @@ function snakeCase(name: string): string {
  * if `base` is already taken, appends `2`, `3`, ... When `preferred`
  * is set (an `existingFields` name reuse hint), tries that first.
  */
-function mintName(
-  base: string,
-  used: Set<string>,
-  preferred?: string,
-): string {
+function mintName(base: string, used: Set<string>, preferred?: string): string {
   if (preferred && !used.has(preferred)) return preferred;
   const norm = snakeCase(base) || "field";
   if (!used.has(norm)) return norm;
@@ -113,9 +102,7 @@ export function extractModuleStructure(
   const extractions: Extraction[] = [];
   const fields: ModuleField[] = [];
   const defaultValues: Record<string, unknown> = {};
-  const usedNames = new Set<string>(
-    (existingFields ?? []).map((f) => f.name),
-  );
+  const usedNames = new Set<string>((existingFields ?? []).map((f) => f.name));
 
   // Walk the source HTML, tracking element stack so we can apply per-
   // tag inference rules.
@@ -418,8 +405,7 @@ export function validateTemplatizedModule(
   const referenced = new Set<string>();
   // Match primitive {{name}}, single-nested {{>name}}, and module-list
   // {{#name}} / {{/name}} forms — all count as references.
-  const ref =
-    /\{\{\s*(?:>|#|\/)?\s*([a-z][a-z0-9_]*)\s*\}\}/g;
+  const ref = /\{\{\s*(?:>|#|\/)?\s*([a-z][a-z0-9_]*)\s*\}\}/g;
   let m: RegExpExecArray | null = ref.exec(html);
   while (m !== null) {
     if (m[1]) referenced.add(m[1]);
@@ -427,7 +413,10 @@ export function validateTemplatizedModule(
   }
   for (const name of referenced) {
     if (!declared.has(name)) {
-      return { ok: false, message: `placeholder {{${name}}} references undeclared field "${name}"` };
+      return {
+        ok: false,
+        message: `placeholder {{${name}}} references undeclared field "${name}"`,
+      };
     }
   }
   for (const name of declared) {

@@ -124,11 +124,7 @@ export function renderModuleWithContent(
   return { html, touchedModuleIds: touched, missingSlots: missing };
 }
 
-function renderInner(
-  moduleId: string,
-  contentInstanceId: string,
-  ctx: RenderContext,
-): string {
+function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderContext): string {
   if (ctx.depth >= MAX_RECURSION_DEPTH) {
     ctx.missing.push(`depth-limit:${moduleId}/${contentInstanceId}`);
     return comment(`depth-limit-${MAX_RECURSION_DEPTH}`);
@@ -150,7 +146,9 @@ function renderInner(
     return comment(`content-instance-missing ${contentInstanceId}`);
   }
   if (ci.moduleId !== moduleId) {
-    ctx.missing.push(`content-instance-mismatch:${contentInstanceId} (for ${ci.moduleId}, expected ${moduleId})`);
+    ctx.missing.push(
+      `content-instance-mismatch:${contentInstanceId} (for ${ci.moduleId}, expected ${moduleId})`,
+    );
     return comment(`content-instance-mismatch ${contentInstanceId}`);
   }
   ctx.touched.add(moduleId);

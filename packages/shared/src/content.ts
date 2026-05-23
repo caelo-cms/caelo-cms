@@ -78,9 +78,7 @@ export const MODULE_FIELD_KINDS = [
   ...MODULE_FIELD_NESTED_KINDS,
 ] as const;
 
-const moduleFieldName = z
-  .string()
-  .regex(/^[a-z][a-z0-9_]{0,63}$/, "name must be snake_case");
+const moduleFieldName = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/, "name must be snake_case");
 const moduleFieldLabel = z.string().min(1).max(128);
 
 const moduleFieldPrimitiveSchema = z
@@ -332,12 +330,7 @@ export const contentInstanceUpdateSchema = z
     values: contentValuesSchema,
     /** Optional optimistic-concurrency token; mirrors pages.update. */
     expectedVersion: z.number().int().nonnegative().optional(),
-  })
-  .strict();
-
-export const contentInstanceRenameSchema = z
-  .object({
-    id: z.string().uuid(),
+    /** Optional rename in the same write; mirrors how pages.update accepts metadata edits. */
     slug: slugSchema.nullable().optional(),
     displayName: z.string().min(1).max(128).nullable().optional(),
   })
@@ -369,7 +362,6 @@ export const forkPlacementContentSchema = z
 
 export type ContentInstanceCreateInput = z.infer<typeof contentInstanceCreateSchema>;
 export type ContentInstanceUpdateInput = z.infer<typeof contentInstanceUpdateSchema>;
-export type ContentInstanceRenameInput = z.infer<typeof contentInstanceRenameSchema>;
 export type ContentInstanceDeleteInput = z.infer<typeof contentInstanceDeleteSchema>;
 export type SetPlacementContentInput = z.infer<typeof setPlacementContentSchema>;
 export type ForkPlacementContentInput = z.infer<typeof forkPlacementContentSchema>;

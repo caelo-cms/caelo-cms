@@ -130,9 +130,7 @@ export const listContentInstancesOp = defineOperation({
   output: z.object({ instances: z.array(contentInstanceRowSchema) }),
   handler: async (ctx, input, tx) => {
     const branchFilter = branchVisibilityFilter(ctx);
-    const moduleFilter = input.moduleId
-      ? sql`AND ci.module_id = ${input.moduleId}::uuid`
-      : sql``;
+    const moduleFilter = input.moduleId ? sql`AND ci.module_id = ${input.moduleId}::uuid` : sql``;
     const slugFilter = input.slug ? sql`AND ci.slug = ${input.slug}` : sql``;
     const searchFilter = input.search
       ? sql`AND (ci.display_name ILIKE ${`%${input.search}%`} OR ci.slug ILIKE ${`%${input.search}%`})`
@@ -388,7 +386,13 @@ export const setContentInstanceValuesOp = defineOperation({
     });
     if (!lock.permitted && lock.holder) {
       return err(
-        await lockedError(tx, "content_instances.set_values", "contentInstance", input.id, lock.holder),
+        await lockedError(
+          tx,
+          "content_instances.set_values",
+          "contentInstance",
+          input.id,
+          lock.holder,
+        ),
       );
     }
 
@@ -541,7 +545,8 @@ export const deleteContentInstanceOp = defineOperation({
         nextAction: {
           tool: "fork_placement_content",
           args: {},
-          reason: "detach each referencing placement into its own private content_instance before deleting",
+          reason:
+            "detach each referencing placement into its own private content_instance before deleting",
         },
       });
     }
@@ -609,9 +614,7 @@ export const setPlacementContentOp = defineOperation({
       chatBranchId: ctx.chatBranchId,
     });
     if (!lock.permitted && lock.holder) {
-      return err(
-        await lockedError(tx, "placement.set_content", "page", input.pageId, lock.holder),
-      );
+      return err(await lockedError(tx, "placement.set_content", "page", input.pageId, lock.holder));
     }
 
     // Verify the placement exists (live; for branched callers, the
@@ -797,8 +800,7 @@ export const forkPlacementContentOp = defineOperation({
       LIMIT 1
     `)) as unknown as { values: unknown }[];
     const srcValues = srcRows[0]?.values ?? {};
-    const valuesJson =
-      typeof srcValues === "string" ? srcValues : JSON.stringify(srcValues);
+    const valuesJson = typeof srcValues === "string" ? srcValues : JSON.stringify(srcValues);
 
     // Mint the new (unsynced) content_instance, copy values, and bind
     // the placement to it.
@@ -849,7 +851,9 @@ export const forkPlacementContentOp = defineOperation({
       chatTaskId: ctx.chatTaskId ?? null,
       chatBranchId: ctx.chatBranchId ?? null,
       entities: [
-        ...(ciState ? [{ kind: "contentInstance" as const, entityId: newCiId, state: ciState }] : []),
+        ...(ciState
+          ? [{ kind: "contentInstance" as const, entityId: newCiId, state: ciState }]
+          : []),
         { kind: "pageLayout", entityId: input.pageId, state: layoutState },
       ],
     });

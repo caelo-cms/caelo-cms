@@ -15,7 +15,6 @@ import { z } from "zod";
 import {
   contentInstanceCreateSchema,
   contentInstanceDeleteSchema,
-  contentInstanceRenameSchema,
   contentInstanceUpdateSchema,
   forkPlacementContentSchema,
   MODULE_CSS_MAX,
@@ -183,7 +182,6 @@ export const getContentInstanceToolInput = z
 
 export const createContentInstanceToolInput = contentInstanceCreateSchema;
 export const setContentInstanceValuesToolInput = contentInstanceUpdateSchema;
-export const renameContentInstanceToolInput = contentInstanceRenameSchema;
 export const deleteContentInstanceToolInput = contentInstanceDeleteSchema;
 export const setPlacementContentToolInput = setPlacementContentSchema;
 export const forkPlacementContentToolInput = forkPlacementContentSchema;
@@ -217,7 +215,6 @@ export const AI_TOOLS = [
   "get_content_instance",
   "create_content_instance",
   "set_content_instance_values",
-  "rename_content_instance",
   "delete_content_instance",
   "set_placement_content",
   "fork_placement_content",
@@ -230,7 +227,6 @@ export type ListContentInstancesToolInput = z.infer<typeof listContentInstancesT
 export type GetContentInstanceToolInput = z.infer<typeof getContentInstanceToolInput>;
 export type CreateContentInstanceToolInput = z.infer<typeof createContentInstanceToolInput>;
 export type SetContentInstanceValuesToolInput = z.infer<typeof setContentInstanceValuesToolInput>;
-export type RenameContentInstanceToolInput = z.infer<typeof renameContentInstanceToolInput>;
 export type DeleteContentInstanceToolInput = z.infer<typeof deleteContentInstanceToolInput>;
 export type SetPlacementContentToolInput = z.infer<typeof setPlacementContentToolInput>;
 export type ForkPlacementContentToolInput = z.infer<typeof forkPlacementContentToolInput>;

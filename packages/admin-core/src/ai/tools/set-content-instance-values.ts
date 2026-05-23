@@ -50,7 +50,10 @@ export const setContentInstanceValuesTool: ToolDefinitionWithHandler<
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `content_instances.set_values failed: ${describeError(r.error)}` };
+      return {
+        ok: false,
+        content: `content_instances.set_values failed: ${describeError(r.error)}`,
+      };
     }
     const { placementCount, version } = r.value as { placementCount: number; version: number };
     return {

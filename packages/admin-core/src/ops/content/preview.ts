@@ -29,8 +29,8 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  collectNestedRefs,
   type ContentInstanceResource,
+  collectNestedRefs,
   type ModuleResource,
   type RenderResolver,
   renderModuleWithContent,
@@ -49,7 +49,6 @@ interface ModuleSourceRow {
   fields: unknown;
 }
 
-
 // v0.12.1 — `substituteFields` was replaced by the recursive renderer
 // in `./preview-render.ts`. The new renderer subsumes the v0.4.0 flat
 // behaviour AND handles {{>field}} / {{#field}}…{{/field}} slots for
@@ -66,7 +65,8 @@ function parseFields(raw: unknown): { name: string; kind: string; default?: unkn
     })
     .map((f) => ({
       name: f.name,
-      kind: typeof (f as { kind?: unknown }).kind === "string" ? ((f as { kind: string }).kind) : "text",
+      kind:
+        typeof (f as { kind?: unknown }).kind === "string" ? (f as { kind: string }).kind : "text",
       default: (f as { default?: unknown }).default,
     }));
 }
@@ -415,7 +415,9 @@ export const renderPagePreviewOp = defineOperation({
     }
 
     // Load values + module_id for every referenced content_instance_id.
-    const allInstanceIds = [...new Set([...placementBindings.values()].map((b) => b.contentInstanceId))];
+    const allInstanceIds = [
+      ...new Set([...placementBindings.values()].map((b) => b.contentInstanceId)),
+    ];
     const valuesByInstance = new Map<string, Record<string, unknown>>();
     const instanceModuleIdById = new Map<string, string>();
     if (allInstanceIds.length > 0) {
@@ -451,7 +453,10 @@ export const renderPagePreviewOp = defineOperation({
         `)) as unknown as { id: string; state: unknown }[];
         for (const r of branchRows) {
           const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-          const state = (raw ?? {}) as { values?: Record<string, unknown>; deletedAt?: string | null };
+          const state = (raw ?? {}) as {
+            values?: Record<string, unknown>;
+            deletedAt?: string | null;
+          };
           if (state.deletedAt) continue;
           if (state.values) {
             valuesByInstance.set(r.id, state.values);
@@ -474,11 +479,15 @@ export const renderPagePreviewOp = defineOperation({
         html: m.html,
         css: m.css,
         js: m.js,
-        fields: parseFields(m.fields).map((f) => ({ name: f.name, kind: f.kind, default: f.default })),
+        fields: parseFields(m.fields).map((f) => ({
+          name: f.name,
+          kind: f.kind,
+          default: f.default,
+        })),
       });
     }
     for (const [id, values] of valuesByInstance) {
-      const moduleId = (instanceModuleIdById.get(id) ?? "");
+      const moduleId = instanceModuleIdById.get(id) ?? "";
       instanceByIdResource.set(id, { id, moduleId, values, deletedAt: null });
     }
 

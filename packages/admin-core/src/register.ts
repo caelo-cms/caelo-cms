@@ -40,6 +40,15 @@ import {
 } from "./ops/chat/stage.js";
 import { summarizeChatOp } from "./ops/chat/summarize.js";
 import {
+  createContentInstanceOp,
+  deleteContentInstanceOp,
+  forkPlacementContentOp,
+  getContentInstanceOp,
+  listContentInstancesOp,
+  setContentInstanceValuesOp,
+  setPlacementContentOp,
+} from "./ops/content/content-instances.js";
+import {
   executeLayoutProposalOp,
   listPendingLayoutProposalsOp,
   proposeLayoutCreateOp,
@@ -67,15 +76,6 @@ import {
   updateModuleOp,
   updateModulesManyOp,
 } from "./ops/content/modules.js";
-import {
-  createContentInstanceOp,
-  deleteContentInstanceOp,
-  forkPlacementContentOp,
-  getContentInstanceOp,
-  listContentInstancesOp,
-  setContentInstanceValuesOp,
-  setPlacementContentOp,
-} from "./ops/content/content-instances.js";
 import {
   getPageModuleContentOp,
   setPageModuleContentOp,

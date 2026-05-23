@@ -356,7 +356,14 @@ export async function loadPageLayoutState(
   }[];
   const grouped = new Map<
     string,
-    { moduleIds: string[]; placements: { moduleId: string; contentInstanceId: string; syncMode: "synced" | "unsynced" }[] }
+    {
+      moduleIds: string[];
+      placements: {
+        moduleId: string;
+        contentInstanceId: string;
+        syncMode: "synced" | "unsynced";
+      }[];
+    }
   >();
   for (const r of rows) {
     const bucket = grouped.get(r.block_name) ?? { moduleIds: [], placements: [] };

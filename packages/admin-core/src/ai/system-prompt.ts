@@ -174,7 +174,7 @@ const MODULE_MODEL_BLOCK = [
   "",
   'When the operator says "change the hero text on /home" → set_page_module_content (the shim handles synced vs unsynced).',
   'When the operator says "the hero looks ugly, redesign it" → edit_module.',
-  'When the operator says "this contact info should be the same on /about and /contact" → create_content_instance + set_placement_content({syncMode:\'synced\'}) on both placements.',
+  "When the operator says \"this contact info should be the same on /about and /contact\" → create_content_instance + set_placement_content({syncMode:'synced'}) on both placements.",
   "When in doubt: structural / cross-page styling → edit_module; per-page content → set_page_module_content; explicit cross-page CONTENT reuse → set_placement_content with syncMode='synced'.",
 ].join("\n");
 

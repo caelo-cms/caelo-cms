@@ -42,13 +42,7 @@ export const setPlacementContentTool: ToolDefinitionWithHandler<
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      ctx,
-      "placement.set_content",
-      input,
-    );
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "placement.set_content", input);
     if (!r.ok) {
       return { ok: false, content: `placement.set_content failed: ${describeError(r.error)}` };
     }

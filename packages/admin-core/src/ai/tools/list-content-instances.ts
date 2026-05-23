@@ -40,7 +40,13 @@ export const listContentInstancesTool: ToolDefinitionWithHandler<
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "content_instances.list", input);
+    const r = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      ctx,
+      "content_instances.list",
+      input,
+    );
     if (!r.ok) {
       return { ok: false, content: `content_instances.list failed: ${describeError(r.error)}` };
     }
@@ -54,7 +60,10 @@ export const listContentInstancesTool: ToolDefinitionWithHandler<
       }[];
     };
     if (instances.length === 0) {
-      return { ok: true, content: "No content_instances match. Call create_content_instance to mint one." };
+      return {
+        ok: true,
+        content: "No content_instances match. Call create_content_instance to mint one.",
+      };
     }
     const lines = instances.map(
       (i) =>
