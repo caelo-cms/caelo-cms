@@ -52,6 +52,16 @@ export default defineConfig({
   // real Anthropic latency can run 3-4 min on a cold compose stack.
   timeout: 300_000,
   fullyParallel: false,
+  // Single worker. `fullyParallel: false` alone is NOT enough — that
+  // only stops within-file parallelism; Playwright still spawns up to
+  // `workers` (auto = cores/2) processes for cross-file parallelism.
+  // Scenarios all hit the same admin instance + DB, so concurrent runs
+  // race on chat_sessions, pages, modules, content_instances etc.
+  // The unique-constraint and "AI produced nothing" failures we chased
+  // for an hour all dissolve once scenarios run sequentially. Verified
+  // local: `Running 6 tests using 5 workers` line in the log was the
+  // tell.
+  workers: 1,
   forbidOnly: !!process.env.CI,
   // 1 retry = 2 attempts total. PR #61 follow-up — we ran the suite
   // at retries=2 (3 attempts) while debugging Sonnet's variance; now

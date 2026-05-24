@@ -164,19 +164,27 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
       // Page: 'home' (matches the seed-dev-owner.ts convention +
       // every scenario helper that queries WHERE slug='home').
       //
-      // Hard-delete any leftover 'home' first (branched OR main).
-      // The previous "SELECT and reuse" pattern raced with the prior
-      // scenario's chat-runner still doing async writes when this
-      // seed runs — between resetLiveditFixtures' DELETE and this
-      // SELECT, a stale chat-runner can INSERT another 'home',
-      // shifting the unique-constraint conflict to our INSERT.
-      // Hard delete inside the same tx as the INSERT eliminates the
-      // window. Visible under retries=1 where the prior retry-mask
-      // is gone.
-      await tx\`DELETE FROM pages WHERE slug = 'home' AND locale = 'en'\`;
+      // Atomic upsert keyed by the same expression-based unique index
+      // (pages_slug_locale_branch_uidx) the DB enforces. Without the
+      // atomic upsert, a prior scenario's still-running chat-runner
+      // can sneak an INSERT between our DELETE and our INSERT under
+      // READ COMMITTED isolation (each statement takes a fresh
+      // snapshot, so the unique constraint on the second statement
+      // fires even though the first deleted the conflicting row).
+      // Symptom: \`pages_slug_locale_branch_uidx\` violation that
+      // tripped half the AI scenarios in the full-suite run at
+      // retries=1. ON CONFLICT DO UPDATE makes seedMinimalSite
+      // idempotent across the race.
       const pg = await tx\`
         INSERT INTO pages (slug, locale, name, title, template_id, status)
         VALUES ('home', 'en', 'Home', 'Home', \${templateId}::uuid, 'draft')
+        ON CONFLICT (slug, locale, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
+          WHERE deleted_at IS NULL
+          DO UPDATE SET
+            name = EXCLUDED.name,
+            title = EXCLUDED.title,
+            template_id = EXCLUDED.template_id,
+            status = EXCLUDED.status
         RETURNING id::text AS id
       \`;
       const pageId = pg[0].id;
