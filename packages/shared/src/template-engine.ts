@@ -118,9 +118,20 @@ function isNestedRef(v: unknown): v is NestedRef {
   );
 }
 
-function comment(reason: string): string {
+/**
+ * Render a `caelo:missing` HTML comment carrying a failure reason.
+ * The shape (`<!-- caelo:missing reason=<…> -->`) is part of the
+ * public failure-marker contract — the chat-runner diag pass reads
+ * the comment text out of rendered HTML, and the editor's missing-
+ * content surface highlights it for the operator. Exported so the
+ * DB-aware preview-render path (`packages/admin-core/src/ops/content/
+ * preview-render.ts`) emits the exact same shape without redeclaring.
+ */
+export function caeloMissingComment(reason: string): string {
   return `<!-- caelo:missing reason=${reason} -->`;
 }
+
+const comment = caeloMissingComment;
 
 /**
  * Render `html` against `contentValues` + `fields` + `partials`,

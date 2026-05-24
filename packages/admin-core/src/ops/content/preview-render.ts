@@ -55,7 +55,7 @@
  * of band so the page's <head>/<style> + footer scripts are stable.
  */
 
-import { type ModuleFieldKind, renderTemplate } from "@caelo-cms/shared";
+import { caeloMissingComment, type ModuleFieldKind, renderTemplate } from "@caelo-cms/shared";
 
 const MAX_RECURSION_DEPTH = 8;
 
@@ -120,9 +120,11 @@ function isNestedRef(v: unknown): v is NestedRefValue {
   );
 }
 
-function comment(reason: string): string {
-  return `<!-- caelo:missing reason=${reason} -->`;
-}
+// Shared with the template engine so the failure-comment shape is
+// declared in exactly one place (`packages/shared/src/template-engine.ts`).
+// The chat-runner diag pass + editor missing-content surface depend on
+// this exact `<!-- caelo:missing reason=… -->` byte sequence.
+const comment = caeloMissingComment;
 
 /**
  * Render a module's HTML against a content_instance's values, recursing
