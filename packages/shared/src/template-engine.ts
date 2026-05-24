@@ -99,9 +99,13 @@ interface NestedRef {
 // Field names per the v0.4.0 + v0.12.0 grammar: lowercase ASCII +
 // digits + underscores. Case-insensitive primitive matching (the AI
 // sometimes camelCases the placeholder when extracting from existing
-// HTML) is handled below via lowercased view lookup.
-const SECTION_RE = /\{\{#\s*([a-z][a-z0-9_]*)\s*\}\}([\s\S]*?)\{\{\/\s*\1\s*\}\}/g;
-const PARTIAL_RE = /\{\{>\s*([a-z][a-z0-9_]*)\s*\}\}/g;
+// HTML) is handled below via lowercased view lookup. Whitespace
+// between `{{` and the sigil (#, >, /) is permitted to match the
+// Mustache spec — an extractor that pretty-prints AI-authored HTML
+// shouldn't silently break section / partial dispatch.
+const SECTION_RE =
+  /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}([\s\S]*?)\{\{\s*\/\s*\1\s*\}\}/g;
+const PARTIAL_RE = /\{\{\s*>\s*([a-z][a-z0-9_]*)\s*\}\}/g;
 const PRIMITIVE_RE = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
 
 // Section-dispatch kinds (the engine's `{{#name}}` operand). Imported

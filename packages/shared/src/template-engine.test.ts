@@ -288,6 +288,42 @@ describe("renderTemplate — loud-raw on unknown sections (AC #3)", () => {
   });
 });
 
+describe("renderTemplate — whitespace tolerance in markers", () => {
+  // The regexes allow surrounding whitespace inside the curly braces
+  // (e.g. `{{ name }}`, `{{ #items }}`, `{{ > hero }}`). AI-authored
+  // HTML usually emits tight markers, but a future extractor that
+  // pretty-prints could regress silently — these tests pin behaviour
+  // the regexes already support so any future tightening fails loudly.
+
+  it("primitive {{ name }} (whitespace inside braces) substitutes normally", () => {
+    const r = renderTemplate({
+      html: "<h1>{{ title }}</h1>",
+      fields: [{ name: "title", kind: "text" }],
+      contentValues: { title: "Hello" },
+    });
+    expect(r.html).toBe("<h1>Hello</h1>");
+  });
+
+  it("section {{ #items }}…{{ /items }} (whitespace inside braces) iterates normally", () => {
+    const r = renderTemplate({
+      html: "<ul>{{ #items }}<li>{{ . }}</li>{{ /items }}</ul>",
+      fields: [{ name: "items", kind: "text-list" }],
+      contentValues: { items: ["a", "b"] },
+    });
+    expect(r.html).toBe("<ul><li>a</li><li>b</li></ul>");
+  });
+
+  it("partial {{ > hero }} (whitespace inside braces) resolves normally", () => {
+    const r = renderTemplate({
+      html: "<aside>{{ > hero }}</aside>",
+      fields: [{ name: "hero", kind: "module" }],
+      contentValues: { hero: { moduleId: "m", contentInstanceId: "c" } },
+      partials: { hero: "<h1>X</h1>" },
+    });
+    expect(r.html).toBe("<aside><h1>X</h1></aside>");
+  });
+});
+
 describe("renderTemplate — failure-marker parity", () => {
   it("kind-mismatch on {{#name}} against a primitive field", () => {
     const r = renderTemplate({
