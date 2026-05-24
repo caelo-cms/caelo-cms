@@ -43,10 +43,12 @@ export const test = base.extend<{
     { auto: true },
   ],
   _backendLogErrorGuard: [
-    // Playwright fixture signature is `(deps, use)`. This fixture has
-    // no fixture dependencies but still needs the slot — bind it to
-    // `_` so we don't trip biome's noEmptyPattern.
-    async (_, use) => {
+    // Playwright requires the first arg to be a destructuring
+    // pattern — it inspects the function source to wire fixture
+    // dependencies and rejects a plain identifier like `_`. This
+    // fixture has zero dependencies, so the pattern is empty.
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture API requires the destructure slot even with zero deps
+    async ({}, use) => {
       const tracker = snapshotBackendLogOffset();
       await use(undefined);
       assertNoBackendErrors(tracker);
