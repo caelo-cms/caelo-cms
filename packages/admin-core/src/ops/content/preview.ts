@@ -511,8 +511,16 @@ export const renderPagePreviewOp = defineOperation({
       for (let round = 0; round < 8; round += 1) {
         if (pendingModuleIds.size === 0 && pendingInstanceIds.size === 0) break;
         if (pendingModuleIds.size > 0) {
+          // Pre-existing bug surfaced by #71's nested-module
+          // integration test: the SELECT aliased `id::text AS id`
+          // but the consumer read `f.module_id`, leaving the
+          // recursion's transitively-referenced modules unloaded
+          // (every nested-module ref then resolved as
+          // `module-missing`). Align the alias with what the
+          // top-level pass at line 192 uses so the BFS-loaded
+          // modules actually populate `moduleByIdResource`.
           const fetched = (await tx.execute(sql`
-            SELECT id::text AS id, slug, display_name, html, css, js, fields
+            SELECT id::text AS module_id, slug, display_name, html, css, js, fields
             FROM modules
             WHERE id IN (${sql.join(
               [...pendingModuleIds].map((id) => sql`${id}::uuid`),
