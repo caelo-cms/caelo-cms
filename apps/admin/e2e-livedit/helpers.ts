@@ -62,6 +62,19 @@ export function resetLiveditFixtures(): void {
       await tx\`DELETE FROM chat_messages\`;
       await tx\`DELETE FROM chat_sessions\`;
       await tx\`DELETE FROM pages\`;
+      // PR #61 added content_instances + content_instance_snapshots.
+      // Without wiping them, the next scenario's AI authoring path
+      // can collide with leftover ci slugs / module_id refs the prior
+      // scenario minted. modules without referencing content_instances
+      // get wiped too — chat-branched modules don't ship to main, but
+      // they accumulate across scenarios when only \`pages\` is reset.
+      // Order: snapshots → content_instances → modules (FK chain).
+      await tx\`DELETE FROM content_instance_snapshots\`;
+      await tx\`DELETE FROM content_instances\`;
+      await tx\`DELETE FROM module_snapshots\`;
+      // Keep main-branch modules that the seed/migrations created;
+      // only wipe modules the test runs minted (chat_branch_id set).
+      await tx\`DELETE FROM modules WHERE chat_branch_id IS NOT NULL\`;
       // Login bucket gets consumed by every loginAsDevOwner() call;
       // global-setup only clears it once at suite start, so after 5+
       // tests the rate limiter starts rejecting and loginAsDevOwner's
@@ -139,28 +152,23 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
 
       // Page: 'home' (matches the seed-dev-owner.ts convention +
       // every scenario helper that queries WHERE slug='home').
-      // Idempotent: resetLiveditFixtures wipes pages, but if a prior
-      // step left a 'home' row behind (e.g. AI-branched create that
-      // outran the cleanup), reuse it rather than tripping the
-      // pages_slug_locale_branch_uidx constraint.
-      const existing = await tx\`
-        SELECT id::text AS id FROM pages
-        WHERE slug = 'home' AND locale = 'en'
-          AND deleted_at IS NULL
-          AND chat_branch_id IS NULL
-        LIMIT 1
+      //
+      // Hard-delete any leftover 'home' first (branched OR main).
+      // The previous "SELECT and reuse" pattern raced with the prior
+      // scenario's chat-runner still doing async writes when this
+      // seed runs — between resetLiveditFixtures' DELETE and this
+      // SELECT, a stale chat-runner can INSERT another 'home',
+      // shifting the unique-constraint conflict to our INSERT.
+      // Hard delete inside the same tx as the INSERT eliminates the
+      // window. Visible under retries=1 where the prior retry-mask
+      // is gone.
+      await tx\`DELETE FROM pages WHERE slug = 'home' AND locale = 'en'\`;
+      const pg = await tx\`
+        INSERT INTO pages (slug, locale, name, title, template_id, status)
+        VALUES ('home', 'en', 'Home', 'Home', \${templateId}::uuid, 'draft')
+        RETURNING id::text AS id
       \`;
-      let pageId;
-      if (existing[0]) {
-        pageId = existing[0].id;
-      } else {
-        const pg = await tx\`
-          INSERT INTO pages (slug, locale, name, title, template_id, status)
-          VALUES ('home', 'en', 'Home', 'Home', \${templateId}::uuid, 'draft')
-          RETURNING id::text AS id
-        \`;
-        pageId = pg[0].id;
-      }
+      const pageId = pg[0].id;
       result = { pageId, templateId };
     });
     console.log(JSON.stringify(result));
