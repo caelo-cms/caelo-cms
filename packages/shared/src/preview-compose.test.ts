@@ -142,6 +142,70 @@ describe("tagModuleId (P6.7 live-edit overlay support)", () => {
   });
 });
 
+describe("composePagePreview substitutes {{name}} placeholders with field defaults", () => {
+  // PR #61 follow-up: before this, modules with `{{name}}` placeholders
+  // and a declared `fields[]` shipped raw to the browser via the
+  // static-generator path (visitors saw literal `{{spantext}}` /
+  // `{{ctahref}}` text). The substitution lives in compose so both the
+  // preview-iframe path and the static-gen path agree on the default
+  // floor. Per-placement overrides (content_instances.values) still
+  // happen in preview-render, not here.
+  const slot = `<body><caelo-slot name="content">_</caelo-slot></body>`;
+  it("fills declared {{name}} placeholders with each field's default", () => {
+    const out = composePagePreview({
+      templateHtml: slot,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            {
+              moduleId: "mod-x",
+              slug: "hero",
+              displayName: "Hero",
+              html: "<h1>{{heading}}</h1><a href=\"{{ctahref}}\">{{ctalabel}}</a>",
+              css: "",
+              js: "",
+              fields: [
+                { name: "heading", default: "Welcome to Caelo" },
+                { name: "ctahref", default: "/get-started" },
+                { name: "ctalabel", default: "Get started" },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(out.html).toContain(">Welcome to Caelo</h1>");
+    expect(out.html).toContain('<a href="/get-started">Get started</a>');
+    // No raw `{{name}}` residue in the body.
+    expect(out.html).not.toMatch(/\{\{[a-z]/i);
+  });
+  it("leaves unknown {{name}} as raw placeholder (no-fallbacks per CLAUDE.md §2)", () => {
+    const out = composePagePreview({
+      templateHtml: slot,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            {
+              moduleId: "mod-y",
+              slug: "broken",
+              displayName: "Broken",
+              html: "<p>{{declared}} and {{undeclared}}</p>",
+              css: "",
+              js: "",
+              fields: [{ name: "declared", default: "OK" }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(out.html).toContain(">OK and {{undeclared}}</p>");
+  });
+});
+
 describe("composePagePreview tags every module's outermost element", () => {
   const slot = `<body><caelo-slot name="content">_</caelo-slot></body>`;
   it("threads the moduleId through the composed output", () => {

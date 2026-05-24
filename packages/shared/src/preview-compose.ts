@@ -39,6 +39,19 @@ export interface ComposeModule {
   readonly html: string;
   readonly css: string;
   readonly js: string;
+  /**
+   * v0.4.0 module-field schema. When present, the composer substitutes
+   * `{{name}}` placeholders in `html` with each field's `default` value
+   * before slot replacement — without this, modules created via the
+   * AI-authored extractor path (which mints `{{spantext}}` /
+   * `{{ctahref}}` etc. with declared defaults) ship raw placeholders
+   * to the browser, visible to visitors as literal `{{name}}` text.
+   *
+   * Per-placement overrides (content_instances.values) are NOT applied
+   * here — that's the preview-render path. Compose only fills in the
+   * default-floor so the published HTML is never broken.
+   */
+  readonly fields?: readonly { name: string; default?: unknown }[];
 }
 
 export interface ComposeBlock {
@@ -117,7 +130,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       } else if (langSelector !== null) {
         baseHtml = langSelector;
       } else {
-        baseHtml = m.html;
+        baseHtml = applyFieldDefaults(m.html, m.fields);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -277,6 +290,37 @@ function renderThemeCss(sets: ComposeStructuredSets | undefined): string | null 
   return `:root{${tokens.map((t) => `--${t.token}: ${t.value};`).join("")}}`;
 }
 
+/**
+ * Substitute `{{name}}` placeholders in module HTML using each field's
+ * declared `default`. Per-placement overrides (content_instances.values)
+ * are NOT applied here — they live on the preview-render path. This
+ * default-floor substitution prevents the visible-placeholder bug
+ * extractor-authored modules used to ship with on the static-gen path.
+ *
+ * Conservative on missing fields: an unknown `{{name}}` (no entry in
+ * `fields`, no default) is left as the raw placeholder so the operator
+ * sees the broken template instead of silently swallowing the placeholder
+ * — pre-1.0 no-fallbacks (CLAUDE.md §2).
+ */
+function applyFieldDefaults(
+  html: string,
+  fields: readonly { name: string; default?: unknown }[] | undefined,
+): string {
+  if (!fields || fields.length === 0) return html;
+  const byName = new Map<string, unknown>();
+  for (const f of fields) {
+    if (f.default !== undefined && f.default !== null) byName.set(f.name, f.default);
+  }
+  if (byName.size === 0) return html;
+  // The `i` flag matches the legacy preview-render regex; field names
+  // are normalised to lowercase via the snakeCase pass in the
+  // extractor, so this catches both `{{ctaHref}}` and `{{ctahref}}`.
+  return html.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/gi, (full, name: string) => {
+    const v = byName.get(name) ?? byName.get(name.toLowerCase());
+    return v === undefined ? full : String(v);
+  });
+}
+
 export function tagModuleId(html: string, moduleId: string): string {
   if (!html) return html;
   const firstOpen = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/;
@@ -403,7 +447,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       } else if (langSelector !== null) {
         baseHtml = langSelector;
       } else {
-        baseHtml = m.html;
+        baseHtml = applyFieldDefaults(m.html, m.fields);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -435,7 +479,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       } else if (langSelector !== null) {
         baseHtml = langSelector;
       } else {
-        baseHtml = m.html;
+        baseHtml = applyFieldDefaults(m.html, m.fields);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
