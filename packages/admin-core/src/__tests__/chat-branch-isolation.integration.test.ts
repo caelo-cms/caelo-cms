@@ -107,11 +107,14 @@ describe("chat branch isolation", () => {
       slug: `${MOD_SLUG}-a`,
       displayName: "M-A",
       html: "<p>main-a</p>",
+      // v0.12.2 — opt out of extractor so snapshot.state.html stays literal.
+      fields: [{ name: "body", kind: "text", label: "Body" } as never],
     });
     const createB = await execute(registry, adapter, HUMAN, "modules.create", {
       slug: `${MOD_SLUG}-b`,
       displayName: "M-B",
       html: "<p>main-b</p>",
+      fields: [{ name: "body", kind: "text", label: "Body" } as never],
     });
     if (!createA.ok || !createB.ok) throw new Error("seed");
     const moduleIdA = (createA.value as { moduleId: string }).moduleId;

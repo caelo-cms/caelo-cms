@@ -57,10 +57,15 @@ afterAll(async () => {
 
 describe("modules CRUD", () => {
   it("create + list + get + update + delete round-trip", async () => {
+    // v0.12.2 — pass explicit fields so the extractor doesn't
+    // auto-templatise <h1>Hi</h1>. We're testing CRUD wiring, not
+    // extraction behaviour (that's covered by the extractor unit
+    // tests).
     const create = await execute(registry, adapter, systemCtx, "modules.create", {
       slug: SLUGS[0],
       displayName: "Hero",
       html: "<h1>Hi</h1>",
+      fields: [{ name: "headline", kind: "text", label: "Headline" } as never],
     });
     expect(create.ok).toBe(true);
     if (!create.ok) return;

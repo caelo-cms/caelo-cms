@@ -12,6 +12,14 @@ export const templates = pgTable("templates", {
   id: uuid("id").primaryKey().defaultRandom(),
   slug: text("slug").notNull().unique(),
   displayName: text("display_name").notNull(),
+  /**
+   * v0.12.0 — coarse page-type tag. Constrained by templates_kind_check
+   * to: home | landing | product | blog | doc | content | utility.
+   * Surfaced in the AI's `## Pages` block so the AI sees three modules-
+   * on-product-pages as a pattern. Pages inherit the kind via their
+   * template_id. See CLAUDE.md §1A.
+   */
+  kind: text("kind").notNull().default("content"),
   /** Full document HTML, including `<caelo-slot name="…">` markers. */
   html: text("html").notNull(),
   css: text("css").notNull().default(""),

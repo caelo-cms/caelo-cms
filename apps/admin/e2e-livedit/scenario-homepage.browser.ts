@@ -5,7 +5,7 @@
  * then re-edit just the hero headline.
  *
  * Validates the full chat → Stage → Publish → re-edit loop against
- * the live Anthropic API (Sonnet 4.6, temperature=0). Every mid-flow
+ * the live Anthropic API (Opus 4.7, temperature=0). Every mid-flow
  * assertion is deterministic (DOM via getByRole/locator, DB via
  * bun:SQL, admin-stderr via captured admin.log); the only AI call in
  * the verification path is the closing vision verdict on the published
@@ -16,11 +16,11 @@
  *   • AC #4, #5 — Playwright drives everything, no mid-flow LLM
  *   • AC #6 — closing vision verdict
  *   • AC #7 — orphan-lock + chat-runner-diag regression guards
- *   • AC #11 — retries=2 (config-level)
+ *   • AC #11 — retries=1 (config-level; 2 attempts total)
  */
 
 import { spawnSync } from "node:child_process";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures.js";
 import {
   assertNoChatRunnerDiagWarnings,
   assertNoOrphanLocks,
@@ -96,32 +96,31 @@ function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | nu
             return;
           }
           const pg = pages[0];
+          // PR #61 — content lives in content_instances now (bound to
+          // page_modules via pm.content_instance_id), not in the legacy
+          // page_module_content table. Read ci.updated_at so the
+          // re-edit assertion detects edits the AI persists via
+          // set_content_instance_values.
           const placements = await tx\`
             SELECT
               pm.block_name      AS "blockName",
               pm.position        AS position,
               m.slug             AS "moduleSlug",
-              pmc.updated_at::text AS "contentUpdatedAt"
+              ci.updated_at::text AS "contentUpdatedAt"
             FROM page_modules pm
-            JOIN modules m ON m.id = pm.module_id
-            LEFT JOIN page_module_content pmc
-              ON pmc.page_id = pm.page_id
-             AND pmc.block_name = pm.block_name
-             AND pmc.position = pm.position
+            JOIN modules m            ON m.id  = pm.module_id
+            JOIN content_instances ci ON ci.id = pm.content_instance_id
             WHERE pm.page_id = \${pg.pageId}::uuid
             ORDER BY pm.block_name, pm.position
           \`;
           // Aggregate any footer-ish content into a single text blob for
-          // substring assertions.
+          // substring assertions. Same content_instances source as above.
           const footerRows = await tx\`
-            SELECT pmc.content_values::text AS values
-            FROM page_module_content pmc
-            JOIN page_modules pm
-              ON pm.page_id = pmc.page_id
-             AND pm.block_name = pmc.block_name
-             AND pm.position = pmc.position
-            JOIN modules m ON m.id = pm.module_id
-            WHERE pmc.page_id = \${pg.pageId}::uuid
+            SELECT ci.values::text AS values
+            FROM page_modules pm
+            JOIN modules m            ON m.id  = pm.module_id
+            JOIN content_instances ci ON ci.id = pm.content_instance_id
+            WHERE pm.page_id = \${pg.pageId}::uuid
               AND (m.slug ILIKE '%footer%' OR pm.block_name ILIKE '%footer%')
           \`;
           out.pageId = pg.pageId;
@@ -145,7 +144,7 @@ function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | nu
 }
 
 test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
-  // Playwright retries=2 — each attempt must start from clean fixtures.
+  // Playwright retries=1 — each attempt must start from clean fixtures.
   // Without this, attempt 1's orphan rows confuse snapshotMostRecentPage
   // on attempt 2 (per plan §6 open question 4).
   test.beforeEach(() => {
@@ -219,7 +218,7 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
 
     // ── Step 5: DB structural floor (AC #2) ────────────────────────
     // Structural minimum: the AI must have created a page row and at
-    // least 2 page_modules placements. At temperature=0 Sonnet 4.6
+    // least 2 page_modules placements. At temperature=0 the AI
     // consistently uses a bulk add_page tool that emits 2 placements
     // in a single call regardless of how the prompt is phrased; this
     // is the deterministic floor. Header / footer content quality is
@@ -263,7 +262,7 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     );
     // The previous "MPL 2.0" production HTML substring check was
     // dropped — it depended on the AI emitting a literal copyright
-    // footer module, which Sonnet 4.6 doesn't do deterministically at
+    // footer module, which the AI doesn't do deterministically at
     // temperature=0 (the AI uses a bulk add_page tool that produces 2
     // placements regardless of prompt phrasing). The iframe DOM check
     // above already verifies the <footer> renders substantive content;

@@ -87,6 +87,9 @@ describe("chat-runner tool-call idempotency", () => {
       slug: SLUG,
       displayName: "M",
       html: "<p>v0</p>",
+      // v0.12.2 — opt out of extractor so the assertion on stored html
+      // matches the input verbatim.
+      fields: [{ name: "body", kind: "text", label: "Body" } as never],
     });
     if (!create.ok) throw new Error("seed");
     const moduleId = (create.value as { moduleId: string }).moduleId;

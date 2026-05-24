@@ -20,6 +20,8 @@ const templateRowSchema = z.object({
   id: z.string(),
   slug: z.string(),
   displayName: z.string(),
+  /** v0.12.0 — page-type tag pages inherit. */
+  kind: z.enum(["home", "landing", "product", "blog", "doc", "content", "utility"]),
   html: z.string(),
   css: z.string(),
   /** P6.7.6 — every template binds to one layout. */
@@ -34,6 +36,7 @@ type RawTemplateRow = {
   id: string;
   slug: string;
   display_name: string;
+  kind?: string | null;
   html: string;
   css: string;
   layout_id: string;
@@ -64,18 +67,29 @@ function rowsToTemplates(
     blockMap.set(b.template_id, arr);
   }
   for (const arr of blockMap.values()) arr.sort((a, b) => a.position - b.position);
-  return templates.map((t) => ({
-    id: t.id,
-    slug: t.slug,
-    displayName: t.display_name,
-    html: t.html,
-    css: t.css,
-    layoutId: t.layout_id,
-    createdAt: iso(t.created_at),
-    updatedAt: iso(t.updated_at),
-    deletedAt: t.deleted_at === null ? null : iso(t.deleted_at),
-    blocks: blockMap.get(t.id) ?? [],
-  }));
+  return templates.map((t) => {
+    const kindRaw = (t.kind ?? "content") as
+      | "home"
+      | "landing"
+      | "product"
+      | "blog"
+      | "doc"
+      | "content"
+      | "utility";
+    return {
+      id: t.id,
+      slug: t.slug,
+      displayName: t.display_name,
+      kind: kindRaw,
+      html: t.html,
+      css: t.css,
+      layoutId: t.layout_id,
+      createdAt: iso(t.created_at),
+      updatedAt: iso(t.updated_at),
+      deletedAt: t.deleted_at === null ? null : iso(t.deleted_at),
+      blocks: blockMap.get(t.id) ?? [],
+    };
+  });
 }
 
 export const listTemplatesOp = defineOperation({
@@ -91,13 +105,13 @@ export const listTemplatesOp = defineOperation({
     const templates = (await tx.execute(
       input.includeDeleted
         ? sql`
-            SELECT id::text AS id, slug, display_name, html, css,
+            SELECT id::text AS id, slug, display_name, kind, html, css,
                    layout_id::text AS layout_id,
                    created_at, updated_at, deleted_at
             FROM templates WHERE 1=1 ${branchFilter} ORDER BY created_at ASC
           `
         : sql`
-            SELECT id::text AS id, slug, display_name, html, css,
+            SELECT id::text AS id, slug, display_name, kind, html, css,
                    layout_id::text AS layout_id,
                    created_at, updated_at, deleted_at
             FROM templates WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
@@ -122,7 +136,7 @@ export const getTemplateOp = defineOperation({
     // v0.9.0 — branch-aware read.
     const branchFilter = branchVisibilityFilter(ctx);
     const templates = (await tx.execute(sql`
-      SELECT id::text AS id, slug, display_name, html, css,
+      SELECT id::text AS id, slug, display_name, kind, html, css,
              layout_id::text AS layout_id,
              created_at, updated_at, deleted_at
       FROM templates WHERE id = ${input.templateId}::uuid ${branchFilter} LIMIT 1
@@ -242,10 +256,11 @@ export const createTemplateOp = defineOperation({
     // v0.9.0 — branched-create: branched until chat.merge_to_main
     // clears the chat_branch_id tag.
     const rows = (await tx.execute(sql`
-      INSERT INTO templates (slug, display_name, html, css, layout_id, chat_branch_id)
+      INSERT INTO templates (slug, display_name, kind, html, css, layout_id, chat_branch_id)
       VALUES (
         ${input.slug},
         ${input.displayName},
+        ${input.kind},
         ${input.html},
         ${input.css},
         ${layoutId}::uuid,
@@ -354,6 +369,7 @@ export const updateTemplateOp = defineOperation({
     }
     const sets = buildPatchSet({
       display_name: input.displayName,
+      kind: input.kind,
       html: input.html,
       css: input.css,
       layout_id: input.layoutId !== undefined ? sql`${input.layoutId}::uuid` : undefined,
@@ -363,6 +379,7 @@ export const updateTemplateOp = defineOperation({
     // when only `blocks` was provided.
     const hasScalarPatch =
       input.displayName !== undefined ||
+      input.kind !== undefined ||
       input.html !== undefined ||
       input.css !== undefined ||
       input.layoutId !== undefined;

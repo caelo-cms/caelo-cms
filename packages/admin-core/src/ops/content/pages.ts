@@ -42,6 +42,13 @@ const pageRowSchema = z.object({
   name: z.string(),
   title: z.string(),
   templateId: z.string(),
+  /**
+   * v0.12.0 — page-type kind inherited from the page's template.
+   * Surfaced in `## Pages` so the AI sees three modules-on-product-
+   * pages as a pattern. Optional on the wire (templates predating
+   * migration 0096 don't have it).
+   */
+  kind: z.enum(["home", "landing", "product", "blog", "doc", "content", "utility"]).optional(),
   status: z.enum(["draft", "published"]),
   /** P9 — populated for source rows; tracks variant freshness. */
   translationStatus: z.enum(["source", "up_to_date", "needs_update", "not_started"]),
@@ -70,6 +77,9 @@ const pageWithModulesSchema = pageRowSchema.extend({
            * (CMS_REQUIREMENTS §3.1, P3 plan §"Risks").
            */
           isDeleted: z.boolean(),
+          /** v0.12.0 — placement → content_instance binding. */
+          contentInstanceId: z.string().nullable(),
+          syncMode: z.enum(["synced", "unsynced"]),
         }),
       ),
     }),
@@ -83,6 +93,8 @@ type RawPageRow = {
   name: string | null;
   title: string;
   template_id: string;
+  /** v0.12.0 — joined from `templates.kind`. */
+  template_kind?: string | null;
   status: "draft" | "published";
   translation_status: "source" | "up_to_date" | "needs_update" | "not_started";
   version: number | string;
@@ -100,6 +112,19 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
   // overflow JS number — for our version counter (will not approach 2^53)
   // both shapes are safe to coerce.
   const version = typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version;
+  // v0.12.0 — template_kind comes from the LEFT JOIN; defaults to
+  // 'content' for templates that pre-date migration 0096.
+  const kindRaw = r.template_kind ?? null;
+  const kind: "home" | "landing" | "product" | "blog" | "doc" | "content" | "utility" | undefined =
+    kindRaw === "home" ||
+    kindRaw === "landing" ||
+    kindRaw === "product" ||
+    kindRaw === "blog" ||
+    kindRaw === "doc" ||
+    kindRaw === "content" ||
+    kindRaw === "utility"
+      ? kindRaw
+      : undefined;
   return {
     id: r.id,
     slug: r.slug,
@@ -111,6 +136,7 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
     name: r.name ?? r.title,
     title: r.title,
     templateId: r.template_id,
+    ...(kind !== undefined ? { kind } : {}),
     status: r.status,
     translationStatus: r.translation_status,
     version,
@@ -133,20 +159,28 @@ export const listPagesOp = defineOperation({
   output: z.object({ pages: z.array(pageRowSchema) }),
   handler: async (ctx, input, tx) => {
     // v0.9.0 — branch-aware: chats see main + their own branched creates.
+    // Filters reference `pages` columns; the LEFT JOIN to templates
+    // adds template_kind for the AI's `## Pages` block.
     const filters = [];
-    if (!input.includeDeleted) filters.push(sql`deleted_at IS NULL`);
-    if (input.locale !== undefined) filters.push(sql`locale = ${input.locale}`);
+    if (!input.includeDeleted) filters.push(sql`pages.deleted_at IS NULL`);
+    if (input.locale !== undefined) filters.push(sql`pages.locale = ${input.locale}`);
     if (ctx.chatBranchId) {
-      filters.push(sql`(chat_branch_id IS NULL OR chat_branch_id = ${ctx.chatBranchId}::uuid)`);
+      filters.push(
+        sql`(pages.chat_branch_id IS NULL OR pages.chat_branch_id = ${ctx.chatBranchId}::uuid)`,
+      );
     } else {
-      filters.push(sql`chat_branch_id IS NULL`);
+      filters.push(sql`pages.chat_branch_id IS NULL`);
     }
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
-             status, translation_status, version, created_at, updated_at, deleted_at
+      SELECT pages.id::text AS id, pages.slug, pages.locale, pages.name, pages.title,
+             pages.template_id::text AS template_id,
+             templates.kind AS template_kind,
+             pages.status, pages.translation_status, pages.version,
+             pages.created_at, pages.updated_at, pages.deleted_at
       FROM pages
+      LEFT JOIN templates ON templates.id = pages.template_id
       ${buildWhere(filters)}
-      ORDER BY created_at ASC
+      ORDER BY pages.created_at ASC
     `)) as unknown as RawPageRow[];
     return ok({ pages: rows.map(rowToPage) });
   },
@@ -236,6 +270,8 @@ export const getPageWithModulesOp = defineOperation({
         css: string;
         js: string;
         isDeleted: boolean;
+        contentInstanceId: string | null;
+        syncMode: "synced" | "unsynced";
       }[]
     >();
     const allModuleIds: string[] = [];
@@ -263,6 +299,44 @@ export const getPageWithModulesOp = defineOperation({
         is_deleted: boolean;
       }[];
       const detailById = new Map(modDetailRows.map((r) => [r.module_id, r]));
+      // v0.12.0 — placement metadata. Index by (block, position) so
+      // the loop below can hand the per-placement sync_mode +
+      // content_instance_id to the UI.
+      type PlacementMeta = { contentInstanceId: string; syncMode: "synced" | "unsynced" };
+      const placementByKey = new Map<string, PlacementMeta>();
+      // First check the layout snapshot for per-placement metadata
+      // (branched callers get this via layoutState.blocks[i].placements).
+      for (const b of layoutState.blocks) {
+        const placements = b.placements ?? [];
+        for (let i = 0; i < placements.length; i += 1) {
+          const p = placements[i];
+          if (!p) continue;
+          placementByKey.set(`${b.blockName}#${i}`, {
+            contentInstanceId: p.contentInstanceId,
+            syncMode: p.syncMode,
+          });
+        }
+      }
+      // Fall back to live page_modules for any placement the layout
+      // snapshot didn't carry (covers pre-v0.12 snapshots + live reads).
+      if (placementByKey.size === 0) {
+        const liveBindings = (await tx.execute(sql`
+          SELECT block_name, position, content_instance_id::text AS content_instance_id, sync_mode
+          FROM page_modules
+          WHERE page_id = ${input.pageId}::uuid
+        `)) as unknown as {
+          block_name: string;
+          position: number;
+          content_instance_id: string;
+          sync_mode: "synced" | "unsynced";
+        }[];
+        for (const r of liveBindings) {
+          placementByKey.set(`${r.block_name}#${r.position}`, {
+            contentInstanceId: r.content_instance_id,
+            syncMode: r.sync_mode,
+          });
+        }
+      }
       for (const block of layoutState.blocks) {
         const arr: {
           moduleId: string;
@@ -272,10 +346,17 @@ export const getPageWithModulesOp = defineOperation({
           css: string;
           js: string;
           isDeleted: boolean;
+          contentInstanceId: string | null;
+          syncMode: "synced" | "unsynced";
         }[] = [];
+        let position = 0;
         for (const id of block.moduleIds) {
           const d = detailById.get(id);
-          if (!d) continue; // module not visible to this actor — skip
+          if (!d) {
+            position += 1;
+            continue;
+          }
+          const binding = placementByKey.get(`${block.blockName}#${position}`);
           arr.push({
             moduleId: id,
             slug: d.slug,
@@ -284,7 +365,10 @@ export const getPageWithModulesOp = defineOperation({
             css: d.css,
             js: d.js,
             isDeleted: d.is_deleted,
+            contentInstanceId: binding?.contentInstanceId ?? null,
+            syncMode: binding?.syncMode ?? "unsynced",
           });
+          position += 1;
         }
         if (arr.length > 0) grouped.set(block.blockName, arr);
       }
@@ -967,29 +1051,128 @@ export const setPageModulesOp = defineOperation({
       }
     }
 
+    // v0.12.0 — page_modules requires content_instance_id NOT NULL.
+    // Read the current state so we can preserve content bindings for
+    // placements that survive (same blockName, position, moduleId) and
+    // mint fresh unsynced content_instances for net-new placements.
+    const priorRows = (await tx.execute(sql`
+      SELECT block_name, position, module_id::text AS module_id,
+             content_instance_id::text AS content_instance_id, sync_mode
+      FROM page_modules WHERE page_id = ${input.pageId}::uuid
+    `)) as unknown as {
+      block_name: string;
+      position: number;
+      module_id: string;
+      content_instance_id: string;
+      sync_mode: "synced" | "unsynced";
+    }[];
+    const priorByKey = new Map<
+      string,
+      { moduleId: string; contentInstanceId: string; syncMode: "synced" | "unsynced" }
+    >();
+    for (const r of priorRows) {
+      priorByKey.set(`${r.block_name}#${r.position}`, {
+        moduleId: r.module_id,
+        contentInstanceId: r.content_instance_id,
+        syncMode: r.sync_mode,
+      });
+    }
+
+    // Resolve `(moduleId, contentInstanceId, syncMode)` for every new
+    // placement. Mint fresh unsynced content_instances where needed —
+    // this happens in BOTH branched and live paths so the snapshot's
+    // `placements` array carries authoritative bindings.
+    type ResolvedPlacement = {
+      blockName: string;
+      position: number;
+      moduleId: string;
+      contentInstanceId: string;
+      syncMode: "synced" | "unsynced";
+    };
+    const resolved: ResolvedPlacement[] = [];
+    for (const block of input.blocks) {
+      let position = 0;
+      for (const moduleId of block.moduleIds) {
+        const prior = priorByKey.get(`${block.blockName}#${position}`);
+        let contentInstanceId: string;
+        let syncMode: "synced" | "unsynced";
+        if (prior && prior.moduleId === moduleId) {
+          // Same module survives at the same slot — preserve binding.
+          contentInstanceId = prior.contentInstanceId;
+          syncMode = prior.syncMode;
+        } else {
+          // New placement or module swap — mint fresh unsynced content_instance.
+          const minted = (await tx.execute(sql`
+            INSERT INTO content_instances
+              (module_id, "values", updated_by, chat_branch_id)
+            VALUES (
+              ${moduleId}::uuid,
+              '{}'::jsonb,
+              ${ctx.actorId}::uuid,
+              ${ctx.chatBranchId ?? null}::uuid
+            )
+            RETURNING id::text AS id
+          `)) as unknown as { id: string }[];
+          const newId = minted[0]?.id;
+          if (!newId) {
+            return err({
+              kind: "HandlerError",
+              operation: "pages.set_modules",
+              message: "failed to mint content_instance for new placement",
+            });
+          }
+          contentInstanceId = newId;
+          syncMode = "unsynced";
+        }
+        resolved.push({
+          blockName: block.blockName,
+          position,
+          moduleId,
+          contentInstanceId,
+          syncMode,
+        });
+        position += 1;
+      }
+    }
+
     // v0.5.3 — branched: skip live page_modules write; build the
     // layout state in-memory and emit branched snapshot.
     const branched = !!ctx.chatBranchId;
     let layoutState: import("../../snapshots/state.js").PageLayoutState;
     if (branched) {
+      const byBlock = new Map<string, ResolvedPlacement[]>();
+      for (const p of resolved) {
+        const arr = byBlock.get(p.blockName) ?? [];
+        arr.push(p);
+        byBlock.set(p.blockName, arr);
+      }
       layoutState = {
         schemaVersion: 1,
         blocks: input.blocks.map((b) => ({
           blockName: b.blockName,
           moduleIds: [...b.moduleIds],
+          placements: (byBlock.get(b.blockName) ?? []).map((p) => ({
+            moduleId: p.moduleId,
+            contentInstanceId: p.contentInstanceId,
+            syncMode: p.syncMode,
+          })),
         })),
       };
     } else {
       await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${input.pageId}::uuid`);
-      for (const block of input.blocks) {
-        let position = 0;
-        for (const moduleId of block.moduleIds) {
-          await tx.execute(sql`
-            INSERT INTO page_modules (page_id, block_name, position, module_id)
-            VALUES (${input.pageId}::uuid, ${block.blockName}, ${position}, ${moduleId}::uuid)
-          `);
-          position += 1;
-        }
+      for (const p of resolved) {
+        await tx.execute(sql`
+          INSERT INTO page_modules
+            (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+          VALUES (
+            ${input.pageId}::uuid,
+            ${p.blockName},
+            ${p.position},
+            ${p.moduleId}::uuid,
+            ${p.contentInstanceId}::uuid,
+            ${p.syncMode}
+          )
+        `);
       }
       await tx.execute(sql`
         UPDATE pages SET updated_at = now(), version = version + 1
@@ -1237,12 +1420,55 @@ export const duplicatePageOp = defineOperation({
       typeof sourceCounts[0]?.live === "string"
         ? Number.parseInt(sourceCounts[0].live, 10)
         : (sourceCounts[0]?.live ?? 0);
+    // v0.12.0 — duplicate must clone the source's content_instances too,
+    // not just rebind to them. A true "duplicate" lets the operator
+    // diverge the clone's content without affecting the source — so for
+    // each source placement we mint a fresh unsynced content_instance
+    // with the source's values copied, then bind the clone's
+    // page_modules row to the new ci. (Shared-synced semantics are
+    // available via set_placement_content after duplicate completes.)
     await tx.execute(sql`
-      INSERT INTO page_modules (page_id, block_name, position, module_id)
-      SELECT ${newPageId}::uuid, pm.block_name, pm.position, pm.module_id
-      FROM page_modules pm
-      JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
-      WHERE pm.page_id = ${input.sourcePageId}::uuid
+      WITH source_placements AS (
+        SELECT pm.block_name, pm.position, pm.module_id, pm.content_instance_id, pm.sync_mode
+        FROM page_modules pm
+        JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
+        WHERE pm.page_id = ${input.sourcePageId}::uuid
+      ),
+      cloned_cis AS (
+        INSERT INTO content_instances (module_id, slug, display_name, "values", updated_by, chat_branch_id)
+        SELECT
+          sp.module_id,
+          NULL,
+          NULL,
+          COALESCE(ci."values", '{}'::jsonb),
+          ${ctx.actorId}::uuid,
+          ${ctx.chatBranchId ?? null}::uuid
+        FROM source_placements sp
+        LEFT JOIN content_instances ci ON ci.id = sp.content_instance_id
+        RETURNING id, module_id
+      ),
+      indexed_sources AS (
+        SELECT
+          sp.*,
+          ROW_NUMBER() OVER (PARTITION BY sp.module_id ORDER BY sp.block_name, sp.position) AS rn
+        FROM source_placements sp
+      ),
+      indexed_clones AS (
+        SELECT
+          cc.id, cc.module_id,
+          ROW_NUMBER() OVER (PARTITION BY cc.module_id ORDER BY cc.id) AS rn
+        FROM cloned_cis cc
+      )
+      INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+      SELECT
+        ${newPageId}::uuid,
+        s.block_name,
+        s.position,
+        s.module_id,
+        c.id,
+        'unsynced'
+      FROM indexed_sources s
+      JOIN indexed_clones c ON c.module_id = s.module_id AND c.rn = s.rn
     `);
     // P7 review-pass: bump media usage_count for every distinct asset
     // referenced from the cloned modules' HTML. A duplicated page adds
@@ -1385,15 +1611,34 @@ export const changeTemplateOp = defineOperation({
       });
     }
 
+    // v0.12.0 — preserve content_instance_id + sync_mode through the
+    // re-bind. change_template is a chrome change; the page's content
+    // should ride through unchanged.
     const pmRows = (await tx.execute(sql`
-      SELECT block_name, position, module_id::text AS module_id
+      SELECT
+        block_name,
+        position,
+        module_id::text AS module_id,
+        content_instance_id::text AS content_instance_id,
+        sync_mode
       FROM page_modules WHERE page_id = ${input.pageId}::uuid
       ORDER BY block_name ASC, position ASC
-    `)) as unknown as { block_name: string; position: number; module_id: string }[];
+    `)) as unknown as {
+      block_name: string;
+      position: number;
+      module_id: string;
+      content_instance_id: string;
+      sync_mode: "synced" | "unsynced";
+    }[];
 
     const migratedBlocks = new Set<string>();
     const droppedModules: { moduleId: string; formerBlock: string }[] = [];
-    const survivors: { block_name: string; module_id: string }[] = [];
+    const survivors: {
+      block_name: string;
+      module_id: string;
+      content_instance_id: string;
+      sync_mode: "synced" | "unsynced";
+    }[] = [];
     const orphanBlock =
       input.orphanDisposition.kind === "preserve-as-block"
         ? input.orphanDisposition.blockName
@@ -1401,9 +1646,19 @@ export const changeTemplateOp = defineOperation({
     for (const r of pmRows) {
       if (newBlockNames.has(r.block_name)) {
         migratedBlocks.add(r.block_name);
-        survivors.push({ block_name: r.block_name, module_id: r.module_id });
+        survivors.push({
+          block_name: r.block_name,
+          module_id: r.module_id,
+          content_instance_id: r.content_instance_id,
+          sync_mode: r.sync_mode,
+        });
       } else if (orphanBlock !== null) {
-        survivors.push({ block_name: orphanBlock, module_id: r.module_id });
+        survivors.push({
+          block_name: orphanBlock,
+          module_id: r.module_id,
+          content_instance_id: r.content_instance_id,
+          sync_mode: r.sync_mode,
+        });
       } else {
         droppedModules.push({ moduleId: r.module_id, formerBlock: r.block_name });
       }
@@ -1414,8 +1669,8 @@ export const changeTemplateOp = defineOperation({
     for (const s of survivors) {
       const pos = positionByBlock.get(s.block_name) ?? 0;
       await tx.execute(sql`
-        INSERT INTO page_modules (page_id, block_name, position, module_id)
-        VALUES (${input.pageId}::uuid, ${s.block_name}, ${pos}, ${s.module_id}::uuid)
+        INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        VALUES (${input.pageId}::uuid, ${s.block_name}, ${pos}, ${s.module_id}::uuid, ${s.content_instance_id}::uuid, ${s.sync_mode})
       `);
       positionByBlock.set(s.block_name, pos + 1);
     }

@@ -1,11 +1,18 @@
 name: E2E Live Edit (real AI)
 
 # Issue #47 — drives the editor chat against the real Anthropic API
-# (Sonnet 4.6, temperature=0) so the regression classes the mock-AI
+# (Opus 4.7, temperature=0) so the regression classes the mock-AI
 # suite cannot catch (empty AI turns, orphan locks, missing primers)
 # are gated on every PR. Real cost is the cost of correctness per the
 # operator direction in the issue; no schedule, no label gating, no
 # cost guard.
+#
+# PR #61 follow-up: switched from Sonnet 4.6 to Opus 4.7. Sonnet was
+# tripping ~4/6 scenarios on AI-variance failures; with Opus, any
+# remaining red is a real bug (prompt, code, process) not model
+# planning variance. Revisit the model choice once the suite has been
+# stable for a few weeks. Model is pinned in
+# `apps/admin/playwright.livedit.config.ts:E2E_LIVEDIT_MODEL`.
 
 on:
   pull_request:
@@ -60,10 +67,16 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.enabled == 'true'
     runs-on: ubuntu-latest
-    # The full chat → Stage → Publish → re-edit loop runs ~5 min at
-    # Sonnet 4.6 plus compose spin-up + admin build. 20 min is the
-    # ceiling so a stuck job fails clearly instead of burning CI hours.
-    timeout-minutes: 20
+    # The full chat → Stage → Publish → re-edit loop runs ~5 min per
+    # scenario at Opus 4.7 plus compose spin-up + admin build. The
+    # suite now runs 6 scenarios (the v0.12 PR added 5 — extract-
+    # fields, nested-modules, content-library-shared-edit, placement-
+    # sync-toggle, ai-nested-cta — on top of the pre-existing
+    # homepage scenario), so the prior 20-min ceiling started timing
+    # out runs that were genuinely working. 45 min covers the 6-
+    # scenario worst case (~30 min run + ~10 min spin-up + buffer)
+    # while still failing a stuck job in bounded time.
+    timeout-minutes: 45
     permissions:
       # `contents: write` is required for the "Push screenshots…" step
       # below — it pushes failure screenshots to the `screenshots/
@@ -279,6 +292,28 @@ jobs:
           git commit -qm "e2e-livedit: PR #${PR_NUMBER} run ${RUN_ID} screenshots"
           git push -q origin "$BRANCH"
 
+          # PR #61 follow-up — surface the actual error text next to the
+          # screenshots, not just a URL. Playwright drops a per-attempt
+          # context MD into playwright-report/data/<hash>.md with the
+          # test name + the assertion failure + any chat-runner /
+          # browser-console errors the fixtures (`fixtures.ts`)
+          # collected. Without these, the PR reviewer had to download
+          # the artifact bundle to find out *why* a screenshot is red.
+          ERR_CONTEXT_DIR="${GITHUB_WORKSPACE}/${FAIL_DIR}"
+          ERR_CONTEXT_MDS=("${ERR_CONTEXT_DIR}"/*.md)
+
+          # PR #61 follow-up — `build-stats.ts` parses admin.log +
+          # playwright-report.json and emits an API-stats block + a
+          # per-scenario results table. We splice it in between the
+          # screenshots and the error details. Falls through silently
+          # if the script errors so a bug here can't block the rest
+          # of the comment.
+          STATS_FILE=/tmp/e2e-livedit-stats.md
+          (
+            cd "${GITHUB_WORKSPACE}"
+            bun run apps/admin/e2e-livedit/lib/build-stats.ts > "$STATS_FILE"
+          ) || echo "_(stats script failed; see workflow logs)_" > "$STATS_FILE"
+
           {
             printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\n' \
               "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS"
@@ -293,14 +328,61 @@ jobs:
               done
             fi
 
+            # Stats block: chat-runner API counters + per-scenario table.
+            if [ -s "$STATS_FILE" ]; then
+              cat "$STATS_FILE"
+              printf '\n'
+            fi
+
+            # Group errors by test name so a 3-attempt failure shows
+            # under ONE collapsible block, not three. `awk` extracts the
+            # `- Name: ` line and the `# Error details` block (between
+            # that header and the next `# ` header). Each block is
+            # capped at 6000 chars per scenario so a multi-attempt
+            # failure doesn't blow past GitHub's 65k-char comment limit.
+            if [ ${#ERR_CONTEXT_MDS[@]} -gt 0 ]; then
+              printf '### Errors from chat + assertions\n\n'
+              printf 'Per-attempt error details captured by the Playwright + chat-runner + console-error trackers (see [`fixtures.ts`](https://github.com/%s/blob/%s/apps/admin/e2e-livedit/fixtures.ts)).\n\n' "$REPO" "${GITHUB_SHA}"
+              # Build a tmp file keyed by test name → concatenated errors.
+              rm -rf /tmp/e2e-errors && mkdir -p /tmp/e2e-errors
+              for md in "${ERR_CONTEXT_MDS[@]}"; do
+                test_name=$(awk -F': ' '/^- Name:/ {sub(/^.*>> /, "", $0); sub(/^- Name: /, "", $0); print; exit}' "$md")
+                [ -z "$test_name" ] && test_name="(unknown test)"
+                # File-name-safe key.
+                slug=$(printf '%s' "$test_name" | tr -c '[:alnum:]' '_' | cut -c1-80)
+                {
+                  printf -- '----- attempt @ %s -----\n' "$(basename "$md" .md | cut -c1-8)"
+                  awk '/^# Error details/{flag=1; next} /^# / && flag {exit} flag {print}' "$md"
+                } >> "/tmp/e2e-errors/${slug}.txt"
+                # Remember pretty name for the slug.
+                printf '%s' "$test_name" > "/tmp/e2e-errors/${slug}.name"
+              done
+              for txt in /tmp/e2e-errors/*.txt; do
+                slug=$(basename "$txt" .txt)
+                name=$(cat "/tmp/e2e-errors/${slug}.name")
+                printf '<details><summary><b>%s</b></summary>\n\n```\n' "$name"
+                head -c 6000 "$txt"
+                if [ "$(wc -c < "$txt")" -gt 6000 ]; then
+                  printf '\n…(truncated; full text in the artifact bundle)\n'
+                fi
+                printf '\n```\n\n</details>\n\n'
+              done
+            fi
+
             if [ ${#FAIL_SHOTS[@]} -gt 0 ]; then
-              printf '### Failure attempts\n\n'
-              i=1
+              # PR #61 follow-up — DON'T number these globally. Pre-fix
+              # the comment showed e.g. "Attempt 1" through "Attempt 8"
+              # for 8 PNGs that were actually 4 scenarios × 2 attempts,
+              # implying the same scenario retried 8 times. Each PNG is
+              # one attempt's failure shot from across the run; the
+              # errors block above is where the per-scenario / per-
+              # attempt grouping lives.
+              printf '### Failure screenshots\n\n'
+              printf 'One screenshot per failed attempt across all scenarios. Scenario + attempt grouping is in the **Errors from chat + assertions** block above.\n\n'
               for src in "${FAIL_SHOTS[@]}"; do
                 name=$(basename "$src")
                 url="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${DEST_REL}/failure/${name}"
-                printf '**Attempt %d:**\n\n![%s](%s)\n\n' "$i" "$name" "$url"
-                i=$((i + 1))
+                printf '![%s](%s)\n\n' "$name" "$url"
               done
             fi
 

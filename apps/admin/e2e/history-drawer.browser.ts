@@ -73,8 +73,17 @@ test("Advanced History drawer reverts a module", async ({ page }) => {
   await expect(page.getByText(/Module reverted\./)).toBeVisible({ timeout: 15_000 });
 
   // Confirm live module is back to v1.
+  //
+  // v0.12.2 — modules.create runs the conservative extractor when no
+  // explicit fields are supplied, so the persisted v1 HTML is the
+  // templatised form (`<p>{{body}}</p>` with a `body` field whose
+  // default is V1_TEXT) — NOT the literal `<p>${V1_TEXT}</p>` the form
+  // submitted. After revert, the textarea shows the v1 state, which
+  // is the templatised form. The literal text lives in the field
+  // default, which is what the renderer will substitute at preview
+  // time.
   await page.goto(`/content/modules/${moduleId}`);
-  await expect(page.locator('textarea[name="html"]')).toHaveValue(`<p>${V1_TEXT}</p>`);
+  await expect(page.locator('textarea[name="html"]')).toHaveValue(`<p>{{body}}</p>`);
 
   // History timeline now contains a "revert module → …" entry. Other
   // parallel specs may emit unrelated snapshots so we filter for the

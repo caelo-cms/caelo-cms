@@ -124,4 +124,52 @@ export const actions: Actions = {
     if (!result.ok) return fail(400, { error: "Could not delete page." });
     throw redirect(303, "/content/pages");
   },
+
+  // v0.12.4 — bind a placement to a content_instance + choose sync mode.
+  // Powers the PlacementSyncToggle's "share with another page" affordance.
+  setPlacementContent: async ({ params, request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+
+    const blockName = String(form.get("blockName") ?? "");
+    const position = Number.parseInt(String(form.get("position") ?? ""), 10);
+    const contentInstanceId = String(form.get("contentInstanceId") ?? "");
+    const syncMode = String(form.get("syncMode") ?? "synced");
+    const result = await execute(registry, adapter, locals.ctx, "placement.set_content", {
+      pageId: params.id,
+      blockName,
+      position,
+      contentInstanceId,
+      syncMode: syncMode === "unsynced" ? "unsynced" : "synced",
+    });
+    if (!result.ok) {
+      const message = (result.error as { message?: string }).message ?? "could not bind placement";
+      return fail(400, { error: message });
+    }
+    return { ok: true };
+  },
+
+  // v0.12.4 — detach a placement into a fresh unsynced content_instance.
+  // Powers the PlacementSyncToggle's "edit only this page" affordance.
+  forkPlacementContent: async ({ params, request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+
+    const blockName = String(form.get("blockName") ?? "");
+    const position = Number.parseInt(String(form.get("position") ?? ""), 10);
+    const result = await execute(registry, adapter, locals.ctx, "placement.fork_content", {
+      pageId: params.id,
+      blockName,
+      position,
+    });
+    if (!result.ok) {
+      const message = (result.error as { message?: string }).message ?? "could not fork placement";
+      return fail(400, { error: message });
+    }
+    return { ok: true };
+  },
 };

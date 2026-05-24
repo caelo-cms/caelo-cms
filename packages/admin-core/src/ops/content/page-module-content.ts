@@ -15,66 +15,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
-import { emitSnapshot, loadPageModuleContentState } from "../../snapshots/index.js";
-
-/**
- * v0.6.1 — branch-aware placement-exists check used by
- * `set_page_module_content`. Mirrors the chat-preview overlay pattern in
- * `preview.ts:214-258`:
- *
- *   - When `chatBranchId` is set, the active chat's latest
- *     `page_layout_snapshots` row for this page authoritatively
- *     describes the page's blocks + module order. `pages.set_modules`
- *     deliberately skips writing to live `page_modules` while a chat
- *     branch is active (the snapshot IS the branch's state until
- *     publish merges it back). So a placement created earlier in the
- *     same chat WILL be in the snapshot but NOT in `page_modules`.
- *   - When no branched snapshot exists (the page hasn't been touched
- *     in this chat) OR no `chatBranchId` is supplied (direct human /
- *     system write), fall through to the live `page_modules` query.
- *
- * Returns true iff `(blockName, position)` resolves to a non-empty
- * module ID under the relevant view. The caller never sees branched
- * snapshot details — just an existence boolean.
- */
-async function branchAwarePlacementExists(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  pageId: string,
-  blockName: string,
-  position: number,
-  chatBranchId: string | undefined,
-): Promise<boolean> {
-  if (chatBranchId) {
-    const snap = (await tx.execute(sql`
-      SELECT state FROM page_layout_snapshots pls
-      JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-      WHERE pls.page_id = ${pageId}::uuid
-        AND ss.chat_branch_id = ${chatBranchId}::uuid
-      ORDER BY ss.created_at DESC
-      LIMIT 1
-    `)) as unknown as { state: unknown }[];
-    const raw = snap[0]?.state;
-    if (raw) {
-      const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
-        blocks?: { blockName: string; moduleIds: string[] }[];
-      };
-      const block = parsed.blocks?.find((b) => b.blockName === blockName);
-      if (block && position < block.moduleIds.length) return true;
-      // Branched snapshot exists for this page on this branch but the
-      // (block, position) pair isn't in it. Fall through to live so a
-      // placement created BEFORE the chat started is still visible.
-    }
-  }
-  const live = (await tx.execute(sql`
-    SELECT 1 FROM page_modules
-    WHERE page_id = ${pageId}::uuid
-      AND block_name = ${blockName}
-      AND position = ${position}
-    LIMIT 1
-  `)) as unknown as { exists: number }[];
-  return live.length > 0;
-}
+import { setContentInstanceValuesOp } from "./content-instances.js";
 
 const pageModuleContentRowSchema = z.object({
   id: z.string(),
@@ -169,46 +110,87 @@ export const setPageModuleContentOp = defineOperation({
     .strict(),
   output: z.object({ pageModuleContentId: z.string() }),
   handler: async (ctx, input, tx) => {
-    // v0.5.3 — per-page lock. Content writes are page-bound; two
-    // chats editing the same placement would silently overwrite.
-    const lock = await checkAndAcquireEntityLock(tx, {
-      kind: "page",
-      entityId: input.pageId,
-      chatBranchId: ctx.chatBranchId,
-    });
-    if (!lock.permitted && lock.holder) {
-      return err(
-        await lockedError(tx, "page_module_content.set", "page", input.pageId, lock.holder),
-      );
-    }
-    // v0.6.1 — branch-aware placement check. The earlier draft queried
-    // live `page_modules` only. But `pages.set_modules` (called per-page
-    // by `add_module_to_template`) writes branched layouts to
-    // `page_layout_snapshots` and SKIPS the live table when
-    // `ctx.chatBranchId` is set — so placements created in the SAME chat
-    // were invisible here, causing legitimate per-page content
-    // overrides to fail with "no placement" and the v0.6.0 W3 recovery
-    // hint pointing at `inspect_page_render` (which ALSO read live
-    // state, surfacing the same empty block in a recovery loop).
+    // v0.12.0 — set_page_module_content is now a routing SHIM. It looks
+    // up the placement's content_instance_id + sync_mode and forwards to
+    // content_instances.set_values for the (much more common) unsynced
+    // case. Synced placements bounce with a structured error pointing
+    // the AI at fork_placement_content or set_content_instance_values
+    // so the operator's "edit this hero" intent doesn't silently
+    // propagate. Locks + branch isolation + snapshot bookkeeping all
+    // live in content_instances.set_values; the shim is concerned only
+    // with the routing decision.
     //
-    // The fix mirrors the chat-preview overlay pattern at
-    // `preview.ts:214-258`: when `ctx.chatBranchId` is set, consult the
-    // branched layout snapshot first; fall through to live
-    // `page_modules` when no branched snapshot exists for this page on
-    // this branch. The recovery hint stays correct — only fires when
-    // the placement is genuinely missing on BOTH branch + live.
-    const placementExists = await branchAwarePlacementExists(
-      tx,
-      input.pageId,
-      input.blockName,
-      input.position,
-      ctx.chatBranchId,
-    );
-    if (!placementExists) {
+    // v0.12.0 — resolve (page, block, position) → content_instance_id
+    // via page_modules.content_instance_id (the new binding column).
+    // For unsynced placements, route to content_instances.set_values.
+    // For synced placements, refuse + point the AI at
+    // set_content_instance_values OR fork_placement_content so the
+    // operator's "edit this hero on /home" intent doesn't silently
+    // propagate to every other page that binds to the same instance.
+    const placementRows = (await tx.execute(sql`
+      SELECT pm.content_instance_id::text AS content_instance_id, pm.sync_mode,
+             ci.version
+      FROM page_modules pm
+      JOIN content_instances ci ON ci.id = pm.content_instance_id
+      WHERE pm.page_id = ${input.pageId}::uuid
+        AND pm.block_name = ${input.blockName}
+        AND pm.position = ${input.position}
+      LIMIT 1
+    `)) as unknown as {
+      content_instance_id: string;
+      sync_mode: "synced" | "unsynced";
+      version: number | string;
+    }[];
+    let placement = placementRows[0];
+    // v0.12.0 — branch-aware placement-exists fallback. The chat
+    // branched-create flow writes the placement only to
+    // page_layout_snapshots and skips live page_modules (see
+    // pages.set_modules). When the AI follows up with
+    // set_page_module_content on the SAME chat branch, the live join
+    // above misses the placement. Consult the latest branched layout
+    // snapshot for the placement's content_instance_id + sync_mode
+    // when ctx.chatBranchId is set. Mirrors the v0.6.1 fix shape on
+    // the pre-v0.12 branchAwarePlacementExists helper.
+    if (!placement && ctx.chatBranchId) {
+      const snap = (await tx.execute(sql`
+        SELECT pls.state
+        FROM page_layout_snapshots pls
+        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+        WHERE pls.page_id = ${input.pageId}::uuid
+          AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+        ORDER BY ss.created_at DESC
+        LIMIT 1
+      `)) as unknown as { state: unknown }[];
+      const raw = snap[0]?.state;
+      if (raw) {
+        const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
+          blocks?: {
+            blockName: string;
+            placements?: { contentInstanceId: string; syncMode: "synced" | "unsynced" }[];
+          }[];
+        };
+        const block = parsed.blocks?.find((b) => b.blockName === input.blockName);
+        const p = block?.placements?.[input.position];
+        if (p) {
+          // Branched-placement found. Look up its version to satisfy the
+          // type shape — branched content_instances exist in the DB
+          // tagged with chat_branch_id, so this join works.
+          const branchedCiRows = (await tx.execute(sql`
+            SELECT version FROM content_instances WHERE id = ${p.contentInstanceId}::uuid LIMIT 1
+          `)) as unknown as { version: number | string }[];
+          placement = {
+            content_instance_id: p.contentInstanceId,
+            sync_mode: p.syncMode,
+            version: branchedCiRows[0]?.version ?? 0,
+          };
+        }
+      }
+    }
+    if (!placement) {
       return err({
         kind: "HandlerError",
         operation: "page_module_content.set",
-        message: `no placement at (${input.blockName}, ${input.position}) on this page`,
+        message: `no placement at (${input.blockName}, ${input.position}) on page ${input.pageId}`,
         nextAction: {
           tool: "inspect_page_render",
           args: { pageId: input.pageId },
@@ -218,56 +200,51 @@ export const setPageModuleContentOp = defineOperation({
       });
     }
 
-    const valuesJson = JSON.stringify(input.contentValues);
-    const branchId = ctx.chatBranchId ?? null;
-
-    // v0.4.0 — branch isolation. When a chat branch is active, do NOT
-    // touch the live page_module_content row; only record a branch
-    // snapshot. The preview-time overlay reads the branch snapshot for
-    // the active chat, so other chats + the published site keep seeing
-    // the prior live state. chat.publish later promotes the branch
-    // snapshot to live in one atomic merge.
-    //
-    // When there's no branch (human or system write outside any chat),
-    // the write lands on live directly + emits a no-branch snapshot for
-    // global revert history.
-    let id: string;
-    if (branchId !== null) {
-      // Ensure there's a live row so the snapshot has an id to reference.
-      // INSERT...DO NOTHING leaves any prior live values intact.
-      const existing = (await tx.execute(sql`
-        INSERT INTO page_module_content
-          (page_id, block_name, position, content_values, version)
-        VALUES (${input.pageId}::uuid, ${input.blockName}, ${input.position}, '{}'::jsonb, 1)
-        ON CONFLICT (page_id, block_name, position) DO UPDATE SET updated_at = page_module_content.updated_at
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-      id = existing[0]?.id ?? "";
-    } else {
-      const rows = (await tx.execute(sql`
-        INSERT INTO page_module_content
-          (page_id, block_name, position, content_values, version, updated_at)
-        VALUES (
-          ${input.pageId}::uuid,
-          ${input.blockName},
-          ${input.position},
-          ${valuesJson}::jsonb,
-          1,
-          now()
-        )
-        ON CONFLICT (page_id, block_name, position) DO UPDATE
-          SET content_values = EXCLUDED.content_values,
-              version = page_module_content.version + 1,
-              updated_at = now()
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-      id = rows[0]?.id ?? "";
-    }
-    if (!id) {
+    if (placement.sync_mode === "synced") {
       return err({
         kind: "HandlerError",
         operation: "page_module_content.set",
-        message: "no id returned",
+        message:
+          `placement at (${input.blockName}, ${input.position}) on page ${input.pageId} is SYNCED to content_instance ${placement.content_instance_id}. ` +
+          `Editing via set_page_module_content would propagate to every page bound to the same instance, ` +
+          `which is rarely the intent of "set the content on this page". ` +
+          `Either (a) call set_content_instance_values({ id: "${placement.content_instance_id}", values: ... }) to commit to the blast radius, or ` +
+          `(b) call fork_placement_content first to detach this placement into a private instance, then retry.`,
+        nextAction: {
+          tool: "fork_placement_content",
+          args: {
+            pageId: input.pageId,
+            blockName: input.blockName,
+            position: input.position,
+          },
+          reason:
+            "detach this placement so the edit stays local to this page; rerun set_page_module_content after the fork",
+        },
+      });
+    }
+
+    // Unsynced — write through to content_instances.set_values. The
+    // op handles the lock + branch isolation + snapshot.
+    const setValuesResult = await setContentInstanceValuesOp.handler(
+      ctx,
+      {
+        id: placement.content_instance_id,
+        values: input.contentValues,
+      },
+      tx,
+    );
+    if (!setValuesResult.ok) {
+      // Forward the error with the shim's operation tag so audit + the
+      // AI's error-handling expectations stay consistent.
+      const inner = setValuesResult.error as {
+        message?: string;
+        nextAction?: { tool: string; args?: Record<string, unknown>; reason: string };
+      };
+      return err({
+        kind: "HandlerError" as const,
+        operation: "page_module_content.set",
+        message: inner.message ?? "set_content_instance_values failed",
+        nextAction: inner.nextAction,
       });
     }
 
@@ -277,35 +254,10 @@ export const setPageModuleContentOp = defineOperation({
       operation: "page_module_content.set",
       input,
       succeeded: true,
-      entityId: id,
-      resultSummary: `fields=${Object.keys(input.contentValues).length}${branchId ? " (branch)" : ""}`,
+      entityId: placement.content_instance_id,
+      resultSummary: `routed=content_instances.set_values fields=${Object.keys(input.contentValues).length}`,
     });
 
-    // Always snapshot. For branched writes, the snapshot carries the
-    // desired contentValues (live row may differ). For non-branch writes,
-    // the snapshot mirrors live (just-written).
-    const state =
-      branchId !== null
-        ? {
-            schemaVersion: 1 as const,
-            pageId: input.pageId,
-            blockName: input.blockName,
-            position: input.position,
-            contentValues: input.contentValues,
-            version: 1,
-          }
-        : await loadPageModuleContentState(tx, id);
-    if (state) {
-      await emitSnapshot(tx, {
-        actorId: ctx.actorId,
-        opKind: "page_module_content.set",
-        description: `page_module_content.set page=${input.pageId} block=${input.blockName} pos=${input.position}`,
-        chatTaskId: ctx.chatTaskId ?? null,
-        chatBranchId: branchId,
-        entities: [{ kind: "pageModuleContent", entityId: id, state }],
-      });
-    }
-
-    return ok({ pageModuleContentId: id });
+    return ok({ pageModuleContentId: placement.content_instance_id });
   },
 });

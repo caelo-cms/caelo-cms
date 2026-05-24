@@ -3,7 +3,7 @@
 /**
  * Real-AI end-to-end suite (issue #47).
  *
- * Drives the editor chat against the live Anthropic API (Sonnet 4.6,
+ * Drives the editor chat against the live Anthropic API (Opus 4.7,
  * temperature=0) to catch the regression classes the mock-AI suite at
  * `e2e/` cannot — empty AI turns, orphan locks after Stage, missing
  * tool primers — and verifies the published result with one closing
@@ -26,13 +26,22 @@
 import { defineConfig } from "@playwright/test";
 
 /**
- * Pinned Sonnet 4.6 model id for the livedit suite. Matches the
- * codebase's undated convention (DEFAULT_MODEL.anthropic =
- * "claude-opus-4-7" in provider-resolver.ts). If Anthropic ships a new
- * Sonnet point release that materially changes tool-call planning, bump
- * here and rerun the 10× determinism check from docs/internal/e2e-livedit.md.
+ * Pinned Opus 4.7 model id for the livedit suite. PR #61 follow-up:
+ * the suite ran against Sonnet 4.6 for cost reasons, but four of six
+ * scenarios were tripping on AI-variance failures (the AI emitted a
+ * structurally-correct page that didn't satisfy the structural floor —
+ * missing `<h1>` in the homepage, missing `add_page` tool call in
+ * nested-cta). With Opus 4.7 (the codebase's documented default per
+ * `DEFAULT_MODEL.anthropic` in provider-resolver.ts), any remaining
+ * scenario failure is a real bug — prompt regression, missing primer,
+ * tool-schema drift, process bug — NOT model planning variance.
+ *
+ * Switch back to Sonnet 4.6 once the suite has been stable for a few
+ * weeks AND we've validated the cost delta against the green-rate
+ * improvement. Bump here + rerun the 10× determinism check from
+ * `docs/internal/e2e-livedit.md` if you do.
  */
-export const E2E_LIVEDIT_MODEL = "claude-sonnet-4-6";
+export const E2E_LIVEDIT_MODEL = "claude-opus-4-7";
 
 export default defineConfig({
   testDir: "./e2e-livedit",
@@ -43,8 +52,25 @@ export default defineConfig({
   // real Anthropic latency can run 3-4 min on a cold compose stack.
   timeout: 300_000,
   fullyParallel: false,
+  // Single worker. `fullyParallel: false` alone is NOT enough — that
+  // only stops within-file parallelism; Playwright still spawns up to
+  // `workers` (auto = cores/2) processes for cross-file parallelism.
+  // Scenarios all hit the same admin instance + DB, so concurrent runs
+  // race on chat_sessions, pages, modules, content_instances etc.
+  // The unique-constraint and "AI produced nothing" failures we chased
+  // for an hour all dissolve once scenarios run sequentially. Verified
+  // local: `Running 6 tests using 5 workers` line in the log was the
+  // tell.
+  workers: 1,
   forbidOnly: !!process.env.CI,
-  retries: 2,
+  // 1 retry = 2 attempts total. PR #61 follow-up — we ran the suite
+  // at retries=2 (3 attempts) while debugging Sonnet's variance; now
+  // on Opus 4.7 the assertions are tight enough that anything failing
+  // twice in a row is signal, not noise (real bug, prompt regression,
+  // process issue). More retries past 2 papers over real problems
+  // and burns API tokens — see CLAUDE.md §4 (root-cause bugs, no
+  // quick fixes).
+  retries: 1,
   // Playwright per-test artifact dir — kept SIBLING (not parent) of
   // the HTML reporter dir below so Playwright's "HTML reporter output
   // folder clashes with tests output folder" guard doesn't fire.
@@ -54,6 +80,11 @@ export default defineConfig({
   reporter: [
     ["list"],
     ["html", { outputFolder: "test-results/livedit/playwright-report", open: "never" }],
+    // PR #61 follow-up — machine-readable per-scenario timings + statuses
+    // for the post-run stats table the workflow embeds in the PR comment.
+    // Lives next to admin.log under test-results/livedit/ so the artifact
+    // upload picks it up alongside everything else.
+    ["json", { outputFile: "test-results/livedit/playwright-report.json" }],
   ],
   use: {
     baseURL: "http://localhost:4173",

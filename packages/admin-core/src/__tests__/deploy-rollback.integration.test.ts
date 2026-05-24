@@ -87,6 +87,8 @@ describe("deploy.rollback", () => {
       slug: MOD_SLUG,
       displayName: "M",
       html: "<p>VERSION_ONE</p>",
+      // v0.12.2 — opt out of extractor to preserve literal HTML.
+      fields: [{ name: "body", kind: "text", label: "Body" } as never],
     });
     if (!m.ok) throw new Error("seed");
     const modId = (m.value as { moduleId: string }).moduleId;

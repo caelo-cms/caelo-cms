@@ -35,7 +35,12 @@ export type LockedEntityKind =
   // coverage gap.
   | "page"
   | "siteSettings"
-  | "siteDefaults";
+  | "siteDefaults"
+  // v0.12.0 — content_instances.set_values on a synced placement
+  // propagates to every page that references the instance, so the lock
+  // is per-instance (not per-placement) so two chats can't simultaneously
+  // rewrite shared content.
+  | "contentInstance";
 
 export interface LockHolder {
   chatSessionId: string;

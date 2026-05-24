@@ -19,9 +19,11 @@ import { changePageSlugTool } from "./change-page-slug.js";
 import { changeTemplateTool } from "./change-template.js";
 import { composeFromImportTool } from "./compose-from-import.js";
 import { composePageFromSpecTool } from "./compose-page-from-spec.js";
+import { createContentInstanceTool } from "./create-content-instance.js";
 import { createLayoutTool } from "./create-layout.js";
 import { createPageTool } from "./create-page.js";
 import { createTemplateTool } from "./create-template.js";
+import { deleteContentInstanceTool } from "./delete-content-instance.js";
 import { deletePageTool } from "./delete-page.js";
 import { deleteStructuredSetTool } from "./delete-structured-set.js";
 import { ToolRegistry } from "./dispatch.js";
@@ -29,10 +31,13 @@ import { duplicatePageTool } from "./duplicate-page.js";
 import { editModuleTool } from "./edit-module.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
+import { forkPlacementContentTool } from "./fork-placement-content.js";
 import { generateImageTool } from "./generate-image.js";
+import { getContentInstanceTool } from "./get-content-instance.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
+import { listContentInstancesTool } from "./list-content-instances.js";
 import { listLayoutsTool } from "./list-layouts.js";
 import { listPagesTool } from "./list-pages.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
@@ -79,12 +84,14 @@ import { renamePageTool } from "./rename-page.js";
 import { reorderModuleTool } from "./reorder-module.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotPageTool } from "./screenshot-page.js";
+import { setContentInstanceValuesTool } from "./set-content-instance-values.js";
 import { setMediaAltTool } from "./set-media-alt.js";
 import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageSeoTool } from "./set-page-seo.js";
 import { setPageStatusTool } from "./set-page-status.js";
 import { setPageTitleTool } from "./set-page-title.js";
 import { setPagesStatusManyTool } from "./set-pages-status-many.js";
+import { setPlacementContentTool } from "./set-placement-content.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
@@ -104,6 +111,14 @@ export function createDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(editModuleTool);
   registry.register(setPageModuleContentTool);
+  // v0.12.0 — content_instances + placement binding tools.
+  registry.register(listContentInstancesTool);
+  registry.register(getContentInstanceTool);
+  registry.register(createContentInstanceTool);
+  registry.register(setContentInstanceValuesTool);
+  registry.register(deleteContentInstanceTool);
+  registry.register(setPlacementContentTool);
+  registry.register(forkPlacementContentTool);
   // v0.5.12 — explicit read fallbacks for layouts / templates / pages.
   // Mirror the system-prompt `# Layouts on this site` / `# Templates →
   // layouts` / `# All pages` context blocks. Existed only as system-prompt

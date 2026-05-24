@@ -77,6 +77,22 @@ const pageLayoutStateV1 = z
         .object({
           blockName: z.string(),
           moduleIds: z.array(z.string().uuid()),
+          // v0.12.0 — per-placement binding metadata (moduleId,
+          // contentInstanceId, syncMode). Producers always write it
+          // post-v0.12; pre-v0.12 snapshots leave it undefined and the
+          // merge / revert paths fall back to minting fresh unsynced
+          // content_instances per moduleId.
+          placements: z
+            .array(
+              z
+                .object({
+                  moduleId: z.string().uuid(),
+                  contentInstanceId: z.string().uuid(),
+                  syncMode: z.enum(["synced", "unsynced"]),
+                })
+                .strict(),
+            )
+            .optional(),
         })
         .strict(),
     ),

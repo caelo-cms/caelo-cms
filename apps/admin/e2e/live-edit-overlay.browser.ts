@@ -75,9 +75,17 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
           RETURNING id::text AS id\`;
         out.tpl = tpl[0].id;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${out.tpl}::uuid, 'content', 'Content', 0)\`;
+        // v0.12.2 — pre-declare a fields row so modules.update's
+        // conservative extractor SKIPS extraction on the AI's edit
+        // (otherwise the update would rewrite the AI-supplied literal
+        // into a templatised form and the test'd see "{{title}}" in
+        // the rendered h1 since the existing content_instance values
+        // don't include the freshly-extracted field). With a non-empty
+        // fields array on the live row, the update stores the AI's
+        // HTML literal as-is.
         const mod = await tx\`
-          INSERT INTO modules (slug, display_name, html)
-          VALUES (\${process.env.MOD_SLUG}, 'le mod', '<h1>HERO_BEFORE</h1>')
+          INSERT INTO modules (slug, display_name, html, fields)
+          VALUES (\${process.env.MOD_SLUG}, 'le mod', '<h1>HERO_BEFORE</h1>', '[{"name":"hero","kind":"text","label":"Hero","default":"HERO_BEFORE"}]'::jsonb)
           RETURNING id::text AS id\`;
         out.mod = mod[0].id;
         const pg = await tx\`
@@ -85,7 +93,8 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
           VALUES (\${process.env.PAGE_SLUG}, 'en', 'LE Page', \${out.tpl}::uuid, 'published')
           RETURNING id::text AS id\`;
         out.pg = pg[0].id;
-        await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id) VALUES (\${out.pg}::uuid, 'content', 0, \${out.mod}::uuid)\`;
+        const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${out.mod}::uuid, '{}'::jsonb) RETURNING id::text AS id\`;
+        await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id) VALUES (\${out.pg}::uuid, 'content', 0, \${out.mod}::uuid, \${ci[0].id}::uuid)\`;
       });
       await sql.end();
       process.stdout.write(JSON.stringify(out));

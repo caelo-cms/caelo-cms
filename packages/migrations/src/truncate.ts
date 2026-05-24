@@ -67,6 +67,7 @@ if (!url) {
  */
 const ADMIN_TABLES = [
   // Snapshots (referencing content + chats)
+  "content_instance_snapshots",
   "page_module_content_snapshots",
   "module_snapshots",
   "template_snapshots",
@@ -81,8 +82,9 @@ const ADMIN_TABLES = [
   "chat_sessions",
 
   // Content
+  "page_modules", // FK to content_instances — must drop before content_instances
+  "content_instances",
   "page_module_content",
-  "page_modules",
   "pages_seo",
   "pages",
   "template_blocks",

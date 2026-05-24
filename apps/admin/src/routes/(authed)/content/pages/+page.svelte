@@ -153,7 +153,7 @@
               id="slug"
               name="slug"
               type="text"
-              pattern="[a-z0-9](?:[a-z0-9-]{'{0,62}'}[a-z0-9])?"
+              pattern={"[a-z0-9](?:[a-z0-9\\-]{0,62}[a-z0-9])?"}
               required
               aria-invalid={createForm.errors.slug ? "true" : undefined}
               aria-describedby={createForm.errors.slug ? "slug-err" : undefined}

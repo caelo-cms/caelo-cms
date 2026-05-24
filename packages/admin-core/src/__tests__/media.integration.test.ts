@@ -228,10 +228,14 @@ describe("P7 media ops", () => {
     if (!up.ok) throw new Error("up failed");
     const assetId = (up.value as { assetId: string }).assetId;
 
+    // v0.12.2 — non-empty `fields` opts out of the extractor so the
+    // media URL stays literal in the stored HTML where the
+    // applyMediaUsageDelta scanner finds it (legacy authoring shape).
     const create = await execute(registry, adapter, systemCtx, "modules.create", {
       slug: MOD_SLUG_B,
       displayName: "test b",
       html: `<img src="/_caelo/media/${assetId}/orig" alt="x" />`,
+      fields: [{ name: "body", kind: "text", label: "Body" } as never],
     });
     expect(create.ok).toBe(true);
 

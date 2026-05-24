@@ -44,7 +44,7 @@
               name="slug"
               type="text"
               required
-              pattern="[a-z0-9][a-z0-9-]*"
+              pattern={"[a-z0-9][a-z0-9\\-]*"}
               placeholder="header-main" />
           </div>
           <div class="space-y-2">

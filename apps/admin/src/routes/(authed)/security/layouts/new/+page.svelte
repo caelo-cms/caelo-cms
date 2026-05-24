@@ -57,7 +57,7 @@
               name="slug"
               type="text"
               required
-              pattern="[a-z0-9][a-z0-9-]*"
+              pattern={"[a-z0-9][a-z0-9\\-]*"}
               placeholder="campaign-banner"
             />
             <p class="text-xs text-muted-foreground">Lowercase letters, digits, hyphens.</p>

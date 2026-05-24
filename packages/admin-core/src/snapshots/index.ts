@@ -7,6 +7,8 @@ export {
   type SnapshotOpKind,
 } from "./emit.js";
 export {
+  loadContentInstanceState,
+  loadContentInstanceStateWithBranchOverlay,
   loadModuleState,
   loadModuleStateWithBranchOverlay,
   loadPageLayoutState,
@@ -38,6 +40,7 @@ export {
   type SeverityResult,
 } from "./severity.js";
 export type {
+  ContentInstanceState,
   ModuleState,
   PageLayoutState,
   PageModuleContentState,

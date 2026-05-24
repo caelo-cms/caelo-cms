@@ -6,6 +6,28 @@ Every rule has a short *why* so you can make judgment calls instead of following
 
 ---
 
+## 1A. The operator describes outcomes; the AI decides implementation
+
+**This is the load-bearing principle for every surface in Caelo.** Internalize it before reading the rest.
+
+The operator says *"I need a pricing page"*, *"add a footer to the blog"*, *"the homepage hero feels stale"* — never *"create a header module, then a hero module, then a CTA module"*. The AI translates intent into the right modules, layout, copy, and bindings. The operator is non-technical and does not think in modules, placements, content_instances, or sync_mode. They think in pages, sections, and outcomes.
+
+That makes the design test for every AI-facing surface — every tool description, every system-prompt context block, every error message, every list returned to the AI: **can the AI make the right call without round-tripping back to the operator?** If the AI has to ask *"should this be the site header or a product header?"*, an implementation question has leaked through to a human who shouldn't have to hold the answer. The fix is never to teach the operator the question; the fix is always to enrich the surface so the AI doesn't need to ask.
+
+Concretely, this means every domain object the AI might reach for ships with **decision-support context**, not just identity:
+
+- **Modules** carry a `description` (what this module is for + when to use it) AND a `kind` (`chrome | hero | content | cta | utility`) AND a usage signal (placement count, top sample pages, last-edit timestamp). The AI sees enough to pick the right one without asking.
+- **Content instances** carry a `purpose` (why this row exists as a shared instance — operator's intent or AI's inferred reason) plus the same usage signal, so the AI can decide *reuse the synced row* vs *fork to unsynced* vs *mint new* without a tool call.
+- **Pages** carry a `kind` derivable from their template so a module appearing on three product pages reads as "this is a product-page pattern", not three coincidences.
+- **Field names inside modules** are semantic snake_case (`hero_title`, `primary_cta_href`), authored by the AI in the same call that authors the HTML — not minted by server-side heuristics from tag names. The extractor heuristic is a fallback for messy human-authored HTML, not the canonical AI path.
+- **Repeating content is a list field** (`text-list`, `link-list`, or a `module-list` of sub-modules), never numbered scalars (`label`, `label2`, `label3`, …). A menu with 10 items is one field with 10 items.
+
+**Reviewer test for any new AI-facing surface:** an operator who has never heard the word "module" can use it. If a surface only makes sense to a developer, the AI hasn't been given enough context.
+
+This principle is older than v0.12 but v0.12 is where it becomes load-bearing — the content_instances primitive only earns its keep if the AI can reason about *which* instance to reuse, fork, or mint without operator help. See §11 (op + tool design conventions) for the mechanical consequences.
+
+---
+
 ## 1. Project identity
 
 Caelo is an AI-first, open-source CMS, MPL 2.0 licensed. Key architectural anchors (see `CMS_REQUIREMENTS.md` for depth):

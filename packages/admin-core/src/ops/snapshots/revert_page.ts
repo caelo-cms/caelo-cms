@@ -93,15 +93,58 @@ export const revertPageOp = defineOperation({
         }
         throw e;
       }
+      // v0.12.0 — page_modules now carries content_instance_id NOT NULL.
+      // Prefer the snapshot's `placements` array (v0.12+ writers); fall
+      // back to minting fresh unsynced content_instances for pre-v0.12
+      // snapshots whose state only carries `moduleIds`.
       await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${input.pageId}::uuid`);
       for (const block of target.blocks) {
-        let position = 0;
-        for (const moduleId of block.moduleIds) {
-          await tx.execute(sql`
-            INSERT INTO page_modules (page_id, block_name, position, module_id)
-            VALUES (${input.pageId}::uuid, ${block.blockName}, ${position}, ${moduleId}::uuid)
-          `);
-          position += 1;
+        const placements = block.placements ?? [];
+        if (placements.length > 0) {
+          let position = 0;
+          for (const p of placements) {
+            await tx.execute(sql`
+              INSERT INTO page_modules
+                (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+              VALUES (
+                ${input.pageId}::uuid,
+                ${block.blockName},
+                ${position},
+                ${p.moduleId}::uuid,
+                ${p.contentInstanceId}::uuid,
+                ${p.syncMode}
+              )
+            `);
+            position += 1;
+          }
+        } else {
+          let position = 0;
+          for (const moduleId of block.moduleIds) {
+            const minted = (await tx.execute(sql`
+              INSERT INTO content_instances (module_id, "values")
+              VALUES (${moduleId}::uuid, '{}'::jsonb)
+              RETURNING id::text AS id
+            `)) as unknown as { id: string }[];
+            const newCiId = minted[0]?.id;
+            if (!newCiId) {
+              throw new Error(
+                `revert_page: failed to mint content_instance for legacy pageLayout snapshot (page=${input.pageId} block=${block.blockName} pos=${position})`,
+              );
+            }
+            await tx.execute(sql`
+              INSERT INTO page_modules
+                (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+              VALUES (
+                ${input.pageId}::uuid,
+                ${block.blockName},
+                ${position},
+                ${moduleId}::uuid,
+                ${newCiId}::uuid,
+                'unsynced'
+              )
+            `);
+            position += 1;
+          }
         }
       }
       // Bump version when only the layout came back.

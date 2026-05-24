@@ -17,6 +17,7 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import type {
+  ContentInstanceState,
   ModuleState,
   PageLayoutState,
   PageModuleContentState,
@@ -53,7 +54,13 @@ export type SnapshotOpKind =
   | "structured_sets.set"
   | "redirects.create"
   | "redirects.update"
-  | "redirects.delete";
+  | "redirects.delete"
+  // v0.12.0 — content_instances + placement binding op kinds.
+  | "content_instances.create"
+  | "content_instances.set_values"
+  | "content_instances.delete"
+  | "placement.set_content"
+  | "placement.fork_content";
 
 export type SnapshotEntity =
   | { readonly kind: "module"; readonly entityId: string; readonly state: ModuleState }
@@ -69,6 +76,11 @@ export type SnapshotEntity =
       readonly kind: "structuredSet";
       readonly entityId: string;
       readonly state: StructuredSetState;
+    }
+  | {
+      readonly kind: "contentInstance";
+      readonly entityId: string;
+      readonly state: ContentInstanceState;
     };
 
 export interface SnapshotInput {
@@ -152,6 +164,17 @@ export async function emitSnapshot(
         await tx.execute(sql`
           INSERT INTO structured_set_snapshots
             (site_snapshot_id, structured_set_id, state)
+          VALUES (
+            ${siteSnapshotId}::uuid,
+            ${entity.entityId}::uuid,
+            ${stateJson}::jsonb
+          )
+        `);
+        break;
+      case "contentInstance":
+        await tx.execute(sql`
+          INSERT INTO content_instance_snapshots
+            (site_snapshot_id, content_instance_id, state)
           VALUES (
             ${siteSnapshotId}::uuid,
             ${entity.entityId}::uuid,

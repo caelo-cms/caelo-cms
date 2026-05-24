@@ -40,6 +40,15 @@ import {
 } from "./ops/chat/stage.js";
 import { summarizeChatOp } from "./ops/chat/summarize.js";
 import {
+  createContentInstanceOp,
+  deleteContentInstanceOp,
+  forkPlacementContentOp,
+  getContentInstanceOp,
+  listContentInstancesOp,
+  setContentInstanceValuesOp,
+  setPlacementContentOp,
+} from "./ops/content/content-instances.js";
+import {
   executeLayoutProposalOp,
   listPendingLayoutProposalsOp,
   proposeLayoutCreateOp,
@@ -64,6 +73,7 @@ import {
   deleteModulesManyOp,
   getModuleOp,
   listModulesOp,
+  listModulesUsageOp,
   updateModuleOp,
   updateModulesManyOp,
 } from "./ops/content/modules.js";
@@ -448,6 +458,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPendingRoleProposalsOp);
   // P3 content layer
   registry.register(listModulesOp);
+  registry.register(listModulesUsageOp);
   registry.register(getModuleOp);
   registry.register(createModuleOp);
   registry.register(updateModuleOp);
@@ -480,6 +491,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setPageModulesOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
+  // v0.12.0 — content_instances + placement binding ops.
+  registry.register(listContentInstancesOp);
+  registry.register(getContentInstanceOp);
+  registry.register(createContentInstanceOp);
+  registry.register(setContentInstanceValuesOp);
+  registry.register(deleteContentInstanceOp);
+  registry.register(setPlacementContentOp);
+  registry.register(forkPlacementContentOp);
   registry.register(duplicatePageOp);
   registry.register(changeTemplateOp);
   registry.register(deletePageOp);

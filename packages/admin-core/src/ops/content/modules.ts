@@ -27,6 +27,7 @@ import {
   loadModuleStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
+import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
 
 /**
  * Diff media references between two HTML strings and apply usage-count
@@ -58,6 +59,10 @@ const moduleRowSchema = z.object({
   id: z.string(),
   slug: z.string(),
   displayName: z.string(),
+  /** v0.12.0 — operator/AI rationale; what this module is for. */
+  description: z.string(),
+  /** v0.12.0 — coarse role tag for the AI's `## Modules` catalog. */
+  kind: z.enum(["chrome", "hero", "content", "cta", "utility"]),
   html: z.string(),
   css: z.string(),
   js: z.string(),
@@ -72,6 +77,8 @@ function rowToModule(r: {
   id: string;
   slug: string;
   display_name: string;
+  description?: string | null;
+  kind?: string | null;
   html: string;
   css: string;
   js: string;
@@ -85,10 +92,17 @@ function rowToModule(r: {
   // defensively for the (unlikely) string case.
   const rawFields = typeof r.fields === "string" ? JSON.parse(r.fields) : r.fields;
   const fields = Array.isArray(rawFields) ? (rawFields as ModuleField[]) : [];
+  // v0.12.0 — description / kind default for legacy rows that pre-date
+  // migration 0095. The migration backfills both columns NOT NULL so
+  // this only matters for in-flight branched rows whose snapshot was
+  // taken before the column existed.
+  const kindRaw = (r.kind ?? "content") as "chrome" | "hero" | "content" | "cta" | "utility";
   return {
     id: r.id,
     slug: r.slug,
     displayName: r.display_name,
+    description: r.description ?? "",
+    kind: kindRaw,
     html: r.html,
     css: r.css,
     js: r.js,
@@ -98,6 +112,83 @@ function rowToModule(r: {
     deletedAt: r.deleted_at === null ? null : iso(r.deleted_at),
   };
 }
+
+/**
+ * v0.12.0 — module usage signal for the AI's `## Modules`
+ * decision-support block. Per CLAUDE.md §1A every domain object the
+ * AI might reach for ships with usage context, not just identity —
+ * so the AI sees "this header is on every product page" rather than
+ * three coincidences.
+ *
+ * Returns one row per module that has at least one placement:
+ *   - placementCount: total live placements on undeleted pages
+ *   - sampleSlugs: top-3 page slugs (alphabetic for determinism)
+ *
+ * Modules with zero placements are omitted; the formatter renders
+ * them as "unplaced". Branch isolation matches modules.list — main
+ * + the caller's own branched pages.
+ */
+export const listModulesUsageOp = defineOperation({
+  name: "modules.list_usage",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({}),
+  output: z.object({
+    usage: z.array(
+      z.object({
+        moduleId: z.string(),
+        placementCount: z.number().int().nonnegative(),
+        sampleSlugs: z.array(z.string()),
+      }),
+    ),
+  }),
+  handler: async (ctx, _input, tx) => {
+    // Branch filter on pages — chats see their own branched pages'
+    // placements alongside main; system actors see main only.
+    const branchFilter = ctx.chatBranchId
+      ? sql` AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+      : sql` AND p.chat_branch_id IS NULL`;
+    const rows = (await tx.execute(sql`
+      SELECT
+        pm.module_id::text AS module_id,
+        COUNT(*)::int AS placement_count,
+        (
+          SELECT array_agg(DISTINCT p2.slug ORDER BY p2.slug ASC)
+          FROM (
+            SELECT DISTINCT p3.slug
+            FROM page_modules pm3
+            JOIN pages p3 ON p3.id = pm3.page_id AND p3.deleted_at IS NULL
+            WHERE pm3.module_id = pm.module_id
+            ${
+              ctx.chatBranchId
+                ? sql`AND (p3.chat_branch_id IS NULL OR p3.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+                : sql`AND p3.chat_branch_id IS NULL`
+            }
+            ORDER BY p3.slug ASC
+            LIMIT 3
+          ) p2
+        ) AS sample_slugs
+      FROM page_modules pm
+      JOIN pages p ON p.id = pm.page_id AND p.deleted_at IS NULL
+      WHERE 1=1 ${branchFilter}
+      GROUP BY pm.module_id
+    `)) as unknown as {
+      module_id: string;
+      placement_count: number | string;
+      sample_slugs: string[] | null;
+    }[];
+    return ok({
+      usage: rows.map((r) => ({
+        moduleId: r.module_id,
+        placementCount:
+          typeof r.placement_count === "string"
+            ? Number.parseInt(r.placement_count, 10)
+            : r.placement_count,
+        sampleSlugs: Array.isArray(r.sample_slugs) ? r.sample_slugs : [],
+      })),
+    });
+  },
+});
 
 export const listModulesOp = defineOperation({
   name: "modules.list",
@@ -115,12 +206,12 @@ export const listModulesOp = defineOperation({
     const rows = (await tx.execute(
       input.includeDeleted
         ? sql`
-            SELECT id::text AS id, slug, display_name, html, css, js, fields,
+            SELECT id::text AS id, slug, display_name, description, kind, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules WHERE 1=1 ${branchFilter} ORDER BY created_at ASC
           `
         : sql`
-            SELECT id::text AS id, slug, display_name, html, css, js, fields,
+            SELECT id::text AS id, slug, display_name, description, kind, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
           `,
@@ -161,8 +252,64 @@ export const createModuleOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: moduleCreateSchema,
-  output: z.object({ moduleId: z.string() }),
+  output: z.object({
+    moduleId: z.string(),
+    /**
+     * v0.12.2 — fields the extractor inferred from the input HTML. When
+     * the AI passed un-templatised HTML (`<h1>Welcome</h1>`), the
+     * extractor inserts placeholders + mints field names; the result
+     * here lets the AI see what it got so a follow-up rename is one
+     * call, not a guess.
+     */
+    extractedFields: z.array(moduleFieldSchema).optional(),
+  }),
   handler: async (ctx, input, tx) => {
+    // v0.12.2 — auto-templatise hardcoded content ONLY when the caller
+    // didn't supply explicit fields. Callers that pass `fields` are
+    // declaring intent: their HTML may already be pre-templatised
+    // (existing {{name}} references aligned with the field list), OR
+    // they're authoring fixture HTML where literal content is part of
+    // the test (rewriter / media-usage tests need the raw <img src=…>).
+    // The extractor runs as a runtime invariant only in the AI-author
+    // path where fields are absent — that's where the operator's
+    // ergonomic ask actually applies.
+    const shouldExtract = !input.fields || input.fields.length === 0;
+    const extracted = shouldExtract ? extractModuleStructure(input.html, input.fields) : null;
+    const candidateHtml = extracted?.templatizedHtml ?? input.html;
+    const candidateFields = (
+      input.fields && input.fields.length > 0
+        ? input.fields
+        : extracted
+          ? ([...extracted.fields] as ModuleField[])
+          : []
+    ) as ModuleField[];
+    // Validator only fires on the extractor's output — its job is to
+    // catch typo'd / orphan placeholders the extractor itself can't
+    // produce. When the caller passes explicit fields with their own
+    // HTML, trust them: declared-but-not-yet-referenced fields are a
+    // legitimate intermediate state (the AI may add the placeholder in
+    // a follow-up update; tests use literal HTML for assertion).
+    if (extracted) {
+      const validation = validateTemplatizedModule(candidateHtml, candidateFields);
+      if (!validation.ok) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "modules.create",
+          input,
+          succeeded: false,
+          resultSummary: `validation-failed: ${validation.message}`,
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "modules.create",
+          message: validation.message,
+        });
+      }
+    }
+    const persistedHtml = candidateHtml;
+    const extractedMutable = extracted ? ([...extracted.fields] as ModuleField[]) : [];
+    const persistedFields = candidateFields;
     // v0.9.0 — branch-scoped uniqueness. Same-branch slug clash
     // surfaces as the unique-index violation at INSERT below; check
     // here narrows it to a clean error. We only check the caller's
@@ -195,15 +342,22 @@ export const createModuleOp = defineOperation({
     // v0.9.0 — branched-create. When ctx.chatBranchId is set, the row
     // is invisible to other chats until chat.merge_to_main clears the
     // tag. Same-chat reads see it via branchVisibilityFilter.
+    // v0.12.0 — description + kind persisted alongside core columns.
+    // Schema defaults ("" + "content") let the 82+ legacy callers keep
+    // working; AI tool descriptions push the AI to pass them
+    // explicitly so the `## Modules` block can render decision-support
+    // context (CLAUDE.md §1A).
     const rows = (await tx.execute(sql`
-      INSERT INTO modules (slug, display_name, html, css, js, fields, chat_branch_id)
+      INSERT INTO modules (slug, display_name, description, kind, html, css, js, fields, chat_branch_id)
       VALUES (
         ${input.slug},
         ${input.displayName},
-        ${input.html},
+        ${input.description},
+        ${input.kind},
+        ${persistedHtml},
         ${input.css},
         ${input.js},
-        ${JSON.stringify(input.fields)}::jsonb,
+        ${JSON.stringify(persistedFields)}::jsonb,
         ${ctx.chatBranchId ?? null}::uuid
       )
       RETURNING id::text AS id
@@ -218,7 +372,7 @@ export const createModuleOp = defineOperation({
     }
     // P7 usage-tracker: a fresh module's HTML may already reference
     // existing media (AI tool, paste-from-template, etc.).
-    await applyMediaUsageDelta(tx, "", input.html);
+    await applyMediaUsageDelta(tx, "", persistedHtml);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -226,7 +380,7 @@ export const createModuleOp = defineOperation({
       input,
       succeeded: true,
       entityId: moduleId,
-      resultSummary: `slug=${input.slug}`,
+      resultSummary: `slug=${input.slug} extractedFields=${extracted?.fields.length ?? 0}`,
     });
     const state = await loadModuleState(tx, moduleId);
     if (state) {
@@ -239,7 +393,13 @@ export const createModuleOp = defineOperation({
         entities: [{ kind: "module", entityId: moduleId, state }],
       });
     }
-    return ok({ moduleId });
+    // v0.12.2 — surface the inferred field shape so the AI's next turn
+    // sees the auto-minted names. Only when the AI didn't supply fields
+    // explicitly (explicit fields = AI knows what it wants; extracted
+    // would be redundant + confusing).
+    const extractedForCaller =
+      input.fields && input.fields.length > 0 ? undefined : extractedMutable;
+    return ok({ moduleId, extractedFields: extractedForCaller });
   },
 });
 
@@ -251,7 +411,14 @@ export const updateModuleOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: moduleUpdateSchema,
-  output: z.object({}),
+  output: z.object({
+    /**
+     * v0.12.2 — same shape as modules.create — when the AI passed
+     * un-templatised HTML, the extractor minted fields and we hand them
+     * back so the AI's next turn can use the inferred names verbatim.
+     */
+    extractedFields: z.array(moduleFieldSchema).optional(),
+  }),
   handler: async (ctx, input, tx) => {
     // v0.5.0 — per-entity lock. When the caller is in a chat,
     // acquire the lock for this module; reject if another chat holds
@@ -268,11 +435,13 @@ export const updateModuleOp = defineOperation({
     // (v0.5.1) the branched-write path where we construct the new state
     // in-memory without touching the live `modules` row.
     const prevRows = (await tx.execute(sql`
-      SELECT slug, display_name, html, css, js, fields, deleted_at
+      SELECT slug, display_name, description, kind, html, css, js, fields, deleted_at
       FROM modules WHERE id = ${input.moduleId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as {
       slug: string;
       display_name: string;
+      description: string;
+      kind: string;
       html: string;
       css: string;
       js: string;
@@ -288,6 +457,48 @@ export const updateModuleOp = defineOperation({
       });
     }
 
+    // v0.12.2 — auto-extract content from new HTML ONLY when the caller
+    // didn't supply explicit fields AND the live module didn't already
+    // declare fields. If either is present, the caller is in control of
+    // the field schema and we persist the HTML verbatim. Mirrors the
+    // modules.create conservative-extraction rule above so the rewriter
+    // / media-usage / chained-edit fixtures don't get their literal
+    // hrefs / srcs templatised out from under them.
+    const rawPrevFields = typeof prev.fields === "string" ? JSON.parse(prev.fields) : prev.fields;
+    const prevFields = Array.isArray(rawPrevFields) ? (rawPrevFields as ModuleField[]) : [];
+    const explicitFieldsPresent = input.fields !== undefined && input.fields.length > 0;
+    const liveFieldsPresent = prevFields.length > 0;
+    const shouldExtract = input.html !== undefined && !explicitFieldsPresent && !liveFieldsPresent;
+    let extractedHtml = input.html;
+    let extractedFields: ModuleField[] | undefined;
+    let extractedSurfacedToCaller: ModuleField[] | undefined;
+    if (input.html !== undefined && shouldExtract) {
+      const extracted = extractModuleStructure(input.html, prevFields);
+      const validation = validateTemplatizedModule(extracted.templatizedHtml, extracted.fields);
+      if (!validation.ok) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "modules.update",
+          input,
+          succeeded: false,
+          resultSummary: `validation-failed: ${validation.message}`,
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "modules.update",
+          message: validation.message,
+        });
+      }
+      extractedHtml = extracted.templatizedHtml;
+      const extractedMutable = [...extracted.fields] as ModuleField[];
+      extractedFields = input.fields ?? extractedMutable;
+      extractedSurfacedToCaller =
+        input.fields && input.fields.length > 0 ? undefined : extractedMutable;
+    }
+    const persistedHtml = extractedHtml;
+    const persistedFields = extractedFields ?? input.fields;
+
     const branchId = ctx.chatBranchId ?? null;
 
     // v0.5.1 — branched writes skip the live UPDATE. Module code stays
@@ -300,19 +511,23 @@ export const updateModuleOp = defineOperation({
       // v0.4.0 — `fields` is jsonb; cast via SQL fragment.
       const sets = buildPatchSet({
         display_name: input.displayName,
-        html: input.html,
+        description: input.description,
+        kind: input.kind,
+        html: persistedHtml,
         css: input.css,
         js: input.js,
         fields:
-          input.fields !== undefined ? sql`${JSON.stringify(input.fields)}::jsonb` : undefined,
+          persistedFields !== undefined
+            ? sql`${JSON.stringify(persistedFields)}::jsonb`
+            : undefined,
       });
       await tx.execute(sql`
         UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid
       `);
       // P7 usage-tracker: only diff when html changed AND we wrote live.
       // For branched writes, usage delta is applied at publish time.
-      if (input.html !== undefined) {
-        await applyMediaUsageDelta(tx, prev.html, input.html);
+      if (persistedHtml !== undefined) {
+        await applyMediaUsageDelta(tx, prev.html, persistedHtml);
       }
     }
 
@@ -355,10 +570,10 @@ export const updateModuleOp = defineOperation({
       state = {
         ...base,
         displayName: input.displayName ?? base.displayName,
-        html: input.html ?? base.html,
+        html: persistedHtml ?? base.html,
         css: input.css ?? base.css,
         js: input.js ?? base.js,
-        fields: input.fields ?? base.fields,
+        fields: persistedFields ?? base.fields,
         deletedAt: null,
       };
     } else {
@@ -375,7 +590,7 @@ export const updateModuleOp = defineOperation({
         entities: [{ kind: "module", entityId: input.moduleId, state }],
       });
     }
-    return ok({});
+    return ok({ extractedFields: extractedSurfacedToCaller });
   },
 });
 

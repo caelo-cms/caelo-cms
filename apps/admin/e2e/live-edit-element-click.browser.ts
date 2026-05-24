@@ -74,7 +74,8 @@ test("clicking an element in the live-preview iframe appends a chip", async ({ p
         VALUES (\${process.env.PAGE_SLUG}, 'en', 'LE Click Page', \${tpl[0].id}::uuid, 'draft')
         RETURNING id::text AS id\`;
       out.pg = pg[0].id;
-      await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id) VALUES (\${out.pg}::uuid, 'content', 0, \${mod[0].id}::uuid)\`;
+      const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${mod[0].id}::uuid, '{}'::jsonb) RETURNING id::text AS id\`;
+      await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id) VALUES (\${out.pg}::uuid, 'content', 0, \${mod[0].id}::uuid, \${ci[0].id}::uuid)\`;
     });
     await sql.end();
     process.stdout.write(JSON.stringify(out));
