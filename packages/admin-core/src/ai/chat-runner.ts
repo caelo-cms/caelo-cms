@@ -1452,6 +1452,12 @@ export async function* runChatTurn(
       loop,
       loopStop,
       toolCalls: accumulatedToolCalls.length,
+      // PR #61 follow-up — surface tool NAMES (not just count) so
+      // admin.log inspection during e2e debugging can answer "which
+      // tools did the AI actually call on this loop?" without having
+      // to grep the chat_messages table after the run. Names only
+      // (no args) keeps the log line bounded.
+      toolNames: accumulatedToolCalls.map((c) => c.name),
       textChars: accumulatedText.join("").length,
       thinkingBlocks: accumulatedThinking.length,
       tokensIn: totalIn,
