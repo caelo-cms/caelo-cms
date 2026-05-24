@@ -29,6 +29,17 @@ coverage/
 
 # Local AI workflow orchestrator — not part of the CMS source tree.
 claude-workflow/
+# Orchestrator's per-run plan file. Was briefly committed under #47
+# (commit 80901c1) but every workflow run rewrites it, so each run
+# produced a 700-line "diff" that polluted PRs and forced manual
+# stashing between runs. Untracked + ignored; the file stays on
+# disk for the active run.
+.workflow-plan.md
+
+# Playwright MCP server scratch directory (page snapshots, console
+# logs, screenshots from `mcp__playwright__*` calls during dev /
+# step 13 browser walks). Local debug state; never source.
+.playwright-mcp/
 
 # Phase 6 static-gen output (per-target dist trees)
 apps/admin/output/
