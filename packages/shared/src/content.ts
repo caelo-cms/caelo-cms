@@ -100,6 +100,26 @@ export const MODULE_FIELD_KINDS = [
   ...MODULE_FIELD_NESTED_KINDS,
 ] as const;
 
+/**
+ * Canonical union of every field kind — used by callers that need to
+ * type a single `kind` field (e.g. the shared template engine's
+ * `TemplateField.kind`, the static-gen field parser). Importing this
+ * instead of `string` catches typos like `'tetx-list'` at compile time.
+ */
+export type ModuleFieldKind = (typeof MODULE_FIELD_KINDS)[number];
+
+/**
+ * Field kinds the shared template engine iterates via the
+ * `{{#name}}…{{/name}}` Mustache-section operator. Adding a new
+ * list-shaped kind to MODULE_FIELD_LIST_KINDS / MODULE_FIELD_NESTED_KINDS
+ * automatically extends this set; the engine's section-dispatch branch
+ * keys off it (`packages/shared/src/template-engine.ts`).
+ */
+export const MODULE_FIELD_SECTION_KINDS = [
+  ...MODULE_FIELD_LIST_KINDS,
+  "module-list",
+] as const;
+
 const moduleFieldName = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/, "name must be snake_case");
 const moduleFieldLabel = z.string().min(1).max(128);
 

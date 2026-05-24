@@ -51,6 +51,7 @@
  */
 
 import Mustache from "mustache";
+import { MODULE_FIELD_SECTION_KINDS } from "./content.js";
 
 // Override Mustache's default HTML escape — module HTML substitutes
 // raw. The engine module is the only workspace importer of mustache,
@@ -103,7 +104,10 @@ const SECTION_RE = /\{\{#\s*([a-z][a-z0-9_]*)\s*\}\}([\s\S]*?)\{\{\/\s*\1\s*\}\}
 const PARTIAL_RE = /\{\{>\s*([a-z][a-z0-9_]*)\s*\}\}/g;
 const PRIMITIVE_RE = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
 
-const LIST_KINDS = new Set(["text-list", "link-list", "module-list"]);
+// Section-dispatch kinds (the engine's `{{#name}}` operand). Imported
+// from content.ts so new list-shaped kinds wire through automatically
+// when the canonical declaration is extended.
+const SECTION_KINDS: ReadonlySet<string> = new Set(MODULE_FIELD_SECTION_KINDS);
 
 function isNestedRef(v: unknown): v is NestedRef {
   return (
@@ -168,7 +172,7 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   for (const f of input.fields) {
     const lower = f.name.toLowerCase();
     if (lower in view) continue;
-    if (LIST_KINDS.has(f.kind) || f.kind === "module") continue;
+    if (SECTION_KINDS.has(f.kind) || f.kind === "module") continue;
     if (f.default !== undefined && f.default !== null) view[lower] = f.default;
   }
 
