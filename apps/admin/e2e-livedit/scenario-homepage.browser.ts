@@ -5,7 +5,7 @@
  * then re-edit just the hero headline.
  *
  * Validates the full chat → Stage → Publish → re-edit loop against
- * the live Anthropic API (Sonnet 4.6, temperature=0). Every mid-flow
+ * the live Anthropic API (Opus 4.7, temperature=0). Every mid-flow
  * assertion is deterministic (DOM via getByRole/locator, DB via
  * bun:SQL, admin-stderr via captured admin.log); the only AI call in
  * the verification path is the closing vision verdict on the published
@@ -219,7 +219,7 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
 
     // ── Step 5: DB structural floor (AC #2) ────────────────────────
     // Structural minimum: the AI must have created a page row and at
-    // least 2 page_modules placements. At temperature=0 Sonnet 4.6
+    // least 2 page_modules placements. At temperature=0 the AI
     // consistently uses a bulk add_page tool that emits 2 placements
     // in a single call regardless of how the prompt is phrased; this
     // is the deterministic floor. Header / footer content quality is
@@ -263,7 +263,7 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     );
     // The previous "MPL 2.0" production HTML substring check was
     // dropped — it depended on the AI emitting a literal copyright
-    // footer module, which Sonnet 4.6 doesn't do deterministically at
+    // footer module, which the AI doesn't do deterministically at
     // temperature=0 (the AI uses a bulk add_page tool that produces 2
     // placements regardless of prompt phrasing). The iframe DOM check
     // above already verifies the <footer> renders substantive content;

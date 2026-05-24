@@ -43,47 +43,66 @@ export const appendChatMessageOp = defineOperation({
     .strict(),
   output: messageRow,
   handler: async (_ctx, input, tx) => {
-    // `INSERT ... SELECT ... WHERE EXISTS` (instead of `VALUES`) so a
-    // chat_messages row is only minted if the chat_sessions row still
-    // exists. Without this, a long-running chat-runner that races
-    // session deletion (user clicks Discard / test harness resets
-    // fixtures / cascade from a user-delete) hits the
-    // `chat_messages_chat_session_id_fkey` FK and Postgres logs a red
-    // `Failed query` line for what is an expected race, not a bug. The
-    // empty result-set path below returns the soft `session_gone` error
-    // the runner downgrades silently.
-    const rows = (await tx.execute(sql`
-      INSERT INTO chat_messages (
-        chat_session_id, role, content, tool_calls, tool_call_id,
-        tokens_in, tokens_out, cached_tokens, status, thinking_blocks
-      )
-      SELECT
-        ${input.chatSessionId}::uuid,
-        ${input.role},
-        ${input.content},
-        ${input.toolCalls ? JSON.stringify(input.toolCalls) : null}::jsonb,
-        ${input.toolCallId ?? null},
-        ${input.tokensIn ?? null}::int,
-        ${input.tokensOut ?? null}::int,
-        ${input.cachedTokens ?? null}::int,
-        ${input.status ?? "complete"},
-        ${input.thinkingBlocks && input.thinkingBlocks.length > 0 ? JSON.stringify(input.thinkingBlocks) : null}::jsonb
-      WHERE EXISTS (
-        SELECT 1 FROM chat_sessions WHERE id = ${input.chatSessionId}::uuid
-      )
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
-    const id = rows[0]?.id;
-    if (!id) {
-      // The session row was gone before we wrote — see comment above.
-      // Sentinel message the chat-runner pattern-matches on to skip
-      // its red console.error + SSE error banner.
-      return err({
-        kind: "HandlerError",
-        operation: "chat.append_message",
-        message: "session_gone: chat_sessions row missing — likely deleted mid-stream",
-      });
+    // Two-layer defense against the chat_sessions-deleted-mid-stream
+    // race (test harness resets fixtures, user clicks Discard, cascade
+    // from user-delete fires while the chat-runner is still persisting
+    // turns):
+    //
+    // 1. `INSERT ... SELECT ... WHERE EXISTS` so the common case
+    //    (session already gone when we look) doesn't fire the FK at
+    //    all — 0 rows projected, 0 rows inserted.
+    // 2. try/catch around the INSERT catches the inverted race window:
+    //    session existed at SELECT time, was deleted before the FK
+    //    constraint validated (Postgres' INSERT...SELECT does a per-
+    //    row check, and another tx can interleave a DELETE between
+    //    projection and FK validation under READ COMMITTED). Without
+    //    this, CI was still logging red `Failed query: INSERT INTO
+    //    chat_messages …` blocks because the race fired on the
+    //    integration-test path.
+    //
+    // Both paths converge on the `session_gone:` soft error the
+    // chat-runner pattern-matches on to skip its red console.error +
+    // SSE error banner.
+    const sessionGone = err({
+      kind: "HandlerError" as const,
+      operation: "chat.append_message",
+      message: "session_gone: chat_sessions row missing — likely deleted mid-stream",
+    });
+    let rows: { id: string }[];
+    try {
+      rows = (await tx.execute(sql`
+        INSERT INTO chat_messages (
+          chat_session_id, role, content, tool_calls, tool_call_id,
+          tokens_in, tokens_out, cached_tokens, status, thinking_blocks
+        )
+        SELECT
+          ${input.chatSessionId}::uuid,
+          ${input.role},
+          ${input.content},
+          ${input.toolCalls ? JSON.stringify(input.toolCalls) : null}::jsonb,
+          ${input.toolCallId ?? null},
+          ${input.tokensIn ?? null}::int,
+          ${input.tokensOut ?? null}::int,
+          ${input.cachedTokens ?? null}::int,
+          ${input.status ?? "complete"},
+          ${input.thinkingBlocks && input.thinkingBlocks.length > 0 ? JSON.stringify(input.thinkingBlocks) : null}::jsonb
+        WHERE EXISTS (
+          SELECT 1 FROM chat_sessions WHERE id = ${input.chatSessionId}::uuid
+        )
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+    } catch (e) {
+      const pgErr = e as { code?: string; constraint?: string };
+      if (
+        pgErr?.code === "23503" /* foreign_key_violation */ &&
+        pgErr?.constraint === "chat_messages_chat_session_id_fkey"
+      ) {
+        return sessionGone;
+      }
+      throw e;
     }
+    const id = rows[0]?.id;
+    if (!id) return sessionGone;
     await tx.execute(sql`
       UPDATE chat_sessions SET last_active_at = now()
       WHERE id = ${input.chatSessionId}::uuid

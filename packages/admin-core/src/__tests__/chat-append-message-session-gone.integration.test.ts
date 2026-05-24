@@ -108,9 +108,7 @@ describe("chat.append_message — session-gone race", () => {
       });
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("unreachable");
-      expect((result.value as { messageId: string }).messageId).toMatch(
-        /^[0-9a-f-]{36}$/i,
-      );
+      expect((result.value as { messageId: string }).messageId).toMatch(/^[0-9a-f-]{36}$/i);
     } finally {
       await deleteSession(sessionId);
     }

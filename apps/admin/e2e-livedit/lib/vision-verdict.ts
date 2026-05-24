@@ -24,7 +24,7 @@ import { z } from "zod";
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
 
-/** Default vision-judge model. Cheaper than Sonnet 4.6 — vision-only
+/** Default vision-judge model. Cheaper than Opus 4.7 — vision-only
  *  rubric check, not chat planning. Override via `model` arg in tests. */
 export const DEFAULT_VISION_MODEL = "claude-haiku-4-5-20251001";
 

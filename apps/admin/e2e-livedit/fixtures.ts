@@ -31,21 +31,24 @@ import {
 } from "./helpers.js";
 
 export const test = base.extend<{
-  _browserConsoleErrorGuard: void;
-  _backendLogErrorGuard: void;
+  _browserConsoleErrorGuard: undefined;
+  _backendLogErrorGuard: undefined;
 }>({
   _browserConsoleErrorGuard: [
     async ({ page }, use) => {
       const tracker = attachBrowserConsoleErrorTracker(page);
-      await use();
+      await use(undefined);
       assertNoBrowserConsoleErrors(tracker);
     },
     { auto: true },
   ],
   _backendLogErrorGuard: [
-    async ({}, use) => {
+    // Playwright fixture signature is `(deps, use)`. This fixture has
+    // no fixture dependencies but still needs the slot — bind it to
+    // `_` so we don't trip biome's noEmptyPattern.
+    async (_, use) => {
       const tracker = snapshotBackendLogOffset();
-      await use();
+      await use(undefined);
       assertNoBackendErrors(tracker);
     },
     { auto: true },

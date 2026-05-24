@@ -1,11 +1,18 @@
 name: E2E Live Edit (real AI)
 
 # Issue #47 — drives the editor chat against the real Anthropic API
-# (Sonnet 4.6, temperature=0) so the regression classes the mock-AI
+# (Opus 4.7, temperature=0) so the regression classes the mock-AI
 # suite cannot catch (empty AI turns, orphan locks, missing primers)
 # are gated on every PR. Real cost is the cost of correctness per the
 # operator direction in the issue; no schedule, no label gating, no
 # cost guard.
+#
+# PR #61 follow-up: switched from Sonnet 4.6 to Opus 4.7. Sonnet was
+# tripping ~4/6 scenarios on AI-variance failures; with Opus, any
+# remaining red is a real bug (prompt, code, process) not model
+# planning variance. Revisit the model choice once the suite has been
+# stable for a few weeks. Model is pinned in
+# `apps/admin/playwright.livedit.config.ts:E2E_LIVEDIT_MODEL`.
 
 on:
   pull_request:
@@ -61,7 +68,7 @@ jobs:
     if: needs.preflight.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     # The full chat → Stage → Publish → re-edit loop runs ~5 min per
-    # scenario at Sonnet 4.6 plus compose spin-up + admin build. The
+    # scenario at Opus 4.7 plus compose spin-up + admin build. The
     # suite now runs 6 scenarios (the v0.12 PR added 5 — extract-
     # fields, nested-modules, content-library-shared-edit, placement-
     # sync-toggle, ai-nested-cta — on top of the pre-existing

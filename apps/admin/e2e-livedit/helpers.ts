@@ -188,7 +188,7 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
  * `streaming`; when the SSE turn finishes (the streaming $state goes
  * false), it flips back to `idle`.
  *
- * 240s default handles a multi-tool homepage build at Sonnet 4.6.
+ * 240s default handles a multi-tool homepage build at Opus 4.7.
  */
 export async function waitForChatTurnIdle(page: Page, timeoutMs = 240_000): Promise<void> {
   // The status element is `hidden`; assert against the attribute, not
@@ -248,10 +248,37 @@ export function attachChatSessionTracker(page: Page): ChatSessionTracker {
  * `bun run check` or in admin.log. The scenario only catches them if
  * someone watches DevTools, which CI doesn't.
  *
- * Allowlist: a few third-party noise sources can be filtered with the
- * `ignore` predicate (the SSE stream emits an `EventSource` reconnect
- * error during page teardown that's harmless). Default ignores nothing.
+ * Default ignore list — extend with caution. Each entry must:
+ *   1. be a string the test author would otherwise have to recognise
+ *      and dismiss in DevTools on every run,
+ *   2. come from third-party code OR be a known artifact of the
+ *      Playwright-vs-Svelte-vs-bun lifecycle (teardown / hot-reload /
+ *      navigation aborts), AND
+ *   3. carry a comment naming the upstream cause + a follow-up issue
+ *      or remediation path so the entry can be removed later.
+ *
+ * Resist the urge to expand this. Every entry hides a class of error
+ * that future regressions can use as a hiding place.
  */
+const DEFAULT_CONSOLE_ERROR_IGNORE: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
+  {
+    // bits-ui `use-arrow-navigation.js`: `candidate.hasAttribute(...)`
+    // crashes when `candidate` is a Comment node, which Svelte 5
+    // emits as a fragment-end marker. Upstream issue: third-party.
+    // Trips on every page with a Combobox / Menu / Select. Tracked
+    // for follow-up — remove this entry once bits-ui ships the fix.
+    pattern: /TypeError: \w+\.hasAttribute is not a function/,
+    reason: "bits-ui arrow-navigation hits a Comment node",
+  },
+  {
+    // Inflight fetch (SSE stream, prefetch, image) aborts on page
+    // navigation / test teardown. Browser surfaces as console.error
+    // before unloading. Not actionable — no bug surface beneath it.
+    pattern: /TypeError: Failed to fetch/,
+    reason: "fetch aborted by page navigation / test teardown",
+  },
+];
+
 export interface BrowserConsoleErrorTracker {
   readonly drain: () => readonly string[];
 }
@@ -261,7 +288,11 @@ export function attachBrowserConsoleErrorTracker(
   options: { ignore?: (message: string) => boolean } = {},
 ): BrowserConsoleErrorTracker {
   const errors: string[] = [];
-  const shouldIgnore = options.ignore ?? (() => false);
+  const customIgnore = options.ignore ?? (() => false);
+  const shouldIgnore = (text: string): boolean => {
+    if (customIgnore(text)) return true;
+    return DEFAULT_CONSOLE_ERROR_IGNORE.some((e) => e.pattern.test(text));
+  };
   page.on("console", (msg) => {
     if (msg.type() !== "error") return;
     const text = msg.text();
