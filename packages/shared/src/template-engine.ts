@@ -51,7 +51,7 @@
  */
 
 import Mustache from "mustache";
-import { MODULE_FIELD_SECTION_KINDS } from "./content.js";
+import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
 
 // Override Mustache's default HTML escape — module HTML substitutes
 // raw. The engine module is the only workspace importer of mustache,
@@ -66,7 +66,7 @@ Mustache.escape = (s: unknown): string => (s === null || s === undefined ? "" : 
  */
 export interface TemplateField {
   readonly name: string;
-  readonly kind: string;
+  readonly kind: ModuleFieldKind;
   readonly default?: unknown;
 }
 

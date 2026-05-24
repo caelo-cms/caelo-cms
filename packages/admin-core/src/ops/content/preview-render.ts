@@ -55,7 +55,7 @@
  * of band so the page's <head>/<style> + footer scripts are stable.
  */
 
-import { renderTemplate } from "@caelo-cms/shared";
+import { type ModuleFieldKind, renderTemplate } from "@caelo-cms/shared";
 
 const MAX_RECURSION_DEPTH = 8;
 
@@ -67,7 +67,7 @@ export interface ModuleResource {
   readonly js: string;
   readonly fields: readonly {
     readonly name: string;
-    readonly kind: string;
+    readonly kind: ModuleFieldKind;
     readonly default?: unknown;
   }[];
 }

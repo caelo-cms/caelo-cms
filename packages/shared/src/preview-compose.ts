@@ -25,6 +25,7 @@
  * the admin; in P11, plugin Web Components inside Shadow DOM).
  */
 
+import type { ModuleFieldKind } from "./content.js";
 import {
   applySlotReplacements,
   extractInnerOfTopLevelContentSlot,
@@ -59,7 +60,7 @@ export interface ComposeModule {
    * preview path additionally walks nested-module refs in
    * preview-render before reaching here.
    */
-  readonly fields?: readonly { name: string; kind?: string; default?: unknown }[];
+  readonly fields?: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[];
   /**
    * PR #61 follow-up — per-placement content values from the bound
    * `content_instances.values` jsonb. When present, the composer
@@ -332,7 +333,7 @@ function renderThemeCss(sets: ComposeStructuredSets | undefined): string | null 
  */
 function applyFieldSubstitution(
   html: string,
-  fields: readonly { name: string; kind?: string; default?: unknown }[] | undefined,
+  fields: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[] | undefined,
   contentValues: Readonly<Record<string, unknown>> | undefined,
 ): string {
   if (!fields && !contentValues) return html;

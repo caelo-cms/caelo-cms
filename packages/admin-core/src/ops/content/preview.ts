@@ -20,6 +20,7 @@ import {
   composePageWithLayout,
   err,
   injectSeoIntoHead,
+  type ModuleFieldKind,
   ok,
   renderSeoHead,
   resolveCanonicalUrl,
@@ -54,7 +55,7 @@ interface ModuleSourceRow {
 // behaviour AND handles {{>field}} / {{#field}}…{{/field}} slots for
 // nested module / module-list field kinds.
 
-function parseFields(raw: unknown): { name: string; kind: string; default?: unknown }[] {
+function parseFields(raw: unknown): { name: string; kind: ModuleFieldKind; default?: unknown }[] {
   const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
   if (!Array.isArray(arr)) return [];
   return arr
@@ -65,8 +66,14 @@ function parseFields(raw: unknown): { name: string; kind: string; default?: unkn
     })
     .map((f) => ({
       name: f.name,
+      // jsonb may carry a typo'd or unknown kind; the cast preserves
+      // today's runtime fail-loud (engine emits kind-mismatch when
+      // dispatch can't find a branch). Compile-time safety lives at
+      // typed authoring tools, not at the raw-jsonb boundary.
       kind:
-        typeof (f as { kind?: unknown }).kind === "string" ? (f as { kind: string }).kind : "text",
+        typeof (f as { kind?: unknown }).kind === "string"
+          ? ((f as { kind: string }).kind as ModuleFieldKind)
+          : ("text" as const),
       default: (f as { default?: unknown }).default,
     }));
 }

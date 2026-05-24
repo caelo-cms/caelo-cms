@@ -25,7 +25,12 @@
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import { ComposeError, composePageWithLayout, resolveLocaleUrl } from "@caelo-cms/shared";
+import {
+  ComposeError,
+  composePageWithLayout,
+  type ModuleFieldKind,
+  resolveLocaleUrl,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
@@ -118,17 +123,25 @@ interface ModuleRow {
  */
 function parseModuleFields(
   raw: string | null,
-): { name: string; kind?: string; default?: unknown }[] | undefined {
+): { name: string; kind?: ModuleFieldKind; default?: unknown }[] | undefined {
   if (!raw) return undefined;
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
-    const out: { name: string; kind?: string; default?: unknown }[] = [];
+    const out: { name: string; kind?: ModuleFieldKind; default?: unknown }[] = [];
     for (const f of parsed) {
       if (!f || typeof f !== "object") continue;
       const o = f as { name?: unknown; kind?: unknown; default?: unknown };
       if (typeof o.name !== "string") continue;
-      const kind = typeof o.kind === "string" ? o.kind : undefined;
+      // The jsonb may carry an unknown / typo'd kind; the cast preserves
+      // today's runtime behaviour (the engine emits kind-mismatch when
+      // dispatch fails to find a matching branch), so propagating the
+      // raw string as the union type is a deliberate lie that keeps
+      // the fail-loud channel intact. Compile-time safety lives at the
+      // callers (compose, preview-render) where `kind` originates from
+      // typed authoring tools rather than raw jsonb.
+      const kind =
+        typeof o.kind === "string" ? (o.kind as ModuleFieldKind) : undefined;
       out.push({ name: o.name, kind, default: o.default });
     }
     return out.length > 0 ? out : undefined;
@@ -384,7 +397,7 @@ export async function generateSite(args: {
         html: string;
         css: string;
         js: string;
-        fields?: { name: string; kind?: string; default?: unknown }[];
+        fields?: { name: string; kind?: ModuleFieldKind; default?: unknown }[];
       }[]
     >
   >();
@@ -952,7 +965,7 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
     html: string;
     css: string;
     js: string;
-    fields?: { name: string; kind?: string; default?: unknown }[];
+    fields?: { name: string; kind?: ModuleFieldKind; default?: unknown }[];
     contentValues?: Record<string, unknown>;
   }[];
 }[] {
@@ -965,7 +978,7 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
       html: string;
       css: string;
       js: string;
-      fields?: { name: string; kind?: string; default?: unknown }[];
+      fields?: { name: string; kind?: ModuleFieldKind; default?: unknown }[];
       contentValues?: Record<string, unknown>;
     }[]
   >();
