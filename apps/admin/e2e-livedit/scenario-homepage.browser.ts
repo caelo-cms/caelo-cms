@@ -96,32 +96,31 @@ function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | nu
             return;
           }
           const pg = pages[0];
+          // PR #61 — content lives in content_instances now (bound to
+          // page_modules via pm.content_instance_id), not in the legacy
+          // page_module_content table. Read ci.updated_at so the
+          // re-edit assertion detects edits the AI persists via
+          // set_content_instance_values.
           const placements = await tx\`
             SELECT
               pm.block_name      AS "blockName",
               pm.position        AS position,
               m.slug             AS "moduleSlug",
-              pmc.updated_at::text AS "contentUpdatedAt"
+              ci.updated_at::text AS "contentUpdatedAt"
             FROM page_modules pm
-            JOIN modules m ON m.id = pm.module_id
-            LEFT JOIN page_module_content pmc
-              ON pmc.page_id = pm.page_id
-             AND pmc.block_name = pm.block_name
-             AND pmc.position = pm.position
+            JOIN modules m            ON m.id  = pm.module_id
+            JOIN content_instances ci ON ci.id = pm.content_instance_id
             WHERE pm.page_id = \${pg.pageId}::uuid
             ORDER BY pm.block_name, pm.position
           \`;
           // Aggregate any footer-ish content into a single text blob for
-          // substring assertions.
+          // substring assertions. Same content_instances source as above.
           const footerRows = await tx\`
-            SELECT pmc.content_values::text AS values
-            FROM page_module_content pmc
-            JOIN page_modules pm
-              ON pm.page_id = pmc.page_id
-             AND pm.block_name = pmc.block_name
-             AND pm.position = pmc.position
-            JOIN modules m ON m.id = pm.module_id
-            WHERE pmc.page_id = \${pg.pageId}::uuid
+            SELECT ci.values::text AS values
+            FROM page_modules pm
+            JOIN modules m            ON m.id  = pm.module_id
+            JOIN content_instances ci ON ci.id = pm.content_instance_id
+            WHERE pm.page_id = \${pg.pageId}::uuid
               AND (m.slug ILIKE '%footer%' OR pm.block_name ILIKE '%footer%')
           \`;
           out.pageId = pg.pageId;
