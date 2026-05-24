@@ -147,13 +147,16 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
 
   // Sentinels survive Mustache.render untouched (they contain no
   // `{{` `}}`), then get restored to the original Mustache source
-  // after render — the loud-raw invariant. The token is intentionally
-  // long + uppercase so accidental collision with a module's literal
-  // HTML content is negligible (and a collision would just produce
-  // weird output, which is pre-1.0 fail-loud behaviour anyway).
+  // after render — the loud-raw invariant. The prefix carries a
+  // per-call UUID so the sentinel string is unguessable from the
+  // outside: a module author who pastes the literal `__CAELO_TPL_…__`
+  // pattern into their HTML can't break loud-raw restore by
+  // intercepting the sentinel for a known-key sentinel — they would
+  // have to guess the UUID minted at render time.
   const sentinels = new Map<string, string>();
+  const sentinelPrefix = `__CAELO_TPL_${globalThis.crypto.randomUUID()}_`;
   const mkSentinel = (original: string): string => {
-    const key = `__CAELO_TEMPLATE_ENGINE_RAW_${sentinels.size}__`;
+    const key = `${sentinelPrefix}${sentinels.size}__`;
     sentinels.set(key, original);
     return key;
   };
