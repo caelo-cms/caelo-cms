@@ -140,8 +140,7 @@ function parseModuleFields(
       // the fail-loud channel intact. Compile-time safety lives at the
       // callers (compose, preview-render) where `kind` originates from
       // typed authoring tools rather than raw jsonb.
-      const kind =
-        typeof o.kind === "string" ? (o.kind as ModuleFieldKind) : undefined;
+      const kind = typeof o.kind === "string" ? (o.kind as ModuleFieldKind) : undefined;
       out.push({ name: o.name, kind, default: o.default });
     }
     return out.length > 0 ? out : undefined;

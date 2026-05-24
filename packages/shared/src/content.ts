@@ -115,10 +115,7 @@ export type ModuleFieldKind = (typeof MODULE_FIELD_KINDS)[number];
  * automatically extends this set; the engine's section-dispatch branch
  * keys off it (`packages/shared/src/template-engine.ts`).
  */
-export const MODULE_FIELD_SECTION_KINDS = [
-  ...MODULE_FIELD_LIST_KINDS,
-  "module-list",
-] as const;
+export const MODULE_FIELD_SECTION_KINDS = [...MODULE_FIELD_LIST_KINDS, "module-list"] as const;
 
 const moduleFieldName = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/, "name must be snake_case");
 const moduleFieldLabel = z.string().min(1).max(128);

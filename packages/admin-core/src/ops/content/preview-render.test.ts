@@ -554,8 +554,7 @@ describe("renderModuleWithContent — engine-routing parity (#71)", () => {
   });
 
   it("kind-mismatch on {{#name}} against a primitive field emits the exact legacy string", () => {
-    const expected =
-      "kind-mismatch:title expected=module-list|text-list|link-list actual=text";
+    const expected = "kind-mismatch:title expected=module-list|text-list|link-list actual=text";
     const resolver = buildResolver(
       [
         {

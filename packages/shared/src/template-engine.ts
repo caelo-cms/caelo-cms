@@ -103,8 +103,7 @@ interface NestedRef {
 // between `{{` and the sigil (#, >, /) is permitted to match the
 // Mustache spec — an extractor that pretty-prints AI-authored HTML
 // shouldn't silently break section / partial dispatch.
-const SECTION_RE =
-  /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}([\s\S]*?)\{\{\s*\/\s*\1\s*\}\}/g;
+const SECTION_RE = /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}([\s\S]*?)\{\{\s*\/\s*\1\s*\}\}/g;
 const PARTIAL_RE = /\{\{\s*>\s*([a-z][a-z0-9_]*)\s*\}\}/g;
 const PRIMITIVE_RE = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
 
@@ -318,9 +317,7 @@ function renderLinkList(
     }
     const { label, href } = el as { label: string; href: string };
     parts.push(
-      inner
-        .replace(/\{\{\s*label\s*\}\}/g, () => label)
-        .replace(/\{\{\s*href\s*\}\}/g, () => href),
+      inner.replace(/\{\{\s*label\s*\}\}/g, () => label).replace(/\{\{\s*href\s*\}\}/g, () => href),
     );
   }
   return parts.join("");

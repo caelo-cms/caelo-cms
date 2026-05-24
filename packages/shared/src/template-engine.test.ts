@@ -331,8 +331,7 @@ describe("renderTemplate — failure-marker parity", () => {
       fields: [{ name: "title", kind: "text" }],
       contentValues: {},
     });
-    const expected =
-      "kind-mismatch:title expected=module-list|text-list|link-list actual=text";
+    const expected = "kind-mismatch:title expected=module-list|text-list|link-list actual=text";
     expect(r.html).toBe(`<p><!-- caelo:missing reason=${expected} --></p>`);
     expect(r.missingSlots).toContain(expected);
   });
