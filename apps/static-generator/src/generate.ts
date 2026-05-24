@@ -108,24 +108,28 @@ interface ModuleRow {
 
 /**
  * Parse the jsonb `modules.fields` column as it comes back from
- * `m.fields::text`. The shape is `[{ name, kind, label, default? }]`
- * but the substitution path only cares about `name` + `default`.
- * Returns undefined when the column is null / empty / malformed —
- * caller treats that as "no field-default substitution to do" rather
- * than throwing, so a legacy module with a NULL fields column still
- * ships.
+ * `m.fields::text`. The shape is `[{ name, kind, label, default? }]`.
+ * The substitution path needs `name`, `kind` (#71 — for text-list /
+ * link-list / module-list dispatch via the shared template engine),
+ * and `default`. Returns undefined when the column is null / empty
+ * / malformed — caller treats that as "no field-default substitution
+ * to do" rather than throwing, so a legacy module with a NULL fields
+ * column still ships.
  */
-function parseModuleFields(raw: string | null): { name: string; default?: unknown }[] | undefined {
+function parseModuleFields(
+  raw: string | null,
+): { name: string; kind?: string; default?: unknown }[] | undefined {
   if (!raw) return undefined;
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
-    const out: { name: string; default?: unknown }[] = [];
+    const out: { name: string; kind?: string; default?: unknown }[] = [];
     for (const f of parsed) {
       if (!f || typeof f !== "object") continue;
-      const o = f as { name?: unknown; default?: unknown };
+      const o = f as { name?: unknown; kind?: unknown; default?: unknown };
       if (typeof o.name !== "string") continue;
-      out.push({ name: o.name, default: o.default });
+      const kind = typeof o.kind === "string" ? o.kind : undefined;
+      out.push({ name: o.name, kind, default: o.default });
     }
     return out.length > 0 ? out : undefined;
   } catch {
@@ -380,7 +384,7 @@ export async function generateSite(args: {
         html: string;
         css: string;
         js: string;
-        fields?: { name: string; default?: unknown }[];
+        fields?: { name: string; kind?: string; default?: unknown }[];
       }[]
     >
   >();
@@ -948,7 +952,7 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
     html: string;
     css: string;
     js: string;
-    fields?: { name: string; default?: unknown }[];
+    fields?: { name: string; kind?: string; default?: unknown }[];
     contentValues?: Record<string, unknown>;
   }[];
 }[] {
@@ -961,7 +965,7 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
       html: string;
       css: string;
       js: string;
-      fields?: { name: string; default?: unknown }[];
+      fields?: { name: string; kind?: string; default?: unknown }[];
       contentValues?: Record<string, unknown>;
     }[]
   >();
