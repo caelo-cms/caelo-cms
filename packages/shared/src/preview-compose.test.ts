@@ -163,7 +163,7 @@ describe("composePagePreview substitutes {{name}} placeholders with field defaul
               moduleId: "mod-x",
               slug: "hero",
               displayName: "Hero",
-              html: "<h1>{{heading}}</h1><a href=\"{{ctahref}}\">{{ctalabel}}</a>",
+              html: '<h1>{{heading}}</h1><a href="{{ctahref}}">{{ctalabel}}</a>',
               css: "",
               js: "",
               fields: [
@@ -180,6 +180,59 @@ describe("composePagePreview substitutes {{name}} placeholders with field defaul
     expect(out.html).toContain('<a href="/get-started">Get started</a>');
     // No raw `{{name}}` residue in the body.
     expect(out.html).not.toMatch(/\{\{[a-z]/i);
+  });
+  it("contentValues override field defaults (per-placement wins)", () => {
+    const out = composePagePreview({
+      templateHtml: slot,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            {
+              moduleId: "mod-z",
+              slug: "hero",
+              displayName: "Hero",
+              html: "<h1>{{heading}}</h1>",
+              css: "",
+              js: "",
+              fields: [{ name: "heading", default: "Default headline" }],
+              contentValues: { heading: "Per-placement headline" },
+            },
+          ],
+        },
+      ],
+    });
+    expect(out.html).toContain(">Per-placement headline</h1>");
+    expect(out.html).not.toContain("Default headline");
+  });
+  it("contentValues without a matching field still substitute (values are authoritative)", () => {
+    // AI-authored explicit fields without defaults rely on
+    // contentValues being the source of truth — the bug e2e-livedit's
+    // second Stage hit before this commit (issue #70).
+    const out = composePagePreview({
+      templateHtml: slot,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            {
+              moduleId: "mod-w",
+              slug: "brand",
+              displayName: "Brand",
+              html: '<a href="{{brand_href}}">{{brand_name}}</a>',
+              css: "",
+              js: "",
+              fields: [{ name: "brand_href" }, { name: "brand_name" }],
+              contentValues: { brand_href: "/", brand_name: "Caelo" },
+            },
+          ],
+        },
+      ],
+    });
+    expect(out.html).toContain('<a href="/" data-caelo-module-id="mod-w">Caelo</a>');
+    expect(out.html).not.toMatch(/\{\{brand/);
   });
   it("leaves unknown {{name}} as raw placeholder (no-fallbacks per CLAUDE.md §2)", () => {
     const out = composePagePreview({

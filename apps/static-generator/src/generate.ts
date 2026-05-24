@@ -101,6 +101,7 @@ interface ModuleRow {
   css: string;
   js: string;
   fields: string | null;
+  content_values: string | null;
   experiment_id: string | null;
   variant_label: string | null;
 }
@@ -127,6 +128,25 @@ function parseModuleFields(raw: string | null): { name: string; default?: unknow
       out.push({ name: o.name, default: o.default });
     }
     return out.length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parse the jsonb `content_instances.values` column. Per-placement
+ * override map keyed by module field name — see
+ * `applyFieldSubstitution` in `@caelo-cms/shared/preview-compose` for
+ * substitution semantics. Returns undefined on null / malformed /
+ * non-object so compose falls back to field defaults.
+ */
+function parseContentValues(raw: string | null): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const obj = parsed as Record<string, unknown>;
+    return Object.keys(obj).length > 0 ? obj : undefined;
   } catch {
     return undefined;
   }
@@ -444,9 +464,18 @@ export async function generateSite(args: {
       SELECT pm.block_name, pm.position,
              m.id::text AS module_id,
              m.slug, m.display_name, m.html, m.css, m.js, m.fields::text AS fields,
+             ci.values::text AS content_values,
              NULL::uuid AS experiment_id,
              NULL::text AS variant_label
-      FROM page_modules pm JOIN modules m ON m.id = pm.module_id
+      FROM page_modules pm
+        JOIN modules m            ON m.id  = pm.module_id
+        -- PR #61 follow-up — every placement carries a
+        -- content_instance_id (page_modules schema, v0.12.0); join
+        -- is INNER because the column is NOT NULL. ci.values fills
+        -- the module's curly-brace placeholders. Without this join
+        -- the static-generator shipped raw placeholder text for
+        -- AI-authored modules whose fields had no default.
+        JOIN content_instances ci ON ci.id = pm.content_instance_id
       WHERE pm.page_id = ${page.page_id}::uuid
         AND m.deleted_at IS NULL
         -- v0.9.0 — main-only.
@@ -920,6 +949,7 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
     css: string;
     js: string;
     fields?: { name: string; default?: unknown }[];
+    contentValues?: Record<string, unknown>;
   }[];
 }[] {
   const grouped = new Map<
@@ -932,6 +962,7 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
       css: string;
       js: string;
       fields?: { name: string; default?: unknown }[];
+      contentValues?: Record<string, unknown>;
     }[]
   >();
   for (const r of rows) {
@@ -944,6 +975,7 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
       css: r.css,
       js: r.js,
       fields: parseModuleFields(r.fields),
+      contentValues: parseContentValues(r.content_values),
     });
     grouped.set(r.block_name, arr);
   }

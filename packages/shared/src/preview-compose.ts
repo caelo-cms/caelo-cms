@@ -52,6 +52,16 @@ export interface ComposeModule {
    * default-floor so the published HTML is never broken.
    */
   readonly fields?: readonly { name: string; default?: unknown }[];
+  /**
+   * PR #61 follow-up — per-placement content values from the bound
+   * `content_instances.values` jsonb. When present, the composer
+   * substitutes `{{name}}` placeholders with `contentValues[name]`
+   * BEFORE falling back to `fields[].default`. Without this, AI-
+   * authored modules that declare explicit fields (without a `default`)
+   * but rely on per-placement values shipped raw `{{name}}` text to
+   * visitors — the bug e2e-livedit's second Stage caught.
+   */
+  readonly contentValues?: Readonly<Record<string, unknown>>;
 }
 
 export interface ComposeBlock {
@@ -130,7 +140,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       } else if (langSelector !== null) {
         baseHtml = langSelector;
       } else {
-        baseHtml = applyFieldDefaults(m.html, m.fields);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -291,33 +301,53 @@ function renderThemeCss(sets: ComposeStructuredSets | undefined): string | null 
 }
 
 /**
- * Substitute `{{name}}` placeholders in module HTML using each field's
- * declared `default`. Per-placement overrides (content_instances.values)
- * are NOT applied here — they live on the preview-render path. This
- * default-floor substitution prevents the visible-placeholder bug
- * extractor-authored modules used to ship with on the static-gen path.
+ * Substitute `{{name}}` placeholders in module HTML. Priority:
  *
- * Conservative on missing fields: an unknown `{{name}}` (no entry in
- * `fields`, no default) is left as the raw placeholder so the operator
- * sees the broken template instead of silently swallowing the placeholder
- * — pre-1.0 no-fallbacks (CLAUDE.md §2).
+ *   1. `contentValues[name]` — per-placement value from the bound
+ *      `content_instances` row (PR #61). What an editor changes in
+ *      the chat/library; what static-gen now joins in too.
+ *   2. `fields[name].default` — module-level default from the
+ *      extractor (or AI-authored explicit fields).
+ *   3. raw `{{name}}` left in place — pre-1.0 no-fallbacks
+ *      (CLAUDE.md §2) so operators see the broken template instead
+ *      of silently swallowing the placeholder.
+ *
+ * Both `contentValues` and `fields` are optional; the substitution
+ * is a no-op when neither is supplied.
+ *
+ * Nested-module field kinds (`module`, `module-list`) are intentionally
+ * NOT handled here — those need the recursive walk in
+ * `packages/admin-core/src/ops/content/preview-render.ts`. Compose
+ * stays pure / no-recursion. Issue #70 tracks unifying the two.
  */
-function applyFieldDefaults(
+function applyFieldSubstitution(
   html: string,
   fields: readonly { name: string; default?: unknown }[] | undefined,
+  contentValues: Readonly<Record<string, unknown>> | undefined,
 ): string {
-  if (!fields || fields.length === 0) return html;
-  const byName = new Map<string, unknown>();
-  for (const f of fields) {
-    if (f.default !== undefined && f.default !== null) byName.set(f.name, f.default);
+  const defaults = new Map<string, unknown>();
+  if (fields) {
+    for (const f of fields) {
+      if (f.default !== undefined && f.default !== null) defaults.set(f.name, f.default);
+    }
   }
-  if (byName.size === 0) return html;
+  const hasValues = contentValues && Object.keys(contentValues).length > 0;
+  if (defaults.size === 0 && !hasValues) return html;
   // The `i` flag matches the legacy preview-render regex; field names
   // are normalised to lowercase via the snakeCase pass in the
   // extractor, so this catches both `{{ctaHref}}` and `{{ctahref}}`.
   return html.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/gi, (full, name: string) => {
-    const v = byName.get(name) ?? byName.get(name.toLowerCase());
-    return v === undefined ? full : String(v);
+    if (contentValues && Object.hasOwn(contentValues, name)) {
+      const v = contentValues[name];
+      return v === null || v === undefined ? "" : String(v);
+    }
+    const lower = name.toLowerCase();
+    if (contentValues && Object.hasOwn(contentValues, lower)) {
+      const v = contentValues[lower];
+      return v === null || v === undefined ? "" : String(v);
+    }
+    const dv = defaults.get(name) ?? defaults.get(lower);
+    return dv === undefined ? full : String(dv);
   });
 }
 
@@ -447,7 +477,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       } else if (langSelector !== null) {
         baseHtml = langSelector;
       } else {
-        baseHtml = applyFieldDefaults(m.html, m.fields);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -479,7 +509,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       } else if (langSelector !== null) {
         baseHtml = langSelector;
       } else {
-        baseHtml = applyFieldDefaults(m.html, m.fields);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
