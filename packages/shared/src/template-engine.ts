@@ -141,6 +141,28 @@ const comment = caeloMissingComment;
  * Render `html` against `contentValues` + `fields` + `partials`,
  * returning the substituted HTML plus a structured `missingSlots`
  * channel. Pure / sync / no IO.
+ *
+ * @example
+ * // AC #1 fixture (issue #71). Iterates a link-list field per element.
+ * renderTemplate({
+ *   html: '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
+ *   fields: [{ name: 'nav_items', kind: 'link-list' }],
+ *   contentValues: {
+ *     nav_items: [
+ *       { label: 'Docs', href: '/docs' },
+ *       { label: 'Blog', href: '/blog' },
+ *     ],
+ *   },
+ * });
+ * // → {
+ * //     html: '<nav><a href="/docs">Docs</a><a href="/blog">Blog</a></nav>',
+ * //     missingSlots: [],
+ * //   }
+ *
+ * @see {@link TemplateField} for the field shape (name + kind + optional default).
+ * @see {@link ./content.js#MODULE_FIELD_KINDS} for the canonical kind union.
+ * @see {@link ./content.js#MODULE_FIELD_SECTION_KINDS} for the kinds the engine
+ *      iterates via `{{#name}}` (text-list / link-list / module-list).
  */
 export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput {
   const missing: string[] = [];
