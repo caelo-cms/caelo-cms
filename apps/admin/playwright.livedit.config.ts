@@ -63,6 +63,11 @@ export default defineConfig({
   reporter: [
     ["list"],
     ["html", { outputFolder: "test-results/livedit/playwright-report", open: "never" }],
+    // PR #61 follow-up — machine-readable per-scenario timings + statuses
+    // for the post-run stats table the workflow embeds in the PR comment.
+    // Lives next to admin.log under test-results/livedit/ so the artifact
+    // upload picks it up alongside everything else.
+    ["json", { outputFile: "test-results/livedit/playwright-report.json" }],
   ],
   use: {
     baseURL: "http://localhost:4173",

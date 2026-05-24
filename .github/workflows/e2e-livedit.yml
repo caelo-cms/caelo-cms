@@ -302,6 +302,18 @@ jobs:
           ERR_CONTEXT_DIR="${GITHUB_WORKSPACE}/${FAIL_DIR}"
           ERR_CONTEXT_MDS=("${ERR_CONTEXT_DIR}"/*.md)
 
+          # PR #61 follow-up — `build-stats.ts` parses admin.log +
+          # playwright-report.json and emits an API-stats block + a
+          # per-scenario results table. We splice it in between the
+          # screenshots and the error details. Falls through silently
+          # if the script errors so a bug here can't block the rest
+          # of the comment.
+          STATS_FILE=/tmp/e2e-livedit-stats.md
+          (
+            cd "${GITHUB_WORKSPACE}"
+            bun run apps/admin/e2e-livedit/lib/build-stats.ts > "$STATS_FILE"
+          ) || echo "_(stats script failed; see workflow logs)_" > "$STATS_FILE"
+
           {
             printf '## e2e-livedit run [%s](https://github.com/%s/actions/runs/%s) — %s\n\n' \
               "$RUN_ID" "$REPO" "$RUN_ID" "$JOB_STATUS"
@@ -314,6 +326,12 @@ jobs:
                 url="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${DEST_REL}/final-state/${name}"
                 printf '![%s](%s)\n\n' "$name" "$url"
               done
+            fi
+
+            # Stats block: chat-runner API counters + per-scenario table.
+            if [ -s "$STATS_FILE" ]; then
+              cat "$STATS_FILE"
+              printf '\n'
             fi
 
             # Group errors by test name so a 3-attempt failure shows
