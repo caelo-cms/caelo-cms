@@ -16,7 +16,7 @@
  *   • AC #4, #5 — Playwright drives everything, no mid-flow LLM
  *   • AC #6 — closing vision verdict
  *   • AC #7 — orphan-lock + chat-runner-diag regression guards
- *   • AC #11 — retries=2 (config-level)
+ *   • AC #11 — retries=1 (config-level; 2 attempts total)
  */
 
 import { spawnSync } from "node:child_process";
@@ -144,7 +144,7 @@ function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | nu
 }
 
 test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
-  // Playwright retries=2 — each attempt must start from clean fixtures.
+  // Playwright retries=1 — each attempt must start from clean fixtures.
   // Without this, attempt 1's orphan rows confuse snapshotMostRecentPage
   // on attempt 2 (per plan §6 open question 4).
   test.beforeEach(() => {

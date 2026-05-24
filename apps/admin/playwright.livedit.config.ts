@@ -53,7 +53,14 @@ export default defineConfig({
   timeout: 300_000,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: 2,
+  // 1 retry = 2 attempts total. PR #61 follow-up — we ran the suite
+  // at retries=2 (3 attempts) while debugging Sonnet's variance; now
+  // on Opus 4.7 the assertions are tight enough that anything failing
+  // twice in a row is signal, not noise (real bug, prompt regression,
+  // process issue). More retries past 2 papers over real problems
+  // and burns API tokens — see CLAUDE.md §4 (root-cause bugs, no
+  // quick fixes).
+  retries: 1,
   // Playwright per-test artifact dir — kept SIBLING (not parent) of
   // the HTML reporter dir below so Playwright's "HTML reporter output
   // folder clashes with tests output folder" guard doesn't fire.

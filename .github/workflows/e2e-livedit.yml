@@ -370,13 +370,19 @@ jobs:
             fi
 
             if [ ${#FAIL_SHOTS[@]} -gt 0 ]; then
+              # PR #61 follow-up — DON'T number these globally. Pre-fix
+              # the comment showed e.g. "Attempt 1" through "Attempt 8"
+              # for 8 PNGs that were actually 4 scenarios × 2 attempts,
+              # implying the same scenario retried 8 times. Each PNG is
+              # one attempt's failure shot from across the run; the
+              # errors block above is where the per-scenario / per-
+              # attempt grouping lives.
               printf '### Failure screenshots\n\n'
-              i=1
+              printf 'One screenshot per failed attempt across all scenarios. Scenario + attempt grouping is in the **Errors from chat + assertions** block above.\n\n'
               for src in "${FAIL_SHOTS[@]}"; do
                 name=$(basename "$src")
                 url="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${DEST_REL}/failure/${name}"
-                printf '**Attempt %d:**\n\n![%s](%s)\n\n' "$i" "$name" "$url"
-                i=$((i + 1))
+                printf '![%s](%s)\n\n' "$name" "$url"
               done
             fi
 

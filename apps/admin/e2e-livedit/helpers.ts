@@ -36,7 +36,7 @@ function runBunInline(script: string, extraEnv: Record<string, string> = {}): st
 
 /**
  * Truncate the fixtures the real-AI scenarios create so Playwright's
- * `retries: 2` doesn't trip over orphan rows from a prior attempt.
+ * `retries: 1` doesn't trip over orphan rows from a prior attempt.
  *
  * Deletes (system context, in one tx):
  *   - chat_entity_locks  — orphan-lock test would see stale rows
