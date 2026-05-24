@@ -647,6 +647,17 @@ export const countBranchChangesOp = defineOperation({
        * on the branch (each call IS the layout-level change).
        */
       layoutChrome: z.number().int().nonnegative(),
+      /**
+       * v0.12.0 — content_instance row-level edits on this branch
+       * (`create_content_instance`, `set_content_instance_values`,
+       * `unsync_placement` / `resync_placement` snapshot bumps).
+       * Before this entry was added, a re-edit chat that only touched
+       * a placement's content_instance.values rendered the toolbar
+       * in the `branchChangeCount === 0` branch (showing only
+       * "Publish live", never Stage) — the regression PR #61's
+       * e2e-livedit scenario-homepage second-Stage caught.
+       */
+      contentInstances: z.number().int().nonnegative(),
     }),
   }),
   handler: async (_ctx, input, tx) => {
@@ -669,7 +680,13 @@ export const countBranchChangesOp = defineOperation({
         (SELECT COUNT(DISTINCT template_id)::int FROM template_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS templates,
         (SELECT COUNT(DISTINCT page_id)::int     FROM page_layout_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_layouts,
         (SELECT COUNT(DISTINCT page_module_content_id)::int FROM page_module_content_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_module_content,
-        (SELECT COUNT(*)::int FROM branch WHERE op_kind = 'layout_modules.set') AS layout_chrome
+        (SELECT COUNT(*)::int FROM branch WHERE op_kind = 'layout_modules.set') AS layout_chrome,
+        -- v0.12.0 — see byKind.contentInstances doc above. Dedupe by
+        -- content_instance_id so multiple set_content_instance_values
+        -- calls on the same row count as one change for toolbar UX.
+        (SELECT COUNT(DISTINCT content_instance_id)::int
+           FROM content_instance_snapshots
+          WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS content_instances
     `)) as unknown as {
       modules: number;
       pages: number;
@@ -677,6 +694,7 @@ export const countBranchChangesOp = defineOperation({
       page_layouts: number;
       page_module_content: number;
       layout_chrome: number;
+      content_instances: number;
     }[];
     const r = rows[0] ?? {
       modules: 0,
@@ -685,6 +703,7 @@ export const countBranchChangesOp = defineOperation({
       page_layouts: 0,
       page_module_content: 0,
       layout_chrome: 0,
+      content_instances: 0,
     };
     return ok({
       count:
@@ -693,7 +712,8 @@ export const countBranchChangesOp = defineOperation({
         r.templates +
         r.page_layouts +
         r.page_module_content +
-        r.layout_chrome,
+        r.layout_chrome +
+        r.content_instances,
       byKind: {
         modules: r.modules,
         pages: r.pages,
@@ -701,6 +721,7 @@ export const countBranchChangesOp = defineOperation({
         pageLayouts: r.page_layouts,
         pageModuleContent: r.page_module_content,
         layoutChrome: r.layout_chrome,
+        contentInstances: r.content_instances,
       },
     });
   },
