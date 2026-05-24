@@ -43,31 +43,45 @@ export const appendChatMessageOp = defineOperation({
     .strict(),
   output: messageRow,
   handler: async (_ctx, input, tx) => {
+    // `INSERT ... SELECT ... WHERE EXISTS` (instead of `VALUES`) so a
+    // chat_messages row is only minted if the chat_sessions row still
+    // exists. Without this, a long-running chat-runner that races
+    // session deletion (user clicks Discard / test harness resets
+    // fixtures / cascade from a user-delete) hits the
+    // `chat_messages_chat_session_id_fkey` FK and Postgres logs a red
+    // `Failed query` line for what is an expected race, not a bug. The
+    // empty result-set path below returns the soft `session_gone` error
+    // the runner downgrades silently.
     const rows = (await tx.execute(sql`
       INSERT INTO chat_messages (
         chat_session_id, role, content, tool_calls, tool_call_id,
         tokens_in, tokens_out, cached_tokens, status, thinking_blocks
       )
-      VALUES (
+      SELECT
         ${input.chatSessionId}::uuid,
         ${input.role},
         ${input.content},
-        ${input.toolCalls ? JSON.stringify(input.toolCalls) : null},
+        ${input.toolCalls ? JSON.stringify(input.toolCalls) : null}::jsonb,
         ${input.toolCallId ?? null},
-        ${input.tokensIn ?? null},
-        ${input.tokensOut ?? null},
-        ${input.cachedTokens ?? null},
+        ${input.tokensIn ?? null}::int,
+        ${input.tokensOut ?? null}::int,
+        ${input.cachedTokens ?? null}::int,
         ${input.status ?? "complete"},
-        ${input.thinkingBlocks && input.thinkingBlocks.length > 0 ? JSON.stringify(input.thinkingBlocks) : null}
+        ${input.thinkingBlocks && input.thinkingBlocks.length > 0 ? JSON.stringify(input.thinkingBlocks) : null}::jsonb
+      WHERE EXISTS (
+        SELECT 1 FROM chat_sessions WHERE id = ${input.chatSessionId}::uuid
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const id = rows[0]?.id;
     if (!id) {
+      // The session row was gone before we wrote — see comment above.
+      // Sentinel message the chat-runner pattern-matches on to skip
+      // its red console.error + SSE error banner.
       return err({
         kind: "HandlerError",
         operation: "chat.append_message",
-        message: "no id returned",
+        message: "session_gone: chat_sessions row missing — likely deleted mid-stream",
       });
     }
     await tx.execute(sql`

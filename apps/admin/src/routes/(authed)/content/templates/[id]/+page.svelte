@@ -93,7 +93,7 @@
               type="text"
               placeholder="slot name (e.g. content)"
               bind:value={block.name}
-              pattern="[a-z0-9](?:[a-z0-9-]{'{0,62}'}[a-z0-9])?"
+              pattern={"[a-z0-9](?:[a-z0-9\\-]{0,62}[a-z0-9])?"}
             />
             <Input
               name={`blockDisplay.${i}`}

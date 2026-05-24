@@ -8,7 +8,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import type { Page, Response } from "@playwright/test";
 import { expect } from "@playwright/test";
 import { ADMIN_LOG_PATH } from "./global-setup.js";
@@ -236,6 +236,57 @@ export function attachChatSessionTracker(page: Page): ChatSessionTracker {
 }
 
 /**
+ * Collect browser `console.error` + uncaught `pageerror` events for the
+ * scenario's lifetime. The `assertNoBrowserConsoleErrors` helper drains
+ * the buffer at scenario teardown and fails the test with quoted
+ * messages if any landed.
+ *
+ * Catches the regression class step 13 surfaced on PR #61: a Svelte
+ * route can compile fine on the server, ship to the browser, and then
+ * fail at runtime because of v-flag-strict regex parsing, web-component
+ * upgrade errors, or hydration mismatches — none of which show up in
+ * `bun run check` or in admin.log. The scenario only catches them if
+ * someone watches DevTools, which CI doesn't.
+ *
+ * Allowlist: a few third-party noise sources can be filtered with the
+ * `ignore` predicate (the SSE stream emits an `EventSource` reconnect
+ * error during page teardown that's harmless). Default ignores nothing.
+ */
+export interface BrowserConsoleErrorTracker {
+  readonly drain: () => readonly string[];
+}
+
+export function attachBrowserConsoleErrorTracker(
+  page: Page,
+  options: { ignore?: (message: string) => boolean } = {},
+): BrowserConsoleErrorTracker {
+  const errors: string[] = [];
+  const shouldIgnore = options.ignore ?? (() => false);
+  page.on("console", (msg) => {
+    if (msg.type() !== "error") return;
+    const text = msg.text();
+    if (shouldIgnore(text)) return;
+    errors.push(`[console.error] ${text}`);
+  });
+  page.on("pageerror", (err) => {
+    const text = `${err.name}: ${err.message}`;
+    if (shouldIgnore(text)) return;
+    errors.push(`[pageerror] ${text}`);
+  });
+  return { drain: () => errors.slice() };
+}
+
+export function assertNoBrowserConsoleErrors(tracker: BrowserConsoleErrorTracker): void {
+  const errors = tracker.drain();
+  if (errors.length === 0) return;
+  const quoted = errors.map((e) => `  - ${e.slice(0, 300)}`).join("\n");
+  throw new Error(
+    `assertNoBrowserConsoleErrors: ${errors.length} browser-side error(s) during this scenario. ` +
+      `Each one is something a user would see as a red entry in DevTools.\n${quoted}`,
+  );
+}
+
+/**
  * Click the Stage modal trigger + confirm; resolves when the
  * `?/stageAndDeployStaging` action returns. The action awaits
  * `chat.merge_to_main` + `deploy.trigger` synchronously, so the HTTP
@@ -340,6 +391,81 @@ export function assertNoChatRunnerDiagWarnings(): void {
       );
     }
   }
+}
+
+/**
+ * Catch backend errors that escaped to admin stderr — the broader sweep
+ * `assertNoChatRunnerDiagWarnings` was missing. The step 13 e2e walk on
+ * PR #61 surfaced 3+ `chat_messages_chat_session_id_fkey` violations
+ * logged by the bun:SQL driver when the chat-runner raced session
+ * deletion; those were red `Failed query` blocks in admin.log that
+ * neither bun-test nor Playwright noticed.
+ *
+ * Patterns matched (line-anchored to avoid false-positives on tool
+ * results that quote the strings):
+ *   - `ERR_POSTGRES_SERVER_ERROR`  — any Postgres-driver server error
+ *   - `[chat-runner] failed to persist` — runner gave up on a write
+ *   - `[chat-runner] max_loops cap hit` — loop terminated abnormally
+ *
+ * The Postgres pattern can also be tripped by intentional
+ * validator-level rejections (RLS denials, FK checks on Tier-2 ops),
+ * so the message includes the matched line so the reader can decide
+ * whether to allowlist or fix.
+ */
+const BACKEND_ERROR_PATTERNS = [
+  /^.*ERR_POSTGRES_SERVER_ERROR.*$/m,
+  /^.*\[chat-runner\] failed to persist.*$/m,
+  /^.*\[chat-runner\] max_loops cap hit.*$/m,
+] as const;
+
+/**
+ * Snapshot the current admin.log size so a later
+ * `assertNoBackendErrors` reads only what was written during this
+ * scenario. Without this, scenario 4 would fail on scenario 2's
+ * errors and obscure which run actually regressed.
+ */
+export interface BackendLogTracker {
+  readonly startOffset: number;
+}
+
+export function snapshotBackendLogOffset(): BackendLogTracker {
+  const startOffset = existsSync(ADMIN_LOG_PATH) ? statSync(ADMIN_LOG_PATH).size : 0;
+  return { startOffset };
+}
+
+export function assertNoBackendErrors(
+  tracker: BackendLogTracker,
+  options: { ignore?: RegExp[] } = {},
+): void {
+  if (!existsSync(ADMIN_LOG_PATH)) {
+    throw new Error(
+      `assertNoBackendErrors: ${ADMIN_LOG_PATH} not found — global-setup did not capture admin stderr.`,
+    );
+  }
+  // Read the full file (Node's `start` arg on readFileSync isn't
+  // public) and slice from the recorded offset. admin.log stays small
+  // (~few hundred KB per scenario), so this is fine.
+  const fullLog = readFileSync(ADMIN_LOG_PATH, "utf8");
+  // Byte vs. char offset: bun's admin.log is plain ASCII for log
+  // headers; we use Buffer.byteLength of the prefix to keep the slice
+  // honest when stack traces include multibyte chars.
+  const buf = Buffer.from(fullLog, "utf8");
+  const sliceBuf = buf.subarray(Math.min(tracker.startOffset, buf.length));
+  const log = sliceBuf.toString("utf8");
+  const ignore = options.ignore ?? [];
+  const hits: string[] = [];
+  for (const pattern of BACKEND_ERROR_PATTERNS) {
+    const m = log.match(pattern);
+    if (!m) continue;
+    if (ignore.some((re) => re.test(m[0]))) continue;
+    hits.push(m[0].slice(0, 400));
+  }
+  if (hits.length === 0) return;
+  throw new Error(
+    `assertNoBackendErrors: ${hits.length} backend error line(s) in admin.log (since byte ${tracker.startOffset}):\n` +
+      hits.map((h) => `  - ${h}`).join("\n") +
+      `\nSee ${ADMIN_LOG_PATH} for the full context.`,
+  );
 }
 
 /**

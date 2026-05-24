@@ -138,7 +138,7 @@
               <Input
                 type="text"
                 placeholder="name (e.g. content, header, footer)"
-                pattern="[a-z0-9](?:[a-z0-9-]{'{0,62}'}[a-z0-9])?"
+                pattern={"[a-z0-9](?:[a-z0-9\\-]{0,62}[a-z0-9])?"}
                 required
                 value={block.name}
                 oninput={(e: Event) => {

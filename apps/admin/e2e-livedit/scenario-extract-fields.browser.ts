@@ -17,7 +17,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures.js";
 import {
   attachChatSessionTracker,
   loginAsDevOwner,

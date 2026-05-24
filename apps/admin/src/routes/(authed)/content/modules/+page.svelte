@@ -85,7 +85,7 @@
         <div class="grid gap-4 md:grid-cols-2">
           <div class="space-y-2">
             <Label for="slug">Slug</Label>
-            <Input id="slug" name="slug" type="text" pattern="[a-z0-9](?:[a-z0-9-]{'{0,62}'}[a-z0-9])?" required />
+            <Input id="slug" name="slug" type="text" pattern={"[a-z0-9](?:[a-z0-9\\-]{0,62}[a-z0-9])?"} required />
           </div>
           <div class="space-y-2">
             <Label for="displayName">Display name</Label>

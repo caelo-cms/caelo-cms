@@ -1256,7 +1256,7 @@ export async function* runChatTurn(
   let totalOut = 0;
   let totalCached = 0;
   let succeeded = true;
-  type StopReason = "end_turn" | "tool_use" | "max_tokens" | "error" | "max_loops";
+  type StopReason = "end_turn" | "tool_use" | "max_tokens" | "error" | "max_loops" | "session_gone";
   let stopReason: StopReason = "end_turn";
   let lastAssistantMessageId: string | null = null;
   // v0.3.20 — track the most recent loopStop so we can detect the
@@ -1369,6 +1369,22 @@ export async function* runChatTurn(
         messageId: lastAssistantMessageId,
       };
     } else {
+      // PR #61 follow-up — chat.append_message returns the
+      // `session_gone` sentinel when the session row vanished mid-stream
+      // (user clicked Discard, the test harness reset fixtures, a
+      // cascade delete fired). That's a normal race, not a bug. Log it
+      // softly and terminate the loop without an SSE error banner — no
+      // operator is on the other end of this stream anymore.
+      const e = assistantSave.error;
+      const isSessionGone = e.kind === "HandlerError" && e.message.startsWith("session_gone");
+      if (isSessionGone) {
+        console.warn("[chat-runner] session gone mid-stream; terminating quietly", {
+          chatSessionId: input.chatSessionId,
+        });
+        stopReason = "session_gone";
+        succeeded = false;
+        break;
+      }
       // v0.2.52 — Don't silently proceed to tool dispatch when the
       // anchor message wasn't persisted. Pre-v0.2.52 this branch
       // dropped through to tool-dispatch, tool rows persisted, and the
@@ -1381,7 +1397,6 @@ export async function* runChatTurn(
         error: assistantSave.error,
       });
       const persistErrMsg = (() => {
-        const e = assistantSave.error;
         switch (e.kind) {
           case "UnknownOperation":
             return `unknown op: ${e.name}`;
