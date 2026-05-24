@@ -63,18 +63,29 @@ export function resetLiveditFixtures(): void {
       await tx\`DELETE FROM chat_sessions\`;
       await tx\`DELETE FROM pages\`;
       // PR #61 added content_instances + content_instance_snapshots.
-      // Without wiping them, the next scenario's AI authoring path
-      // can collide with leftover ci slugs / module_id refs the prior
-      // scenario minted. modules without referencing content_instances
-      // get wiped too — chat-branched modules don't ship to main, but
-      // they accumulate across scenarios when only \`pages\` is reset.
-      // Order: snapshots → content_instances → modules (FK chain).
+      // Without wiping them, the next scenario's AI sees the prior
+      // scenario's leftovers in the \`## Modules\` + \`## Content
+      // Library\` system-prompt blocks and may decide to reuse them
+      // instead of authoring fresh — which leaves the assertion's
+      // "the AI created module X" lookup finding nothing new. Worse:
+      // a prior scenario that ran chat.merge_to_main (publish) clears
+      // \`chat_branch_id\` on its modules, so a "wipe branched only"
+      // pattern misses them. Migrations seed ZERO modules /
+      // content_instances (verified: no \`INSERT INTO modules\` in
+      // cms_admin migrations), so wiping all is safe and self-seeded
+      // scenarios re-create what they need after this reset.
+      // Order: snapshots → content_instances → snapshots → modules
+      // (FK chain — modules is referenced by content_instances).
       await tx\`DELETE FROM content_instance_snapshots\`;
       await tx\`DELETE FROM content_instances\`;
       await tx\`DELETE FROM module_snapshots\`;
-      // Keep main-branch modules that the seed/migrations created;
-      // only wipe modules the test runs minted (chat_branch_id set).
-      await tx\`DELETE FROM modules WHERE chat_branch_id IS NOT NULL\`;
+      // layout_modules.module_id FK has no ON DELETE clause (defaults
+      // to NO ACTION) — wipe layout-module placements before modules
+      // so the modules DELETE doesn't fail. layout_modules has no
+      // migration-seeded rows; scenarios that need chrome modules
+      // re-seed after this reset.
+      await tx\`DELETE FROM layout_modules\`;
+      await tx\`DELETE FROM modules\`;
       // Login bucket gets consumed by every loginAsDevOwner() call;
       // global-setup only clears it once at suite start, so after 5+
       // tests the rate limiter starts rejecting and loginAsDevOwner's
