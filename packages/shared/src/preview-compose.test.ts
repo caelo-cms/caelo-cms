@@ -259,6 +259,136 @@ describe("composePagePreview substitutes {{name}} placeholders with field defaul
   });
 });
 
+describe("composePagePreview list-iteration via shared template engine (#71)", () => {
+  // PR #71 / Plan B — the compose path now routes through the shared
+  // template engine and gains text-list / link-list / module-list
+  // section support. The fixtures below are the AC verbatim shapes;
+  // failures here imply the static-generator is leaking raw mustache
+  // markers to visitors again (the bug #71 closes).
+  const slot = `<body><caelo-slot name="content">_</caelo-slot></body>`;
+
+  it("AC #1 — link-list iterates per element inside composed page", () => {
+    const out = composePagePreview({
+      templateHtml: slot,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            {
+              moduleId: "mod-nav",
+              slug: "header",
+              displayName: "Header",
+              html: '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
+              css: "",
+              js: "",
+              fields: [{ name: "nav_items", kind: "link-list" }],
+              contentValues: {
+                nav_items: [
+                  { label: "Docs", href: "/docs" },
+                  { label: "Blog", href: "/blog" },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    // Outermost element is tagged with data-caelo-module-id; assert
+    // the section iterated and that no raw markers leaked into the
+    // composed HTML.
+    expect(out.html).toContain('<a href="/docs">Docs</a>');
+    expect(out.html).toContain('<a href="/blog">Blog</a>');
+    expect(out.html).not.toMatch(/\{\{[#/]/);
+    expect(out.html).not.toMatch(/\{\{label/);
+    expect(out.html).not.toMatch(/\{\{href/);
+    expect(out.html).toContain('data-caelo-module-id="mod-nav"');
+  });
+
+  it("AC #2 — text-list iterates {{.}} per element inside composed page", () => {
+    const out = composePagePreview({
+      templateHtml: slot,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            {
+              moduleId: "mod-tags",
+              slug: "tags",
+              displayName: "Tags",
+              html: "<ul>{{#tags}}<li>{{.}}</li>{{/tags}}</ul>",
+              css: "",
+              js: "",
+              fields: [{ name: "tags", kind: "text-list" }],
+              contentValues: { tags: ["a", "b", "c"] },
+            },
+          ],
+        },
+      ],
+    });
+    expect(out.html).toContain("<li>a</li><li>b</li><li>c</li>");
+    expect(out.html).not.toMatch(/\{\{[#/]/);
+    expect(out.html).toContain('data-caelo-module-id="mod-tags"');
+  });
+
+  it("AC #3 — unknown {{#unknown}}…{{/unknown}} stays as raw markers in composed output", () => {
+    const out = composePagePreview({
+      templateHtml: slot,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            {
+              moduleId: "mod-broken",
+              slug: "broken",
+              displayName: "Broken",
+              html: "<p>{{#unknown}}x{{/unknown}}</p>",
+              css: "",
+              js: "",
+              fields: [],
+            },
+          ],
+        },
+      ],
+    });
+    // Raw markers preserved (no silent swallow) so the operator sees
+    // the broken template in DevTools, per CLAUDE.md §2.
+    expect(out.html).toContain("{{#unknown}}x{{/unknown}}");
+  });
+
+  it("AC #4 (compose-path posture) — module-list emits loud HTML comment, never raw markers", () => {
+    const out = composePagePreview({
+      templateHtml: slot,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            {
+              moduleId: "mod-cards",
+              slug: "cards",
+              displayName: "Cards",
+              html: "<ul>{{#cards}}<li>x</li>{{/cards}}</ul>",
+              css: "",
+              js: "",
+              fields: [{ name: "cards", kind: "module-list" }],
+              contentValues: {
+                cards: [{ moduleId: "child-mod", contentInstanceId: "child-ci" }],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(out.html).toContain(
+      "<!-- caelo:module-list cards needs recursive renderer (compose path) -->",
+    );
+    expect(out.html).not.toMatch(/\{\{[#/]/);
+  });
+});
+
 describe("composePagePreview tags every module's outermost element", () => {
   const slot = `<body><caelo-slot name="content">_</caelo-slot></body>`;
   it("threads the moduleId through the composed output", () => {
