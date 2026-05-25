@@ -170,6 +170,72 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
     expect(block).toContain("propose_create_theme");
   });
 
+  it("v0.11.4 (issue #76 follow-up) — seed origin renders the evolve-the-palette notice", () => {
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      origin: "seed",
+      tokensSummary: "16 colors, 3 typography",
+    });
+    expect(block).toContain("origin:");
+    expect(block).toContain("seed");
+    // The seed branch should explicitly tell the AI to evolve the
+    // palette before authoring modules — that's the line that fixes
+    // the PR-79 monochrome-page regression.
+    expect(block).toContain("evolve the palette");
+    expect(block).toContain("set_theme_tokens");
+    expect(block).toContain("set_theme_meta");
+    // The module-CSS-uses-vars primer always renders.
+    expect(block).toContain("var(--color-primary)");
+    expect(block).toContain("var(--spacing-md)");
+    // No design intent recorded yet → the prompt nudges the AI.
+    expect(block).toContain("none recorded");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — ai-origin theme drops the seed notice but keeps the var primer", () => {
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      origin: "ai",
+      description: "Indigo primary for SaaS B2B feel. System fonts.",
+      tokensSummary: "16 colors, 3 typography",
+    });
+    expect(block).toContain("origin:");
+    expect(block).toContain("ai");
+    // No "evolve the palette" nudge once the theme has been shaped.
+    expect(block).not.toContain("evolve the palette");
+    // Description should render as the design intent line.
+    expect(block).toContain("Indigo primary for SaaS B2B feel");
+    // Module-CSS primer still renders — it's universal advice.
+    expect(block).toContain("var(--color-primary)");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — operator-origin theme behaves like ai-origin (preserve)", () => {
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      origin: "operator",
+      tokensSummary: "16 colors, 3 typography",
+    });
+    expect(block).toContain("operator");
+    expect(block).not.toContain("evolve the palette");
+    // Always advertises the new tools.
+    expect(block).toContain("set_theme_meta");
+    expect(block).toContain("list_theme_history");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — origin defaults to seed when caller omits the field", () => {
+    // Back-compat: callers that haven't been updated to pass `origin`
+    // shouldn't lose the new seed-warning behaviour.
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      tokensSummary: "16 colors, 3 typography",
+    });
+    expect(block).toContain("seed");
+    expect(block).toContain("evolve the palette");
+  });
+
   it("nav-menu item inlining still works when sets exist (v0.10.20 behavior preserved)", () => {
     const block = formatStructuredSetsBlock([
       {

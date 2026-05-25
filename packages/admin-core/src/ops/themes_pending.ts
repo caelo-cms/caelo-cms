@@ -390,12 +390,17 @@ export const executeThemeProposalOp = defineOperation({
         tokens = applyDtcgWrites(tokens, normalized.set, normalized.types);
       }
 
+      // v0.11.4 (issue #76 follow-up) — origin='operator'. The AI may
+      // have authored the proposal, but the actual create only happens
+      // because a human Owner clicked Approve — so this is an
+      // operator-deliberate theme, NOT a seed.
       const ins = (await tx.execute(sql`
-        INSERT INTO themes (slug, display_name, description, is_active, tokens, updated_by)
+        INSERT INTO themes (slug, display_name, description, origin, is_active, tokens, updated_by)
         VALUES (
           ${slug},
           ${displayName},
           ${description},
+          'operator',
           false,
           ${JSON.stringify(tokens)}::text::jsonb,
           ${ctx.actorId}::uuid

@@ -526,6 +526,9 @@ export async function* runChatTurn(
         // multi-theme installs (v0.11.1+) let the AI pick the right slug
         // by intent (e.g. "Brand Orange — campaign-page variant").
         description: theme.description,
+        // v0.11.4 (issue #76 follow-up) — surface provenance so the AI
+        // knows whether to evolve (`seed`) or preserve (`ai`/`operator`).
+        origin: theme.origin,
         // v0.11.1 (issue #76) — formatThemeSummary replaces the v0.11.0
         // category-count `summarizeTokens` so the system prompt carries
         // the palette/font/radius shorthand the AI actually uses to pick

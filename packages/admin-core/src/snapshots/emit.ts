@@ -72,7 +72,11 @@ export type SnapshotOpKind =
   // on dogfood installs under v0.11.0 still satisfy the typed union.
   | "themes.import_dtcg"
   | "themes.import"
-  | "themes.activate";
+  | "themes.activate"
+  // v0.11.4 (issue #76 follow-up) — meta-only edit (description /
+  // displayName) emits its own kind so the history view can
+  // distinguish a token rewrite from a metadata change.
+  | "themes.update_meta";
 
 export type SnapshotEntity =
   | { readonly kind: "module"; readonly entityId: string; readonly state: ModuleState }

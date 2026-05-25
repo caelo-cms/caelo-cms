@@ -142,6 +142,13 @@ export interface ThemeState {
   readonly slug: string;
   readonly displayName: string;
   readonly description: string | null;
+  /**
+   * v0.11.4 (issue #76 follow-up) — provenance at time of snapshot.
+   * Older snapshot rows (pre-0100) carry no origin in their state jsonb;
+   * the revert path treats absence as 'seed' (the column's default).
+   * Optional in the type to keep historical-state reads typed.
+   */
+  readonly origin?: "seed" | "ai" | "operator";
   readonly isActive: boolean;
   readonly tokens: unknown;
   readonly assets: {

@@ -370,8 +370,10 @@ import {
   getActiveThemeOp,
   getThemeOp,
   importThemeOp,
+  listThemeHistoryOp,
   listThemesOp,
   setThemeAssetOp,
+  updateThemeMetaOp,
   updateThemeTokensOp,
 } from "./ops/themes.js";
 import {
@@ -661,6 +663,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getThemeOp);
   registry.register(getActiveThemeOp);
   registry.register(updateThemeTokensOp);
+  // v0.11.4 (issue #76 follow-up) — meta editor + history reader.
+  registry.register(updateThemeMetaOp);
+  registry.register(listThemeHistoryOp);
   registry.register(setThemeAssetOp);
   registry.register(duplicateThemeOp);
   registry.register(importThemeOp);

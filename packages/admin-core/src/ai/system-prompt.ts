@@ -574,6 +574,13 @@ export function composeSystemPrompt(
  * body font, default radius, category counts). Callers compute it via
  * `formatThemeSummary(activeTheme.tokens)` and pass as `tokensSummary`.
  *
+ * v0.11.4 (issue #76 follow-up) — leads with `origin` + `description`
+ * so the AI distinguishes "untouched seed" from "operator brand choice"
+ * and knows whether to evolve the theme. Also carries two behavioural
+ * primers (theme = starting palette; module CSS uses theme vars) that
+ * close the regression where the AI would inherit a neutral seed and
+ * emit monochrome modules.
+ *
  * Renders nothing when no active theme exists (pre-migration test
  * states only — production installs always carry one is_active row
  * post-0097).
@@ -590,6 +597,13 @@ export function formatThemeBlock(
      */
     description?: string | null;
     /**
+     * v0.11.4 (issue #76 follow-up) — provenance of current state.
+     * `seed` = untouched starter palette (the AI should evolve it for
+     * the site being built). `ai` / `operator` = someone has shaped it
+     * deliberately (preserve unless asked otherwise).
+     */
+    origin?: "seed" | "ai" | "operator";
+    /**
      * v0.11.1 (issue #76) — terse summary line built by
      * `formatThemeSummary(tokens)` (palette/font/radius shorthand +
      * category counts). Replaces v0.11.0's flat category-count string.
@@ -604,16 +618,34 @@ export function formatThemeBlock(
       "_No active theme on this install. An Owner must propose+approve one via `propose_create_theme`._",
     ].join("\n");
   }
-  const descriptionLine = theme.description ? `\n_${theme.description}_\n` : "";
+  const origin = theme.origin ?? "seed";
+  const originLabel: Record<typeof origin, string> = {
+    seed: "**seed** — untouched starter palette",
+    ai: "**ai** — last edited by an AI turn",
+    operator: "**operator** — last edited by a human",
+  };
+  const descriptionLine = theme.description
+    ? `Design intent: _${theme.description}_`
+    : "Design intent: _(none recorded — call `set_theme_meta({description: '…'})` after editing tokens so the next turn knows WHY this palette)_";
+  const seedNotice =
+    origin === "seed"
+      ? "\n> ⚠️ This theme is a **seed** (neutral defaults populated on install). When the operator asks you to build/restyle a site with a clear brand, **evolve the palette to match** — call `set_theme_tokens` for the colors and `set_theme_meta({description})` to record why. Do this BEFORE authoring modules so they inherit the right tokens."
+      : "";
   return [
     "## Theme",
     "",
-    `Active theme: **${theme.displayName}** (slug \`${theme.slug}\`) — ${theme.tokensSummary}.${descriptionLine}`,
+    `Active theme: **${theme.displayName}** (slug \`${theme.slug}\`, origin: ${originLabel[origin]}) — ${theme.tokensSummary}.`,
+    descriptionLine,
+    seedNotice,
+    "",
+    "**Module CSS must reference theme vars** so token edits cascade: `background: var(--color-primary)`, `padding: var(--spacing-md)`, `font-family: var(--font-heading)`. Hardcoded hex defeats the theme — the operator can no longer tune the site by editing tokens.",
     "",
     "Tools (all read tokens by canonical DTCG path; `set_theme_tokens` ALSO accepts loose names that the server normalizes):",
     "- `list_themes()` — list every theme (one active, rest variants).",
     "- `get_theme({slug, as?})` — `as` is one of `dtcg` (default) / `css-vars` / `tailwind` / `summary`. Use `css-vars` when authoring module HTML so you don't translate DTCG paths.",
     "- `set_theme_tokens({set: {primaryColor: '#ff6600', fontHeading: 'Inter'}})` — edit the active theme. Pass loose names; the server returns the canonical paths it wrote.",
+    "- `set_theme_meta({description?, displayName?})` — record design intent (and/or rename). Call after evolving a `seed` so future turns stay coherent.",
+    "- `list_theme_history({limit?})` — recent edits with who/when/what. Check before proposing a rewrite — the operator may have already done it.",
     "- `set_theme_asset({slot, mediaId})` — bind logo / logoDark / favicon / socialShare.",
     "- `duplicate_theme({sourceSlug, newSlug, newDisplayName})` — clone tokens + assets into an inactive variant.",
     "- `import_theme({themeSlug, body})` — auto-detects DTCG / Style Dictionary / Tailwind 4 / shadcn / loose. `export_theme({themeSlug})` — DTCG out.",

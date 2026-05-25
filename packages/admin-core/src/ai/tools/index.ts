@@ -46,6 +46,7 @@ import { listLayoutsTool } from "./list-layouts.js";
 import { listPagesTool } from "./list-pages.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
+import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
@@ -104,6 +105,7 @@ import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
 import { setThemeAssetTool } from "./set-theme-asset.js";
+import { setThemeMetaTool } from "./set-theme-meta.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
 import { submitPluginTool } from "./submit-plugin.js";
@@ -275,6 +277,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listThemesTool);
   registry.register(getThemeTool);
   registry.register(updateThemeTokensTool);
+  // v0.11.4 (issue #76 follow-up) — record design intent + read history.
+  registry.register(setThemeMetaTool);
+  registry.register(listThemeHistoryTool);
   registry.register(setThemeAssetTool);
   registry.register(duplicateThemeTool);
   registry.register(importThemeTool);

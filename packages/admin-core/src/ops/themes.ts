@@ -77,6 +77,9 @@ const themeRow = z.object({
   slug: z.string(),
   displayName: z.string(),
   description: z.string().nullable(),
+  // v0.11.4 (issue #76 follow-up) — provenance of current state. See
+  // ThemeOrigin in @caelo-cms/shared/themes.ts.
+  origin: z.enum(["seed", "ai", "operator"]),
   isActive: z.boolean(),
   tokens: z.unknown(),
   assets: themeAssetsSchema,
@@ -102,6 +105,7 @@ interface ThemeDbRow {
   slug: string;
   display_name: string;
   description: string | null;
+  origin: "seed" | "ai" | "operator";
   is_active: boolean;
   tokens: unknown;
   logo_media_id: string | null;
@@ -124,6 +128,7 @@ function dbRowToTheme(r: ThemeDbRow): Theme {
     slug: r.slug,
     displayName: r.display_name,
     description: r.description,
+    origin: r.origin,
     isActive: r.is_active,
     tokens: tokensJson,
     assets: {
@@ -143,6 +148,7 @@ const SELECT_THEME_COLUMNS = sql`
     slug                            AS slug,
     display_name                    AS display_name,
     description                     AS description,
+    origin                          AS origin,
     is_active                       AS is_active,
     tokens                          AS tokens,
     logo_media_id::text             AS logo_media_id,
@@ -230,6 +236,7 @@ function buildSnapshotState(theme: Theme): ThemeState {
     slug: theme.slug,
     displayName: theme.displayName,
     description: theme.description,
+    origin: theme.origin,
     isActive: theme.isActive,
     tokens: theme.tokens,
     assets: {
@@ -402,6 +409,14 @@ export const updateThemeTokensOp = defineOperation({
       });
     }
 
+    // v0.11.4 (issue #76 follow-up) — flip origin to reflect this
+    // actor. 'seed' → 'ai'|'operator' on first edit; 'ai' ↔ 'operator'
+    // afterwards. Plugin actors are treated as 'system'-equivalent and
+    // do not flip the column (keeps an AI-flavoured theme labelled 'ai'
+    // when a plugin runs maintenance).
+    const nextOrigin: "seed" | "ai" | "operator" =
+      ctx.actorKind === "ai" ? "ai" : ctx.actorKind === "human" ? "operator" : target.origin;
+
     // Live write (skipped under a chat branch — the snapshot carries
     // the new state for the preview overlay).
     const branched = !!ctx.chatBranchId;
@@ -409,13 +424,14 @@ export const updateThemeTokensOp = defineOperation({
       await tx.execute(sql`
         UPDATE themes
         SET tokens = ${JSON.stringify(nextTokens)}::text::jsonb,
+            origin = ${nextOrigin},
             updated_at = now(),
             updated_by = ${ctx.actorId}::uuid
         WHERE id = ${target.id}::uuid
       `);
     }
 
-    const nextTheme: Theme = { ...target, tokens: nextTokens };
+    const nextTheme: Theme = { ...target, tokens: nextTokens, origin: nextOrigin };
     await emitThemeWrite(tx, {
       actorId: ctx.actorId,
       chatBranchId: ctx.chatBranchId,
@@ -446,6 +462,106 @@ export const updateThemeTokensOp = defineOperation({
 // v0.11.0 (#45, step-11 opt §5) — `applyDtcgWrites` + `removeDtcgPath`
 // moved to packages/shared/src/themes.ts so themes_pending.ts's execute
 // branch can share the dotted-path merge logic with this file.
+
+// ────────────────────────────────────────────────────────────────────
+// update_meta (description / displayName)
+// ────────────────────────────────────────────────────────────────────
+
+const updateMetaInput = z
+  .object({
+    themeSlug: slugSchema.optional(),
+    /**
+     * Operator- or AI-written description of the design intent
+     * ("Indigo primary for a SaaS B2B feel. Open Sans body."). Carried
+     * into the `## Theme` system-prompt block so future AI turns stay
+     * consistent with the established intent. Nullable to clear.
+     */
+    description: z.string().max(1000).nullable().optional(),
+    /** Human-readable name shown in the admin UI + system prompt. */
+    displayName: z.string().min(1).max(200).optional(),
+  })
+  .strict()
+  .refine((v) => v.description !== undefined || v.displayName !== undefined, {
+    message: "pass at least one of `description` or `displayName`",
+  });
+
+export const updateThemeMetaOp = defineOperation({
+  name: "themes.update_meta",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: updateMetaInput,
+  output: z.object({ themeId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const target = input.themeSlug
+      ? await fetchThemeOrNull(tx, { slug: input.themeSlug })
+      : await fetchThemeOrNull(tx, { active: true });
+    if (!target) {
+      return err({
+        kind: "HandlerError",
+        operation: "themes.update_meta",
+        message: input.themeSlug
+          ? `theme '${input.themeSlug}' not found — call list_themes to see what's available`
+          : "no active theme — an Owner must activate one via propose_activate_theme",
+      });
+    }
+
+    if (ctx.chatBranchId) {
+      const lock = await checkAndAcquireEntityLock(tx, {
+        kind: "theme",
+        entityId: target.id,
+        chatBranchId: ctx.chatBranchId,
+      });
+      if (!lock.permitted && lock.holder) {
+        return err(await lockedError(tx, "themes.update_meta", "theme", target.id, lock.holder));
+      }
+    }
+
+    const nextDescription =
+      input.description === undefined ? target.description : input.description;
+    const nextDisplayName = input.displayName ?? target.displayName;
+    // v0.11.4 — same actor-based origin flip as token edits.
+    const nextOrigin: "seed" | "ai" | "operator" =
+      ctx.actorKind === "ai" ? "ai" : ctx.actorKind === "human" ? "operator" : target.origin;
+
+    const branched = !!ctx.chatBranchId;
+    if (!branched) {
+      await tx.execute(sql`
+        UPDATE themes
+        SET description = ${nextDescription},
+            display_name = ${nextDisplayName},
+            origin = ${nextOrigin},
+            updated_at = now(),
+            updated_by = ${ctx.actorId}::uuid
+        WHERE id = ${target.id}::uuid
+      `);
+    }
+
+    const nextTheme: Theme = {
+      ...target,
+      description: nextDescription,
+      displayName: nextDisplayName,
+      origin: nextOrigin,
+    };
+    await emitThemeWrite(tx, {
+      actorId: ctx.actorId,
+      chatBranchId: ctx.chatBranchId,
+      chatTaskId: ctx.chatTaskId ?? null,
+      opKind: "themes.update_meta",
+      description: `themes.update_meta ${target.slug}${branched ? " (branched)" : ""}`,
+      theme: nextTheme,
+    });
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "themes.update_meta",
+      input,
+      succeeded: true,
+      entityId: target.id,
+      resultSummary: `description=${input.description !== undefined} displayName=${input.displayName !== undefined}${branched ? " (branched)" : ""}`,
+    });
+    return ok({ themeId: target.id });
+  },
+});
 
 // ────────────────────────────────────────────────────────────────────
 // set_asset
@@ -513,9 +629,14 @@ export const setThemeAssetOp = defineOperation({
     }
 
     const column = SLOT_COLUMN[input.slot];
+    // v0.11.4 (issue #76 follow-up) — asset binding is a deliberate
+    // edit; flip origin same as token edits.
+    const nextOrigin: "seed" | "ai" | "operator" =
+      ctx.actorKind === "ai" ? "ai" : ctx.actorKind === "human" ? "operator" : target.origin;
     await tx.execute(sql`
       UPDATE themes
       SET ${sql.raw(column)} = ${input.mediaId === null ? null : sql`${input.mediaId}::uuid`},
+          origin = ${nextOrigin},
           updated_at = now(),
           updated_by = ${ctx.actorId}::uuid
       WHERE id = ${target.id}::uuid
@@ -593,9 +714,13 @@ export const duplicateThemeOp = defineOperation({
         message: `theme slug '${input.newSlug}' already exists — pick a different slug or update the existing theme via update_theme_tokens`,
       });
     }
+    // v0.11.4 (issue #76 follow-up) — origin reflects WHO duplicated.
+    // Duplicate copies tokens but the row itself is a fresh creation,
+    // so this isn't 'seed' — it's whichever actor wanted the variant.
+    const newOrigin: "ai" | "operator" = ctx.actorKind === "ai" ? "ai" : "operator";
     const rows = (await tx.execute(sql`
       INSERT INTO themes (
-        slug, display_name, description, is_active, tokens,
+        slug, display_name, description, origin, is_active, tokens,
         logo_media_id, logo_dark_media_id, favicon_media_id, social_share_media_id,
         updated_by
       )
@@ -603,6 +728,7 @@ export const duplicateThemeOp = defineOperation({
         ${input.newSlug},
         ${input.newDisplayName},
         ${input.description ?? null},
+        ${newOrigin},
         false,
         ${JSON.stringify(source.tokens)}::text::jsonb,
         ${source.assets.logo?.mediaId === undefined || source.assets.logo === null ? null : sql`${source.assets.logo.mediaId}::uuid`},
@@ -713,17 +839,22 @@ export const importThemeOp = defineOperation({
       }
     }
 
+    // v0.11.4 (issue #76 follow-up) — import is a wholesale replacement;
+    // flip origin same as update_tokens.
+    const nextOrigin: "seed" | "ai" | "operator" =
+      ctx.actorKind === "ai" ? "ai" : ctx.actorKind === "human" ? "operator" : target.origin;
     const branched = !!ctx.chatBranchId;
     if (!branched) {
       await tx.execute(sql`
         UPDATE themes
         SET tokens = ${JSON.stringify(validated)}::text::jsonb,
+            origin = ${nextOrigin},
             updated_at = now(),
             updated_by = ${ctx.actorId}::uuid
         WHERE id = ${target.id}::uuid
       `);
     }
-    const nextTheme: Theme = { ...target, tokens: validated };
+    const nextTheme: Theme = { ...target, tokens: validated, origin: nextOrigin };
     await emitThemeWrite(tx, {
       actorId: ctx.actorId,
       chatBranchId: ctx.chatBranchId,
@@ -762,5 +893,105 @@ export const exportThemeDtcgOp = defineOperation({
     }
     const body = exportDtcg({ tokens: target.tokens });
     return ok({ themeId: target.id, body });
+  },
+});
+
+// ────────────────────────────────────────────────────────────────────
+// list_history
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * v0.11.4 (issue #76 follow-up) — surface theme_snapshots as a readable
+ * changelog. The whole-blob `state` jsonb already carries displayName /
+ * description / tokens / asset FKs at the time of each write; this op
+ * joins to `site_snapshots` for op_kind + actor + chat-origin, returning
+ * a per-write row the AI can scan to answer "how has this theme evolved?"
+ * (and the operator can show in a "Theme history" panel later).
+ *
+ * Per CLAUDE.md §1A: every row carries decision-support context (who,
+ * when, what changed at a glance) so the AI can reason without a second
+ * tool call per entry.
+ */
+const historyEntrySchema = z.object({
+  snapshotId: z.string(),
+  createdAt: z.string(),
+  opKind: z.string(),
+  actorKind: z.enum(["human", "ai", "system", "plugin"]),
+  actorName: z.string(),
+  chatBranchId: z.string().nullable(),
+  descriptionAtTime: z.string().nullable(),
+  displayNameAtTime: z.string(),
+  originAtTime: z.enum(["seed", "ai", "operator"]).nullable(),
+  summary: z.string(),
+});
+
+export const listThemeHistoryOp = defineOperation({
+  name: "themes.list_history",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      themeSlug: slugSchema.optional(),
+      limit: z.number().int().min(1).max(100).default(20),
+    })
+    .strict(),
+  output: z.object({ entries: z.array(historyEntrySchema), themeId: z.string() }),
+  handler: async (_ctx, input, tx) => {
+    const target = input.themeSlug
+      ? await fetchThemeOrNull(tx, { slug: input.themeSlug })
+      : await fetchThemeOrNull(tx, { active: true });
+    if (!target) {
+      return err({
+        kind: "HandlerError",
+        operation: "themes.list_history",
+        message: input.themeSlug
+          ? `theme '${input.themeSlug}' not found`
+          : "no active theme — call list_themes",
+      });
+    }
+    const rows = (await tx.execute(sql`
+      SELECT
+        ts.id::text                        AS snapshot_id,
+        ss.created_at                      AS created_at,
+        ss.op_kind                         AS op_kind,
+        ss.description                     AS site_description,
+        ss.chat_branch_id::text            AS chat_branch_id,
+        a.kind                             AS actor_kind,
+        a.display_name                     AS actor_name,
+        ts.state->>'description'           AS theme_description_at_time,
+        ts.state->>'displayName'           AS theme_display_name_at_time,
+        ts.state->>'origin'                AS theme_origin_at_time
+      FROM theme_snapshots ts
+        JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
+        JOIN actors a ON a.id = ss.actor_id
+      WHERE ts.theme_id = ${target.id}::uuid
+      ORDER BY ss.created_at DESC
+      LIMIT ${input.limit}
+    `)) as unknown as Array<{
+      snapshot_id: string;
+      created_at: string | Date;
+      op_kind: string;
+      site_description: string;
+      chat_branch_id: string | null;
+      actor_kind: "human" | "ai" | "system" | "plugin";
+      actor_name: string;
+      theme_description_at_time: string | null;
+      theme_display_name_at_time: string;
+      theme_origin_at_time: "seed" | "ai" | "operator" | null;
+    }>;
+    const entries = rows.map((r) => ({
+      snapshotId: r.snapshot_id,
+      createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+      opKind: r.op_kind,
+      actorKind: r.actor_kind,
+      actorName: r.actor_name,
+      chatBranchId: r.chat_branch_id,
+      descriptionAtTime: r.theme_description_at_time,
+      displayNameAtTime: r.theme_display_name_at_time,
+      // Older snapshot rows (pre-0100) carry no origin key in state jsonb.
+      originAtTime: r.theme_origin_at_time,
+      summary: r.site_description,
+    }));
+    return ok({ entries, themeId: target.id });
   },
 });

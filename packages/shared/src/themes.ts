@@ -285,11 +285,22 @@ export interface ThemeAssetRef {
   readonly url: string;
 }
 
+/**
+ * v0.11.4 (issue #76 follow-up) — provenance of the current state.
+ * `seed`: untouched starter palette (e.g. shadcn-default populated by
+ * migration 0099). `ai`: most recent write was by an AI actor. `operator`:
+ * most recent write was by a human actor. The system-prompt `## Theme`
+ * block surfaces this so the AI knows whether it should evolve the
+ * palette for the site being built or treat it as an operator choice.
+ */
+export type ThemeOrigin = "seed" | "ai" | "operator";
+
 export interface Theme {
   readonly id: string;
   readonly slug: string;
   readonly displayName: string;
   readonly description: string | null;
+  readonly origin: ThemeOrigin;
   readonly isActive: boolean;
   readonly tokens: ThemeDocument;
   readonly assets: {
