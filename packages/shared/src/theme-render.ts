@@ -30,11 +30,7 @@
  * isolation.
  */
 
-import {
-  type AnyThemeToken,
-  flattenTokens,
-  type ThemeDocument,
-} from "./themes.js";
+import { type AnyThemeToken, flattenTokens, type ThemeDocument } from "./themes.js";
 
 /** Renderer-level error for cyclic / unresolved aliases. */
 export class ThemeRenderError extends Error {

@@ -39,7 +39,9 @@ export const listThemesTool: ToolDefinitionWithHandler<ListThemesToolInput> = {
     if (themes.length === 0) {
       return { ok: true, content: "No themes on this site yet." };
     }
-    const lines = themes.map((t) => `- ${t.slug} ("${t.displayName}")${t.isActive ? " [active]" : ""}`);
+    const lines = themes.map(
+      (t) => `- ${t.slug} ("${t.displayName}")${t.isActive ? " [active]" : ""}`,
+    );
     return { ok: true, content: lines.join("\n") };
   },
 };

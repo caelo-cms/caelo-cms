@@ -44,7 +44,8 @@ export const importThemeTool: ToolDefinitionWithHandler<ImportThemeToolInput> = 
   },
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.import_dtcg", input);
-    if (!r.ok) return { ok: false, content: `themes.import_dtcg failed: ${describeError(r.error)}` };
+    if (!r.ok)
+      return { ok: false, content: `themes.import_dtcg failed: ${describeError(r.error)}` };
     const v = r.value as { themeId: string; format: "dtcg" };
     return {
       ok: true,

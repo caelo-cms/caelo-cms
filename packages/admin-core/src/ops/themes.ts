@@ -32,8 +32,8 @@ import {
   buildMediaUrl,
   err,
   exportDtcg,
-  importDtcg,
   InvalidColorValue,
+  importDtcg,
   NotDtcgShape,
   normalizeTokens,
   ok,
@@ -85,7 +85,10 @@ const slugSchema = z
   .string()
   .min(1)
   .max(120)
-  .regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase letters/digits/hyphens, must start with letter or digit");
+  .regex(
+    /^[a-z0-9][a-z0-9-]*$/,
+    "lowercase letters/digits/hyphens, must start with letter or digit",
+  );
 
 // ────────────────────────────────────────────────────────────────────
 // Row → Theme aggregate
@@ -108,7 +111,9 @@ interface ThemeDbRow {
 
 function dbRowToTheme(r: ThemeDbRow): Theme {
   const tokensJson: ThemeDocument =
-    typeof r.tokens === "string" ? (JSON.parse(r.tokens) as ThemeDocument) : (r.tokens as ThemeDocument);
+    typeof r.tokens === "string"
+      ? (JSON.parse(r.tokens) as ThemeDocument)
+      : (r.tokens as ThemeDocument);
   const asset = (id: string | null): { mediaId: string; url: string } | null =>
     id === null ? null : { mediaId: id, url: buildMediaUrl(id, "orig") };
   return {

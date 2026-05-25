@@ -104,7 +104,6 @@ import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
 import { setThemeAssetTool } from "./set-theme-asset.js";
-import { updateThemeTokensTool } from "./update-theme-tokens.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
 import { submitPluginTool } from "./submit-plugin.js";
@@ -112,6 +111,7 @@ import { submitPluginTool } from "./submit-plugin.js";
 // Tier-1 plugin (`packages/plugins/translation/`). The chat-runner discovers
 // them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
+import { updateThemeTokensTool } from "./update-theme-tokens.js";
 
 /**
  * Registers every shipped tool against a fresh ToolRegistry. Tests can

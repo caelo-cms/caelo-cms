@@ -20,9 +20,7 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listStructuredSetsToolInput = z
   .object({
-    kind: z
-      .enum(["nav-menu", "taxonomy", "tags", "link-list", "language-selector"])
-      .optional(),
+    kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list", "language-selector"]).optional(),
   })
   .strict();
 

@@ -1086,8 +1086,7 @@ function prepareLegacyAggregatedToken(t: {
 
   // Shape the value: typography needs the composite object envelope;
   // everything else is a flat string.
-  const value: unknown =
-    category === "typography" ? { fontFamily: t.value } : t.value;
+  const value: unknown = category === "typography" ? { fontFamily: t.value } : t.value;
 
   return { canonicalPath, value };
 }

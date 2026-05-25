@@ -39,7 +39,8 @@ export const exportThemeTool: ToolDefinitionWithHandler<ExportThemeToolInput> = 
   },
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.export_dtcg", input);
-    if (!r.ok) return { ok: false, content: `themes.export_dtcg failed: ${describeError(r.error)}` };
+    if (!r.ok)
+      return { ok: false, content: `themes.export_dtcg failed: ${describeError(r.error)}` };
     const v = r.value as { themeId: string; body: string };
     return { ok: true, content: v.body };
   },

@@ -174,9 +174,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
     let themeTokens: Record<string, string> = {};
     const themeR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {});
     if (themeR.ok) {
-      const theme = (
-        themeR.value as { theme: { tokens: unknown } | null }
-      ).theme;
+      const theme = (themeR.value as { theme: { tokens: unknown } | null }).theme;
       if (theme?.tokens) {
         themeTokens = flattenThemeTokensForInspector(theme.tokens);
       }

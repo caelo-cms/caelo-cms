@@ -27,11 +27,7 @@
  * AI-actionable".
  */
 
-import {
-  InvalidColorValue,
-  TokenCategoryMismatch,
-  UnknownTokenName,
-} from "./themes-errors.js";
+import { InvalidColorValue, TokenCategoryMismatch, UnknownTokenName } from "./themes-errors.js";
 
 export type CanonicalPath = string;
 
@@ -47,7 +43,10 @@ export interface NormalizeResult {
    * category from the path prefix, but the ops layer uses this to set
    * `$type` on the stored token.
    */
-  readonly types: Record<CanonicalPath, "color" | "dimension" | "typography" | "shadow" | "duration" | "cubicBezier">;
+  readonly types: Record<
+    CanonicalPath,
+    "color" | "dimension" | "typography" | "shadow" | "duration" | "cubicBezier"
+  >;
   /** Echo-back list for the AI tool's result content. */
   readonly canonicalPaths: readonly CanonicalPath[];
 }
@@ -57,7 +56,7 @@ const COLOR_VALUE_REGEX =
 const CSS_LENGTH_REGEX = /^-?\d+(\.\d+)?(rem|em|px|%|vh|vw|vmin|vmax|pt|pc|ch|ex)?$/;
 const DURATION_REGEX = /^\d+(\.\d+)?(ms|s)$/;
 const ALIAS_REGEX = /^\{[a-zA-Z0-9_.-]+\}$/;
-const SHADOW_VALUE_REGEX = /^(\-?\d+(\.\d+)?(rem|em|px|%)? *){2,5}(.+)?$/;
+const SHADOW_VALUE_REGEX = /^(-?\d+(\.\d+)?(rem|em|px|%)? *){2,5}(.+)?$/;
 
 /**
  * The canonical "well-known" tokens the AI is most likely to mean when
@@ -124,7 +123,19 @@ interface CategoryDef {
 const CATEGORIES: readonly CategoryDef[] = [
   {
     category: "color",
-    nameHints: [/color/i, /^bg$/i, /background/i, /foreground/i, /destructive/i, /primary$/i, /secondary$/i, /accent$/i, /muted$/i, /ring$/i, /border$/i],
+    nameHints: [
+      /color/i,
+      /^bg$/i,
+      /background/i,
+      /foreground/i,
+      /destructive/i,
+      /primary$/i,
+      /secondary$/i,
+      /accent$/i,
+      /muted$/i,
+      /ring$/i,
+      /border$/i,
+    ],
     inferredType: "color",
     buildPath: (basename) => `color.${basename}`,
   },
@@ -237,8 +248,7 @@ function resolveOne(rawName: string, rawValue: unknown): ResolvedToken {
     chosen = matched[0];
   } else if (matched.length > 1) {
     // Prefer the category whose inferred type matches the value shape.
-    chosen =
-      matched.find((m) => m.inferredType === valueCategory) ?? matched[0];
+    chosen = matched.find((m) => m.inferredType === valueCategory) ?? matched[0];
   } else if (valueCategory) {
     // Bare name but value hints — pick category by value.
     chosen = CATEGORIES.find((c) => c.inferredType === valueCategory);
@@ -312,10 +322,7 @@ function validateValueShape(category: string, value: unknown, canonicalPath: str
   // the rest at validateThemeTokens time.
 }
 
-function inferTypeFromPath(
-  path: string,
-  value: unknown,
-): NormalizeResult["types"][string] {
+function inferTypeFromPath(path: string, value: unknown): NormalizeResult["types"][string] {
   const head = path.split(".")[0] ?? "";
   switch (head) {
     case "color":
@@ -344,9 +351,7 @@ function inferTypeFromPath(
   }
 }
 
-function sniffCategoryFromValue(
-  value: unknown,
-): NormalizeResult["types"][string] | undefined {
+function sniffCategoryFromValue(value: unknown): NormalizeResult["types"][string] | undefined {
   if (typeof value !== "string") return undefined;
   if (ALIAS_REGEX.test(value)) return undefined; // alias has no value shape
   if (COLOR_VALUE_REGEX.test(value)) return "color";
@@ -365,9 +370,7 @@ function sniffCategoryFromValue(
  */
 function extractBasename(rawName: string, category: string): string | null {
   // Lowercase camelCase → kebab-case for uniform tokenisation.
-  const kebab = rawName
-    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-    .toLowerCase();
+  const kebab = rawName.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
   const parts = kebab.split(/[-_]+/);
 
   // Filter out category aliases (font / typography / heading-related
@@ -412,8 +415,7 @@ function defaultTier(category: string): string {
  */
 export function didYouMean(input: string): readonly string[] {
   const lower = input.toLowerCase();
-  return KNOWN_CANONICAL_PATHS
-    .map((p) => ({ path: p, score: similarity(lower, p.toLowerCase()) }))
+  return KNOWN_CANONICAL_PATHS.map((p) => ({ path: p, score: similarity(lower, p.toLowerCase()) }))
     .filter((c) => c.score >= 0.4)
     .sort((a, b) => b.score - a.score)
     .slice(0, 3)

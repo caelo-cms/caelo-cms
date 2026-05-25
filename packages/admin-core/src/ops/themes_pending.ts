@@ -29,8 +29,9 @@ import {
   InvalidColorValue,
   normalizeTokens,
   ok,
-  PresetNotFound,
   type PresetName,
+  PresetNotFound,
+  type ThemeDocument,
   TokenCategoryMismatch,
   UnknownTokenName,
 } from "@caelo-cms/shared";
@@ -101,12 +102,16 @@ export const proposeCreateThemeOp = defineOperation({
     // Resolve preset + overrides at propose time so the preview
     // carries the realised tokens (operator sees what they'd be
     // approving). Throws → AI-actionable error.
-    let presetTokens;
+    let presetTokens: ThemeDocument;
     try {
       presetTokens = getPreset(input.preset);
     } catch (e) {
       if (e instanceof PresetNotFound) {
-        return err({ kind: "HandlerError", operation: "themes.propose_create", message: e.message });
+        return err({
+          kind: "HandlerError",
+          operation: "themes.propose_create",
+          message: e.message,
+        });
       }
       throw e;
     }
@@ -470,9 +475,7 @@ export const listPendingThemeProposalsOp = defineOperation({
   name: "themes.list_pending",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z
-    .object({ limit: z.number().int().min(1).max(200).optional() })
-    .strict(),
+  input: z.object({ limit: z.number().int().min(1).max(200).optional() }).strict(),
   output: z.object({ proposals: z.array(proposalRowSchema) }),
   handler: async (_ctx, input, tx) => {
     const limit = input.limit ?? 50;

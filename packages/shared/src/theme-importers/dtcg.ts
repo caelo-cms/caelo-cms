@@ -19,8 +19,8 @@
  * widening `themes.ts`.
  */
 
-import { NotDtcgShape } from "../themes-errors.js";
 import { type Theme, type ThemeDocument, validateThemeTokens } from "../themes.js";
+import { NotDtcgShape } from "../themes-errors.js";
 
 /**
  * Parse a DTCG JSON document into a validated tokens tree. Three

@@ -175,12 +175,7 @@ export const themeCubicBezierToken = z
   .object({
     $value: z.union([
       z
-        .tuple([
-          z.number().min(0).max(1),
-          z.number(),
-          z.number().min(0).max(1),
-          z.number(),
-        ])
+        .tuple([z.number().min(0).max(1), z.number(), z.number().min(0).max(1), z.number()])
         .describe("[x1, y1, x2, y2]"),
       aliasString,
     ]),
@@ -221,13 +216,7 @@ type TokenGroup = {
 };
 
 const tokenGroupSchema: z.ZodType<TokenGroup> = z.lazy(() =>
-  z.record(
-    z.string(),
-    z.union([
-      anyThemeToken,
-      tokenGroupSchema,
-    ]),
-  ),
+  z.record(z.string(), z.union([anyThemeToken, tokenGroupSchema])),
 );
 
 /**

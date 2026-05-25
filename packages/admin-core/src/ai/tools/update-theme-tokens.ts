@@ -54,13 +54,7 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      ctx,
-      "themes.update_tokens",
-      input,
-    );
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.update_tokens", input);
     if (!r.ok) {
       return { ok: false, content: `themes.update_tokens failed: ${describeError(r.error)}` };
     }

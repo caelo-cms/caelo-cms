@@ -7,7 +7,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { type Theme } from "@caelo-cms/shared";
+import type { Theme } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";

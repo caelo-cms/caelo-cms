@@ -28,8 +28,8 @@ import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   ComposeError,
-  composePageWithLayout,
   type ComposeTheme,
+  composePageWithLayout,
   type ModuleFieldKind,
   resolveLocaleUrl,
   type ThemeDocument,
@@ -462,7 +462,9 @@ export async function generateSite(args: {
   const tr = themeRows[0];
   if (tr) {
     const tokens: ThemeDocument =
-      typeof tr.tokens === "string" ? (JSON.parse(tr.tokens) as ThemeDocument) : (tr.tokens as ThemeDocument);
+      typeof tr.tokens === "string"
+        ? (JSON.parse(tr.tokens) as ThemeDocument)
+        : (tr.tokens as ThemeDocument);
     const asset = (id: string | null): { mediaId: string; url: string } | null =>
       id === null ? null : { mediaId: id, url: buildMediaUrl(id, "orig") };
     activeTheme = {

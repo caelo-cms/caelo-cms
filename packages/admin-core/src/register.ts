@@ -357,6 +357,14 @@ import {
   setStructuredSetOp,
 } from "./ops/structured_sets.js";
 import {
+  aggregateAiCallsForSessionOp,
+  createPendingSubagentRunOp,
+  finishSubagentRunOp,
+  gcSubagentSessionsOp,
+  getSubagentRunOp,
+  listSubagentRunsOp,
+} from "./ops/subagents/runs.js";
+import {
   duplicateThemeOp,
   exportThemeDtcgOp,
   getActiveThemeOp,
@@ -374,14 +382,6 @@ import {
   proposeDeleteThemeOp,
   rejectThemeProposalOp,
 } from "./ops/themes_pending.js";
-import {
-  aggregateAiCallsForSessionOp,
-  createPendingSubagentRunOp,
-  finishSubagentRunOp,
-  gcSubagentSessionsOp,
-  getSubagentRunOp,
-  listSubagentRunsOp,
-} from "./ops/subagents/runs.js";
 import {
   listPendingToolApprovalsOp,
   markToolApprovalResultOp,

@@ -14,8 +14,8 @@
  * it to `PRESET_NAMES` below, (c) extend the contrast test.
  */
 
-import { PresetNotFound } from "../themes-errors.js";
 import { type ThemeDocument, validateThemeTokens } from "../themes.js";
+import { PresetNotFound } from "../themes-errors.js";
 import minimalJson from "./minimal.json" with { type: "json" };
 import playfulJson from "./playful.json" with { type: "json" };
 import shadcnDefaultJson from "./shadcn-default.json" with { type: "json" };

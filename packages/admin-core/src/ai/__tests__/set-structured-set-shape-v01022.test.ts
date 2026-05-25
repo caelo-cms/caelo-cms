@@ -41,13 +41,7 @@ import { setStructuredSetTool } from "../tools/set-structured-set.js";
 // v0.11.0 (#45) — theme was cut out of the structured-sets primitive
 // and moved to its own `themes` table with DTCG-shaped jsonb. The
 // remaining structured-set kinds are the five list/tag/menu shapes.
-const allKinds = [
-  "nav-menu",
-  "tags",
-  "taxonomy",
-  "link-list",
-  "language-selector",
-] as const;
+const allKinds = ["nav-menu", "tags", "taxonomy", "link-list", "language-selector"] as const;
 
 describe("v0.10.22 — set_structured_set unified surface + per-kind JSON Schema", () => {
   it("kind enum covers all 5 structured-set kinds (pre-v0.10.22 missed language-selector; v0.11.0 cut theme)", () => {

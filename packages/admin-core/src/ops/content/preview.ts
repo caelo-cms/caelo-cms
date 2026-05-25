@@ -18,8 +18,8 @@ import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   ComposeError,
-  composePageWithLayout,
   type ComposeTheme,
+  composePageWithLayout,
   err,
   injectSeoIntoHead,
   type ModuleFieldKind,
@@ -1039,7 +1039,9 @@ async function loadActiveThemeForCompose(
   const row = rows[0];
   if (!row) return undefined;
   let tokens: ThemeDocument =
-    typeof row.tokens === "string" ? (JSON.parse(row.tokens) as ThemeDocument) : (row.tokens as ThemeDocument);
+    typeof row.tokens === "string"
+      ? (JSON.parse(row.tokens) as ThemeDocument)
+      : (row.tokens as ThemeDocument);
 
   // Branch overlay — most-recent theme_snapshots row for this branch
   // replaces live tokens.
