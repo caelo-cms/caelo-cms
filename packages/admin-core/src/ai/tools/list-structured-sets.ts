@@ -21,7 +21,7 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 const listStructuredSetsToolInput = z
   .object({
     kind: z
-      .enum(["nav-menu", "taxonomy", "theme", "tags", "link-list", "language-selector"])
+      .enum(["nav-menu", "taxonomy", "tags", "link-list", "language-selector"])
       .optional(),
   })
   .strict();
@@ -31,15 +31,16 @@ type ListStructuredSetsToolInput = z.infer<typeof listStructuredSetsToolInput>;
 export const listStructuredSetsTool: ToolDefinitionWithHandler<ListStructuredSetsToolInput> = {
   name: "list_structured_sets",
   description:
-    "List structured-data sets on this site. Pass `kind` to filter (nav-menu, tags, taxonomy, theme, link-list, language-selector); omit to return all kinds. " +
-    "The system-prompt block above already shows existing sets at session start; call this only if you need fresh state after a write or if the prompt block was truncated.",
+    "List structured-data sets on this site. Pass `kind` to filter (nav-menu, tags, taxonomy, link-list, language-selector); omit to return all kinds. " +
+    "The system-prompt block above already shows existing sets at session start; call this only if you need fresh state after a write or if the prompt block was truncated. " +
+    "Theme tokens are not structured sets (v0.11.0+) — use `list_themes` / `get_theme` instead.",
   schema: listStructuredSetsToolInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     properties: {
       kind: {
-        enum: ["nav-menu", "tags", "taxonomy", "theme", "link-list", "language-selector"],
+        enum: ["nav-menu", "tags", "taxonomy", "link-list", "language-selector"],
       },
     },
   },

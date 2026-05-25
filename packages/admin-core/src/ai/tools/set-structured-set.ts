@@ -37,9 +37,10 @@ export const setStructuredSetTool: ToolDefinitionWithHandler<
   name: "set_structured_set",
   description:
     "Upsert a structured-data set. Creates the set if `(kind, slug)` doesn't exist yet; REPLACES the items array if it does (NOT append — pass the full desired list). " +
-    "Kinds: nav-menu, tags, taxonomy, theme, link-list, language-selector. The per-item shape is enforced by Zod at the tool boundary; a mismatch is rejected with a structured error naming the offending field. " +
+    "Kinds: nav-menu, tags, taxonomy, link-list, language-selector. The per-item shape is enforced by Zod at the tool boundary; a mismatch is rejected with a structured error naming the offending field. " +
     "Current sets + their items (for nav-menus, up to 30 items) are inlined in the '# Structured-data sets you can edit' system-prompt block above; copy them and modify, don't re-invent. If a set isn't inlined (cap exceeded or different kind), call `get_structured_set({kind, slug})` first. " +
-    "Common slugs: nav-menu/header-main, nav-menu/footer-main, theme/site, tags/blog.",
+    "Common slugs: nav-menu/header-main, nav-menu/footer-main, tags/blog. " +
+    "Theme tokens are NOT structured sets anymore (v0.11.0) — use `set_theme_tokens` for theme edits and `propose_create_theme` to mint a new theme.",
   schema: setStructuredSetToolInput,
   inputSchema: {
     type: "object",
@@ -47,7 +48,7 @@ export const setStructuredSetTool: ToolDefinitionWithHandler<
     required: ["kind", "slug", "displayName", "items"],
     properties: {
       kind: {
-        enum: ["nav-menu", "tags", "taxonomy", "theme", "link-list", "language-selector"],
+        enum: ["nav-menu", "tags", "taxonomy", "link-list", "language-selector"],
       },
       slug: { type: "string", minLength: 1, maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
