@@ -126,3 +126,29 @@ export interface ContentInstanceState {
   readonly version: number;
   readonly deletedAt: string | null;
 }
+
+/**
+ * v0.11.0 (#45) — whole-blob state for one `themes` row. Stored in
+ * `theme_snapshots.state` by the shared emitSnapshot path. The shape
+ * matches the live `themes` row + the four media FK ids; restoring a
+ * snapshot copies the values back into the live row.
+ *
+ * Theme is small enough (one DTCG document + four media FK ids) that
+ * we don't shard per-token snapshot ops the way structured_set
+ * carries per-item op rows — whole-blob is sufficient for revert.
+ */
+export interface ThemeState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly slug: string;
+  readonly displayName: string;
+  readonly description: string | null;
+  readonly isActive: boolean;
+  readonly tokens: unknown;
+  readonly assets: {
+    readonly logo: string | null;
+    readonly logoDark: string | null;
+    readonly favicon: string | null;
+    readonly socialShare: string | null;
+  };
+  readonly deletedAt: string | null;
+}

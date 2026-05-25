@@ -47,6 +47,8 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
+import { emitSnapshot, type SnapshotOpKind } from "../snapshots/index.js";
+import type { ThemeState } from "../snapshots/state.js";
 
 // ────────────────────────────────────────────────────────────────────
 // Zod row schemas
@@ -147,44 +149,6 @@ const SELECT_THEME_COLUMNS = sql`
 // Snapshot helpers
 // ────────────────────────────────────────────────────────────────────
 
-interface ThemeSnapshotState {
-  schemaVersion: 1;
-  slug: string;
-  displayName: string;
-  description: string | null;
-  isActive: boolean;
-  tokens: ThemeDocument;
-  assets: {
-    logo: string | null;
-    logoDark: string | null;
-    favicon: string | null;
-    socialShare: string | null;
-  };
-  deletedAt: string | null;
-}
-
-async function emitThemeSnapshot(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  args: {
-    actorId: string;
-    chatBranchId?: string | null;
-    chatTaskId?: string | null;
-    siteSnapshotId: string;
-    themeId: string;
-    state: ThemeSnapshotState;
-  },
-): Promise<void> {
-  const stateJson = JSON.stringify(args.state);
-  await tx.execute(sql`
-    INSERT INTO theme_snapshots (site_snapshot_id, theme_id, state)
-    VALUES (
-      ${args.siteSnapshotId}::uuid,
-      ${args.themeId}::uuid,
-      ${stateJson}::jsonb
-    )
-  `);
-}
-
 async function fetchThemeOrNull(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   by: { id?: string; slug?: string; active?: true },
@@ -207,51 +171,45 @@ async function fetchThemeOrNull(
   return row ? dbRowToTheme(row) : null;
 }
 
-async function emitThemeWrite(
+/**
+ * Thin wrapper around the shared emitSnapshot — keeps the per-call
+ * boilerplate (opKind + description + state-from-theme) compact at
+ * every theme-write site without duplicating the snapshot emission
+ * itself. Step-11 opt §1: themes now ride the standard emitSnapshot
+ * path so revert / lock / audit improvements apply uniformly.
+ *
+ * Exported so the propose/execute path in themes_pending.ts (which
+ * emits a snapshot on the activation flip per step-11 opt §2) can
+ * reuse the same boilerplate-compaction.
+ */
+export async function emitThemeWrite(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   args: {
     actorId: string;
-    requestId: string;
     chatBranchId?: string | null;
     chatTaskId?: string | null;
-    opKind: "themes.update_tokens" | "themes.set_asset" | "themes.duplicate" | "themes.import_dtcg";
+    opKind: SnapshotOpKind;
     description: string;
-    themeId: string;
-    state: ThemeSnapshotState;
+    theme: Theme;
   },
 ): Promise<void> {
-  // The snapshot emitter dispatches per entity-kind; themes get a
-  // dedicated table not yet handled by SnapshotEntity. Emit the
-  // site_snapshots header via emitSnapshot with an empty entities
-  // list, then write the theme_snapshots row pointing at it.
-  // v0.11.x will fold "theme" into the SnapshotEntity union once the
-  // revert walker grows the matching branch; for v0.11.0 we keep the
-  // surface narrow and write the snapshot row directly.
-  const headerRows = (await tx.execute(sql`
-    INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id, revert_of)
-    VALUES (
-      ${args.actorId}::uuid,
-      ${args.opKind},
-      ${args.description},
-      ${args.chatTaskId ?? null},
-      ${args.chatBranchId ?? null},
-      ${null}
-    )
-    RETURNING id::text AS id
-  `)) as unknown as { id: string }[];
-  const siteSnapshotId = headerRows[0]?.id;
-  if (!siteSnapshotId) throw new Error("emitThemeWrite: site_snapshots returned no row");
-  await emitThemeSnapshot(tx, {
+  await emitSnapshot(tx, {
     actorId: args.actorId,
-    chatBranchId: args.chatBranchId,
-    chatTaskId: args.chatTaskId,
-    siteSnapshotId,
-    themeId: args.themeId,
-    state: args.state,
+    opKind: args.opKind,
+    description: args.description,
+    chatTaskId: args.chatTaskId ?? null,
+    chatBranchId: args.chatBranchId ?? null,
+    entities: [
+      {
+        kind: "theme",
+        entityId: args.theme.id,
+        state: buildSnapshotState(args.theme),
+      },
+    ],
   });
 }
 
-function buildSnapshotState(theme: Theme): ThemeSnapshotState {
+function buildSnapshotState(theme: Theme): ThemeState {
   return {
     schemaVersion: 1,
     slug: theme.slug,
@@ -445,13 +403,11 @@ export const updateThemeTokensOp = defineOperation({
     const nextTheme: Theme = { ...target, tokens: nextTokens };
     await emitThemeWrite(tx, {
       actorId: ctx.actorId,
-      requestId: ctx.requestId,
       chatBranchId: ctx.chatBranchId,
       chatTaskId: ctx.chatTaskId ?? null,
       opKind: "themes.update_tokens",
       description: `themes.update_tokens ${target.slug} written=${canonicalPathsWritten.length} removed=${removed.length}${branched ? " (branched)" : ""}`,
-      themeId: target.id,
-      state: buildSnapshotState(nextTheme),
+      theme: nextTheme,
     });
 
     await recordAudit(tx, {
@@ -560,13 +516,11 @@ export const setThemeAssetOp = defineOperation({
     }
     await emitThemeWrite(tx, {
       actorId: ctx.actorId,
-      requestId: ctx.requestId,
       chatBranchId: ctx.chatBranchId,
       chatTaskId: ctx.chatTaskId ?? null,
       opKind: "themes.set_asset",
       description: `themes.set_asset ${refreshed.slug} slot=${input.slot}`,
-      themeId: refreshed.id,
-      state: buildSnapshotState(refreshed),
+      theme: refreshed,
     });
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -662,13 +616,11 @@ export const duplicateThemeOp = defineOperation({
     }
     await emitThemeWrite(tx, {
       actorId: ctx.actorId,
-      requestId: ctx.requestId,
       chatBranchId: ctx.chatBranchId,
       chatTaskId: ctx.chatTaskId ?? null,
       opKind: "themes.duplicate",
       description: `themes.duplicate ${input.sourceSlug} → ${input.newSlug}`,
-      themeId: newId,
-      state: buildSnapshotState(newTheme),
+      theme: newTheme,
     });
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -757,13 +709,11 @@ export const importThemeDtcgOp = defineOperation({
     const nextTheme: Theme = { ...target, tokens: parsed };
     await emitThemeWrite(tx, {
       actorId: ctx.actorId,
-      requestId: ctx.requestId,
       chatBranchId: ctx.chatBranchId,
       chatTaskId: ctx.chatTaskId ?? null,
       opKind: "themes.import_dtcg",
       description: `themes.import_dtcg ${target.slug}${branched ? " (branched)" : ""}`,
-      themeId: target.id,
-      state: buildSnapshotState(nextTheme),
+      theme: nextTheme,
     });
     await recordAudit(tx, {
       actorId: ctx.actorId,

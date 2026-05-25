@@ -24,6 +24,7 @@ import type {
   PageState,
   StructuredSetState,
   TemplateState,
+  ThemeState,
 } from "./state.js";
 
 /**
@@ -60,7 +61,13 @@ export type SnapshotOpKind =
   | "content_instances.set_values"
   | "content_instances.delete"
   | "placement.set_content"
-  | "placement.fork_content";
+  | "placement.fork_content"
+  // v0.11.0 (#45) — themes primitive snapshot op kinds.
+  | "themes.update_tokens"
+  | "themes.set_asset"
+  | "themes.duplicate"
+  | "themes.import_dtcg"
+  | "themes.activate";
 
 export type SnapshotEntity =
   | { readonly kind: "module"; readonly entityId: string; readonly state: ModuleState }
@@ -81,6 +88,11 @@ export type SnapshotEntity =
       readonly kind: "contentInstance";
       readonly entityId: string;
       readonly state: ContentInstanceState;
+    }
+  | {
+      readonly kind: "theme";
+      readonly entityId: string;
+      readonly state: ThemeState;
     };
 
 export interface SnapshotInput {
@@ -175,6 +187,17 @@ export async function emitSnapshot(
         await tx.execute(sql`
           INSERT INTO content_instance_snapshots
             (site_snapshot_id, content_instance_id, state)
+          VALUES (
+            ${siteSnapshotId}::uuid,
+            ${entity.entityId}::uuid,
+            ${stateJson}::jsonb
+          )
+        `);
+        break;
+      case "theme":
+        await tx.execute(sql`
+          INSERT INTO theme_snapshots
+            (site_snapshot_id, theme_id, state)
           VALUES (
             ${siteSnapshotId}::uuid,
             ${entity.entityId}::uuid,

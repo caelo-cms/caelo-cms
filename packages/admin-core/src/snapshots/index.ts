@@ -47,6 +47,7 @@ export type {
   PageState,
   StateSchemaVersion,
   TemplateState,
+  ThemeState,
 } from "./state.js";
 export {
   parseAndUpgradeModuleState,

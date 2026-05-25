@@ -149,6 +149,55 @@ CREATE POLICY theme_pending_actions_authenticated_scope ON theme_pending_actions
   WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
 
 ------------------------------------------------------------------------
+-- site_snapshots.op_kind: add the 5 themes.* values
+------------------------------------------------------------------------
+-- emitSnapshot writes site_snapshots.op_kind from the SnapshotOpKind
+-- TS union; the matching CHECK constraint must list every value or
+-- the INSERT fails. Append the v0.11.0 theme write kinds.
+ALTER TABLE site_snapshots
+  DROP CONSTRAINT IF EXISTS site_snapshots_op_kind_check;
+ALTER TABLE site_snapshots
+  ADD CONSTRAINT site_snapshots_op_kind_check CHECK (op_kind IN (
+    'modules.create',
+    'modules.update',
+    'modules.delete',
+    'templates.create',
+    'templates.update',
+    'templates.delete',
+    'template_blocks.set',
+    'pages.create',
+    'pages.update',
+    'pages.set_modules',
+    'pages.delete',
+    'snapshots.revert_site',
+    'snapshots.revert_module',
+    'snapshots.revert_template',
+    'snapshots.revert_page',
+    'chat.publish',
+    'chat.merge_to_main',
+    'chat.stage',
+    'chat.unstage',
+    'layout_modules.set',
+    'page_module_content.set',
+    'structured_sets.set',
+    'redirects.create',
+    'redirects.update',
+    'redirects.delete',
+    'content_instances.create',
+    'content_instances.set_values',
+    'content_instances.delete',
+    'placement.set_content',
+    'placement.fork_content',
+    'unknown',
+    -- v0.11.0 (#45) — themes primitive.
+    'themes.update_tokens',
+    'themes.set_asset',
+    'themes.duplicate',
+    'themes.import_dtcg',
+    'themes.activate'
+  ));
+
+------------------------------------------------------------------------
 -- chat_entity_locks.entity_kind: add 'theme'
 ------------------------------------------------------------------------
 -- Themes are global (one active row affects every page) so writes lock
