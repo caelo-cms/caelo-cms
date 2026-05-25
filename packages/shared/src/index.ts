@@ -28,5 +28,6 @@ export * from "./skills.js";
 export * from "./snapshots.js";
 export * from "./structured-sets.js";
 export * from "./subagents.js";
+export * from "./template-engine.js";
 export * from "./translation.js";
 export { CAELO_VERSION, CALEO_VERSION, type CaeloVersion, parseVersion } from "./version.js";

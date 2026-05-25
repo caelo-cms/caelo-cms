@@ -5,6 +5,24 @@
  * unit-testable without the compose stack. `pages.render_preview`
  * fetches the data + calls into here.
  *
+ * v0.13 (#71) — Substitution + iteration moved into the shared
+ * template engine (`@caelo-cms/shared/template-engine`). This file
+ * keeps the recursion + cycle-detection + depth-limit guards because
+ * those rely on the DB-aware RenderResolver to walk nested module /
+ * content_instance refs. Per-call shape:
+ *   1. `renderInner` validates the (moduleId, contentInstanceId)
+ *      pair against the resolver and the depth / cycle bookkeeping.
+ *   2. The new `substituteWithRecursion` pre-resolves every nested
+ *      ref declared via field.kind === 'module' / 'module-list' by
+ *      recursing through `renderInner`, builds a deterministic
+ *      partials map (`<name>` for single refs, `<name>__<index>`
+ *      for list elements), and hands the engine the HTML + view +
+ *      partials.
+ *   3. The engine performs primitive substitution, section
+ *      iteration, and loud-raw / failure-marker emission. Its
+ *      `missingSlots` are merged into the recursion context's
+ *      `missing` array.
+ *
  * Template grammar (extends v0.4.0's `{{fieldName}}` with two nested
  * forms):
  *
@@ -14,21 +32,14 @@
  *                                        (field kind = 'module').
  *                                        values[fieldName] is
  *                                        { moduleId, contentInstanceId }.
- *   {{#fieldName}}{{/fieldName}}        — repeated nested module slot
- *                                        (field kind = 'module-list').
- *                                        values[fieldName] is an array
- *                                        of { moduleId, contentInstanceId };
- *                                        each nested module is rendered
- *                                        in order against its own
- *                                        content_instance. NOTE: any
- *                                        `inner` template text between
- *                                        the open + close tags is
- *                                        currently IGNORED in v0.12 —
- *                                        per-element wrappers
- *                                        (e.g. `<li>{{>item}}</li>`)
- *                                        are a future v0.x extension.
- *                                        Author the wrapper inside the
- *                                        nested module's own HTML.
+ *   {{#fieldName}}…{{/fieldName}}      — section over a list field
+ *                                        (kind = text-list / link-list
+ *                                        / module-list). text-list /
+ *                                        link-list iterate the inner
+ *                                        template; module-list ignores
+ *                                        the inner and renders each
+ *                                        element's nested module HTML
+ *                                        via `renderInner` (recursion).
  *
  * Pre-1.0 fail-loud (CLAUDE.md §2):
  *   - Depth limit 8 — beyond that, emit an HTML comment naming the
@@ -44,6 +55,8 @@
  * of band so the page's <head>/<style> + footer scripts are stable.
  */
 
+import { caeloMissingComment, type ModuleFieldKind, renderTemplate } from "@caelo-cms/shared";
+
 const MAX_RECURSION_DEPTH = 8;
 
 export interface ModuleResource {
@@ -54,7 +67,7 @@ export interface ModuleResource {
   readonly js: string;
   readonly fields: readonly {
     readonly name: string;
-    readonly kind: string;
+    readonly kind: ModuleFieldKind;
     readonly default?: unknown;
   }[];
 }
@@ -107,9 +120,11 @@ function isNestedRef(v: unknown): v is NestedRefValue {
   );
 }
 
-function comment(reason: string): string {
-  return `<!-- caelo:missing reason=${reason} -->`;
-}
+// Shared with the template engine so the failure-comment shape is
+// declared in exactly one place (`packages/shared/src/template-engine.ts`).
+// The chat-runner diag pass + editor missing-content surface depend on
+// this exact `<!-- caelo:missing reason=… -->` byte sequence.
+const comment = caeloMissingComment;
 
 /**
  * Render a module's HTML against a content_instance's values, recursing
@@ -174,166 +189,63 @@ function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderCon
   return substituteWithRecursion(mod, ci, childCtx);
 }
 
+/**
+ * v0.13 (#71) — Thin wrapper around the shared template engine.
+ * Pre-resolves nested module / module-list refs by recursing through
+ * `renderInner` (which keeps the depth-limit + cycle-detection +
+ * module-missing / content-instance-missing guards), builds the
+ * partials map the engine consumes, then delegates substitution +
+ * loud-raw + failure-marker emission to the engine.
+ *
+ * Partial-key contract (matches the engine's expectations):
+ *   - single `{{>name}}` (module field): partials[<name>] = rendered
+ *     HTML (or the loud comment from renderInner if recursion failed).
+ *   - `{{#name}}…{{/name}}` over module-list: partials[`<name>__<i>`]
+ *     = rendered HTML for element i. Malformed elements (non-NestedRef
+ *     shape) are NOT pre-resolved — the engine emits the existing
+ *     `module-list-malformed:<name>[<i>]` marker.
+ *
+ * Failure-marker parity: every literal `missingSlots` string the
+ * legacy hand-rolled substitution emitted is preserved — half by the
+ * engine (kind-mismatch, *-malformed, module-ref-malformed,
+ * field-not-declared), half by `renderInner` (depth-limit, cycle,
+ * module-missing, content-instance-missing, content-instance-mismatch).
+ * The chat-runner diag pass + editor missing-content surface match
+ * these strings literally; renaming any is a silent regression.
+ */
 function substituteWithRecursion(
   mod: ModuleResource,
   ci: ContentInstanceResource,
   ctx: RenderContext,
 ): string {
-  let html = mod.html;
-
-  // 1. Iteration slots: {{#fieldName}}…inner…{{/fieldName}}.
-  // Process before single-module + primitive so the inner template
-  // doesn't get touched twice. Non-greedy match; supports any inner.
-  //
-  // Three kinds dispatch through this branch by field.kind:
-  //   module-list — array of {moduleId, contentInstanceId} refs;
-  //                 each element renders its nested module's HTML
-  //                 (inner template text is ignored — wrappers
-  //                 belong inside the nested module).
-  //   text-list   — array of strings; inner template substitutes
-  //                 {{.}} or {{item}} with the current element.
-  //   link-list   — array of {label, href}; inner template
-  //                 substitutes {{label}} + {{href}} per iteration.
-  html = html.replace(
-    /\{\{#\s*([a-z][a-z0-9_]*)\s*\}\}([\s\S]*?)\{\{\/\s*\1\s*\}\}/g,
-    (_full, name: string, inner: string) => {
-      const field = mod.fields.find((f) => f.name === name);
-      if (!field) {
-        ctx.missing.push(`field-not-declared:${name}`);
-        return comment(`field-not-declared ${name}`);
+  const partials: Record<string, string> = {};
+  for (const field of mod.fields) {
+    if (field.kind === "module") {
+      const ref = ci.values[field.name];
+      if (isNestedRef(ref)) {
+        partials[field.name] = renderInner(ref.moduleId, ref.contentInstanceId, ctx);
       }
-      if (
-        field.kind !== "module-list" &&
-        field.kind !== "text-list" &&
-        field.kind !== "link-list"
-      ) {
-        ctx.missing.push(
-          `kind-mismatch:${name} expected=module-list|text-list|link-list actual=${field.kind}`,
-        );
-        return comment(`kind-mismatch ${name}`);
-      }
-      // Resolve the list values — prefer ci.values, fall back to the
-      // field's `default` so module authors can ship a sensible list
-      // that renders before the first content-instance edit.
-      const raw = Object.hasOwn(ci.values, name)
-        ? ci.values[name]
-        : "default" in field
-          ? field.default
-          : undefined;
-      if (!Array.isArray(raw)) {
-        // Empty list / unset is fine — render nothing.
-        return "";
-      }
-
-      if (field.kind === "text-list") {
-        // Inner template references {{.}} or {{item}} per iteration.
-        // Element type: string. We coerce to string defensively so
-        // numbers / booleans don't blow up rendering.
-        const parts: string[] = [];
-        for (let i = 0; i < raw.length; i += 1) {
-          const el = raw[i];
-          if (typeof el !== "string" && typeof el !== "number" && typeof el !== "boolean") {
-            ctx.missing.push(`text-list-malformed:${name}[${i}]`);
-            parts.push(comment(`text-list-malformed ${name}[${i}]`));
-            continue;
-          }
-          const value = String(el);
-          parts.push(inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => value));
-        }
-        return parts.join("");
-      }
-
-      if (field.kind === "link-list") {
-        // Inner template references {{label}} + {{href}} per iteration.
-        const parts: string[] = [];
-        for (let i = 0; i < raw.length; i += 1) {
-          const el = raw[i];
-          if (
-            typeof el !== "object" ||
-            el === null ||
-            typeof (el as { label?: unknown }).label !== "string" ||
-            typeof (el as { href?: unknown }).href !== "string"
-          ) {
-            ctx.missing.push(`link-list-malformed:${name}[${i}]`);
-            parts.push(comment(`link-list-malformed ${name}[${i}]`));
-            continue;
-          }
-          const { label, href } = el as { label: string; href: string };
-          parts.push(
-            inner
-              .replace(/\{\{\s*label\s*\}\}/g, () => label)
-              .replace(/\{\{\s*href\s*\}\}/g, () => href),
-          );
-        }
-        return parts.join("");
-      }
-
-      // module-list: each element renders its nested module's HTML
-      // (recursing through renderInner). Inner template text is
-      // ignored — per-element wrappers belong inside the nested
-      // module's own HTML, not in the outer iterator block.
-      const parts: string[] = [];
+      continue;
+    }
+    if (field.kind === "module-list") {
+      const raw = Object.hasOwn(ci.values, field.name) ? ci.values[field.name] : field.default;
+      if (!Array.isArray(raw)) continue;
       for (let i = 0; i < raw.length; i += 1) {
         const el = raw[i];
-        if (!isNestedRef(el)) {
-          ctx.missing.push(`module-list-malformed:${name}[${i}]`);
-          parts.push(comment(`module-list-malformed ${name}[${i}]`));
-          continue;
-        }
-        const nestedMod = ctx.resolver.getModule(el.moduleId);
-        const nestedCi = ctx.resolver.getContentInstance(el.contentInstanceId);
-        if (!nestedMod) {
-          ctx.missing.push(`module-missing:${el.moduleId}`);
-          parts.push(comment(`module-missing ${el.moduleId}`));
-          continue;
-        }
-        if (!nestedCi || nestedCi.deletedAt !== null) {
-          ctx.missing.push(`content-instance-missing:${el.contentInstanceId}`);
-          parts.push(comment(`content-instance-missing ${el.contentInstanceId}`));
-          continue;
-        }
-        parts.push(renderInner(el.moduleId, el.contentInstanceId, ctx));
-        void inner;
+        if (!isNestedRef(el)) continue; // engine emits module-list-malformed
+        partials[`${field.name}__${i}`] = renderInner(el.moduleId, el.contentInstanceId, ctx);
       }
-      return parts.join("");
-    },
-  );
+    }
+  }
 
-  // 2. Single nested module slots: {{>fieldName}}.
-  html = html.replace(/\{\{>\s*([a-z][a-z0-9_]*)\s*\}\}/g, (_full, name: string) => {
-    const field = mod.fields.find((f) => f.name === name);
-    if (!field) {
-      ctx.missing.push(`field-not-declared:${name}`);
-      return comment(`field-not-declared ${name}`);
-    }
-    if (field.kind !== "module") {
-      ctx.missing.push(`kind-mismatch:${name} expected=module actual=${field.kind}`);
-      return comment(`kind-mismatch ${name}`);
-    }
-    const ref = ci.values[name];
-    if (!isNestedRef(ref)) {
-      // Missing / malformed nested ref — render comment for visibility.
-      ctx.missing.push(`module-ref-malformed:${name}`);
-      return comment(`module-ref-malformed ${name}`);
-    }
-    return renderInner(ref.moduleId, ref.contentInstanceId, ctx);
+  const result = renderTemplate({
+    html: mod.html,
+    fields: mod.fields,
+    contentValues: ci.values,
+    partials,
   });
-
-  // 3. Primitive {{fieldName}} substitution — unchanged from v0.4.0
-  // (now with `mod.fields[].default` as the fallback).
-  html = html.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/gi, (full, name: string) => {
-    if (Object.hasOwn(ci.values, name)) {
-      const v = ci.values[name];
-      return v === null || v === undefined ? "" : String(v);
-    }
-    const field = mod.fields.find((f) => f.name === name);
-    if (field && field.default !== undefined && field.default !== null) {
-      return String(field.default);
-    }
-    return full;
-  });
-
-  return html;
+  for (const m of result.missingSlots) ctx.missing.push(m);
+  return result.html;
 }
 
 /**

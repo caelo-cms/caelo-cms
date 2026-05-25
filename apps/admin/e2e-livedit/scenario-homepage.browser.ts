@@ -260,6 +260,17 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     expect(productionBody, `Production HTML at ${productionUrl} missing "Caelo"`).toContain(
       "Caelo",
     );
+    // #71 regression guard — the bug this scenario is meant to catch:
+    // the static-gen compose path used to leak raw `{{#nav_items}}` /
+    // `{{/nav_items}}` markers to visitors when the AI authored
+    // text-list / link-list fields, because the no-DB compose path
+    // didn't implement Mustache section iteration. After Plan B
+    // (shared template engine), the published HTML must NEVER contain
+    // `{{#` or `{{/` markers. Closes the open thread on #62.
+    expect(
+      productionBody,
+      "Published HTML must not leak {{# or {{/ markers — see #71, closes the open thread on #62",
+    ).not.toMatch(/\{\{[#/]/);
     // The previous "MPL 2.0" production HTML substring check was
     // dropped — it depended on the AI emitting a literal copyright
     // footer module, which the AI doesn't do deterministically at

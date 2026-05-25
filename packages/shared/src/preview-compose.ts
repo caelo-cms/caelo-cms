@@ -25,12 +25,14 @@
  * the admin; in P11, plugin Web Components inside Shadow DOM).
  */
 
+import type { ModuleFieldKind } from "./content.js";
 import {
   applySlotReplacements,
   extractInnerOfTopLevelContentSlot,
   listSlotNames,
 } from "./preview-scanner.js";
 import { type LanguageSelectorOverride, renderLanguageSelector } from "./structured-sets.js";
+import { renderTemplate, type TemplateField } from "./template-engine.js";
 
 export interface ComposeModule {
   readonly moduleId: string;
@@ -40,18 +42,25 @@ export interface ComposeModule {
   readonly css: string;
   readonly js: string;
   /**
-   * v0.4.0 module-field schema. When present, the composer substitutes
-   * `{{name}}` placeholders in `html` with each field's `default` value
-   * before slot replacement — without this, modules created via the
-   * AI-authored extractor path (which mints `{{spantext}}` /
-   * `{{ctahref}}` etc. with declared defaults) ship raw placeholders
-   * to the browser, visible to visitors as literal `{{name}}` text.
+   * v0.4.0 module-field schema, extended in #71 to carry `kind` so
+   * the shared template engine can dispatch text-list / link-list /
+   * module-list / module sections. `kind` is optional for back-compat
+   * with callers that haven't been updated; the engine treats absent
+   * kinds as primitives (the legacy compose-path behaviour).
    *
-   * Per-placement overrides (content_instances.values) are NOT applied
-   * here — that's the preview-render path. Compose only fills in the
-   * default-floor so the published HTML is never broken.
+   * When present, the composer substitutes `{{name}}` placeholders
+   * in `html` with each field's `default` value before slot
+   * replacement — without this, modules created via the AI-authored
+   * extractor path (which mints `{{spantext}}` / `{{ctahref}}` etc.
+   * with declared defaults) ship raw placeholders to the browser,
+   * visible to visitors as literal `{{name}}` text.
+   *
+   * Per-placement overrides (content_instances.values) are applied
+   * here via the `contentValues` field below. The chat-branched
+   * preview path additionally walks nested-module refs in
+   * preview-render before reaching here.
    */
-  readonly fields?: readonly { name: string; default?: unknown }[];
+  readonly fields?: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[];
   /**
    * PR #61 follow-up — per-placement content values from the bound
    * `content_instances.values` jsonb. When present, the composer
@@ -301,54 +310,45 @@ function renderThemeCss(sets: ComposeStructuredSets | undefined): string | null 
 }
 
 /**
- * Substitute `{{name}}` placeholders in module HTML. Priority:
+ * Substitute `{{name}}` placeholders and `{{#name}}…{{/name}}`
+ * sections in module HTML. Thin wrapper around the shared template
+ * engine (#71); see `template-engine.ts` for the full substitution
+ * grammar and the loud-raw / failure-marker invariants.
  *
- *   1. `contentValues[name]` — per-placement value from the bound
- *      `content_instances` row (PR #61). What an editor changes in
- *      the chat/library; what static-gen now joins in too.
- *   2. `fields[name].default` — module-level default from the
- *      extractor (or AI-authored explicit fields).
- *   3. raw `{{name}}` left in place — pre-1.0 no-fallbacks
- *      (CLAUDE.md §2) so operators see the broken template instead
- *      of silently swallowing the placeholder.
+ * Compose is the no-DB path: nested-module field kinds (`module`,
+ * `module-list`) cannot be resolved here because the partial loader
+ * needs a DB walk to fetch nested content_instances. The engine
+ * emits a loud HTML comment for those refs so static-gen output is
+ * visible-broken (per CLAUDE.md §2) rather than silent-empty. The
+ * chat-branched preview path resolves nested refs via
+ * `preview-render.ts` BEFORE the substituted HTML reaches the
+ * composer, so this branch never trips for that path. Issue #70
+ * tracks pre-resolving in static-gen so the loud comment goes away
+ * there too.
  *
- * Both `contentValues` and `fields` are optional; the substitution
- * is a no-op when neither is supplied.
- *
- * Nested-module field kinds (`module`, `module-list`) are intentionally
- * NOT handled here — those need the recursive walk in
- * `packages/admin-core/src/ops/content/preview-render.ts`. Compose
- * stays pure / no-recursion. Issue #70 tracks unifying the two.
+ * Both `fields` and `contentValues` are optional. Field `kind` is
+ * optional for back-compat with callers that haven't been updated;
+ * the engine treats absent kinds as primitives (the legacy
+ * compose-path behaviour).
  */
 function applyFieldSubstitution(
   html: string,
-  fields: readonly { name: string; default?: unknown }[] | undefined,
+  fields: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[] | undefined,
   contentValues: Readonly<Record<string, unknown>> | undefined,
 ): string {
-  const defaults = new Map<string, unknown>();
-  if (fields) {
-    for (const f of fields) {
-      if (f.default !== undefined && f.default !== null) defaults.set(f.name, f.default);
-    }
-  }
-  const hasValues = contentValues && Object.keys(contentValues).length > 0;
-  if (defaults.size === 0 && !hasValues) return html;
-  // The `i` flag matches the legacy preview-render regex; field names
-  // are normalised to lowercase via the snakeCase pass in the
-  // extractor, so this catches both `{{ctaHref}}` and `{{ctahref}}`.
-  return html.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/gi, (full, name: string) => {
-    if (contentValues && Object.hasOwn(contentValues, name)) {
-      const v = contentValues[name];
-      return v === null || v === undefined ? "" : String(v);
-    }
-    const lower = name.toLowerCase();
-    if (contentValues && Object.hasOwn(contentValues, lower)) {
-      const v = contentValues[lower];
-      return v === null || v === undefined ? "" : String(v);
-    }
-    const dv = defaults.get(name) ?? defaults.get(lower);
-    return dv === undefined ? full : String(dv);
-  });
+  if (!fields && !contentValues) return html;
+  const engineFields: TemplateField[] = (fields ?? []).map((f) => ({
+    name: f.name,
+    kind: f.kind ?? "text",
+    default: f.default,
+  }));
+  return renderTemplate({
+    html,
+    fields: engineFields,
+    contentValues,
+    // Compose path has no DB; pass no partials so module/module-list
+    // refs emit the loud HTML comment per CLAUDE.md §2.
+  }).html;
 }
 
 export function tagModuleId(html: string, moduleId: string): string {

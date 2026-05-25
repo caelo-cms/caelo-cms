@@ -498,6 +498,199 @@ describe("renderModuleWithContent — safety invariants", () => {
   });
 });
 
+describe("renderModuleWithContent — engine-routing parity (#71)", () => {
+  // The substitution + section iteration moved into the shared
+  // template engine. These tests pin the behaviour-change cases the
+  // plan §8.1 calls out, plus the literal failure-marker strings the
+  // chat-runner diag pass + editor missing-content surface depend on.
+
+  it("AC #3 — unknown {{name}} leaves raw markers AND tracks field-not-declared", () => {
+    // Behaviour change from legacy: the old primitive branch silently
+    // returned the raw `{{name}}` text without pushing to missingSlots.
+    // The new uniform engine pushes `field-not-declared:<name>` for
+    // truly-unknown placeholders (declared-but-empty stays silent —
+    // the operator is still authoring). The chat-runner diag surface
+    // benefits from the richer signal.
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "broken",
+          html: "<p>{{ghost}}</p>",
+          css: "",
+          js: "",
+          fields: [],
+        },
+      ],
+      [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null }],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toBe("<p>{{ghost}}</p>");
+    expect(r.missingSlots).toContain("field-not-declared:ghost");
+  });
+
+  it("AC #3 — unknown {{#unknown}}…{{/unknown}} leaves raw markers AND tracks field-not-declared", () => {
+    // Deliberate HTML-shape change from legacy: today's hand-rolled
+    // path emitted `<!-- caelo:missing reason=field-not-declared … -->`
+    // inline; the new uniform behaviour leaves the raw markers per
+    // the AC #3 literal text. The structured missingSlots channel
+    // callers depend on stays populated.
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "broken-block",
+          html: "<p>{{#unknown}}x{{/unknown}}</p>",
+          css: "",
+          js: "",
+          fields: [],
+        },
+      ],
+      [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null }],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toBe("<p>{{#unknown}}x{{/unknown}}</p>");
+    expect(r.missingSlots).toContain("field-not-declared:unknown");
+  });
+
+  it("kind-mismatch on {{#name}} against a primitive field emits the exact legacy string", () => {
+    const expected = "kind-mismatch:title expected=module-list|text-list|link-list actual=text";
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "mismatch",
+          html: "<p>{{#title}}x{{/title}}</p>",
+          css: "",
+          js: "",
+          fields: [{ name: "title", kind: "text" }],
+        },
+      ],
+      [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null }],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toContain(`<!-- caelo:missing reason=${expected} -->`);
+    expect(r.missingSlots).toContain(expected);
+  });
+
+  it("kind-mismatch on {{>name}} against a list field emits the exact legacy string", () => {
+    const expected = "kind-mismatch:items expected=module actual=text-list";
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "mismatch-partial",
+          html: "<aside>{{>items}}</aside>",
+          css: "",
+          js: "",
+          fields: [{ name: "items", kind: "text-list" }],
+        },
+      ],
+      [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null }],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toContain(`<!-- caelo:missing reason=${expected} -->`);
+    expect(r.missingSlots).toContain(expected);
+  });
+
+  it("module-ref-malformed on {{>name}} when the value is not a NestedRef", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "malformed-ref",
+          html: "<aside>{{>hero}}</aside>",
+          css: "",
+          js: "",
+          fields: [{ name: "hero", kind: "module" }],
+        },
+      ],
+      [
+        {
+          id: PARENT_CI_ID,
+          moduleId: PARENT_MOD_ID,
+          values: { hero: "not-a-ref" },
+          deletedAt: null,
+        },
+      ],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toContain("<!-- caelo:missing reason=module-ref-malformed hero -->");
+    expect(r.missingSlots).toContain("module-ref-malformed:hero");
+  });
+
+  it("text-list-malformed per element preserves the exact legacy marker", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "text-list-malformed",
+          html: "<ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>",
+          css: "",
+          js: "",
+          fields: [{ name: "items", kind: "text-list" }],
+        },
+      ],
+      [
+        {
+          id: PARENT_CI_ID,
+          moduleId: PARENT_MOD_ID,
+          values: { items: ["a", { bogus: true }, "c"] },
+          deletedAt: null,
+        },
+      ],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toContain("<li>a</li>");
+    expect(r.html).toContain("<li>c</li>");
+    expect(r.html).toContain("<!-- caelo:missing reason=text-list-malformed items[1] -->");
+    expect(r.missingSlots).toContain("text-list-malformed:items[1]");
+  });
+
+  it("module-list-malformed per element preserves the exact legacy marker", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "module-list-malformed",
+          html: "<ul>{{#cards}}x{{/cards}}</ul>",
+          css: "",
+          js: "",
+          fields: [{ name: "cards", kind: "module-list" }],
+        },
+        {
+          moduleId: CHILD_MOD_ID,
+          slug: "card",
+          html: "<article>{{title}}</article>",
+          css: "",
+          js: "",
+          fields: [{ name: "title", kind: "text" }],
+        },
+      ],
+      [
+        {
+          id: PARENT_CI_ID,
+          moduleId: PARENT_MOD_ID,
+          values: {
+            cards: [{ moduleId: CHILD_MOD_ID, contentInstanceId: CHILD_CI_ID }, "not-a-ref"],
+          },
+          deletedAt: null,
+        },
+        {
+          id: CHILD_CI_ID,
+          moduleId: CHILD_MOD_ID,
+          values: { title: "OK" },
+          deletedAt: null,
+        },
+      ],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toContain("<article>OK</article>");
+    expect(r.html).toContain("<!-- caelo:missing reason=module-list-malformed cards[1] -->");
+    expect(r.missingSlots).toContain("module-list-malformed:cards[1]");
+  });
+});
+
 describe("collectNestedRefs", () => {
   it("returns single + list refs from a values bag, ignoring primitives", () => {
     const refA: NestedRefValue = { moduleId: "m-a", contentInstanceId: "c-a" };
