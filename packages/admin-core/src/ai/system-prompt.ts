@@ -573,7 +573,18 @@ export function composeSystemPrompt(
  * post-0097).
  */
 export function formatThemeBlock(
-  theme: { slug: string; displayName: string; tokensSummary: string } | null,
+  theme: {
+    slug: string;
+    displayName: string;
+    /**
+     * Round-2 opt §4: the operator-supplied description column from
+     * the themes table. Optional — pre-v0.11.0 single-theme installs
+     * leave it null. When set, the AI uses it as the intent signal
+     * for multi-theme installs ("Brand Orange — campaign-page variant").
+     */
+    description?: string | null;
+    tokensSummary: string;
+  } | null,
 ): string {
   if (!theme) {
     return [
@@ -582,10 +593,11 @@ export function formatThemeBlock(
       "_No active theme on this install. An Owner must propose+approve one via `propose_create_theme`._",
     ].join("\n");
   }
+  const descriptionLine = theme.description ? `\n_${theme.description}_\n` : "";
   return [
     "## Theme",
     "",
-    `Active theme: **${theme.displayName}** (slug \`${theme.slug}\`) — ${theme.tokensSummary}.`,
+    `Active theme: **${theme.displayName}** (slug \`${theme.slug}\`) — ${theme.tokensSummary}.${descriptionLine}`,
     "",
     "Tools (all read tokens by canonical DTCG path; `set_theme_tokens` ALSO accepts loose names that the server normalizes):",
     "- `list_themes()` — list every theme (one active, rest variants).",

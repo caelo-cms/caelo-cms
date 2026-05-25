@@ -44,6 +44,7 @@ import {
   resolveEngagements,
   skillAutoEngagementHints,
   summarizeTokens,
+  type Theme,
   type ThemeDocument,
 } from "@caelo-cms/shared";
 
@@ -513,15 +514,19 @@ export async function* runChatTurn(
   let themeBlock: string | undefined;
   const activeThemeR = await execute(registry, adapter, humanCtx, "themes.get_active", {});
   if (activeThemeR.ok) {
-    const theme = (activeThemeR.value as {
-      theme: { slug: string; displayName: string; tokens: unknown } | null;
-    }).theme;
+    // Round-2 opt §3: cast to the typed Theme aggregate (op output schema)
+    // instead of a hand-rolled partial; surfaces compile-time errors if
+    // themes.get_active's output ever drifts.
+    const { theme } = activeThemeR.value as { theme: Theme | null };
     if (theme) {
-      const summary = summarizeTokens(theme.tokens as ThemeDocument);
       themeBlock = formatThemeBlock({
         slug: theme.slug,
         displayName: theme.displayName,
-        tokensSummary: summary,
+        // Round-2 opt §4: surface the operator-supplied description so
+        // multi-theme installs (v0.11.1+) let the AI pick the right slug
+        // by intent (e.g. "Brand Orange — campaign-page variant").
+        description: theme.description,
+        tokensSummary: summarizeTokens(theme.tokens as ThemeDocument),
       });
     } else {
       themeBlock = formatThemeBlock(null);
