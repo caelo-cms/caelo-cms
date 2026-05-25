@@ -28,13 +28,17 @@ import { deletePageTool } from "./delete-page.js";
 import { deleteStructuredSetTool } from "./delete-structured-set.js";
 import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
+import { duplicateThemeTool } from "./duplicate-theme.js";
 import { editModuleTool } from "./edit-module.js";
+import { exportThemeTool } from "./export-theme.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
 import { forkPlacementContentTool } from "./fork-placement-content.js";
 import { generateImageTool } from "./generate-image.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
+import { getThemeTool } from "./get-theme.js";
+import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
@@ -42,6 +46,7 @@ import { listLayoutsTool } from "./list-layouts.js";
 import { listPagesTool } from "./list-pages.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
+import { listThemesTool } from "./list-themes.js";
 import { moveModuleTool } from "./move-module.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeAddLocaleTool } from "./propose-add-locale.js";
@@ -51,8 +56,11 @@ import { proposeSetDefaultLocaleTool } from "./propose-set-default-locale.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
 import { proposeSkillTool } from "./propose-skill.js";
 import {
+  proposeActivateThemeTool,
   proposeAiProvidersClearKeyTool,
   proposeAiProvidersSetTool,
+  proposeCreateThemeTool,
+  proposeDeleteThemeTool,
   proposeDomainAddTool,
   proposeDomainRemoveTool,
   proposeEmailConfigSetTool,
@@ -95,6 +103,8 @@ import { setPlacementContentTool } from "./set-placement-content.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
+import { setThemeAssetTool } from "./set-theme-asset.js";
+import { updateThemeTokensTool } from "./update-theme-tokens.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
 import { submitPluginTool } from "./submit-plugin.js";
@@ -260,6 +270,18 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeDomainRemoveTool);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);
+  // v0.11.0 — themes primitive (#45). Routine + the §11.A propose
+  // wrappers for create / activate / delete.
+  registry.register(listThemesTool);
+  registry.register(getThemeTool);
+  registry.register(updateThemeTokensTool);
+  registry.register(setThemeAssetTool);
+  registry.register(duplicateThemeTool);
+  registry.register(importThemeTool);
+  registry.register(exportThemeTool);
+  registry.register(proposeCreateThemeTool);
+  registry.register(proposeActivateThemeTool);
+  registry.register(proposeDeleteThemeTool);
   return registry;
 }
 
