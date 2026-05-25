@@ -183,7 +183,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       } else if (langSelector !== null) {
         baseHtml = langSelector;
       } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -369,8 +369,9 @@ function applyFieldSubstitution(
   html: string,
   fields: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[] | undefined,
   contentValues: Readonly<Record<string, unknown>> | undefined,
+  theme: ComposeTheme | undefined,
 ): string {
-  if (!fields && !contentValues) return html;
+  if (!fields && !contentValues && !theme) return html;
   const engineFields: TemplateField[] = (fields ?? []).map((f) => ({
     name: f.name,
     kind: f.kind ?? "text",
@@ -380,6 +381,17 @@ function applyFieldSubstitution(
     html,
     fields: engineFields,
     contentValues,
+    // v0.11.1 (issue #76) — thread the active theme's asset URLs so
+    // module HTML carrying `{{theme_logo_url}}` etc. resolves. Unbound
+    // slots emit loud-raw + `theme-asset-unbound:<slot>` markers.
+    themeAssets: theme
+      ? {
+          logo: theme.assets.logo?.url ?? null,
+          logoDark: theme.assets.logoDark?.url ?? null,
+          favicon: theme.assets.favicon?.url ?? null,
+          socialShare: theme.assets.socialShare?.url ?? null,
+        }
+      : undefined,
     // Compose path has no DB; pass no partials so module/module-list
     // refs emit the loud HTML comment per CLAUDE.md §2.
   }).html;
@@ -511,7 +523,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       } else if (langSelector !== null) {
         baseHtml = langSelector;
       } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });
@@ -543,7 +555,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       } else if (langSelector !== null) {
         baseHtml = langSelector;
       } else {
-        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues);
+        baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
       }
       return tagModuleId(baseHtml, m.moduleId);
     });

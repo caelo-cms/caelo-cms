@@ -30,6 +30,9 @@
  * `kind-mismatch:<name> expected=<…> actual=<kind>`,
  * `text-list-malformed:<name>[<i>]`, `link-list-malformed:<name>[<i>]`,
  * `module-list-malformed:<name>[<i>]`, `module-ref-malformed:<name>`.
+ * v0.11.1 (issue #76): `theme-asset-unbound:<slot>` for the four
+ * `{{theme_<slot>_url}}` placeholders when the active theme's asset
+ * slot isn't bound.
  * The chat-runner diag pass + editor missing-content surface read
  * these literal strings; any rename is a silent regression for them.
  *
@@ -83,6 +86,22 @@ export interface RenderTemplateInput {
    * Preview-render path: built from RenderResolver walks.
    */
   readonly partials?: Readonly<Record<string, string>>;
+  /**
+   * v0.11.1 (issue #76) — active theme's resolved asset URLs. When
+   * present, `{{theme_logo_url}}` / `{{theme_logo_dark_url}}` /
+   * `{{theme_favicon_url}}` / `{{theme_social_share_url}}` substitute
+   * to the asset URL string. Unbound slots (null/absent) follow the
+   * existing loud-raw invariant (CLAUDE.md §2): the `{{…}}` stays in
+   * the output verbatim AND `theme-asset-unbound:<slot>` lands in
+   * `missingSlots`. Per-placement `contentValues` still take
+   * precedence so an operator can override on a single module.
+   */
+  readonly themeAssets?: {
+    readonly logo: string | null;
+    readonly logoDark: string | null;
+    readonly favicon: string | null;
+    readonly socialShare: string | null;
+  };
 }
 
 export interface RenderTemplateOutput {
@@ -111,6 +130,20 @@ const PRIMITIVE_RE = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
 // from content.ts so new list-shaped kinds wire through automatically
 // when the canonical declaration is extended.
 const SECTION_KINDS: ReadonlySet<string> = new Set(MODULE_FIELD_SECTION_KINDS);
+
+// v0.11.1 (issue #76) — the four theme-asset substitutions the engine
+// resolves from `RenderTemplateInput.themeAssets`. Keys are the
+// `{{name}}` placeholders module authors write; the table maps them
+// back to the asset slot on the ComposeTheme.assets aggregate.
+const THEME_ASSET_KEY_TO_SLOT = {
+  theme_logo_url: "logo",
+  theme_logo_dark_url: "logoDark",
+  theme_favicon_url: "favicon",
+  theme_social_share_url: "socialShare",
+} as const;
+const THEME_ASSET_KEYS = Object.keys(THEME_ASSET_KEY_TO_SLOT) as ReadonlyArray<
+  keyof typeof THEME_ASSET_KEY_TO_SLOT
+>;
 
 function isNestedRef(v: unknown): v is NestedRef {
   return (
@@ -215,9 +248,37 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     if (f.default !== undefined && f.default !== null) view[lower] = f.default;
   }
 
+  // v0.11.1 (issue #76) — pre-populate four theme-asset substitutions
+  // when the caller supplied `themeAssets`. `contentValues` already
+  // populated `view` above so any per-placement override wins (per
+  // §S19's "contentValues take precedence" invariant). Unbound slots
+  // (null) DON'T land in the view — they fall through to the loud-raw
+  // path below, but mark themselves with `theme-asset-unbound:<slot>`
+  // so the failure marker disambiguates from `field-not-declared`.
+  const themeAssetKeys = THEME_ASSET_KEYS;
+  const themeAssetSlotByKey = THEME_ASSET_KEY_TO_SLOT;
+  const themeAssets = input.themeAssets;
+  if (themeAssets) {
+    for (const key of themeAssetKeys) {
+      const slot = themeAssetSlotByKey[key];
+      const url = themeAssets[slot];
+      if (typeof url === "string" && url.length > 0 && !(key in view)) {
+        view[key] = url;
+      }
+    }
+  }
+
   html = html.replace(PRIMITIVE_RE, (match, name: string) => {
     const lower = name.toLowerCase();
     if (lower in view) return `{{${lower}}}`;
+    // v0.11.1 (issue #76) — theme-asset placeholder with no bound URL.
+    // Use a dedicated marker so the failure surface disambiguates from
+    // the generic field-not-declared marker.
+    if (lower in themeAssetSlotByKey) {
+      const slot = themeAssetSlotByKey[lower as keyof typeof THEME_ASSET_KEY_TO_SLOT];
+      missing.push(`theme-asset-unbound:${slot}`);
+      return mkSentinel(match);
+    }
     // No value + no default: leave raw (CLAUDE.md §2). Track in
     // missingSlots only when the field isn't declared at all —
     // declared-but-empty is the operator's responsibility (still
