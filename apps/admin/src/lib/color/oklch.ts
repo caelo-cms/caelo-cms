@@ -61,8 +61,12 @@ export function parseColor(input: string): ParsedColor {
  * so client-side previews stay byte-identical to derived ramp stops.
  */
 export function formatOklch(coords: readonly [number, number, number]): string {
-  const fmt = (n: number): string => {
-    if (!isFinite(n)) return "0";
+  // colorjs.io returns `null` (not NaN) for the hue of an achromatic
+  // color like `#ffffff` / `#000000` / gray; coerce both null and NaN
+  // to 0 so the OKLCh string is well-formed and downstream
+  // `.toFixed(3)` doesn't throw on null.
+  const fmt = (n: number | null | undefined): string => {
+    if (n == null || !isFinite(n)) return "0";
     return n.toFixed(3).replace(/\.?0+$/, "") || "0";
   };
   return `oklch(${fmt(coords[0])} ${fmt(coords[1])} ${fmt(coords[2])})`;

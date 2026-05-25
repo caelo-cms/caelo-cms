@@ -141,7 +141,7 @@
                 name="newSlug"
                 placeholder="new-slug"
                 required
-                pattern="[a-z0-9][a-z0-9-]*"
+                pattern={"[a-z0-9](?:[a-z0-9]|-)*"}
                 class="w-24 rounded-md border bg-background p-1 text-xs"
               />
               <input
@@ -181,7 +181,7 @@
       <input type="hidden" name="_csrf" value={data.csrfToken} />
       <div class="grid gap-1.5">
         <Label for="ct-slug">Slug</Label>
-        <Input id="ct-slug" name="slug" required pattern="[a-z0-9][a-z0-9-]*" placeholder="brand-orange" />
+        <Input id="ct-slug" name="slug" required pattern={"[a-z0-9](?:[a-z0-9]|-)*"} placeholder="brand-orange" />
       </div>
       <div class="grid gap-1.5">
         <Label for="ct-displayName">Display name</Label>
