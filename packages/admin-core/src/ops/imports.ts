@@ -23,6 +23,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
 
@@ -850,39 +851,32 @@ export const composeFromImportRunOp = defineOperation({
       }
     }
 
-    // 5. Merge aggregated tokens into the active themes row (v0.11.0).
-    // Pre-v0.11 wrote a flat structured_sets row at `theme/site`; the
-    // new primitive carries DTCG-shaped jsonb. Mapping mirrors the
-    // 0097 migration: scope drives the category bucket; unscoped
-    // values default to color (hex-like) or spacing (else).
+    // 5. Merge aggregated tokens into the active themes row via the
+    // `themes.update_tokens` op (v0.11.0, #45 AC #12). The op emits
+    // a theme_snapshots row + audit + acquires the per-entity lock,
+    // so importer-driven theme writes show up in site history and can
+    // be reverted like any other theme edit. Pre-v0.11 wrote a flat
+    // structured_sets row at `theme/site`; the new primitive carries
+    // DTCG-shaped jsonb.
     if (aggregatedTokens.length > 0) {
-      const activeRows = (await tx.execute(sql`
-        SELECT id::text AS id, tokens FROM themes WHERE is_active = true LIMIT 1
-      `)) as unknown as Array<{ id: string; tokens: unknown }>;
-      const active = activeRows[0];
-      if (active) {
-        const merged: Record<string, unknown> =
-          typeof active.tokens === "string"
-            ? (JSON.parse(active.tokens) as Record<string, unknown>)
-            : ({ ...((active.tokens as Record<string, unknown>) ?? {}) });
-        for (const t of aggregatedTokens) {
-          const { category, basename, $type } = mapAggregatedTokenToDtcg(t);
-          if (!basename) continue;
-          if (!merged[category] || typeof merged[category] !== "object") {
-            merged[category] = {};
-          }
-          (merged[category] as Record<string, unknown>)[basename] = {
-            $value: t.value,
-            $type,
-          };
+      const set: Record<string, unknown> = {};
+      for (const t of aggregatedTokens) {
+        const prepared = prepareLegacyAggregatedToken(t);
+        if (prepared) set[prepared.canonicalPath] = prepared.value;
+      }
+      if (Object.keys(set).length > 0) {
+        const r = await updateThemeTokensOp.handler(ctx, { set }, tx);
+        if (!r.ok) {
+          return err({
+            kind: "HandlerError",
+            operation: "imports.compose_from_run",
+            message: `theme merge failed: ${
+              typeof r.error === "object" && r.error && "message" in r.error
+                ? String((r.error as { message: unknown }).message)
+                : "unknown"
+            }`,
+          });
         }
-        await tx.execute(sql`
-          UPDATE themes
-          SET tokens = ${JSON.stringify(merged)}::text::jsonb,
-              updated_at = now(),
-              updated_by = ${ctx.actorId}::uuid
-          WHERE id = ${active.id}::uuid
-        `);
       }
     }
 
@@ -1035,41 +1029,48 @@ export const composeFromImportRunOp = defineOperation({
 });
 
 /**
- * v0.11.0 (#45) — map an importer-aggregated `{token, value, scope?}`
- * tuple to a DTCG `(category, basename, $type)` triple. Mirrors the
- * scope→category logic baked into migration 0097's back-fill so
- * imports land at the same DTCG paths that an upgrade-in-place would.
+ * v0.11.0 (#45 AC #12) — convert an importer-aggregated
+ * `{token, value, scope?}` tuple into a `themes.update_tokens`-ready
+ * `(canonicalPath, value)` pair.
+ *
+ * The legacy importer stores every theme value as a string. The new
+ * DTCG schema accepts:
+ *
+ *   - color / dimension (color, spacing, radius, breakpoint) — flat
+ *     string value, passed through as-is.
+ *   - typography composite — `$value` must be an object with
+ *     fontFamily / fontSize / etc. so we wrap the legacy string as
+ *     `{fontFamily: <value>}`.
+ *   - shadow composite — `$value` must be a structured object;
+ *     parsing the legacy stringified shadow ("0 1px 2px rgba(...)") is
+ *     out of scope for v0.11.0, so shadow tokens from the importer are
+ *     dropped (returns null). Importers that need full shadow support
+ *     should hand-edit the theme after the run.
+ *
+ * Scope → category mirrors migration 0097's back-fill so imports land
+ * at the same DTCG paths as an upgrade-in-place.
  */
-function mapAggregatedTokenToDtcg(t: { token: string; value: string; scope?: string }): {
-  category: string;
-  basename: string;
-  $type: "color" | "dimension" | "shadow";
-} {
+function prepareLegacyAggregatedToken(t: {
+  token: string;
+  value: string;
+  scope?: string;
+}): { canonicalPath: string; value: unknown } | null {
+  // Determine category + basename.
   let category: string;
-  let $type: "color" | "dimension" | "shadow";
-  if (t.scope === "color") {
-    category = "color";
-    $type = "color";
-  } else if (t.scope === "font") {
-    category = "typography";
-    $type = "dimension";
-  } else if (t.scope === "space") {
-    category = "spacing";
-    $type = "dimension";
-  } else if (t.scope === "radius") {
-    category = "radius";
-    $type = "dimension";
-  } else if (t.scope === "shadow") {
-    category = "shadow";
-    $type = "shadow";
-  } else if (/^#[0-9a-fA-F]{3,8}$/.test(t.value)) {
-    category = "color";
-    $type = "color";
-  } else {
-    category = "spacing";
-    $type = "dimension";
-  }
-  // Strip a leading `<category>-` (or scope-prefixed) name so
+  if (t.scope === "color") category = "color";
+  else if (t.scope === "font") category = "typography";
+  else if (t.scope === "space") category = "spacing";
+  else if (t.scope === "radius") category = "radius";
+  else if (t.scope === "shadow") category = "shadow";
+  else if (/^#[0-9a-fA-F]{3,8}$/.test(t.value)) category = "color";
+  else category = "spacing";
+
+  // Drop shadow tokens — legacy stringified shadows don't round-trip
+  // into the DTCG composite shape. v0.11.0 leaves the existing
+  // shadow tokens untouched.
+  if (category === "shadow") return null;
+
+  // Strip the leading `<category>-` (or scope-prefixed) name so
   // `color-primary` becomes `primary`.
   let basename = t.token;
   const prefixes = [category, t.scope ?? "", "font", "space"].filter((p) => p);
@@ -1079,5 +1080,14 @@ function mapAggregatedTokenToDtcg(t: { token: string; value: string; scope?: str
       break;
     }
   }
-  return { category, basename, $type };
+  if (!basename) return null;
+
+  const canonicalPath = `${category}.${basename}`;
+
+  // Shape the value: typography needs the composite object envelope;
+  // everything else is a flat string.
+  const value: unknown =
+    category === "typography" ? { fontFamily: t.value } : t.value;
+
+  return { canonicalPath, value };
 }
