@@ -32,6 +32,8 @@ export * from "./template-engine.js";
 export * from "./theme-importers/dtcg.js";
 export * from "./theme-normalize.js";
 export { getPreset, PRESET_NAMES, type PresetName } from "./theme-presets/index.js";
+export * from "./theme-ramp.js";
+export * from "./theme-render.js";
 export * from "./themes.js";
 export * from "./themes-errors.js";
 export * from "./translation.js";
