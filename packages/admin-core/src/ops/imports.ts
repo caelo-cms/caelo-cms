@@ -850,24 +850,40 @@ export const composeFromImportRunOp = defineOperation({
       }
     }
 
-    // 5. Write theme set if anything was aggregated. Reuses the canonical
-    // `theme/site` slug consumed by the renderer.
+    // 5. Merge aggregated tokens into the active themes row (v0.11.0).
+    // Pre-v0.11 wrote a flat structured_sets row at `theme/site`; the
+    // new primitive carries DTCG-shaped jsonb. Mapping mirrors the
+    // 0097 migration: scope drives the category bucket; unscoped
+    // values default to color (hex-like) or spacing (else).
     if (aggregatedTokens.length > 0) {
-      await tx.execute(sql`
-        INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
-        VALUES (
-          'theme',
-          'site',
-          'Site theme (imported)',
-          ${JSON.stringify(aggregatedTokens)}::text::jsonb,
-          ${ctx.actorId}::uuid
-        )
-        ON CONFLICT (kind, slug) DO UPDATE SET
-          display_name = EXCLUDED.display_name,
-          items        = EXCLUDED.items,
-          updated_at   = now(),
-          updated_by   = EXCLUDED.updated_by
-      `);
+      const activeRows = (await tx.execute(sql`
+        SELECT id::text AS id, tokens FROM themes WHERE is_active = true LIMIT 1
+      `)) as unknown as Array<{ id: string; tokens: unknown }>;
+      const active = activeRows[0];
+      if (active) {
+        const merged: Record<string, unknown> =
+          typeof active.tokens === "string"
+            ? (JSON.parse(active.tokens) as Record<string, unknown>)
+            : ({ ...((active.tokens as Record<string, unknown>) ?? {}) });
+        for (const t of aggregatedTokens) {
+          const { category, basename, $type } = mapAggregatedTokenToDtcg(t);
+          if (!basename) continue;
+          if (!merged[category] || typeof merged[category] !== "object") {
+            merged[category] = {};
+          }
+          (merged[category] as Record<string, unknown>)[basename] = {
+            $value: t.value,
+            $type,
+          };
+        }
+        await tx.execute(sql`
+          UPDATE themes
+          SET tokens = ${JSON.stringify(merged)}::text::jsonb,
+              updated_at = now(),
+              updated_by = ${ctx.actorId}::uuid
+          WHERE id = ${active.id}::uuid
+        `);
+      }
     }
 
     // 6. Find or create the target template. Fresh-on-conflict pattern
@@ -1017,3 +1033,51 @@ export const composeFromImportRunOp = defineOperation({
     });
   },
 });
+
+/**
+ * v0.11.0 (#45) — map an importer-aggregated `{token, value, scope?}`
+ * tuple to a DTCG `(category, basename, $type)` triple. Mirrors the
+ * scope→category logic baked into migration 0097's back-fill so
+ * imports land at the same DTCG paths that an upgrade-in-place would.
+ */
+function mapAggregatedTokenToDtcg(t: { token: string; value: string; scope?: string }): {
+  category: string;
+  basename: string;
+  $type: "color" | "dimension" | "shadow";
+} {
+  let category: string;
+  let $type: "color" | "dimension" | "shadow";
+  if (t.scope === "color") {
+    category = "color";
+    $type = "color";
+  } else if (t.scope === "font") {
+    category = "typography";
+    $type = "dimension";
+  } else if (t.scope === "space") {
+    category = "spacing";
+    $type = "dimension";
+  } else if (t.scope === "radius") {
+    category = "radius";
+    $type = "dimension";
+  } else if (t.scope === "shadow") {
+    category = "shadow";
+    $type = "shadow";
+  } else if (/^#[0-9a-fA-F]{3,8}$/.test(t.value)) {
+    category = "color";
+    $type = "color";
+  } else {
+    category = "spacing";
+    $type = "dimension";
+  }
+  // Strip a leading `<category>-` (or scope-prefixed) name so
+  // `color-primary` becomes `primary`.
+  let basename = t.token;
+  const prefixes = [category, t.scope ?? "", "font", "space"].filter((p) => p);
+  for (const p of prefixes) {
+    if (basename.startsWith(`${p}-`)) {
+      basename = basename.slice(p.length + 1);
+      break;
+    }
+  }
+  return { category, basename, $type };
+}
