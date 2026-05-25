@@ -15,8 +15,8 @@
  * use `themes.update_tokens` directly.
  */
 
-import { applyDtcgWrites, type ThemeDocument, validateThemeTokens } from "../themes.js";
 import { normalizeTokens } from "../theme-normalize.js";
+import { applyDtcgWrites, type ThemeDocument, validateThemeTokens } from "../themes.js";
 import { NotLooseShape } from "../themes-errors.js";
 
 export function importLoose(body: string): ThemeDocument {

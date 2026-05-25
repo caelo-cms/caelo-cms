@@ -53,7 +53,7 @@ export function wcagBadge(ratio: number): WcagGrade {
  */
 function relativeLuminance(srgb: readonly [number, number, number]): number {
   const linearise = (c: number): number =>
-    c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
   const [r, g, b] = srgb.map(linearise) as [number, number, number];
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }

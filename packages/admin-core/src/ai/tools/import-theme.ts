@@ -22,6 +22,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import {
+  type AutoDetectResult,
   autoDetectAndImport,
   NoImporterMatched,
   TailwindImportError,
@@ -68,7 +69,7 @@ export const importThemeTool: ToolDefinitionWithHandler<ImportThemeToolInput> = 
   handler: async (ctx, input, toolCtx) => {
     // 1. Auto-detect the format in TS-land so the op surface stays
     //    parser-free (single responsibility: write pre-parsed tokens).
-    let detected;
+    let detected: AutoDetectResult;
     try {
       detected = autoDetectAndImport(input.body);
     } catch (e) {

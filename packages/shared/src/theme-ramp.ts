@@ -78,7 +78,10 @@ export interface DerivedRampStop {
  * paths the generator wrote (for echo-back in the propose preview).
  */
 export interface RampResult {
-  readonly tokens: Record<string, DerivedRampStop | { $value: string; $type: "color"; _derived: true }>;
+  readonly tokens: Record<
+    string,
+    DerivedRampStop | { $value: string; $type: "color"; _derived: true }
+  >;
   readonly derivedPaths: readonly string[];
 }
 

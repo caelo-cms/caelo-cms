@@ -72,10 +72,7 @@ export interface RenderThemeCssOptions {
  * `.theme-preview` so the operator's edits don't leak onto the admin
  * UI. Public + chat paths omit the option and get the default.
  */
-export function renderThemeCss(
-  tokens: ThemeDocument,
-  options: RenderThemeCssOptions = {},
-): string {
+export function renderThemeCss(tokens: ThemeDocument, options: RenderThemeCssOptions = {}): string {
   const selector = options.selector ?? ":root";
   const flat = flattenTokens(tokens);
   const resolveCache = new Map<string, unknown>();
@@ -152,7 +149,11 @@ export function formatThemeSummary(tokens: ThemeDocument): string {
   for (const { path, token } of flat) {
     const category = path.split(".")[0] ?? "(uncategorised)";
     counts.set(category, (counts.get(category) ?? 0) + 1);
-    if (path === "color.primary" || path === "color.primary.500" || path === "color.primary.DEFAULT") {
+    if (
+      path === "color.primary" ||
+      path === "color.primary.500" ||
+      path === "color.primary.DEFAULT"
+    ) {
       const v = resolveTokenValue(token, tokens, resolveCache, new Set([path]));
       const flatVal = pickColorVariant(v);
       if (typeof flatVal === "string" && primary === undefined) primary = flatVal;
@@ -161,7 +162,11 @@ export function formatThemeSummary(tokens: ThemeDocument): string {
       const v = resolveTokenValue(token, tokens, resolveCache, new Set([path]));
       if (v && typeof v === "object" && "fontFamily" in v) {
         const ff = (v as { fontFamily?: unknown }).fontFamily;
-        if (typeof ff === "string") body = ff.split(",")[0]?.trim().replace(/^['"]|['"]$/g, "");
+        if (typeof ff === "string")
+          body = ff
+            .split(",")[0]
+            ?.trim()
+            .replace(/^['"]|['"]$/g, "");
       }
     }
     if (path === "radius.md") {

@@ -32,7 +32,7 @@ interface CssVarMap {
 export function importShadcn(body: string): ThemeDocument {
   // Quick rejections so the auto-detect chain can fall through fast.
   if (/"value"\s*:/i.test(body)) {
-    throw new NotShadcnShape("input contains `\"value\":` — looks like Style Dictionary JSON");
+    throw new NotShadcnShape('input contains `"value":` — looks like Style Dictionary JSON');
   }
   const lightBlock = extractBlock(body, ":root");
   if (lightBlock === null) {

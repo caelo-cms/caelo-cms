@@ -76,7 +76,7 @@ export function autoDetectAndImport(body: string): AutoDetectResult {
       }
       attempts.push({
         format: def.format,
-        reason: e instanceof Error ? e.message.split("\n")[0] ?? "rejected" : "rejected",
+        reason: e instanceof Error ? (e.message.split("\n")[0] ?? "rejected") : "rejected",
       });
     }
   }

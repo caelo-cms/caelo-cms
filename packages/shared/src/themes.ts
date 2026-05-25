@@ -335,9 +335,10 @@ export type CreateThemeOverrides = z.infer<typeof createThemeOverridesSchema>;
  * create handler to split the ramp-seed off before normalizing the
  * remaining loose names.
  */
-export function extractPrimaryColorSeed(
-  overrides: Record<string, unknown> | undefined,
-): { primaryColor: string | undefined; rest: Record<string, unknown> } {
+export function extractPrimaryColorSeed(overrides: Record<string, unknown> | undefined): {
+  primaryColor: string | undefined;
+  rest: Record<string, unknown>;
+} {
   if (!overrides) return { primaryColor: undefined, rest: {} };
   const { primaryColor, ...rest } = overrides as { primaryColor?: unknown } & Record<
     string,

@@ -173,8 +173,7 @@ export class NotShadcnShape extends Error {
 export class NotLooseShape extends Error {
   constructor(message?: string) {
     super(
-      message ??
-        "NotLooseShape: input is not a flat JSON object of `{looseName: value}` pairs.",
+      message ?? "NotLooseShape: input is not a flat JSON object of `{looseName: value}` pairs.",
     );
     this.name = "NotLooseShape";
   }

@@ -42,8 +42,8 @@ import {
   removeDtcgPath,
   type Theme,
   type ThemeDocument,
-  themeDocument,
   TokenCategoryMismatch,
+  themeDocument,
   UnknownTokenName,
   validateThemeTokens,
 } from "@caelo-cms/shared";

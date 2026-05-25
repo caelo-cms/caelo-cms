@@ -40,10 +40,10 @@ import {
   type ChatEngagement,
   type ChatSendMessageInput,
   type ExecutionContext,
+  formatThemeSummary,
   matchSkills,
   resolveEngagements,
   skillAutoEngagementHints,
-  formatThemeSummary,
   type Theme,
   type ThemeDocument,
 } from "@caelo-cms/shared";

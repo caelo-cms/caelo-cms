@@ -194,7 +194,10 @@ export const proposeCreateThemeOp = defineOperation({
       preset: input.preset,
       presetTokenCount: Object.keys(presetTokens).length,
       overrideCount: overridesNormalized.wrote.length + (rampSeed !== undefined ? 1 : 0),
-      overridePaths: [...overridesNormalized.wrote, ...(rampSeed !== undefined ? ["primaryColor"] : [])],
+      overridePaths: [
+        ...overridesNormalized.wrote,
+        ...(rampSeed !== undefined ? ["primaryColor"] : []),
+      ],
       // v0.11.1 (issue #76) — reflect the OKLCh ramp in the preview so
       // the Owner sees what they're approving. derivedRampPaths is empty
       // when overrides.primaryColor is unset.
@@ -357,8 +360,7 @@ export const executeThemeProposalOp = defineOperation({
       // also supplied explicit `color.primary.<stop>` paths in
       // overrides, mergeRampIntoTokens layers them over the derived
       // ramp (explicit-wins).
-      const { primaryColor: rampSeed, rest: nonRampOverrides } =
-        extractPrimaryColorSeed(overrides);
+      const { primaryColor: rampSeed, rest: nonRampOverrides } = extractPrimaryColorSeed(overrides);
       if (rampSeed !== undefined) {
         const ramp = deriveOklchPrimaryRamp(rampSeed);
         // Convert nonRamp overrides to canonical paths so any
