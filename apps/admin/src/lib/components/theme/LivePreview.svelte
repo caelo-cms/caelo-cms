@@ -51,7 +51,46 @@
     }
   }
   const themeCss = $derived(safeRender(debouncedTokens));
-  const themeStyleTag = $derived(`<style>${themeCss}</style>`);
+
+  /**
+   * v0.11.1 (issue #76, e2e round 1) — `.theme-preview` is a class
+   * scope (NOT an iframe / Shadow DOM), so admin's outer `:root` CSS
+   * variables (set in app.css for shadcn) cascade in for any var the
+   * theme doesn't override. A theme that omits, say, `--color-primary`
+   * (because the OKLCh ramp's DEFAULT alias is the only `--color-primary`
+   * source and the renderer used to mis-emit it as `--color-primary-DEFAULT`)
+   * would show the admin's neutral primary instead of the operator's
+   * brand. Reset every var the sample DOM consumes to `initial` so the
+   * `var(--name, fallback)` chain falls through to its inline fallback
+   * when the theme doesn't define the var. Themes that DO define the
+   * var override the `initial` via the byte-identical renderThemeCss
+   * output that comes after.
+   */
+  const RESET_VARS = [
+    "--color-background",
+    "--color-foreground",
+    "--color-primary",
+    "--color-primary-foreground",
+    "--color-secondary",
+    "--color-secondary-foreground",
+    "--color-card",
+    "--color-card-foreground",
+    "--color-muted-foreground",
+    "--color-border",
+    "--color-destructive",
+    "--color-destructive-foreground",
+    "--font-heading",
+    "--font-body",
+    "--text-heading",
+    "--text-body",
+    "--font-weight-heading",
+    "--font-weight-body",
+    "--radius-sm",
+    "--radius-md",
+    "--shadow-sm",
+  ];
+  const resetCss = `.theme-preview{${RESET_VARS.map((v) => `${v}:initial;`).join("")}}`;
+  const themeStyleTag = $derived(`<style>${resetCss}${themeCss}</style>`);
 </script>
 
 <aside class="space-y-3">
