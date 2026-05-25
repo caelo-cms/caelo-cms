@@ -42,6 +42,7 @@ import {
   removeDtcgPath,
   type Theme,
   type ThemeDocument,
+  themeDocument,
   TokenCategoryMismatch,
   UnknownTokenName,
   validateThemeTokens,
@@ -659,8 +660,14 @@ const importInput = z
      * v0.11.1 (issue #76) — pre-parsed DTCG document. Format detection
      * moved to the AI tool (`autoDetectAndImport` in
      * @caelo-cms/shared) so the op surface stays parser-free.
+     *
+     * Validated by the shared `themeDocument` schema at the Validator
+     * boundary per CLAUDE.md §4 (Zod at every boundary) — the handler
+     * trusts its input type and doesn't redo validation. Callers that
+     * feed malformed tokens get a structured Zod error from the
+     * Validator before the handler ever runs.
      */
-    tokens: z.unknown(),
+    tokens: themeDocument,
     /**
      * Target theme slug. If it exists, the import REPLACES its tokens
      * (asset FKs are untouched). If it doesn't exist, the import
@@ -681,21 +688,10 @@ export const importThemeOp = defineOperation({
   input: importInput,
   output: z.object({ themeId: z.string() }),
   handler: async (ctx, input, tx) => {
-    // Validate the incoming tokens document — caller's parser may have
-    // produced something that fails the canonical Zod schema (e.g. a
-    // shadcn shape with an unrecognised semantic name landing as a
-    // weird color value).
-    let validated: ThemeDocument;
-    try {
-      validated = validateThemeTokens(input.tokens);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return err({
-        kind: "HandlerError",
-        operation: "themes.import",
-        message: `imported tokens failed validation: ${msg}`,
-      });
-    }
+    // input.tokens is already a validated ThemeDocument — the
+    // themeDocument Zod schema ran at the Validator boundary
+    // (CLAUDE.md §4). No redundant try/catch + handler-side validation.
+    const validated: ThemeDocument = input.tokens;
 
     const target = await fetchThemeOrNull(tx, { slug: input.themeSlug });
     if (!target) {
