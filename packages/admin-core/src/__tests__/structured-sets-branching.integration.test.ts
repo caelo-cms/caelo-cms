@@ -9,8 +9,14 @@
  *   - chat.publish materialises the staged blob into live.
  *
  * The pre-v0.5.3 behaviour overwrote `items` unconditionally; two
- * chats editing theme stepped on each other live. This pins the
- * isolation guarantee.
+ * chats editing the same structured-set stepped on each other live.
+ * This pins the isolation guarantee.
+ *
+ * v0.11.0 (#45) — theme is no longer a structured-set kind; the
+ * branched-write semantics are identical for the surviving kinds
+ * (nav-menu, taxonomy, tags, link-list, language-selector), so this
+ * test now uses nav-menu. The theme primitive's own branched-write
+ * isolation is exercised by the v0.11.0 themes integration suite.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -32,7 +38,7 @@ const HUMAN: ExecutionContext = {
   requestId: "v053-ss",
 };
 
-const SET_SLUG = "v053-theme";
+const SET_SLUG = "v053-nav-menu";
 const SESSION_TITLE = "v053-ss-session";
 
 async function wipe(): Promise<void> {
@@ -61,14 +67,16 @@ afterAll(async () => {
 });
 
 describe("structured_sets branched writes (v0.5.3)", () => {
-  it("branched theme write skips live items + lands a branched snapshot; publish merges", async () => {
-    // Seed the theme set in main with one token. Theme items use
-    // {token,value} (token is lowercase kebab-case, no leading --).
+  it("branched nav-menu write skips live items + lands a branched snapshot; publish merges", async () => {
+    // Seed the nav-menu in main with one item. v0.11.0 (#45) — theme
+    // moved out of structured_sets; the branched-write semantics are
+    // identical across the surviving kinds, so this test pins the
+    // isolation guarantee on nav-menu instead.
     const seed = await execute(registry, adapter, HUMAN, "structured_sets.set", {
-      kind: "theme",
+      kind: "nav-menu",
       slug: SET_SLUG,
-      displayName: "Test Theme",
-      items: [{ token: "bg", value: "#fff" }],
+      displayName: "Test Menu",
+      items: [{ label: "Home", href: "/" }],
     });
     if (!seed.ok) throw new Error("seed");
     const setId = (seed.value as { setId: string }).setId;
@@ -91,10 +99,10 @@ describe("structured_sets branched writes (v0.5.3)", () => {
       chatBranchId,
     };
     const branchedWrite = await execute(registry, adapter, aiCtx, "structured_sets.set", {
-      kind: "theme",
+      kind: "nav-menu",
       slug: SET_SLUG,
-      displayName: "Test Theme",
-      items: [{ token: "bg", value: "#000" }],
+      displayName: "Test Menu",
+      items: [{ label: "Branched Home", href: "/" }],
     });
     expect(branchedWrite.ok).toBe(true);
 
@@ -106,8 +114,8 @@ describe("structured_sets branched writes (v0.5.3)", () => {
         const liveRows = (await tx`
           SELECT items::text AS items FROM structured_sets WHERE id = ${setId}::uuid
         `) as unknown as { items: string }[];
-        const liveItems = JSON.parse(liveRows[0]?.items ?? "[]") as { value: string }[];
-        expect(liveItems[0]?.value).toBe("#fff");
+        const liveItems = JSON.parse(liveRows[0]?.items ?? "[]") as { label: string }[];
+        expect(liveItems[0]?.label).toBe("Home");
 
         // Branched snapshot reflects the new value.
         const snapRows = (await tx`
@@ -116,13 +124,13 @@ describe("structured_sets branched writes (v0.5.3)", () => {
           WHERE sss.structured_set_id = ${setId}::uuid
             AND ss.chat_branch_id = ${chatBranchId}::uuid
           ORDER BY ss.created_at DESC LIMIT 1
-        `) as unknown as { state: string | { items: { value: string }[] } }[];
+        `) as unknown as { state: string | { items: { label: string }[] } }[];
         const raw = snapRows[0]?.state;
         const state =
           typeof raw === "string"
-            ? (JSON.parse(raw) as { items: { value: string }[] })
-            : (raw as { items: { value: string }[] });
-        expect(state.items[0]?.value).toBe("#000");
+            ? (JSON.parse(raw) as { items: { label: string }[] })
+            : (raw as { items: { label: string }[] });
+        expect(state.items[0]?.label).toBe("Branched Home");
       });
     } finally {
       await sql.end();
@@ -141,8 +149,8 @@ describe("structured_sets branched writes (v0.5.3)", () => {
         const liveAfter = (await tx`
           SELECT items::text AS items FROM structured_sets WHERE id = ${setId}::uuid
         `) as unknown as { items: string }[];
-        const liveItems = JSON.parse(liveAfter[0]?.items ?? "[]") as { value: string }[];
-        expect(liveItems[0]?.value).toBe("#000");
+        const liveItems = JSON.parse(liveAfter[0]?.items ?? "[]") as { label: string }[];
+        expect(liveItems[0]?.label).toBe("Branched Home");
       });
     } finally {
       await sql2.end();
