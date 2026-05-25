@@ -647,3 +647,80 @@ export const proposeDomainRemoveTool = makeProposeTool({
   },
   summarize: (_input, preview) => `remove domain "${preview.hostname ?? "?"}"`,
 });
+
+// ─── themes (v0.11.0, #45) ───────────────────────────────────────────
+
+export const proposeCreateThemeTool = makeProposeTool({
+  toolName: "propose_create_theme",
+  opName: "themes.propose_create",
+  pendingQueuePath: "/security/themes/pending",
+  when:
+    "Create a new theme. Pick a preset (`shadcn-default`, `minimal`, `warm`, `playful`) " +
+    "and override the keys you care about with brand-friendly names: " +
+    "`{primaryColor: '#ff6600', fontHeading: 'Inter', radius: '0.75rem'}`. " +
+    "Server fills in every other category from the preset. Returns the canonical token " +
+    "paths it wrote so you can edit specific tokens afterward.",
+  schema: z
+    .object({
+      slug: z
+        .string()
+        .min(1)
+        .max(120)
+        .regex(/^[a-z0-9][a-z0-9-]*$/),
+      displayName: z.string().min(1).max(200),
+      description: z.string().max(1000).optional(),
+      preset: z.enum(["shadcn-default", "minimal", "warm", "playful"]),
+      overrides: z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict(),
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["slug", "displayName", "preset"],
+    properties: {
+      slug: { type: "string", minLength: 1, maxLength: 120 },
+      displayName: { type: "string", minLength: 1, maxLength: 200 },
+      description: { type: "string", maxLength: 1000 },
+      preset: { type: "string", enum: ["shadcn-default", "minimal", "warm", "playful"] },
+      overrides: { type: "object", additionalProperties: true },
+    },
+  },
+  summarize: (input) =>
+    `create theme "${input.displayName}" (${input.slug}) from preset "${input.preset}"`,
+});
+
+export const proposeActivateThemeTool = makeProposeTool({
+  toolName: "propose_activate_theme",
+  opName: "themes.propose_activate",
+  pendingQueuePath: "/security/themes/pending",
+  when:
+    "Switch the site's active theme. Approving flips the DB row only — the live site keeps " +
+    "serving the previously-active theme's CSS until an Owner separately approves " +
+    "`propose_deploy_promote`. Tell the operator both steps are needed.",
+  schema: z.object({ themeId: uuid }).strict(),
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["themeId"],
+    properties: { themeId: { type: "string", format: "uuid" } },
+  },
+  summarize: (_input, preview) =>
+    `activate "${preview.targetSlug ?? "?"}" (replaces "${preview.currentActiveSlug ?? "none"}")`,
+});
+
+export const proposeDeleteThemeTool = makeProposeTool({
+  toolName: "propose_delete_theme",
+  opName: "themes.propose_delete",
+  pendingQueuePath: "/security/themes/pending",
+  when:
+    "Delete an inactive theme. Active themes are rejected — activate a different theme " +
+    "first via `propose_activate_theme`.",
+  schema: z.object({ themeId: uuid }).strict(),
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["themeId"],
+    properties: { themeId: { type: "string", format: "uuid" } },
+  },
+  summarize: (_input, preview) => `delete theme "${preview.slug ?? "?"}"`,
+});

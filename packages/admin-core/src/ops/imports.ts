@@ -23,6 +23,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
 
@@ -850,24 +851,33 @@ export const composeFromImportRunOp = defineOperation({
       }
     }
 
-    // 5. Write theme set if anything was aggregated. Reuses the canonical
-    // `theme/site` slug consumed by the renderer.
+    // 5. Merge aggregated tokens into the active themes row via the
+    // `themes.update_tokens` op (v0.11.0, #45 AC #12). The op emits
+    // a theme_snapshots row + audit + acquires the per-entity lock,
+    // so importer-driven theme writes show up in site history and can
+    // be reverted like any other theme edit. Pre-v0.11 wrote a flat
+    // structured_sets row at `theme/site`; the new primitive carries
+    // DTCG-shaped jsonb.
     if (aggregatedTokens.length > 0) {
-      await tx.execute(sql`
-        INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
-        VALUES (
-          'theme',
-          'site',
-          'Site theme (imported)',
-          ${JSON.stringify(aggregatedTokens)}::text::jsonb,
-          ${ctx.actorId}::uuid
-        )
-        ON CONFLICT (kind, slug) DO UPDATE SET
-          display_name = EXCLUDED.display_name,
-          items        = EXCLUDED.items,
-          updated_at   = now(),
-          updated_by   = EXCLUDED.updated_by
-      `);
+      const set: Record<string, unknown> = {};
+      for (const t of aggregatedTokens) {
+        const prepared = prepareLegacyAggregatedToken(t);
+        if (prepared) set[prepared.canonicalPath] = prepared.value;
+      }
+      if (Object.keys(set).length > 0) {
+        const r = await updateThemeTokensOp.handler(ctx, { set }, tx);
+        if (!r.ok) {
+          return err({
+            kind: "HandlerError",
+            operation: "imports.compose_from_run",
+            message: `theme merge failed: ${
+              typeof r.error === "object" && r.error && "message" in r.error
+                ? String((r.error as { message: unknown }).message)
+                : "unknown"
+            }`,
+          });
+        }
+      }
     }
 
     // 6. Find or create the target template. Fresh-on-conflict pattern
@@ -1017,3 +1027,66 @@ export const composeFromImportRunOp = defineOperation({
     });
   },
 });
+
+/**
+ * v0.11.0 (#45 AC #12) — convert an importer-aggregated
+ * `{token, value, scope?}` tuple into a `themes.update_tokens`-ready
+ * `(canonicalPath, value)` pair.
+ *
+ * The legacy importer stores every theme value as a string. The new
+ * DTCG schema accepts:
+ *
+ *   - color / dimension (color, spacing, radius, breakpoint) — flat
+ *     string value, passed through as-is.
+ *   - typography composite — `$value` must be an object with
+ *     fontFamily / fontSize / etc. so we wrap the legacy string as
+ *     `{fontFamily: <value>}`.
+ *   - shadow composite — `$value` must be a structured object;
+ *     parsing the legacy stringified shadow ("0 1px 2px rgba(...)") is
+ *     out of scope for v0.11.0, so shadow tokens from the importer are
+ *     dropped (returns null). Importers that need full shadow support
+ *     should hand-edit the theme after the run.
+ *
+ * Scope → category mirrors migration 0097's back-fill so imports land
+ * at the same DTCG paths as an upgrade-in-place.
+ */
+function prepareLegacyAggregatedToken(t: {
+  token: string;
+  value: string;
+  scope?: string;
+}): { canonicalPath: string; value: unknown } | null {
+  // Determine category + basename.
+  let category: string;
+  if (t.scope === "color") category = "color";
+  else if (t.scope === "font") category = "typography";
+  else if (t.scope === "space") category = "spacing";
+  else if (t.scope === "radius") category = "radius";
+  else if (t.scope === "shadow") category = "shadow";
+  else if (/^#[0-9a-fA-F]{3,8}$/.test(t.value)) category = "color";
+  else category = "spacing";
+
+  // Drop shadow tokens — legacy stringified shadows don't round-trip
+  // into the DTCG composite shape. v0.11.0 leaves the existing
+  // shadow tokens untouched.
+  if (category === "shadow") return null;
+
+  // Strip the leading `<category>-` (or scope-prefixed) name so
+  // `color-primary` becomes `primary`.
+  let basename = t.token;
+  const prefixes = [category, t.scope ?? "", "font", "space"].filter((p) => p);
+  for (const p of prefixes) {
+    if (basename.startsWith(`${p}-`)) {
+      basename = basename.slice(p.length + 1);
+      break;
+    }
+  }
+  if (!basename) return null;
+
+  const canonicalPath = `${category}.${basename}`;
+
+  // Shape the value: typography needs the composite object envelope;
+  // everything else is a flat string.
+  const value: unknown = category === "typography" ? { fontFamily: t.value } : t.value;
+
+  return { canonicalPath, value };
+}

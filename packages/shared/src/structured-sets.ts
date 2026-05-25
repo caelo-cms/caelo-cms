@@ -50,19 +50,6 @@ export const taxonomyItem = z
   })
   .strict();
 
-/** One CSS variable. Renderer emits `<style>:root{--<token>: <value>;…}</style>`. */
-export const themeToken = z
-  .object({
-    token: z
-      .string()
-      .min(1)
-      .max(80)
-      .regex(/^[a-z][a-z0-9-]*$/, "lowercase kebab-case"),
-    value: z.string().min(1).max(500),
-    scope: z.enum(["color", "font", "space", "radius", "shadow"]).optional(),
-  })
-  .strict();
-
 /** Flat tag — used by post taxonomies, content filtering. */
 export const tagItem = z
   .object({
@@ -108,11 +95,14 @@ export const languageSelectorOverride = z
   .strict();
 
 /** Discriminated kind → items array. The Query API op picks the
- *  validator at runtime by reading `kind` first. */
+ *  validator at runtime by reading `kind` first.
+ *
+ *  v0.11.0 (#45) — `theme` is no longer a structured-set kind. The
+ *  theme primitive moved to its own `themes` table with DTCG-shaped
+ *  jsonb tokens; see `themes.ts` + `theme-render.ts`. */
 export const structuredSetKind = z.enum([
   "nav-menu",
   "taxonomy",
-  "theme",
   "tags",
   "link-list",
   "language-selector",
@@ -136,8 +126,6 @@ export function validateStructuredSetItems(kind: StructuredSetKind, items: unkno
       return items.map((it) => navMenuItem.parse(it));
     case "taxonomy":
       return items.map((it) => taxonomyItem.parse(it));
-    case "theme":
-      return items.map((it) => themeToken.parse(it));
     case "tags":
       return items.map((it) => tagItem.parse(it));
     case "link-list":
@@ -149,7 +137,6 @@ export function validateStructuredSetItems(kind: StructuredSetKind, items: unkno
 
 export type NavMenuItem = z.infer<typeof navMenuItem>;
 export type TaxonomyItem = z.infer<typeof taxonomyItem>;
-export type ThemeToken = z.infer<typeof themeToken>;
 export type TagItem = z.infer<typeof tagItem>;
 export type LinkListItem = z.infer<typeof linkListItem>;
 export type LanguageSelectorOverride = z.infer<typeof languageSelectorOverride>;

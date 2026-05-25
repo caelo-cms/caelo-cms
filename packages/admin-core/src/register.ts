@@ -365,6 +365,24 @@ import {
   listSubagentRunsOp,
 } from "./ops/subagents/runs.js";
 import {
+  duplicateThemeOp,
+  exportThemeDtcgOp,
+  getActiveThemeOp,
+  getThemeOp,
+  importThemeDtcgOp,
+  listThemesOp,
+  setThemeAssetOp,
+  updateThemeTokensOp,
+} from "./ops/themes.js";
+import {
+  executeThemeProposalOp,
+  listPendingThemeProposalsOp,
+  proposeActivateThemeOp,
+  proposeCreateThemeOp,
+  proposeDeleteThemeOp,
+  rejectThemeProposalOp,
+} from "./ops/themes_pending.js";
+import {
   listPendingToolApprovalsOp,
   markToolApprovalResultOp,
   queueToolApprovalOp,
@@ -637,6 +655,22 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getStructuredSetOp);
   registry.register(listStructuredSetsOp);
   registry.register(deleteStructuredSetOp);
+  // v0.11.0 — themes primitive (#45). Routine read + write ops plus
+  // the §11.A propose/execute gate for create / activate / delete.
+  registry.register(listThemesOp);
+  registry.register(getThemeOp);
+  registry.register(getActiveThemeOp);
+  registry.register(updateThemeTokensOp);
+  registry.register(setThemeAssetOp);
+  registry.register(duplicateThemeOp);
+  registry.register(importThemeDtcgOp);
+  registry.register(exportThemeDtcgOp);
+  registry.register(proposeCreateThemeOp);
+  registry.register(proposeActivateThemeOp);
+  registry.register(proposeDeleteThemeOp);
+  registry.register(executeThemeProposalOp);
+  registry.register(rejectThemeProposalOp);
+  registry.register(listPendingThemeProposalsOp);
   registry.register(setPinnedElementsOp);
   registry.register(setChatExtendedThinkingOp);
   // P6.7.6 — layouts (site-wide chrome) + site_defaults singleton.

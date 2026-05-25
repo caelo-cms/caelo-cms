@@ -23,7 +23,7 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const deleteStructuredSetToolInput = z
   .object({
-    kind: z.enum(["nav-menu", "taxonomy", "theme", "tags", "link-list", "language-selector"]),
+    kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list", "language-selector"]),
     slug: z.string().min(1).max(120),
   })
   .strict();
@@ -44,7 +44,7 @@ export const deleteStructuredSetTool: ToolDefinitionWithHandler<DeleteStructured
     required: ["kind", "slug"],
     properties: {
       kind: {
-        enum: ["nav-menu", "tags", "taxonomy", "theme", "link-list", "language-selector"],
+        enum: ["nav-menu", "tags", "taxonomy", "link-list", "language-selector"],
       },
       slug: { type: "string", minLength: 1, maxLength: 120 },
     },

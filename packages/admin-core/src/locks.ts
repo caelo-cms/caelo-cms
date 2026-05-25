@@ -40,7 +40,10 @@ export type LockedEntityKind =
   // propagates to every page that references the instance, so the lock
   // is per-instance (not per-placement) so two chats can't simultaneously
   // rewrite shared content.
-  | "contentInstance";
+  | "contentInstance"
+  // v0.11.0 — themes are global (one active row affects every page),
+  // so writes lock the theme entity same as structured_sets / layouts.
+  | "theme";
 
 export interface LockHolder {
   chatSessionId: string;

@@ -26,10 +26,13 @@ import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
+  buildMediaUrl,
   ComposeError,
+  type ComposeTheme,
   composePageWithLayout,
   type ModuleFieldKind,
   resolveLocaleUrl,
+  type ThemeDocument,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
@@ -420,9 +423,11 @@ export async function generateSite(args: {
   }
 
   // P6.7.5 — load structured sets once for the whole build so each
-  // page's composer gets the same theme + nav-menu state. Re-querying
-  // per-page would be wasteful and could surface rebuild-mid-deploy
-  // races where some pages saw the old menu and some the new.
+  // page's composer gets the same nav-menu state. Re-querying per-page
+  // would be wasteful and could surface rebuild-mid-deploy races where
+  // some pages saw the old menu and some the new.
+  // v0.11.0 (#45) — theme moved out of structured_sets into its own
+  // `themes` table; loaded separately below as a ComposeTheme.
   const setRows = (await tx.execute(sql`
     SELECT kind, slug, items::text AS items FROM structured_sets
   `)) as unknown as { kind: string; slug: string; items: string }[];
@@ -433,6 +438,44 @@ export async function generateSite(args: {
     } catch {
       // ignore malformed rows
     }
+  }
+
+  // v0.11.0 — load the active theme once for the whole build. The
+  // renderer emits <style data-source="theme"> from these tokens; the
+  // four asset URLs are surfaced for modules that reference them.
+  const themeRows = (await tx.execute(sql`
+    SELECT
+      tokens                       AS tokens,
+      logo_media_id::text          AS logo_media_id,
+      logo_dark_media_id::text     AS logo_dark_media_id,
+      favicon_media_id::text       AS favicon_media_id,
+      social_share_media_id::text  AS social_share_media_id
+    FROM themes WHERE is_active = true LIMIT 1
+  `)) as unknown as Array<{
+    tokens: unknown;
+    logo_media_id: string | null;
+    logo_dark_media_id: string | null;
+    favicon_media_id: string | null;
+    social_share_media_id: string | null;
+  }>;
+  let activeTheme: ComposeTheme | undefined;
+  const tr = themeRows[0];
+  if (tr) {
+    const tokens: ThemeDocument =
+      typeof tr.tokens === "string"
+        ? (JSON.parse(tr.tokens) as ThemeDocument)
+        : (tr.tokens as ThemeDocument);
+    const asset = (id: string | null): { mediaId: string; url: string } | null =>
+      id === null ? null : { mediaId: id, url: buildMediaUrl(id, "orig") };
+    activeTheme = {
+      tokens,
+      assets: {
+        logo: asset(tr.logo_media_id),
+        logoDark: asset(tr.logo_dark_media_id),
+        favicon: asset(tr.favicon_media_id),
+        socialShare: asset(tr.social_share_media_id),
+      },
+    };
   }
 
   // P9 — build the per-slug published-locale matrix once so the
@@ -552,6 +595,7 @@ export async function generateSite(args: {
         templateCss: page.template_css,
         blocks,
         structuredSets,
+        theme: activeTheme,
         layoutHtml: page.layout_html,
         layoutCss: page.layout_css,
         layoutBlocks,

@@ -5,8 +5,11 @@
  * `structured_sets.get` op. Returns the items array for one set
  * identified by `kind` + `slug`. Use this to refresh the AI's view of
  * a specific set before doing a partial update (the `set` tool is
- * full-replace, so the typical workflow for "change one theme token
+ * full-replace, so the typical workflow for "rename one menu item
  * without losing others" is: get → mutate → set).
+ *
+ * v0.11.0 (#45) — theme is no longer a structured-set kind; use
+ * `get_theme` / `set_theme_tokens` for theme reads + writes.
  *
  * Part of the unified structured-sets CRUD surface: list / get / set /
  * delete.
@@ -19,7 +22,7 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const getStructuredSetToolInput = z
   .object({
-    kind: z.enum(["nav-menu", "taxonomy", "theme", "tags", "link-list", "language-selector"]),
+    kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list", "language-selector"]),
     slug: z.string().min(1).max(120),
   })
   .strict();
@@ -30,7 +33,8 @@ export const getStructuredSetTool: ToolDefinitionWithHandler<GetStructuredSetToo
   name: "get_structured_set",
   description:
     "Fetch one structured-data set's current items by `kind` + `slug`. " +
-    "Use this when (1) the system-prompt block didn't inline the items (>30 cap, or non-nav-menu kind) and you need to extend an existing set, or (2) you're doing a partial update (theme token tweak, single link rename) and need the current state before `set_structured_set` to merge in JS. " +
+    "Use this when (1) the system-prompt block didn't inline the items (>30 cap, or non-nav-menu kind) and you need to extend an existing set, or (2) you're doing a partial update (single link rename) and need the current state before `set_structured_set` to merge in JS. " +
+    "Theme tokens are NOT a structured-set kind (v0.11.0+) — use `get_theme` / `set_theme_tokens` instead. " +
     "Returns null in the set field if no row exists for that kind+slug.",
   schema: getStructuredSetToolInput,
   inputSchema: {
@@ -39,7 +43,7 @@ export const getStructuredSetTool: ToolDefinitionWithHandler<GetStructuredSetToo
     required: ["kind", "slug"],
     properties: {
       kind: {
-        enum: ["nav-menu", "tags", "taxonomy", "theme", "link-list", "language-selector"],
+        enum: ["nav-menu", "tags", "taxonomy", "link-list", "language-selector"],
       },
       slug: { type: "string", minLength: 1, maxLength: 120 },
     },

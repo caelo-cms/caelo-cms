@@ -131,7 +131,8 @@ export async function mergeBranchSnapshotsToMain(
       | "pageLayout"
       | "pageModuleContent"
       | "structuredSet"
-      | "contentInstance",
+      | "contentInstance"
+      | "theme",
   ) => input.entities?.filter((e) => e.kind === kind).map((e) => e.entityId) ?? null;
   const wantModules = filterByKind("module");
   const wantTemplates = filterByKind("template");
@@ -140,6 +141,7 @@ export async function mergeBranchSnapshotsToMain(
   const wantContent = filterByKind("pageModuleContent");
   const wantStructuredSets = filterByKind("structuredSet");
   const wantContentInstances = filterByKind("contentInstance");
+  const wantThemes = filterByKind("theme");
   const includeAll = input.entities === undefined;
 
   const inFilter = (ids: readonly string[] | null) =>
@@ -157,7 +159,8 @@ export async function mergeBranchSnapshotsToMain(
       | "pageLayout"
       | "pageModuleContent"
       | "structuredSet"
-      | "contentInstance",
+      | "contentInstance"
+      | "theme",
   ) =>
     options.skipAlreadyPublished
       ? sql`
@@ -183,7 +186,8 @@ export async function mergeBranchSnapshotsToMain(
       | "pageLayout"
       | "pageModuleContent"
       | "structuredSet"
-      | "contentInstance",
+      | "contentInstance"
+      | "theme",
   ) =>
     options.honourStageFilter && includeAll && hasStagedMarks
       ? sql`
@@ -301,6 +305,27 @@ export async function mergeBranchSnapshotsToMain(
     WHERE 1=1 ${notYetPublished("contentInstance")} ${stageFilter("contentInstance")} ${inFilter(includeAll ? null : (wantContentInstances ?? []))}
   `)) as unknown as Row[]);
 
+  // v0.11.0 (#45 step-11 round-2 opt §1) — themes merge. Mirrors the
+  // structured_sets shape: pick the most-recent branched theme_snapshots
+  // row per theme_id and replay (tokens + display_name + description +
+  // asset FKs) onto the live themes row in the replay loop below.
+  const themeRows =
+    !includeAll && (wantThemes?.length ?? 0) === 0
+      ? []
+      : ((await tx.execute(sql`
+    SELECT entity_id, state FROM (
+      SELECT DISTINCT ON (ts.theme_id)
+             ts.theme_id::text AS entity_id,
+             ts.state,
+             ts.theme_id::text AS entity_id_text
+      FROM theme_snapshots ts
+      JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      ORDER BY ts.theme_id, ss.created_at DESC
+    ) sub
+    WHERE 1=1 ${notYetPublished("theme")} ${stageFilter("theme")} ${inFilter(includeAll ? null : (wantThemes ?? []))}
+  `)) as unknown as Row[]);
+
   const total =
     moduleRows.length +
     templateRows.length +
@@ -308,7 +333,8 @@ export async function mergeBranchSnapshotsToMain(
     layoutRows.length +
     contentRows.length +
     structuredSetRows.length +
-    contentInstanceRows.length;
+    contentInstanceRows.length +
+    themeRows.length;
   if (total === 0) {
     return { ok: true, value: { siteSnapshotId: null, entityCount: 0, session, includeAll } };
   }
@@ -378,6 +404,24 @@ export async function mergeBranchSnapshotsToMain(
         };
         return { kind: "contentInstance", entityId: r.entity_id, state: raw };
       }),
+      ...themeRows.map((r): SnapshotEntity => {
+        const raw = parseSnapshotState(r.state) as {
+          schemaVersion: 1;
+          slug: string;
+          displayName: string;
+          description: string | null;
+          isActive: boolean;
+          tokens: unknown;
+          assets: {
+            logo: string | null;
+            logoDark: string | null;
+            favicon: string | null;
+            socialShare: string | null;
+          };
+          deletedAt: string | null;
+        };
+        return { kind: "theme", entityId: r.entity_id, state: raw };
+      }),
     ];
   } catch (e) {
     if (e instanceof SnapshotSchemaError) {
@@ -417,6 +461,28 @@ export async function mergeBranchSnapshotsToMain(
         UPDATE structured_sets
         SET items = ${itemsJson}::text::jsonb,
             display_name = ${e.state.displayName},
+            updated_at = now(),
+            updated_by = ${ctx.actorId}::uuid
+        WHERE id = ${e.entityId}::uuid
+      `);
+    } else if (e.kind === "theme") {
+      // v0.11.0 (#45, step-11 round-2 opt §1) — replay the branched
+      // theme snapshot onto the live themes row. Mirrors the
+      // structured_sets shape: tokens jsonb + display_name + description
+      // + the four asset FKs come from the snapshot state. is_active is
+      // intentionally NOT replayed here — activation lives in its own
+      // gated propose/execute path and shouldn't be implicitly flipped
+      // by a chat publish.
+      const tokensJson = JSON.stringify(e.state.tokens);
+      await tx.execute(sql`
+        UPDATE themes
+        SET tokens = ${tokensJson}::text::jsonb,
+            display_name = ${e.state.displayName},
+            description = ${e.state.description},
+            logo_media_id = ${e.state.assets.logo === null ? null : sql`${e.state.assets.logo}::uuid`},
+            logo_dark_media_id = ${e.state.assets.logoDark === null ? null : sql`${e.state.assets.logoDark}::uuid`},
+            favicon_media_id = ${e.state.assets.favicon === null ? null : sql`${e.state.assets.favicon}::uuid`},
+            social_share_media_id = ${e.state.assets.socialShare === null ? null : sql`${e.state.assets.socialShare}::uuid`},
             updated_at = now(),
             updated_by = ${ctx.actorId}::uuid
         WHERE id = ${e.entityId}::uuid

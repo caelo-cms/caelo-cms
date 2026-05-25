@@ -71,21 +71,20 @@ export function formatStructuredSetsBlock(
 ): string {
   const primer = [
     "# Structured-data sets you can edit",
-    "Caelo has typed named lists for **global repeated content**: navigation menus, tags, taxonomies, theme tokens, link-lists, and language-selectors. When the user asks about any of these, prefer creating or editing a structured set over hardcoding values in module HTML — that's what these lists are for.",
+    "Caelo has typed named lists for **global repeated content**: navigation menus, tags, taxonomies, link-lists, and language-selectors. When the user asks about any of these, prefer creating or editing a structured set over hardcoding values in module HTML — that's what these lists are for.",
     "",
-    "Kinds: `nav-menu`, `tags`, `taxonomy`, `theme`, `link-list`, `language-selector`. Item shape is per-kind and enforced by the JSON Schema on `set_structured_set` (a mismatch is rejected at the tool boundary with a structured error).",
+    "Kinds: `nav-menu`, `tags`, `taxonomy`, `link-list`, `language-selector`. Item shape is per-kind and enforced by the JSON Schema on `set_structured_set` (a mismatch is rejected at the tool boundary with a structured error). " +
+      "**Theme tokens are NOT a structured-set kind anymore (v0.11.0)** — see the `## Theme` block below; use `set_theme_tokens` for token tweaks and `propose_create_theme` to mint a new theme.",
     "",
     "Tools (one unified CRUD surface — `kind` is a discriminator argument):",
     "- `list_structured_sets({ kind? })` — list sets; omit `kind` for all. Existing sets are already inlined below at session start; call this only after writes or if the listing was truncated.",
-    "- `get_structured_set({ kind, slug })` — fetch one set's items. Use before a partial update (e.g. tweak one theme token) so you can merge in JS.",
+    "- `get_structured_set({ kind, slug })` — fetch one set's items. Use before a partial update so you can merge in JS.",
     "- `set_structured_set({ kind, slug, displayName, items })` — UPSERT. Creates the set when the slug doesn't exist; REPLACES `items` if it does (NOT append — pass the full desired list).",
     "- `delete_structured_set({ kind, slug })` — remove a set.",
     "",
     "Renderer convention: a module with slug `<kind>-<slug>` auto-renders the matching `<kind>/<slug>` set. Currently only `nav-menu-<slug>` and `language-selector-<slug>` auto-wire — for the other kinds, the rendering module's HTML/JS references the items directly via the structured-sets API. To wire a brand-new nav menu onto a layout: (1) `set_structured_set({ kind: 'nav-menu', slug: 'X', displayName: '…', items: [...] })` to create the items, (2) ensure a module named `nav-menu-X` is on the layout's header (or footer) block — use `add_module_to_layout` if it doesn't exist yet.",
     "",
     'If the user mentions "navigation", "the nav", "the menu", "header links", "footer menu" — that\'s a nav-menu, NOT a module to edit. Reach for `set_structured_set` with `kind: "nav-menu"` first.',
-    "",
-    "Theme-token tweaks ('brighten the primary color', 'use Inter for headings') are a `theme/site` structured set. For partial updates, call `get_structured_set` first, mutate in JS, then `set_structured_set` with the merged array — DON'T overwrite the whole token list with just the changed tokens.",
   ].join("\n");
   if (sets.length === 0) {
     return [
@@ -561,4 +560,56 @@ export function composeSystemPrompt(
   return composeSystemPromptChunks(memory, tools)
     .map((c) => c.body)
     .join("\n\n");
+}
+
+/**
+ * v0.11.0 (#45) — `## Theme` system-prompt block. Names the active
+ * theme + a one-line category summary so the AI knows the surface
+ * exists without paying for the full DTCG document in every turn.
+ * Full tokens load on demand via `get_theme({slug})`.
+ *
+ * Renders nothing when no active theme exists (pre-migration test
+ * states only — production installs always carry one is_active row
+ * post-0097).
+ */
+export function formatThemeBlock(
+  theme: {
+    slug: string;
+    displayName: string;
+    /**
+     * Round-2 opt §4: the operator-supplied description column from
+     * the themes table. Optional — pre-v0.11.0 single-theme installs
+     * leave it null. When set, the AI uses it as the intent signal
+     * for multi-theme installs ("Brand Orange — campaign-page variant").
+     */
+    description?: string | null;
+    tokensSummary: string;
+  } | null,
+): string {
+  if (!theme) {
+    return [
+      "## Theme",
+      "",
+      "_No active theme on this install. An Owner must propose+approve one via `propose_create_theme`._",
+    ].join("\n");
+  }
+  const descriptionLine = theme.description ? `\n_${theme.description}_\n` : "";
+  return [
+    "## Theme",
+    "",
+    `Active theme: **${theme.displayName}** (slug \`${theme.slug}\`) — ${theme.tokensSummary}.${descriptionLine}`,
+    "",
+    "Tools (all read tokens by canonical DTCG path; `set_theme_tokens` ALSO accepts loose names that the server normalizes):",
+    "- `list_themes()` — list every theme (one active, rest variants).",
+    "- `get_theme({slug})` — full DTCG tokens jsonb + asset URLs.",
+    "- `set_theme_tokens({set: {primaryColor: '#ff6600', fontHeading: 'Inter'}})` — edit the active theme. Pass loose names; the server returns the canonical paths it wrote.",
+    "- `set_theme_asset({slot, mediaId})` — bind logo / logoDark / favicon / socialShare.",
+    "- `duplicate_theme({sourceSlug, newSlug, newDisplayName})` — clone tokens + assets into an inactive variant.",
+    "- `import_theme({themeSlug, body})` / `export_theme({themeSlug})` — DTCG round-trip.",
+    "",
+    "Gated (each is a §11.A propose/execute; the AI proposes, an Owner clicks Approve at `/security/themes/pending`):",
+    "- `propose_create_theme({slug, displayName, preset, overrides?})` — preset is one of `shadcn-default` / `minimal` / `warm` / `playful`; overrides take brand-friendly names.",
+    "- `propose_activate_theme({themeId})` — flips the DB row only. A deploy must be approved separately via `propose_deploy_promote` for the new CSS to ship.",
+    "- `propose_delete_theme({themeId})` — inactive themes only.",
+  ].join("\n");
 }

@@ -43,6 +43,9 @@ import {
   matchSkills,
   resolveEngagements,
   skillAutoEngagementHints,
+  summarizeTokens,
+  type Theme,
+  type ThemeDocument,
 } from "@caelo-cms/shared";
 
 import { tryAutoRecover } from "./auto-recovery.js";
@@ -52,6 +55,7 @@ import {
   formatContentLibraryBlock,
   formatModulesBlock,
   formatStructuredSetsBlock,
+  formatThemeBlock,
 } from "./system-prompt.js";
 import { buildToolDescribeState } from "./tools/describe-state.js";
 import type { ToolRegistry } from "./tools/index.js";
@@ -503,22 +507,29 @@ export async function* runChatTurn(
     }
   }
 
+  // v0.11.0 (#45) — themes primitive. Load the active theme (one row,
+  // is_active=true) and render the dedicated ## Theme system-prompt
+  // block via formatThemeBlock. Replaces the pre-v0.11 prose that
+  // referenced the legacy `structured_sets WHERE kind='theme'` row.
   let themeBlock: string | undefined;
-  const themeR = await execute(registry, adapter, humanCtx, "structured_sets.get", {
-    kind: "theme",
-    slug: "site",
-  });
-  if (themeR.ok) {
-    const set = (themeR.value as { set: { items: unknown } | null }).set;
-    if (set && Array.isArray(set.items) && set.items.length > 0) {
-      const tokens = set.items as { token: string; value: string }[];
-      themeBlock = [
-        "# Theme tokens (CSS variables on :root)",
-        "Use `var(--<token>)` in generated HTML/CSS instead of raw hex codes when the user wants brand-consistent colors / fonts.",
-        ...tokens.map((t) => `- --${t.token}: ${t.value}`),
-        "",
-        "To change a token: call `get_structured_set({kind:'theme', slug:'site'})` to read current items, mutate in JS, then `set_structured_set({kind:'theme', slug:'site', displayName:'Site theme', items: <merged>})`. Item shape: `{ token: 'color-primary', value: '#0066ff', scope?: 'color'|'font'|'space'|'radius'|'shadow' }`. Token names are lowercase kebab-case.",
-      ].join("\n");
+  const activeThemeR = await execute(registry, adapter, humanCtx, "themes.get_active", {});
+  if (activeThemeR.ok) {
+    // Round-2 opt §3: cast to the typed Theme aggregate (op output schema)
+    // instead of a hand-rolled partial; surfaces compile-time errors if
+    // themes.get_active's output ever drifts.
+    const { theme } = activeThemeR.value as { theme: Theme | null };
+    if (theme) {
+      themeBlock = formatThemeBlock({
+        slug: theme.slug,
+        displayName: theme.displayName,
+        // Round-2 opt §4: surface the operator-supplied description so
+        // multi-theme installs (v0.11.1+) let the AI pick the right slug
+        // by intent (e.g. "Brand Orange — campaign-page variant").
+        description: theme.description,
+        tokensSummary: summarizeTokens(theme.tokens as ThemeDocument),
+      });
+    } else {
+      themeBlock = formatThemeBlock(null);
     }
   }
 
@@ -529,7 +540,7 @@ export async function* runChatTurn(
       setsR.value as {
         sets: { kind: string; slug: string; displayName: string; items: unknown }[];
       }
-    ).sets.filter((s) => s.kind !== "theme");
+    ).sets;
     structuredSetsBlock = formatStructuredSetsBlock(sets);
   }
 

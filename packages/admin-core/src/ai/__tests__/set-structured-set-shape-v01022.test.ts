@@ -32,23 +32,19 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { formatStructuredSetsBlock } from "../system-prompt.js";
+import { formatStructuredSetsBlock, formatThemeBlock } from "../system-prompt.js";
 import { deleteStructuredSetTool } from "../tools/delete-structured-set.js";
 import { getStructuredSetTool } from "../tools/get-structured-set.js";
 import { listStructuredSetsTool } from "../tools/list-structured-sets.js";
 import { setStructuredSetTool } from "../tools/set-structured-set.js";
 
-const allKinds = [
-  "nav-menu",
-  "tags",
-  "taxonomy",
-  "theme",
-  "link-list",
-  "language-selector",
-] as const;
+// v0.11.0 (#45) — theme was cut out of the structured-sets primitive
+// and moved to its own `themes` table with DTCG-shaped jsonb. The
+// remaining structured-set kinds are the five list/tag/menu shapes.
+const allKinds = ["nav-menu", "tags", "taxonomy", "link-list", "language-selector"] as const;
 
 describe("v0.10.22 — set_structured_set unified surface + per-kind JSON Schema", () => {
-  it("kind enum covers all 6 structured-set kinds (pre-v0.10.22 missed language-selector)", () => {
+  it("kind enum covers all 5 structured-set kinds (pre-v0.10.22 missed language-selector; v0.11.0 cut theme)", () => {
     const schema = setStructuredSetTool.inputSchema as {
       properties: { kind: { enum: string[] } };
     };
@@ -137,10 +133,41 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
     expect(block).toContain('"navigation"');
   });
 
-  it("primer covers theme partial-update workflow (get → mutate → set)", () => {
+  it("v0.11.0 (#45) — primer points the AI at the dedicated theme block, not structured_sets", () => {
+    // Theme moved out of structured_sets into its own primitive
+    // (themes table + DTCG jsonb tokens). The structured-sets primer
+    // explicitly tells the AI NOT to reach for set_structured_set when
+    // the operator asks about colors / fonts / theme tokens.
     const block = formatStructuredSetsBlock([]);
-    expect(block).toContain("get_structured_set");
-    expect(block).toContain("partial updates");
+    expect(block).not.toContain("theme/site");
+    expect(block).not.toContain("get_structured_set first, mutate in JS");
+    expect(block).toContain("set_theme_tokens");
+    expect(block).toContain("propose_create_theme");
+  });
+
+  it("v0.11.0 (#45) — formatThemeBlock renders the dedicated `## Theme` section", () => {
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      tokensSummary: "8 colors, 5 typography, 6 spacing",
+    });
+    expect(block).toContain("## Theme");
+    expect(block).toContain("site-default");
+    expect(block).toContain("Site default");
+    expect(block).toContain("8 colors, 5 typography, 6 spacing");
+    // The block lists every routine + propose theme tool the AI can
+    // call so it doesn't need a separate catalogue lookup.
+    expect(block).toContain("set_theme_tokens");
+    expect(block).toContain("propose_create_theme");
+    expect(block).toContain("propose_activate_theme");
+    expect(block).toContain("propose_delete_theme");
+  });
+
+  it("v0.11.0 (#45) — formatThemeBlock null branch tells the AI to propose one", () => {
+    const block = formatThemeBlock(null);
+    expect(block).toContain("## Theme");
+    expect(block).toContain("No active theme");
+    expect(block).toContain("propose_create_theme");
   });
 
   it("nav-menu item inlining still works when sets exist (v0.10.20 behavior preserved)", () => {

@@ -26,6 +26,7 @@
     mcp_tokens: "/security/mcp/pending",
     templates: "/security/templates/pending",
     domains: "/security/domains/pending",
+    themes: "/security/themes/pending",
     locales: "/security/locales/pending",
     gateway: "/security/gateway",
     site_memory: "/security/ai/memory-proposals",

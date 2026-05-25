@@ -16,7 +16,9 @@
 
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  buildMediaUrl,
   ComposeError,
+  type ComposeTheme,
   composePageWithLayout,
   err,
   injectSeoIntoHead,
@@ -26,6 +28,7 @@ import {
   resolveCanonicalUrl,
   resolveLocaleUrl,
   type SiteSeoSettings,
+  type ThemeDocument,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -819,6 +822,13 @@ export const renderPagePreviewOp = defineOperation({
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
 
+    // v0.11.0 (#45) — load the active theme row + apply chat-branch
+    // overlay so the preview reflects branch-scoped token edits without
+    // leaking them to other chats. The legacy structured_sets['theme/site']
+    // lookup is gone (the migration deleted the row); the renderer reads
+    // `input.theme` instead.
+    const composeTheme = await loadActiveThemeForCompose(tx, input.chatBranchId);
+
     let composed: ReturnType<typeof composePageWithLayout>;
     try {
       composed = composePageWithLayout({
@@ -826,6 +836,7 @@ export const renderPagePreviewOp = defineOperation({
         templateCss: pageRow.template_css,
         blocks,
         structuredSets: { byKindSlug },
+        theme: composeTheme,
         layoutHtml: pageRow.layout_html,
         layoutCss: pageRow.layout_css,
         layoutBlocks,
@@ -991,3 +1002,78 @@ export const renderPagePreviewOp = defineOperation({
     });
   },
 });
+
+/**
+ * v0.11.0 — load the currently-active themes row + apply chat-branch
+ * overlay (theme_snapshots tagged with the caller's chat_branch_id
+ * authoritatively replace live tokens for the preview render).
+ *
+ * Returns null when no active theme exists; the renderer skips the
+ * <style data-source="theme"> tag entirely in that case (legacy
+ * parity). The migration ensures at least one is_active row exists
+ * post-install so this only fires before-the-migration tests.
+ */
+async function loadActiveThemeForCompose(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  chatBranchId: string | undefined,
+): Promise<ComposeTheme | undefined> {
+  const rows = (await tx.execute(sql`
+    SELECT
+      id::text                     AS id,
+      tokens                       AS tokens,
+      logo_media_id::text          AS logo_media_id,
+      logo_dark_media_id::text     AS logo_dark_media_id,
+      favicon_media_id::text       AS favicon_media_id,
+      social_share_media_id::text  AS social_share_media_id
+    FROM themes
+    WHERE is_active = true
+    LIMIT 1
+  `)) as unknown as Array<{
+    id: string;
+    tokens: unknown;
+    logo_media_id: string | null;
+    logo_dark_media_id: string | null;
+    favicon_media_id: string | null;
+    social_share_media_id: string | null;
+  }>;
+  const row = rows[0];
+  if (!row) return undefined;
+  let tokens: ThemeDocument =
+    typeof row.tokens === "string"
+      ? (JSON.parse(row.tokens) as ThemeDocument)
+      : (row.tokens as ThemeDocument);
+
+  // Branch overlay — most-recent theme_snapshots row for this branch
+  // replaces live tokens.
+  if (chatBranchId) {
+    const branchRows = (await tx.execute(sql`
+      SELECT state
+      FROM theme_snapshots ts
+      JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
+      WHERE ts.theme_id = ${row.id}::uuid
+        AND ss.chat_branch_id = ${chatBranchId}::uuid
+      ORDER BY ss.created_at DESC
+      LIMIT 1
+    `)) as unknown as Array<{ state: unknown }>;
+    const raw = branchRows[0]?.state;
+    if (raw) {
+      const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
+        tokens?: ThemeDocument;
+        deletedAt?: string | null;
+      };
+      if (!parsed.deletedAt && parsed.tokens) tokens = parsed.tokens;
+    }
+  }
+
+  const asset = (id: string | null): { mediaId: string; url: string } | null =>
+    id === null ? null : { mediaId: id, url: buildMediaUrl(id, "orig") };
+  return {
+    tokens,
+    assets: {
+      logo: asset(row.logo_media_id),
+      logoDark: asset(row.logo_dark_media_id),
+      favicon: asset(row.favicon_media_id),
+      socialShare: asset(row.social_share_media_id),
+    },
+  };
+}
