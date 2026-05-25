@@ -127,6 +127,22 @@ export const proposeCreateThemeOp = defineOperation({
     // v0.11.1 (issue #76) — split `primaryColor` off the loose
     // overrides as a sentinel; if present, derive an OKLCh ramp now so
     // the preview reflects every stop the operator will see post-approve.
+    //
+    // v0.11.1 (issue #76 round-2 opt #3) — surface a structured error
+    // when `overrides.primaryColor` is present but not a CSS-color
+    // string. Pre-fix, a non-string seed (e.g. `42` from a malformed
+    // AI tool call) was silently dropped: the operator got the preset
+    // verbatim without the ramp, no warning. Now we look at the raw
+    // value BEFORE extractPrimaryColorSeed's typeof narrowing and
+    // throw an AI-actionable error per CLAUDE.md §11.
+    const rawPrimaryColor = (input.overrides ?? {})["primaryColor"];
+    if (rawPrimaryColor !== undefined && typeof rawPrimaryColor !== "string") {
+      return err({
+        kind: "HandlerError",
+        operation: "themes.propose_create",
+        message: `overrides.primaryColor must be a CSS color string (got ${typeof rawPrimaryColor}). Pass a value like '#ff6600' or 'oklch(0.7 0.18 30)'.`,
+      });
+    }
     const { primaryColor: rampSeed, rest: nonRampOverrides } = extractPrimaryColorSeed(
       input.overrides,
     );
