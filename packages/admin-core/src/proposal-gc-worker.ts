@@ -46,6 +46,8 @@ const PENDING_TABLES = [
   "domain_pending_actions",
   "locale_pending_actions",
   "plugin_rate_limit_proposals",
+  // v0.11.0 (#45) — themes primitive uses the standard pending shape.
+  "theme_pending_actions",
 ] as const;
 
 let workerHandle: ReturnType<typeof setInterval> | null = null;

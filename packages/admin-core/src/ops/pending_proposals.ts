@@ -132,6 +132,13 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                COALESCE(preview->>'hostname', 'domain'),
                chat_session_id::text
           FROM domain_pending_actions WHERE status = 'pending'
+        UNION ALL
+        -- v0.11.0 (#45) — themes primitive.
+        SELECT 'themes', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'slug', preview->>'targetSlug',
+                        preview->>'displayName', 'theme'),
+               chat_session_id::text
+          FROM theme_pending_actions WHERE status = 'pending'
         -- Older proposal tables (varying shape; aliased into common columns).
         UNION ALL
         SELECT 'locales', action_kind, id::text, proposed_by::text, proposed_at,
@@ -185,6 +192,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'mcp_tokens' FROM mcp_token_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'templates' FROM template_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'domains' FROM domain_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'themes' FROM theme_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'locales' FROM locale_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'gateway' FROM plugin_rate_limit_proposals WHERE status = 'pending'
         UNION ALL SELECT 'site_memory' FROM site_memory_proposals WHERE status = 'pending'
