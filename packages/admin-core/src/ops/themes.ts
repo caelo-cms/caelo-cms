@@ -149,7 +149,13 @@ const SELECT_THEME_COLUMNS = sql`
 // Snapshot helpers
 // ────────────────────────────────────────────────────────────────────
 
-async function fetchThemeOrNull(
+/**
+ * Fetch one themes row by id / slug / active flag, joined with the
+ * derived asset URLs. Exported so the propose/execute path in
+ * themes_pending.ts can hydrate the full Theme aggregate before
+ * emitting activation snapshots (step-11 opt §2).
+ */
+export async function fetchThemeOrNull(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   by: { id?: string; slug?: string; active?: true },
 ): Promise<Theme | null> {

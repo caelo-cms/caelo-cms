@@ -43,6 +43,7 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
+import { emitThemeWrite, fetchThemeOrNull } from "./themes.js";
 
 const slugSchema = z
   .string()
@@ -336,6 +337,11 @@ export const executeThemeProposalOp = defineOperation({
           message: "activate proposal has no theme_id",
         });
       }
+      // Capture the previously-active theme's id (if any) BEFORE the
+      // flip so we can emit a snapshot row for it with its new
+      // is_active=false state — without this the activation is
+      // unrecoverable via site-history (step-11 opt §2).
+      const previouslyActive = await fetchThemeOrNull(tx, { active: true });
       // Atomic flip in one tx — partial-unique themes_one_active
       // index enforces "only one active row".
       await tx.execute(sql`UPDATE themes SET is_active = false WHERE is_active = true`);
@@ -344,6 +350,30 @@ export const executeThemeProposalOp = defineOperation({
         SET is_active = true, updated_at = now(), updated_by = ${ctx.actorId}::uuid
         WHERE id = ${row.theme_id}::uuid
       `);
+      // Emit snapshots for BOTH themes carrying their new is_active
+      // state so an Owner can revert a misclicked activation via
+      // revert_site / chat-revert.
+      const newlyActive = await fetchThemeOrNull(tx, { id: row.theme_id });
+      if (previouslyActive && previouslyActive.id !== row.theme_id) {
+        await emitThemeWrite(tx, {
+          actorId: ctx.actorId,
+          chatBranchId: ctx.chatBranchId,
+          chatTaskId: ctx.chatTaskId ?? null,
+          opKind: "themes.activate",
+          description: `themes.activate deactivated ${previouslyActive.slug}`,
+          theme: { ...previouslyActive, isActive: false },
+        });
+      }
+      if (newlyActive) {
+        await emitThemeWrite(tx, {
+          actorId: ctx.actorId,
+          chatBranchId: ctx.chatBranchId,
+          chatTaskId: ctx.chatTaskId ?? null,
+          opKind: "themes.activate",
+          description: `themes.activate activated ${newlyActive.slug}`,
+          theme: newlyActive,
+        });
+      }
     } else if (row.kind === "delete") {
       if (!row.theme_id) {
         return err({
