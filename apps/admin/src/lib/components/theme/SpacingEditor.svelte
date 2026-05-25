@@ -15,16 +15,24 @@
    * Save committing both adds AND mutations of existing rows works
    * because update_tokens treats `set` as upsert-per-canonical-path.
    *
-   * v0.11.1 (e2e round 1 fix #1) — the per-row remove form CANNOT be
-   * a descendant of the outer save form (HTML invalid; Svelte 5
-   * fails to hydrate via `TypeError: input.hasAttribute is not a function`
-   * because the browser auto-closes the outer form when it parses the
-   * nested one). DOM layout is now flat: the save form contains only
-   * its own hidden inputs + Save button. Each row's value Input is
-   * a sibling of the save form and links to it via the `form="..."`
-   * attribute (well-supported, modern browsers). Each row's Remove
-   * form is also a sibling. Visually, CSS lays them out as
-   * grid/flex rows.
+   * ════════════════════════════════════════════════════════════════════
+   * INVARIANT — DO NOT NEST FORMS (issue #76 e2e round 1, fix #1)
+   * ════════════════════════════════════════════════════════════════════
+   * The per-row `<form action="?/removeToken">` MUST stay a SIBLING of
+   * the Save `<form id={formId}>`, never a descendant. Nesting forms
+   * is HTML-invalid → modern browsers auto-close the outer form when
+   * they parse the inner one → Svelte 5 hydration crashes with
+   * `TypeError: input.hasAttribute is not a function` from
+   * get_next_sibling → ENTIRE edit page hydration breaks (ColorEditor
+   * pickers show fallback grey, every contrast badge reads Fail).
+   *
+   * If you're "cleaning up" the DOM and the per-row Remove form LOOKS
+   * like it should live inside the Save form because it's part of the
+   * same row visually — DON'T. The per-row inputs reach the Save form
+   * via the HTML `form="..."` attribute (well-supported on every modern
+   * browser; ties an input to a form by ID regardless of DOM nesting).
+   * See commit e6a9f0e9 for the failure mode + the structural fix.
+   * ════════════════════════════════════════════════════════════════════
    */
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
