@@ -177,10 +177,28 @@ function mapEntriesToDtcg(entries: readonly CssVarEntry[]): ThemeDocument {
         $type: "typography",
       };
     } else {
-      group[leafName] = {
+      // v0.11.1 (issue #76 Copilot review #4): if `leafName` looks like
+      // a Tailwind ramp suffix (`primary-50` … `primary-900`,
+      // `primary-DEFAULT`), nest it as `<group>.<stop>` so the result
+      // matches the OKLCh ramp's DTCG group shape. Without this,
+      // `--color-primary-50` would land at the flat key `color['primary-50']`
+      // and downstream ramp-aware logic (DEFAULT-alias resolver, the
+      // ColorEditor's color.primary swatch, the propose-create explicit-
+      // stop override path) wouldn't see the stops as a group.
+      const rampMatch = /^(.+)-(50|100|200|300|400|500|600|700|800|900|DEFAULT)$/.exec(leafName);
+      const tokenLeaf = {
         $value: entry.value,
         $type: category === "color" ? "color" : category === "duration" ? "duration" : "dimension",
       };
+      if (rampMatch && category === "color") {
+        const [, baseName, stop] = rampMatch as unknown as [string, string, string];
+        if (!group[baseName] || typeof group[baseName] !== "object") {
+          group[baseName] = {};
+        }
+        (group[baseName] as Record<string, unknown>)[stop] = tokenLeaf;
+      } else {
+        group[leafName] = tokenLeaf;
+      }
     }
   }
   return out as ThemeDocument;
