@@ -95,6 +95,18 @@
             </div>
           {/each}
         </div>
+        <!-- v0.11.1 (issue #76 Copilot review #3): the sub-field inputs
+             above drive the live preview via setSub() but they don't
+             carry name= attributes — they're UX helpers, not part of
+             the form submission. The hidden input below serializes
+             the WHOLE composite for THIS stop as a JSON-encoded value.
+             The server's coerceFormValue helper JSON.parses it back
+             into the {color, offsetX, offsetY, blur, [spread]} shape
+             themeShadowComposite expects, so applyDtcgWrites can land
+             it as a valid composite leaf at shadow.<stop>. Posting
+             per-sub-field strings would silently fail Zod validation
+             (composite $value must be an object, not a flat scalar). -->
+        <input type="hidden" name={`shadow.${stop}`} value={JSON.stringify(s)} />
       </div>
     {/each}
   </div>

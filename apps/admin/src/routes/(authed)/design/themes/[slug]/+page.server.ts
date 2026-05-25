@@ -44,12 +44,22 @@ export const actions: Actions = {
     const slug = String(form.get("themeSlug") ?? params.slug);
 
     // Strip framework keys; everything else is a loose name → value.
-    const set: Record<string, string> = {};
+    //
+    // v0.11.1 (issue #76 Copilot review #2 + #3): some editors post
+    // composite tokens (typography.* / shadow.*) as a JSON-encoded
+    // string in a single field so the composite shape survives the
+    // form-encoding boundary. JSON-parse values that look JSON-shaped
+    // (start with `{`, `[`, or a bare number/keyword for fontWeight);
+    // fall back to the raw string for scalar fields (colors, hex,
+    // CSS lengths, etc.). The downstream normalizer + Zod-validate at
+    // themes.update_tokens still catch garbage values.
+    const set: Record<string, unknown> = {};
     for (const [key, value] of form.entries()) {
       if (key === "_csrf" || key === "themeSlug") continue;
       if (typeof value !== "string") continue;
-      if (value.trim().length === 0) continue;
-      set[key] = value;
+      const trimmed = value.trim();
+      if (trimmed.length === 0) continue;
+      set[key] = coerceFormValue(key, trimmed);
     }
     if (Object.keys(set).length === 0) {
       return fail(400, { error: "nothing to update" });
@@ -143,4 +153,38 @@ function extractErrorMessage(error: unknown, fallback: string): string {
     return String((error as { message: unknown }).message);
   }
   return fallback;
+}
+
+/**
+ * v0.11.1 (issue #76 Copilot review #2 + #3): convert a raw form-encoded
+ * string back into the structured shape the normalizer + Zod schema
+ * expect. The form encoding loses type information; this restores it
+ * for the two paths that need it:
+ *
+ *   - composite values (typography.X / shadow.X) — posted as a JSON
+ *     object literal, parsed here back to {fontFamily, fontSize, ...}
+ *     or {color, offsetX, offsetY, blur, ...} so the canonical Zod
+ *     schema's $value-is-object constraint holds.
+ *   - typography numerics (typography.X.fontWeight / .lineHeight) —
+ *     posted as a bare digit string; parsed to number so the Zod
+ *     union `z.number() | z.enum(['normal', 'bold', ...])` accepts it.
+ *
+ * Everything else (color strings, CSS lengths, named radii, etc.)
+ * passes through unchanged.
+ */
+function coerceFormValue(name: string, raw: string): unknown {
+  // JSON-shaped composite or list — try to parse.
+  if (raw.startsWith("{") || raw.startsWith("[")) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // Fall through — the normalizer will reject if it really expected
+      // an object; a string value is a perfectly fine fallback.
+    }
+  }
+  // Typography numeric sub-fields: parse as number.
+  if (/^typography\.[a-z0-9-]+\.(fontWeight|lineHeight)$/.test(name) && /^\d+(\.\d+)?$/.test(raw)) {
+    return Number(raw);
+  }
+  return raw;
 }
