@@ -323,6 +323,10 @@ export const chatPublishInput = z
               "pageModuleContent",
               "layout",
               "structuredSet",
+              // v0.11.0 (#45) — themes primitive joins the publish/Stage
+              // surface so chat-branched theme edits replay into live
+              // on chat.publish.
+              "theme",
             ]),
             entityId: z.string().uuid(),
           })
