@@ -10,10 +10,13 @@
    * option — what the operator sees is byte-for-byte what visitors
    * will see (AC #3 byte-for-byte invariant).
    *
-   * Re-renders on every token mutation; svelte's reactive `$derived`
-   * handles the dependency tracking. For large theme documents the
-   * recompute is debounce-friendly; v0.11.1 ships without debouncing
-   * (the renderThemeCss cost is sub-millisecond for typical themes).
+   * Re-renders on every token mutation with a 50ms debounce (Risk §6.12
+   * mitigation) so rapid keystrokes coalesce into one renderThemeCss
+   * call instead of N. For shadcn-default-sized themes the per-call
+   * cost is sub-millisecond, but a slow client or a large multi-theme
+   * install benefits from coalescing; the 50ms delay is below the
+   * human-perception threshold (~100ms) so the operator still sees an
+   * 'immediate' update.
    */
   import { renderThemeCss, type ThemeDocument } from "@caelo-cms/shared";
 
@@ -23,6 +26,18 @@
     darkMode?: boolean;
   }
   let { tokens, darkMode = false }: Props = $props();
+
+  // Debounced mirror of `tokens` — drives the preview render so a
+  // typing burst coalesces into a single CSS recompute. Initialise
+  // with the first incoming value so the first paint is immediate.
+  let debouncedTokens = $state<ThemeDocument>(tokens);
+  $effect(() => {
+    const next = tokens;
+    const id = setTimeout(() => {
+      debouncedTokens = next;
+    }, 50);
+    return () => clearTimeout(id);
+  });
 
   // Scope to `.theme-preview` so the CSS variables only apply inside
   // the sample DOM below — not the surrounding admin shell.
@@ -35,7 +50,7 @@
       return ".theme-preview{}";
     }
   }
-  const themeCss = $derived(safeRender(tokens));
+  const themeCss = $derived(safeRender(debouncedTokens));
   const themeStyleTag = $derived(`<style>${themeCss}</style>`);
 </script>
 
