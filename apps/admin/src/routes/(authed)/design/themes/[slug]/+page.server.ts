@@ -71,6 +71,41 @@ export const actions: Actions = {
   },
 
   /**
+   * v0.11.1 (issue #76) — remove a single canonical DTCG path
+   * (e.g. `spacing.3xl`). Used by editors that support add/remove
+   * UX (SpacingEditor, future TypographyEditor tier removal). The
+   * underlying themes.update_tokens op's `remove` parameter takes
+   * a list; this action wraps a single-path submission to keep the
+   * form shape simple.
+   */
+  removeToken: async ({ request, params, locals }) => {
+    requirePermission(locals, "roles.manage");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const slug = String(form.get("themeSlug") ?? params.slug);
+    const path = String(form.get("path") ?? "").trim();
+    if (path.length === 0) {
+      return fail(400, { error: "remove path is required" });
+    }
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "themes.update_tokens", {
+      themeSlug: slug,
+      remove: [path],
+    });
+    if (!r.ok) {
+      return fail(400, { error: extractErrorMessage(r.error, "remove failed") });
+    }
+    const v = r.value as { canonicalPathsRemoved: string[] };
+    return {
+      ok: true,
+      message:
+        v.canonicalPathsRemoved.length > 0
+          ? `Removed ${v.canonicalPathsRemoved.join(", ")}.`
+          : `No matching path ('${path}') — already gone.`,
+    };
+  },
+
+  /**
    * Bind an asset slot to a media row (or clear with mediaId="").
    */
   setAsset: async ({ request, params, locals }) => {
