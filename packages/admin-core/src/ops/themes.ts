@@ -32,10 +32,12 @@ import {
   err,
   exportDtcg,
   importDtcg,
+  InvalidColorValue,
   normalizeTokens,
   ok,
   type Theme,
   type ThemeDocument,
+  TokenCategoryMismatch,
   UnknownTokenName,
   validateThemeTokens,
 } from "@caelo-cms/shared";
@@ -382,7 +384,14 @@ export const updateThemeTokensOp = defineOperation({
         nextTokens = applyTokenWrites(nextTokens, normalized.set, normalized.types);
         canonicalPathsWritten = normalized.canonicalPaths;
       } catch (e) {
-        if (e instanceof UnknownTokenName) {
+        // AI-actionable error surface (#45 AC #7). Every typed error
+        // already carries the next step the AI should try inside its
+        // .message; surface it verbatim so the AI doesn't lose context.
+        if (
+          e instanceof UnknownTokenName ||
+          e instanceof InvalidColorValue ||
+          e instanceof TokenCategoryMismatch
+        ) {
           return err({
             kind: "HandlerError",
             operation: "themes.update_tokens",

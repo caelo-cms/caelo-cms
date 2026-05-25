@@ -25,10 +25,12 @@ import { defineOperation } from "@caelo-cms/query-api";
 import {
   err,
   getPreset,
+  InvalidColorValue,
   normalizeTokens,
   ok,
   PresetNotFound,
   type PresetName,
+  TokenCategoryMismatch,
   UnknownTokenName,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -119,7 +121,14 @@ export const proposeCreateThemeOp = defineOperation({
           types: normalized.types,
         };
       } catch (e) {
-        if (e instanceof UnknownTokenName) {
+        // AI-actionable error surface (#45 AC #7). Surface every typed
+        // override-validation error so the AI's retry can land
+        // without a round-trip through generic Zod messaging.
+        if (
+          e instanceof UnknownTokenName ||
+          e instanceof InvalidColorValue ||
+          e instanceof TokenCategoryMismatch
+        ) {
           return err({
             kind: "HandlerError",
             operation: "themes.propose_create",

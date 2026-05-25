@@ -27,7 +27,11 @@
  * AI-actionable".
  */
 
-import { UnknownTokenName } from "./themes-errors.js";
+import {
+  InvalidColorValue,
+  TokenCategoryMismatch,
+  UnknownTokenName,
+} from "./themes-errors.js";
 
 export type CanonicalPath = string;
 
@@ -190,6 +194,8 @@ function resolveOne(rawName: string, rawValue: unknown): ResolvedToken {
   // 1. Direct canonical DTCG paths: pass through unchanged.
   if (/^[a-z][a-z0-9_-]*(\.[a-z0-9_-]+)+(\.\$value)?$/i.test(rawName)) {
     const path = rawName.replace(/\.\$value$/, "");
+    const category = path.split(".")[0] ?? "";
+    validateValueShape(category, rawValue, path);
     return { path, inferredType: inferTypeFromPath(path, rawValue) };
   }
 
@@ -202,9 +208,17 @@ function resolveOne(rawName: string, rawValue: unknown): ResolvedToken {
       const rest = stripped.slice(firstHyphen + 1);
       // The Tailwind 4 typography split (--font + --text) collapses to
       // typography.<name>.fontFamily / fontSize at the storage layer.
-      if (category === "font") return { path: `typography.${rest}.fontFamily`, inferredType: "typography" };
-      if (category === "text") return { path: `typography.${rest}.fontSize`, inferredType: "dimension" };
-      return { path: `${category}.${rest}`, inferredType: inferTypeFromPath(`${category}.${rest}`, rawValue) };
+      if (category === "font") {
+        // No value-shape check — fontFamily is a free-form string.
+        return { path: `typography.${rest}.fontFamily`, inferredType: "typography" };
+      }
+      if (category === "text") {
+        validateValueShape("spacing", rawValue, `typography.${rest}.fontSize`);
+        return { path: `typography.${rest}.fontSize`, inferredType: "dimension" };
+      }
+      const path = `${category}.${rest}`;
+      validateValueShape(category, rawValue, path);
+      return { path, inferredType: inferTypeFromPath(path, rawValue) };
     }
   }
 
@@ -236,13 +250,66 @@ function resolveOne(rawName: string, rawValue: unknown): ResolvedToken {
 
   // 5. Extract basename: strip category prefix + camel/kebab.
   const basename = extractBasename(rawName, chosen.category);
-  if (!basename) {
-    // Bare category word ("color" / "shadow") — pick the default tier
-    // (`primary` for color, `sm` for shadow/radius, etc.).
-    const fallback = defaultTier(chosen.category);
-    return { path: chosen.buildPath(fallback), inferredType: chosen.inferredType };
+  const path = basename
+    ? chosen.buildPath(basename)
+    : // Bare category word ("color" / "shadow") — pick the default tier
+      // (`primary` for color, `sm` for shadow/radius, etc.).
+      chosen.buildPath(defaultTier(chosen.category));
+  validateValueShape(chosen.category, rawValue, path);
+  return { path, inferredType: chosen.inferredType };
+}
+
+/**
+ * v0.11.0 (#45 AC #7) — fail-fast value-shape validation for the
+ * AI-actionable error surface. Catches:
+ *
+ *   - color slot + string value that isn't a valid CSS color
+ *     → InvalidColorValue (carries supportedFormats list).
+ *   - any slot + value whose sniffed category disagrees with the
+ *     resolved slot's category → TokenCategoryMismatch (carries
+ *     expected vs got).
+ *
+ * Aliases (`{color.primary}`) bypass — they're resolved at render
+ * time and may legitimately point at a value of any shape. Non-string
+ * values (numbers, composite objects) also bypass because the AI
+ * passes those only on direct DTCG paths where the Zod composite
+ * schema validates the shape downstream.
+ *
+ * Typography sub-paths (`typography.<name>.fontFamily`) skip the
+ * check because fontFamily accepts free-form strings.
+ */
+function validateValueShape(category: string, value: unknown, canonicalPath: string): void {
+  if (typeof value !== "string") return;
+  if (ALIAS_REGEX.test(value)) return;
+
+  if (category === "color") {
+    if (COLOR_VALUE_REGEX.test(value)) return;
+    const sniffed = sniffCategoryFromValue(value);
+    if (sniffed && sniffed !== "color") {
+      throw new TokenCategoryMismatch(canonicalPath, "color", sniffed);
+    }
+    throw new InvalidColorValue(value);
   }
-  return { path: chosen.buildPath(basename), inferredType: chosen.inferredType };
+
+  if (category === "spacing" || category === "radius" || category === "breakpoint") {
+    const sniffed = sniffCategoryFromValue(value);
+    if (sniffed && sniffed !== "dimension") {
+      throw new TokenCategoryMismatch(canonicalPath, "dimension", sniffed);
+    }
+    return;
+  }
+
+  if (category === "duration") {
+    const sniffed = sniffCategoryFromValue(value);
+    if (sniffed && sniffed !== "duration") {
+      throw new TokenCategoryMismatch(canonicalPath, "duration", sniffed);
+    }
+    return;
+  }
+
+  // shadow / typography composites + unknown categories: caller's
+  // responsibility to pass a structurally-correct value; Zod catches
+  // the rest at validateThemeTokens time.
 }
 
 function inferTypeFromPath(
