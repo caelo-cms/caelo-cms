@@ -198,7 +198,12 @@ erDiagram
   site_snapshots ||--o{ module_snapshots : "groups"
   site_snapshots ||--o{ template_snapshots : "groups"
   site_snapshots ||--o{ page_layout_snapshots : "groups"
+  site_snapshots ||--o{ theme_snapshots : "groups"
   chat_branches ||--o{ chat_branch_publish_marks : "merged via"
+
+  %% Themes (v0.11.0, #45)
+  themes ||--o{ theme_pending_actions : "gated via"
+  themes }o--o| media_assets : "logo / favicon / social-share FKs"
 
   %% Chat
   chat_sessions ||--o{ chat_messages : "has"
@@ -227,7 +232,8 @@ erDiagram
 | **Snapshots** | `site_snapshots`, `page_snapshots`, `module_snapshots`, `template_snapshots`, `page_layout_snapshots`, `chat_branch_publish_marks` | Every write emits a snapshot. Reverting `site_snapshots` restores the full set atomically. |
 | **Chat** | `chat_sessions`, `chat_branches`, `chat_messages`, `ai_calls`, `site_ai_memory`, `site_memory_proposals` | Sessions on ephemeral branches. AI memory proposals queue for Owner review. |
 | **Deploy** | `deploy_targets`, `deploy_runs` | `deploy_runs.progress jsonb` updated by the static generator subprocess. |
-| **Sideband** | `structured_sets`, `redirects`, `site_defaults`, `audit_events`, `rate_limit_buckets`, `user_preferences` | `structured_sets` is the typed-list primitive (nav-menus, theme tokens, taxonomies, tags). `site_defaults` is a singleton row. |
+| **Sideband** | `structured_sets`, `redirects`, `site_defaults`, `audit_events`, `rate_limit_buckets`, `user_preferences` | `structured_sets` is the typed-list primitive (nav-menus, taxonomies, tags, link-lists, language-selectors). `site_defaults` is a singleton row. |
+| **Themes** (v0.11.0, #45) | `themes`, `theme_snapshots`, `theme_pending_actions` | DTCG-shaped jsonb `tokens` (color / dimension / typography composite / shadow composite / motion / breakpoint, plus DTCG aliasing). Exactly one `is_active=true` row enforced by partial unique index. Four media FKs for logo / logo-dark / favicon / social-share. Create / activate / delete go through the §11.A propose/execute gate (`theme_pending_actions`). The renderer reads the active theme via `ComposeInput.theme` and emits Tailwind 4-namespaced CSS vars under `<style data-source="theme">`. Zod source of truth: `packages/shared/src/themes.ts`. |
 
 **Snapshot semantics.** A snapshot is a content-addressed copy of an entity at a point in time, grouped under a `site_snapshots` row tagged with the originating chat branch (or `NULL` for system / direct-admin writes). Reverting walks the group and restores every member in one transaction. Chat-keyed Undo (the primary history surface) targets the most recent `site_snapshots` row tagged with the active branch.
 
