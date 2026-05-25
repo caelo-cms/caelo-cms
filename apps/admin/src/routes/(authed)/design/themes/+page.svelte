@@ -4,6 +4,7 @@
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
+  import { buttonVariants } from "$lib/components/ui/button/button-variants.js";
   import {
     Card,
     CardContent,
@@ -123,8 +124,13 @@
             {/if}
           </CardContent>
           <CardFooter class="flex flex-wrap items-center gap-2">
-            <a href={`/design/themes/${theme.slug}`} class="contents">
-              <Button variant="outline" size="sm">Edit</Button>
+            <!-- v0.11.1 (issue #76 Copilot review): style the link
+                 directly via buttonVariants() so we don't nest a
+                 <button> inside an <a> (HTML-invalid, a11y/keyboard
+                 hazard). Same buttonVariants pattern CLAUDE.md §6A
+                 calls out as the convention for link-as-button. -->
+            <a href={`/design/themes/${theme.slug}`} class={buttonVariants({ variant: "outline", size: "sm" })}>
+              Edit
             </a>
             {#if !theme.isActive}
               <form method="post" action="?/activate">
