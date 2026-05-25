@@ -378,3 +378,86 @@ function pluralise(category: string, n: number): string {
   if (category.endsWith("y")) return `${category.slice(0, -1)}ies`;
   return `${category}s`;
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Patch helpers (shared between themes.update_tokens + themes.execute_proposal)
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * v0.11.0 (#45, step-11 opt §5) — apply a canonical-path → value patch
+ * to a DTCG document. Returns a fresh document; the input is not
+ * mutated.
+ *
+ * Each entry in `writes` becomes a `{$value, $type}` leaf at the dotted
+ * canonical path. The `types` map carries the inferred DTCG `$type` for
+ * each path (already known to the normalizer) so the leaf advertises
+ * the right shape to consumers.
+ *
+ * Both themes.update_tokens (loose-input set path) and
+ * themes.propose_create's execute branch (preset + overrides merge)
+ * use this same logic — extracted so the dotted-path merge lives in
+ * one place and v0.11.1's OKLCH auto-ramp can extend it without
+ * forking.
+ */
+export function applyDtcgWrites(
+  current: ThemeDocument,
+  writes: Record<string, unknown>,
+  types: Record<string, string>,
+): ThemeDocument {
+  const out: ThemeDocument = JSON.parse(JSON.stringify(current));
+  for (const [path, value] of Object.entries(writes)) {
+    const inferredType = types[path];
+    setLeafAtPath(out, path, {
+      $value: value,
+      ...(inferredType ? { $type: inferredType } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Walk a dotted DTCG path and set the leaf in-place. Caller passes a
+ * cloned document (never the original) — `applyDtcgWrites` enforces
+ * that for the public surface.
+ */
+function setLeafAtPath(doc: Record<string, unknown>, path: string, leaf: unknown): void {
+  const parts = path.split(".");
+  let cur: Record<string, unknown> = doc;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const k = parts[i];
+    if (!k) continue;
+    if (cur[k] === undefined || cur[k] === null || typeof cur[k] !== "object") {
+      cur[k] = {};
+    }
+    cur = cur[k] as Record<string, unknown>;
+  }
+  const last = parts[parts.length - 1];
+  if (last) cur[last] = leaf;
+}
+
+/**
+ * Companion to `applyDtcgWrites` — drop the leaf at a canonical path
+ * if it exists. Returns `{tokens, removed}` so the caller can report
+ * which paths were actually removed (silent on missing paths so a
+ * remove-list that includes already-absent keys is idempotent).
+ */
+export function removeDtcgPath(
+  doc: ThemeDocument,
+  path: string,
+): { tokens: ThemeDocument; removed: boolean } {
+  const out: ThemeDocument = JSON.parse(JSON.stringify(doc));
+  const parts = path.split(".");
+  let cur: Record<string, unknown> = out;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const k = parts[i];
+    if (!k) continue;
+    const next = cur[k];
+    if (!next || typeof next !== "object") return { tokens: doc, removed: false };
+    cur = next as Record<string, unknown>;
+  }
+  const last = parts[parts.length - 1];
+  if (!last) return { tokens: doc, removed: false };
+  if (!(last in cur)) return { tokens: doc, removed: false };
+  delete cur[last];
+  return { tokens: out, removed: true };
+}

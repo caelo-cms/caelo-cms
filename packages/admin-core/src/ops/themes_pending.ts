@@ -23,6 +23,7 @@
 
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  applyDtcgWrites,
   err,
   getPreset,
   InvalidColorValue,
@@ -299,25 +300,11 @@ export const executeThemeProposalOp = defineOperation({
 
       let tokens = getPreset(presetName);
       if (Object.keys(overrides).length > 0) {
+        // Re-normalize at execute time so the value-shape errors from
+        // propose time stay consistent and so we don't trust the
+        // payload jsonb that was persisted between propose and execute.
         const normalized = normalizeTokens(overrides);
-        // Apply each canonical-path override onto the preset tokens.
-        const next = JSON.parse(JSON.stringify(tokens)) as Record<string, unknown>;
-        for (const [path, value] of Object.entries(normalized.set)) {
-          const inferredType = normalized.types[path];
-          const parts = path.split(".");
-          let cur: Record<string, unknown> = next;
-          for (let i = 0; i < parts.length - 1; i++) {
-            const k = parts[i];
-            if (!k) continue;
-            if (cur[k] === undefined || cur[k] === null || typeof cur[k] !== "object") cur[k] = {};
-            cur = cur[k] as Record<string, unknown>;
-          }
-          const last = parts[parts.length - 1];
-          if (last) {
-            cur[last] = { $value: value, ...(inferredType ? { $type: inferredType } : {}) };
-          }
-        }
-        tokens = next as typeof tokens;
+        tokens = applyDtcgWrites(tokens, normalized.set, normalized.types);
       }
 
       const ins = (await tx.execute(sql`

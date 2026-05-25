@@ -28,6 +28,7 @@
 
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  applyDtcgWrites,
   buildMediaUrl,
   err,
   exportDtcg,
@@ -35,6 +36,7 @@ import {
   InvalidColorValue,
   normalizeTokens,
   ok,
+  removeDtcgPath,
   type Theme,
   type ThemeDocument,
   TokenCategoryMismatch,
@@ -381,7 +383,7 @@ export const updateThemeTokensOp = defineOperation({
     if (input.set && Object.keys(input.set).length > 0) {
       try {
         const normalized = normalizeTokens(input.set);
-        nextTokens = applyTokenWrites(nextTokens, normalized.set, normalized.types);
+        nextTokens = applyDtcgWrites(nextTokens, normalized.set, normalized.types);
         canonicalPathsWritten = normalized.canonicalPaths;
       } catch (e) {
         // AI-actionable error surface (#45 AC #7). Every typed error
@@ -406,7 +408,7 @@ export const updateThemeTokensOp = defineOperation({
     const removed: string[] = [];
     if (input.remove && input.remove.length > 0) {
       for (const path of input.remove) {
-        const result = removeTokenAtPath(nextTokens, path);
+        const result = removeDtcgPath(nextTokens, path);
         if (result.removed) {
           nextTokens = result.tokens;
           removed.push(path);
@@ -470,57 +472,9 @@ export const updateThemeTokensOp = defineOperation({
   },
 });
 
-function applyTokenWrites(
-  current: ThemeDocument,
-  writes: Record<string, unknown>,
-  types: Record<string, "color" | "dimension" | "typography" | "shadow" | "duration" | "cubicBezier">,
-): ThemeDocument {
-  const out: ThemeDocument = JSON.parse(JSON.stringify(current));
-  for (const [path, value] of Object.entries(writes)) {
-    const inferredType = types[path];
-    setAtPath(out, path, {
-      $value: value,
-      ...(inferredType ? { $type: inferredType } : {}),
-    });
-  }
-  return out;
-}
-
-function setAtPath(doc: Record<string, unknown>, path: string, leaf: unknown): void {
-  const parts = path.split(".");
-  let cur: Record<string, unknown> = doc;
-  for (let i = 0; i < parts.length - 1; i++) {
-    const k = parts[i];
-    if (!k) continue;
-    if (cur[k] === undefined || cur[k] === null || typeof cur[k] !== "object") {
-      cur[k] = {};
-    }
-    cur = cur[k] as Record<string, unknown>;
-  }
-  const last = parts[parts.length - 1];
-  if (last) cur[last] = leaf;
-}
-
-function removeTokenAtPath(
-  doc: ThemeDocument,
-  path: string,
-): { tokens: ThemeDocument; removed: boolean } {
-  const out: ThemeDocument = JSON.parse(JSON.stringify(doc));
-  const parts = path.split(".");
-  let cur: Record<string, unknown> = out;
-  for (let i = 0; i < parts.length - 1; i++) {
-    const k = parts[i];
-    if (!k) continue;
-    const next = cur[k];
-    if (!next || typeof next !== "object") return { tokens: doc, removed: false };
-    cur = next as Record<string, unknown>;
-  }
-  const last = parts[parts.length - 1];
-  if (!last) return { tokens: doc, removed: false };
-  if (!(last in cur)) return { tokens: doc, removed: false };
-  delete cur[last];
-  return { tokens: out, removed: true };
-}
+// v0.11.0 (#45, step-11 opt §5) — `applyDtcgWrites` + `removeDtcgPath`
+// moved to packages/shared/src/themes.ts so themes_pending.ts's execute
+// branch can share the dotted-path merge logic with this file.
 
 // ────────────────────────────────────────────────────────────────────
 // set_asset
