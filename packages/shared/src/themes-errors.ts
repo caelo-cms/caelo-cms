@@ -80,6 +80,27 @@ export class PresetNotFound extends Error {
 }
 
 /**
+ * v0.11.0 (#45 opt §2) — `themes.import_dtcg` was handed a JSON body
+ * whose shape doesn't look like DTCG (no `$value` anywhere in the
+ * tree). Could be a Tailwind config, Style Dictionary v3, Figma
+ * export, or pasted CSS — none of which the v0.11.0 importer
+ * understands. Caller should retry with a DTCG document; format
+ * auto-detection across the rest ships in v0.11.2.
+ */
+export class NotDtcgShape extends Error {
+  constructor() {
+    super(
+      "NotDtcgShape: the JSON body parsed cleanly but doesn't look like a DTCG document " +
+        "(no `$value` keys anywhere in the tree). Send a DTCG-shaped document — see " +
+        "https://www.designtokens.org/tr/drafts/format/ for the spec. Format auto-detection " +
+        "across Style Dictionary / Tailwind 4 @theme / shadcn :root / loose key-value lands " +
+        "in v0.11.2 — for now, send DTCG only.",
+    );
+    this.name = "NotDtcgShape";
+  }
+}
+
+/**
  * Loose-name input resolved to a canonical path but the value's
  * inferred category doesn't match the category for that path
  * (e.g. caller put a `0.5rem` value at `color.primary`).

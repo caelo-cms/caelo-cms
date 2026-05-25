@@ -34,6 +34,7 @@ import {
   exportDtcg,
   importDtcg,
   InvalidColorValue,
+  NotDtcgShape,
   normalizeTokens,
   ok,
   removeDtcgPath,
@@ -674,6 +675,17 @@ export const importThemeDtcgOp = defineOperation({
     try {
       parsed = importDtcg(input.body);
     } catch (e) {
+      // Round-2 opt §2: NotDtcgShape carries its own complete next-step
+      // message (parsed cleanly but not DTCG-shaped); surface verbatim
+      // so the AI doesn't wade through a redundant "verify the spec"
+      // suffix. Other failures still get the spec-pointer hint.
+      if (e instanceof NotDtcgShape) {
+        return err({
+          kind: "HandlerError",
+          operation: "themes.import_dtcg",
+          message: e.message,
+        });
+      }
       const msg = e instanceof Error ? e.message : String(e);
       return err({
         kind: "HandlerError",
