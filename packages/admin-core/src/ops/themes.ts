@@ -4,9 +4,13 @@
  * v0.11.0 — Themes primitive Query API ops (#45, Phase 2 routine).
  *
  * Routine (non-gated) surface: list / get / get_active / update_tokens
- * / set_asset / duplicate / import_dtcg / export_dtcg. The hard-to-
- * revert ops (create / activate / delete) flow through the §11.A
+ * / set_asset / duplicate / import / export_dtcg. The hard-to-revert
+ * ops (create / activate / delete) flow through the §11.A
  * propose/execute gate in `themes_pending.ts`.
+ *
+ * v0.11.1 (issue #76) — `import_dtcg` renamed to `import`; the op now
+ * accepts pre-parsed `tokens: ThemeDocument` and the AI tool runs the
+ * five-format auto-detect chain in TS-land before calling.
  *
  * Every write op:
  *   - normalizes loose AI inputs via theme-normalize.ts (where
@@ -33,8 +37,6 @@ import {
   err,
   exportDtcg,
   InvalidColorValue,
-  importDtcg,
-  NotDtcgShape,
   normalizeTokens,
   ok,
   removeDtcgPath,
@@ -648,17 +650,17 @@ export const duplicateThemeOp = defineOperation({
 });
 
 // ────────────────────────────────────────────────────────────────────
-// import_dtcg / export_dtcg
+// import / export_dtcg
 // ────────────────────────────────────────────────────────────────────
 
-const importDtcgInput = z
+const importInput = z
   .object({
     /**
-     * DTCG JSON body. v0.11.0 ships DTCG-only; format auto-detection
-     * across Style Dictionary / Tailwind / shadcn / loose lands in
-     * v0.11.2 per the #45 follow-up comment.
+     * v0.11.1 (issue #76) — pre-parsed DTCG document. Format detection
+     * moved to the AI tool (`autoDetectAndImport` in
+     * @caelo-cms/shared) so the op surface stays parser-free.
      */
-    body: z.string().min(1).max(1_000_000),
+    tokens: z.unknown(),
     /**
      * Target theme slug. If it exists, the import REPLACES its tokens
      * (asset FKs are untouched). If it doesn't exist, the import
@@ -669,33 +671,29 @@ const importDtcgInput = z
   })
   .strict();
 
-export const importThemeDtcgOp = defineOperation({
-  name: "themes.import_dtcg",
+export const importThemeOp = defineOperation({
+  // v0.11.1 (issue #76) — renamed from `themes.import_dtcg`. v0.11.0
+  // had no external consumers; the op now accepts pre-parsed tokens
+  // (caller runs autoDetectAndImport in TS-land).
+  name: "themes.import",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: importDtcgInput,
-  output: z.object({ themeId: z.string(), format: z.literal("dtcg") }),
+  input: importInput,
+  output: z.object({ themeId: z.string() }),
   handler: async (ctx, input, tx) => {
-    let parsed: ThemeDocument;
+    // Validate the incoming tokens document — caller's parser may have
+    // produced something that fails the canonical Zod schema (e.g. a
+    // shadcn shape with an unrecognised semantic name landing as a
+    // weird color value).
+    let validated: ThemeDocument;
     try {
-      parsed = importDtcg(input.body);
+      validated = validateThemeTokens(input.tokens);
     } catch (e) {
-      // Round-2 opt §2: NotDtcgShape carries its own complete next-step
-      // message (parsed cleanly but not DTCG-shaped); surface verbatim
-      // so the AI doesn't wade through a redundant "verify the spec"
-      // suffix. Other failures still get the spec-pointer hint.
-      if (e instanceof NotDtcgShape) {
-        return err({
-          kind: "HandlerError",
-          operation: "themes.import_dtcg",
-          message: e.message,
-        });
-      }
       const msg = e instanceof Error ? e.message : String(e);
       return err({
         kind: "HandlerError",
-        operation: "themes.import_dtcg",
-        message: `DTCG import failed: ${msg} — verify the JSON validates against the W3C Design Tokens Format spec.`,
+        operation: "themes.import",
+        message: `imported tokens failed validation: ${msg}`,
       });
     }
 
@@ -703,7 +701,7 @@ export const importThemeDtcgOp = defineOperation({
     if (!target) {
       return err({
         kind: "HandlerError",
-        operation: "themes.import_dtcg",
+        operation: "themes.import",
         message: `theme '${input.themeSlug}' not found — mint a new theme via propose_create_theme first, then import into it.`,
       });
     }
@@ -715,7 +713,7 @@ export const importThemeDtcgOp = defineOperation({
         chatBranchId: ctx.chatBranchId,
       });
       if (!lock.permitted && lock.holder) {
-        return err(await lockedError(tx, "themes.import_dtcg", "theme", target.id, lock.holder));
+        return err(await lockedError(tx, "themes.import", "theme", target.id, lock.holder));
       }
     }
 
@@ -723,31 +721,31 @@ export const importThemeDtcgOp = defineOperation({
     if (!branched) {
       await tx.execute(sql`
         UPDATE themes
-        SET tokens = ${JSON.stringify(parsed)}::text::jsonb,
+        SET tokens = ${JSON.stringify(validated)}::text::jsonb,
             updated_at = now(),
             updated_by = ${ctx.actorId}::uuid
         WHERE id = ${target.id}::uuid
       `);
     }
-    const nextTheme: Theme = { ...target, tokens: parsed };
+    const nextTheme: Theme = { ...target, tokens: validated };
     await emitThemeWrite(tx, {
       actorId: ctx.actorId,
       chatBranchId: ctx.chatBranchId,
       chatTaskId: ctx.chatTaskId ?? null,
-      opKind: "themes.import_dtcg",
-      description: `themes.import_dtcg ${target.slug}${branched ? " (branched)" : ""}`,
+      opKind: "themes.import",
+      description: `themes.import ${target.slug}${branched ? " (branched)" : ""}`,
       theme: nextTheme,
     });
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
-      operation: "themes.import_dtcg",
-      input: { themeSlug: input.themeSlug, bytes: input.body.length },
+      operation: "themes.import",
+      input: { themeSlug: input.themeSlug },
       succeeded: true,
       entityId: target.id,
-      resultSummary: `imported DTCG bytes=${input.body.length}`,
+      resultSummary: `imported tokens (categories=${Object.keys(validated).length})`,
     });
-    return ok({ themeId: target.id, format: "dtcg" as const });
+    return ok({ themeId: target.id });
   },
 });
 

@@ -66,7 +66,12 @@ export type SnapshotOpKind =
   | "themes.update_tokens"
   | "themes.set_asset"
   | "themes.duplicate"
+  // v0.11.1 (issue #76) — `themes.import` replaces v0.11.0's
+  // `themes.import_dtcg` (the op surface no longer parses; auto-detect
+  // moved to the AI tool). Old name kept so historical rows that landed
+  // on dogfood installs under v0.11.0 still satisfy the typed union.
   | "themes.import_dtcg"
+  | "themes.import"
   | "themes.activate";
 
 export type SnapshotEntity =

@@ -369,7 +369,7 @@ import {
   exportThemeDtcgOp,
   getActiveThemeOp,
   getThemeOp,
-  importThemeDtcgOp,
+  importThemeOp,
   listThemesOp,
   setThemeAssetOp,
   updateThemeTokensOp,
@@ -663,7 +663,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(updateThemeTokensOp);
   registry.register(setThemeAssetOp);
   registry.register(duplicateThemeOp);
-  registry.register(importThemeDtcgOp);
+  registry.register(importThemeOp);
   registry.register(exportThemeDtcgOp);
   registry.register(proposeCreateThemeOp);
   registry.register(proposeActivateThemeOp);
