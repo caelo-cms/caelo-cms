@@ -13,12 +13,15 @@
 
   let { data, form } = $props();
 
+  // v0.11.0 (#45) — theme moved out of structured_sets into its own
+  // `themes` primitive. The dedicated editor lives at /design/themes
+  // (v0.11.1). language-selector is also a structured-set kind but
+  // operators rarely touch it directly; it surfaces in the locale UI.
   const KINDS: { kind: string; label: string; desc: string }[] = [
     { kind: "nav-menu", label: "Nav menus", desc: "Header / footer / sidebar navigation" },
     { kind: "tags", label: "Tags", desc: "Flat tag lists for content filtering" },
     { kind: "taxonomy", label: "Taxonomies", desc: "Tree-shaped category hierarchies" },
     { kind: "link-list", label: "Link lists", desc: "Footer 'legal', related resources" },
-    { kind: "theme", label: "Theme tokens", desc: "CSS variables and design tokens" },
   ];
 
   const setsByKind = $derived(

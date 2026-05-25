@@ -504,10 +504,11 @@ export const setStructuredSetToolInput = z
 
 // v0.10.22 — `updateThemeToolInput` removed. The kind-specific `update_theme`
 // wrapper was replaced by the unified `set_structured_set` surface.
-// Partial token updates (merge by token) are now expressed as the
-// two-step AI workflow: `get_structured_set({kind:'theme', slug:'site'})`
-// to read existing items, mutate in JS, then `set_structured_set` with
-// the merged array.
+// v0.11.0 (#45) — theme moved out of structured_sets entirely into its
+// own `themes` primitive (DTCG-shaped jsonb). Theme edits are now
+// `set_theme_tokens` (loose-name patch) / `propose_create_theme`
+// (gated mint) / `propose_activate_theme` (gated flip) — see
+// packages/admin-core/src/ai/tools/{update-theme-tokens,get-theme,…}.ts.
 
 /**
  * P6.7.6 — layout-layer tools. Layouts are site-wide chrome (header /

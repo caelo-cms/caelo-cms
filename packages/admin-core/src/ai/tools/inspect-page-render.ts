@@ -165,20 +165,20 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
       }
     }
 
-    // 4. Theme tokens. Caelo's theme is a structured set under
-    //    kind="theme", slug="default" — rendered as :root CSS
-    //    variables in the composed output.
+    // 4. Theme tokens. v0.11.0 (#45) — theme moved out of structured_sets
+    //    into its own `themes` table with DTCG-shaped jsonb tokens.
+    //    Pre-v0.11 this read structured_sets WHERE kind='theme' AND
+    //    slug='default'; that path is gone (the Zod enum rejects 'theme').
+    //    Read the active theme row instead and flatten the DTCG document
+    //    into a `{[canonicalPath]: string}` map for the inspector output.
     let themeTokens: Record<string, string> = {};
-    const themeR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "structured_sets.get", {
-      kind: "theme",
-      slug: "default",
-    });
+    const themeR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {});
     if (themeR.ok) {
-      const themeSet = (
-        themeR.value as { set: { items: { name: string; value: string }[] } | null }
-      ).set;
-      if (themeSet?.items) {
-        themeTokens = Object.fromEntries(themeSet.items.map((i) => [i.name, i.value]));
+      const theme = (
+        themeR.value as { theme: { tokens: unknown } | null }
+      ).theme;
+      if (theme?.tokens) {
+        themeTokens = flattenThemeTokensForInspector(theme.tokens);
       }
     }
 
@@ -237,3 +237,31 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
     };
   },
 };
+
+/**
+ * v0.11.0 (#45) — flatten the active theme's DTCG tokens jsonb into a
+ * `{[canonicalPath]: stringValue}` map for the inspector output. The
+ * inspector's old shape was a flat `{tokenName: value}` from the legacy
+ * structured-set; the closest analogue on the DTCG tree is the leaf-path
+ * → string-value form (e.g. `color.primary → "#ff6600"`). Composite
+ * leaves (`$value: {fontFamily, fontSize, ...}`) JSON-stringify into one
+ * entry so the inspector keeps a flat shape.
+ */
+function flattenThemeTokensForInspector(tokens: unknown): Record<string, string> {
+  if (!tokens || typeof tokens !== "object") return {};
+  const out: Record<string, string> = {};
+  walk(tokens as Record<string, unknown>, []);
+  return out;
+
+  function walk(node: Record<string, unknown>, prefix: readonly string[]): void {
+    if ("$value" in node) {
+      const v = (node as { $value: unknown }).$value;
+      out[prefix.join(".")] = typeof v === "string" ? v : JSON.stringify(v);
+      return;
+    }
+    for (const [k, v] of Object.entries(node)) {
+      if (k.startsWith("$")) continue;
+      if (v && typeof v === "object") walk(v as Record<string, unknown>, [...prefix, k]);
+    }
+  }
+}
