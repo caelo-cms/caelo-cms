@@ -60,6 +60,13 @@ An open-source, AI-first Content Management System that enables users to design,
 - Modules are included in site snapshots alongside pages — full rollback safety at site and individual module level
 - Pages are built by composing modules — AI cannot write raw HTML directly onto a page
 
+**Template grammar (Mustache subset):**
+
+- `{{fieldName}}` — primitive substitution (text, richtext, url, image, …)
+- `{{>fieldName}}` — single nested module reference (field kind = `module`)
+- `{{#fieldName}}…{{/fieldName}}` — section iteration (text-list / link-list / module-list)
+- **Reserved theme-asset placeholders (v0.11.1):** `{{theme_logo_url}}`, `{{theme_logo_dark_url}}`, `{{theme_favicon_url}}`, `{{theme_social_share_url}}` resolve to the active theme's bound asset URLs at render time (operators bind via `themes.set_asset`; AI authors don't need to declare these as fields). Unbound slots stay loud-raw in output AND emit a `theme-asset-unbound:<slot>` marker — silent empty-src would mask a broken `<img>` tag.
+
 ### 3.3 Module Versioning
 
 - Pages use live references to modules — always reflect the latest module state
