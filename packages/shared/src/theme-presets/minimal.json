@@ -1,0 +1,53 @@
+{
+  "$description": "High-contrast grayscale, no shadows, sharp corners. For editorial sites that want the type to do the work.",
+  "color": {
+    "background": { "$type": "color", "$value": "#ffffff" },
+    "foreground": { "$type": "color", "$value": "#000000" },
+    "primary": { "$type": "color", "$value": "#000000" },
+    "primary-foreground": { "$type": "color", "$value": "#ffffff" },
+    "secondary": { "$type": "color", "$value": "#f4f4f5" },
+    "secondary-foreground": { "$type": "color", "$value": "#000000" },
+    "accent": { "$type": "color", "$value": "#000000" },
+    "accent-foreground": { "$type": "color", "$value": "#ffffff" },
+    "muted": { "$type": "color", "$value": "#f4f4f5" },
+    "muted-foreground": { "$type": "color", "$value": "#52525b" },
+    "card": { "$type": "color", "$value": "#ffffff" },
+    "card-foreground": { "$type": "color", "$value": "#000000" },
+    "border": { "$type": "color", "$value": "#000000" },
+    "ring": { "$type": "color", "$value": "#000000" },
+    "destructive": { "$type": "color", "$value": "#991b1b" },
+    "destructive-foreground": { "$type": "color", "$value": "#ffffff" }
+  },
+  "typography": {
+    "body": {
+      "$type": "typography",
+      "$value": {
+        "fontFamily": "Georgia, 'Times New Roman', serif",
+        "fontSize": "1.0625rem",
+        "fontWeight": 400,
+        "lineHeight": 1.6
+      }
+    },
+    "heading": {
+      "$type": "typography",
+      "$value": {
+        "fontFamily": "Georgia, 'Times New Roman', serif",
+        "fontSize": "2.25rem",
+        "fontWeight": 700,
+        "lineHeight": 1.15
+      }
+    }
+  },
+  "spacing": {
+    "xs": { "$type": "dimension", "$value": "0.25rem" },
+    "sm": { "$type": "dimension", "$value": "0.5rem" },
+    "md": { "$type": "dimension", "$value": "1rem" },
+    "lg": { "$type": "dimension", "$value": "1.5rem" },
+    "xl": { "$type": "dimension", "$value": "2rem" }
+  },
+  "radius": {
+    "sm": { "$type": "dimension", "$value": "0" },
+    "md": { "$type": "dimension", "$value": "0" },
+    "lg": { "$type": "dimension", "$value": "0" }
+  }
+}

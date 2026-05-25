@@ -33,6 +33,8 @@ import {
 } from "./preview-scanner.js";
 import { type LanguageSelectorOverride, renderLanguageSelector } from "./structured-sets.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
+import { renderThemeCss as renderThemeCssFromTokens } from "./theme-render.js";
+import type { ThemeDocument } from "./themes.js";
 
 export interface ComposeModule {
   readonly moduleId: string;
@@ -100,12 +102,44 @@ export interface ComposeLanguageSelector {
   }>;
 }
 
+/**
+ * v0.11.0 — Theme context resolved by the preview op + static generator
+ * (#45 Phase 3). Carries the active theme's DTCG tokens jsonb plus the
+ * four asset URL resolutions (logo / logo-dark / favicon / social-share).
+ *
+ * The composer reads `tokens` to emit `<style data-source="theme">`;
+ * `assets` are surfaced for modules that want to reference theme-bound
+ * images (the dedicated `{{theme_logo_url}}` template binding lands in
+ * v0.11.x — see #45's "Out of scope"; v0.11.0 only surfaces the URLs).
+ */
+export interface ComposeThemeAsset {
+  readonly mediaId: string;
+  readonly url: string;
+}
+
+export interface ComposeTheme {
+  readonly tokens: ThemeDocument;
+  readonly assets: {
+    readonly logo: ComposeThemeAsset | null;
+    readonly logoDark: ComposeThemeAsset | null;
+    readonly favicon: ComposeThemeAsset | null;
+    readonly socialShare: ComposeThemeAsset | null;
+  };
+}
+
 export interface ComposeInput {
   readonly templateHtml: string;
   readonly templateCss: string;
   readonly blocks: readonly ComposeBlock[];
   readonly structuredSets?: ComposeStructuredSets;
   readonly languageSelector?: ComposeLanguageSelector;
+  /**
+   * v0.11.0 — active theme threaded through from the preview op + static
+   * generator. Undefined when no theme row exists OR when the caller
+   * hasn't been migrated to the new primitive yet (renderer no-ops in
+   * both cases, preserving legacy parity).
+   */
+  readonly theme?: ComposeTheme;
 }
 
 export interface ComposeOutput {
@@ -164,9 +198,12 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   const replaced = applySlotReplacements(input.templateHtml, { contentByName });
   let html = replaced.html;
 
-  // P6.7.5 — theme tokens become CSS custom properties on :root. Goes
-  // first so module CSS can `var(--color-primary)` and override.
-  const themeCss = renderThemeCss(input.structuredSets);
+  // v0.11.0 — theme tokens become CSS custom properties on :root + (when
+  // dark variants exist) :root.dark. Goes first so module CSS can
+  // `var(--color-primary)` and override. Pre-v0.11 read from
+  // structured_sets["theme/site"]; now reads the active themes row
+  // threaded through ComposeInput.theme.
+  const themeCss = renderThemeCss(input.theme);
   if (themeCss !== null) {
     const styleTag = `<style data-source="theme">${themeCss}</style>`;
     html = injectBefore(html, HEAD_CLOSE_RE, styleTag);
@@ -287,26 +324,23 @@ function renderNavItem(item: NavMenuItem): string {
   return `<li><a href="${escapeAttr(item.href)}"${target}>${escapeText(item.label)}</a>${inner}</li>`;
 }
 
-interface ThemeTokenItem {
-  token: string;
-  value: string;
-}
 /**
- * Render the theme/site set's tokens as `:root { --token: value; }` CSS.
- * Returns null when no theme is configured so the composer skips
- * injecting an empty <style> tag.
+ * v0.11.0 — Render the active theme's DTCG tokens as `:root { … }` (+
+ * optional `:root.dark { … }`) CSS. Returns null when no active theme
+ * is threaded through, so the composer skips injecting an empty
+ * `<style>` tag. The renderer itself lives in `theme-render.ts`; this
+ * wrapper exists so the composer's call site stays readable + the
+ * empty-tokens case (active row, `tokens={}`) emits a deterministic
+ * empty shell rather than skipping the tag (observable absence in
+ * DevTools, per #45's test-strategy "empty-active-theme" assertion).
  */
-function renderThemeCss(sets: ComposeStructuredSets | undefined): string | null {
-  if (!sets) return null;
-  const items = sets.byKindSlug["theme/site"];
-  if (!items || items.length === 0) return null;
-  const tokens = items.filter((it): it is ThemeTokenItem => {
-    if (!it || typeof it !== "object") return false;
-    const o = it as { token?: unknown; value?: unknown };
-    return typeof o.token === "string" && typeof o.value === "string";
-  });
-  if (tokens.length === 0) return null;
-  return `:root{${tokens.map((t) => `--${t.token}: ${t.value};`).join("")}}`;
+function renderThemeCss(theme: ComposeTheme | undefined): string | null {
+  if (!theme) return null;
+  // Empty-tokens case: emit the shell so cascade ordering stays
+  // consistent (legacy "no theme/site row" case still returns null
+  // above so the tag is skipped entirely).
+  if (Object.keys(theme.tokens).length === 0) return ":root{}";
+  return renderThemeCssFromTokens(theme.tokens);
 }
 
 /**
@@ -526,7 +560,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   });
   let html = replaced.html;
 
-  const themeCss = renderThemeCss(input.structuredSets);
+  const themeCss = renderThemeCss(input.theme);
   if (themeCss !== null) {
     html = injectBefore(html, HEAD_CLOSE_RE, `<style data-source="theme">${themeCss}</style>`);
   }
