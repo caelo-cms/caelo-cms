@@ -54,10 +54,10 @@ CREATE TABLE themes (
   tokens                 jsonb NOT NULL DEFAULT '{}'::jsonb,
   -- Asset references. Kept out of `tokens` so they don't fight the
   -- DTCG schema for primitives. Each is optional (operator uploads).
-  logo_media_id          uuid REFERENCES media(id) ON DELETE SET NULL,
-  logo_dark_media_id     uuid REFERENCES media(id) ON DELETE SET NULL,
-  favicon_media_id       uuid REFERENCES media(id) ON DELETE SET NULL,
-  social_share_media_id  uuid REFERENCES media(id) ON DELETE SET NULL,
+  logo_media_id          uuid REFERENCES media_assets(id) ON DELETE SET NULL,
+  logo_dark_media_id     uuid REFERENCES media_assets(id) ON DELETE SET NULL,
+  favicon_media_id       uuid REFERENCES media_assets(id) ON DELETE SET NULL,
+  social_share_media_id  uuid REFERENCES media_assets(id) ON DELETE SET NULL,
   created_at             timestamptz NOT NULL DEFAULT now(),
   updated_at             timestamptz NOT NULL DEFAULT now(),
   updated_by             uuid REFERENCES actors(id)
