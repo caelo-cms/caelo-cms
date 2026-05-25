@@ -43,7 +43,7 @@ import {
   matchSkills,
   resolveEngagements,
   skillAutoEngagementHints,
-  summarizeTokens,
+  formatThemeSummary,
   type Theme,
   type ThemeDocument,
 } from "@caelo-cms/shared";
@@ -526,7 +526,11 @@ export async function* runChatTurn(
         // multi-theme installs (v0.11.1+) let the AI pick the right slug
         // by intent (e.g. "Brand Orange — campaign-page variant").
         description: theme.description,
-        tokensSummary: summarizeTokens(theme.tokens as ThemeDocument),
+        // v0.11.1 (issue #76) — formatThemeSummary replaces the v0.11.0
+        // category-count `summarizeTokens` so the system prompt carries
+        // the palette/font/radius shorthand the AI actually uses to pick
+        // matching module styling.
+        tokensSummary: formatThemeSummary(theme.tokens as ThemeDocument),
       });
     } else {
       themeBlock = formatThemeBlock(null);

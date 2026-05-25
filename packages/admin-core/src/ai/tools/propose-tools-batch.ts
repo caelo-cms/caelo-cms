@@ -659,7 +659,11 @@ export const proposeCreateThemeTool = makeProposeTool({
     "and override the keys you care about with brand-friendly names: " +
     "`{primaryColor: '#ff6600', fontHeading: 'Inter', radius: '0.75rem'}`. " +
     "Server fills in every other category from the preset. Returns the canonical token " +
-    "paths it wrote so you can edit specific tokens afterward.",
+    "paths it wrote so you can edit specific tokens afterward. " +
+    "If `overrides.primaryColor` is set, the server derives a 50–900 OKLCh lightness ramp " +
+    "from it (each stop annotated `_derived: true`); operator can override any individual " +
+    "stop via `overrides[\"color.primary.500\"] = '#…'` etc. — explicit stops win over " +
+    "derived ones.",
   schema: z
     .object({
       slug: z

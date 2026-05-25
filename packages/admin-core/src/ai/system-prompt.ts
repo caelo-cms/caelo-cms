@@ -564,9 +564,15 @@ export function composeSystemPrompt(
 
 /**
  * v0.11.0 (#45) — `## Theme` system-prompt block. Names the active
- * theme + a one-line category summary so the AI knows the surface
- * exists without paying for the full DTCG document in every turn.
- * Full tokens load on demand via `get_theme({slug})`.
+ * theme + a one-line summary so the AI knows the surface exists
+ * without paying for the full DTCG document in every turn. Full tokens
+ * load on demand via `get_theme({slug})` (which in v0.11.1 accepts
+ * `as: "css-vars" | "tailwind" | "summary"` too).
+ *
+ * v0.11.1 (issue #76) — `summary` is the value formatThemeSummary()
+ * produces from the tokens document directly (primary color shorthand,
+ * body font, default radius, category counts). Callers compute it via
+ * `formatThemeSummary(activeTheme.tokens)` and pass as `tokensSummary`.
  *
  * Renders nothing when no active theme exists (pre-migration test
  * states only — production installs always carry one is_active row
@@ -583,6 +589,11 @@ export function formatThemeBlock(
      * for multi-theme installs ("Brand Orange — campaign-page variant").
      */
     description?: string | null;
+    /**
+     * v0.11.1 (issue #76) — terse summary line built by
+     * `formatThemeSummary(tokens)` (palette/font/radius shorthand +
+     * category counts). Replaces v0.11.0's flat category-count string.
+     */
     tokensSummary: string;
   } | null,
 ): string {
@@ -601,14 +612,14 @@ export function formatThemeBlock(
     "",
     "Tools (all read tokens by canonical DTCG path; `set_theme_tokens` ALSO accepts loose names that the server normalizes):",
     "- `list_themes()` — list every theme (one active, rest variants).",
-    "- `get_theme({slug})` — full DTCG tokens jsonb + asset URLs.",
+    "- `get_theme({slug, as?})` — `as` is one of `dtcg` (default) / `css-vars` / `tailwind` / `summary`. Use `css-vars` when authoring module HTML so you don't translate DTCG paths.",
     "- `set_theme_tokens({set: {primaryColor: '#ff6600', fontHeading: 'Inter'}})` — edit the active theme. Pass loose names; the server returns the canonical paths it wrote.",
     "- `set_theme_asset({slot, mediaId})` — bind logo / logoDark / favicon / socialShare.",
     "- `duplicate_theme({sourceSlug, newSlug, newDisplayName})` — clone tokens + assets into an inactive variant.",
-    "- `import_theme({themeSlug, body})` / `export_theme({themeSlug})` — DTCG round-trip.",
+    "- `import_theme({themeSlug, body})` — auto-detects DTCG / Style Dictionary / Tailwind 4 / shadcn / loose. `export_theme({themeSlug})` — DTCG out.",
     "",
     "Gated (each is a §11.A propose/execute; the AI proposes, an Owner clicks Approve at `/security/themes/pending`):",
-    "- `propose_create_theme({slug, displayName, preset, overrides?})` — preset is one of `shadcn-default` / `minimal` / `warm` / `playful`; overrides take brand-friendly names.",
+    "- `propose_create_theme({slug, displayName, preset, overrides?})` — preset is one of `shadcn-default` / `minimal` / `warm` / `playful`. `overrides.primaryColor` triggers a 50–900 OKLCh ramp (each stop `_derived: true`).",
     "- `propose_activate_theme({themeId})` — flips the DB row only. A deploy must be approved separately via `propose_deploy_promote` for the new CSS to ship.",
     "- `propose_delete_theme({themeId})` — inactive themes only.",
   ].join("\n");
