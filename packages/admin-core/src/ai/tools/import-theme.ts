@@ -26,10 +26,12 @@ type ImportThemeToolInput = z.infer<typeof importThemeToolInput>;
 export const importThemeTool: ToolDefinitionWithHandler<ImportThemeToolInput> = {
   name: "import_theme",
   description:
-    "Import a theme from a DTCG JSON document. Server validates against the DTCG schema and " +
-    "writes a new theme (or updates if slug matches). Pass the raw JSON in `body` and the " +
-    "target slug in `themeSlug`. The slug must already exist — mint a new theme via " +
-    "`propose_create_theme` first if needed. " +
+    "Import a DTCG JSON document into an EXISTING theme — replaces the target theme's tokens " +
+    "wholesale. Server validates against the DTCG schema first; pre-Zod sniff rejects bodies " +
+    "that aren't DTCG-shaped (no `$value` leaves anywhere). Pass the raw JSON in `body` and " +
+    "the target slug in `themeSlug`. " +
+    "The slug MUST already exist — minting a new theme goes through `propose_create_theme` " +
+    "(gated) so this tool never creates one. " +
     "Format auto-detection across Style Dictionary / Tailwind 4 / shadcn CSS variables / " +
     "loose key-value lands in v0.11.2 — for now, send DTCG only.",
   schema: importThemeToolInput,

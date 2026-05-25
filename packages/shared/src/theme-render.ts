@@ -250,7 +250,38 @@ function emitSimple(baseName: string, value: unknown, out: string[]): void {
 
 function asString(value: unknown): string {
   if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return sanitizeCssTokenValue(value);
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value);
+  return sanitizeCssTokenValue(JSON.stringify(value));
+}
+
+/**
+ * v0.11.0 fix (#45 review thread on theme-render.ts:207 — HIGH XSS) —
+ * scrub HTML-context escape sequences from a string that's about to
+ * be injected into a `<style>` block.
+ *
+ * CSS values are otherwise unrestricted in character set (font-family
+ * names legitimately contain quotes, commas, parens, hyphens), so we
+ * don't HTML-encode broadly — that would break perfectly-valid
+ * `font-family: "Segoe UI", sans-serif` declarations. Instead, scrub
+ * the two sequences that let an attacker break out of the surrounding
+ * `<style>…</style>` context:
+ *
+ *   - `</style` (case-insensitive) — premature end-tag would close
+ *     the style block and let everything after it parse as HTML
+ *     (`fontFamily: "Inter</style><script>alert(1)</script>"`).
+ *   - `<!--` / `-->` — CDO/CDC tokens; some HTML parsers treat them
+ *     specially inside `<style>` and they're never valid in a real
+ *     CSS value anyway.
+ *
+ * The themeColorToken / themeDimensionToken Zod regexes already
+ * constrain those token types to character sets that exclude `<`, so
+ * this scrub is the load-bearing defence for the free-form fields
+ * (`typography.X.fontFamily`, `$description` if it ever lands in CSS).
+ */
+function sanitizeCssTokenValue(value: string): string {
+  return value
+    .replace(/<\/style/gi, "")
+    .replace(/<!--/g, "")
+    .replace(/-->/g, "");
 }

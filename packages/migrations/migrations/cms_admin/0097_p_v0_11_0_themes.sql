@@ -278,7 +278,7 @@ BEGIN
         inferred_type := 'color';
       ELSIF raw_scope = 'font' THEN
         category := 'typography';
-        inferred_type := 'dimension';
+        inferred_type := 'typography';
       ELSIF raw_scope = 'space' THEN
         category := 'spacing';
         inferred_type := 'dimension';
@@ -310,12 +310,31 @@ BEGIN
         basename := substring(basename FROM 7);
       END IF;
 
-      built_tokens := jsonb_set(
-        built_tokens,
-        ARRAY[category, basename],
-        jsonb_build_object('$value', raw_value, '$type', inferred_type),
-        true
-      );
+      -- Build the leaf. Typography is a composite per DTCG +
+      -- packages/shared/src/themes.ts:themeTypographyComposite — `$value`
+      -- MUST be an object. The legacy importer stored every theme value
+      -- as a single string; wrap it as `{fontFamily: <string>}` so the
+      -- migrated leaf validates and remains editable via the new
+      -- themes.update_tokens loose-name path (which produces the same
+      -- composite-root + wrapped-value shape).
+      IF category = 'typography' THEN
+        built_tokens := jsonb_set(
+          built_tokens,
+          ARRAY[category, basename],
+          jsonb_build_object(
+            '$value', jsonb_build_object('fontFamily', raw_value),
+            '$type', 'typography'
+          ),
+          true
+        );
+      ELSE
+        built_tokens := jsonb_set(
+          built_tokens,
+          ARRAY[category, basename],
+          jsonb_build_object('$value', raw_value, '$type', inferred_type),
+          true
+        );
+      END IF;
     END LOOP;
   END IF;
 

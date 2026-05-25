@@ -207,16 +207,48 @@ const anyThemeToken = z.union([
 // ────────────────────────────────────────────────────────────────────
 
 /**
- * One category group: a flat record of token-name → token, OR (for
- * nested groups like `color.brand.*`) a record of sub-name → group.
- * DTCG allows arbitrary nesting; we lazy-recurse to support it.
+ * One category group: a flat record of token-name → (token | sub-group
+ * | `$`-prefixed metadata). DTCG allows arbitrary nesting; the
+ * structural constraints (every non-`$` key must validate as a token
+ * or nested group; `$description` must be a string) are enforced by
+ * the `superRefine` walker at runtime — the TS type stays a permissive
+ * `Record<string, unknown>` to match Zod's inferred type.
+ *
+ * Per DTCG spec, any group (including the document root) MAY carry
+ * `$description` / `$extensions` metadata alongside its real children.
+ * The four shipped presets do this at the root, and Figma / Tokens
+ * Studio / Style Dictionary exports do it at every level.
  */
-type TokenGroup = {
-  [k: string]: TokenGroup | z.infer<typeof anyThemeToken>;
-};
+type TokenGroup = Record<string, unknown>;
 
 const tokenGroupSchema: z.ZodType<TokenGroup> = z.lazy(() =>
-  z.record(z.string(), z.union([anyThemeToken, tokenGroupSchema])),
+  z.record(z.string(), z.unknown()).superRefine((obj, ctx) => {
+    for (const [k, v] of Object.entries(obj)) {
+      if (k.startsWith("$")) {
+        // DTCG group-level metadata. $description must be a string;
+        // every other $-prefixed key is tooling extension data and
+        // passes through unmodified (the spec leaves these open).
+        if (k === "$description" && typeof v !== "string") {
+          ctx.addIssue({
+            code: "custom",
+            path: [k],
+            message: "$description must be a string",
+          });
+        }
+        continue;
+      }
+      const sub = z.union([anyThemeToken, tokenGroupSchema]).safeParse(v);
+      if (!sub.success) {
+        for (const issue of sub.error.issues) {
+          ctx.addIssue({
+            code: "custom",
+            path: [k, ...issue.path],
+            message: issue.message,
+          });
+        }
+      }
+    }
+  }),
 );
 
 /**
@@ -225,14 +257,14 @@ const tokenGroupSchema: z.ZodType<TokenGroup> = z.lazy(() =>
  *   color, typography, spacing, radius, shadow, motion (duration +
  *   cubicBezier sub-groups), breakpoint.
  *
- * Plus `$extensions` for tooling metadata (passed through unmodified
- * by import/export).
- *
  * Unknown root keys are tolerated because DTCG explicitly leaves the
  * category vocabulary open — we don't want to reject a future
  * `effect` or `gradient` category that operators bring from Figma.
+ * Root-level `$description` / `$extensions` are also tolerated (DTCG
+ * presets routinely carry these — e.g. the shipped shadcn-default /
+ * minimal / warm / playful JSONs all have `$description`).
  */
-export const themeDocument = z.record(z.string(), tokenGroupSchema);
+export const themeDocument: z.ZodType<TokenGroup> = tokenGroupSchema;
 
 export type ThemeDocument = z.infer<typeof themeDocument>;
 export type ThemeColorToken = z.infer<typeof themeColorToken>;
@@ -396,12 +428,55 @@ export function applyDtcgWrites(
   const out: ThemeDocument = JSON.parse(JSON.stringify(current));
   for (const [path, value] of Object.entries(writes)) {
     const inferredType = types[path];
+    // v0.11.0 fix (#45 review thread on theme-normalize.ts:149) — when
+    // the incoming value is a partial composite object (e.g. typography's
+    // `{fontFamily: "Inter"}` from a loose `fontHeading` input), MERGE
+    // it into any existing leaf's `$value` instead of overwriting. This
+    // is the only sensible semantics for typography: setting fontFamily
+    // must not erase fontSize / fontWeight / etc. set previously.
+    const existing = readLeafAtPath(out, path);
+    let nextValue: unknown = value;
+    if (
+      existing &&
+      typeof existing === "object" &&
+      typeof (existing as { $value?: unknown }).$value === "object" &&
+      (existing as { $value: unknown }).$value !== null &&
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value)
+    ) {
+      nextValue = {
+        ...(existing as { $value: Record<string, unknown> }).$value,
+        ...(value as Record<string, unknown>),
+      };
+    }
     setLeafAtPath(out, path, {
-      $value: value,
+      $value: nextValue,
       ...(inferredType ? { $type: inferredType } : {}),
     });
   }
   return out;
+}
+
+/**
+ * Read the existing leaf at a dotted DTCG path, returning the node if
+ * it already carries `$value` (i.e. is a token leaf) and `undefined`
+ * otherwise. Used by `applyDtcgWrites` to detect composite leaves
+ * where the new value should MERGE into the existing `$value` instead
+ * of replacing it.
+ */
+function readLeafAtPath(doc: Record<string, unknown>, path: string): unknown {
+  const parts = path.split(".");
+  let cur: unknown = doc;
+  for (const k of parts) {
+    if (!k) return undefined;
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string, unknown>)[k];
+  }
+  if (cur && typeof cur === "object" && "$value" in (cur as Record<string, unknown>)) {
+    return cur;
+  }
+  return undefined;
 }
 
 /**

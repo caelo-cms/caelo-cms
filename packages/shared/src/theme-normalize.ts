@@ -143,9 +143,13 @@ const CATEGORIES: readonly CategoryDef[] = [
     category: "typography",
     nameHints: [/font/i, /typography/i, /heading/i, /body/i, /display/i, /mono/i],
     inferredType: "typography",
-    // Loose typography inputs hit the fontFamily sub-field. Full
-    // composite edits use the direct DTCG path.
-    buildPath: (basename) => `typography.${basename}.fontFamily`,
+    // v0.11.0 fix (#45 review thread): loose typography names target
+    // the composite ROOT (`typography.<name>`) — themeTypographyComposite
+    // Zod requires `$value` to be an object. The value gets wrapped as
+    // `{fontFamily: <input>}` in normalizeTokens (see compositeWrap
+    // below). The original sub-path shape (`typography.X.fontFamily`)
+    // produced documents Zod rejected.
+    buildPath: (basename) => `typography.${basename}`,
   },
   {
     category: "spacing",
@@ -187,10 +191,22 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
   const paths: CanonicalPath[] = [];
 
   for (const [rawName, rawValue] of Object.entries(input)) {
-    const { path, inferredType } = resolveOne(rawName, rawValue);
-    set[path] = rawValue;
-    types[path] = inferredType;
-    paths.push(path);
+    const resolved = resolveOne(rawName, rawValue);
+    // v0.11.0 fix (#45 review thread on theme-normalize.ts:149) —
+    // typography is a composite; `$value` MUST be an object per the
+    // Zod schema. When the loose input (or a direct `typography.X.<sub>`
+    // DTCG path, or a `--font-X` / `--text-X` CSS-var) implied a single
+    // sub-field, wrap the scalar value as `{[subField]: value}` so the
+    // resulting document validates. applyDtcgWrites merges this into
+    // any existing typography composite at the path so partial updates
+    // don't erase sibling sub-fields.
+    let storedValue: unknown = rawValue;
+    if (resolved.compositeWrap && typeof rawValue === "string" && !ALIAS_REGEX.test(rawValue)) {
+      storedValue = { [resolved.compositeWrap]: rawValue };
+    }
+    set[resolved.path] = storedValue;
+    types[resolved.path] = resolved.inferredType;
+    paths.push(resolved.path);
   }
 
   return { set, types, canonicalPaths: paths };
@@ -199,13 +215,34 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
 interface ResolvedToken {
   readonly path: CanonicalPath;
   readonly inferredType: NormalizeResult["types"][string];
+  /**
+   * When set, normalizeTokens wraps the raw value as
+   * `{[compositeWrap]: rawValue}` so the resulting leaf matches the
+   * typography (or future) composite `$value` shape. Unset for flat
+   * categories (color / dimension / shadow / duration / cubicBezier).
+   */
+  readonly compositeWrap?: string;
 }
 
 function resolveOne(rawName: string, rawValue: unknown): ResolvedToken {
-  // 1. Direct canonical DTCG paths: pass through unchanged.
+  // 1. Direct canonical DTCG paths: pass through unchanged. Typography
+  //    sub-paths (`typography.X.fontFamily` / `.fontSize` / …) collapse
+  //    onto the composite root so the leaf carries `$value: {sub: val}`.
   if (/^[a-z][a-z0-9_-]*(\.[a-z0-9_-]+)+(\.\$value)?$/i.test(rawName)) {
     const path = rawName.replace(/\.\$value$/, "");
-    const category = path.split(".")[0] ?? "";
+    const parts = path.split(".");
+    const category = parts[0] ?? "";
+    if (
+      category === "typography" &&
+      parts.length === 3 &&
+      isTypographyCompositeSubField(parts[2])
+    ) {
+      return {
+        path: `${parts[0]}.${parts[1]}`,
+        inferredType: "typography",
+        compositeWrap: parts[2],
+      };
+    }
     validateValueShape(category, rawValue, path);
     return { path, inferredType: inferTypeFromPath(path, rawValue) };
   }
@@ -217,15 +254,24 @@ function resolveOne(rawName: string, rawValue: unknown): ResolvedToken {
     if (firstHyphen > 0) {
       const category = stripped.slice(0, firstHyphen);
       const rest = stripped.slice(firstHyphen + 1);
-      // The Tailwind 4 typography split (--font + --text) collapses to
-      // typography.<name>.fontFamily / fontSize at the storage layer.
+      // Tailwind 4 typography split (--font + --text) maps onto the
+      // composite root with the right sub-field set; the value gets
+      // wrapped into `{fontFamily}` / `{fontSize}` by normalizeTokens
+      // so the leaf matches themeTypographyComposite.
       if (category === "font") {
-        // No value-shape check — fontFamily is a free-form string.
-        return { path: `typography.${rest}.fontFamily`, inferredType: "typography" };
+        return {
+          path: `typography.${rest}`,
+          inferredType: "typography",
+          compositeWrap: "fontFamily",
+        };
       }
       if (category === "text") {
-        validateValueShape("spacing", rawValue, `typography.${rest}.fontSize`);
-        return { path: `typography.${rest}.fontSize`, inferredType: "dimension" };
+        validateValueShape("spacing", rawValue, `typography.${rest}`);
+        return {
+          path: `typography.${rest}`,
+          inferredType: "typography",
+          compositeWrap: "fontSize",
+        };
       }
       const path = `${category}.${rest}`;
       validateValueShape(category, rawValue, path);
@@ -266,7 +312,27 @@ function resolveOne(rawName: string, rawValue: unknown): ResolvedToken {
       // (`primary` for color, `sm` for shadow/radius, etc.).
       chosen.buildPath(defaultTier(chosen.category));
   validateValueShape(chosen.category, rawValue, path);
+  // Typography is a composite — loose names imply a single sub-field
+  // (fontFamily by convention). The wrap happens in normalizeTokens.
+  if (chosen.category === "typography") {
+    return { path, inferredType: chosen.inferredType, compositeWrap: "fontFamily" };
+  }
   return { path, inferredType: chosen.inferredType };
+}
+
+/**
+ * Sub-field keys recognised by `themeTypographyComposite`. Used to
+ * detect direct DTCG sub-paths like `typography.heading.fontFamily`
+ * and collapse them onto the composite root with a wrapped value.
+ */
+function isTypographyCompositeSubField(segment: string | undefined): segment is string {
+  return (
+    segment === "fontFamily" ||
+    segment === "fontSize" ||
+    segment === "fontWeight" ||
+    segment === "lineHeight" ||
+    segment === "letterSpacing"
+  );
 }
 
 /**
