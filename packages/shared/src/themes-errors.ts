@@ -82,21 +82,118 @@ export class PresetNotFound extends Error {
 /**
  * v0.11.0 (#45 opt §2) — `themes.import_dtcg` was handed a JSON body
  * whose shape doesn't look like DTCG (no `$value` anywhere in the
- * tree). Could be a Tailwind config, Style Dictionary v3, Figma
- * export, or pasted CSS — none of which the v0.11.0 importer
- * understands. Caller should retry with a DTCG document; format
- * auto-detection across the rest ships in v0.11.2.
+ * tree). v0.11.1 (issue #76) — auto-detect chain uses this as a
+ * "fall through to next importer" signal; only surfaces verbatim when
+ * the caller explicitly picked the DTCG importer.
  */
 export class NotDtcgShape extends Error {
-  constructor() {
+  constructor(message?: string) {
     super(
-      "NotDtcgShape: the JSON body parsed cleanly but doesn't look like a DTCG document " +
-        "(no `$value` keys anywhere in the tree). Send a DTCG-shaped document — see " +
-        "https://www.designtokens.org/tr/drafts/format/ for the spec. Format auto-detection " +
-        "across Style Dictionary / Tailwind 4 @theme / shadcn :root / loose key-value lands " +
-        "in v0.11.2 — for now, send DTCG only.",
+      message ??
+        "NotDtcgShape: the JSON body parsed cleanly but doesn't look like a DTCG document " +
+          "(no `$value` keys anywhere in the tree). Send a DTCG-shaped document — see " +
+          "https://www.designtokens.org/tr/drafts/format/ for the spec.",
     );
     this.name = "NotDtcgShape";
+  }
+}
+
+/**
+ * v0.11.1 (issue #76) — Style Dictionary importer rejected input.
+ * Used as a fall-through signal by the auto-detect chain.
+ */
+export class NotStyleDictionaryShape extends Error {
+  constructor(message?: string) {
+    super(
+      message ??
+        "NotStyleDictionaryShape: input has no nested `{ value: … }` leaves typical of " +
+          "Style Dictionary v3/v4. Looks like another format — try DTCG ($value leaves), " +
+          "Tailwind 4 (@theme block), or shadcn (:root CSS variables).",
+    );
+    this.name = "NotStyleDictionaryShape";
+  }
+}
+
+/**
+ * v0.11.1 (issue #76) — Tailwind 4 `@theme { … }` importer rejected
+ * input. Either no `@theme` block found, or the body contained a
+ * construct the line-by-line parser can't handle (calc(), nested
+ * at-rules). Auto-detect chain catches it and falls through.
+ */
+export class NotTailwindShape extends Error {
+  constructor(message?: string) {
+    super(
+      message ??
+        "NotTailwindShape: input has no `@theme { … }` block. Send the contents of your " +
+          "Tailwind 4 theme file or use a different importer.",
+    );
+    this.name = "NotTailwindShape";
+  }
+}
+
+/**
+ * v0.11.1 (issue #76) — Tailwind 4 importer hit a construct it can't
+ * parse (e.g. `calc(…)` values, nested at-rules). Surfaced verbatim
+ * by the auto-detect chain since the input WAS Tailwind-shaped — the
+ * caller should simplify or pre-resolve.
+ */
+export class TailwindImportError extends Error {
+  readonly construct: string;
+  constructor(construct: string, line: string) {
+    super(
+      `TailwindImportError: the @theme block contains '${construct}' which the importer can't parse: '${line.trim()}'. ` +
+        "Pre-resolve calc()/var() to literal values, or split nested at-rules into a separate file.",
+    );
+    this.name = "TailwindImportError";
+    this.construct = construct;
+  }
+}
+
+/**
+ * v0.11.1 (issue #76) — shadcn `:root { … }` importer rejected input
+ * (no `:root` selector found, or values were wrapped in `{value: …}`
+ * style-dictionary shape). Auto-detect chain falls through.
+ */
+export class NotShadcnShape extends Error {
+  constructor(message?: string) {
+    super(
+      message ??
+        "NotShadcnShape: input has no `:root { … }` CSS block with `--<name>: <value>;` pairs. " +
+          "Send a shadcn-style CSS variable list (with optional `.dark { … }` for dark mode).",
+    );
+    this.name = "NotShadcnShape";
+  }
+}
+
+/**
+ * v0.11.1 (issue #76) — loose JSON-object importer rejected input
+ * (not a JSON object, or contains `$value` / `value` leaves that
+ * belong to a different format). Auto-detect chain falls through.
+ */
+export class NotLooseShape extends Error {
+  constructor(message?: string) {
+    super(
+      message ?? "NotLooseShape: input is not a flat JSON object of `{looseName: value}` pairs.",
+    );
+    this.name = "NotLooseShape";
+  }
+}
+
+/**
+ * v0.11.1 (issue #76) — auto-detect chain ran every importer and none
+ * accepted the input. Carries per-format rejection reasons so the AI's
+ * next turn can fix the input or fall back to `set_theme_tokens`.
+ */
+export class NoImporterMatched extends Error {
+  readonly attempts: ReadonlyArray<{ format: string; reason: string }>;
+  constructor(attempts: ReadonlyArray<{ format: string; reason: string }>) {
+    const summary = attempts.map((a) => `${a.format}: ${a.reason}`).join("; ");
+    super(
+      `NoImporterMatched: none of the supported formats accepted the input. ${summary}. ` +
+        "Fix the input or fall back to `set_theme_tokens` with a normalized object.",
+    );
+    this.name = "NoImporterMatched";
+    this.attempts = attempts;
   }
 }
 

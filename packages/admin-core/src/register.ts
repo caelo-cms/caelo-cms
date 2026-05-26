@@ -319,7 +319,7 @@ import {
   siteDefaultsGetSeoOp,
   siteDefaultsSetSeoOp,
 } from "./ops/seo.js";
-import { getSiteDefaultsOp, setSiteDefaultsOp } from "./ops/site_defaults.js";
+import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/site_defaults.js";
 import { getSiteSettingsOp, setSiteSettingsOp } from "./ops/site_settings.js";
 import {
   listPinDefaultsOp,
@@ -369,9 +369,11 @@ import {
   exportThemeDtcgOp,
   getActiveThemeOp,
   getThemeOp,
-  importThemeDtcgOp,
+  importThemeOp,
+  listThemeHistoryOp,
   listThemesOp,
   setThemeAssetOp,
+  updateThemeMetaOp,
   updateThemeTokensOp,
 } from "./ops/themes.js";
 import {
@@ -422,7 +424,6 @@ import {
 } from "./ops/user_pending.js";
 import { getUserPreferenceOp, setUserPreferenceOp } from "./ops/user_preferences.js";
 import {
-  completeOnboardingOp,
   createFirstOwnerOp,
   createUserOp,
   deleteUserOp,
@@ -661,9 +662,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getThemeOp);
   registry.register(getActiveThemeOp);
   registry.register(updateThemeTokensOp);
+  // v0.11.4 (issue #76 follow-up) — meta editor + history reader.
+  registry.register(updateThemeMetaOp);
+  registry.register(listThemeHistoryOp);
   registry.register(setThemeAssetOp);
   registry.register(duplicateThemeOp);
-  registry.register(importThemeDtcgOp);
+  registry.register(importThemeOp);
   registry.register(exportThemeDtcgOp);
   registry.register(proposeCreateThemeOp);
   registry.register(proposeActivateThemeOp);
@@ -695,6 +699,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPendingLayoutProposalsOp);
   registry.register(getSiteDefaultsOp);
   registry.register(setSiteDefaultsOp);
+  // v0.11.4 (issue #76 follow-up) — site identity onboarding writer.
+  registry.register(setSiteIdentityOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
@@ -779,7 +785,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // (or the human Owner did). Restricted to the actor who proposed it
   // by the WHERE clause; doesn't grant cross-actor cancel rights.
   registry.register(cancelProposalOp);
-  registry.register(completeOnboardingOp);
   registry.register(listBranchEditedModulesOp);
   registry.register(listBranchEditedEntitiesOp);
   registry.register(countBranchChangesOp);

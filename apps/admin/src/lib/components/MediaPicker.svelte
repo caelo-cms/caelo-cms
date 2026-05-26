@@ -32,7 +32,15 @@
   interface Props {
     open: boolean;
     onClose?: () => void;
-    onPick: (m: { url: string; alt: string }) => void;
+    /**
+     * Called when the operator picks an asset. v0.11.1 (issue #76)
+     * extended the payload with `mediaId` so consumers like the
+     * AssetsEditor on /design/themes can call `themes.set_asset({slot,
+     * mediaId})` without re-parsing the URL. Existing consumers that
+     * only need {url, alt} keep working — object destructuring picks
+     * up just the fields they care about.
+     */
+    onPick: (m: { url: string; alt: string; mediaId: string }) => void;
   }
   let { open = $bindable(), onClose, onPick }: Props = $props();
 
@@ -97,6 +105,7 @@
     onPick({
       url: `/_caelo/media/${a.id}/${pickVariant(a)}`,
       alt: a.alt,
+      mediaId: a.id,
     });
     open = false;
     onClose?.();

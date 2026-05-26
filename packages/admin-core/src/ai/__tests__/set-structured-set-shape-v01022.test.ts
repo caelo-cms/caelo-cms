@@ -32,7 +32,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { formatStructuredSetsBlock, formatThemeBlock } from "../system-prompt.js";
+import {
+  formatSiteIdentityBlock,
+  formatStructuredSetsBlock,
+  formatThemeBlock,
+} from "../system-prompt.js";
 import { deleteStructuredSetTool } from "../tools/delete-structured-set.js";
 import { getStructuredSetTool } from "../tools/get-structured-set.js";
 import { listStructuredSetsTool } from "../tools/list-structured-sets.js";
@@ -168,6 +172,169 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
     expect(block).toContain("## Theme");
     expect(block).toContain("No active theme");
     expect(block).toContain("propose_create_theme");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — seed origin renders the required-action notice with concrete examples", () => {
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      origin: "seed",
+      tokensSummary: "16 colors, 3 typography",
+    });
+    expect(block).toContain("origin:");
+    expect(block).toContain("seed");
+    // The seed branch should be prescriptive (not aspirational) about
+    // updating the palette before authoring modules — that's the line
+    // that fixes the PR-79 monochrome-page regression. The CI screenshot
+    // proved that a soft "consider evolving" nudge wasn't enough; this
+    // wording is explicit: "Required action when you create or restyle
+    // ANY visitor-facing page".
+    expect(block).toContain("Required action");
+    expect(block).toContain("primary color");
+    // A concrete `set_theme_tokens` example with a real hex must render
+    // so the AI sees the exact shape to call.
+    expect(block).toContain("set_theme_tokens({set: {primaryColor:");
+    expect(block).toContain("#4f46e5");
+    // Palette-by-feel guidance helps the AI pick when the brand isn't
+    // overtly color-coded.
+    expect(block).toContain("Common picks");
+    expect(block).toContain("set_theme_meta");
+    // The module-CSS-uses-vars primer always renders.
+    expect(block).toContain("var(--color-primary)");
+    expect(block).toContain("var(--spacing-md)");
+    // No design intent recorded yet → the prompt nudges the AI.
+    expect(block).toContain("none recorded");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — ai-origin theme drops the seed notice but keeps the var primer", () => {
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      origin: "ai",
+      description: "Indigo primary for SaaS B2B feel. System fonts.",
+      tokensSummary: "16 colors, 3 typography",
+    });
+    expect(block).toContain("origin:");
+    expect(block).toContain("ai");
+    // No seed-action notice once the theme has been shaped.
+    expect(block).not.toContain("Required action");
+    expect(block).not.toContain("Common picks");
+    // Description should render as the design intent line.
+    expect(block).toContain("Indigo primary for SaaS B2B feel");
+    // Module-CSS primer still renders — it's universal advice.
+    expect(block).toContain("var(--color-primary)");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — operator-origin theme behaves like ai-origin (preserve)", () => {
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      origin: "operator",
+      tokensSummary: "16 colors, 3 typography",
+    });
+    expect(block).toContain("operator");
+    expect(block).not.toContain("Required action");
+    // Always advertises the new tools.
+    expect(block).toContain("set_theme_meta");
+    expect(block).toContain("list_theme_history");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — cssVarNames inventory renders grouped by category", () => {
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      origin: "operator",
+      tokensSummary: "16 colors, 3 typography",
+      cssVarNames: [
+        "--color-background",
+        "--color-foreground",
+        "--color-primary",
+        "--color-muted-foreground",
+        "--spacing-md",
+        "--spacing-lg",
+        "--font-heading",
+        "--radius-md",
+      ],
+    });
+    // The block must surface the inventory header so the AI knows to
+    // read it (otherwise the var names get lost in the wall of text).
+    expect(block).toContain("CSS vars this theme defines");
+    // Each category should appear as a `--<cat>-*` summary line.
+    expect(block).toContain("`--color-*`");
+    expect(block).toContain("`--spacing-*`");
+    expect(block).toContain("`--font-*`");
+    expect(block).toContain("`--radius-*`");
+    // The exact var names must be inline so the AI can grep them.
+    expect(block).toContain("--color-foreground");
+    expect(block).toContain("--color-muted-foreground");
+    // The "don't invent others" warning must be present — this is
+    // what addresses the CSS-var-invention bug.
+    expect(block).toContain("do NOT invent others");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — formatSiteIdentityBlock renders when fields are populated", () => {
+    const block = formatSiteIdentityBlock({
+      siteName: "Acme Sustainability",
+      sitePurpose:
+        "A consulting firm helping mid-sized companies cut emissions. Calm, trustworthy feel.",
+    });
+    expect(block).not.toBeNull();
+    expect(block).toContain("## Site identity");
+    expect(block).toContain("Acme Sustainability");
+    expect(block).toContain("helping mid-sized companies cut emissions");
+    // The instruction that closes the block — tells the AI to use the
+    // identity for every page + evolve theme if mismatch.
+    expect(block).toContain("Use this context for every page you build");
+    expect(block).toContain("set_theme_tokens");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — formatSiteIdentityBlock renders cold-start instructions when fields are empty", () => {
+    // Caelo is chat-first per §1A — no forms-based onboarding. When
+    // site identity hasn't been captured yet, the block must tell the
+    // AI WHAT to do on its first turn: infer + capture identity via
+    // set_site_identity BEFORE authoring modules. The cold-start
+    // branch is what replaces the deleted /onboarding tour.
+    for (const empty of [
+      null,
+      { siteName: null, sitePurpose: null },
+      { siteName: "  ", sitePurpose: "  " },
+    ] as const) {
+      const block = formatSiteIdentityBlock(empty);
+      expect(block).not.toBeNull();
+      expect(block).toContain("## Site identity");
+      expect(block).toContain("Untouched install");
+      // The cold-start instructions must name the tool + the order.
+      expect(block).toContain("set_site_identity");
+      expect(block).toContain("Infer");
+      expect(block).toContain("Capture");
+      expect(block).toContain("Evolve the theme");
+      // And handle the vague-prompt fallback (don't guess silently).
+      expect(block).toContain("ASK ONE concise question");
+    }
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — formatSiteIdentityBlock renders with name only", () => {
+    const block = formatSiteIdentityBlock({
+      siteName: "Acme",
+      sitePurpose: null,
+    });
+    expect(block).not.toBeNull();
+    expect(block).toContain("## Site identity");
+    expect(block).toContain("Acme");
+    // Without a purpose the "What this site is for" header is omitted.
+    expect(block).not.toContain("What this site is for");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — origin defaults to seed when caller omits the field", () => {
+    // Back-compat: callers that haven't been updated to pass `origin`
+    // shouldn't lose the new seed-warning behaviour.
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      tokensSummary: "16 colors, 3 typography",
+    });
+    expect(block).toContain("seed");
+    expect(block).toContain("Required action");
   });
 
   it("nav-menu item inlining still works when sets exist (v0.10.20 behavior preserved)", () => {

@@ -392,6 +392,13 @@ export interface VolatileContext {
   readonly allPagesBlock?: string;
   /** P6.7.5 — current theme tokens (CSS variables). */
   readonly themeBlock?: string;
+  /**
+   * v0.11.4 (issue #76 follow-up) — operator-captured site name +
+   * purpose (from /onboarding ?/identity). Brand context the AI uses
+   * for every page it builds. Renders before `## Theme` so the AI
+   * reads brand intent before tokens.
+   */
+  readonly siteIdentityBlock?: string;
   /** P6.7.5 — named structured-data sets the AI can edit (nav-menu, tags, etc.). */
   readonly structuredSetsBlock?: string;
   /** v0.12.0 — `## Modules` decision-support catalog (modules grouped
@@ -493,6 +500,13 @@ export function composeSystemPromptChunks(
       label: "plugin-context",
     });
   }
+  // v0.11.4 (issue #76 follow-up) — site identity comes BEFORE theme
+  // so the AI reads brand intent before reading tokens. With both
+  // blocks visible, the AI can judge whether the theme matches the
+  // brand and evolve tokens if not.
+  if (volatile.siteIdentityBlock && volatile.siteIdentityBlock.trim().length > 0) {
+    chunks.push({ body: volatile.siteIdentityBlock, cacheable: false, label: "site-identity" });
+  }
   if (volatile.themeBlock && volatile.themeBlock.trim().length > 0) {
     chunks.push({ body: volatile.themeBlock, cacheable: false, label: "theme" });
   }
@@ -563,10 +577,85 @@ export function composeSystemPrompt(
 }
 
 /**
+ * v0.11.4 (issue #76 follow-up) — `## Site identity` system-prompt
+ * block. Caelo is chat-first per CLAUDE.md §1A: there's no forms-
+ * based onboarding. The AI captures site identity (`siteName`,
+ * `sitePurpose`) from the operator's first chat via the
+ * `set_site_identity` tool, and that captured state then anchors
+ * every future chat's brand context.
+ *
+ * Two branches:
+ *
+ * - **Untouched install** (both fields null): the block renders an
+ *   instruction telling the AI to infer + capture identity from the
+ *   FIRST user prompt before authoring anything. This is the cold-
+ *   start path Caelo expects.
+ * - **Populated**: the block renders the captured name + purpose
+ *   plus a primer telling the AI to match copy/layout/theme to the
+ *   brand context.
+ *
+ * Always returns a non-null block — even the empty case carries
+ * cold-start instructions the AI needs to read.
+ */
+export function formatSiteIdentityBlock(
+  identity: { siteName: string | null; sitePurpose: string | null } | null,
+): string | null {
+  const hasName = identity && identity.siteName && identity.siteName.trim().length > 0;
+  const hasPurpose = identity && identity.sitePurpose && identity.sitePurpose.trim().length > 0;
+
+  if (!hasName && !hasPurpose) {
+    // Cold-start path: no identity captured yet. Tell the AI what to
+    // do BEFORE it authors any modules.
+    return [
+      "## Site identity",
+      "",
+      "> ⚠️ **Untouched install** — no site identity captured yet.",
+      "",
+      "Caelo is chat-first. Before you author any modules on the FIRST request that asks you to build/restyle/extend the site, you MUST:",
+      "",
+      "1. **Infer** `siteName` + `sitePurpose` from the operator's prompt. Example: *'build me a homepage for an AI-first CMS called Caelo, trustworthy and developer-focused'* → siteName `Caelo`, sitePurpose `An AI-first CMS for developers — trustworthy, branched edits, plugin sandbox`.",
+      "2. **Capture** them via `set_site_identity({siteName, sitePurpose})`. This persists into every future chat so the next session inherits the brand context.",
+      "3. **Evolve the theme** if the brand suggests a specific palette — `set_theme_tokens({set: {primaryColor: '#…'}})` + `set_theme_meta({description})` (the `## Theme` block below has more detail).",
+      "4. **Then** author the modules the operator asked for.",
+      "",
+      "If the operator's prompt is too vague to infer (e.g. *'add a contact form'* on an unconfigured install with no brand signal), ASK ONE concise question for the essentials (\"What's this site for?\") before proceeding. Don't guess silently.",
+    ].join("\n");
+  }
+
+  const lines: string[] = ["## Site identity", ""];
+  if (hasName) lines.push(`Site name: **${identity?.siteName}**`);
+  if (hasPurpose) {
+    lines.push("");
+    lines.push(`What this site is for:`);
+    lines.push(`> ${identity?.sitePurpose}`);
+  }
+  lines.push("");
+  lines.push(
+    "Use this context for every page you build — pick fitting copy, layout, and theme tokens. " +
+      "If the active theme's palette doesn't match this brand, evolve it (`set_theme_tokens` + `set_theme_meta`) BEFORE authoring modules so the new tokens cascade through `var(--…)` references. " +
+      "If the operator's request implies the identity has shifted (rebrand, new audience), update it with `set_site_identity`.",
+  );
+  return lines.join("\n");
+}
+
+/**
  * v0.11.0 (#45) — `## Theme` system-prompt block. Names the active
- * theme + a one-line category summary so the AI knows the surface
- * exists without paying for the full DTCG document in every turn.
- * Full tokens load on demand via `get_theme({slug})`.
+ * theme + a one-line summary so the AI knows the surface exists
+ * without paying for the full DTCG document in every turn. Full tokens
+ * load on demand via `get_theme({slug})` (which in v0.11.1 accepts
+ * `as: "css-vars" | "tailwind" | "summary"` too).
+ *
+ * v0.11.1 (issue #76) — `summary` is the value formatThemeSummary()
+ * produces from the tokens document directly (primary color shorthand,
+ * body font, default radius, category counts). Callers compute it via
+ * `formatThemeSummary(activeTheme.tokens)` and pass as `tokensSummary`.
+ *
+ * v0.11.4 (issue #76 follow-up) — leads with `origin` + `description`
+ * so the AI distinguishes "untouched seed" from "operator brand choice"
+ * and knows whether to evolve the theme. Also carries two behavioural
+ * primers (theme = starting palette; module CSS uses theme vars) that
+ * close the regression where the AI would inherit a neutral seed and
+ * emit monochrome modules.
  *
  * Renders nothing when no active theme exists (pre-migration test
  * states only — production installs always carry one is_active row
@@ -583,7 +672,28 @@ export function formatThemeBlock(
      * for multi-theme installs ("Brand Orange — campaign-page variant").
      */
     description?: string | null;
+    /**
+     * v0.11.4 (issue #76 follow-up) — provenance of current state.
+     * `seed` = untouched starter palette (the AI should evolve it for
+     * the site being built). `ai` / `operator` = someone has shaped it
+     * deliberately (preserve unless asked otherwise).
+     */
+    origin?: "seed" | "ai" | "operator";
+    /**
+     * v0.11.1 (issue #76) — terse summary line built by
+     * `formatThemeSummary(tokens)` (palette/font/radius shorthand +
+     * category counts). Replaces v0.11.0's flat category-count string.
+     */
     tokensSummary: string;
+    /**
+     * v0.11.4 (issue #76 follow-up) — the actual CSS variable names
+     * the renderer emits for this theme's tokens. Listed inline so the
+     * AI uses real names in module CSS instead of guessing
+     * (`--color-text` doesn't exist; `--color-foreground` does).
+     * Without this, AI-authored module CSS falls through to hardcoded
+     * fallbacks and pages render monochrome regardless of theme values.
+     */
+    cssVarNames?: readonly string[];
   } | null,
 ): string {
   if (!theme) {
@@ -593,23 +703,113 @@ export function formatThemeBlock(
       "_No active theme on this install. An Owner must propose+approve one via `propose_create_theme`._",
     ].join("\n");
   }
-  const descriptionLine = theme.description ? `\n_${theme.description}_\n` : "";
+  const origin = theme.origin ?? "seed";
+  const originLabel: Record<typeof origin, string> = {
+    seed: "**seed** — untouched starter palette",
+    ai: "**ai** — last edited by an AI turn",
+    operator: "**operator** — last edited by a human",
+  };
+  const descriptionLine = theme.description
+    ? `Design intent: _${theme.description}_`
+    : "Design intent: _(none recorded — call `set_theme_meta({description: '…'})` after editing tokens so the next turn knows WHY this palette)_";
+  const seedNotice =
+    origin === "seed"
+      ? [
+          "",
+          "> ⚠️ **This theme is a SEED** — neutral placeholders (primary, accent, etc. are all gray). Pages rendered against it look monochrome.",
+          ">",
+          "> **Required action when you create or restyle ANY visitor-facing page** (homepage, landing, product, marketing — anything that isn't pure admin chrome): pick a primary color that fits the site's name / content / industry, and run this BEFORE authoring modules:",
+          ">",
+          "> ```",
+          "> set_theme_tokens({set: {primaryColor: '#4f46e5'}})  // example: indigo",
+          "> set_theme_meta({description: 'Indigo primary chosen because ...'})",
+          "> ```",
+          ">",
+          "> Common picks by feel: `#4f46e5` indigo (SaaS / dev tools), `#7c3aed` violet (creative / AI products), `#06b6d4` cyan (data / analytics), `#10b981` emerald (sustainability / finance), `#f59e0b` amber (warm / lifestyle), `#ef4444` red (urgency / news), `#0f172a` slate (luxury / enterprise). Pick the closest match — don't default to neutral on a real site.",
+          ">",
+          "> After the first `set_theme_tokens` + `set_theme_meta` call, `origin` flips off `seed` and this warning disappears.",
+        ].join("\n")
+      : "";
   return [
     "## Theme",
     "",
-    `Active theme: **${theme.displayName}** (slug \`${theme.slug}\`) — ${theme.tokensSummary}.${descriptionLine}`,
+    `Active theme: **${theme.displayName}** (slug \`${theme.slug}\`, origin: ${originLabel[origin]}) — ${theme.tokensSummary}.`,
+    descriptionLine,
+    seedNotice,
+    "",
+    "**Module CSS must reference theme vars** so token edits cascade: `background: var(--color-primary)`, `padding: var(--spacing-md)`, `font-family: var(--font-heading)`. Hardcoded hex defeats the theme — the operator can no longer tune the site by editing tokens.",
+    "",
+    // v0.11.4 (issue #76 follow-up) — list the EXACT CSS var names the
+    // renderer emits for THIS theme. Without this the AI guesses
+    // (--color-text, --color-surface, etc. — names that look reasonable
+    // but don't exist in shadcn-style themes). With this, the AI uses
+    // only var names it knows resolve, and module CSS no longer falls
+    // through to hardcoded slate/white fallbacks.
+    theme.cssVarNames && theme.cssVarNames.length > 0
+      ? `**CSS vars this theme defines** (use these exact names — do NOT invent others; unknown var names fall through to your fallbacks and render as the hardcoded value):\n${formatCssVarInventory(theme.cssVarNames)}`
+      : "**CSS vars this theme defines:** _(none — theme is empty; ask the operator to configure tokens)_",
     "",
     "Tools (all read tokens by canonical DTCG path; `set_theme_tokens` ALSO accepts loose names that the server normalizes):",
     "- `list_themes()` — list every theme (one active, rest variants).",
-    "- `get_theme({slug})` — full DTCG tokens jsonb + asset URLs.",
+    "- `get_theme({slug, as?})` — `as` is one of `dtcg` (default) / `css-vars` / `tailwind` / `summary`. Use `css-vars` when authoring module HTML so you don't translate DTCG paths.",
     "- `set_theme_tokens({set: {primaryColor: '#ff6600', fontHeading: 'Inter'}})` — edit the active theme. Pass loose names; the server returns the canonical paths it wrote.",
+    "- `set_theme_meta({description?, displayName?})` — record design intent (and/or rename). Call after evolving a `seed` so future turns stay coherent.",
+    "- `list_theme_history({limit?})` — recent edits with who/when/what. Check before proposing a rewrite — the operator may have already done it.",
     "- `set_theme_asset({slot, mediaId})` — bind logo / logoDark / favicon / socialShare.",
     "- `duplicate_theme({sourceSlug, newSlug, newDisplayName})` — clone tokens + assets into an inactive variant.",
-    "- `import_theme({themeSlug, body})` / `export_theme({themeSlug})` — DTCG round-trip.",
+    "- `import_theme({themeSlug, body})` — auto-detects DTCG / Style Dictionary / Tailwind 4 / shadcn / loose. `export_theme({themeSlug})` — DTCG out.",
     "",
     "Gated (each is a §11.A propose/execute; the AI proposes, an Owner clicks Approve at `/security/themes/pending`):",
-    "- `propose_create_theme({slug, displayName, preset, overrides?})` — preset is one of `shadcn-default` / `minimal` / `warm` / `playful`; overrides take brand-friendly names.",
+    "- `propose_create_theme({slug, displayName, preset, overrides?})` — preset is one of `shadcn-default` / `minimal` / `warm` / `playful`. `overrides.primaryColor` triggers a 50–900 OKLCh ramp (each stop `_derived: true`).",
     "- `propose_activate_theme({themeId})` — flips the DB row only. A deploy must be approved separately via `propose_deploy_promote` for the new CSS to ship.",
     "- `propose_delete_theme({themeId})` — inactive themes only.",
   ].join("\n");
+}
+
+/**
+ * v0.11.4 (issue #76 follow-up) — group + render CSS var names for the
+ * `## Theme` block. Groups by category prefix (`--color-*`, `--spacing-*`,
+ * etc.) so the AI scans the right group quickly without reading a flat
+ * 60-line list. Compact: 4-up where short, one-per-line when long.
+ */
+function formatCssVarInventory(names: readonly string[]): string {
+  // Group by category: everything after `--` up to the first `-`.
+  const groups = new Map<string, string[]>();
+  for (const name of names) {
+    const stripped = name.startsWith("--") ? name.slice(2) : name;
+    const dash = stripped.indexOf("-");
+    const category = dash > 0 ? stripped.slice(0, dash) : stripped;
+    const arr = groups.get(category) ?? [];
+    arr.push(name);
+    groups.set(category, arr);
+  }
+  // Stable order — match the renderer's category iteration.
+  const ORDER = [
+    "color",
+    "spacing",
+    "radius",
+    "font",
+    "text",
+    "font-weight",
+    "leading",
+    "tracking",
+    "shadow",
+    "duration",
+    "ease",
+    "breakpoint",
+  ];
+  const sortedCategories = [...groups.keys()].sort((a, b) => {
+    const ai = ORDER.indexOf(a);
+    const bi = ORDER.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return a.localeCompare(b);
+  });
+  const lines: string[] = [];
+  for (const cat of sortedCategories) {
+    const items = groups.get(cat) ?? [];
+    lines.push(`- \`--${cat}-*\`: ${items.join(", ")}`);
+  }
+  return lines.join("\n");
 }

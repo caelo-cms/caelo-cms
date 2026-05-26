@@ -45,12 +45,35 @@ export class ThemeRenderError extends Error {
 }
 
 /**
+ * Optional render options. The `selector` parameter (v0.11.1, issue #76)
+ * scopes the emitted CSS variables under a custom selector so the admin
+ * live-preview pane can render the byte-identical CSS without leaking
+ * the theme's tokens onto the surrounding admin chrome. Default `:root`
+ * keeps the static-gen + chat-runner paths unchanged.
+ */
+export interface RenderThemeCssOptions {
+  /**
+   * Selector to wrap the emitted rule blocks. Defaults to `:root`. The
+   * dark-variant block becomes `${selector}.dark` so a single `.dark`
+   * class toggle on the scoping element flips both surfaces — same
+   * behaviour as the public site's `:root` / `:root.dark` pairing.
+   */
+  readonly selector?: string;
+}
+
+/**
  * Emit the `:root { … }` (+ optional `:root.dark { … }`) CSS for the
  * supplied tokens document. Returns the bare CSS body — caller wraps
  * it in `<style data-source="theme">…</style>` and injects it ahead of
  * module CSS in the document head.
+ *
+ * Pass `options.selector` (v0.11.1) to scope the rule blocks under a
+ * custom selector instead of `:root`. The admin live preview uses
+ * `.theme-preview` so the operator's edits don't leak onto the admin
+ * UI. Public + chat paths omit the option and get the default.
  */
-export function renderThemeCss(tokens: ThemeDocument): string {
+export function renderThemeCss(tokens: ThemeDocument, options: RenderThemeCssOptions = {}): string {
+  const selector = options.selector ?? ":root";
   const flat = flattenTokens(tokens);
   const resolveCache = new Map<string, unknown>();
   const lightLines: string[] = [];
@@ -62,9 +85,147 @@ export function renderThemeCss(tokens: ThemeDocument): string {
     emitTokenLines(category, path, value, lightLines, darkLines);
   }
 
-  const lightBlock = `:root{${lightLines.join("")}}`;
+  const lightBlock = `${selector}{${lightLines.join("")}}`;
   if (darkLines.length === 0) return lightBlock;
-  return `${lightBlock}:root.dark{${darkLines.join("")}}`;
+  return `${lightBlock}${selector}.dark{${darkLines.join("")}}`;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// v0.11.1 (issue #76) — `get_theme as` format helpers
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * Named export of the `:root { … }` CSS-vars form. Alias for
+ * `renderThemeCss(tokens)` — exists so the AI tool's `as: "css-vars"`
+ * dispatch table reads symmetrically with the other format names.
+ */
+export function formatThemeAsCssVars(tokens: ThemeDocument): string {
+  return renderThemeCss(tokens);
+}
+
+/**
+ * v0.11.4 (issue #76 follow-up) — return JUST the CSS variable names
+ * the renderer would emit for this token document. The AI uses this in
+ * the system-prompt `## Theme` block so it knows exactly which
+ * `var(--…)` names exist before authoring module CSS.
+ *
+ * Without this surface the AI guesses var names (e.g. `--color-text`,
+ * `--color-surface`) that look reasonable but don't exist in the
+ * shadcn-style theme — its CSS then falls through to hardcoded
+ * fallbacks and the page renders monochrome regardless of token values.
+ *
+ * Returns a sorted, de-duplicated array. Emits the same names as the
+ * `renderThemeCss` light branch (the dark variant uses the same names
+ * with different values, so listing them once is correct).
+ */
+export function listThemeCssVarNames(tokens: ThemeDocument): readonly string[] {
+  const flat = flattenTokens(tokens);
+  if (flat.length === 0) return [];
+  const resolveCache = new Map<string, unknown>();
+  const lines: string[] = [];
+  for (const { path, token } of flat) {
+    const category = path.split(".")[0] ?? "";
+    const value = resolveTokenValue(token, tokens, resolveCache, new Set([path]));
+    emitTokenLines(category, path, value, lines, []);
+  }
+  // Each `lines` entry is `--name:value;`. Strip the value to get the name.
+  const names = new Set<string>();
+  for (const line of lines) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    const name = line.slice(0, colon).trim();
+    if (name.startsWith("--")) names.add(name);
+  }
+  return [...names].sort();
+}
+
+/**
+ * Emit a Tailwind 4 `@theme inline { … }` block. The body re-uses the
+ * same per-category emission as `renderThemeCss` so the variable names
+ * match what `app.css` exposes — feeding this output into the Tailwind
+ * importer round-trips to the same DTCG document.
+ */
+export function formatThemeAsTailwind(tokens: ThemeDocument): string {
+  const flat = flattenTokens(tokens);
+  const resolveCache = new Map<string, unknown>();
+  const lightLines: string[] = [];
+  const darkLines: string[] = [];
+  for (const { path, token } of flat) {
+    const category = path.split(".")[0] ?? "";
+    const value = resolveTokenValue(token, tokens, resolveCache, new Set([path]));
+    emitTokenLines(category, path, value, lightLines, darkLines);
+  }
+  // Tailwind 4 `@theme` doesn't have a built-in dark variant; emit the
+  // light values in the `@theme inline` block and append a `.dark { … }`
+  // override block at module top-level (matches Caelo's app.css setup).
+  const themeBody = lightLines.join("");
+  if (darkLines.length === 0) return `@theme inline {${themeBody}}`;
+  return `@theme inline {${themeBody}}\n.dark{${darkLines.join("")}}`;
+}
+
+/**
+ * Emit a terse one-line summary of the tokens document — primary color
+ * shorthand, body font, default radius, and category counts. Used by
+ * the system-prompt `## Theme` block so the AI sees the theme's feel
+ * without spending tokens on the full DTCG document.
+ *
+ * Format: `primary=<hex|oklch>, body=<fontFamily-first-name>, radius=<value>, <category counts>`.
+ * Falls back to category counts only when the canonical paths aren't
+ * populated (e.g. an empty or unusual theme).
+ */
+export function formatThemeSummary(tokens: ThemeDocument): string {
+  const flat = flattenTokens(tokens);
+  if (flat.length === 0) return "no tokens";
+
+  const resolveCache = new Map<string, unknown>();
+  let primary: string | undefined;
+  let body: string | undefined;
+  let radiusDefault: string | undefined;
+  const counts = new Map<string, number>();
+  for (const { path, token } of flat) {
+    const category = path.split(".")[0] ?? "(uncategorised)";
+    counts.set(category, (counts.get(category) ?? 0) + 1);
+    if (
+      path === "color.primary" ||
+      path === "color.primary.500" ||
+      path === "color.primary.DEFAULT"
+    ) {
+      const v = resolveTokenValue(token, tokens, resolveCache, new Set([path]));
+      const flatVal = pickColorVariant(v);
+      if (typeof flatVal === "string" && primary === undefined) primary = flatVal;
+    }
+    if (path === "typography.body") {
+      const v = resolveTokenValue(token, tokens, resolveCache, new Set([path]));
+      if (v && typeof v === "object" && "fontFamily" in v) {
+        const ff = (v as { fontFamily?: unknown }).fontFamily;
+        if (typeof ff === "string")
+          body = ff
+            .split(",")[0]
+            ?.trim()
+            .replace(/^['"]|['"]$/g, "");
+      }
+    }
+    if (path === "radius.md") {
+      const v = resolveTokenValue(token, tokens, resolveCache, new Set([path]));
+      if (typeof v === "string") radiusDefault = v;
+    }
+  }
+
+  const parts: string[] = [];
+  if (primary) parts.push(`primary=${primary}`);
+  if (body) parts.push(`body=${body}`);
+  if (radiusDefault) parts.push(`radius=${radiusDefault}`);
+  const categoryParts: string[] = [];
+  for (const [k, n] of counts) categoryParts.push(`${n} ${k}`);
+  if (categoryParts.length > 0) parts.push(categoryParts.join("/"));
+  return parts.join(", ");
+}
+
+function pickColorVariant(value: unknown): unknown {
+  if (value && typeof value === "object" && "light" in value) {
+    return (value as { light: unknown }).light;
+  }
+  return value;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -150,7 +311,21 @@ function emitTokenLines(
 ): void {
   // Strip the category prefix to get the rest of the path. e.g.
   // `color.brand.primary` → `brand-primary` becomes `--color-brand-primary`.
-  const rest = path.slice(category.length + 1).replace(/\./g, "-");
+  //
+  // v0.11.1 (issue #76) — Tailwind/shadcn convention: a leaf at
+  // `<group>.DEFAULT` (e.g. the OKLCh ramp's `color.primary.DEFAULT`
+  // alias generated by deriveOklchPrimaryRamp) emits `--<category>-<group>`
+  // (NOT `--<category>-<group>-DEFAULT`) so module HTML using
+  // `var(--color-primary)` resolves to the brand color. Without this,
+  // the ramp's group emits `--color-primary-50` … `--color-primary-900`
+  // + `--color-primary-DEFAULT` but no bare `--color-primary` — and
+  // consumers fall back to the cascade. This special-case applies to
+  // every category (color/spacing/radius/etc.) so any future
+  // DTCG-group-with-DEFAULT-alias works the same way.
+  const restRaw = path.slice(category.length + 1);
+  const rest = restRaw.endsWith(".DEFAULT")
+    ? restRaw.slice(0, -".DEFAULT".length).replace(/\./g, "-")
+    : restRaw.replace(/\./g, "-");
   const baseName = `--${category === "ease" ? "ease" : category}-${rest}`;
 
   switch (category) {

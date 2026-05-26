@@ -1,12 +1,32 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * v0.11.0 — AI tool: import_theme. DTCG-only this slice; the verbatim
- * format-auto-detect description from #45's follow-up comment lands
- * when the auto-detector ships in v0.11.2.
+ * v0.11.1 (issue #76) — AI tool: import_theme.
+ *
+ * Replaces an existing theme's tokens by accepting any of the major
+ * token formats the ecosystem uses. The TS-land `autoDetectAndImport`
+ * walks the importer chain (DTCG → Style Dictionary → Tailwind 4 →
+ * shadcn → loose) and the op `themes.import` accepts the pre-parsed
+ * `ThemeDocument`. The detected format string flows back to the AI so
+ * subsequent turns don't re-detect.
+ *
+ * Verbatim description text from issue #45's follow-up comment:
+ *   "Import a theme from JSON or CSS. Server auto-detects DTCG /
+ *    Style Dictionary / Tailwind 4 / shadcn-CSS-vars / loose key-value
+ *    formats. Pass the raw text in `body`. Returns the detected format
+ *    + the slug of the imported theme."
+ *
+ * Pinned in tests as a regression guard — the AI-side prompt depends
+ * on this exact wording.
  */
 
 import { execute } from "@caelo-cms/query-api";
+import {
+  type AutoDetectResult,
+  autoDetectAndImport,
+  NoImporterMatched,
+  TailwindImportError,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -23,17 +43,19 @@ const importThemeToolInput = z
   .strict();
 type ImportThemeToolInput = z.infer<typeof importThemeToolInput>;
 
+/**
+ * v0.11.1 — verbatim description from issue #45's follow-up comment
+ * ("Tool descriptions (verbatim updates)" section). Pinned by the
+ * `import-theme.test.ts` regression guard.
+ */
+export const IMPORT_THEME_DESCRIPTION =
+  "Import a theme from JSON or CSS. Server auto-detects DTCG / Style Dictionary / " +
+  "Tailwind 4 / shadcn-CSS-vars / loose key-value formats. Pass the raw text in `body`. " +
+  "Returns the detected format + the slug of the imported theme.";
+
 export const importThemeTool: ToolDefinitionWithHandler<ImportThemeToolInput> = {
   name: "import_theme",
-  description:
-    "Import a DTCG JSON document into an EXISTING theme — replaces the target theme's tokens " +
-    "wholesale. Server validates against the DTCG schema first; pre-Zod sniff rejects bodies " +
-    "that aren't DTCG-shaped (no `$value` leaves anywhere). Pass the raw JSON in `body` and " +
-    "the target slug in `themeSlug`. " +
-    "The slug MUST already exist — minting a new theme goes through `propose_create_theme` " +
-    "(gated) so this tool never creates one. " +
-    "Format auto-detection across Style Dictionary / Tailwind 4 / shadcn CSS variables / " +
-    "loose key-value lands in v0.11.2 — for now, send DTCG only.",
+  description: IMPORT_THEME_DESCRIPTION,
   schema: importThemeToolInput,
   inputSchema: {
     type: "object",
@@ -45,13 +67,34 @@ export const importThemeTool: ToolDefinitionWithHandler<ImportThemeToolInput> = 
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.import_dtcg", input);
-    if (!r.ok)
-      return { ok: false, content: `themes.import_dtcg failed: ${describeError(r.error)}` };
-    const v = r.value as { themeId: string; format: "dtcg" };
+    // 1. Auto-detect the format in TS-land so the op surface stays
+    //    parser-free (single responsibility: write pre-parsed tokens).
+    let detected: AutoDetectResult;
+    try {
+      detected = autoDetectAndImport(input.body);
+    } catch (e) {
+      if (e instanceof NoImporterMatched) {
+        return { ok: false, content: e.message };
+      }
+      if (e instanceof TailwindImportError) {
+        return { ok: false, content: e.message };
+      }
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false, content: `theme import failed: ${msg}` };
+    }
+
+    // 2. Submit pre-parsed tokens to the (renamed in v0.11.1) op.
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.import", {
+      themeSlug: input.themeSlug,
+      tokens: detected.tokens,
+    });
+    if (!r.ok) {
+      return { ok: false, content: `themes.import failed: ${describeError(r.error)}` };
+    }
+    const v = r.value as { themeId: string };
     return {
       ok: true,
-      content: `imported ${v.format} into theme '${input.themeSlug}' (themeId ${v.themeId})`,
+      content: `imported ${detected.format} into theme '${input.themeSlug}' (themeId ${v.themeId}, detectedFormat=${detected.format})`,
     };
   },
 };

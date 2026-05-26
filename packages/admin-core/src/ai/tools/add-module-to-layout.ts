@@ -17,6 +17,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { addModuleToLayoutToolInput } from "@caelo-cms/shared";
+import { checkColdStartGate } from "./_cold-start-gate.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -118,6 +119,10 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     },
   },
   handler: async (ctx, input, toolCtx) => {
+    // v0.11.4 (issue #76 follow-up) — cold-start gate.
+    const gate = await checkColdStartGate(ctx, toolCtx, "add_module_to_layout");
+    if (gate.blocked) return gate.gateResult!;
+
     const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.get", {
       slug: input.layoutSlug,
     });

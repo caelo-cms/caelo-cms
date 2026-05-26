@@ -285,11 +285,22 @@ export interface ThemeAssetRef {
   readonly url: string;
 }
 
+/**
+ * v0.11.4 (issue #76 follow-up) — provenance of the current state.
+ * `seed`: untouched starter palette (e.g. shadcn-default populated by
+ * migration 0099). `ai`: most recent write was by an AI actor. `operator`:
+ * most recent write was by a human actor. The system-prompt `## Theme`
+ * block surfaces this so the AI knows whether it should evolve the
+ * palette for the site being built or treat it as an operator choice.
+ */
+export type ThemeOrigin = "seed" | "ai" | "operator";
+
 export interface Theme {
   readonly id: string;
   readonly slug: string;
   readonly displayName: string;
   readonly description: string | null;
+  readonly origin: ThemeOrigin;
   readonly isActive: boolean;
   readonly tokens: ThemeDocument;
   readonly assets: {
@@ -309,6 +320,45 @@ export interface Theme {
  */
 export function validateThemeTokens(tokens: unknown): ThemeDocument {
   return themeDocument.parse(tokens);
+}
+
+/**
+ * v0.11.1 (issue #76) — Zod schema for `propose_create_theme.overrides`.
+ *
+ * The base shape is a permissive `Record<string, unknown>` (same as
+ * v0.11.0) so loose names like `primaryColor` / `fontHeading` /
+ * `spacing-lg` continue to flow through `normalizeTokens`. The explicit
+ * `primaryColor` recognition (v0.11.1) is documented here — when set,
+ * the propose-create handler derives a `color.primary.{50..900}`
+ * OKLCh ramp from the value (each stop `_derived: true`) instead of
+ * landing a single `color.primary` leaf via the normalizer.
+ *
+ * Operator-supplied `color.primary.<stop>` paths in the same overrides
+ * map layer over the derived ramp (explicit-wins precedence).
+ */
+export const createThemeOverridesSchema = z.record(z.string(), z.unknown());
+export type CreateThemeOverrides = z.infer<typeof createThemeOverridesSchema>;
+
+/**
+ * v0.11.1 (issue #76) — extract the `primaryColor` sentinel from a
+ * loose-name overrides map. Returns `{primaryColor, rest}` where `rest`
+ * is the same map minus the `primaryColor` key. Used by the propose-
+ * create handler to split the ramp-seed off before normalizing the
+ * remaining loose names.
+ */
+export function extractPrimaryColorSeed(overrides: Record<string, unknown> | undefined): {
+  primaryColor: string | undefined;
+  rest: Record<string, unknown>;
+} {
+  if (!overrides) return { primaryColor: undefined, rest: {} };
+  const { primaryColor, ...rest } = overrides as { primaryColor?: unknown } & Record<
+    string,
+    unknown
+  >;
+  return {
+    primaryColor: typeof primaryColor === "string" ? primaryColor : undefined,
+    rest,
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────

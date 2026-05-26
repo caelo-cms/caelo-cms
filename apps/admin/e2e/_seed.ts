@@ -84,12 +84,17 @@ export const SETUP_SCRIPT = `
         VALUES (\${actorId}::uuid, \${email}, \${passwordHash}, true, now())
       \`;
     }
-    // Defensive: existing dev-owner from prior runs may have null
-    // onboarded_at after migration 0022; bump it so the post-login
-    // redirect to /onboarding doesn't intercept the sweep. Also flip
-    // is_first_owner = true so specs that fixture-up state by querying
-    // \`WHERE is_first_owner = true LIMIT 1\` (e.g. propose-execute-flow,
-    // content-reviewer-readonly) find the dev-owner.
+    // Defensive: flip is_first_owner = true so specs that fixture-up
+    // state by querying \`WHERE is_first_owner = true LIMIT 1\` (e.g.
+    // propose-execute-flow, content-reviewer-readonly) find the dev-
+    // owner.
+    //
+    // v0.11.4 (issue #76 follow-up) — the post-login /onboarding
+    // redirect was removed (Caelo is chat-first per CLAUDE.md §1A —
+    // operator opens /edit and describes outcomes, AI captures site
+    // identity via \`set_site_identity\`). The \`onboarded_at\` bump
+    // here is harmless but no longer load-bearing; left in place so
+    // specs that read the column see a stable value.
     await tx\`
       UPDATE users
       SET onboarded_at = COALESCE(onboarded_at, now()),
@@ -125,6 +130,62 @@ export const SETUP_SCRIPT = `
         api_key_iv = EXCLUDED.api_key_iv,
         api_key_kek_fp = EXCLUDED.api_key_kek_fp,
         api_key_set_at = EXCLUDED.api_key_set_at
+    \`;
+
+    // v0.11.4 (issue #76 follow-up) — NO post-onboarding state seeded
+    // here. Caelo is chat-first per CLAUDE.md §1A: the AI captures site
+    // identity (\`set_site_identity\`) and evolves the theme (\`set_theme_tokens\`)
+    // from the operator's first chat prompt. The e2e-livedit scenarios
+    // exercise that cold-start path. Mock-AI suites that don't need
+    // to test cold-start call \`POST_CHAT_SEED_SCRIPT\` AFTER this one
+    // to populate the post-AI-chat state so cold-start gates don't fire.
+  });
+  await sql.end();
+`;
+
+/**
+ * v0.11.4 (issue #76 follow-up) — fast-forward the install past the
+ * cold-start state so mock-AI tests that don't exercise the chat-first
+ * setup path aren't blocked by the cold-start gate on
+ * compose_page_from_spec / add_module_to_page / add_module_to_layout
+ * (etc.).
+ *
+ * Real-AI scenarios (e2e-livedit) should NOT call this — they need
+ * cold-start state to exercise `set_site_identity` + `set_theme_tokens`.
+ *
+ * Mirrors what the AI's cold-start sequence would have produced on its
+ * first chat: site identity captured, theme origin flipped to
+ * `operator` (the actor that seeds state in this script), indigo
+ * primary so theme-aware modules render in brand colors.
+ *
+ * Idempotent via COALESCE + WHERE origin='seed'. Re-running never
+ * overwrites operator-customised state.
+ */
+export const POST_CHAT_SEED_SCRIPT = `
+  import { SQL } from "bun";
+  const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+  await sql.begin(async (tx) => {
+    await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+    await tx\`
+      UPDATE site_defaults
+      SET site_name = COALESCE(site_name, 'Caelo'),
+          site_purpose = COALESCE(site_purpose,
+            'A content management system built around an AI co-editor. Modern, developer-focused, trustworthy.')
+      WHERE id = 1
+    \`;
+    await tx\`
+      UPDATE themes
+      SET origin = CASE WHEN origin = 'seed' THEN 'operator' ELSE origin END,
+          display_name = CASE WHEN display_name = 'Site default' THEN 'Caelo' ELSE display_name END,
+          description = COALESCE(description,
+            'Indigo primary chosen during setup to signal a modern, trustworthy AI-first product for developers.'),
+          tokens = jsonb_set(
+            tokens,
+            '{color,primary}',
+            '{"$type": "color", "$value": "#4f46e5"}'::jsonb
+          )
+      WHERE is_active = true
+        AND origin = 'seed'
     \`;
   });
   await sql.end();

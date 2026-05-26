@@ -11,6 +11,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { createPageToolInput } from "@caelo-cms/shared";
+import { checkColdStartGate } from "./_cold-start-gate.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -75,6 +76,10 @@ export const createPageTool: ToolDefinitionWithHandler<
     },
   },
   handler: async (ctx, input, toolCtx) => {
+    // v0.11.4 (issue #76 follow-up) — cold-start gate.
+    const gate = await checkColdStartGate(ctx, toolCtx, "create_page");
+    if (gate.blocked) return gate.gateResult!;
+
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.create", input);
     if (!r.ok) {
       const next = forwardNextAction(r.error);

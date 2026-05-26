@@ -587,6 +587,21 @@ export const renderPagePreviewOp = defineOperation({
       getContentInstance: (id) => instanceByIdResource.get(id) ?? null,
     };
 
+    // v0.11.1 (issue #76) — load the active theme up front so its asset
+    // URLs are available to renderModuleWithContent (substitutes
+    // `{{theme_logo_url}}` etc. inside nested-module HTML). The same
+    // theme value flows into composePageWithLayout below for the
+    // `<style data-source="theme">` injection — single fetch, two uses.
+    const composeTheme = await loadActiveThemeForCompose(tx, input.chatBranchId);
+    const renderThemeAssets = composeTheme
+      ? {
+          logo: composeTheme.assets.logo?.url ?? null,
+          logoDark: composeTheme.assets.logoDark?.url ?? null,
+          favicon: composeTheme.assets.favicon?.url ?? null,
+          socialShare: composeTheme.assets.socialShare?.url ?? null,
+        }
+      : undefined;
+
     // Collect CSS/JS from every nested module touched during recursion
     // so the page's <style>/<script> tags include them. Dedup by
     // moduleId; the composer further dedupes by slug.
@@ -597,7 +612,12 @@ export const renderPagePreviewOp = defineOperation({
         m.html = "";
         continue;
       }
-      const result = renderModuleWithContent(m.module_id, binding.contentInstanceId, resolver);
+      const result = renderModuleWithContent(
+        m.module_id,
+        binding.contentInstanceId,
+        resolver,
+        renderThemeAssets,
+      );
       m.html = result.html;
       // CSS/JS dedup: emit CSS/JS for every module the recursion touched
       // (in addition to this top-level module). The existing composer
@@ -822,13 +842,11 @@ export const renderPagePreviewOp = defineOperation({
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
 
-    // v0.11.0 (#45) — load the active theme row + apply chat-branch
-    // overlay so the preview reflects branch-scoped token edits without
-    // leaking them to other chats. The legacy structured_sets['theme/site']
-    // lookup is gone (the migration deleted the row); the renderer reads
-    // `input.theme` instead.
-    const composeTheme = await loadActiveThemeForCompose(tx, input.chatBranchId);
-
+    // v0.11.0 (#45) — `composeTheme` loaded earlier (above the render
+    // loop) so its asset URLs flow into renderModuleWithContent for
+    // `{{theme_logo_url}}` substitution (v0.11.1, issue #76). Same row
+    // flows into composePageWithLayout's <style data-source="theme">
+    // injection below.
     let composed: ReturnType<typeof composePageWithLayout>;
     try {
       composed = composePageWithLayout({

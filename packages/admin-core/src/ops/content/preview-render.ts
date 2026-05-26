@@ -103,12 +103,29 @@ export interface RenderResult {
   readonly missingSlots: readonly string[];
 }
 
+/**
+ * v0.11.1 (issue #76) — active theme's resolved asset URLs threaded
+ * through the recursion so module HTML carrying `{{theme_logo_url}}`
+ * etc. resolves under the DB-aware preview-render path the same way
+ * it does under the no-DB preview-compose path.
+ */
+export interface RenderThemeAssets {
+  readonly logo: string | null;
+  readonly logoDark: string | null;
+  readonly favicon: string | null;
+  readonly socialShare: string | null;
+}
+
 interface RenderContext {
   readonly resolver: RenderResolver;
   readonly touched: Set<string>;
   readonly missing: string[];
   readonly path: ReadonlySet<string>;
   readonly depth: number;
+  /** v0.11.1 (issue #76) — see RenderThemeAssets. Undefined when no
+   *  active theme on this install (renderer emits loud-raw for any
+   *  `{{theme_<slot>_url}}` placeholders). */
+  readonly themeAssets: RenderThemeAssets | undefined;
 }
 
 function isNestedRef(v: unknown): v is NestedRefValue {
@@ -134,6 +151,7 @@ export function renderModuleWithContent(
   moduleId: string,
   contentInstanceId: string,
   resolver: RenderResolver,
+  themeAssets?: RenderThemeAssets,
 ): RenderResult {
   const touched = new Set<string>();
   const missing: string[] = [];
@@ -143,6 +161,7 @@ export function renderModuleWithContent(
     missing,
     path: new Set<string>(),
     depth: 0,
+    themeAssets,
   });
   return { html, touchedModuleIds: touched, missingSlots: missing };
 }
@@ -184,6 +203,7 @@ function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderCon
     missing: ctx.missing,
     path,
     depth: ctx.depth + 1,
+    themeAssets: ctx.themeAssets,
   };
 
   return substituteWithRecursion(mod, ci, childCtx);
@@ -243,6 +263,7 @@ function substituteWithRecursion(
     fields: mod.fields,
     contentValues: ci.values,
     partials,
+    themeAssets: ctx.themeAssets,
   });
   for (const m of result.missingSlots) ctx.missing.push(m);
   return result.html;

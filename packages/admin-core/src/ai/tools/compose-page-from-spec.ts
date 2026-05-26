@@ -21,6 +21,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { composePageFromSpecToolInput } from "@caelo-cms/shared";
+import { checkColdStartGate } from "./_cold-start-gate.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -132,6 +133,10 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
   },
   handler: async (ctx, input, toolCtx) => {
     const blockName = input.blockName ?? "content";
+
+    // v0.11.4 (issue #76 follow-up) — cold-start gate.
+    const gate = await checkColdStartGate(ctx, toolCtx, "compose_page_from_spec");
+    if (gate.blocked) return gate.gateResult!;
 
     // STEP 1 — create the page. Inherits create_page's nextAction
     // recovery (no defaults → list_templates auto-recovery).

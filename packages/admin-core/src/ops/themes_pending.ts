@@ -24,9 +24,13 @@
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   applyDtcgWrites,
+  deriveOklchPrimaryRamp,
   err,
+  extractPrimaryColorSeed,
   getPreset,
   InvalidColorValue,
+  InvalidSeedColor,
+  mergeRampIntoTokens,
   normalizeTokens,
   ok,
   type PresetName,
@@ -120,9 +124,47 @@ export const proposeCreateThemeOp = defineOperation({
       wrote: [],
       types: {},
     };
-    if (input.overrides && Object.keys(input.overrides).length > 0) {
+    // v0.11.1 (issue #76) — split `primaryColor` off the loose
+    // overrides as a sentinel; if present, derive an OKLCh ramp now so
+    // the preview reflects every stop the operator will see post-approve.
+    //
+    // v0.11.1 (issue #76 round-2 opt #3) — surface a structured error
+    // when `overrides.primaryColor` is present but not a CSS-color
+    // string. Pre-fix, a non-string seed (e.g. `42` from a malformed
+    // AI tool call) was silently dropped: the operator got the preset
+    // verbatim without the ramp, no warning. Now we look at the raw
+    // value BEFORE extractPrimaryColorSeed's typeof narrowing and
+    // throw an AI-actionable error per CLAUDE.md §11.
+    const rawPrimaryColor = (input.overrides ?? {})["primaryColor"];
+    if (rawPrimaryColor !== undefined && typeof rawPrimaryColor !== "string") {
+      return err({
+        kind: "HandlerError",
+        operation: "themes.propose_create",
+        message: `overrides.primaryColor must be a CSS color string (got ${typeof rawPrimaryColor}). Pass a value like '#ff6600' or 'oklch(0.7 0.18 30)'.`,
+      });
+    }
+    const { primaryColor: rampSeed, rest: nonRampOverrides } = extractPrimaryColorSeed(
+      input.overrides,
+    );
+    let derivedRampPaths: readonly string[] = [];
+    if (rampSeed !== undefined) {
       try {
-        const normalized = normalizeTokens(input.overrides);
+        const ramp = deriveOklchPrimaryRamp(rampSeed);
+        derivedRampPaths = ramp.derivedPaths;
+      } catch (e) {
+        if (e instanceof InvalidSeedColor) {
+          return err({
+            kind: "HandlerError",
+            operation: "themes.propose_create",
+            message: e.message,
+          });
+        }
+        throw e;
+      }
+    }
+    if (nonRampOverrides && Object.keys(nonRampOverrides).length > 0) {
+      try {
+        const normalized = normalizeTokens(nonRampOverrides);
         overridesNormalized = {
           wrote: normalized.canonicalPaths,
           types: normalized.types,
@@ -151,8 +193,16 @@ export const proposeCreateThemeOp = defineOperation({
       displayName: input.displayName,
       preset: input.preset,
       presetTokenCount: Object.keys(presetTokens).length,
-      overrideCount: overridesNormalized.wrote.length,
-      overridePaths: overridesNormalized.wrote,
+      overrideCount: overridesNormalized.wrote.length + (rampSeed !== undefined ? 1 : 0),
+      overridePaths: [
+        ...overridesNormalized.wrote,
+        ...(rampSeed !== undefined ? ["primaryColor"] : []),
+      ],
+      // v0.11.1 (issue #76) — reflect the OKLCh ramp in the preview so
+      // the Owner sees what they're approving. derivedRampPaths is empty
+      // when overrides.primaryColor is unset.
+      derivedRampPaths,
+      primaryColorSeed: rampSeed ?? null,
     };
 
     return queueProposal(tx, ctx, "create", null, input, preview, "themes.propose_create");
@@ -305,7 +355,34 @@ export const executeThemeProposalOp = defineOperation({
       const overrides = (payload.overrides as Record<string, unknown> | undefined) ?? {};
 
       let tokens = getPreset(presetName);
-      if (Object.keys(overrides).length > 0) {
+      // v0.11.1 (issue #76) — same primaryColor-then-rest split as
+      // propose-time, applied to the actual write. If the operator
+      // also supplied explicit `color.primary.<stop>` paths in
+      // overrides, mergeRampIntoTokens layers them over the derived
+      // ramp (explicit-wins).
+      const { primaryColor: rampSeed, rest: nonRampOverrides } = extractPrimaryColorSeed(overrides);
+      if (rampSeed !== undefined) {
+        const ramp = deriveOklchPrimaryRamp(rampSeed);
+        // Convert nonRamp overrides to canonical paths so any
+        // `color.primary.<stop>` keys are recognized in mergeRampIntoTokens.
+        const normalizedForRamp = normalizeTokens(nonRampOverrides);
+        tokens = mergeRampIntoTokens(tokens, ramp, normalizedForRamp.set);
+        // After merging the ramp, run the remaining (non-color.primary.*)
+        // writes through applyDtcgWrites so e.g. typography / spacing
+        // overrides land too. Filter out the color.primary.* paths
+        // already applied by mergeRampIntoTokens.
+        const nonPrimarySet: Record<string, unknown> = {};
+        const nonPrimaryTypes: Record<string, string> = {};
+        for (const [path, value] of Object.entries(normalizedForRamp.set)) {
+          if (!path.startsWith("color.primary.")) {
+            nonPrimarySet[path] = value;
+            nonPrimaryTypes[path] = normalizedForRamp.types[path] ?? "color";
+          }
+        }
+        if (Object.keys(nonPrimarySet).length > 0) {
+          tokens = applyDtcgWrites(tokens, nonPrimarySet, nonPrimaryTypes);
+        }
+      } else if (Object.keys(overrides).length > 0) {
         // Re-normalize at execute time so the value-shape errors from
         // propose time stay consistent and so we don't trust the
         // payload jsonb that was persisted between propose and execute.
@@ -313,12 +390,17 @@ export const executeThemeProposalOp = defineOperation({
         tokens = applyDtcgWrites(tokens, normalized.set, normalized.types);
       }
 
+      // v0.11.4 (issue #76 follow-up) — origin='operator'. The AI may
+      // have authored the proposal, but the actual create only happens
+      // because a human Owner clicked Approve — so this is an
+      // operator-deliberate theme, NOT a seed.
       const ins = (await tx.execute(sql`
-        INSERT INTO themes (slug, display_name, description, is_active, tokens, updated_by)
+        INSERT INTO themes (slug, display_name, description, origin, is_active, tokens, updated_by)
         VALUES (
           ${slug},
           ${displayName},
           ${description},
+          'operator',
           false,
           ${JSON.stringify(tokens)}::text::jsonb,
           ${ctx.actorId}::uuid

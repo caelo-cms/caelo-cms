@@ -34,6 +34,7 @@
     "@types/dompurify": "^3",
     "bits-ui": "^2.18.0",
     "clsx": "^2.1.1",
+    "colorjs.io": "^0.6.1",
     "cmdk-sv": "^0.0.19",
     "dompurify": "^3",
     "file-type": "^19",

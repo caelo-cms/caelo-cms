@@ -11,6 +11,7 @@
     MessageSquare,
     Moon,
     Package,
+    Palette,
     Rocket,
     Sailboat,
     ShieldCheck,
@@ -60,6 +61,15 @@
         show: has("content.read"),
       },
       { href: "/content/chat", label: "Chats", icon: MessageSquare, show: has("content.write") },
+      // v0.11.1 (issue #76) — operator-facing theme editor. roles.manage
+      // matches the existing /security/themes/pending permission: theme
+      // edits affect every page on the site.
+      {
+        href: "/design/themes",
+        label: "Themes",
+        icon: Palette,
+        show: has("roles.manage"),
+      },
       {
         href: "/security/deployments",
         label: "Deployments",
