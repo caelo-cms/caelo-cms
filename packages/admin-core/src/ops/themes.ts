@@ -417,19 +417,26 @@ export const updateThemeTokensOp = defineOperation({
     const nextOrigin: "seed" | "ai" | "operator" =
       ctx.actorKind === "ai" ? "ai" : ctx.actorKind === "human" ? "operator" : target.origin;
 
-    // Live write (skipped under a chat branch — the snapshot carries
-    // the new state for the preview overlay).
+    // v0.11.4 (issue #76 follow-up) — theme writes ALWAYS land live,
+    // even from a chat branch. Rationale: themes are site-wide config
+    // (not per-page content), and the cold-start gate on module-
+    // creation tools reads `themes.get_active` (live state) to decide
+    // whether to fire. If theme writes only landed at the snapshot
+    // layer in branched mode, the gate would keep firing even after
+    // the AI calls `set_theme_tokens`, looping forever. Snapshot is
+    // still emitted with `chatBranchId` set so chat revert can roll
+    // the change back. The branched-preview-only semantics that
+    // v0.11.0 originally added for themes turned out to be
+    // mis-applied — themes don't need preview-before-publish.
+    await tx.execute(sql`
+      UPDATE themes
+      SET tokens = ${JSON.stringify(nextTokens)}::text::jsonb,
+          origin = ${nextOrigin},
+          updated_at = now(),
+          updated_by = ${ctx.actorId}::uuid
+      WHERE id = ${target.id}::uuid
+    `);
     const branched = !!ctx.chatBranchId;
-    if (!branched) {
-      await tx.execute(sql`
-        UPDATE themes
-        SET tokens = ${JSON.stringify(nextTokens)}::text::jsonb,
-            origin = ${nextOrigin},
-            updated_at = now(),
-            updated_by = ${ctx.actorId}::uuid
-        WHERE id = ${target.id}::uuid
-      `);
-    }
 
     const nextTheme: Theme = { ...target, tokens: nextTokens, origin: nextOrigin };
     await emitThemeWrite(tx, {
@@ -523,18 +530,18 @@ export const updateThemeMetaOp = defineOperation({
     const nextOrigin: "seed" | "ai" | "operator" =
       ctx.actorKind === "ai" ? "ai" : ctx.actorKind === "human" ? "operator" : target.origin;
 
+    // v0.11.4 (issue #76 follow-up) — meta writes always land live,
+    // see the same-rationale comment in `themes.update_tokens`.
+    await tx.execute(sql`
+      UPDATE themes
+      SET description = ${nextDescription},
+          display_name = ${nextDisplayName},
+          origin = ${nextOrigin},
+          updated_at = now(),
+          updated_by = ${ctx.actorId}::uuid
+      WHERE id = ${target.id}::uuid
+    `);
     const branched = !!ctx.chatBranchId;
-    if (!branched) {
-      await tx.execute(sql`
-        UPDATE themes
-        SET description = ${nextDescription},
-            display_name = ${nextDisplayName},
-            origin = ${nextOrigin},
-            updated_at = now(),
-            updated_by = ${ctx.actorId}::uuid
-        WHERE id = ${target.id}::uuid
-      `);
-    }
 
     const nextTheme: Theme = {
       ...target,
@@ -839,21 +846,19 @@ export const importThemeOp = defineOperation({
       }
     }
 
-    // v0.11.4 (issue #76 follow-up) — import is a wholesale replacement;
-    // flip origin same as update_tokens.
+    // v0.11.4 (issue #76 follow-up) — import writes live (themes are
+    // site-wide config; same rationale as `themes.update_tokens`).
     const nextOrigin: "seed" | "ai" | "operator" =
       ctx.actorKind === "ai" ? "ai" : ctx.actorKind === "human" ? "operator" : target.origin;
+    await tx.execute(sql`
+      UPDATE themes
+      SET tokens = ${JSON.stringify(validated)}::text::jsonb,
+          origin = ${nextOrigin},
+          updated_at = now(),
+          updated_by = ${ctx.actorId}::uuid
+      WHERE id = ${target.id}::uuid
+    `);
     const branched = !!ctx.chatBranchId;
-    if (!branched) {
-      await tx.execute(sql`
-        UPDATE themes
-        SET tokens = ${JSON.stringify(validated)}::text::jsonb,
-            origin = ${nextOrigin},
-            updated_at = now(),
-            updated_by = ${ctx.actorId}::uuid
-        WHERE id = ${target.id}::uuid
-      `);
-    }
     const nextTheme: Theme = { ...target, tokens: validated, origin: nextOrigin };
     await emitThemeWrite(tx, {
       actorId: ctx.actorId,

@@ -424,7 +424,6 @@ import {
 } from "./ops/user_pending.js";
 import { getUserPreferenceOp, setUserPreferenceOp } from "./ops/user_preferences.js";
 import {
-  completeOnboardingOp,
   createFirstOwnerOp,
   createUserOp,
   deleteUserOp,
@@ -786,7 +785,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // (or the human Owner did). Restricted to the actor who proposed it
   // by the WHERE clause; doesn't grant cross-actor cancel rights.
   registry.register(cancelProposalOp);
-  registry.register(completeOnboardingOp);
   registry.register(listBranchEditedModulesOp);
   registry.register(listBranchEditedEntitiesOp);
   registry.register(countBranchChangesOp);

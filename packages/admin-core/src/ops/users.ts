@@ -328,33 +328,9 @@ export const deleteUserOp = defineOperation({
   },
 });
 
-/**
- * P6.6b — sets `users.onboarded_at = now()` for the calling user so
- * the post-login layout stops redirecting them to /onboarding. Idempotent
- * — calling on an already-onboarded user is a no-op (the UPDATE leaves
- * the existing timestamp alone).
- */
-export const completeOnboardingOp = defineOperation({
-  name: "users.complete_onboarding",
-  // Why human-only: per-user UI flag bumped from the /onboarding tour.
-  actorScope: ["human", "system"],
-  database: "cms_admin",
-  input: z.object({}).strict(),
-  output: z.object({}),
-  handler: async (ctx, _input, tx) => {
-    await tx.execute(sql`
-      UPDATE users
-      SET onboarded_at = COALESCE(onboarded_at, now())
-      WHERE id = ${ctx.actorId}::uuid
-    `);
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "users.complete_onboarding",
-      input: {},
-      succeeded: true,
-      entityId: ctx.actorId,
-    });
-    return ok({});
-  },
-});
+// v0.11.4 (issue #76 follow-up) — `users.complete_onboarding` removed
+// along with the /onboarding tour. Caelo is chat-first per CLAUDE.md
+// §1A: the operator opens /edit and describes outcomes; there is no
+// forms-based onboarding step to "complete." The `users.onboarded_at`
+// column stays for back-compat (avoiding a destructive migration on
+// dogfood installs) but is no longer gate-checked or written.

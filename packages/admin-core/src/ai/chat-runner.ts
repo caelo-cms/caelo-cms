@@ -631,15 +631,21 @@ export async function* runChatTurn(
     includeDeleted: false,
   });
   const defaultsR = await execute(registry, adapter, humanCtxWithBranch, "site_defaults.get", {});
-  if (defaultsR.ok) {
-    const defaults = (
-      defaultsR.value as {
-        defaults: { siteName: string | null; sitePurpose: string | null } | null;
-      }
-    ).defaults;
-    const identityRender = formatSiteIdentityBlock(defaults);
-    if (identityRender) siteIdentityBlock = identityRender;
-  }
+  // v0.11.4 (issue #76 follow-up) — always render the ## Site identity
+  // block. When defaults are null or both fields are empty, the block
+  // carries cold-start instructions telling the AI to capture identity
+  // from the first user prompt via `set_site_identity` BEFORE authoring
+  // modules. That's the chat-first replacement for the removed
+  // /onboarding tour.
+  const identityDefaults = defaultsR.ok
+    ? (
+        defaultsR.value as {
+          defaults: { siteName: string | null; sitePurpose: string | null } | null;
+        }
+      ).defaults
+    : null;
+  const identityRender = formatSiteIdentityBlock(identityDefaults);
+  if (identityRender) siteIdentityBlock = identityRender;
   if (layoutsR.ok) {
     const layouts = (
       layoutsR.value as {

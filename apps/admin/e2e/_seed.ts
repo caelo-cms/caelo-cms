@@ -84,12 +84,17 @@ export const SETUP_SCRIPT = `
         VALUES (\${actorId}::uuid, \${email}, \${passwordHash}, true, now())
       \`;
     }
-    // Defensive: existing dev-owner from prior runs may have null
-    // onboarded_at after migration 0022; bump it so the post-login
-    // redirect to /onboarding doesn't intercept the sweep. Also flip
-    // is_first_owner = true so specs that fixture-up state by querying
-    // \`WHERE is_first_owner = true LIMIT 1\` (e.g. propose-execute-flow,
-    // content-reviewer-readonly) find the dev-owner.
+    // Defensive: flip is_first_owner = true so specs that fixture-up
+    // state by querying \`WHERE is_first_owner = true LIMIT 1\` (e.g.
+    // propose-execute-flow, content-reviewer-readonly) find the dev-
+    // owner.
+    //
+    // v0.11.4 (issue #76 follow-up) — the post-login /onboarding
+    // redirect was removed (Caelo is chat-first per CLAUDE.md §1A —
+    // operator opens /edit and describes outcomes, AI captures site
+    // identity via \`set_site_identity\`). The \`onboarded_at\` bump
+    // here is harmless but no longer load-bearing; left in place so
+    // specs that read the column see a stable value.
     await tx\`
       UPDATE users
       SET onboarded_at = COALESCE(onboarded_at, now()),
@@ -127,50 +132,12 @@ export const SETUP_SCRIPT = `
         api_key_set_at = EXCLUDED.api_key_set_at
     \`;
 
-    // v0.11.4 (issue #76 follow-up) — seed the post-onboarding state.
-    //
-    // The dev-owner above claims onboarded_at=now() so /edit doesn't
-    // redirect to /onboarding. But "onboarded" without seeding what
-    // onboarding PRODUCES (site identity + brand-colored theme) leaves
-    // the chat-runner system prompt with no \`## Site identity\` block
-    // and a seed-origin theme. Result: AI sees a generic install and
-    // produces a generic monochrome page — even when the operator's
-    // chat asks for a clearly-branded site like Caelo.
-    //
-    // A real production user would have gone through /onboarding before
-    // their first chat. The seed must mirror that state so e2e tests
-    // exercise the real production journey, not a state that only
-    // exists because the seed faked onboarded_at.
-    //
-    // Idempotent UPDATE via COALESCE: only seeds when the columns are
-    // still null (post-migration state). Re-running the seed never
-    // overwrites an operator's customisation.
-    await tx\`
-      UPDATE site_defaults
-      SET site_name = COALESCE(site_name, 'Caelo'),
-          site_purpose = COALESCE(site_purpose,
-            'An AI-first content management system for teams that want to ship pages by describing outcomes instead of building modules. Modern, developer-focused, trustworthy.')
-      WHERE id = 1
-    \`;
-
-    // Mirror onboarding's theme write: indigo primary, display name =
-    // site name, description = brand intent, origin = operator. This
-    // is what the rewritten /onboarding ?/identity action produces
-    // when the operator picks #4f46e5 as their brand color.
-    await tx\`
-      UPDATE themes
-      SET origin = CASE WHEN origin = 'seed' THEN 'operator' ELSE origin END,
-          display_name = CASE WHEN display_name = 'Site default' THEN 'Caelo' ELSE display_name END,
-          description = COALESCE(description,
-            'Indigo primary chosen during onboarding to signal a modern, trustworthy AI-first product for developers.'),
-          tokens = jsonb_set(
-            tokens,
-            '{color,primary}',
-            '{"$type": "color", "$value": "#4f46e5"}'::jsonb
-          )
-      WHERE is_active = true
-        AND origin = 'seed'
-    \`;
+    // v0.11.4 (issue #76 follow-up) — NO post-onboarding state seeded
+    // here. Caelo is chat-first per CLAUDE.md §1A: the AI captures site
+    // identity (\`set_site_identity\`) and evolves the theme (\`set_theme_tokens\`)
+    // from the operator's first chat prompt. The e2e scenarios exercise
+    // that cold-start path. Seeding pre-built state would mask whether
+    // the AI actually does its job on the realistic flow.
   });
   await sql.end();
 `;

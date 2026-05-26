@@ -578,39 +578,62 @@ export function composeSystemPrompt(
 
 /**
  * v0.11.4 (issue #76 follow-up) — `## Site identity` system-prompt
- * block. Carries the operator's site name + purpose (captured at
- * onboarding via `/onboarding ?/identity`) so every AI turn has the
- * brand context that drives module copy, color choices, and content
- * voice.
+ * block. Caelo is chat-first per CLAUDE.md §1A: there's no forms-
+ * based onboarding. The AI captures site identity (`siteName`,
+ * `sitePurpose`) from the operator's first chat via the
+ * `set_site_identity` tool, and that captured state then anchors
+ * every future chat's brand context.
  *
- * Without this block, the AI in every chat has to RE-INFER what kind
- * of site it's working on from the user prompt alone, every time.
- * That inference is probabilistic — sometimes it picks an apt
- * brand palette, sometimes it stays neutral (the symptom that drove
- * #76's follow-up). With this block, the inference moves from
- * "AI infers per chat turn" to "operator stated at site init".
+ * Two branches:
  *
- * Renders nothing when neither field is populated (pre-onboarding
- * state, or operators who skipped the identity step).
+ * - **Untouched install** (both fields null): the block renders an
+ *   instruction telling the AI to infer + capture identity from the
+ *   FIRST user prompt before authoring anything. This is the cold-
+ *   start path Caelo expects.
+ * - **Populated**: the block renders the captured name + purpose
+ *   plus a primer telling the AI to match copy/layout/theme to the
+ *   brand context.
+ *
+ * Always returns a non-null block — even the empty case carries
+ * cold-start instructions the AI needs to read.
  */
 export function formatSiteIdentityBlock(
   identity: { siteName: string | null; sitePurpose: string | null } | null,
 ): string | null {
-  if (!identity) return null;
-  const hasName = identity.siteName && identity.siteName.trim().length > 0;
-  const hasPurpose = identity.sitePurpose && identity.sitePurpose.trim().length > 0;
-  if (!hasName && !hasPurpose) return null;
+  const hasName = identity && identity.siteName && identity.siteName.trim().length > 0;
+  const hasPurpose = identity && identity.sitePurpose && identity.sitePurpose.trim().length > 0;
+
+  if (!hasName && !hasPurpose) {
+    // Cold-start path: no identity captured yet. Tell the AI what to
+    // do BEFORE it authors any modules.
+    return [
+      "## Site identity",
+      "",
+      "> ⚠️ **Untouched install** — no site identity captured yet.",
+      "",
+      "Caelo is chat-first. Before you author any modules on the FIRST request that asks you to build/restyle/extend the site, you MUST:",
+      "",
+      "1. **Infer** `siteName` + `sitePurpose` from the operator's prompt. Example: *'build me a homepage for an AI-first CMS called Caelo, trustworthy and developer-focused'* → siteName `Caelo`, sitePurpose `An AI-first CMS for developers — trustworthy, branched edits, plugin sandbox`.",
+      "2. **Capture** them via `set_site_identity({siteName, sitePurpose})`. This persists into every future chat so the next session inherits the brand context.",
+      "3. **Evolve the theme** if the brand suggests a specific palette — `set_theme_tokens({set: {primaryColor: '#…'}})` + `set_theme_meta({description})` (the `## Theme` block below has more detail).",
+      "4. **Then** author the modules the operator asked for.",
+      "",
+      "If the operator's prompt is too vague to infer (e.g. *'add a contact form'* on an unconfigured install with no brand signal), ASK ONE concise question for the essentials (\"What's this site for?\") before proceeding. Don't guess silently.",
+    ].join("\n");
+  }
+
   const lines: string[] = ["## Site identity", ""];
-  if (hasName) lines.push(`Site name: **${identity.siteName}**`);
+  if (hasName) lines.push(`Site name: **${identity?.siteName}**`);
   if (hasPurpose) {
     lines.push("");
     lines.push(`What this site is for:`);
-    lines.push(`> ${identity.sitePurpose}`);
+    lines.push(`> ${identity?.sitePurpose}`);
   }
   lines.push("");
   lines.push(
     "Use this context for every page you build — pick fitting copy, layout, and theme tokens. " +
-      "If the active theme's palette doesn't match this brand, evolve it (`set_theme_tokens` + `set_theme_meta`) BEFORE authoring modules so the new tokens cascade through `var(--…)` references.",
+      "If the active theme's palette doesn't match this brand, evolve it (`set_theme_tokens` + `set_theme_meta`) BEFORE authoring modules so the new tokens cascade through `var(--…)` references. " +
+      "If the operator's request implies the identity has shifted (rebrand, new audience), update it with `set_site_identity`.",
   );
   return lines.join("\n");
 }

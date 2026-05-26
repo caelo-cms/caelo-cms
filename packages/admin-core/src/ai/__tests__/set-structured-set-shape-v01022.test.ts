@@ -288,10 +288,29 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
     expect(block).toContain("set_theme_tokens");
   });
 
-  it("v0.11.4 (issue #76 follow-up) — formatSiteIdentityBlock returns null when both fields are empty", () => {
-    expect(formatSiteIdentityBlock(null)).toBeNull();
-    expect(formatSiteIdentityBlock({ siteName: null, sitePurpose: null })).toBeNull();
-    expect(formatSiteIdentityBlock({ siteName: "  ", sitePurpose: "  " })).toBeNull();
+  it("v0.11.4 (issue #76 follow-up) — formatSiteIdentityBlock renders cold-start instructions when fields are empty", () => {
+    // Caelo is chat-first per §1A — no forms-based onboarding. When
+    // site identity hasn't been captured yet, the block must tell the
+    // AI WHAT to do on its first turn: infer + capture identity via
+    // set_site_identity BEFORE authoring modules. The cold-start
+    // branch is what replaces the deleted /onboarding tour.
+    for (const empty of [
+      null,
+      { siteName: null, sitePurpose: null },
+      { siteName: "  ", sitePurpose: "  " },
+    ] as const) {
+      const block = formatSiteIdentityBlock(empty);
+      expect(block).not.toBeNull();
+      expect(block).toContain("## Site identity");
+      expect(block).toContain("Untouched install");
+      // The cold-start instructions must name the tool + the order.
+      expect(block).toContain("set_site_identity");
+      expect(block).toContain("Infer");
+      expect(block).toContain("Capture");
+      expect(block).toContain("Evolve the theme");
+      // And handle the vague-prompt fallback (don't guess silently).
+      expect(block).toContain("ASK ONE concise question");
+    }
   });
 
   it("v0.11.4 (issue #76 follow-up) — formatSiteIdentityBlock renders with name only", () => {

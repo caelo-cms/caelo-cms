@@ -174,28 +174,31 @@ export const setSiteDefaultsOp = defineOperation({
 /**
  * v0.11.4 (issue #76 follow-up) — write site identity (name + purpose).
  *
- * Onboarding captures these so every subsequent chat sees a `## Site
- * identity` block with the operator's brand context. Without this, the
- * AI has no way to know "this is a sustainability consulting firm" vs
- * "this is a SaaS landing page" and falls back to neutral defaults.
+ * Captured by the AI from the operator's first chat: when the user
+ * opens /edit and says *"build me a homepage for an AI-first CMS
+ * called Caelo"*, the AI infers `siteName="Caelo"` and a
+ * `sitePurpose` synthesized from the request, then calls this op so
+ * the identity persists into every future chat's system prompt.
  *
- * Independent of `site_defaults.set` (layout/template ids) so an
- * operator who customizes their layout later doesn't have to re-type
- * the site identity, and vice versa. Both write into the same
- * singleton row; UPSERT path mirrors `set` but only touches the
- * identity columns. The row must already exist (created by
- * `site_defaults.set` during onboarding's template bootstrap or by
- * migration 0021's idempotent INSERT) — fails loud if missing per the
- * no-fallbacks invariant.
+ * Per CLAUDE.md §1A — the operator describes outcomes in chat; the
+ * AI captures structured state. There's no forms-based onboarding
+ * step; the AI drives identity capture conversationally.
+ *
+ * Independent of `site_defaults.set` (layout/template ids) so the
+ * identity write doesn't depend on the operator picking layouts
+ * first, and vice versa. Both write into the same singleton row;
+ * UPSERT path mirrors `set` but only touches the identity columns.
+ * The row must already exist (created by `site_defaults.set` during
+ * AI's template bootstrap or by migration 0021's idempotent INSERT)
+ * — fails loud if missing per the no-fallbacks invariant.
  */
 export const setSiteIdentityOp = defineOperation({
   name: "site_defaults.set_identity",
-  // Human + system only — this is an onboarding write driven by the
-  // operator typing into a form. AI doesn't need to call this (it
-  // reads the values from the `## Site identity` block).
-  // Why human-only: the operator IS the site identity. The AI deriving
-  // its own brand description is the symptom we're trying to fix.
-  actorScope: ["human", "system"],
+  // AI-callable per §1A — the AI infers identity from the operator's
+  // chat and writes it directly, same as `set_theme_tokens` and the
+  // other routine writes. Snapshot-revertable via audit log if the
+  // AI guesses badly.
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
