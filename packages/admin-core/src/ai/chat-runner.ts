@@ -41,6 +41,7 @@ import {
   type ChatSendMessageInput,
   type ExecutionContext,
   formatThemeSummary,
+  listThemeCssVarNames,
   matchSkills,
   resolveEngagements,
   skillAutoEngagementHints,
@@ -54,6 +55,7 @@ import {
   composeSystemPromptChunks,
   formatContentLibraryBlock,
   formatModulesBlock,
+  formatSiteIdentityBlock,
   formatStructuredSetsBlock,
   formatThemeBlock,
 } from "./system-prompt.js";
@@ -534,6 +536,12 @@ export async function* runChatTurn(
         // the palette/font/radius shorthand the AI actually uses to pick
         // matching module styling.
         tokensSummary: formatThemeSummary(theme.tokens as ThemeDocument),
+        // v0.11.4 (issue #76 follow-up) — list the actual CSS var names
+        // the renderer emits for this theme. Without this the AI guesses
+        // names (--color-text, --color-surface) that don't exist in
+        // shadcn-style themes, and module CSS falls through to hardcoded
+        // slate/white fallbacks. With this, the AI uses real var names.
+        cssVarNames: listThemeCssVarNames(theme.tokens as ThemeDocument),
       });
     } else {
       themeBlock = formatThemeBlock(null);
@@ -613,6 +621,9 @@ export async function* runChatTurn(
   // templates.
   let layoutsBlock: string | undefined;
   let siteDefaultsBlock: string | undefined;
+  // v0.11.4 (issue #76 follow-up) — site identity block reads from the
+  // same site_defaults row.
+  let siteIdentityBlock: string | undefined;
   const layoutsR = await execute(registry, adapter, humanCtxWithBranch, "layouts.list", {
     includeDeleted: false,
   });
@@ -620,6 +631,15 @@ export async function* runChatTurn(
     includeDeleted: false,
   });
   const defaultsR = await execute(registry, adapter, humanCtxWithBranch, "site_defaults.get", {});
+  if (defaultsR.ok) {
+    const defaults = (
+      defaultsR.value as {
+        defaults: { siteName: string | null; sitePurpose: string | null } | null;
+      }
+    ).defaults;
+    const identityRender = formatSiteIdentityBlock(defaults);
+    if (identityRender) siteIdentityBlock = identityRender;
+  }
   if (layoutsR.ok) {
     const layouts = (
       layoutsR.value as {
@@ -1241,6 +1261,7 @@ export async function* runChatTurn(
       chipsBlock,
       pageContextBlock,
       allPagesBlock,
+      siteIdentityBlock,
       themeBlock,
       structuredSetsBlock,
       modulesBlock,

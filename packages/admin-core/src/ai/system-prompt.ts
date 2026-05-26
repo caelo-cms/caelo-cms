@@ -392,6 +392,13 @@ export interface VolatileContext {
   readonly allPagesBlock?: string;
   /** P6.7.5 — current theme tokens (CSS variables). */
   readonly themeBlock?: string;
+  /**
+   * v0.11.4 (issue #76 follow-up) — operator-captured site name +
+   * purpose (from /onboarding ?/identity). Brand context the AI uses
+   * for every page it builds. Renders before `## Theme` so the AI
+   * reads brand intent before tokens.
+   */
+  readonly siteIdentityBlock?: string;
   /** P6.7.5 — named structured-data sets the AI can edit (nav-menu, tags, etc.). */
   readonly structuredSetsBlock?: string;
   /** v0.12.0 — `## Modules` decision-support catalog (modules grouped
@@ -493,6 +500,13 @@ export function composeSystemPromptChunks(
       label: "plugin-context",
     });
   }
+  // v0.11.4 (issue #76 follow-up) — site identity comes BEFORE theme
+  // so the AI reads brand intent before reading tokens. With both
+  // blocks visible, the AI can judge whether the theme matches the
+  // brand and evolve tokens if not.
+  if (volatile.siteIdentityBlock && volatile.siteIdentityBlock.trim().length > 0) {
+    chunks.push({ body: volatile.siteIdentityBlock, cacheable: false, label: "site-identity" });
+  }
   if (volatile.themeBlock && volatile.themeBlock.trim().length > 0) {
     chunks.push({ body: volatile.themeBlock, cacheable: false, label: "theme" });
   }
@@ -563,6 +577,45 @@ export function composeSystemPrompt(
 }
 
 /**
+ * v0.11.4 (issue #76 follow-up) — `## Site identity` system-prompt
+ * block. Carries the operator's site name + purpose (captured at
+ * onboarding via `/onboarding ?/identity`) so every AI turn has the
+ * brand context that drives module copy, color choices, and content
+ * voice.
+ *
+ * Without this block, the AI in every chat has to RE-INFER what kind
+ * of site it's working on from the user prompt alone, every time.
+ * That inference is probabilistic — sometimes it picks an apt
+ * brand palette, sometimes it stays neutral (the symptom that drove
+ * #76's follow-up). With this block, the inference moves from
+ * "AI infers per chat turn" to "operator stated at site init".
+ *
+ * Renders nothing when neither field is populated (pre-onboarding
+ * state, or operators who skipped the identity step).
+ */
+export function formatSiteIdentityBlock(
+  identity: { siteName: string | null; sitePurpose: string | null } | null,
+): string | null {
+  if (!identity) return null;
+  const hasName = identity.siteName && identity.siteName.trim().length > 0;
+  const hasPurpose = identity.sitePurpose && identity.sitePurpose.trim().length > 0;
+  if (!hasName && !hasPurpose) return null;
+  const lines: string[] = ["## Site identity", ""];
+  if (hasName) lines.push(`Site name: **${identity.siteName}**`);
+  if (hasPurpose) {
+    lines.push("");
+    lines.push(`What this site is for:`);
+    lines.push(`> ${identity.sitePurpose}`);
+  }
+  lines.push("");
+  lines.push(
+    "Use this context for every page you build — pick fitting copy, layout, and theme tokens. " +
+      "If the active theme's palette doesn't match this brand, evolve it (`set_theme_tokens` + `set_theme_meta`) BEFORE authoring modules so the new tokens cascade through `var(--…)` references.",
+  );
+  return lines.join("\n");
+}
+
+/**
  * v0.11.0 (#45) — `## Theme` system-prompt block. Names the active
  * theme + a one-line summary so the AI knows the surface exists
  * without paying for the full DTCG document in every turn. Full tokens
@@ -609,6 +662,15 @@ export function formatThemeBlock(
      * category counts). Replaces v0.11.0's flat category-count string.
      */
     tokensSummary: string;
+    /**
+     * v0.11.4 (issue #76 follow-up) — the actual CSS variable names
+     * the renderer emits for this theme's tokens. Listed inline so the
+     * AI uses real names in module CSS instead of guessing
+     * (`--color-text` doesn't exist; `--color-foreground` does).
+     * Without this, AI-authored module CSS falls through to hardcoded
+     * fallbacks and pages render monochrome regardless of theme values.
+     */
+    cssVarNames?: readonly string[];
   } | null,
 ): string {
   if (!theme) {
@@ -654,6 +716,16 @@ export function formatThemeBlock(
     "",
     "**Module CSS must reference theme vars** so token edits cascade: `background: var(--color-primary)`, `padding: var(--spacing-md)`, `font-family: var(--font-heading)`. Hardcoded hex defeats the theme — the operator can no longer tune the site by editing tokens.",
     "",
+    // v0.11.4 (issue #76 follow-up) — list the EXACT CSS var names the
+    // renderer emits for THIS theme. Without this the AI guesses
+    // (--color-text, --color-surface, etc. — names that look reasonable
+    // but don't exist in shadcn-style themes). With this, the AI uses
+    // only var names it knows resolve, and module CSS no longer falls
+    // through to hardcoded slate/white fallbacks.
+    theme.cssVarNames && theme.cssVarNames.length > 0
+      ? `**CSS vars this theme defines** (use these exact names — do NOT invent others; unknown var names fall through to your fallbacks and render as the hardcoded value):\n${formatCssVarInventory(theme.cssVarNames)}`
+      : "**CSS vars this theme defines:** _(none — theme is empty; ask the operator to configure tokens)_",
+    "",
     "Tools (all read tokens by canonical DTCG path; `set_theme_tokens` ALSO accepts loose names that the server normalizes):",
     "- `list_themes()` — list every theme (one active, rest variants).",
     "- `get_theme({slug, as?})` — `as` is one of `dtcg` (default) / `css-vars` / `tailwind` / `summary`. Use `css-vars` when authoring module HTML so you don't translate DTCG paths.",
@@ -669,4 +741,52 @@ export function formatThemeBlock(
     "- `propose_activate_theme({themeId})` — flips the DB row only. A deploy must be approved separately via `propose_deploy_promote` for the new CSS to ship.",
     "- `propose_delete_theme({themeId})` — inactive themes only.",
   ].join("\n");
+}
+
+/**
+ * v0.11.4 (issue #76 follow-up) — group + render CSS var names for the
+ * `## Theme` block. Groups by category prefix (`--color-*`, `--spacing-*`,
+ * etc.) so the AI scans the right group quickly without reading a flat
+ * 60-line list. Compact: 4-up where short, one-per-line when long.
+ */
+function formatCssVarInventory(names: readonly string[]): string {
+  // Group by category: everything after `--` up to the first `-`.
+  const groups = new Map<string, string[]>();
+  for (const name of names) {
+    const stripped = name.startsWith("--") ? name.slice(2) : name;
+    const dash = stripped.indexOf("-");
+    const category = dash > 0 ? stripped.slice(0, dash) : stripped;
+    const arr = groups.get(category) ?? [];
+    arr.push(name);
+    groups.set(category, arr);
+  }
+  // Stable order — match the renderer's category iteration.
+  const ORDER = [
+    "color",
+    "spacing",
+    "radius",
+    "font",
+    "text",
+    "font-weight",
+    "leading",
+    "tracking",
+    "shadow",
+    "duration",
+    "ease",
+    "breakpoint",
+  ];
+  const sortedCategories = [...groups.keys()].sort((a, b) => {
+    const ai = ORDER.indexOf(a);
+    const bi = ORDER.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return a.localeCompare(b);
+  });
+  const lines: string[] = [];
+  for (const cat of sortedCategories) {
+    const items = groups.get(cat) ?? [];
+    lines.push(`- \`--${cat}-*\`: ${items.join(", ")}`);
+  }
+  return lines.join("\n");
 }

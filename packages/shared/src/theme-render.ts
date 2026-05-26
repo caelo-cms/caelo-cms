@@ -104,6 +104,42 @@ export function formatThemeAsCssVars(tokens: ThemeDocument): string {
 }
 
 /**
+ * v0.11.4 (issue #76 follow-up) — return JUST the CSS variable names
+ * the renderer would emit for this token document. The AI uses this in
+ * the system-prompt `## Theme` block so it knows exactly which
+ * `var(--…)` names exist before authoring module CSS.
+ *
+ * Without this surface the AI guesses var names (e.g. `--color-text`,
+ * `--color-surface`) that look reasonable but don't exist in the
+ * shadcn-style theme — its CSS then falls through to hardcoded
+ * fallbacks and the page renders monochrome regardless of token values.
+ *
+ * Returns a sorted, de-duplicated array. Emits the same names as the
+ * `renderThemeCss` light branch (the dark variant uses the same names
+ * with different values, so listing them once is correct).
+ */
+export function listThemeCssVarNames(tokens: ThemeDocument): readonly string[] {
+  const flat = flattenTokens(tokens);
+  if (flat.length === 0) return [];
+  const resolveCache = new Map<string, unknown>();
+  const lines: string[] = [];
+  for (const { path, token } of flat) {
+    const category = path.split(".")[0] ?? "";
+    const value = resolveTokenValue(token, tokens, resolveCache, new Set([path]));
+    emitTokenLines(category, path, value, lines, []);
+  }
+  // Each `lines` entry is `--name:value;`. Strip the value to get the name.
+  const names = new Set<string>();
+  for (const line of lines) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    const name = line.slice(0, colon).trim();
+    if (name.startsWith("--")) names.add(name);
+  }
+  return [...names].sort();
+}
+
+/**
  * Emit a Tailwind 4 `@theme inline { … }` block. The body re-uses the
  * same per-category emission as `renderThemeCss` so the variable names
  * match what `app.css` exposes — feeding this output into the Tailwind

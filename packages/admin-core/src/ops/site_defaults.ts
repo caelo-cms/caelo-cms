@@ -31,6 +31,11 @@ const siteDefaultsRow = z.object({
   defaultLayoutSlug: z.string(),
   defaultTemplateId: z.string(),
   defaultTemplateSlug: z.string(),
+  // v0.11.4 (issue #76 follow-up) — site identity captured at onboarding.
+  // Nullable on fresh installs that pre-date the identity step or where
+  // the operator skipped the optional fields.
+  siteName: z.string().nullable(),
+  sitePurpose: z.string().nullable(),
   updatedAt: z.string(),
 });
 
@@ -47,6 +52,8 @@ export const getSiteDefaultsOp = defineOperation({
         l.slug                        AS default_layout_slug,
         sd.default_template_id::text AS default_template_id,
         t.slug                        AS default_template_slug,
+        sd.site_name                  AS site_name,
+        sd.site_purpose               AS site_purpose,
         sd.updated_at                 AS updated_at
       FROM site_defaults sd
       JOIN layouts l   ON l.id   = sd.default_layout_id
@@ -58,6 +65,8 @@ export const getSiteDefaultsOp = defineOperation({
       default_layout_slug: string;
       default_template_id: string;
       default_template_slug: string;
+      site_name: string | null;
+      site_purpose: string | null;
       updated_at: string | Date;
     }[];
     const r = rows[0];
@@ -68,6 +77,8 @@ export const getSiteDefaultsOp = defineOperation({
         defaultLayoutSlug: r.default_layout_slug,
         defaultTemplateId: r.default_template_id,
         defaultTemplateSlug: r.default_template_slug,
+        siteName: r.site_name,
+        sitePurpose: r.site_purpose,
         updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
       },
     });
@@ -155,6 +166,86 @@ export const setSiteDefaultsOp = defineOperation({
       input,
       succeeded: true,
       resultSummary: `layout=${input.defaultLayoutId},template=${input.defaultTemplateId}`,
+    });
+    return ok({});
+  },
+});
+
+/**
+ * v0.11.4 (issue #76 follow-up) — write site identity (name + purpose).
+ *
+ * Onboarding captures these so every subsequent chat sees a `## Site
+ * identity` block with the operator's brand context. Without this, the
+ * AI has no way to know "this is a sustainability consulting firm" vs
+ * "this is a SaaS landing page" and falls back to neutral defaults.
+ *
+ * Independent of `site_defaults.set` (layout/template ids) so an
+ * operator who customizes their layout later doesn't have to re-type
+ * the site identity, and vice versa. Both write into the same
+ * singleton row; UPSERT path mirrors `set` but only touches the
+ * identity columns. The row must already exist (created by
+ * `site_defaults.set` during onboarding's template bootstrap or by
+ * migration 0021's idempotent INSERT) — fails loud if missing per the
+ * no-fallbacks invariant.
+ */
+export const setSiteIdentityOp = defineOperation({
+  name: "site_defaults.set_identity",
+  // Human + system only — this is an onboarding write driven by the
+  // operator typing into a form. AI doesn't need to call this (it
+  // reads the values from the `## Site identity` block).
+  // Why human-only: the operator IS the site identity. The AI deriving
+  // its own brand description is the symptom we're trying to fix.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      siteName: z.string().min(1).max(200).nullable().optional(),
+      sitePurpose: z.string().min(1).max(2000).nullable().optional(),
+    })
+    .strict()
+    .refine((v) => v.siteName !== undefined || v.sitePurpose !== undefined, {
+      message: "pass at least one of `siteName` or `sitePurpose`",
+    }),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const exists = (await tx.execute(
+      sql`SELECT 1 FROM site_defaults WHERE id = 1 LIMIT 1`,
+    )) as unknown as Array<{ exists: number }>;
+    if (exists.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "site_defaults.set_identity",
+        message:
+          "site_defaults singleton row is missing — call site_defaults.set with a default layout + template first (onboarding bootstrap creates it).",
+      });
+    }
+    // Build a partial UPDATE so undefined fields are NOT touched
+    // (lets the operator update name without clearing purpose, etc.).
+    const setClauses: ReturnType<typeof sql>[] = [];
+    if (input.siteName !== undefined) {
+      setClauses.push(sql`site_name = ${input.siteName}`);
+    }
+    if (input.sitePurpose !== undefined) {
+      setClauses.push(sql`site_purpose = ${input.sitePurpose}`);
+    }
+    setClauses.push(sql`updated_at = now()`);
+    setClauses.push(sql`updated_by = ${ctx.actorId}::uuid`);
+    // Stitch clauses with literal `, ` separators. Drizzle's sql.join
+    // helper isn't exported on this version; the manual loop is fine
+    // since `setClauses` content is parameterized.
+    let setExpr = setClauses[0]!;
+    for (let i = 1; i < setClauses.length; i++) {
+      setExpr = sql`${setExpr}, ${setClauses[i]}`;
+    }
+    await tx.execute(sql`UPDATE site_defaults SET ${setExpr} WHERE id = 1`);
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "site_defaults.set_identity",
+      input,
+      succeeded: true,
+      resultSummary: `siteName=${input.siteName !== undefined} sitePurpose=${input.sitePurpose !== undefined}`,
     });
     return ok({});
   },

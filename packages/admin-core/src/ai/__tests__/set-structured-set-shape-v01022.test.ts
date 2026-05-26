@@ -32,7 +32,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { formatStructuredSetsBlock, formatThemeBlock } from "../system-prompt.js";
+import {
+  formatSiteIdentityBlock,
+  formatStructuredSetsBlock,
+  formatThemeBlock,
+} from "../system-prompt.js";
 import { deleteStructuredSetTool } from "../tools/delete-structured-set.js";
 import { getStructuredSetTool } from "../tools/get-structured-set.js";
 import { listStructuredSetsTool } from "../tools/list-structured-sets.js";
@@ -233,6 +237,73 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
     // Always advertises the new tools.
     expect(block).toContain("set_theme_meta");
     expect(block).toContain("list_theme_history");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — cssVarNames inventory renders grouped by category", () => {
+    const block = formatThemeBlock({
+      slug: "site-default",
+      displayName: "Site default",
+      origin: "operator",
+      tokensSummary: "16 colors, 3 typography",
+      cssVarNames: [
+        "--color-background",
+        "--color-foreground",
+        "--color-primary",
+        "--color-muted-foreground",
+        "--spacing-md",
+        "--spacing-lg",
+        "--font-heading",
+        "--radius-md",
+      ],
+    });
+    // The block must surface the inventory header so the AI knows to
+    // read it (otherwise the var names get lost in the wall of text).
+    expect(block).toContain("CSS vars this theme defines");
+    // Each category should appear as a `--<cat>-*` summary line.
+    expect(block).toContain("`--color-*`");
+    expect(block).toContain("`--spacing-*`");
+    expect(block).toContain("`--font-*`");
+    expect(block).toContain("`--radius-*`");
+    // The exact var names must be inline so the AI can grep them.
+    expect(block).toContain("--color-foreground");
+    expect(block).toContain("--color-muted-foreground");
+    // The "don't invent others" warning must be present — this is
+    // what addresses the CSS-var-invention bug.
+    expect(block).toContain("do NOT invent others");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — formatSiteIdentityBlock renders when fields are populated", () => {
+    const block = formatSiteIdentityBlock({
+      siteName: "Acme Sustainability",
+      sitePurpose:
+        "A consulting firm helping mid-sized companies cut emissions. Calm, trustworthy feel.",
+    });
+    expect(block).not.toBeNull();
+    expect(block).toContain("## Site identity");
+    expect(block).toContain("Acme Sustainability");
+    expect(block).toContain("helping mid-sized companies cut emissions");
+    // The instruction that closes the block — tells the AI to use the
+    // identity for every page + evolve theme if mismatch.
+    expect(block).toContain("Use this context for every page you build");
+    expect(block).toContain("set_theme_tokens");
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — formatSiteIdentityBlock returns null when both fields are empty", () => {
+    expect(formatSiteIdentityBlock(null)).toBeNull();
+    expect(formatSiteIdentityBlock({ siteName: null, sitePurpose: null })).toBeNull();
+    expect(formatSiteIdentityBlock({ siteName: "  ", sitePurpose: "  " })).toBeNull();
+  });
+
+  it("v0.11.4 (issue #76 follow-up) — formatSiteIdentityBlock renders with name only", () => {
+    const block = formatSiteIdentityBlock({
+      siteName: "Acme",
+      sitePurpose: null,
+    });
+    expect(block).not.toBeNull();
+    expect(block).toContain("## Site identity");
+    expect(block).toContain("Acme");
+    // Without a purpose the "What this site is for" header is omitted.
+    expect(block).not.toContain("What this site is for");
   });
 
   it("v0.11.4 (issue #76 follow-up) — origin defaults to seed when caller omits the field", () => {

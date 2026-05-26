@@ -319,7 +319,7 @@ import {
   siteDefaultsGetSeoOp,
   siteDefaultsSetSeoOp,
 } from "./ops/seo.js";
-import { getSiteDefaultsOp, setSiteDefaultsOp } from "./ops/site_defaults.js";
+import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/site_defaults.js";
 import { getSiteSettingsOp, setSiteSettingsOp } from "./ops/site_settings.js";
 import {
   listPinDefaultsOp,
@@ -700,6 +700,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPendingLayoutProposalsOp);
   registry.register(getSiteDefaultsOp);
   registry.register(setSiteDefaultsOp);
+  // v0.11.4 (issue #76 follow-up) — site identity onboarding writer.
+  registry.register(setSiteIdentityOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
