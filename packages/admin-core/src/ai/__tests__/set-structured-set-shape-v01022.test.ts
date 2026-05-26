@@ -170,7 +170,7 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
     expect(block).toContain("propose_create_theme");
   });
 
-  it("v0.11.4 (issue #76 follow-up) — seed origin renders the evolve-the-palette notice", () => {
+  it("v0.11.4 (issue #76 follow-up) — seed origin renders the required-action notice with concrete examples", () => {
     const block = formatThemeBlock({
       slug: "site-default",
       displayName: "Site default",
@@ -179,11 +179,21 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
     });
     expect(block).toContain("origin:");
     expect(block).toContain("seed");
-    // The seed branch should explicitly tell the AI to evolve the
-    // palette before authoring modules — that's the line that fixes
-    // the PR-79 monochrome-page regression.
-    expect(block).toContain("evolve the palette");
-    expect(block).toContain("set_theme_tokens");
+    // The seed branch should be prescriptive (not aspirational) about
+    // updating the palette before authoring modules — that's the line
+    // that fixes the PR-79 monochrome-page regression. The CI screenshot
+    // proved that a soft "consider evolving" nudge wasn't enough; this
+    // wording is explicit: "Required action when you create or restyle
+    // ANY visitor-facing page".
+    expect(block).toContain("Required action");
+    expect(block).toContain("primary color");
+    // A concrete `set_theme_tokens` example with a real hex must render
+    // so the AI sees the exact shape to call.
+    expect(block).toContain("set_theme_tokens({set: {primaryColor:");
+    expect(block).toContain("#4f46e5");
+    // Palette-by-feel guidance helps the AI pick when the brand isn't
+    // overtly color-coded.
+    expect(block).toContain("Common picks");
     expect(block).toContain("set_theme_meta");
     // The module-CSS-uses-vars primer always renders.
     expect(block).toContain("var(--color-primary)");
@@ -202,8 +212,9 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
     });
     expect(block).toContain("origin:");
     expect(block).toContain("ai");
-    // No "evolve the palette" nudge once the theme has been shaped.
-    expect(block).not.toContain("evolve the palette");
+    // No seed-action notice once the theme has been shaped.
+    expect(block).not.toContain("Required action");
+    expect(block).not.toContain("Common picks");
     // Description should render as the design intent line.
     expect(block).toContain("Indigo primary for SaaS B2B feel");
     // Module-CSS primer still renders — it's universal advice.
@@ -218,7 +229,7 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
       tokensSummary: "16 colors, 3 typography",
     });
     expect(block).toContain("operator");
-    expect(block).not.toContain("evolve the palette");
+    expect(block).not.toContain("Required action");
     // Always advertises the new tools.
     expect(block).toContain("set_theme_meta");
     expect(block).toContain("list_theme_history");
@@ -233,7 +244,7 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
       tokensSummary: "16 colors, 3 typography",
     });
     expect(block).toContain("seed");
-    expect(block).toContain("evolve the palette");
+    expect(block).toContain("Required action");
   });
 
   it("nav-menu item inlining still works when sets exist (v0.10.20 behavior preserved)", () => {

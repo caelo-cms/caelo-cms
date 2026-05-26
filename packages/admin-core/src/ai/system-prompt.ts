@@ -629,7 +629,21 @@ export function formatThemeBlock(
     : "Design intent: _(none recorded — call `set_theme_meta({description: '…'})` after editing tokens so the next turn knows WHY this palette)_";
   const seedNotice =
     origin === "seed"
-      ? "\n> ⚠️ This theme is a **seed** (neutral defaults populated on install). When the operator asks you to build/restyle a site with a clear brand, **evolve the palette to match** — call `set_theme_tokens` for the colors and `set_theme_meta({description})` to record why. Do this BEFORE authoring modules so they inherit the right tokens."
+      ? [
+          "",
+          "> ⚠️ **This theme is a SEED** — neutral placeholders (primary, accent, etc. are all gray). Pages rendered against it look monochrome.",
+          ">",
+          "> **Required action when you create or restyle ANY visitor-facing page** (homepage, landing, product, marketing — anything that isn't pure admin chrome): pick a primary color that fits the site's name / content / industry, and run this BEFORE authoring modules:",
+          ">",
+          "> ```",
+          "> set_theme_tokens({set: {primaryColor: '#4f46e5'}})  // example: indigo",
+          "> set_theme_meta({description: 'Indigo primary chosen because ...'})",
+          "> ```",
+          ">",
+          "> Common picks by feel: `#4f46e5` indigo (SaaS / dev tools), `#7c3aed` violet (creative / AI products), `#06b6d4` cyan (data / analytics), `#10b981` emerald (sustainability / finance), `#f59e0b` amber (warm / lifestyle), `#ef4444` red (urgency / news), `#0f172a` slate (luxury / enterprise). Pick the closest match — don't default to neutral on a real site.",
+          ">",
+          "> After the first `set_theme_tokens` + `set_theme_meta` call, `origin` flips off `seed` and this warning disappears.",
+        ].join("\n")
       : "";
   return [
     "## Theme",
