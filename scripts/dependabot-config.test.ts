@@ -96,14 +96,12 @@ const parsed = yaml.load(RAW) as DependabotConfig;
 
 const updates = parsed.updates ?? [];
 const bunEntry = updates.find((u) => u["package-ecosystem"] === "bun");
-const actionsEntry = updates.find(
-  (u) => u["package-ecosystem"] === "github-actions",
-);
+const actionsEntry = updates.find((u) => u["package-ecosystem"] === "github-actions");
 const dockerEntry = updates.find((u) => u["package-ecosystem"] === "docker");
 
-const rootPkg = JSON.parse(
-  readFileSync(join(REPO_ROOT, "package.json"), "utf8"),
-) as { workspaces?: ReadonlyArray<string> };
+const rootPkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as {
+  workspaces?: ReadonlyArray<string>;
+};
 
 describe("S1: SPDX header", () => {
   it("first non-blank line is the MPL-2.0 SPDX marker", () => {
@@ -172,9 +170,7 @@ describe("S7: Conventional Commits commit-message prefix", () => {
   });
 
   it("bun block carries `chore(deps-dev)` for devDependencies", () => {
-    expect(bunEntry?.["commit-message"]?.["prefix-development"]).toBe(
-      "chore(deps-dev)",
-    );
+    expect(bunEntry?.["commit-message"]?.["prefix-development"]).toBe("chore(deps-dev)");
   });
 });
 
@@ -209,14 +205,11 @@ describe("S11: minor-and-patch group on every block", () => {
     ["bun", bunEntry],
     ["github-actions", actionsEntry],
     ["docker", dockerEntry],
-  ])(
-    "%s: groups.minor-and-patch update-types === ['minor', 'patch']",
-    (_ecosystem, entry) => {
-      const group = entry?.groups?.["minor-and-patch"];
-      expect(group).toBeDefined();
-      expect(group?.["update-types"]).toEqual(["minor", "patch"]);
-    },
-  );
+  ])("%s: groups.minor-and-patch update-types === ['minor', 'patch']", (_ecosystem, entry) => {
+    const group = entry?.groups?.["minor-and-patch"];
+    expect(group).toBeDefined();
+    expect(group?.["update-types"]).toEqual(["minor", "patch"]);
+  });
 });
 
 describe("S12: cooldown default-days 3 on every block", () => {
@@ -234,23 +227,18 @@ describe("S13: deferred-scope keys stay absent", () => {
     ["bun", bunEntry],
     ["github-actions", actionsEntry],
     ["docker", dockerEntry],
-  ])(
-    "%s: no registries / allow / reviewers / assignees keys",
-    (_ecosystem, entry) => {
-      expect(entry?.registries).toBeUndefined();
-      expect(entry?.allow).toBeUndefined();
-      expect(entry?.reviewers).toBeUndefined();
-      expect(entry?.assignees).toBeUndefined();
-    },
-  );
+  ])("%s: no registries / allow / reviewers / assignees keys", (_ecosystem, entry) => {
+    expect(entry?.registries).toBeUndefined();
+    expect(entry?.allow).toBeUndefined();
+    expect(entry?.reviewers).toBeUndefined();
+    expect(entry?.assignees).toBeUndefined();
+  });
 });
 
 describe("docker block covers the right paths", () => {
   it("includes both Dockerfile dirs plus the root compose file", () => {
     const dirs = new Set(dockerEntry?.directories ?? []);
-    expect(dirs).toEqual(
-      new Set(["/apps/admin", "/apps/api-gateway", "/"]),
-    );
+    expect(dirs).toEqual(new Set(["/apps/admin", "/apps/api-gateway", "/"]));
   });
 });
 
