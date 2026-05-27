@@ -28,7 +28,12 @@
 # - "Security advisory triggers an immediate PR" (AC #3) is governed by
 #   the repo-level toggle at /settings/security_analysis, NOT this file.
 #   Security PRs are individual by Dependabot's own design — never
-#   grouped, never delayed by the weekly schedule below.
+#   grouped, never delayed by the weekly schedule below, and never held
+#   by the cooldown window.
+#
+# - `cooldown.default-days: 3` defers brand-new releases for three days
+#   so packages that get yanked or hot-patched immediately after publish
+#   never reach the review queue. Security PRs ignore cooldown.
 
 version: 2
 updates:
@@ -61,6 +66,8 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
+    cooldown:
+      default-days: 3
     groups:
       minor-and-patch:
         update-types:
@@ -83,6 +90,8 @@ updates:
       - "dependencies"
     commit-message:
       prefix: "chore(deps)"
+    cooldown:
+      default-days: 3
     groups:
       minor-and-patch:
         update-types:
@@ -112,6 +121,8 @@ updates:
       - "dependencies"
     commit-message:
       prefix: "chore(deps)"
+    cooldown:
+      default-days: 3
     groups:
       minor-and-patch:
         update-types:
