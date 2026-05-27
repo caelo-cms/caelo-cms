@@ -34,6 +34,7 @@ Verify everything passes locally before opening a PR:
 bun run lint            # biome + audit-callsites + SPDX
 bun run typecheck       # tsc -b across the whole workspace
 bun test                # unit + integration tests; needs Postgres up
+bun run knip            # dead-code gate — unused files / exports / deps (see docs/dev/knip.md)
 bun run license:check   # transitive license allowlist
 ```
 
