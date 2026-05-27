@@ -4,7 +4,8 @@
 #
 # Ships per CLAUDE.md §3 "Dependabot/renovate on; security advisories
 # block merges". Three ecosystem entries:
-#   - bun            workspace JS (root + 22 workspace package.jsons)
+#   - bun            workspace JS (root + apps/* + packages/* +
+#                    packages/plugins/* + claude-workflow)
 #   - github-actions .github/workflows/*
 #   - docker         apps/{admin,api-gateway}/Dockerfile + root docker-compose.yml
 #
@@ -35,30 +36,18 @@ updates:
   # 1. Workspace JS deps (Bun)
   # ────────────────────────────────────────────────────────────────────
   - package-ecosystem: "bun"
+    # Globs mirror the workspaces field in root package.json so a new
+    # workspace is auto-picked up by Dependabot the moment it lands.
+    # `/claude-workflow` is NOT a workspace (it's standalone tooling
+    # for the issue-implementation pipeline) but it ships in the repo
+    # with its own external deps (picocolors, zod) — covered explicitly
+    # so its advisories surface alongside the workspace tree.
     directories:
       - "/"
-      - "/apps/admin"
-      - "/apps/api-gateway"
-      - "/apps/static-generator"
-      - "/packages/admin-core"
-      - "/packages/edge-router"
-      - "/packages/mcp-server"
-      - "/packages/migrations"
-      - "/packages/plugin-component-kit"
-      - "/packages/plugin-host"
-      - "/packages/plugin-sandbox"
-      - "/packages/plugin-sdk"
-      - "/packages/provisioning"
-      - "/packages/query-api"
-      - "/packages/redeploy-orchestrator"
-      - "/packages/shared"
-      - "/packages/site-importer"
-      - "/packages/plugins/auth"
-      - "/packages/plugins/comments"
-      - "/packages/plugins/forms"
-      - "/packages/plugins/newsletter"
-      - "/packages/plugins/ratings"
-      - "/packages/plugins/translation"
+      - "/apps/*"
+      - "/packages/*"
+      - "/packages/plugins/*"
+      - "/claude-workflow"
     schedule:
       interval: "weekly"
       day: "monday"
