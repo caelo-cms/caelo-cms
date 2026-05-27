@@ -1,0 +1,129 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo CMS — Dependabot configuration.
+#
+# Ships per CLAUDE.md §3 "Dependabot/renovate on; security advisories
+# block merges". Three ecosystem entries:
+#   - bun            workspace JS (root + apps/* + packages/* +
+#                    packages/plugins/*)
+#   - github-actions .github/workflows/*
+#   - docker         apps/{admin,api-gateway}/Dockerfile + root docker-compose.yml
+#
+# Notes for future contributors:
+#
+# - The workspace block uses package-ecosystem: "bun" (Dependabot's
+#   Bun-lockfile support, GA 2025). If Dependabot reports bun.lock parse
+#   errors, swap to "npm" — same directories, same fields, lower fidelity
+#   (manifest-only updates; the existing "Lockfile freshness" CI gate
+#   then runs `bun install` on the Dependabot branch to reconcile
+#   bun.lock).
+#
+# - versioning-strategy is "increase", NOT "lockfile-only", because every
+#   workspace package.json uses exact pins (no `^`/`~` ranges). Under
+#   lockfile-only Dependabot only updates the lockfile, but the lockfile
+#   cannot move without the manifest changing first when the constraint
+#   is exact, so it would produce zero PRs in this repo. `increase`
+#   updates the manifest to the new exact version and lets the existing
+#   "Lockfile freshness" CI gate reconcile bun.lock on the same branch.
+#
+# - minor + patch are grouped per directory; majors stay individual so
+#   each breaking change gets a focused review (issue #25 scope).
+#
+# - "Security advisory triggers an immediate PR" (AC #3) is governed by
+#   the repo-level toggle at /settings/security_analysis, NOT this file.
+#   Security PRs are individual by Dependabot's own design — never
+#   grouped, never delayed by the weekly schedule below, and never held
+#   by the cooldown window.
+#
+# - `cooldown.default-days: 3` defers brand-new releases for three days
+#   so packages that get yanked or hot-patched immediately after publish
+#   never reach the review queue. Security PRs ignore cooldown.
+
+version: 2
+updates:
+  # ────────────────────────────────────────────────────────────────────
+  # 1. Workspace JS deps (Bun)
+  # ────────────────────────────────────────────────────────────────────
+  - package-ecosystem: "bun"
+    # Globs mirror the workspaces field in root package.json so a new
+    # workspace is auto-picked up by Dependabot the moment it lands.
+    directories:
+      - "/"
+      - "/apps/*"
+      - "/packages/*"
+      - "/packages/plugins/*"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    versioning-strategy: "increase"
+    rebase-strategy: "auto"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    cooldown:
+      default-days: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ────────────────────────────────────────────────────────────────────
+  # 2. GitHub Actions used in .github/workflows/*.yml
+  # ────────────────────────────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    rebase-strategy: "auto"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ────────────────────────────────────────────────────────────────────
+  # 3. Docker base images
+  #
+  # The two Dockerfiles pin `oven/bun:1.3`. The root docker-compose.yml
+  # pins `postgres:17-alpine` and Caddy images on the dev path; covering
+  # `/` here makes sure security advisories on those images surface too.
+  # ────────────────────────────────────────────────────────────────────
+  - package-ecosystem: "docker"
+    directories:
+      - "/apps/admin"
+      - "/apps/api-gateway"
+      - "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    rebase-strategy: "auto"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
