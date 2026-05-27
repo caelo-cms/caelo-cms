@@ -11,7 +11,7 @@
 # CLAUDE.md §11.C: this image is published to ghcr.io/caelo-cms/admin
 # by .github/workflows/release-images.yml. End-users never build it.
 
-FROM oven/bun:1.3 AS builder
+FROM oven/bun:1.3.14 AS builder
 
 # npm is needed to work around Bun's transitive optionalDependencies gap
 # (oven-sh/bun#14918). Bun fails to install Rollup's per-platform native
@@ -148,7 +148,7 @@ RUN cd apps/admin && bun x vite build
 # ---------------------------------------------------------------------------
 # Runtime stage
 # ---------------------------------------------------------------------------
-FROM oven/bun:1.3-slim AS runtime
+FROM oven/bun:1.3.14-slim AS runtime
 
 # Reproduce the workspace layout under /app so node_modules resolution
 # works the same way it did at build time (Bun nests admin-specific
