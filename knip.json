@@ -1,0 +1,50 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": [
+    "apps/admin/e2e-livedit/lib/build-stats.ts",
+    "apps/admin/src/lib/components/ui/sheet/**",
+    "packages/migrations/src/rls.ts",
+    "packages/migrations/src/schema/cms_admin/rate_limits.ts",
+    "packages/provisioning/stacks/aws/edge-handler-bundle.js"
+  ],
+  "ignoreBinaries": ["cms-provision"],
+  "ignoreDependencies": ["@playwright/mcp", "@caelo-cms/shared"],
+  "ignoreExportsUsedInFile": true,
+  "ignoreIssues": {
+    "apps/admin/e2e-livedit/helpers.ts": ["exports"],
+    "apps/admin/src/lib/components/ui/dialog/index.ts": ["exports"],
+    "apps/admin/src/lib/components/ui/dropdown-menu/index.ts": ["exports"],
+    "apps/admin/src/lib/server/internal-jwt.ts": ["exports"],
+    "apps/admin/src/lib/server/query.ts": ["exports"],
+    "packages/admin-core/src/branch.ts": ["exports"],
+    "packages/admin-core/src/ops/_propose-helpers.ts": ["types"],
+    "packages/admin-core/src/ops/structured_sets.ts": ["exports"],
+    "packages/admin-core/src/proposal-gc-worker.ts": ["exports"],
+    "packages/admin-core/src/snapshots/load.ts": ["exports"],
+    "packages/provisioning/src/gcloud.ts": ["exports"],
+    "packages/provisioning/src/wizard.ts": ["exports"],
+    "packages/shared/src/subagents.ts": ["duplicates"],
+    "packages/site-importer/src/screenshot-diff.ts": ["exports"]
+  },
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.ts", "scripts/*.test.ts"]
+    },
+    "apps/admin": {
+      "entry": [
+        "scripts/scan-media-alt.ts",
+        "scripts/sign-tier1-manifest.ts",
+        "scripts/sync-docs-site.ts"
+      ]
+    },
+    "packages/admin-core": {
+      "entry": ["src/healthcheck.ts"]
+    },
+    "packages/migrations": {
+      "entry": ["src/truncate.ts", "drizzle.config.cms-admin.ts", "drizzle.config.cms-public.ts"]
+    },
+    "packages/provisioning": {
+      "entry": ["stacks/*/index.ts", "stacks/*/edge-handler.ts", "stacks/aws/build-edge.ts"]
+    }
+  }
+}
