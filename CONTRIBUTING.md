@@ -84,7 +84,7 @@ Every PR is reviewed by an automated AI security pass — the workflow is at `.g
 The review is **informational, not blocking** — human reviews remain required for merge. Findings cite the rule they violate (e.g. *"violates CLAUDE.md §2 invariant: raw SQL detected"*); address each one in your next push, or rebut in the PR discussion. When an inline comment doesn't render but the workflow ran, the raw `findings.json` + error log live on the workflow run's `security-review-results` artifact (7-day retention) — open the Actions tab on the PR.
 
 The review is skipped (and no Claude call is made) when:
-- the PR author is a bot (Dependabot / Renovate when those land via #25),
+- the PR author is a bot (Dependabot — see *"Dependabot review conventions"* below — or Renovate, if it ever lands as the alternative),
 - the PR is in Draft state,
 - the PR carries the `skip-ai-review` label, or
 - the PR changes more than 200 files (token-spend guard — split the PR, or add the `skip-ai-review` label if the large diff is intentional).
@@ -96,6 +96,17 @@ Reviewers check (per CLAUDE.md §9):
 - Validation present (Zod at the boundary)
 - Tests added
 - Docs updated when behaviour is user-visible
+
+### Dependabot review conventions
+
+Dependabot is configured at `.github/dependabot.yml` and opens PRs for three ecosystems: workspace JS (Bun), GitHub Actions, and Docker base images. The config (and a unit test that locks its shape at `scripts/dependabot-config.test.ts`) is the source of truth for these conventions — this section just orients reviewers.
+
+- **Label + commit prefix.** Every Dependabot PR carries the `dependencies` label and a `chore(deps)` (or `chore(deps-dev)`) commit subject. Filter your queue with `gh pr list --label dependencies`.
+- **Cadence.** Routine version bumps land in one grouped PR per workspace per week, opened Monday around 06:00 UTC. Major version bumps stay one-PR-each so each breaking change gets a focused review. Security PRs are individual and fire immediately when an advisory lands — they bypass the weekly schedule and the 3-day cooldown.
+- **Rebase, don't push.** If a Dependabot PR has a stale base, comment `@dependabot rebase` on the PR. Don't push local commits onto a `dependabot/...` branch — Dependabot will overwrite them on the next rebase tick.
+- **Reviewing the diff.** Read the changelog / release notes link in the PR description. For majors, ask: is the breaking change one we hit? For minor + patch groups, the diff is usually a `package.json` + `bun.lock` change; the existing CI gates (`Lint, Typecheck, Migrate, Test, License` + `Lockfile freshness` + the two image jobs + the boot smoke) catch the regressions you would otherwise have to look for by hand. A green CI on a Dependabot PR is a strong signal.
+- **Closing without merging.** If you want to skip a specific bump, comment `@dependabot ignore this minor version` (or `major`, or `dependency`) on the PR. Closing the PR without an ignore directive will not stop Dependabot from re-opening the same bump next week.
+- **Toggling.** "Security advisories trigger an immediate PR" depends on the repo-level *Dependabot security updates* setting at `https://github.com/caelo-cms/caelo-cms/settings/security_analysis`. Maintainers can probe its state with `gh api /repos/caelo-cms/caelo-cms/automated-security-fixes`.
 
 ## Reporting security issues
 
