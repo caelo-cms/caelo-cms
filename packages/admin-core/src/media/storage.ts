@@ -14,7 +14,7 @@
  * implement the same shape.
  */
 
-import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { MediaStorageAdapter } from "@caelo-cms/shared";
 // `import type` is compile-time only — never bundled. Real Glob
@@ -97,26 +97,6 @@ export class LocalVolumeAdapter implements MediaStorageAdapter {
     }
     this.#cache = { value: total, expiresAt: now + 60_000 };
     return total;
-  }
-
-  /**
-   * Removes all files under a given sha-prefixed directory.
-   *
-   * FIXME(orphan-scrubber): not currently called. The plan deferred a
-   * periodic orphan-blob scrubber that walks `media_assets.storage_key`
-   * vs `storage.exists()` and reconciles. When the first installation
-   * hits the rare orphan case (transaction-rollback after pipeline
-   * succeeded, or manual file delete), the scrubber lands and uses
-   * this method.
-   */
-  async pruneSha(sha: string): Promise<void> {
-    const path = this.#pathFor(sha);
-    try {
-      await rm(path, { recursive: true, force: true });
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") throw e;
-    }
   }
 }
 

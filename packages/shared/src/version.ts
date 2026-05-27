@@ -25,16 +25,6 @@
 export const CAELO_VERSION = "0.10.22";
 
 /**
- * Deprecated alias for back-compat — early P17 work spelled this
- * `CALEO_VERSION` (typo of "Caelo"). New code should import
- * `CAELO_VERSION`. Kept as a re-export so existing callers keep
- * compiling; remove once external consumers have migrated.
- *
- * @deprecated use CAELO_VERSION
- */
-export const CALEO_VERSION = CAELO_VERSION;
-
-/**
  * Parsed shape — major/minor/patch + optional pre-release tag.
  * Stable interface for callers that need to feature-gate (rare —
  * Caelo doesn't do feature flags, but version-gating a deprecation

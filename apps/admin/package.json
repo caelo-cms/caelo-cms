@@ -31,11 +31,9 @@
     "@caelo-cms/redeploy-orchestrator": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
     "@google-cloud/storage": "^7.19.0",
-    "@types/dompurify": "^3",
     "bits-ui": "^2.18.0",
     "clsx": "^2.1.1",
     "colorjs.io": "^0.6.1",
-    "cmdk-sv": "^0.0.19",
     "dompurify": "^3",
     "file-type": "^19",
     "html2canvas": "1.4.1",
@@ -46,8 +44,7 @@
     "svelte-sonner": "^1.1.1",
     "tailwind-merge": "^2.5.5",
     "tailwind-variants": "^1.0.0",
-    "zod": "4.3.6",
-    "fsevents": "~2.3.3"
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.2",
