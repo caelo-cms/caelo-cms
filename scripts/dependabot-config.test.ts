@@ -9,35 +9,42 @@
  * weeks later when a PR fails to arrive. This test locks every
  * load-bearing field so a regression fires locally before merge.
  *
- * Each assertion below names the invariant from `.workflow-plan.md`'s
- * Scope or AC coverage that would fire if the field were removed.
+ * Each assertion names the invariant that would fail if the field were
+ * removed; the cross-references to CLAUDE.md / the issue scope are in
+ * the same file the assertion guards.
  *
  * S1: SPDX header is the file's first non-blank line (CLAUDE.md §5).
  * S2: `version: 2` (Dependabot's required schema version).
  * S3: three `updates` entries — one per ecosystem.
- * S4: bun block uses workspace globs matching root package.json
- *     `workspaces` plus `/claude-workflow` explicitly. A new workspace
- *     added to `package.json` without updating Dependabot would fall
- *     through this assertion.
+ * S4: bun block uses workspace globs that mirror the `workspaces`
+ *     field in the root `package.json`. A new workspace added to
+ *     `package.json` without a corresponding glob in dependabot.yml
+ *     would fall through this assertion.
  * S5: every ecosystem block carries `schedule.interval: weekly`,
- *     `schedule.day: monday` (AC #2 — first PR within 7 days).
- * S6: every block carries `labels: ["dependencies"]` so the AC #3
- *     security PR is filterable on arrival.
+ *     `schedule.day: monday` (issue #25 AC #2 — first PR within
+ *     7 days).
+ * S6: every block carries `labels: ["dependencies"]` so issue #25
+ *     AC #3 security PRs are filterable on arrival.
  * S7: every block carries `commit-message.prefix: "chore(deps)"` so
  *     PR titles match Conventional Commits (CLAUDE.md §9).
- * S8: bun block carries `versioning-strategy: "increase"` (Risk §7 —
- *     `lockfile-only` would silently produce zero PRs in this repo).
+ * S8: bun block carries `versioning-strategy: "increase"`, NOT
+ *     `lockfile-only`. Every workspace `package.json` uses exact pins
+ *     (no `^`/`~`); under lockfile-only Dependabot only updates the
+ *     lockfile, but the lockfile can't move while the constraint is
+ *     exact, so lockfile-only would silently produce zero PRs.
  * S9: every block carries `rebase-strategy: "auto"` so PRs stay
  *     mergeable as `main` advances.
  * S10: every block carries `open-pull-requests-limit: 10` so the
  *     first weekly run can't open all 22+ workspace PRs at once.
  * S11: every block carries a `minor-and-patch` group with
- *     `update-types: ["minor", "patch"]` (issue #25 scope).
+ *     `update-types: ["minor", "patch"]` (issue #25 scope — keeps
+ *     majors as individual PRs for focused breaking-change review).
  * S12: every block carries `cooldown.default-days: 3` so brand-new
- *     releases don't reach the queue.
+ *     releases don't reach the queue (defends against publish-then-
+ *     yank / publish-then-hot-patch). Security PRs ignore cooldown.
  * S13: negative assertions — no `registries`, no `allow`, no
- *     `reviewers`, no `assignees` (the deferred-scope decisions from
- *     plan §3 / Risk §6).
+ *     `reviewers`, no `assignees`. These are deliberately deferred
+ *     until the conventions form on real Dependabot PR traffic.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -126,13 +133,12 @@ describe("S2 + S3: schema version + entry count", () => {
   });
 });
 
-describe("S4: bun block directories mirror root workspaces + claude-workflow", () => {
+describe("S4: bun block directories mirror root workspaces", () => {
   it("uses globs matching root package.json `workspaces`", () => {
     const expected = new Set<string>(["/"]);
     for (const glob of rootPkg.workspaces ?? []) {
       expected.add(`/${glob}`);
     }
-    expected.add("/claude-workflow");
 
     const actual = new Set(bunEntry?.directories ?? []);
     expect(actual).toEqual(expected);

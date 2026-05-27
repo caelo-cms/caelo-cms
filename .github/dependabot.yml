@@ -5,7 +5,7 @@
 # Ships per CLAUDE.md §3 "Dependabot/renovate on; security advisories
 # block merges". Three ecosystem entries:
 #   - bun            workspace JS (root + apps/* + packages/* +
-#                    packages/plugins/* + claude-workflow)
+#                    packages/plugins/*)
 #   - github-actions .github/workflows/*
 #   - docker         apps/{admin,api-gateway}/Dockerfile + root docker-compose.yml
 #
@@ -19,8 +19,12 @@
 #   bun.lock).
 #
 # - versioning-strategy is "increase", NOT "lockfile-only", because every
-#   workspace package.json uses exact pins. lockfile-only would never
-#   produce PRs in this repo — see plan §6 / Risk §7 for the analysis.
+#   workspace package.json uses exact pins (no `^`/`~` ranges). Under
+#   lockfile-only Dependabot only updates the lockfile, but the lockfile
+#   cannot move without the manifest changing first when the constraint
+#   is exact, so it would produce zero PRs in this repo. `increase`
+#   updates the manifest to the new exact version and lets the existing
+#   "Lockfile freshness" CI gate reconcile bun.lock on the same branch.
 #
 # - minor + patch are grouped per directory; majors stay individual so
 #   each breaking change gets a focused review (issue #25 scope).
@@ -43,16 +47,11 @@ updates:
   - package-ecosystem: "bun"
     # Globs mirror the workspaces field in root package.json so a new
     # workspace is auto-picked up by Dependabot the moment it lands.
-    # `/claude-workflow` is NOT a workspace (it's standalone tooling
-    # for the issue-implementation pipeline) but it ships in the repo
-    # with its own external deps (picocolors, zod) — covered explicitly
-    # so its advisories surface alongside the workspace tree.
     directories:
       - "/"
       - "/apps/*"
       - "/packages/*"
       - "/packages/plugins/*"
-      - "/claude-workflow"
     schedule:
       interval: "weekly"
       day: "monday"
