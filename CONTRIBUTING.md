@@ -35,6 +35,7 @@ bun run lint            # biome + audit-callsites + SPDX
 bun run typecheck       # tsc -b across the whole workspace
 bun test                # unit + integration tests; needs Postgres up
 bun run knip            # dead-code gate — unused files / exports / deps (see docs/dev/knip.md)
+bun run circular        # circular-dependency gate — fails on any runtime import cycle (see docs/dev/madge.md)
 bun run license:check   # transitive license allowlist
 ```
 
@@ -98,6 +99,7 @@ Reviewers check (per CLAUDE.md §9):
 - Tests added
 - Docs updated when behaviour is user-visible
 - Dead code removed, not left behind (the `knip` CI gate enforces this; `git log` is the trail per CLAUDE.md §5 — see [`docs/dev/knip.md`](./docs/dev/knip.md))
+- No new circular dependencies (the `circular` CI gate runs madge and fails on any new runtime import cycle — see [`docs/dev/madge.md`](./docs/dev/madge.md))
 
 ### Dependabot review conventions
 
