@@ -15,10 +15,20 @@ It also flags unlisted dependencies (imports without a corresponding `package.js
 ```bash
 bun run knip          # local check — default mode, table reporter, exit 0 on green
 bun run knip:strict   # CI invocation — github-actions reporter (inline PR annotations)
-bunx knip --fix       # auto-delete the safe findings (unused exports, unused files)
+bun run knip:fix      # auto-delete the safe findings (unused exports, unused files)
 ```
 
-**Always review `--fix`'s diff before committing.** Knip's static analysis can't see dynamic-load patterns (e.g. files invoked via Pulumi CLI, Bun's `import.meta.glob`, DB-resident Tier 2 plugin source). When `--fix` deletes something dynamically loaded, the loss only surfaces at runtime.
+### Safe `knip:fix` workflow
+
+`knip:fix` mutates the working tree by deleting unused exports + unused files in place. The contract for using it safely:
+
+1. **Start from a clean working tree.** `git status` must be empty so the fix's diff is unambiguous.
+2. **Run `bun run knip:fix`.** Knip rewrites source files in place.
+3. **Review the diff with `git diff`.** Knip's static analysis can't see dynamic-load patterns (files invoked via Pulumi CLI, Bun's `import.meta.glob`, DB-resident Tier 2 plugin source). When `--fix` deletes something dynamically loaded, the loss only surfaces at runtime — catch it here, not in production.
+4. **Run `bun run typecheck` + `bun test`.** If anything was dynamically loaded and knip got it wrong, the type-check or test will fail.
+5. **Stage + commit.** Use a `refactor:` Conventional Commit subject so the cleanup is discoverable in `git log`.
+
+If step 3 surfaces a deletion that should NOT happen, revert with `git restore` and add the offending path to `knip.json#ignore` (with a follow-up issue tracking the false positive — knip can't read JSON comments).
 
 ## A note on the `:strict` suffix
 
@@ -44,6 +54,37 @@ If knip flags something that's *not* dead — typically a dynamically-loaded ent
 ```
 
 Categories accepted by `ignoreIssues`: `files`, `dependencies`, `devDependencies`, `unlisted`, `binaries`, `exports`, `types`, `nsExports`, `nsTypes`, `enumMembers`, `classMembers`, `duplicates`, `unresolved`, `optionalPeerDependencies`. See [knip.dev/reference/configuration](https://knip.dev/reference/configuration) for the authoritative list.
+
+## Current ignore inventory
+
+`knip.json` is strict JSON and can't carry inline comments, so the rationale for every current ignore lives here. Two kinds: **permanent** (a real false positive knip can't resolve) and **temporary** (deferred to the issue #22 cleanup — remove the entry when the underlying item is fixed).
+
+### `ignore` (whole-file)
+
+| Path | Kind | Why |
+|---|---|---|
+| `apps/admin/e2e-livedit/lib/build-stats.ts` | Temporary (#22) | Live-edit e2e helper not yet wired to a scenario. |
+| `apps/admin/src/lib/components/ui/sheet/**` | Temporary (#22) | shadcn-svelte Sheet component generated but not yet placed in a route. |
+| `packages/migrations/src/rls.ts` | Temporary (#22) | RLS helper reachable only from migration tooling; needs an entry-point review. |
+| `packages/migrations/src/schema/cms_admin/rate_limits.ts` | Temporary (#22) | Schema table not yet referenced by a Query API op. |
+| `packages/provisioning/stacks/aws/edge-handler-bundle.js` | Permanent | Deploy-time placeholder, replaced by `build:edge-aws` at deploy. Never imported by source. |
+
+### `ignoreBinaries`
+
+| Binary | Kind | Why |
+|---|---|---|
+| `cms-provision` | Permanent | Referenced in `.github/workflows/release.yml`; the bin is published by `packages/provisioning`, invisible to knip's per-workspace binary resolution. |
+
+### `ignoreDependencies`
+
+| Dependency | Kind | Why |
+|---|---|---|
+| `@playwright/mcp` | Permanent | Invoked via `.mcp.json` (`bunx @playwright/mcp`), a non-JS config knip can't parse. |
+| `@caelo-cms/shared` | Temporary (#22) | Declared but not imported in `apps/api-gateway`, `packages/plugin-sandbox`, `packages/plugin-sdk` — needs a per-package review before removal (the dep may be load-bearing for type resolution in a way grep doesn't show). |
+
+### `ignoreIssues` (per-file, per-category)
+
+All current `ignoreIssues` entries are **temporary (#22)** — exports/types/duplicates kept for their public-API shape but not yet consumed. The cleanup pass under #22 will delete the unused symbol and remove the corresponding entry. Notable: `packages/shared/src/subagents.ts` suppresses `duplicates` because `spawnSubagentToolInput` is an intentional readability alias for `subagentSpec` (both names are consumed externally), not actual duplication.
 
 ## What knip won't catch
 

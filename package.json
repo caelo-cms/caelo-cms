@@ -25,6 +25,7 @@
     "rulesets:check": "bun run scripts/apply-rulesets.ts --check",
     "knip": "knip",
     "knip:strict": "knip --reporter github-actions",
+    "knip:fix": "knip --fix",
     "e2e-livedit": "bun run --filter '@caelo-cms/admin' e2e-livedit"
   },
   "devDependencies": {
