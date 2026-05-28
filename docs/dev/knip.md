@@ -84,7 +84,10 @@ Categories accepted by `ignoreIssues`: `files`, `dependencies`, `devDependencies
 
 ### `ignoreIssues` (per-file, per-category)
 
-All current `ignoreIssues` entries are **temporary (#22)** — exports/types/duplicates kept for their public-API shape but not yet consumed. The cleanup pass under #22 will delete the unused symbol and remove the corresponding entry. Notable: `packages/shared/src/subagents.ts` suppresses `duplicates` because `spawnSubagentToolInput` is an intentional readability alias for `subagentSpec` (both names are consumed externally), not actual duplication.
+Most `ignoreIssues` entries are **temporary (#22)** — exports/types kept for their public-API shape but not yet consumed; the cleanup pass under #22 will delete the unused symbol and remove the corresponding entry. Two `duplicates` entries are **permanent**, suppressing intentional aliases rather than real duplication:
+
+- `packages/shared/src/subagents.ts` — `spawnSubagentToolInput` is a readability alias for `subagentSpec` (both names are consumed externally).
+- `packages/shared/src/version.ts` — `CALEO_VERSION` is a `@deprecated` typo-alias for `CAELO_VERSION`, kept for external consumers of the published `@caelo-cms/shared` package until the next major bump.
 
 ## What knip won't catch
 

@@ -24,6 +24,7 @@
     "packages/provisioning/src/gcloud.ts": ["exports"],
     "packages/provisioning/src/wizard.ts": ["exports"],
     "packages/shared/src/subagents.ts": ["duplicates"],
+    "packages/shared/src/version.ts": ["duplicates"],
     "packages/site-importer/src/screenshot-diff.ts": ["exports"]
   },
   "workspaces": {

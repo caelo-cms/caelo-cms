@@ -25,6 +25,19 @@
 export const CAELO_VERSION = "0.10.22";
 
 /**
+ * Deprecated alias for back-compat — early P17 work spelled this
+ * `CALEO_VERSION` (typo of "Caelo"). New code should import
+ * `CAELO_VERSION`. Kept as a re-export so external consumers of this
+ * published package (plugin authors / embedders) keep compiling;
+ * removal is deferred to the next major bump. Knip flags this as a
+ * duplicate export — suppressed in `knip.json#ignoreIssues` because the
+ * alias is intentional, mirroring `subagents.ts`.
+ *
+ * @deprecated use CAELO_VERSION
+ */
+export const CALEO_VERSION = CAELO_VERSION;
+
+/**
  * Parsed shape — major/minor/patch + optional pre-release tag.
  * Stable interface for callers that need to feature-gate (rare —
  * Caelo doesn't do feature flags, but version-gating a deprecation
