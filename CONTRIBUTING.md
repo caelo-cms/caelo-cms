@@ -97,6 +97,7 @@ Reviewers check (per CLAUDE.md §9):
 - Validation present (Zod at the boundary)
 - Tests added
 - Docs updated when behaviour is user-visible
+- Dead code removed, not left behind (the `knip` CI gate enforces this; `git log` is the trail per CLAUDE.md §5 — see [`docs/dev/knip.md`](./docs/dev/knip.md))
 
 ### Dependabot review conventions
 
