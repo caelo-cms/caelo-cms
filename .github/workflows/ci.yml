@@ -102,6 +102,16 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Knip (dead-code gate)
+        # Issue #12 — knip detects unused files, unused exports, and
+        # unused dependencies across every workspace. Default mode here
+        # rather than `--strict` because `--strict` implies production-
+        # only analysis (excludes devDependencies + tests), and Caelo's
+        # e2e helpers / migration tooling live outside the production
+        # tree — `--strict` would flag them as unreachable. The
+        # `github-actions` reporter emits inline annotations on the PR.
+        run: bun run knip:strict
+
       - name: Lockstep version check
         # P20 — every workspace package.json + version.ts must agree.
         # Catches PRs that hand-edit a single package's version field

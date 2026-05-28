@@ -34,6 +34,7 @@ Verify everything passes locally before opening a PR:
 bun run lint            # biome + audit-callsites + SPDX
 bun run typecheck       # tsc -b across the whole workspace
 bun test                # unit + integration tests; needs Postgres up
+bun run knip            # dead-code gate — unused files / exports / deps (see docs/dev/knip.md)
 bun run license:check   # transitive license allowlist
 ```
 
@@ -96,6 +97,7 @@ Reviewers check (per CLAUDE.md §9):
 - Validation present (Zod at the boundary)
 - Tests added
 - Docs updated when behaviour is user-visible
+- Dead code removed, not left behind (the `knip` CI gate enforces this; `git log` is the trail per CLAUDE.md §5 — see [`docs/dev/knip.md`](./docs/dev/knip.md))
 
 ### Dependabot review conventions
 
