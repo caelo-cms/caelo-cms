@@ -63,12 +63,31 @@ function writeFixtureSources(): void {
   );
 }
 
-function writeMadgerc(skipTypeImports: boolean): void {
+// Writes a value-import cycle under an `excluded-dir/` subtree, used to
+// prove excludeRegExp actually suppresses a cycle (not just that the
+// pattern string is present in .madgerc — that's the config test's MC3).
+function writeExcludedCycle(): void {
+  mkdirSync(join(fixtureDir, "src", "excluded-dir"), { recursive: true });
+  writeFileSync(
+    join(fixtureDir, "src", "excluded-dir", "ex-a.ts"),
+    'import { exB } from "./ex-b";\nexport const exA = () => exB;\n',
+  );
+  writeFileSync(
+    join(fixtureDir, "src", "excluded-dir", "ex-b.ts"),
+    'import { exA } from "./ex-a";\nexport const exB = () => exA;\n',
+  );
+}
+
+function writeMadgerc(opts: {
+  skipTypeImports: boolean;
+  excludeRegExp?: ReadonlyArray<string>;
+}): void {
   writeFileSync(
     join(fixtureDir, ".madgerc"),
     JSON.stringify({
       fileExtensions: ["ts"],
-      detectiveOptions: { ts: { skipTypeImports } },
+      ...(opts.excludeRegExp ? { excludeRegExp: opts.excludeRegExp } : {}),
+      detectiveOptions: { ts: { skipTypeImports: opts.skipTypeImports } },
     }),
   );
 }
@@ -96,7 +115,7 @@ describe("madge detects runtime cycles, ignores type-only (issue #13)", () => {
     "MS1-MS3: with skipTypeImports on, flags the runtime cycle, exits non-zero, ignores the type-only cycle",
     async () => {
       writeFixtureSources();
-      writeMadgerc(true);
+      writeMadgerc({ skipTypeImports: true });
       const { stdout, exitCode } = await runMadge();
 
       // MS1: runtime cycle reported by name
@@ -115,11 +134,33 @@ describe("madge detects runtime cycles, ignores type-only (issue #13)", () => {
     "MS4 (control): with skipTypeImports off, the type-only cycle IS reported",
     async () => {
       writeFixtureSources();
-      writeMadgerc(false);
+      writeMadgerc({ skipTypeImports: false });
       const { stdout, exitCode } = await runMadge();
 
       expect(stdout).toContain("type-consumer");
       expect(stdout).toContain("type-only");
+      expect(exitCode).toBe(1);
+    },
+    { timeout: 30_000 },
+  );
+
+  it(
+    "MS5: excludeRegExp suppresses a cycle under an excluded path while still flagging others",
+    async () => {
+      writeFixtureSources();
+      writeExcludedCycle();
+      writeMadgerc({
+        skipTypeImports: true,
+        excludeRegExp: ["(^|/)excluded-dir(/|$)"],
+      });
+      const { stdout, exitCode } = await runMadge();
+
+      // the excluded cycle is not reported (proves excludeRegExp is honored)
+      expect(stdout).not.toContain("ex-a");
+      expect(stdout).not.toContain("ex-b");
+      expect(stdout).not.toContain("excluded-dir");
+      // ...but the non-excluded runtime cycle still is, so the gate isn't blinded
+      expect(stdout).toContain("runtime-a");
       expect(exitCode).toBe(1);
     },
     { timeout: 30_000 },
