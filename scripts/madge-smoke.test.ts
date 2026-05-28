@@ -28,7 +28,7 @@
  */
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,6 +85,13 @@ async function runMadge(): Promise<{ stdout: string; exitCode: number }> {
 }
 
 describe("madge detects runtime cycles, ignores type-only (issue #13)", () => {
+  it("MS0: the pinned madge binary is installed", () => {
+    expect(
+      existsSync(MADGE_BIN),
+      `madge binary missing at ${MADGE_BIN} — run \`bun install\``,
+    ).toBe(true);
+  });
+
   it(
     "MS1-MS3: with skipTypeImports on, flags the runtime cycle, exits non-zero, ignores the type-only cycle",
     async () => {
