@@ -72,7 +72,7 @@ jobs:
       PUBLIC_DATABASE_URL: postgres://public_role:caelo_public_dev@localhost:5432/cms_public
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -167,7 +167,7 @@ jobs:
           - provisioning
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -336,7 +336,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0   # need full history for the changelog query
 
