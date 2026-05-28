@@ -26,6 +26,7 @@
     "knip": "knip",
     "knip:strict": "knip --reporter github-actions",
     "knip:fix": "knip --fix",
+    "circular": "madge --circular apps packages",
     "e2e-livedit": "bun run --filter '@caelo-cms/admin' e2e-livedit"
   },
   "devDependencies": {
@@ -36,6 +37,7 @@
     "js-yaml": "4.1.1",
     "knip": "6.14.2",
     "license-checker-rseidelsohn": "4.4.2",
+    "madge": "8.0.0",
     "typescript": "6.0.3"
   },
   "engines": {
