@@ -32,7 +32,7 @@ Without `skipTypeImports`, madge reports 5 cycles here; with it, the count is 0 
 | Pattern | Why |
 |---|---|
 | `node_modules` | Third-party code; not ours to police. Madge also treats workspace packages resolved through `node_modules` symlinks as external, so cross-package-by-name cycles are out of the detection surface (see below). |
-| `dist`, `build` | Compiled output mirrors source; scanning it would double-count and surface phantom cycles in emitted code. |
+| `dist`, `build`, `output` | Compiled/build output mirrors source; scanning it would double-count and surface phantom cycles in emitted code. `apps/admin/output` is a real example under a scanned root. |
 | `.svelte-kit` | SvelteKit generates `$types.d.ts` ↔ `proxy+page.server.ts` pairs that are inherently circular by design. Without this exclude, madge reports ~96 generated-proxy cycles that no human wrote. |
 | `\.test\.ts$` | Test files are leaves, not graph modules; a test importing the thing it tests is not an architectural cycle. |
 
