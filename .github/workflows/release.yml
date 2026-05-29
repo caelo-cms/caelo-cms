@@ -181,7 +181,7 @@ jobs:
         run: bun run --filter=@caelo-cms/${{ matrix.package }} build
 
       - name: Setup Node (for npm publish)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           # Node 24 ships with npm 11.x natively → no manual upgrade
           # step (which would break npm's in-place self-upgrade by
