@@ -1,0 +1,55 @@
+name: Dependency Review
+
+# Flags pull requests that introduce dependencies with known vulnerabilities or
+# incompatible licenses, before they land (issue #26). This is the PR-time gate;
+# Dependabot (#25) handles ongoing version/security-update PRs separately.
+#
+# Two gates, both at the config layer:
+#   * Vulnerabilities — fail on any newly-introduced dependency with a known
+#     advisory of `high` severity or higher.
+#   * Licenses — allow only the MPL-2.0-compatible set (CLAUDE.md §3). The list
+#     mirrors the superset already pinned by `package.json`'s `license:check`
+#     script so the two license gates agree and a benign, already-accepted dep
+#     doesn't trip a false positive. We use `allow-licenses` (not the deprecated
+#     `deny-licenses`) — anything outside the set (GPL/AGPL/SSPL/proprietary)
+#     fails the check.
+#
+# Supply chain: pinned by major tag per the repo convention; the pin format is
+# asserted by scripts/codeql-workflow.test.ts.
+
+on:
+  pull_request:
+    branches: [main]
+
+# Least privilege: read the tree to diff the dependency manifests, and write a
+# single summary comment on the PR (required by `comment-summary-in-pr`).
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
+          # Gate dev dependencies too, not just runtime. Build/test tooling
+          # (biome, playwright, knip, madge, …) executes in CI with repo-token
+          # access, so a high-severity advisory there is a real exposure — the
+          # action defaults to `runtime` only, which would let it through.
+          fail-on-scopes: runtime, development
+          # MPL-2.0-compatible set per CLAUDE.md §3 — mirrors the `license:check`
+          # allow-list in package.json. Keep the two in lockstep.
+          allow-licenses: MPL-2.0, Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0, Unlicense, Python-2.0, BlueOak-1.0.0
+          comment-summary-in-pr: on-failure
