@@ -51,6 +51,10 @@
           {
             "context": "Admin production image — boot smoke",
             "_note": "Job in .github/workflows/ci.yml (admin-prod-image). Added in #55 — release-images catches build-time regressions; this catches boot-time `Cannot find module` regressions that the build-only matrix can't (the bug class #53 fixed crashes on `docker run`, not on `docker build`)."
+          },
+          {
+            "context": "CodeQL",
+            "_note": "Code-scanning check emitted by .github/workflows/codeql.yml (issue #26). Blocks merge until CodeQL analysis passes; high-or-higher-severity findings fail it. The merge-time severity threshold is set in repo Settings -> Code security -> Protection rules. CAUTION: confirm this context string matches the name GitHub reports on a real CodeQL run before applying via `bun run rulesets:apply` — a non-existent required check would block all merges (plan R1)."
           }
         ]
       }

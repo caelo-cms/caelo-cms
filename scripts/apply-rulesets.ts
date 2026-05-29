@@ -17,8 +17,11 @@
  * `--owner` / `--repo`.
  *
  * Tracked under issue #23 (protect `main` branch). When new CI gates land
- * (#12 knip, #13 madge, #14 coverage, #26 CodeQL, etc.), add their job names
- * to the required_status_checks list in the JSON spec and run this script.
+ * (#12 knip, #13 madge, #14 coverage, etc.), add their job names to the
+ * required_status_checks list in the JSON spec and run this script. #26
+ * CodeQL is now wired (the `CodeQL` context is in main.json) — but confirm the
+ * context string matches the name a real CodeQL run reports before applying,
+ * or a non-existent required check will block all merges.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
