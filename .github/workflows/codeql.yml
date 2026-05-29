@@ -44,7 +44,7 @@ concurrency:
 
 jobs:
   analyze:
-    name: Analyze (javascript-typescript)
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -53,6 +53,22 @@ jobs:
       actions: read
       contents: read
 
+    strategy:
+      # One independent analysis per language. fail-fast: false so an `actions`
+      # finding doesn't cancel the in-flight `javascript-typescript` analysis
+      # (and vice versa) — we want both result sets on every run.
+      fail-fast: false
+      matrix:
+        language:
+          # The merged JavaScript/TypeScript language covers the whole product
+          # tree (apps/, packages/, scripts/) in one pass.
+          - javascript-typescript
+          # CodeQL's GitHub Actions pack scans the workflow files themselves
+          # (script injection via untrusted ${{ }}, over-broad permissions,
+          # unpinned refs) — directly relevant now that this repo runs several
+          # privileged workflows.
+          - actions
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -60,12 +76,10 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          # The merged JavaScript/TypeScript analysis language — covers the
-          # whole repo (apps/, packages/, scripts/) in one pass.
-          languages: javascript-typescript
+          languages: ${{ matrix.language }}
           queries: security-extended
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
         with:
-          category: "/language:javascript-typescript"
+          category: "/language:${{ matrix.language }}"
