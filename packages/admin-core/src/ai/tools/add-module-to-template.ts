@@ -28,7 +28,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { addModuleToTemplateToolInput } from "@caelo-cms/shared";
+import { addModuleToTemplateToolInput, deriveModuleType } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -62,14 +62,11 @@ function describeError(error: unknown): string {
   return e.kind ?? "unknown";
 }
 
+// v0.12.3 (issue #106) — slug = stable type base + uniqueness suffix, so
+// the module's `type` (derived by modules.create) is always a prefix of
+// its slug.
 function slugify(displayName: string): string {
-  const base = displayName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-  const stem = base.length > 0 ? base : "module";
-  return `${stem}-${Date.now().toString(36)}`;
+  return `${deriveModuleType(displayName)}-${Date.now().toString(36)}`;
 }
 
 export const addModuleToTemplateTool: ToolDefinitionWithHandler<

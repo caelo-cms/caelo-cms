@@ -59,7 +59,10 @@ import {
   formatStructuredSetsBlock,
   formatThemeBlock,
 } from "./system-prompt.js";
-import { buildToolDescribeState } from "./tools/describe-state.js";
+import {
+  buildToolDescribeState,
+  type ToolDescribeStateActivePage,
+} from "./tools/describe-state.js";
 import type { ToolRegistry } from "./tools/index.js";
 
 export type ClientEvent =
@@ -365,6 +368,10 @@ export async function* runChatTurn(
   // button at the top" → add_module_to_page; "make the hero red" →
   // edit_module on the matching module-id).
   let pageContextBlock: string | undefined;
+  // v0.12.3 (issue #106) — captured for ToolDescribeState so the
+  // add_module_to_page / move_module describeSchema can pin blockName to
+  // a generation-time enum of THIS page's actual template blocks.
+  let activePageForState: ToolDescribeStateActivePage | null = null;
   if (input.activePageId) {
     const pageR = await execute(registry, adapter, humanCtxWithBranch, "pages.get_with_modules", {
       pageId: input.activePageId,
@@ -384,6 +391,11 @@ export async function* runChatTurn(
           }[];
         };
       };
+      activePageForState = {
+        id: v.page.id,
+        templateId: v.page.templateId,
+        blockNames: v.page.blocks.map((b) => b.blockName),
+      };
       // P6.7.4 — render the page like a visitor would see it, with each
       // module's full HTML wrapped in BEGIN/END markers carrying the
       // module id + slug + block + position. The AI gets both the
@@ -394,7 +406,17 @@ export async function* runChatTurn(
         "# Current page",
         `Page: ${v.page.slug} (locale=${v.page.locale}, status=${v.page.status}, id=${v.page.id})`,
         `Template id: ${v.page.templateId}`,
-        `Blocks (in render order): ${v.page.blocks.map((b) => b.blockName).join(", ") || "(none)"}`,
+        // v0.12.3 (issue #106) — this list is AUTHORITATIVE + EXHAUSTIVE.
+        // `blockName` for add_module_to_page / move_module MUST be one of
+        // these exact strings — do not invent others. A block name is NOT
+        // the same thing as a module `kind` (chrome/hero/content/cta/
+        // utility): `kind` classifies a module, a block name is a slot on
+        // THIS page's template. e.g. a "hero" module goes INTO whichever
+        // block exists below, often `content` — there is usually no block
+        // literally named "hero".
+        `Blocks on this page's template (the ONLY valid blockName values — exhaustive): ${
+          v.page.blocks.map((b) => `\`${b.blockName}\``).join(", ") || "(none)"
+        }`,
         "",
         "## Page content (rendered with module boundaries)",
         "",
@@ -1136,6 +1158,8 @@ export async function* runChatTurn(
     layoutsValue: layoutsR.ok ? layoutsR.value : null,
     templatesValue: tplsR.ok ? tplsR.value : null,
     siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,
+    // v0.12.3 (issue #106) — feeds the per-page blockName enum.
+    activePage: activePageForState,
   });
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion. The

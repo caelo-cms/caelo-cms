@@ -161,6 +161,22 @@ export interface ToolDefinitionWithHandler<I> {
    * description silently. */
   readonly describe?: (state: ToolDescribeState) => string;
   /**
+   * v0.12.3 (issue #106) — optional state-aware `inputSchema` builder.
+   * When set AND a `ToolDescribeState` is passed to `catalogue()`, the
+   * returned JSON Schema REPLACES the static `inputSchema` for that
+   * per-turn provider call. This is the generation-time constraint lever:
+   * `add_module_to_page` / `move_module` use it to narrow `blockName` to
+   * an `enum` of the focused page's actual template blocks, so the model
+   * cannot emit a block name that doesn't exist (CLAUDE.md §1A — constrain
+   * at generation rather than guess-then-fail). The op-layer Validator
+   * still rejects an out-of-set block as defense-in-depth (enum adherence
+   * isn't guaranteed across providers).
+   *
+   * Throwing falls back to the static `inputSchema` silently (mirrors
+   * `describe`). Return the FULL schema object, not a patch.
+   */
+  readonly describeSchema?: (state: ToolDescribeState) => Record<string, unknown>;
+  /**
    * v0.6.0 W5 — SDK-6-inspired approval gate. When set and returns
    * `true` for the parsed args, the dispatcher emits a structured
    * approval-required ToolResult instead of running the handler. The
@@ -239,10 +255,24 @@ export class ToolRegistry {
           );
         }
       }
+      // v0.12.3 (issue #106) — per-turn inputSchema. Lets a tool narrow
+      // an argument to a state-scoped enum (e.g. blockName) at generation
+      // time. Falls back to the static schema if absent or on throw.
+      let inputSchema = t.inputSchema;
+      if (state && t.describeSchema) {
+        try {
+          inputSchema = t.describeSchema(state);
+        } catch (err) {
+          console.error(
+            `[tool.describeSchema] ${t.name} threw — falling back to static inputSchema`,
+            err,
+          );
+        }
+      }
       return {
         name: t.name,
         description,
-        inputSchema: t.inputSchema,
+        inputSchema,
       };
     });
   }
