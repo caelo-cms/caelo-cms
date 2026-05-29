@@ -113,6 +113,21 @@ Reviewers check (per CLAUDE.md §9):
 - Dead code removed, not left behind (the `knip` CI gate enforces this; `git log` is the trail per CLAUDE.md §5 — see [`docs/dev/knip.md`](./docs/dev/knip.md))
 - No new circular dependencies (the `circular` CI gate runs madge and fails on any new runtime import cycle — see [`docs/dev/madge.md`](./docs/dev/madge.md))
 
+### Code scanning, dependency review + secret scanning
+
+Three GitHub-native security gates run alongside the AI review (issue #26). Unlike the AI review, the first two are **deterministic** and the CodeQL gate **blocks merge**.
+
+- **CodeQL (static analysis).** `.github/workflows/codeql.yml` runs CodeQL's `security-extended` query suite over the JavaScript/TypeScript tree on every PR, on every push to `main`, and on a weekly schedule. It catches class-of-vulnerability bugs — SQLi, XSS, command injection, auth bypass, prototype pollution — that pattern-matching reviewers miss. Findings land in the repo **Security tab** (Code scanning alerts). The `CodeQL` check is a **required status check** in the `main-protection` ruleset, so high-or-higher-severity findings block merge (the merge-time severity threshold is configured in repo *Settings → Code security → Protection rules*). If first-run noise is too high, the suite is downgradeable to the default `security` set via the single `queries:` line in the workflow.
+- **Dependency review.** `.github/workflows/dependency-review.yml` runs `actions/dependency-review-action` on every PR and **fails** the PR when it introduces a dependency with a known advisory of `high` severity or higher, or with a license outside the MPL-2.0-compatible allow-list (which mirrors the `license:check` allow-list in `package.json` — keep the two in lockstep). On failure it posts a one-shot summary comment on the PR.
+- **Secret scanning + push protection.** Enabled at the repo level so an accidental secret commit is rejected at `git push` before it ever lands (the mechanical backstop for CLAUDE.md §7). These are repo *settings*, not files; like the branch-protection ruleset they're managed as config-as-code by a maintainer with repo-admin scope:
+
+  ```sh
+  bun run security:check    # report drift: are both flags enabled?
+  bun run security:enable   # enable secret scanning + push protection (idempotent)
+  ```
+
+  If push protection blocks a legitimate push (a false positive, or a value that only looks like a secret), follow the unblock prompt GitHub prints at the push — never bypass it for a real credential.
+
 ### Dependabot review conventions
 
 Dependabot is configured at `.github/dependabot.yml` and opens PRs for three ecosystems: workspace JS (Bun), GitHub Actions, and Docker base images. The config (and a unit test that locks its shape at `scripts/dependabot-config.test.ts`) is the source of truth for these conventions — this section just orients reviewers.
