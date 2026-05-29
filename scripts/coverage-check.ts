@@ -122,16 +122,26 @@ export function computeOpCoveragePct(declared: string[], executed: Set<string>):
   };
 }
 
+export type TierName = "unit" | "integration";
+
 export interface TierVerdict {
-  tier: string;
+  tier: TierName;
   measured: number;
   floor: number;
   pass: boolean;
 }
 
 /** A tier passes when measured >= floor (exact-floor is a pass, not a flake). */
-export function evaluateTier(tier: string, measured: number, floor: number): TierVerdict {
+export function evaluateTier(tier: TierName, measured: number, floor: number): TierVerdict {
   return { tier, measured, floor, pass: measured >= floor };
+}
+
+/** Shape of `coverage/coverage-summary.json` — the machine-readable artifact. */
+export interface CoverageSummary {
+  pass: boolean;
+  unit: TierVerdict & { linesFound: number; linesHit: number };
+  integration: TierVerdict & { declared: number; exercised: number };
+  target: { unitLinePct: number; integrationOpPct: number };
 }
 
 const ThresholdsSchema = z
@@ -241,7 +251,7 @@ async function main(): Promise<number> {
   const integVerdict = evaluateTier("integration", opCov.pct, thresholds.integrationOpPct);
   const pass = unitVerdict.pass && integVerdict.pass;
 
-  const summary = {
+  const summary: CoverageSummary = {
     pass,
     unit: { ...unitVerdict, linesFound: unitCov.linesFound, linesHit: unitCov.linesHit },
     integration: { ...integVerdict, declared: opCov.declared, exercised: opCov.exercised },
