@@ -134,12 +134,28 @@ jobs:
       - name: Run migrations
         run: bun run db:migrate
 
-      - name: Test
-        # `--isolate` gives each file a fresh global so the per-file
-        # Postgres reset in scripts/test-preload.ts fires for every
-        # file, preventing cross-file state pollution in the shared
-        # cms_admin / cms_public DBs.
-        run: bun test --isolate
+      - name: Test + coverage gate
+        # Issue #14 — runs the full suite split into the unit
+        # (`*.test.ts`) and integration (`*.integration.test.ts`) tiers
+        # under `bun test --coverage`, then enforces the per-tier ratchet
+        # floors in scripts/coverage-thresholds.json (CLAUDE.md §6: unit
+        # line coverage, integration = % of declared Query API ops
+        # exercised). Fails the build when a tier drops below its floor.
+        # Replaces the bare `bun test --isolate` step — the gate runs every
+        # test exactly once; the integration tier keeps `--isolate` so the
+        # per-file Postgres reset in scripts/test-preload.ts still fires.
+        run: bun run coverage:check
+
+      - name: Upload coverage report
+        # `if: always()` so the lcov + summary land as an artifact even
+        # when the gate step above fails — that's exactly when you want to
+        # inspect what dropped below the floor.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: warn
 
       - name: License check (MPL-2.0 compatibility)
         run: bun run license:check
