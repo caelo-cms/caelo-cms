@@ -49,9 +49,10 @@ function seedThreePagesSynced(): SeedResult {
           await tx\`DELETE FROM modules WHERE display_name = 'Toggle hero'\`;
 
           const mod = await tx\`
-            INSERT INTO modules (slug, display_name, html, css, js, fields)
+            INSERT INTO modules (slug, display_name, type, html, css, js, fields)
             VALUES ('toggle-hero-' || floor(random()*100000)::text,
                     'Toggle hero',
+                    'toggle-hero',
                     '<h1>{{title}}</h1>',
                     '', '',
                     '[{"name":"title","kind":"text","label":"Title","default":"Shared"}]'::jsonb)

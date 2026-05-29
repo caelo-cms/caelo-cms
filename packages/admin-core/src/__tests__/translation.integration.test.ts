@@ -134,8 +134,8 @@ async function seedSourcePage(
       let position = 0;
       for (const m of modules) {
         const moduleRows = (await tx`
-          INSERT INTO modules (slug, display_name, html, css, js)
-          VALUES (${m.slug}, ${m.slug}, ${m.html}, '', '')
+          INSERT INTO modules (slug, display_name, type, html, css, js)
+          VALUES (${m.slug}, ${m.slug}, ${m.slug}, ${m.html}, '', '')
           RETURNING id::text AS id
         `) as unknown as { id: string }[];
         const mid = moduleRows[0]?.id ?? "";

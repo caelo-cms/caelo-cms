@@ -19,7 +19,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { deriveModuleType, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -600,10 +600,10 @@ export const acceptImportedPageOp = defineOperation({
     // Insert modules + page_modules per extracted module.
     for (const m of proposedModules) {
       const modRows = (await tx.execute(sql`
-        INSERT INTO modules (slug, display_name, html, css, js)
+        INSERT INTO modules (slug, display_name, type, html, css, js)
         VALUES (
           ${`imported-${pageId.slice(0, 8)}-${m.blockName}-${m.position}`},
-          ${m.displayName}, ${m.html}, '', ''
+          ${m.displayName}, ${deriveModuleType(m.displayName)}, ${m.html}, '', ''
         )
         RETURNING id::text AS id
       `)) as unknown as Array<{ id: string }>;
@@ -966,11 +966,13 @@ export const composeFromImportRunOp = defineOperation({
         // content for v1 (a follow-up will let the AI propose adding a
         // header block to the layout).
         const blockName = m.blockName === "content" ? "content" : "content";
+        const modDisplayName = m.displayName || `${m.blockName} ${m.position}`;
         const modInsert = (await tx.execute(sql`
-          INSERT INTO modules (slug, display_name, html, css, js)
+          INSERT INTO modules (slug, display_name, type, html, css, js)
           VALUES (
             ${`imported-${pageId.slice(0, 8)}-${m.blockName}-${m.position}`},
-            ${m.displayName || `${m.blockName} ${m.position}`},
+            ${modDisplayName},
+            ${deriveModuleType(modDisplayName)},
             ${m.html}, '', ''
           )
           RETURNING id::text AS id

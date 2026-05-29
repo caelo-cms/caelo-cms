@@ -130,10 +130,11 @@ try {
       `;
 
       const mod = (await tx`
-        INSERT INTO modules (slug, display_name, html, css, js)
+        INSERT INTO modules (slug, display_name, type, html, css, js)
         VALUES (
           'home-welcome',
           'Welcome',
+          'home-welcome',
           '<section style="padding:4rem 2rem;text-align:center;font-family:system-ui;"><h1 style="font-size:2.5rem;margin:0 0 1rem;">Welcome to your new Caelo site</h1><p style="color:#666;font-size:1.1rem;margin:0 0 2rem;">Tell the AI what to change. Hold Option + Control + Command and click any element to scope an edit.</p><a href="/about" style="display:inline-block;padding:0.75rem 1.5rem;background:#3b82f6;color:#fff;text-decoration:none;border-radius:6px;font-weight:500;">Learn more</a></section>',
           '',
           ''

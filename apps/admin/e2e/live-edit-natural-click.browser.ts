@@ -60,12 +60,12 @@ test("link click without modifier navigates the iframe; URL display updates", as
         out.tpl = tpl[0].id;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${out.tpl}::uuid, 'content', 'Content', 0)\`;
         const modA = await tx\`
-          INSERT INTO modules (slug, display_name, html)
-          VALUES (\${process.env.MOD_A_SLUG}, 'A', '<div><h1>HOME_A</h1><a id="go" href="/' || \${process.env.PAGE_B_SLUG} || '">go to B</a></div>')
+          INSERT INTO modules (slug, display_name, type, html)
+          VALUES (\${process.env.MOD_A_SLUG}, 'A', \${process.env.MOD_A_SLUG}, '<div><h1>HOME_A</h1><a id="go" href="/' || \${process.env.PAGE_B_SLUG} || '">go to B</a></div>')
           RETURNING id::text AS id\`;
         const modB = await tx\`
-          INSERT INTO modules (slug, display_name, html)
-          VALUES (\${process.env.MOD_B_SLUG}, 'B', '<h1>PAGE_B_LANDED</h1>')
+          INSERT INTO modules (slug, display_name, type, html)
+          VALUES (\${process.env.MOD_B_SLUG}, 'B', \${process.env.MOD_B_SLUG}, '<h1>PAGE_B_LANDED</h1>')
           RETURNING id::text AS id\`;
         const pgA = await tx\`
           INSERT INTO pages (slug, locale, title, template_id, status)
