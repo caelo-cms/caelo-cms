@@ -26,7 +26,7 @@
  * unit testing; the orchestration runs only under `import.meta.main`.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 
@@ -162,6 +162,34 @@ export function loadThresholds(parsed: unknown): Thresholds {
   return ThresholdsSchema.parse(parsed);
 }
 
+/**
+ * Append a markdown result table to GitHub Actions' job summary when running in
+ * CI, so the per-tier numbers are visible inline on the run without downloading
+ * the coverage artifact. No-op locally (GITHUB_STEP_SUMMARY unset).
+ */
+function writeStepSummary(summary: CoverageSummary): void {
+  const path = process.env.GITHUB_STEP_SUMMARY;
+  if (!path) return;
+  const row = (v: TierVerdict, detail: string) =>
+    `| ${v.tier} | ${v.measured}% | ${v.floor}% | ${detail} | ${v.pass ? "✅ pass" : "❌ FAIL"} |`;
+  const md = [
+    `### Coverage gate — ${summary.pass ? "✅ passed" : "❌ FAILED"}`,
+    "",
+    "| Tier | Measured | Floor | Detail | Result |",
+    "| --- | --- | --- | --- | --- |",
+    row(summary.unit, `${summary.unit.linesHit}/${summary.unit.linesFound} lines`),
+    row(
+      summary.integration,
+      `${summary.integration.exercised}/${summary.integration.declared} ops`,
+    ),
+    "",
+    `Targets to ratchet toward: unit ${summary.target.unitLinePct}% line coverage, ` +
+      `integration ${summary.target.integrationOpPct}% of declared ops.`,
+    "",
+  ].join("\n");
+  appendFileSync(path, `${md}\n`);
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration (runs only as a script, never on import)
 // ---------------------------------------------------------------------------
@@ -268,6 +296,7 @@ async function main(): Promise<number> {
     target: thresholds.target,
   };
   writeFileSync(SUMMARY_FILE, `${JSON.stringify(summary, null, 2)}\n`);
+  writeStepSummary(summary);
 
   console.log("\n[coverage] summary");
   for (const v of [unitVerdict, integVerdict]) {
@@ -280,9 +309,15 @@ async function main(): Promise<number> {
         "or (if this is an intentional, justified change) adjust scripts/coverage-thresholds.json.",
     );
     if (opCov.missing.length > 0 && !integVerdict.pass) {
+      const SHOW = 25;
+      const shown = opCov.missing.slice(0, SHOW);
+      const tail = opCov.missing.length - shown.length;
       console.error(
-        `[coverage] integration: ${opCov.missing.length} declared ops never exercised.`,
+        `[coverage] integration: ${opCov.missing.length} declared ops never exercised — ` +
+          "add an integration test for these (closest to the floor first):",
       );
+      for (const name of shown) console.error(`    - ${name}`);
+      if (tail > 0) console.error(`    … and ${tail} more`);
     }
     return 1;
   }
