@@ -206,7 +206,9 @@ export async function loadModuleStateWithBranchOverlay(
     `)) as unknown as { state: unknown }[];
     const row = rows[0];
     if (row !== undefined) {
-      const raw = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as ModuleState;
+      const raw = (
+        typeof row.state === "string" ? JSON.parse(row.state) : row.state
+      ) as ModuleState;
       // v0.12.3 — a branched snapshot written before 0103 lacks `type`;
       // fall back to slug so downstream consumers always see a value.
       return raw.type ? raw : { ...raw, type: raw.slug };

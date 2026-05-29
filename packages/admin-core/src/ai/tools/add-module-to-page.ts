@@ -164,8 +164,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
   },
   schema: addModuleToPageToolInput,
   inputSchema: ADD_MODULE_TO_PAGE_INPUT_SCHEMA,
-  describeSchema: (state) =>
-    withBlockNameEnum(ADD_MODULE_TO_PAGE_INPUT_SCHEMA, state, "blockName"),
+  describeSchema: (state) => withBlockNameEnum(ADD_MODULE_TO_PAGE_INPUT_SCHEMA, state, "blockName"),
   handler: async (ctx, input, toolCtx) => {
     // v0.11.4 (issue #76 follow-up) — cold-start gate.
     const gate = await checkColdStartGate(ctx, toolCtx, "add_module_to_page");
