@@ -595,7 +595,10 @@ export async function* runChatTurn(
         displayName: string;
         description: string;
         kind: "chrome" | "hero" | "content" | "cta" | "utility";
-        fields: { name: string; kind: string }[];
+        // v0.12.3 (issue #106) — surfaced so the `## Modules` block shows
+        // each module's stable type + each nested field's allowedModuleTypes.
+        type: string;
+        fields: { name: string; kind: string; allowedModuleTypes?: string[] }[];
       }[];
     };
     // Real usage signal: one query joins page_modules → pages,
