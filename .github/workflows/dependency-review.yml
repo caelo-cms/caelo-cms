@@ -44,6 +44,11 @@ jobs:
         uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
+          # Gate dev dependencies too, not just runtime. Build/test tooling
+          # (biome, playwright, knip, madge, …) executes in CI with repo-token
+          # access, so a high-severity advisory there is a real exposure — the
+          # action defaults to `runtime` only, which would let it through.
+          fail-on-scopes: runtime, development
           # MPL-2.0-compatible set per CLAUDE.md §3 — mirrors the `license:check`
           # allow-list in package.json. Keep the two in lockstep.
           allow-licenses: MPL-2.0, Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0, Unlicense, Python-2.0, BlueOak-1.0.0
