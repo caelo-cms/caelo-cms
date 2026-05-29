@@ -49,7 +49,7 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.11.2",
     "@playwright/test": "1.59.1",
-    "@sveltejs/kit": "2.58.0",
+    "@sveltejs/kit": "2.60.1",
     "@sveltejs/vite-plugin-svelte": "7.0.0",
     "@tailwindcss/vite": "^4.2.4",
     "svelte": "5.55.5",
