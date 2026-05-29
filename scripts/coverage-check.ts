@@ -204,6 +204,16 @@ async function main(): Promise<number> {
   const thresholds = loadThresholds(JSON.parse(readFileSync(THRESHOLDS_FILE, "utf8")));
   const { unit, integration } = discoverTestFiles();
 
+  // Fail loud on an empty tier (CLAUDE.md §2): `bun test` with zero file args
+  // would run the whole suite (or emit no coverage), letting a glob/rename
+  // mistake read as a hollow pass. A real repo always has files in both tiers.
+  if (unit.length === 0)
+    throw new Error("no unit-tier test files found (*.test.ts) — check discovery");
+  if (integration.length === 0)
+    throw new Error(
+      "no integration-tier test files found (*.integration.test.ts) — check discovery",
+    );
+
   // --- Unit pass: line coverage ---
   const unitLcovDir = join(COVERAGE_DIR, "unit");
   console.log(`\n[coverage] unit tier — ${unit.length} files, measuring line coverage…`);
