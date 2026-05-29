@@ -1,0 +1,9 @@
+{
+  "_comment": "Ratchet floors for the CI coverage gate (issue #14, CLAUDE.md §6). scripts/coverage-check.ts fails the build when a tier drops below its floor. Floors are seeded from the observed baseline (unit 34.1% line coverage, integration 43.2% op-coverage = 153/354 declared ops) with a downward margin so a benign fluctuation can't red the build; raise them deliberately as coverage improves toward 'target'. The 'target' block records the §6 goals (unit 90, integration 80).",
+  "unitLinePct": 33,
+  "integrationOpPct": 42,
+  "target": {
+    "unitLinePct": 90,
+    "integrationOpPct": 80
+  }
+}

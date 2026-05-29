@@ -14,6 +14,8 @@
     "typecheck": "tsc -b && bun run --filter=@caelo-cms/admin typecheck",
     "typecheck:clean": "tsc -b --clean",
     "test": "bun test --isolate",
+    "coverage": "bun test --coverage",
+    "coverage:check": "bun run scripts/coverage-check.ts",
     "lint": "biome check . && bun run --filter=@caelo-cms/admin-core lint:audit && bun run --filter=@caelo-cms/admin-core lint:spdx",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
