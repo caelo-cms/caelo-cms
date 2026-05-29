@@ -23,6 +23,36 @@ describe("parseAndUpgradeModuleState", () => {
     expect(r.slug).toBe("hero");
   });
 
+  it("falls back type to slug for a pre-0103 snapshot that lacks type", () => {
+    // Snapshots written before migration 0103 have no `type` key. Revert
+    // must restore the NOT NULL column the same way 0103 backfilled live
+    // rows (type = slug), never empty/null. See state-schemas.ts.
+    const r = parseAndUpgradeModuleState({
+      schemaVersion: 1,
+      slug: "button-mpqxq3ch",
+      displayName: "Button",
+      html: "<p>x</p>",
+      css: "",
+      js: "",
+      deletedAt: null,
+    });
+    expect(r.type).toBe("button-mpqxq3ch");
+  });
+
+  it("preserves an explicit type when the snapshot carries one", () => {
+    const r = parseAndUpgradeModuleState({
+      schemaVersion: 1,
+      slug: "button-mpqxq3ch",
+      type: "button",
+      displayName: "Button",
+      html: "<p>x</p>",
+      css: "",
+      js: "",
+      deletedAt: null,
+    });
+    expect(r.type).toBe("button");
+  });
+
   it("throws SnapshotSchemaError when a required field is missing", () => {
     expect(() =>
       parseAndUpgradeModuleState({
