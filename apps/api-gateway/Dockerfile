@@ -10,7 +10,7 @@
 # CLAUDE.md §11.C: published to ghcr.io/caelo-cms/gateway by the
 # .github/workflows/release-images.yml workflow on every release.
 
-FROM oven/bun:1.3 AS builder
+FROM oven/bun:1.3.14 AS builder
 
 WORKDIR /repo
 
@@ -58,7 +58,7 @@ COPY packages packages/
 RUN bun run --filter @caelo-cms/shared build
 
 # ---------------------------------------------------------------------------
-FROM oven/bun:1.3-slim AS runtime
+FROM oven/bun:1.3.14-slim AS runtime
 
 WORKDIR /app
 
