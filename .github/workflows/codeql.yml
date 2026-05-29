@@ -1,0 +1,71 @@
+name: CodeQL
+
+# GitHub's free OSS static analysis for public repos (issue #26). CodeQL finds
+# class-of-vulnerability bugs (SQLi, XSS, command injection, auth bypass,
+# prototype pollution) that the heuristic AI review (#24) and human audit can
+# miss. This is the "advanced setup" (a committed workflow), chosen over
+# "default setup" so the config lives in-repo under review and the required-
+# status wiring (#23 / .github/rulesets/main.json) has a stable check to point
+# at.
+#
+# Results upload to the repo Security tab as SARIF (the `analyze` step does this
+# automatically via `security-events: write`). High-or-higher-severity findings
+# fail the "CodeQL" check; that check is wired into branch protection so it
+# blocks merge — see .github/rulesets/main.json and CONTRIBUTING.md.
+#
+# Query suite: `security-extended` (broader than the default `security`). If
+# first-run noise on the existing tree proves too high, downgrade to `security`
+# by editing the single `queries:` line below — this is the documented noise
+# lever (plan R6).
+#
+# Supply chain: GitHub-published actions pinned by major tag, matching the
+# repo-wide convention (actions/checkout@v6, oven-sh/setup-bun@v2). The
+# scripts/codeql-workflow.test.ts pin-format assertion fails the build if a
+# floating @main ref ever sneaks in.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly baseline scan of `main` (Mondays 07:13 UTC). An off-the-hour
+    # minute avoids the top-of-hour scheduler congestion GitHub warns about.
+    - cron: "13 7 * * 1"
+
+# Least privilege: CodeQL needs to write analysis results to the Security tab
+# (`security-events: write`) and read the workflow run + the tree. Nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Scoped to the job, not the workflow, so the rest of the file stays read-only.
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          # The merged JavaScript/TypeScript analysis language — covers the
+          # whole repo (apps/, packages/, scripts/) in one pass.
+          languages: javascript-typescript
+          queries: security-extended
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"
