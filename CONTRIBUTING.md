@@ -42,7 +42,7 @@ bun run license:check   # transitive license allowlist
 
 ### Coverage gate
 
-CLAUDE.md §6 mandates coverage gates in CI: **unit ≥ 90%** line coverage and **integration ≥ 80% of declared Query API ops**. `bun run coverage:check` (`scripts/coverage-check.ts`, the `Test + coverage gate` step in `ci.yml`) enforces these, and its `coverage/` output is uploaded as the `coverage-report` CI artifact (even when the gate fails).
+CLAUDE.md §6 mandates coverage gates in CI: **unit ≥ 90%** line coverage and **integration ≥ 80% of declared Query API ops**. `bun run coverage:check` (`scripts/coverage-check.ts`, the `Test + coverage gate` step in `ci.yml`) enforces these, and its `coverage/` output is uploaded as the `coverage-report` CI artifact (even when the gate fails). For the full mechanism (op-coverage instrumentation, the ratchet procedure, reading a failure), see [`docs/dev/coverage.md`](docs/dev/coverage.md).
 
 **Two tiers, by file suffix:**
 
