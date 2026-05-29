@@ -47,6 +47,9 @@ export const editModuleTool: ToolDefinitionWithHandler<
         type: "string",
         enum: ["chrome", "hero", "content", "cta", "utility"],
       },
+      // v0.12.3 (issue #106) — stable type (reusable class). Set to make
+      // this module satisfy a parent's allowedModuleTypes whitelist.
+      type: { type: "string", minLength: 1, maxLength: 64 },
       html: { type: "string" },
       css: { type: "string" },
       js: { type: "string" },
@@ -77,7 +80,7 @@ export const editModuleTool: ToolDefinitionWithHandler<
             },
             label: { type: "string", minLength: 1, maxLength: 128 },
             default: {},
-            allowedModuleSlugs: { type: "array", items: { type: "string" } },
+            allowedModuleTypes: { type: "array", items: { type: "string" } },
             min: { type: "integer", minimum: 0 },
             max: { type: "integer", minimum: 1 },
           },

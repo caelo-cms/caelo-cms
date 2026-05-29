@@ -20,6 +20,31 @@ export const slugSchema = z
     "slug must be lowercase letters, digits, or hyphens (1–64 chars, no leading/trailing hyphen)",
   );
 
+/**
+ * v0.12.3 (issue #106) — derive a module's stable `type` from its
+ * displayName. The `type` is the semantic class of a module (`button`,
+ * `hero`, `pricing-card`) shared by every instance of that class — it is
+ * what a parent module's `allowedModuleTypes` whitelist matches against.
+ *
+ * This is the slug *base* WITHOUT the `-<timestamp>` uniqueness suffix
+ * that `slugify()` appends: a module's `slug` is its unique row identity
+ * (`button-mpqxq3ch`), its `type` is the reusable class (`button`). The
+ * tool-side `slugify` composes as `deriveModuleType(name) + "-" + suffix`
+ * so the two can never diverge.
+ *
+ * Mirrors `slugify`'s normalization (lowercase, non-alphanumerics → single
+ * hyphen, trim hyphens, 40-char cap, `"module"` stem fallback) so a
+ * round-trip is predictable.
+ */
+export function deriveModuleType(displayName: string): string {
+  const base = displayName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return base.length > 0 ? base : "module";
+}
+
 /** BCP-47 shape: 2-letter language with optional 2-letter region. P9 widens this. */
 export const localeSchema = z
   .string()
@@ -56,7 +81,7 @@ const moduleJs = z.string().max(MODULE_JS_MAX, `js exceeds ${MODULE_JS_MAX} byte
  *     per element. Value shape: `Array<{ moduleId, contentInstanceId }>`.
  *
  * Schema is a discriminated union by `kind` so the validator rejects, e.g., a
- * `text` kind that carries `allowedModuleSlugs` (which only nested kinds use)
+ * `text` kind that carries `allowedModuleTypes` (which only nested kinds use)
  * or a `module-list` that carries a `default` (nested kinds populate from
  * referenced content_instances, not from defaults).
  */
@@ -136,11 +161,16 @@ const moduleFieldModuleSchema = z
     kind: z.literal("module"),
     label: moduleFieldLabel,
     /**
-     * Optional whitelist of module slugs that may fill this slot. When
-     * absent, any module is permitted. The op-layer validator enforces
-     * the whitelist at `set_content_instance_values` time.
+     * Optional whitelist of module *types* that may fill this slot (the
+     * stable `modules.type` class, e.g. `button` — NOT the unique
+     * `modules.slug` like `button-mpqxq3ch`). When absent, any module is
+     * permitted. The op-layer validator enforces the whitelist against
+     * the referenced module's `type` at `set_content_instance_values`
+     * time. v0.12.3 (issue #106) renamed this from `allowedModuleSlugs`:
+     * an exact-slug whitelist could never match an AI-minted module
+     * because every minted slug carries a uniqueness suffix.
      */
-    allowedModuleSlugs: z.array(slugSchema).max(32).optional(),
+    allowedModuleTypes: z.array(slugSchema).max(32).optional(),
   })
   .strict();
 
@@ -149,7 +179,9 @@ const moduleFieldModuleListSchema = z
     name: moduleFieldName,
     kind: z.literal("module-list"),
     label: moduleFieldLabel,
-    allowedModuleSlugs: z.array(slugSchema).max(32).optional(),
+    /** v0.12.3 (issue #106) — whitelist of stable module `type`s (not
+     *  unique slugs). See `moduleFieldModuleSchema.allowedModuleTypes`. */
+    allowedModuleTypes: z.array(slugSchema).max(32).optional(),
     /** Minimum count of elements. Validator enforces at write time. */
     min: z.number().int().nonnegative().optional(),
     /** Maximum count of elements. Validator enforces at write time. */
@@ -250,6 +282,15 @@ export const moduleCreateSchema = z
     displayName: displayNameSchema,
     description: moduleDescription.default(""),
     kind: moduleKindSchema.default("content"),
+    /**
+     * v0.12.3 (issue #106) — stable semantic class shared by every
+     * instance of this module (`button`, `pricing-card`). What a parent
+     * module's `allowedModuleTypes` whitelist matches against. Optional:
+     * when omitted, `modules.create` derives it from `displayName` via
+     * `deriveModuleType()`. Pass it explicitly to reuse an existing
+     * class (e.g. a second `button` variant should share `type: "button"`).
+     */
+    type: slugSchema.optional(),
     html: moduleHtml,
     css: moduleCss.default(""),
     js: moduleJs.default(""),
@@ -263,6 +304,8 @@ export const moduleUpdateSchema = z
     displayName: displayNameSchema.optional(),
     description: moduleDescription.optional(),
     kind: moduleKindSchema.optional(),
+    /** v0.12.3 (issue #106) — re-classify a module's stable `type`. */
+    type: slugSchema.optional(),
     html: moduleHtml.optional(),
     css: moduleCss.optional(),
     js: moduleJs.optional(),

@@ -22,6 +22,7 @@ import {
   MODULE_JS_MAX,
   moduleFieldSchema,
   setPlacementContentSchema,
+  slugSchema,
 } from "./content.js";
 
 /**
@@ -55,6 +56,13 @@ export const editModuleToolInput = z
     description: z.string().max(1000).optional(),
     /** v0.12.0 — re-classify the module's role tag. */
     kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
+    /**
+     * v0.12.3 (issue #106) — re-classify the module's stable `type` (the
+     * class a parent's `allowedModuleTypes` whitelist matches against,
+     * e.g. `button`). Rarely needed; usually derived from displayName at
+     * create time. Set it to make this module satisfy a parent's allowlist.
+     */
+    type: slugSchema.optional(),
     html: z.string().max(MODULE_HTML_MAX).optional(),
     css: z.string().max(MODULE_CSS_MAX).optional(),
     js: z.string().max(MODULE_JS_MAX).optional(),
@@ -119,6 +127,15 @@ export const addModuleToPageToolInput = z
     description: z.string().max(1000).optional(),
     /** v0.12.0 — coarse role tag for the `## Modules` block. */
     kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
+    /**
+     * v0.12.3 (issue #106) — stable `type` (the reusable class, e.g.
+     * `button`) a parent module's `allowedModuleTypes` whitelist matches
+     * against. Optional — derived from displayName when omitted. Pass it
+     * to mint an instance of an existing class (a second `button`
+     * variant should share `type: "button"` so it satisfies a CTA's
+     * allowlist).
+     */
+    type: slugSchema.optional(),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),

@@ -110,6 +110,10 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
         type: "string",
         enum: ["chrome", "hero", "content", "cta", "utility"],
       },
+      // v0.12.3 (issue #106) — stable type (reusable class, e.g. `button`).
+      // Derived from displayName when omitted; pass it to mint an instance
+      // of an existing class so it satisfies a parent's allowedModuleTypes.
+      type: { type: "string", minLength: 1, maxLength: 64 },
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
       js: { type: "string", maxLength: 50_000 },
@@ -140,7 +144,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
             },
             label: { type: "string", minLength: 1, maxLength: 128 },
             default: {},
-            allowedModuleSlugs: { type: "array", items: { type: "string" } },
+            allowedModuleTypes: { type: "array", items: { type: "string" } },
             min: { type: "integer", minimum: 0 },
             max: { type: "integer", minimum: 1 },
           },
@@ -163,6 +167,9 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
       // for why the AI SHOULD pass them.
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      // v0.12.3 (issue #106) — forward an AI-authored stable type; the op
+      // derives it from displayName when omitted.
+      ...(input.type !== undefined ? { type: input.type } : {}),
       html: input.html,
       css: input.css ?? "",
       js: input.js ?? "",

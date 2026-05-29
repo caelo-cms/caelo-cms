@@ -26,11 +26,12 @@ export async function loadModuleState(
   moduleId: string,
 ): Promise<ModuleState | null> {
   const rows = (await tx.execute(sql`
-    SELECT slug, display_name, html, css, js, fields, deleted_at
+    SELECT slug, display_name, type, html, css, js, fields, deleted_at
     FROM modules WHERE id = ${moduleId}::uuid LIMIT 1
   `)) as unknown as {
     slug: string;
     display_name: string;
+    type: string | null;
     html: string;
     css: string;
     js: string;
@@ -44,6 +45,9 @@ export async function loadModuleState(
     schemaVersion: 1,
     slug: r.slug,
     displayName: r.display_name,
+    // v0.12.3 — `type` is NOT NULL post-0103; tolerate a null only for
+    // an in-flight pre-migration row by falling back to slug.
+    type: r.type ?? r.slug,
     html: r.html,
     css: r.css,
     js: r.js,
@@ -202,8 +206,10 @@ export async function loadModuleStateWithBranchOverlay(
     `)) as unknown as { state: unknown }[];
     const row = rows[0];
     if (row !== undefined) {
-      const raw = typeof row.state === "string" ? JSON.parse(row.state) : row.state;
-      return raw as ModuleState;
+      const raw = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as ModuleState;
+      // v0.12.3 — a branched snapshot written before 0103 lacks `type`;
+      // fall back to slug so downstream consumers always see a value.
+      return raw.type ? raw : { ...raw, type: raw.slug };
     }
   }
   return loadModuleState(tx, moduleId);
