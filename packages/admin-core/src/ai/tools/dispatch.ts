@@ -144,6 +144,14 @@ export interface ToolResult {
   readonly value?: unknown;
 }
 
+/**
+ * JSON Schema (draft-07-ish) object handed to the AI provider for a tool's
+ * arguments. Hand-authored next to each tool's Zod schema (we don't ship a
+ * zod-to-json-schema dep). Aliased so the per-turn `describeSchema` hook and
+ * the static `inputSchema` share one self-documenting contract.
+ */
+export type ToolInputSchema = Record<string, unknown>;
+
 export interface ToolDefinitionWithHandler<I> {
   readonly name: string;
   /** Static fallback description. Used when `describe()` is absent, when
@@ -175,7 +183,7 @@ export interface ToolDefinitionWithHandler<I> {
    * Throwing falls back to the static `inputSchema` silently (mirrors
    * `describe`). Return the FULL schema object, not a patch.
    */
-  readonly describeSchema?: (state: ToolDescribeState) => Record<string, unknown>;
+  readonly describeSchema?: (state: ToolDescribeState) => ToolInputSchema;
   /**
    * v0.6.0 W5 — SDK-6-inspired approval gate. When set and returns
    * `true` for the parsed args, the dispatcher emits a structured
@@ -215,7 +223,7 @@ export interface ToolDefinitionWithHandler<I> {
   /** JSON Schema for the provider — Zod doesn't ship this directly so we
    * hand-author next to the schema. Easier to keep aligned than to install
    * a Zod-to-JSON-Schema dependency for two tools. */
-  readonly inputSchema: Record<string, unknown>;
+  readonly inputSchema: ToolInputSchema;
   readonly handler: (ctx: ExecutionContext, input: I, toolCtx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -242,7 +250,7 @@ export class ToolRegistry {
    */
   catalogue(
     state?: ToolDescribeState,
-  ): { name: string; description: string; inputSchema: Record<string, unknown> }[] {
+  ): { name: string; description: string; inputSchema: ToolInputSchema }[] {
     return [...this.#tools.values()].map((t) => {
       let description = t.description;
       if (state && t.describe) {
