@@ -143,7 +143,7 @@ Landed in P6.5. Conventions any session touching admin UI should follow:
 - **Input validation before the Query API, not inside it.** The Validator enforces shape; handlers trust their inputs.
 - **Public writes require CAPTCHA/PoW, rate limits, and honeypots.** No exceptions — AI-authored plugin endpoints must honour this.
 - **All AI actions and DB ops pass through the audit log.** Logging is not optional; a code path that skips it is a bug.
-- **Dependency review on every PR.** New deps justified in the PR description.
+- **Dependency review on every PR.** New deps justified in the PR description. Enforced mechanically by CodeQL static analysis (merge-blocking), the dependency-review workflow (high-severity vulns + license allow-list), and repo secret scanning + push protection — see [`docs/dev/codeql.md`](./docs/dev/codeql.md).
 
 ---
 
