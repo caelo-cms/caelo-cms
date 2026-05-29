@@ -34,10 +34,22 @@ Verify everything passes locally before opening a PR:
 bun run lint            # biome + audit-callsites + SPDX
 bun run typecheck       # tsc -b across the whole workspace
 bun test                # unit + integration tests; needs Postgres up
+bun run coverage:check  # coverage gate — enforces per-tier ratchet floors (see "Coverage gate" below); needs Postgres up
 bun run knip            # dead-code gate — unused files / exports / deps (see docs/dev/knip.md)
 bun run circular        # circular-dependency gate — fails on any runtime import cycle (see docs/dev/madge.md)
 bun run license:check   # transitive license allowlist
 ```
+
+### Coverage gate
+
+CLAUDE.md §6 mandates coverage gates in CI: **unit ≥ 90%** line coverage and **integration ≥ 80% of declared Query API ops**. `bun run coverage:check` (`scripts/coverage-check.ts`, the `Test + coverage gate` step in `ci.yml`) enforces these, and its `coverage/` output is uploaded as the `coverage-report` CI artifact (even when the gate fails).
+
+**Two tiers, by file suffix:**
+
+- **Unit tier** — every `*.test.ts` that is *not* `*.integration.test.ts`. Metric: pooled lcov line-coverage % from `bun test --coverage`.
+- **Integration tier** — `*.integration.test.ts`. Metric: op-coverage = (declared Query API ops exercised by the suite) ÷ (declared ops). The pass runs with `CAELO_OP_COVERAGE=1`, which makes `defineOperation` append each exercised op name to `coverage/op-coverage.jsonl`; the declared set comes from `registerAdminOps(new OperationRegistry()).names()`. Name a new test `*.integration.test.ts` only if it touches Postgres; otherwise it's a unit test.
+
+**Floors, targets, and the ratchet.** The 90/80 figures are the *targets*. What CI actually enforces is a **floor** stored in `scripts/coverage-thresholds.json`, seeded below current coverage so the gate is green today and a benign fluctuation can't red the build. The gate fails only when a tier drops **below its floor**. When you add tests and coverage rises, raise the matching floor in that JSON file in the same PR — that's the ratchet, and it's a deliberate one-line edit, never automatic. Lowering a floor needs an explicit justification in the PR description. Targets to ratchet toward live in the file's `target` block.
 
 ## What kinds of contributions we want
 
