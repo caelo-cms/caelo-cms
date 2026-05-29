@@ -112,6 +112,16 @@ jobs:
         # `github-actions` reporter emits inline annotations on the PR.
         run: bun run knip:strict
 
+      - name: Circular dependencies (madge)
+        # Issue #13 — madge fails the build on any new runtime import
+        # cycle (`madge --circular apps packages`, exit non-zero on a
+        # cycle). Sits next to knip: both are fast static gates that
+        # need only the earlier `bun install`, no Postgres. `.madgerc`
+        # sets skipTypeImports so type-only edges (erased under
+        # verbatimModuleSyntax) don't count as runtime cycles. See
+        # docs/dev/madge.md.
+        run: bun run circular
+
       - name: Lockstep version check
         # P20 — every workspace package.json + version.ts must agree.
         # Catches PRs that hand-edit a single package's version field

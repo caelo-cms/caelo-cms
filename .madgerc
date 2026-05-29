@@ -1,0 +1,16 @@
+{
+  "fileExtensions": ["ts", "tsx"],
+  "tsConfig": "tsconfig.base.json",
+  "excludeRegExp": [
+    "(^|/)node_modules(/|$)",
+    "(^|/)dist(/|$)",
+    "(^|/)build(/|$)",
+    "(^|/)output(/|$)",
+    "(^|/)\\.svelte-kit(/|$)",
+    "\\.test\\.ts$"
+  ],
+  "detectiveOptions": {
+    "ts": { "skipTypeImports": true },
+    "tsx": { "skipTypeImports": true }
+  }
+}
