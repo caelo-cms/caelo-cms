@@ -28,7 +28,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { addModuleToTemplateToolInput, deriveModuleType } from "@caelo-cms/shared";
+import { addModuleToTemplateToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -60,13 +60,6 @@ function describeError(error: unknown): string {
   if (typeof e.message === "string") return e.message;
   if (typeof e.detail === "string") return e.detail;
   return e.kind ?? "unknown";
-}
-
-// v0.12.3 (issue #106) — slug = stable type base + uniqueness suffix, so
-// the module's `type` (derived by modules.create) is always a prefix of
-// its slug.
-function slugify(displayName: string): string {
-  return `${deriveModuleType(displayName)}-${Date.now().toString(36)}`;
 }
 
 export const addModuleToTemplateTool: ToolDefinitionWithHandler<
@@ -157,7 +150,7 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     const gate = await checkColdStartGate(ctx, toolCtx, "add_module_to_template");
     if (gate.blocked) return gate.gateResult!;
 
-    const slug = slugify(input.displayName);
+    const slug = slugifyModuleName(input.displayName);
     const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
       slug,
       displayName: input.displayName,

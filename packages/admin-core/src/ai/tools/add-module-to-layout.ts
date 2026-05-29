@@ -16,7 +16,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { addModuleToLayoutToolInput, deriveModuleType } from "@caelo-cms/shared";
+import { addModuleToLayoutToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -25,11 +25,6 @@ interface LayoutDetail {
   id: string;
   slug: string;
   blocks: { name: string; displayName: string; position: number }[];
-}
-
-// v0.12.3 (issue #106) — slug = stable type base + uniqueness suffix.
-function slugify(displayName: string): string {
-  return `${deriveModuleType(displayName)}-${Date.now().toString(36)}`;
 }
 
 export const addModuleToLayoutTool: ToolDefinitionWithHandler<
@@ -154,7 +149,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
         },
       };
     }
-    const slug = slugify(input.displayName);
+    const slug = slugifyModuleName(input.displayName);
     const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
       slug,
       displayName: input.displayName,

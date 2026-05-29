@@ -20,7 +20,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { composePageFromSpecToolInput, deriveModuleType } from "@caelo-cms/shared";
+import { composePageFromSpecToolInput, slugifyModuleSection } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -29,13 +29,6 @@ interface PageWithModules {
   id: string;
   templateId: string;
   blocks: { blockName: string; modules: { moduleId: string }[] }[];
-}
-
-// v0.12.3 (issue #106) — slug = stable type base + index + uniqueness
-// suffix. The index keeps two same-named sections from colliding on the
-// unique slug constraint; modules.create derives `type` from displayName.
-function slugify(displayName: string, idx: number): string {
-  return `${deriveModuleType(displayName)}-${idx}-${Date.now().toString(36)}`;
 }
 
 export const composePageFromSpecTool: ToolDefinitionWithHandler<
@@ -186,7 +179,7 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
     for (let i = 0; i < input.sections.length; i++) {
       const section = input.sections[i];
       if (!section) continue;
-      const slug = slugify(section.displayName, i);
+      const slug = slugifyModuleSection(section.displayName, i);
       const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
         slug,
         displayName: section.displayName,

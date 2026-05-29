@@ -45,6 +45,37 @@ export function deriveModuleType(displayName: string): string {
   return base.length > 0 ? base : "module";
 }
 
+/**
+ * v0.12.3 (issue #106) — mint a unique module slug from a displayName:
+ * the stable `type` base (`deriveModuleType`) + a base36 timestamp
+ * suffix. Because the slug is always `type + "-" + suffix`, a module's
+ * `type` is guaranteed to be a prefix of its `slug` — the two can never
+ * drift. Shared by every module-minting AI tool so the rule lives in one
+ * place.
+ *
+ * @param suffix - override the uniqueness suffix (defaults to a base36
+ *   timestamp). Pass a stable value in tests for determinism.
+ */
+export function slugifyModuleName(
+  displayName: string,
+  suffix: string = Date.now().toString(36),
+): string {
+  return `${deriveModuleType(displayName)}-${suffix}`;
+}
+
+/**
+ * v0.12.3 (issue #106) — slug for a module minted per page-section
+ * (`compose_page_from_spec`). Includes the section index so two sections
+ * sharing a displayName don't collide on the unique slug constraint.
+ */
+export function slugifyModuleSection(
+  displayName: string,
+  idx: number,
+  suffix: string = Date.now().toString(36),
+): string {
+  return `${deriveModuleType(displayName)}-${idx}-${suffix}`;
+}
+
 /** BCP-47 shape: 2-letter language with optional 2-letter region. P9 widens this. */
 export const localeSchema = z
   .string()
