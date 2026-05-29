@@ -81,6 +81,24 @@ export const moveModuleTool: ToolDefinitionWithHandler<
         content: `module is already in block "${input.toBlockName}" — use reorder_module to change its position within the block`,
       };
     }
+    // v0.12.3 (issue #106) — pages.get_with_modules returns ALL template
+    // blocks (incl. empty ones), so a toBlockName absent from this list is
+    // genuinely not a slot on the page's template. Fail loud + AI-actionable
+    // here (matching add_module_to_page) instead of pushing a phantom block
+    // and leaning on pages.set_modules' generic rejection. Defense-in-depth:
+    // set_modules still validates too.
+    if (!detail.blocks.some((b) => b.blockName === input.toBlockName)) {
+      const allowed = detail.blocks.map((b) => b.blockName).join(", ");
+      return {
+        ok: false,
+        content: `block "${input.toBlockName}" does not exist on this page's template. Available blocks: ${allowed}`,
+        nextAction: {
+          tool: "inspect_page_render",
+          args: { pageId: input.pageId },
+          reason: `the page's template defines blocks [${allowed}]; pick one of those for toBlockName and retry`,
+        },
+      };
+    }
     const blocks = detail.blocks.map((b) => {
       if (b.blockName === fromBlock) {
         return {
@@ -106,12 +124,6 @@ export const moveModuleTool: ToolDefinitionWithHandler<
         moduleIds: b.modules.map((m) => m.moduleId),
       };
     });
-    // If the destination block isn't currently on the page (no modules
-    // there yet), set_modules's template-block check will accept it;
-    // we add a fresh entry so the splice persists.
-    if (!blocks.some((b) => b.blockName === input.toBlockName)) {
-      blocks.push({ blockName: input.toBlockName, moduleIds: [input.moduleId] });
-    }
     const setRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_modules", {
       pageId: input.pageId,
       blocks,
