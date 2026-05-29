@@ -248,6 +248,11 @@ async function main(): Promise<number> {
   const unitExit = runTests(
     unit,
     [
+      // `--isolate` matches the canonical `bun test --isolate` CI path: the
+      // bunfig preload (scripts/test-preload.ts) re-registers its per-file
+      // hooks only under isolation, so dropping it here would give the gate
+      // different pass/fail semantics than the suite it's meant to gate.
+      "--isolate",
       "--coverage",
       "--coverage-reporter=lcov",
       "--coverage-reporter=text",
