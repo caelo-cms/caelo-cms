@@ -11,7 +11,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { moveModuleToolInput } from "@caelo-cms/shared";
-import { withBlockNameEnum } from "./_block-name-enum.js";
+import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -88,16 +88,12 @@ export const moveModuleTool: ToolDefinitionWithHandler<
     // and leaning on pages.set_modules' generic rejection. Defense-in-depth:
     // set_modules still validates too.
     if (!detail.blocks.some((b) => b.blockName === input.toBlockName)) {
-      const allowed = detail.blocks.map((b) => b.blockName).join(", ");
-      return {
-        ok: false,
-        content: `block "${input.toBlockName}" does not exist on this page's template. Available blocks: ${allowed}`,
-        nextAction: {
-          tool: "inspect_page_render",
-          args: { pageId: input.pageId },
-          reason: `the page's template defines blocks [${allowed}]; pick one of those for toBlockName and retry`,
-        },
-      };
+      return blockNotFoundError({
+        blockName: input.toBlockName,
+        blockNames: detail.blocks.map((b) => b.blockName),
+        pageId: input.pageId,
+        argName: "toBlockName",
+      });
     }
     const blocks = detail.blocks.map((b) => {
       if (b.blockName === fromBlock) {

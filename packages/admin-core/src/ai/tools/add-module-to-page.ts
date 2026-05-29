@@ -17,7 +17,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { addModuleToPageToolInput, slugifyModuleName } from "@caelo-cms/shared";
-import { withBlockNameEnum } from "./_block-name-enum.js";
+import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -201,20 +201,15 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
     const page = (got.value as { page: PageWithModules }).page;
     const targetBlock = page.blocks.find((b) => b.blockName === input.blockName);
     if (!targetBlock) {
-      const allowed = page.blocks.map((b) => b.blockName).join(", ");
-      // v0.6.0 W3 — surface a nextAction pointing at inspect_page_render
-      // so the AI sees the live block names without a list_* call.
-      // Not autoExecute (the recovery doesn't mechanically rewrite the
-      // failed args — the AI has to pick a different blockName).
-      return {
-        ok: false,
-        content: `block "${input.blockName}" does not exist on this page's template. Available blocks: ${allowed}`,
-        nextAction: {
-          tool: "inspect_page_render",
-          args: { pageId: input.pageId },
-          reason: `the page's template defines blocks [${allowed}]; pick one of those for blockName and retry`,
-        },
-      };
+      // v0.12.3 (issue #106) — shared AI-actionable error (identical body
+      // to move_module) so the two block-name failure paths can't drift.
+      // Not autoExecute: the AI must pick a different blockName.
+      return blockNotFoundError({
+        blockName: input.blockName,
+        blockNames: page.blocks.map((b) => b.blockName),
+        pageId: input.pageId,
+        argName: "blockName",
+      });
     }
 
     const existingIds = targetBlock.modules.map((m) => m.moduleId);
