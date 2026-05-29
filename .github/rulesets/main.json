@@ -54,7 +54,7 @@
           },
           {
             "context": "CodeQL",
-            "_note": "Code-scanning check emitted by .github/workflows/codeql.yml (issue #26). Blocks merge until CodeQL analysis passes; high-or-higher-severity findings fail it. The merge-time severity threshold is set in repo Settings -> Code security -> Protection rules. CAUTION: confirm this context string matches the name GitHub reports on a real CodeQL run before applying via `bun run rulesets:apply` — a non-existent required check would block all merges (plan R1)."
+            "_note": "Code-scanning RESULTS check emitted by GitHub for .github/workflows/codeql.yml (issue #26). This is GitHub's single tool-named check ('CodeQL'), distinct from the per-language 'Analyze (javascript-typescript)' / 'Analyze (actions)' Actions job checks — it is the severity-aware merge blocker AC#4 needs. Confirmed against PR #103: a check literally named 'CodeQL' was emitted and passed, so this context is correct. Blocks merge until CodeQL analysis passes; high-or-higher-severity findings fail it. The merge-time severity threshold is set in repo Settings -> Code security -> Protection rules."
           }
         ]
       }
