@@ -52,8 +52,16 @@ const MODULE_FIELD_ITEM_SCHEMA: Record<string, unknown> = {
     label: { type: "string", minLength: 1, maxLength: 128 },
     default: {},
     // issue #106 — `module`/`module-list` fields constrain nested refs to
-    // modules whose stable `type` is in this allowlist.
-    allowedModuleTypes: { type: "array", items: { type: "string" } },
+    // modules whose stable `type` is in this allowlist. Mirror the Zod
+    // bound `z.array(slugSchema).max(32)` exactly: a slug-shaped pattern
+    // + maxItems 32 so the provider cannot generate an allowlist entry the
+    // Validator then rejects (the same provider-vs-Zod divergence class the
+    // footer bug came from). slugSchema regex = ^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$.
+    allowedModuleTypes: {
+      type: "array",
+      maxItems: 32,
+      items: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
+    },
     min: { type: "integer", minimum: 0 },
     max: { type: "integer", minimum: 1 },
   },

@@ -22,7 +22,10 @@ interface FieldsArraySchema {
     type: string;
     additionalProperties: boolean;
     required: string[];
-    properties: { kind: { type: string; enum: string[] } };
+    properties: {
+      kind: { type: string; enum: string[] };
+      allowedModuleTypes: { type: string; maxItems?: number; items: { pattern?: string } };
+    };
   };
 }
 
@@ -46,5 +49,16 @@ describe("MODULE_FIELDS_JSON_SCHEMA — provider schema mirrors the Zod validato
   it("declares the same required keys + strictness as moduleFieldSchema", () => {
     expect([...item.required].sort()).toEqual(["kind", "label", "name"]);
     expect(item.additionalProperties).toBe(false);
+  });
+
+  it("constrains allowedModuleTypes to mirror the Zod bound z.array(slugSchema).max(32)", () => {
+    // Without this the provider could generate a non-slug or >32-entry
+    // allowlist the Validator then rejects — the same provider-vs-Zod
+    // divergence class as the footer bug.
+    const amt = item.properties.allowedModuleTypes;
+    expect(amt.type).toBe("array");
+    expect(amt.maxItems).toBe(32);
+    // items pattern must be the slug regex (so a non-slug entry can't be generated).
+    expect(amt.items.pattern).toBe("^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$");
   });
 });
