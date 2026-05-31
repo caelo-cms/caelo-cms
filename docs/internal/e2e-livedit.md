@@ -151,6 +151,8 @@ content-shape rather than literal strings the AI wrote.
 | Closing vision verdict `ok: true` | Page renders structurally (heading + body, no broken layout). |
 | Same `page_modules` keys before/after re-edit | Re-edit didn't churn placements (add/delete/reorder). |
 | ≥1 `page_module_content.updated_at` advanced, <total | Edit landed on one content row, not all. |
+| `transcript-failure-count == 0` after a footer-nav prompt (`scenario-ai-layout-footer`) | issue #106: `add_module_to_layout` was emitted, not narrated-then-dropped — the field-schema enum gap that made `link-list` unrepresentable is closed. |
+| `layout_modules` row in the `footer` block whose module has a `link-list` field (`scenario-ai-layout-footer`) | issue #106 / §1A: the footer nav is a single list field, not numbered `label1`/`label2` scalars. |
 
 ## Why the suite diverges from the issue's `docker-compose.test.yml`
 

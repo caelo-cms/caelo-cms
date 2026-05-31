@@ -11,8 +11,8 @@
  * instead of in a live e2e run.
  */
 
-import { MODULE_FIELD_KINDS } from "@caelo-cms/shared";
 import { describe, expect, it } from "bun:test";
+import { MODULE_FIELD_KINDS } from "@caelo-cms/shared";
 import { MODULE_FIELDS_JSON_SCHEMA } from "../_module-fields-schema.js";
 
 /** Narrow the `Record<string, unknown>` schema to the bits we assert on. */
