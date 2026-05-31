@@ -14,7 +14,7 @@
  *   - Cross-plugin RLS: a second plugin sharing schema shape can't read forms data.
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, setDefaultTimeout } from "bun:test";
 import {
   handleRequest,
   invalidateGatewaySettings,
@@ -116,6 +116,14 @@ afterEach(async () => {
 afterAll(async () => {
   await adapter.close();
 });
+
+// Each Forms (Tier-2) plugin op spawns a Deno sandbox subprocess. Under the
+// full `bun test --isolate` run (154 files in parallel) subprocess startup
+// contends for CPU and the default 30s per-test budget is exceeded, even
+// though every test here finishes in <1s in isolation. Raise the budget so
+// the real-Postgres + Deno-subprocess path is not a false timeout.
+// (issue #106 step-12 follow-up; the forms plugin itself is unchanged.)
+setDefaultTimeout(120_000);
 
 describe("Forms plugin end-to-end (P12 PR2)", () => {
   it("create_form + submit (via gateway) + list_submissions round-trip", async () => {
