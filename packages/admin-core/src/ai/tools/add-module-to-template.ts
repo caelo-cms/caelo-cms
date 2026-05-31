@@ -30,6 +30,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { addModuleToTemplateToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
+import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageRow {
@@ -122,27 +123,10 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
       js: { type: "string", maxLength: 50_000 },
-      // v0.5.21 — module field schema (v0.4.0 split). When the AI
-      // creates a module that uses {{name}} substitutions, declare
-      // them here. Page placements fill via set_page_module_content.
-      fields: {
-        type: "array",
-        maxItems: 64,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name", "kind", "label"],
-          properties: {
-            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-            kind: {
-              type: "string",
-              enum: ["text", "richtext", "url", "image", "number", "boolean", "link"],
-            },
-            label: { type: "string", minLength: 1, maxLength: 128 },
-            default: {},
-          },
-        },
-      },
+      // issue #106 — shared field schema (full kind enum incl. list +
+      // nested-module kinds), so a template-wide nav/list module is
+      // representable. See `_module-fields-schema.ts`.
+      fields: MODULE_FIELDS_JSON_SCHEMA,
     },
   },
   handler: async (ctx, input, toolCtx) => {

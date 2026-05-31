@@ -19,6 +19,7 @@ import { execute } from "@caelo-cms/query-api";
 import { addModuleToPageToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
+import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
@@ -75,39 +76,9 @@ const ADD_MODULE_TO_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
     html: { type: "string", minLength: 1, maxLength: 50_000 },
     css: { type: "string", maxLength: 50_000 },
     js: { type: "string", maxLength: 50_000 },
-    fields: {
-      type: "array",
-      maxItems: 64,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["name", "kind", "label"],
-        properties: {
-          name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-          kind: {
-            type: "string",
-            enum: [
-              "text",
-              "richtext",
-              "url",
-              "image",
-              "number",
-              "boolean",
-              "link",
-              "text-list",
-              "link-list",
-              "module",
-              "module-list",
-            ],
-          },
-          label: { type: "string", minLength: 1, maxLength: 128 },
-          default: {},
-          allowedModuleTypes: { type: "array", items: { type: "string" } },
-          min: { type: "integer", minimum: 0 },
-          max: { type: "integer", minimum: 1 },
-        },
-      },
-    },
+    // issue #106 — shared field schema (single source of truth across all
+    // module-authoring tools). See `_module-fields-schema.ts`.
+    fields: MODULE_FIELDS_JSON_SCHEMA,
   },
 };
 

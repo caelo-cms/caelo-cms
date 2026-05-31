@@ -19,6 +19,7 @@ import { execute } from "@caelo-cms/query-api";
 import { addModuleToLayoutToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { describeError } from "./_describe-error.js";
+import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface LayoutDetail {
@@ -86,26 +87,12 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
       js: { type: "string", maxLength: 50_000 },
-      // v0.5.21 — module field schema (v0.4.0 split). See edit_module
-      // for the per-field shape; same validation rules apply here.
-      fields: {
-        type: "array",
-        maxItems: 64,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name", "kind", "label"],
-          properties: {
-            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-            kind: {
-              type: "string",
-              enum: ["text", "richtext", "url", "image", "number", "boolean", "link"],
-            },
-            label: { type: "string", minLength: 1, maxLength: 128 },
-            default: {},
-          },
-        },
-      },
+      // issue #106 — shared field schema (full kind enum incl. list +
+      // nested-module kinds). A footer nav is a `link-list` field per
+      // CLAUDE.md §1A; the old restricted 7-primitive enum made that
+      // unrepresentable, so the provider could not emit a valid footer-nav
+      // call and silently ended the turn. See `_module-fields-schema.ts`.
+      fields: MODULE_FIELDS_JSON_SCHEMA,
     },
   },
   handler: async (ctx, input, toolCtx) => {

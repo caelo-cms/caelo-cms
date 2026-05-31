@@ -16,6 +16,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { editModuleToolInput } from "@caelo-cms/shared";
+import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const editModuleTool: ToolDefinitionWithHandler<
@@ -54,39 +55,9 @@ export const editModuleTool: ToolDefinitionWithHandler<
       html: { type: "string" },
       css: { type: "string" },
       js: { type: "string" },
-      fields: {
-        type: "array",
-        maxItems: 64,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name", "kind", "label"],
-          properties: {
-            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-            kind: {
-              type: "string",
-              enum: [
-                "text",
-                "richtext",
-                "url",
-                "image",
-                "number",
-                "boolean",
-                "link",
-                "text-list",
-                "link-list",
-                "module",
-                "module-list",
-              ],
-            },
-            label: { type: "string", minLength: 1, maxLength: 128 },
-            default: {},
-            allowedModuleTypes: { type: "array", items: { type: "string" } },
-            min: { type: "integer", minimum: 0 },
-            max: { type: "integer", minimum: 1 },
-          },
-        },
-      },
+      // issue #106 — shared field schema (single source of truth across all
+      // module-authoring tools). See `_module-fields-schema.ts`.
+      fields: MODULE_FIELDS_JSON_SCHEMA,
     },
   },
   handler: async (ctx, input, toolCtx) => {
