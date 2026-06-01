@@ -63,6 +63,44 @@ describe("positionInputSchema (v0.6.2)", () => {
     expect(positionInputSchema.safeParse("1e2").success).toBe(false);
   });
 
+  // issue #106 (step-13 round-6) — the model sometimes OVER-quotes the
+  // literal, emitting the JSON string `"\"bottom\""` (the value WITH its
+  // surrounding quote characters) rather than `bottom`. The outer
+  // stripSurroundingQuotes preprocess unwraps one layer of matching quotes so
+  // these normalize instead of failing with a bare `Invalid input`.
+  describe("over-quoted literals (issue #106 round-6)", () => {
+    it("accepts an over-quoted 'bottom' / 'top'", () => {
+      const rb = positionInputSchema.safeParse('"bottom"');
+      expect(rb.success).toBe(true);
+      if (rb.success) expect(rb.data).toBe("bottom");
+
+      const rt = positionInputSchema.safeParse('"top"');
+      expect(rt.success).toBe(true);
+      if (rt.success) expect(rt.data).toBe("top");
+    });
+
+    it("accepts an over-quoted digit string and still coerces it to a number", () => {
+      const r = positionInputSchema.safeParse('"0"');
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data).toBe(0);
+    });
+
+    it("unwraps single-quoted literals too", () => {
+      const r = positionInputSchema.safeParse("'bottom'");
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data).toBe("bottom");
+    });
+
+    it("still rejects garbage even when over-quoted (no silent fallback, §2)", () => {
+      expect(positionInputSchema.safeParse('"middle"').success).toBe(false);
+      expect(positionInputSchema.safeParse('"abc"').success).toBe(false);
+      // only ONE layer is stripped — a doubly-quoted value stays invalid
+      expect(positionInputSchema.safeParse('""bottom""').success).toBe(false);
+      expect(positionInputSchema.safeParse(null).success).toBe(false);
+      expect(positionInputSchema.safeParse(undefined).success).toBe(false);
+    });
+  });
+
   it("propagates to addModuleToPageToolInput", () => {
     const r = addModuleToPageToolInput.safeParse({
       pageId: UUID,
