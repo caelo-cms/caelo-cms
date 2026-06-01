@@ -145,7 +145,14 @@ describe("blockName enum threads activePageId -> provider tools (AC #1, #106 opt
 
     const provider = new CapturingProvider();
     for await (const _ev of runChatTurn(
-      { adapter, registry, provider, tools: toolsFor(new ToolRegistry()), aiCtx: AI, humanCtx: HUMAN },
+      {
+        adapter,
+        registry,
+        provider,
+        tools: toolsFor(new ToolRegistry()),
+        aiCtx: AI,
+        humanCtx: HUMAN,
+      },
       { chatSessionId, content: "add something to this page", chips: [], activePageId: pageId },
     )) {
       // drain
@@ -167,7 +174,14 @@ describe("blockName enum threads activePageId -> provider tools (AC #1, #106 opt
 
     const provider = new CapturingProvider();
     for await (const _ev of runChatTurn(
-      { adapter, registry, provider, tools: toolsFor(new ToolRegistry()), aiCtx: AI, humanCtx: HUMAN },
+      {
+        adapter,
+        registry,
+        provider,
+        tools: toolsFor(new ToolRegistry()),
+        aiCtx: AI,
+        humanCtx: HUMAN,
+      },
       { chatSessionId, content: "general question", chips: [] },
     )) {
       // drain

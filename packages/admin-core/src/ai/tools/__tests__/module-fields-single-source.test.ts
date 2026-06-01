@@ -13,9 +13,9 @@
  * literal (the drift vector).
  */
 
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "bun:test";
 
 const TOOLS_DIR = join(import.meta.dir, "..");
 

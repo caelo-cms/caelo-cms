@@ -206,7 +206,11 @@ export function isLegitimateTextOnlyTurn(text: string): boolean {
   if (t.length === 0) return false; // empty → the empty-response path, not a nudge
   // A clarifying question is a legitimate text-only turn.
   if (/\?\s*$/.test(t)) return true;
-  if (/\b(would you|should i|do you want|want me to|shall i|let me know|which (option|one)|or should i)\b/i.test(t))
+  if (
+    /\b(would you|should i|do you want|want me to|shall i|let me know|which (option|one)|or should i)\b/i.test(
+      t,
+    )
+  )
     return true;
   // Awaiting an Owner approval click (propose/execute gate) — a real
   // human-in-the-loop stop, not a dropped tool call.

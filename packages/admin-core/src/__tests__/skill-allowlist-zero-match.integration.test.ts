@@ -62,11 +62,7 @@ class CapturingProvider implements AIProvider {
   }
 }
 
-async function seedSkill(
-  slug: string,
-  allowlist: string[],
-  keyword: string,
-): Promise<void> {
+async function seedSkill(slug: string, allowlist: string[], keyword: string): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
   try {
     await sql.begin(async (tx) => {
@@ -142,7 +138,11 @@ describe("skill allowlist zero-match guard (issue #106)", () => {
   it("a zero-match allowlist (op-names not tool-names) falls back to the full catalogue", async () => {
     // Mirrors menu-auditor's broken shape: Query-API op names that match no
     // AI tool. Without the guard this strands the AI with zero tools.
-    await seedSkill(ZERO_SLUG, ["structured_sets.list", "pages.list", "redirects.list"], "zzbogusaudit");
+    await seedSkill(
+      ZERO_SLUG,
+      ["structured_sets.list", "pages.list", "redirects.list"],
+      "zzbogusaudit",
+    );
     const tools = await captureToolsForTurn("zzbogusaudit");
     expect(tools.length).toBeGreaterThan(50); // full catalogue, not zero
     expect(tools.some((t) => t.name === "add_module_to_layout")).toBe(true);

@@ -10,11 +10,11 @@
 
 import { describe, expect, it } from "bun:test";
 import type { ExecutionContext, ModuleField } from "@caelo-cms/shared";
-import { addModuleToLayoutTool } from "../add-module-to-layout.js";
 import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
 } from "../_layout-module-fields.js";
+import { addModuleToLayoutTool } from "../add-module-to-layout.js";
 
 describe("findUnrenderableLayoutFields (#106)", () => {
   it("flags a defaultable field that has no default", () => {

@@ -269,7 +269,9 @@ function describeAllowedForms(propSchema: unknown): string | null {
     } else if (branch.type === "integer" || branch.type === "number") {
       const lo = typeof branch.minimum === "number" ? branch.minimum : null;
       const hi = typeof branch.maximum === "number" ? branch.maximum : null;
-      parts.push(lo !== null && hi !== null ? `an ${branch.type} ${lo}..${hi}` : `a ${branch.type}`);
+      parts.push(
+        lo !== null && hi !== null ? `an ${branch.type} ${lo}..${hi}` : `a ${branch.type}`,
+      );
     } else if (typeof branch.type === "string") {
       parts.push(`a ${branch.type}`);
     }
@@ -284,9 +286,7 @@ function formatToolArgError(
 ): string {
   const props = (inputSchema.properties ?? {}) as Record<string, unknown>;
   const allKeys = Object.keys(props);
-  const required = Array.isArray(inputSchema.required)
-    ? (inputSchema.required as string[])
-    : [];
+  const required = Array.isArray(inputSchema.required) ? (inputSchema.required as string[]) : [];
   const optional = allKeys.filter((k) => !required.includes(k));
 
   const lines = issues.slice(0, 6).map((issue) => {

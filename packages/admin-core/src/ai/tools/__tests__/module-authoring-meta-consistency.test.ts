@@ -24,8 +24,8 @@
 import { describe, expect, it } from "bun:test";
 import {
   addModuleToLayoutToolInput,
-  addModuleToTemplateToolInput,
   addModuleToPageToolInput,
+  addModuleToTemplateToolInput,
 } from "@caelo-cms/shared";
 import { addModuleToLayoutTool } from "../add-module-to-layout.js";
 import { addModuleToPageTool } from "../add-module-to-page.js";

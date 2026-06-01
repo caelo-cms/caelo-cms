@@ -23,7 +23,10 @@ import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
 } from "./_layout-module-fields.js";
-import { MODULE_FIELDS_JSON_SCHEMA, MODULE_META_JSON_SCHEMA_PROPS } from "./_module-fields-schema.js";
+import {
+  MODULE_FIELDS_JSON_SCHEMA,
+  MODULE_META_JSON_SCHEMA_PROPS,
+} from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface LayoutDetail {

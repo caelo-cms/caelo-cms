@@ -65,7 +65,11 @@ describe("checkColdStartGate (issue #106)", () => {
   });
 
   it("with an active SEED theme, points the AI at set_theme_tokens (mutate in place)", async () => {
-    const res = await checkColdStartGate(AI, toolCtxWith({ origin: "seed" }, null), "add_module_to_page");
+    const res = await checkColdStartGate(
+      AI,
+      toolCtxWith({ origin: "seed" }, null),
+      "add_module_to_page",
+    );
     expect(res.blocked).toBe(true);
     const content = res.gateResult?.content ?? "";
     expect(content).toContain("seed-origin");

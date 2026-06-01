@@ -82,7 +82,10 @@ class ClarifyingQuestionProvider implements AIProvider {
   calls = 0;
   async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
     this.calls += 1;
-    yield { kind: "text-delta", text: "Want me to add a footer with Home, About, and Contact links?" };
+    yield {
+      kind: "text-delta",
+      text: "Want me to add a footer with Home, About, and Contact links?",
+    };
     yield { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
     yield { kind: "done", stopReason: "end_turn" };
   }

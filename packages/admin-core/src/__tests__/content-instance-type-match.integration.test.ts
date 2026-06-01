@@ -10,9 +10,9 @@
  * context (AC #2 + AC #5).
  */
 
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -33,7 +33,11 @@ const aiCtx: ExecutionContext = {
 
 const sfx = Date.now().toString(36);
 
-async function seedModule(opts: { slug: string; type: string; fields?: unknown[] }): Promise<string> {
+async function seedModule(opts: {
+  slug: string;
+  type: string;
+  fields?: unknown[];
+}): Promise<string> {
   const r = await execute(registry, adapter, aiCtx, "modules.create", {
     slug: opts.slug,
     displayName: opts.slug,
