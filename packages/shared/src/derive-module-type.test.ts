@@ -34,6 +34,23 @@ describe("deriveModuleType", () => {
     expect(t).toBe("button");
     expect(t).not.toMatch(/-[a-z0-9]+$/);
   });
+
+  // Copilot review (#106 PR): the 40-char cap used to run AFTER the edge-hyphen
+  // trim, so a name whose collapsed hyphen sits at the boundary truncated into a
+  // trailing hyphen — which would double-hyphenate `slug = type + "-" + suffix`.
+  it("never returns a trailing hyphen when the cap lands on one", () => {
+    const name = `${"a".repeat(39)} tail`; // collapses to 39 a's + "-tail"
+    const t = deriveModuleType(name);
+    expect(t).not.toMatch(/-$/);
+    expect(t).toBe("a".repeat(39));
+    // the composed slug stays single-hyphenated
+    expect(slugifyModuleName(name, "s")).toBe(`${"a".repeat(39)}-s`);
+  });
+
+  it("never returns a leading hyphen", () => {
+    expect(deriveModuleType("  !!leading")).toBe("leading");
+    expect(deriveModuleType("!!leading")).not.toMatch(/^-/);
+  });
 });
 
 describe("slugifyModuleName", () => {

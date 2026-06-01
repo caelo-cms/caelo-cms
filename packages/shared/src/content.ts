@@ -39,9 +39,17 @@ export const slugSchema = z
 export function deriveModuleType(displayName: string): string {
   const base = displayName
     .toLowerCase()
+    // Collapse every run of non-alphanumerics to a SINGLE hyphen first, so the
+    // string can never contain consecutive hyphens after this point.
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
+    // Cap BEFORE trimming the edge hyphen — trimming first then slicing could
+    // truncate mid-token and leave a trailing hyphen (e.g. the 40th char is a
+    // hyphen), which would make `slug = type + "-" + suffix` double-hyphenate.
+    .slice(0, 40)
+    // Trim a single leading/trailing hyphen. `^-|-$` (not `^-+|-+$`) is both
+    // sufficient — the collapse above guarantees no `--` runs — and free of the
+    // polynomial backtracking CodeQL flags on `-+$` over uncontrolled input.
+    .replace(/^-|-$/g, "");
   return base.length > 0 ? base : "module";
 }
 
