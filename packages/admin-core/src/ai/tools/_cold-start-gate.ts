@@ -62,14 +62,12 @@ export async function checkColdStartGate(
   // Humans + system actors bypass — only AI calls are gated.
   if (ctx.actorKind !== "ai") return { blocked: false };
 
-  const identityCheck = await execute(
-    toolCtx.registry,
-    toolCtx.adapter,
-    ctx,
-    "site_defaults.get",
-    {},
-  );
-  const themeCheck = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {});
+  // The two reads are independent — run them concurrently so the gate
+  // adds one round-trip, not two, to every AI module-creation call.
+  const [identityCheck, themeCheck] = await Promise.all([
+    execute(toolCtx.registry, toolCtx.adapter, ctx, "site_defaults.get", {}),
+    execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {}),
+  ]);
 
   if (!identityCheck.ok || !themeCheck.ok) return { blocked: false };
 
