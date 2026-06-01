@@ -72,6 +72,10 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     'Use for template-wide changes ("add a sidebar to every blog post"). ' +
     "For a single-page change, use add_module_to_page. " +
     "For site-wide chrome (header / footer / nav across every page on every template), use add_module_to_layout. " +
+    "**CONTENT: give each field a `default` holding the shared content** — the fan-out mints a fresh (empty) " +
+    "content_instance per page, so a field with no default renders a raw `{{field}}` on every page until filled. " +
+    "Defaults render everywhere; to vary the content on one page, override that page's placement later with " +
+    "set_placement_content. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
     'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
   // v0.6.0 W1 — state-aware: list the available template UUIDs +

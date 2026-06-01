@@ -19,6 +19,10 @@ import { execute } from "@caelo-cms/query-api";
 import { addModuleToLayoutToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { describeError } from "./_describe-error.js";
+import {
+  findUnrenderableLayoutFields,
+  unrenderableLayoutFieldsError,
+} from "./_layout-module-fields.js";
 import { MODULE_FIELDS_JSON_SCHEMA, MODULE_META_JSON_SCHEMA_PROPS } from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -38,6 +42,11 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     'Use for site-wide chrome ("a footer on every page", "a global header banner"). ' +
     "For template-wide changes use add_module_to_template; for one page use add_module_to_page. " +
     'layoutSlug is the slug you set on create_layout (often "default" or "site-default"). ' +
+    "**CONTENT: layout chrome renders from field DEFAULTS.** A layout placement has NO content_instance binding, " +
+    "so any `{{field}}` you put in the HTML must have its value in that field's `default` (e.g. " +
+    '`{name:"copyright",kind:"text",label:"Copyright",default:"© 2026 …"}`, a footer nav as a `link-list` with a ' +
+    "`default` array of {label,href}). Do NOT use create_content_instance / set_placement_content here — those bind " +
+    "PAGE placements only and will NOT fill layout chrome. Author static text inline or as field defaults. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
     'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
   // v0.6.0 W1 — state-aware: enumerate the layouts that exist + each
@@ -49,6 +58,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     const lines: string[] = [
       "Create a new module and attach it to a LAYOUT block. The chrome reaches every page on every template bound to the layout.",
       'Use for site-wide chrome ("a footer on every page", "a global header banner"). For one page use add_module_to_page; for one template use add_module_to_template.',
+      "CONTENT: layout chrome has no content_instance binding — every `{{field}}` must carry its value in the field `default` (a footer nav is a `link-list` default; copyright is a `text` default). Do NOT use create_content_instance/set_placement_content here.",
     ];
     if (state.layouts.length === 0) {
       lines.push(
@@ -126,6 +136,19 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
         },
       };
     }
+    // issue #106 (step-13 round-5) — chrome renders from field defaults only
+    // (layout placements have no content_instance binding). Reject BEFORE
+    // creating anything if any declared field can't render from a default, so
+    // the AI re-authors with defaults instead of shipping raw `{{…}}`
+    // site-wide and (as observed) wrongly reaching for content_instances.
+    const unrenderable = findUnrenderableLayoutFields(input.fields);
+    if (unrenderable.length > 0) {
+      return {
+        ok: false,
+        content: unrenderableLayoutFieldsError("add_module_to_layout", "layout", unrenderable),
+      };
+    }
+
     const block = layout.blocks.find((b) => b.name === input.blockName);
     if (!block) {
       const allowed = layout.blocks.map((b) => b.name).join(", ");
