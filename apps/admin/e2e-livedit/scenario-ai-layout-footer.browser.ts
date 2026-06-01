@@ -80,6 +80,47 @@ function seedFooterBlock(): void {
   if (r.status !== 0) throw new Error(`seedFooterBlock failed: ${r.stderr || r.stdout}`);
 }
 
+/**
+ * Move the site past cold-start: capture site identity + flip the active
+ * theme off `seed` origin. Without this, the cold-start gate
+ * (`_cold-start-gate.ts`) intercepts add_module_to_layout and the AI spends
+ * the turn proposing identity/theme setup instead of building the footer —
+ * leaving footerModuleCount=0. This scenario tests the footer-build path on a
+ * real (post-onboarding) site; the cold-start onboarding path is covered
+ * separately by scenario-homepage. Mirrors apps/admin/e2e/_seed.ts's
+ * POST_CHAT_SEED_SCRIPT. Idempotent (COALESCE + WHERE origin='seed').
+ */
+function primePostOnboarding(): void {
+  const r = spawnSync(
+    "bun",
+    [
+      "-e",
+      `
+        import { SQL } from "bun";
+        const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          await tx\`
+            UPDATE site_defaults
+            SET site_name = COALESCE(NULLIF(site_name, ''), 'Caelo'),
+                site_purpose = COALESCE(NULLIF(site_purpose, ''),
+                  'An AI-first CMS for developers — branched edits, instant previews, plugin sandbox.')
+            WHERE id = 1
+          \`;
+          await tx\`
+            UPDATE themes
+            SET origin = 'operator'
+            WHERE is_active = true AND origin = 'seed'
+          \`;
+        });
+        await sql.end();
+      `,
+    ],
+    { env: process.env, encoding: "utf8" },
+  );
+  if (r.status !== 0) throw new Error(`primePostOnboarding failed: ${r.stderr || r.stdout}`);
+}
+
 function snapshotFooter(): FooterSnap {
   const raw = spawnSync(
     "bun",
@@ -145,6 +186,11 @@ test("issue #106: AI adds a footer nav to the layout via add_module_to_layout (l
   await resetLiveditFixtures();
   seedMinimalSite();
   seedFooterBlock();
+  // The footer scenario runs first alphabetically (before scenario-homepage's
+  // cold-start onboarding) and resetLiveditFixtures does NOT reset
+  // site_defaults/themes — so prime the post-onboarding state explicitly,
+  // otherwise the cold-start gate eats the turn and no footer is built.
+  primePostOnboarding();
   attachChatSessionTracker(page);
   await loginAsDevOwner(page);
   // ChatPanel only mounts on /edit.
