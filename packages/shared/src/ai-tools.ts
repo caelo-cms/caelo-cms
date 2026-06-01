@@ -36,14 +36,36 @@ import {
  * description explicitly says to use bare integers; the coercion
  * removes that ergonomic gotcha while still rejecting non-numeric
  * strings (`"abc"` → still fails the int check cleanly).
+ *
+ * issue #106 (step-13 round-6) — an OUTER preprocess strips one layer of
+ * surrounding matching quotes first. The model occasionally over-quotes the
+ * literal: it emitted `position` as the JSON string `"\"bottom\""` (the
+ * 8-char value including the quote characters), which matched neither union
+ * branch and failed with a bare `Invalid input`. Unwrapping `"bottom"` →
+ * `bottom` (and `"\"0\""` → `0`, which the integer branch then coerces) turns
+ * that recurring first-call rejection into a clean accept. This is input
+ * NORMALISATION at the boundary (decoding a malformed encoding of a value the
+ * caller did supply), not a missing-data fallback — `undefined`/`null`/`""`
+ * still fall through to a loud rejection, per CLAUDE.md §2.
  */
-export const positionInputSchema = z.union([
-  z.enum(["top", "bottom"]),
-  z.preprocess(
-    (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
-    z.number().int().min(0).max(1000),
-  ),
-]);
+function stripSurroundingQuotes(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  // Only when BOTH ends are the same quote char and there is at least one
+  // inner character — so a bare `"bottom"` / `"0"` is untouched and an empty
+  // `""` is not collapsed into a match here.
+  const m = v.match(/^(["'])([\s\S]+)\1$/);
+  return m ? m[2] : v;
+}
+export const positionInputSchema = z.preprocess(
+  stripSurroundingQuotes,
+  z.union([
+    z.enum(["top", "bottom"]),
+    z.preprocess(
+      (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
+      z.number().int().min(0).max(1000),
+    ),
+  ]),
+);
 
 export const editModuleToolInput = z
   .object({
