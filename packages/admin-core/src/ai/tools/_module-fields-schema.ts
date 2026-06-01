@@ -62,8 +62,13 @@ const MODULE_FIELD_ITEM_SCHEMA: Record<string, unknown> = {
       maxItems: 32,
       items: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
     },
+    // Mirror the Zod list bounds exactly: `min` = nonnegative int,
+    // `max` = positive int capped at 256 (z.number().int().positive().max(256)).
+    // Without the `maximum`, a provider could emit max: 9999 that the JSON
+    // schema allows but the Validator rejects — the provider-vs-Zod divergence
+    // this file exists to prevent.
     min: { type: "integer", minimum: 0 },
-    max: { type: "integer", minimum: 1 },
+    max: { type: "integer", minimum: 1, maximum: 256 },
   },
 };
 
