@@ -172,6 +172,43 @@ const DEFAULT_OUTPUT_COST_PER_M = 75;
  */
 const MAX_OUTPUT_TOKENS_DEFAULT = 16384;
 
+/**
+ * issue #106 — in-memory nudge re-prompted to the model when it narrates an
+ * imminent action but ends the turn without emitting the tool call. NOT
+ * persisted to chat history, so the operator never sees a synthetic turn —
+ * they only see the model self-correct into the real tool call.
+ */
+const PASSIVE_ACTION_NUDGE =
+  "You described an action you were about to take but did not emit any tool call, so nothing actually happened. If you intended to perform it, call the appropriate tool now with the concrete arguments. If you genuinely need information or a decision from the operator first, ask one direct question instead.";
+
+/**
+ * issue #106 — detect the "announced an action, then ended the turn without
+ * emitting the tool call it announced" failure (step-13 footer regression).
+ * Per CLAUDE.md §4 this is a real defect in our layer, not model
+ * nondeterminism, so the chat-runner recovers with a single nudge-and-retry
+ * instead of leaving the operator to type "go ahead".
+ *
+ * Deliberately narrow: returns true only for a near-future first-person
+ * commitment to act ("I'll add the footer", "adding it now") that is NOT a
+ * clarifying question. The broad v0.5.9 detector was removed because it
+ * false-fired on every legitimate question-asking / summarizing turn; this
+ * one must not reintroduce that noise, so clarifying questions and
+ * conditional/advisory phrasing ("I'd add…", "you could…") are excluded.
+ */
+export function looksLikeAnnouncedAction(text: string): boolean {
+  const t = text.trim();
+  if (t.length === 0) return false;
+  // A clarifying question is a legitimate text-only turn — never nudge it.
+  if (/\?\s*$/.test(t)) return false;
+  if (/\b(would you|should i|do you want|want me to|shall i)\b/i.test(t)) return false;
+  // Near-future first-person commitment to perform an action.
+  return (
+    /\b(i'?ll|i will|let me|i'?m going to|i'?m about to)\b/i.test(t) ||
+    /\b(i'?m|i am)\s+(adding|creating|placing|updating|attaching|building|setting up)\b/i.test(t) ||
+    /\b(adding|creating|placing|updating|attaching)\b[^.?!]*\bnow\b/i.test(t)
+  );
+}
+
 function microcents(usd: number): number {
   // 1 USD = 1e8 microcents.
   return Math.round(usd * 1e8);
@@ -1337,6 +1374,10 @@ export async function* runChatTurn(
   // looks identical to a normal end_turn finish — the UI shows no
   // signal, and the user thinks the AI just stopped for no reason.
   let lastLoopStop: StopReason | null = null;
+  // issue #106 — one-shot guard for the passive-turn nudge (see
+  // looksLikeAnnouncedAction). At most one automatic re-prompt per turn so
+  // a model that stays passive can't spin the loop.
+  let passiveNudged = false;
 
   for (let loop = 0; loop < maxLoops; loop++) {
     if (aborted()) break;
@@ -1617,6 +1658,35 @@ export async function* runChatTurn(
     if (aborted()) break;
     lastLoopStop = loopStop;
     if (loopStop !== "tool_use" || accumulatedToolCalls.length === 0) {
+      // issue #106 — passive-turn recovery (CLAUDE.md §4). The model
+      // sometimes narrates an imminent action ("...adding the footer
+      // now.") and then ends the turn WITHOUT emitting the tool call
+      // (loopStop='end_turn', zero tool calls) — the footer-path
+      // regression step 13 caught, where the operator had to type
+      // "go ahead" to get the add_module_to_layout call to fire. Nudge
+      // once and re-run. The nudge rides in-memory only (never persisted),
+      // so the visible chat shows the model self-correcting into the real
+      // tool call rather than a synthetic operator turn. Gated to a single
+      // retry, to turns with tools available, and to commitment-to-act text
+      // (not clarifying questions) so it never re-creates the v0.5.9
+      // false-positive noise on legitimate text-only replies.
+      if (
+        !passiveNudged &&
+        loopStop === "end_turn" &&
+        accumulatedToolCalls.length === 0 &&
+        filteredTools.length > 0 &&
+        !aborted() &&
+        looksLikeAnnouncedAction(accumulatedText.join(""))
+      ) {
+        passiveNudged = true;
+        console.error("[chat-runner] passive-action-nudge", {
+          chatSessionId: input.chatSessionId,
+          textChars: accumulatedText.join("").length,
+          rawFinishReason: stoppingDiagnostics?.rawFinishReason ?? null,
+        });
+        messages = [...messages, { role: "user", content: PASSIVE_ACTION_NUDGE }];
+        continue;
+      }
       stopReason = loopStop;
       break;
     }

@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * issue #106 (step-13 deviation) — the cold-start gate must give setup
+ * instructions that actually work for the install state it detects.
+ *
+ * The original guidance always told the AI to call `set_theme_tokens` /
+ * `set_theme_meta` first. On a fresh install with NO active theme those
+ * fail ("no active theme"), so the AI burned two doomed tool calls before
+ * inferring it had to create + activate a theme first. The gate now
+ * branches: with no active theme it points at propose_create_theme →
+ * propose_activate_theme (AI-proposed, operator-approved); with an active
+ * seed theme it points at set_theme_tokens (mutate in place).
+ *
+ * Unit-tested with a fake adapter so the branch logic is pinned without a
+ * DB — `checkColdStartGate` only reads `site_defaults.get` +
+ * `themes.get_active` through `execute`.
+ */
+
+import { describe, expect, it } from "bun:test";
+import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
+import { ok } from "@caelo-cms/shared";
+import { registerAdminOps } from "../../register.js";
+import { checkColdStartGate } from "../tools/_cold-start-gate.js";
+import type { ToolContext } from "../tools/dispatch.js";
+
+const registry = new OperationRegistry();
+registerAdminOps(registry);
+
+type Theme = { origin: "seed" | "ai" | "operator" } | null;
+type Defaults = { siteName: string | null; sitePurpose: string | null } | null;
+
+/** Fake adapter: returns controlled values for the two reads the gate makes. */
+function toolCtxWith(theme: Theme, defaults: Defaults): ToolContext {
+  const adapter = {
+    runOperation: async (op: { name: string }) => {
+      if (op.name === "site_defaults.get") return ok({ defaults });
+      if (op.name === "themes.get_active") return ok({ theme });
+      return ok({});
+    },
+  } as unknown as DatabaseAdapter;
+  return { adapter, registry } as ToolContext;
+}
+
+const AI: ExecutionContext = {
+  actorId: "00000000-0000-0000-0000-000000000a1a",
+  actorKind: "ai",
+  requestId: "coldstart-unit",
+};
+
+describe("checkColdStartGate (issue #106)", () => {
+  it("with NO active theme, points the AI at propose_create_theme + propose_activate_theme", async () => {
+    const res = await checkColdStartGate(AI, toolCtxWith(null, null), "add_module_to_page");
+    expect(res.blocked).toBe(true);
+    const content = res.gateResult?.content ?? "";
+    expect(content).toContain("no active theme yet");
+    expect(content).toContain("propose_create_theme");
+    expect(content).toContain("propose_activate_theme");
+    // The operator clicks Approve; the AI proposes — must not tell the AI
+    // to set tokens on a theme that doesn't exist yet as step 1.
+    expect(content.indexOf("propose_create_theme")).toBeLessThan(
+      content.indexOf("set_theme_tokens"),
+    );
+  });
+
+  it("with an active SEED theme, points the AI at set_theme_tokens (mutate in place)", async () => {
+    const res = await checkColdStartGate(AI, toolCtxWith({ origin: "seed" }, null), "add_module_to_page");
+    expect(res.blocked).toBe(true);
+    const content = res.gateResult?.content ?? "";
+    expect(content).toContain("seed-origin");
+    expect(content).toContain("set_theme_tokens");
+    // A seed theme exists, so there's nothing to create/activate.
+    expect(content).not.toContain("propose_create_theme");
+  });
+
+  it("does not block once identity is captured AND the theme is evolved", async () => {
+    const res = await checkColdStartGate(
+      AI,
+      toolCtxWith({ origin: "ai" }, { siteName: "Caelo", sitePurpose: "An AI-first CMS" }),
+      "add_module_to_page",
+    );
+    expect(res.blocked).toBe(false);
+  });
+
+  it("bypasses non-AI actors", async () => {
+    const human: ExecutionContext = { ...AI, actorKind: "human" };
+    const res = await checkColdStartGate(human, toolCtxWith(null, null), "add_module_to_page");
+    expect(res.blocked).toBe(false);
+  });
+
+  it("always ends with a numbered 'Retry' step naming the tool", async () => {
+    const res = await checkColdStartGate(AI, toolCtxWith(null, null), "add_module_to_layout");
+    expect(res.gateResult?.content ?? "").toContain("Retry `add_module_to_layout`");
+  });
+});
