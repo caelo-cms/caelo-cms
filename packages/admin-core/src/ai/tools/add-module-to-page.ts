@@ -72,7 +72,16 @@ const ADD_MODULE_TO_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
     // v0.12.3 (issue #106) — stable type (reusable class, e.g. `button`).
     // Derived from displayName when omitted; pass it to mint an instance
     // of an existing class so it satisfies a parent's allowedModuleTypes.
-    type: { type: "string", minLength: 1, maxLength: 64 },
+    // Pattern mirrors the Zod `slugSchema` the Validator enforces, so a
+    // provider doing constrained generation can't emit a `type` the
+    // Validator then rejects (the same provider-vs-Zod divergence class the
+    // allowedModuleTypes pattern closes). slugSchema = ^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$.
+    type: {
+      type: "string",
+      minLength: 1,
+      maxLength: 64,
+      pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+    },
     html: { type: "string", minLength: 1, maxLength: 50_000 },
     css: { type: "string", maxLength: 50_000 },
     js: { type: "string", maxLength: 50_000 },

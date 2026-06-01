@@ -51,7 +51,15 @@ export const editModuleTool: ToolDefinitionWithHandler<
       },
       // v0.12.3 (issue #106) — stable type (reusable class). Set to make
       // this module satisfy a parent's allowedModuleTypes whitelist.
-      type: { type: "string", minLength: 1, maxLength: 64 },
+      // Pattern mirrors the Zod `slugSchema` the Validator enforces so the
+      // provider can't emit a `type` the Validator then rejects.
+      // slugSchema = ^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$.
+      type: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+        pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+      },
       html: { type: "string" },
       css: { type: "string" },
       js: { type: "string" },
