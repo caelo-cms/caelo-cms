@@ -1217,8 +1217,34 @@ export async function* runChatTurn(
   // passes {spawn_subagent, spawn_subagents}); chat-runner itself
   // doesn't branch on "is this a subagent."
   const excluded = options.excludedToolNames;
-  const builtinTools = tools.catalogue(toolDescribeState).filter((t) => {
-    if (allowedToolNames && !allowedToolNames.has(t.name)) return false;
+  const fullCatalogue = tools.catalogue(toolDescribeState);
+  // issue #106 (step-13 root cause) — an engaged skill's allowlist that
+  // matches ZERO live tools is a misconfiguration, never an intent. The
+  // step-13 footer walk hit this: "add a footer with navigation links"
+  // auto-engaged the `menu-auditor` skill, whose `allowlistedTools` list
+  // Query-API op names (`structured_sets.list`, `pages.list`, …) instead of
+  // the AI tool names the catalogue uses (`list_structured_sets`,
+  // `list_pages`, …). The intersection was empty, so the AI was handed ZERO
+  // tools, couldn't call add_module_to_layout, and narrated the footer
+  // instead of building it (and the passive-turn nudge correctly couldn't
+  // fire — there was nothing to nudge toward). Narrowing the AI to zero
+  // tools strands it; treat a zero-match allowlist as absent: fall back to
+  // the full catalogue and warn loudly so the broken skill data gets fixed.
+  let effectiveAllowed = allowedToolNames;
+  if (effectiveAllowed) {
+    const matchCount = fullCatalogue.filter((t) => effectiveAllowed!.has(t.name)).length;
+    if (matchCount === 0) {
+      console.error("[chat-runner] skill-allowlist-zero-match", {
+        chatSessionId: input.chatSessionId,
+        allowlist: [...effectiveAllowed],
+        engagedSkills: engagedSkills.map((e) => e.slug),
+        note: "allowlist matched no live tool (likely op-names vs tool-names) — ignoring it",
+      });
+      effectiveAllowed = null;
+    }
+  }
+  const builtinTools = fullCatalogue.filter((t) => {
+    if (effectiveAllowed && !effectiveAllowed.has(t.name)) return false;
     if (excluded?.has(t.name)) return false;
     return true;
   });
@@ -1228,7 +1254,7 @@ export async function* runChatTurn(
   // discovers them per turn so disabling a plugin removes its tools from
   // the AI's catalogue on the next call.
   const pluginTools = pluginToolsRegistry.list().filter(({ spec }) => {
-    if (allowedToolNames && !allowedToolNames.has(spec.name)) return false;
+    if (effectiveAllowed && !effectiveAllowed.has(spec.name)) return false;
     if (excluded?.has(spec.name)) return false;
     return true;
   });
