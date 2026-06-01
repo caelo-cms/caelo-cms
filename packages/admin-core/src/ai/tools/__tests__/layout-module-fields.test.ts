@@ -9,7 +9,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { ModuleField } from "@caelo-cms/shared";
+import type { ExecutionContext, ModuleField } from "@caelo-cms/shared";
+import { addModuleToLayoutTool } from "../add-module-to-layout.js";
 import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
@@ -68,5 +69,61 @@ describe("findUnrenderableLayoutFields (#106)", () => {
     expect(msg).toContain("field DEFAULTS");
     expect(msg).toContain("Do NOT call create_content_instance");
     expect(msg).toContain("add_module_to_layout");
+  });
+});
+
+describe("add_module_to_layout handler enforces the guard (#106)", () => {
+  const aiCtx = {
+    actorId: "00000000-0000-0000-0000-0000000000a1",
+    actorKind: "ai",
+    requestId: "layout-guard-test",
+  } as unknown as ExecutionContext;
+
+  // A toolCtx whose registry/adapter throw if read — proves the guard rejects
+  // BEFORE the handler reaches checkColdStartGate / layouts.get (both of which
+  // dereference these). If the guard didn't run first, the test throws loudly.
+  const explodingToolCtx = {
+    get registry(): never {
+      throw new Error("DB touched — guard did not short-circuit");
+    },
+    get adapter(): never {
+      throw new Error("DB touched — guard did not short-circuit");
+    },
+  } as unknown as Parameters<typeof addModuleToLayoutTool.handler>[2];
+
+  it("rejects a field with no default, before any DB call", async () => {
+    const res = await addModuleToLayoutTool.handler(
+      aiCtx,
+      {
+        layoutSlug: "site-default",
+        blockName: "footer",
+        position: "bottom",
+        displayName: "Site Footer",
+        html: "<footer>{{copyright}}</footer>",
+        fields: [{ name: "copyright", kind: "text", label: "Copyright" }],
+      },
+      explodingToolCtx,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.content).toContain("field DEFAULTS");
+    expect(res.content).toContain("copyright");
+    expect(res.content).toContain("Do NOT call create_content_instance");
+  });
+
+  it("rejects a module-list field on layout chrome", async () => {
+    const res = await addModuleToLayoutTool.handler(
+      aiCtx,
+      {
+        layoutSlug: "site-default",
+        blockName: "footer",
+        position: 0,
+        displayName: "Promo Footer",
+        html: "<footer>{{#cards}}…{{/cards}}</footer>",
+        fields: [{ name: "cards", kind: "module-list", label: "Cards" }],
+      },
+      explodingToolCtx,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.content).toContain("content_instance");
   });
 });

@@ -112,6 +112,20 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     },
   },
   handler: async (ctx, input, toolCtx) => {
+    // issue #106 (step-13 round-5) — chrome renders from field defaults only
+    // (layout placements have no content_instance binding). This is pure input
+    // validation, so it runs FIRST — fail fast before any DB round-trip when a
+    // declared field can't render from a default, so the AI re-authors with
+    // defaults instead of shipping raw `{{…}}` site-wide and (as observed)
+    // wrongly reaching for content_instances.
+    const unrenderable = findUnrenderableLayoutFields(input.fields);
+    if (unrenderable.length > 0) {
+      return {
+        ok: false,
+        content: unrenderableLayoutFieldsError("add_module_to_layout", "layout", unrenderable),
+      };
+    }
+
     // v0.11.4 (issue #76 follow-up) — cold-start gate.
     const gate = await checkColdStartGate(ctx, toolCtx, "add_module_to_layout");
     if (gate.blocked) return gate.gateResult!;
@@ -136,19 +150,6 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
         },
       };
     }
-    // issue #106 (step-13 round-5) — chrome renders from field defaults only
-    // (layout placements have no content_instance binding). Reject BEFORE
-    // creating anything if any declared field can't render from a default, so
-    // the AI re-authors with defaults instead of shipping raw `{{…}}`
-    // site-wide and (as observed) wrongly reaching for content_instances.
-    const unrenderable = findUnrenderableLayoutFields(input.fields);
-    if (unrenderable.length > 0) {
-      return {
-        ok: false,
-        content: unrenderableLayoutFieldsError("add_module_to_layout", "layout", unrenderable),
-      };
-    }
-
     const block = layout.blocks.find((b) => b.name === input.blockName);
     if (!block) {
       const allowed = layout.blocks.map((b) => b.name).join(", ");
