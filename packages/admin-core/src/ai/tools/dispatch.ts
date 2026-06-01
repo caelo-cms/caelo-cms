@@ -246,6 +246,37 @@ export interface ToolDefinitionWithHandler<I> {
  * allowed keys), so a key-level error like `unrecognized_keys` is always
  * described correctly here.
  */
+
+/**
+ * issue #106 (step-13 round-6, opt 5) — describe the allowed forms of a
+ * polymorphic (`oneOf`/`anyOf`) argument from its JSON schema, so an
+ * `invalid_union` rejection can say "expected \"top\" | \"bottom\", or an
+ * integer 0..1000" instead of the bare "Invalid input" Zod emits for a union.
+ * Returns null when the schema isn't a recognizable union (caller falls back
+ * to the raw message).
+ */
+function describeAllowedForms(propSchema: unknown): string | null {
+  if (!propSchema || typeof propSchema !== "object") return null;
+  const branches =
+    (propSchema as { oneOf?: unknown[] }).oneOf ?? (propSchema as { anyOf?: unknown[] }).anyOf;
+  if (!Array.isArray(branches) || branches.length === 0) return null;
+  const parts: string[] = [];
+  for (const b of branches) {
+    if (!b || typeof b !== "object") continue;
+    const branch = b as { enum?: unknown[]; type?: string; minimum?: number; maximum?: number };
+    if (Array.isArray(branch.enum)) {
+      parts.push(branch.enum.map((v) => JSON.stringify(v)).join(" | "));
+    } else if (branch.type === "integer" || branch.type === "number") {
+      const lo = typeof branch.minimum === "number" ? branch.minimum : null;
+      const hi = typeof branch.maximum === "number" ? branch.maximum : null;
+      parts.push(lo !== null && hi !== null ? `an ${branch.type} ${lo}..${hi}` : `a ${branch.type}`);
+    } else if (typeof branch.type === "string") {
+      parts.push(`a ${branch.type}`);
+    }
+  }
+  return parts.length > 0 ? parts.join(", or ") : null;
+}
+
 function formatToolArgError(
   name: string,
   issues: readonly z.ZodIssue[],
@@ -269,6 +300,14 @@ function formatToolArgError(
         }.`;
       case "invalid_type":
         return `\`${path}\`: expected ${issue.expected} (${issue.message}).`;
+      case "invalid_union": {
+        // Zod emits a bare "Invalid input" for a failed union; surface the
+        // allowed forms from the arg's JSON schema so the model can re-emit.
+        const forms = describeAllowedForms(props[String(issue.path[0])]);
+        return forms
+          ? `\`${path}\`: invalid value — expected ${forms}.`
+          : `\`${path}\`: ${issue.message} (did not match any allowed form for this argument).`;
+      }
       default:
         return `\`${path}\`: ${issue.message}`;
     }
