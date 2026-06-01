@@ -182,31 +182,41 @@ const PASSIVE_ACTION_NUDGE =
   "You described an action you were about to take but did not emit any tool call, so nothing actually happened. If you intended to perform it, call the appropriate tool now with the concrete arguments. If you genuinely need information or a decision from the operator first, ask one direct question instead.";
 
 /**
- * issue #106 — detect the "announced an action, then ended the turn without
- * emitting the tool call it announced" failure (step-13 footer regression).
- * Per CLAUDE.md §4 this is a real defect in our layer, not model
- * nondeterminism, so the chat-runner recovers with a single nudge-and-retry
- * instead of leaving the operator to type "go ahead".
+ * issue #106 — classify a loop-0 text-only `end_turn` as a LEGITIMATE stop
+ * (so the passive-turn nudge skips it) vs. the passive failure (an announced
+ * or implied action the model never carried out — the step-13 footer
+ * regression, where it said "A site-wide footer belongs on the layout's
+ * footer block …" and stopped without calling add_module_to_layout).
  *
- * Deliberately narrow: returns true only for a near-future first-person
- * commitment to act ("I'll add the footer", "adding it now") that is NOT a
- * clarifying question. The broad v0.5.9 detector was removed because it
- * false-fired on every legitimate question-asking / summarizing turn; this
- * one must not reintroduce that noise, so clarifying questions and
- * conditional/advisory phrasing ("I'd add…", "you could…") are excluded.
+ * The legitimate stops are: a clarifying question, and a message awaiting an
+ * Owner approval click (the propose/execute gate — CLAUDE.md §11.A). Anything
+ * else on a loop-0 text-only turn is treated as the passive failure and gets
+ * ONE nudge. This is the inverse of the earlier narrow verb-matcher
+ * (`looksLikeAnnouncedAction`), which only fired on first-person commitment
+ * phrasing ("I'll add…", "adding it now") and so missed footer-style
+ * declaratives that announce the placement without a commitment verb.
+ *
+ * Why "nudge unless legitimate" and not "warn on every text-only turn" (the
+ * v0.5.9 noise we removed): a nudge re-prompt the operator never sees is
+ * functional recovery, not noise — worst case on a genuine info-only answer
+ * is one extra round-trip, bounded to once per turn by `passiveNudged`.
  */
-export function looksLikeAnnouncedAction(text: string): boolean {
+export function isLegitimateTextOnlyTurn(text: string): boolean {
   const t = text.trim();
-  if (t.length === 0) return false;
-  // A clarifying question is a legitimate text-only turn — never nudge it.
-  if (/\?\s*$/.test(t)) return false;
-  if (/\b(would you|should i|do you want|want me to|shall i)\b/i.test(t)) return false;
-  // Near-future first-person commitment to perform an action.
-  return (
-    /\b(i'?ll|i will|let me|i'?m going to|i'?m about to)\b/i.test(t) ||
-    /\b(i'?m|i am)\s+(adding|creating|placing|updating|attaching|building|setting up)\b/i.test(t) ||
-    /\b(adding|creating|placing|updating|attaching)\b[^.?!]*\bnow\b/i.test(t)
-  );
+  if (t.length === 0) return false; // empty → the empty-response path, not a nudge
+  // A clarifying question is a legitimate text-only turn.
+  if (/\?\s*$/.test(t)) return true;
+  if (/\b(would you|should i|do you want|want me to|shall i|let me know|which (option|one)|or should i)\b/i.test(t))
+    return true;
+  // Awaiting an Owner approval click (propose/execute gate) — a real
+  // human-in-the-loop stop, not a dropped tool call.
+  if (
+    /(\/security\/[a-z-]+\/pending|click +approve|once (you|it'?s) (approve|active)|approve (it|the|that|this)|awaiting your approval|need you to approve)/i.test(
+      t,
+    )
+  )
+    return true;
+  return false;
 }
 
 function microcents(usd: number): number {
@@ -1659,24 +1669,32 @@ export async function* runChatTurn(
     lastLoopStop = loopStop;
     if (loopStop !== "tool_use" || accumulatedToolCalls.length === 0) {
       // issue #106 — passive-turn recovery (CLAUDE.md §4). The model
-      // sometimes narrates an imminent action ("...adding the footer
-      // now.") and then ends the turn WITHOUT emitting the tool call
-      // (loopStop='end_turn', zero tool calls) — the footer-path
+      // sometimes describes the change it's about to make ("A site-wide
+      // footer belongs on the layout's footer block …") and then ends the
+      // turn on its FIRST response WITHOUT emitting the tool call
+      // (loop 0, loopStop='end_turn', zero tool calls) — the footer-path
       // regression step 13 caught, where the operator had to type
-      // "go ahead" to get the add_module_to_layout call to fire. Nudge
-      // once and re-run. The nudge rides in-memory only (never persisted),
-      // so the visible chat shows the model self-correcting into the real
-      // tool call rather than a synthetic operator turn. Gated to a single
-      // retry, to turns with tools available, and to commitment-to-act text
-      // (not clarifying questions) so it never re-creates the v0.5.9
-      // false-positive noise on legitimate text-only replies.
+      // "go ahead" to get add_module_to_layout to fire. Nudge once and
+      // re-run. The nudge rides in-memory only (never persisted), so the
+      // visible chat shows the model self-correcting into the real tool
+      // call rather than a synthetic operator turn.
+      //
+      // Gated to: a single retry per turn (`passiveNudged`); loop 0 only,
+      // so a legitimate completion summary after tool calls (loop > 0)
+      // isn't nudged; turns with tools available; and non-empty text that
+      // is NOT a clarifying question or an awaiting-approval message
+      // (isLegitimateTextOnlyTurn). The earlier narrow verb-matcher missed
+      // footer-style declaratives, so this nudges UNLESS the turn is a
+      // recognised legitimate stop.
       if (
         !passiveNudged &&
+        loop === 0 &&
         loopStop === "end_turn" &&
         accumulatedToolCalls.length === 0 &&
         filteredTools.length > 0 &&
         !aborted() &&
-        looksLikeAnnouncedAction(accumulatedText.join(""))
+        accumulatedText.join("").trim().length > 0 &&
+        !isLegitimateTextOnlyTurn(accumulatedText.join(""))
       ) {
         passiveNudged = true;
         console.error("[chat-runner] passive-action-nudge", {
