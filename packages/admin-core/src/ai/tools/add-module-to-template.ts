@@ -77,7 +77,7 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     "Defaults render everywhere; to vary the content on one page, override that page's placement later with " +
     "set_placement_content. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
-    'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+    'Prefer a bare integer (`0`, not `"0"`) — quoted/over-quoted forms are normalized at the boundary, not rejected.',
   // v0.6.0 W1 — state-aware: list the available template UUIDs +
   // their slugs so the AI can pick a `templateId` without a separate
   // templates.list round-trip. Block names live on the template's
@@ -105,7 +105,7 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
       );
     }
     lines.push(
-      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Quoted-string numbers like "0" fail validation.',
+      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Prefer a bare integer; quoted forms are normalized at the boundary, not rejected.',
     );
     return lines.join(" ");
   },

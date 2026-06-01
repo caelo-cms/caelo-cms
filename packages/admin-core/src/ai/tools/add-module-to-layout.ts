@@ -48,7 +48,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     "`default` array of {label,href}). Do NOT use create_content_instance / set_placement_content here — those bind " +
     "PAGE placements only and will NOT fill layout chrome. Author static text inline or as field defaults. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
-    'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+    'Prefer a bare integer (`0`, not `"0"`) — quoted/over-quoted forms are normalized at the boundary, not rejected.',
   // v0.6.0 W1 — state-aware: enumerate the layouts that exist + each
   // one's block names so the AI can pick a valid (layoutSlug, blockName)
   // pair without guessing. Avoids the recurring "block 'content' does
@@ -75,7 +75,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
       );
     }
     lines.push(
-      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `"0"`) — quoted/over-quoted forms are normalized at the boundary, not rejected.',
     );
     return lines.join(" ");
   },

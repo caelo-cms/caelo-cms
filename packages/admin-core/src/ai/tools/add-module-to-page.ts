@@ -88,7 +88,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
     "**Server-side extractor fallback** still exists when you pass HTML without fields, but the names it mints are heuristic — relying on it pollutes `## Modules` with garbage. Author explicitly. " +
     "Use when the operator describes adding new content (a button, a banner, a menu, a section). For site-wide chrome use add_module_to_layout; for template-wide use add_module_to_template. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
-    'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+    'Prefer a bare integer (`0`, not `"0"`) — quoted/over-quoted forms are normalized at the boundary, not rejected.',
   // v0.6.0 W1 — state-aware: this tool takes a pageId (not pageSlug), and
   // the per-page block set depends on the template the page is bound to.
   // v0.12.3 (issue #106) — `blockName` is constrained at GENERATION time
@@ -117,7 +117,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
       );
     }
     lines.push(
-      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Quoted-string numbers like "0" fail validation.',
+      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Prefer a bare integer; quoted forms are normalized at the boundary, not rejected.',
     );
     return lines.join(" ");
   },
