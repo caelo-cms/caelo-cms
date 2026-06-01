@@ -73,3 +73,39 @@ export const MODULE_FIELDS_JSON_SCHEMA: Record<string, unknown> = {
   maxItems: 64,
   items: MODULE_FIELD_ITEM_SCHEMA,
 };
+
+/**
+ * The decision-support metadata properties every module-authoring tool
+ * accepts: `description` (what the module is for + when to use it — surfaced
+ * in `## Modules`), `kind` (coarse role tag), and the stable `type` (reusable
+ * class a parent's `allowedModuleTypes` matches against).
+ *
+ * Why shared (issue #106 — step-13 round-4 deviation): these three props lived
+ * inline in `add_module_to_page` only. `add_module_to_layout` /
+ * `add_module_to_template` omitted them while keeping `additionalProperties:
+ * false`, so when the AI reused its page-authoring pattern (CLAUDE.md §1A —
+ * one consistent authoring surface) and passed `kind`/`type`/`description` on
+ * the layout/template tools, the dispatcher rejected the call with
+ * `unrecognized_keys`. That is the exact issue-#106 class: the live-edit AI
+ * builds a tool call the Validator rejects because the AI-facing surface is
+ * inconsistent across sibling tools. Spreading this constant into all three
+ * `inputSchema.properties` blocks (and the Zod schemas in `@caelo-cms/shared`)
+ * keeps them in lockstep so the drift can't recur.
+ *
+ * Mirrors the Zod fields in `addModuleTo*ToolInput`. `type`'s pattern is the
+ * `slugSchema` regex the Validator enforces, so a provider doing constrained
+ * generation can't emit a `type` the handler then rejects.
+ */
+export const MODULE_META_JSON_SCHEMA_PROPS: Record<string, unknown> = {
+  description: { type: "string", maxLength: 1000 },
+  kind: {
+    type: "string",
+    enum: ["chrome", "hero", "content", "cta", "utility"],
+  },
+  type: {
+    type: "string",
+    minLength: 1,
+    maxLength: 64,
+    pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+  },
+};

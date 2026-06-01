@@ -227,6 +227,66 @@ export interface ToolDefinitionWithHandler<I> {
   readonly handler: (ctx: ExecutionContext, input: I, toolCtx: ToolContext) => Promise<ToolResult>;
 }
 
+/**
+ * issue #106 (step-13 round-4) — build an AI-actionable argument-rejection
+ * message instead of dumping raw Zod issues.
+ *
+ * When the provider emits a tool call the Zod `schema` rejects, the AI's only
+ * recovery path is the error string we hand back. A raw `JSON.stringify(issues)`
+ * dump ("unrecognized_keys [...]") tells the model *what* failed but not *what
+ * shape to emit instead*, so it has to guess — exactly the round-trip CLAUDE.md
+ * §11 ("failure surfaces are AI-actionable") and §1A (don't punt) tell us to
+ * close. We translate the common Zod codes to plain instructions AND append the
+ * tool's expected argument shape (required + optional property names) derived
+ * from its static JSON `inputSchema`, so the model can re-emit a valid call in
+ * one turn without a human round-trip.
+ *
+ * The static `inputSchema` is authoritative for the *key set* even when a tool
+ * uses a per-turn `describeSchema` (those only narrow value enums, never the
+ * allowed keys), so a key-level error like `unrecognized_keys` is always
+ * described correctly here.
+ */
+function formatToolArgError(
+  name: string,
+  issues: readonly z.ZodIssue[],
+  inputSchema: ToolInputSchema,
+): string {
+  const props = (inputSchema.properties ?? {}) as Record<string, unknown>;
+  const allKeys = Object.keys(props);
+  const required = Array.isArray(inputSchema.required)
+    ? (inputSchema.required as string[])
+    : [];
+  const optional = allKeys.filter((k) => !required.includes(k));
+
+  const lines = issues.slice(0, 6).map((issue) => {
+    const path = issue.path.join(".") || "(root)";
+    switch (issue.code) {
+      case "unrecognized_keys":
+        return `Unrecognized argument(s): ${issue.keys
+          .map((k) => `\`${k}\``)
+          .join(", ")} — this tool does not accept ${
+          issue.keys.length > 1 ? "those keys" : "that key"
+        }.`;
+      case "invalid_type":
+        return `\`${path}\`: expected ${issue.expected} (${issue.message}).`;
+      default:
+        return `\`${path}\`: ${issue.message}`;
+    }
+  });
+
+  const shape =
+    `Expected arguments for \`${name}\` — ` +
+    `required: ${required.length ? required.map((k) => `\`${k}\``).join(", ") : "(none)"}; ` +
+    `optional: ${optional.length ? optional.map((k) => `\`${k}\``).join(", ") : "(none)"}.`;
+
+  return (
+    `invalid arguments for ${name}:\n` +
+    lines.map((l) => `- ${l}`).join("\n") +
+    `\n${shape}\n` +
+    `Re-call \`${name}\` with only the listed properties (drop any unrecognized keys) and retry — do not ask the operator.`
+  );
+}
+
 export class ToolRegistry {
   readonly #tools = new Map<string, ToolDefinitionWithHandler<unknown>>();
 
@@ -297,9 +357,12 @@ export class ToolRegistry {
     }
     const parsed = tool.schema.safeParse(rawArgs);
     if (!parsed.success) {
+      // issue #106 — hand back an AI-actionable shape (named problem + the
+      // tool's expected argument set) so the model self-corrects in one turn
+      // rather than guessing or punting to the operator. See formatToolArgError.
       return {
         ok: false,
-        content: `invalid arguments for ${name}: ${JSON.stringify(parsed.error.issues)}`,
+        content: formatToolArgError(name, parsed.error.issues, tool.inputSchema),
       };
     }
     // v0.6.0 W5 — approval gate. When the tool declares

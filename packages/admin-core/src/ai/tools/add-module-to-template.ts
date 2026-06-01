@@ -30,7 +30,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { addModuleToTemplateToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
-import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
+import { MODULE_FIELDS_JSON_SCHEMA, MODULE_META_JSON_SCHEMA_PROPS } from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageRow {
@@ -120,6 +120,10 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
         ],
       },
       displayName: { type: "string", minLength: 1, maxLength: 128 },
+      // issue #106 (step-13 round-4) — same description/kind/type metadata as
+      // add_module_to_page so the AI's one authoring pattern (CLAUDE.md §1A)
+      // is accepted on every module-authoring tool. See `_module-fields-schema.ts`.
+      ...MODULE_META_JSON_SCHEMA_PROPS,
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
       js: { type: "string", maxLength: 50_000 },
@@ -138,6 +142,11 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
       slug,
       displayName: input.displayName,
+      // issue #106 — forward decision-support metadata; type derived from
+      // displayName by modules.create when omitted.
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.type !== undefined ? { type: input.type } : {}),
       html: input.html,
       css: input.css ?? "",
       js: input.js ?? "",

@@ -19,7 +19,7 @@ import { execute } from "@caelo-cms/query-api";
 import { addModuleToPageToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
-import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
+import { MODULE_FIELDS_JSON_SCHEMA, MODULE_META_JSON_SCHEMA_PROPS } from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
@@ -64,24 +64,10 @@ const ADD_MODULE_TO_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
       ],
     },
     displayName: { type: "string", minLength: 1, maxLength: 128 },
-    description: { type: "string", maxLength: 1000 },
-    kind: {
-      type: "string",
-      enum: ["chrome", "hero", "content", "cta", "utility"],
-    },
-    // v0.12.3 (issue #106) — stable type (reusable class, e.g. `button`).
-    // Derived from displayName when omitted; pass it to mint an instance
-    // of an existing class so it satisfies a parent's allowedModuleTypes.
-    // Pattern mirrors the Zod `slugSchema` the Validator enforces, so a
-    // provider doing constrained generation can't emit a `type` the
-    // Validator then rejects (the same provider-vs-Zod divergence class the
-    // allowedModuleTypes pattern closes). slugSchema = ^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$.
-    type: {
-      type: "string",
-      minLength: 1,
-      maxLength: 64,
-      pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-    },
+    // issue #106 — shared decision-support metadata (description/kind/type).
+    // Spread from the single source of truth so the three module-authoring
+    // tools can never drift apart again. See `_module-fields-schema.ts`.
+    ...MODULE_META_JSON_SCHEMA_PROPS,
     html: { type: "string", minLength: 1, maxLength: 50_000 },
     css: { type: "string", maxLength: 50_000 },
     js: { type: "string", maxLength: 50_000 },

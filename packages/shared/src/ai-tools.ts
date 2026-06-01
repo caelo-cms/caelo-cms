@@ -162,6 +162,16 @@ export const addModuleToTemplateToolInput = z
     blockName: z.string().min(1).max(80),
     position: positionInputSchema,
     displayName: z.string().min(1).max(128),
+    /**
+     * issue #106 (step-13 round-4) — same decision-support metadata as
+     * addModuleToPageToolInput. Omitting these while the page tool accepted
+     * them meant the AI's one authoring pattern (CLAUDE.md §1A) was rejected
+     * with `unrecognized_keys` on the template/layout tools. All optional —
+     * modules.create derives `type` from displayName when absent.
+     */
+    description: z.string().max(1000).optional(),
+    kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
+    type: slugSchema.optional(),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
@@ -546,6 +556,16 @@ export const addModuleToLayoutToolInput = z
     blockName: z.string().min(1).max(80),
     position: positionInputSchema,
     displayName: z.string().min(1).max(128),
+    /**
+     * issue #106 (step-13 round-4) — same decision-support metadata as
+     * addModuleToPageToolInput. Layout chrome is authored with the identical
+     * pattern page modules use (CLAUDE.md §1A); these were missing here, so a
+     * call carrying them was rejected with `unrecognized_keys`. All optional —
+     * modules.create derives `type` from displayName when absent.
+     */
+    description: z.string().max(1000).optional(),
+    kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
+    type: slugSchema.optional(),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
