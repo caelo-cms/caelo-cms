@@ -41,9 +41,10 @@ try {
   await sql.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
 
-    // Reuse an existing actor row for this email if one exists; otherwise mint
-    // a new one. The id flows into both users.id and user_roles.user_id so
-    // they all reference the same actor.
+    // Reuse the actor behind this email if a row already exists; otherwise
+    // mint a fresh one. `users.id` IS the actor uuid (FK users.id -> actors.id),
+    // and user_roles.user_id -> users.id, so one uuid flows through all three.
+    // The owner grant lives in user_roles (there is no inline role column).
     const existing = (await tx`
       SELECT id::text AS id FROM users WHERE email = ${EMAIL}
     `) as unknown as { id: string }[];
@@ -51,7 +52,13 @@ try {
     let actorId: string;
     if (existing[0]) {
       actorId = existing[0].id;
-      await tx`UPDATE users SET password_hash = ${passwordHash}, deleted_at = NULL WHERE id = ${actorId}::uuid`;
+      await tx`
+        UPDATE users
+          SET password_hash = ${passwordHash},
+              deleted_at    = NULL,
+              onboarded_at  = COALESCE(onboarded_at, now())
+          WHERE email = ${EMAIL}
+      `;
     } else {
       const actor = (await tx`
         INSERT INTO actors (kind, display_name) VALUES ('human', 'Dev Owner')
@@ -65,15 +72,8 @@ try {
         VALUES (${actorId}::uuid, ${EMAIL}, ${passwordHash}, false, now())
       `;
     }
-    // P6.6 closing pass — defensive: previously-seeded dev-owner rows
-    // may have null onboarded_at after migration 0022 if the seed
-    // pre-dates this fix. Bump them so `bun run seed:dev` doesn't
-    // bounce the user through /onboarding on every fresh dev run.
-    await tx`
-      UPDATE users SET onboarded_at = COALESCE(onboarded_at, now())
-      WHERE email = ${EMAIL}
-    `;
 
+    // Grant the owner role. user_roles.user_id -> users.id (the actor uuid).
     await tx`
       INSERT INTO user_roles (user_id, role_id)
       SELECT ${actorId}::uuid, r.id FROM roles r WHERE r.name = 'owner'
@@ -93,35 +93,58 @@ try {
       // `site-default`; bind home-template to it explicitly so a fresh
       // install (which runs migrations + seed-dev in sequence) has the
       // chrome wrapping by default.
-      const tpl = (await tx`
-        INSERT INTO templates (slug, display_name, html, css, layout_id)
-        VALUES (
-          'home-template',
-          'Home Template',
-          '<!doctype html><html><head><title>Home</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
-          '',
-          (SELECT id FROM layouts WHERE slug = 'site-default')
-        )
-        ON CONFLICT (slug) DO UPDATE SET display_name = EXCLUDED.display_name
-        RETURNING id::text AS id
+      // Existence-guarded rather than ON CONFLICT: the unique index is a
+      // partial expression index on (slug, COALESCE(chat_branch_id, ...))
+      // WHERE deleted_at IS NULL, which ON CONFLICT arbiter inference can't
+      // reliably match. A SELECT-then-INSERT is drift-proof.
+      const tplExisting = (await tx`
+        SELECT id::text AS id FROM templates
+        WHERE slug = 'home-template' AND deleted_at IS NULL
       `) as unknown as { id: string }[];
-      const tplId = tpl[0]?.id;
-      if (!tplId) throw new Error("seed home template returned no row");
+      let tplId: string;
+      if (tplExisting[0]) {
+        tplId = tplExisting[0].id;
+      } else {
+        const tpl = (await tx`
+          INSERT INTO templates (slug, display_name, html, css, layout_id)
+          VALUES (
+            'home-template',
+            'Home Template',
+            '<!doctype html><html><head><title>Home</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
+            '',
+            (SELECT id FROM layouts WHERE slug = 'site-default')
+          )
+          RETURNING id::text AS id
+        `) as unknown as { id: string }[];
+        const id = tpl[0]?.id;
+        if (!id) throw new Error("seed home template returned no row");
+        tplId = id;
+      }
 
-      // Idempotent: ensure site_defaults points at the seeded
-      // home-template + site-default layout. Migration tries to
-      // INSERT only if home-template existed at migrate time; on a
-      // fresh DB it doesn't, so we backfill here.
-      await tx`
-        INSERT INTO site_defaults (id, default_layout_id, default_template_id)
-        SELECT 1,
-               (SELECT id FROM layouts   WHERE slug = 'site-default'),
-               ${tplId}::uuid
-        ON CONFLICT (id) DO UPDATE SET
-          default_layout_id   = EXCLUDED.default_layout_id,
-          default_template_id = EXCLUDED.default_template_id,
-          updated_at          = now()
-      `;
+      // Idempotent: ensure site_defaults points at the seeded home-template
+      // + site-default layout. The migration only INSERTs when home-template
+      // exists at migrate time; on a fresh DB it doesn't, so we backfill.
+      // `id` is a GENERATED ALWAYS identity (the singleton pkey) we never
+      // write, so guard on row existence rather than ON CONFLICT.
+      const sdExisting = (await tx`
+        SELECT 1 AS x FROM site_defaults LIMIT 1
+      `) as unknown as { x: number }[];
+      if (sdExisting[0]) {
+        await tx`
+          UPDATE site_defaults SET
+            default_layout_id   = (SELECT id FROM layouts WHERE slug = 'site-default'),
+            default_template_id = ${tplId}::uuid,
+            updated_at          = now()
+        `;
+      } else {
+        await tx`
+          INSERT INTO site_defaults (default_layout_id, default_template_id)
+          VALUES (
+            (SELECT id FROM layouts WHERE slug = 'site-default'),
+            ${tplId}::uuid
+          )
+        `;
+      }
 
       await tx`
         INSERT INTO template_blocks (template_id, name, display_name, position)
@@ -129,21 +152,30 @@ try {
         ON CONFLICT (template_id, name) DO NOTHING
       `;
 
-      const mod = (await tx`
-        INSERT INTO modules (slug, display_name, type, html, css, js)
-        VALUES (
-          'home-welcome',
-          'Welcome',
-          'home-welcome',
-          '<section style="padding:4rem 2rem;text-align:center;font-family:system-ui;"><h1 style="font-size:2.5rem;margin:0 0 1rem;">Welcome to your new Caelo site</h1><p style="color:#666;font-size:1.1rem;margin:0 0 2rem;">Tell the AI what to change. Hold Option + Control + Command and click any element to scope an edit.</p><a href="/about" style="display:inline-block;padding:0.75rem 1.5rem;background:#3b82f6;color:#fff;text-decoration:none;border-radius:6px;font-weight:500;">Learn more</a></section>',
-          '',
-          ''
-        )
-        ON CONFLICT (slug) DO UPDATE SET display_name = EXCLUDED.display_name
-        RETURNING id::text AS id
+      const modExisting = (await tx`
+        SELECT id::text AS id FROM modules
+        WHERE slug = 'home-welcome' AND deleted_at IS NULL
       `) as unknown as { id: string }[];
-      const modId = mod[0]?.id;
-      if (!modId) throw new Error("seed home module returned no row");
+      let modId: string;
+      if (modExisting[0]) {
+        modId = modExisting[0].id;
+      } else {
+        const mod = (await tx`
+          INSERT INTO modules (slug, display_name, type, html, css, js)
+          VALUES (
+            'home-welcome',
+            'Welcome',
+            'home-welcome',
+            '<section style="padding:4rem 2rem;text-align:center;font-family:system-ui;"><h1 style="font-size:2.5rem;margin:0 0 1rem;">Welcome to your new Caelo site</h1><p style="color:#666;font-size:1.1rem;margin:0 0 2rem;">Tell the AI what to change. Hold Option + Control + Command and click any element to scope an edit.</p><a href="/about" style="display:inline-block;padding:0.75rem 1.5rem;background:#3b82f6;color:#fff;text-decoration:none;border-radius:6px;font-weight:500;">Learn more</a></section>',
+            '',
+            ''
+          )
+          RETURNING id::text AS id
+        `) as unknown as { id: string }[];
+        const id = mod[0]?.id;
+        if (!id) throw new Error("seed home module returned no row");
+        modId = id;
+      }
 
       const pg = (await tx`
         INSERT INTO pages (slug, locale, name, title, template_id, status)
