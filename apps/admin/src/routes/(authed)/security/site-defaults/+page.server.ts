@@ -1,34 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
-
-/**
- * Stringify a Query API error into one human-readable line. Inlined
- * (rather than importing from admin-core's AI-tools helper) to keep
- * the dep direction admin → admin-core narrow + avoid pulling
- * AI-tool internals into a /security route.
- */
-function describeError(error: unknown): string {
-  if (!error || typeof error !== "object") return "unknown error";
-  const e = error as { kind?: string; message?: string; issues?: unknown[]; detail?: string };
-  if (e.kind === "ValidationFailed" && Array.isArray(e.issues)) {
-    return `validation: ${e.issues
-      .slice(0, 3)
-      .map((i) => {
-        const z = i as { path?: unknown[]; message?: string };
-        return `${(z.path ?? []).join(".")}: ${z.message ?? "?"}`;
-      })
-      .join("; ")}`;
-  }
-  if (typeof e.message === "string") return e.message;
-  if (typeof e.detail === "string") return e.detail;
-  return e.kind ?? "unknown error";
-}
 
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "roles.manage");
