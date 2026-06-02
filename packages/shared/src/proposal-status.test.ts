@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
-import { PROPOSAL_STATUSES, proposalStatus, type ProposalStatus } from "./proposal-status.js";
+import { PROPOSAL_STATUSES, type ProposalStatus, proposalStatus } from "./proposal-status.js";
 
 describe("proposalStatus", () => {
   it("has exactly the four states, in canonical order", () => {
