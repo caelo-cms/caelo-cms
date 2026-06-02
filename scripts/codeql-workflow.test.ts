@@ -193,3 +193,75 @@ describe("license allow-list lockstep", () => {
     expect([...dependencyReviewAllowList()].sort()).toEqual([...licenseCheckAllowList()].sort());
   });
 });
+
+describe("issue #113 — workflow action pinning + least-privilege permissions", () => {
+  // The four workflows that carried actions/unpinned-tag +
+  // actions/missing-workflow-permissions alerts. Third-party actions must be
+  // SHA-pinned; first-party actions/* + github/* stay on major tags (GitHub's
+  // trust model — and codeql.yml/dependency-review.yml above keep them on @vN).
+  const WORKFLOWS = ["ci.yml", "release.yml", "release-images.yml", "e2e-livedit.yml"].map((f) => ({
+    name: f,
+    body: readFileSync(resolve(REPO_ROOT, ".github/workflows", f), "utf8"),
+  }));
+
+  const FIRST_PARTY = new Set(["actions", "github"]);
+
+  /**
+   * Every `uses:` ref in `body` whose owner is not GitHub-first-party.
+   * Matches only `uses:` in YAML step-key position (line start, optional
+   * `- `), so prose/comments that mention `uses:` are not treated as actions.
+   * Local (`./…`) reusable-workflow calls are skipped.
+   */
+  function thirdPartyUses(body: string): string[] {
+    const refs: string[] = [];
+    for (const m of body.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)/gm)) {
+      const ref = m[1] ?? "";
+      if (ref.startsWith("./") || ref.startsWith("docker://")) continue;
+      const owner = ref.split("/")[0] ?? "";
+      if (!FIRST_PARTY.has(owner)) refs.push(ref);
+    }
+    return refs;
+  }
+
+  it("P1: extraction finds the expected third-party action uses (guards a silent zero-match)", () => {
+    const total = WORKFLOWS.reduce((n, wf) => n + thirdPartyUses(wf.body).length, 0);
+    expect(total).toBeGreaterThanOrEqual(16);
+  });
+
+  it("P2: every third-party action is pinned to a full 40-char commit SHA (no floating tag)", () => {
+    for (const wf of WORKFLOWS) {
+      for (const ref of thirdPartyUses(wf.body)) {
+        expect(ref, `${wf.name}: ${ref} is not SHA-pinned`).toMatch(/@[0-9a-f]{40}$/);
+      }
+    }
+  });
+
+  it("P3: each SHA-pinned third-party action carries a # vN comment for Dependabot", () => {
+    for (const wf of WORKFLOWS) {
+      const pinned = wf.body.split("\n").filter((l) => /uses:\s*[^\s#]+@[0-9a-f]{40}/.test(l));
+      for (const line of pinned) {
+        expect(line, `${wf.name}: ${line.trim()} missing version comment`).toMatch(
+          /@[0-9a-f]{40}\s+#\s*v?\d/,
+        );
+      }
+    }
+  });
+
+  it("P4: no workflow grants write-all", () => {
+    for (const wf of WORKFLOWS) {
+      expect(wf.body, wf.name).not.toMatch(/write-all/);
+    }
+  });
+
+  it("P5: ci.yml least-privilege jobs each declare a contents:read permissions block", () => {
+    const ci = WORKFLOWS.find((w) => w.name === "ci.yml")?.body ?? "";
+    // lockfile + check + e2e (this PR) + the pre-existing admin-prod-image.
+    const count = (ci.match(/permissions:\s*\n\s*contents:\s*read/g) ?? []).length;
+    expect(count).toBeGreaterThanOrEqual(4);
+  });
+
+  it("P6: e2e-livedit preflight declares an empty permissions block", () => {
+    const wf = WORKFLOWS.find((w) => w.name === "e2e-livedit.yml")?.body ?? "";
+    expect(wf).toMatch(/permissions:\s*\{\}/);
+  });
+});
