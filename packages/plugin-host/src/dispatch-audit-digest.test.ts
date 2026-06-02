@@ -35,7 +35,18 @@ describe("auditInputDigest", () => {
   });
 
   it("redacts every sensitive-named field shape", () => {
-    for (const key of ["password", "passwd", "passphrase", "secret", "apiKey", "api_key", "token", "credential", "privateKey", "private_key"]) {
+    for (const key of [
+      "password",
+      "passwd",
+      "passphrase",
+      "secret",
+      "apiKey",
+      "api_key",
+      "token",
+      "credential",
+      "privateKey",
+      "private_key",
+    ]) {
       expect(auditInputDigest({ [key]: "a" })).toBe(auditInputDigest({ [key]: "b" }));
     }
   });
