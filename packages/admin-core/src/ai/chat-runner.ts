@@ -480,7 +480,17 @@ export async function* runChatTurn(
         for (let i = 0; i < b.modules.length; i++) {
           const m = b.modules[i];
           if (!m) continue;
-          const safeName = m.displayName.replace(/"/g, '\\"');
+          // The name is interpolated into an HTML comment marker as
+          // displayName="…". Escape backslashes BEFORE quotes (escaping `"`
+          // alone leaves a trailing `\` able to escape the closing quote —
+          // CodeQL js/incomplete-sanitization), and neutralize the sequences
+          // that would break out of the `<!-- … -->` marker itself (`-->`,
+          // `--`, raw angle brackets, newlines).
+          const safeName = m.displayName
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"')
+            .replace(/-{2,}/g, "-")
+            .replace(/[<>\r\n]/g, " ");
           lines.push(
             `<!-- BEGIN module=${m.moduleId} slug=${m.slug} block=${b.blockName} position=${i} displayName="${safeName}" -->`,
           );
