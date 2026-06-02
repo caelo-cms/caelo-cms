@@ -49,6 +49,20 @@ export interface ToolDescribeStateSiteDefaults {
 }
 
 /**
+ * v0.12.3 (issue #106) — the page currently focused in the live-edit
+ * surface (the chat's `activePageId`), with its template's actual block
+ * names. `describeSchema` callbacks use `blockNames` to narrow a tool's
+ * `blockName` argument to a generation-time enum. `null` when the turn
+ * has no focused page (cross-page work) — the callback then falls back
+ * to a free-string schema.
+ */
+export interface ToolDescribeStateActivePage {
+  readonly id: string;
+  readonly templateId: string;
+  readonly blockNames: readonly string[];
+}
+
+/**
  * Snapshot of live site state available to a tool's describe() callback.
  * Built once per chat-runner turn from the same queries that feed the
  * `# Layouts` / `# Templates` / `# Site defaults` system-prompt blocks.
@@ -75,6 +89,10 @@ export interface ToolDescribeState {
   readonly layouts: readonly ToolDescribeStateLayout[];
   readonly templates: readonly ToolDescribeStateTemplate[];
   readonly siteDefaults: ToolDescribeStateSiteDefaults | null;
+  /** v0.12.3 (issue #106) — the live-edit focused page + its template
+   *  block names, or null when the turn has no focused page. Drives the
+   *  per-page `blockName` enum in `describeSchema`. */
+  readonly activePage: ToolDescribeStateActivePage | null;
   /** Unix ms when the state was assembled; null if assembly was skipped
    * (op failure on every fetch). describe() callbacks should treat null
    * as "unknown state, fall back to static description shape". */
@@ -97,19 +115,27 @@ export function buildToolDescribeState(args: {
   readonly layoutsValue: unknown | null;
   readonly templatesValue: unknown | null;
   readonly siteDefaultsValue: unknown | null;
+  /** v0.12.3 (issue #106) — the focused page + its template blocks, when
+   *  the live-edit turn carries an activePageId. Pass null otherwise. */
+  readonly activePage?: ToolDescribeStateActivePage | null;
 }): ToolDescribeState {
   const layouts = extractLayouts(args.layoutsValue);
   const templates = extractTemplates(args.templatesValue);
   const siteDefaults = extractSiteDefaults(args.siteDefaultsValue);
+  const activePage = args.activePage ?? null;
 
   const anyFetched =
-    args.layoutsValue !== null || args.templatesValue !== null || args.siteDefaultsValue !== null;
+    args.layoutsValue !== null ||
+    args.templatesValue !== null ||
+    args.siteDefaultsValue !== null ||
+    activePage !== null;
 
   return {
     actor: args.actor,
     layouts,
     templates,
     siteDefaults,
+    activePage,
     fetchedAt: anyFetched ? Date.now() : null,
   };
 }

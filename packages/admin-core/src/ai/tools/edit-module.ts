@@ -16,6 +16,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { editModuleToolInput } from "@caelo-cms/shared";
+import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const editModuleTool: ToolDefinitionWithHandler<
@@ -26,6 +27,7 @@ export const editModuleTool: ToolDefinitionWithHandler<
     "Edit ONE module's structure: HTML template, fields, CSS, JS, displayName, description, or kind. " +
     "**AUTHOR EXPLICITLY (v0.12.0+):** pass `html` with `{{fieldName}}` placeholders + an explicit `fields[]` array with semantic snake_case names (`hero_title`, `primary_cta_href`, `nav_items`), NOT a literal-content fallback. The operator says 'fix the homepage hero copy'; YOU translate that to the right field names. Field names like `cta2label2` or `spanText` are wrong — they leak the extractor heuristic. " +
     "**Field kinds (v0.12.0):** `text`, `richtext`, `url`, `image`, `number`, `boolean`, `link` (primitives); `text-list` (array of strings, slot `{{#field}}…{{.}}…{{/field}}`); `link-list` (array of `{label, href}`, slot `{{#field}}…{{label}}…{{href}}…{{/field}}` — use for menus, footer columns); `module` (single nested module, slot `{{>field}}`); `module-list` (array of nested modules, slot `{{#field}}…{{/field}}`). " +
+    '**Nested fields may declare `allowedModuleTypes`** — a whitelist of stable module `type`s (e.g. `["button"]`), NOT slugs. It matches the referenced module\'s `type`; set it to constrain what can nest in a `module`/`module-list` slot, and widen it here if a valid module is being wrongly rejected. ' +
     "**Lists are lists, not numbered scalars.** A menu with 10 items is ONE `link-list` field with 10 elements — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `text-list`. Cards with rich per-item structure use `module-list` pointing at a sub-module. " +
     "**Update description + kind when the module's purpose drifts.** The `## Modules` block exposes them to your future self; stale descriptions hurt your own decision-making. " +
     "**Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `## Modules` block. Treat it as a fallback, not the default path. " +
@@ -47,42 +49,23 @@ export const editModuleTool: ToolDefinitionWithHandler<
         type: "string",
         enum: ["chrome", "hero", "content", "cta", "utility"],
       },
+      // v0.12.3 (issue #106) — stable type (reusable class). Set to make
+      // this module satisfy a parent's allowedModuleTypes whitelist.
+      // Pattern mirrors the Zod `slugSchema` the Validator enforces so the
+      // provider can't emit a `type` the Validator then rejects.
+      // slugSchema = ^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$.
+      type: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+        pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+      },
       html: { type: "string" },
       css: { type: "string" },
       js: { type: "string" },
-      fields: {
-        type: "array",
-        maxItems: 64,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name", "kind", "label"],
-          properties: {
-            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-            kind: {
-              type: "string",
-              enum: [
-                "text",
-                "richtext",
-                "url",
-                "image",
-                "number",
-                "boolean",
-                "link",
-                "text-list",
-                "link-list",
-                "module",
-                "module-list",
-              ],
-            },
-            label: { type: "string", minLength: 1, maxLength: 128 },
-            default: {},
-            allowedModuleSlugs: { type: "array", items: { type: "string" } },
-            min: { type: "integer", minimum: 0 },
-            max: { type: "integer", minimum: 1 },
-          },
-        },
-      },
+      // issue #106 — shared field schema (single source of truth across all
+      // module-authoring tools). See `_module-fields-schema.ts`.
+      fields: MODULE_FIELDS_JSON_SCHEMA,
     },
   },
   handler: async (ctx, input, toolCtx) => {

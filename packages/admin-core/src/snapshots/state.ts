@@ -17,6 +17,11 @@ export interface ModuleState {
   readonly schemaVersion: StateSchemaVersion;
   readonly slug: string;
   readonly displayName: string;
+  /** v0.12.3 (issue #106) — stable module `type`, captured so revert
+   *  restores the NOT NULL column. Snapshots written before 0103 lack
+   *  it; the parse-upgrade falls back to `slug` (matching how 0103
+   *  backfilled the live rows). */
+  readonly type: string;
   readonly html: string;
   readonly css: string;
   readonly js: string;

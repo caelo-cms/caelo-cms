@@ -16,25 +16,23 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { addModuleToLayoutToolInput } from "@caelo-cms/shared";
+import { addModuleToLayoutToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { describeError } from "./_describe-error.js";
+import {
+  findUnrenderableLayoutFields,
+  unrenderableLayoutFieldsError,
+} from "./_layout-module-fields.js";
+import {
+  MODULE_FIELDS_JSON_SCHEMA,
+  MODULE_META_JSON_SCHEMA_PROPS,
+} from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface LayoutDetail {
   id: string;
   slug: string;
   blocks: { name: string; displayName: string; position: number }[];
-}
-
-function slugify(displayName: string): string {
-  const base = displayName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-  const stem = base.length > 0 ? base : "module";
-  return `${stem}-${Date.now().toString(36)}`;
 }
 
 export const addModuleToLayoutTool: ToolDefinitionWithHandler<
@@ -47,8 +45,13 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     'Use for site-wide chrome ("a footer on every page", "a global header banner"). ' +
     "For template-wide changes use add_module_to_template; for one page use add_module_to_page. " +
     'layoutSlug is the slug you set on create_layout (often "default" or "site-default"). ' +
+    "**CONTENT: layout chrome renders from field DEFAULTS.** A layout placement has NO content_instance binding, " +
+    "so any `{{field}}` you put in the HTML must have its value in that field's `default` (e.g. " +
+    '`{name:"copyright",kind:"text",label:"Copyright",default:"© 2026 …"}`, a footer nav as a `link-list` with a ' +
+    "`default` array of {label,href}). Do NOT use create_content_instance / set_placement_content here — those bind " +
+    "PAGE placements only and will NOT fill layout chrome. Author static text inline or as field defaults. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
-    'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+    'Prefer a bare integer (`0`, not `"0"`) — quoted/over-quoted forms are normalized at the boundary, not rejected.',
   // v0.6.0 W1 — state-aware: enumerate the layouts that exist + each
   // one's block names so the AI can pick a valid (layoutSlug, blockName)
   // pair without guessing. Avoids the recurring "block 'content' does
@@ -58,6 +61,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     const lines: string[] = [
       "Create a new module and attach it to a LAYOUT block. The chrome reaches every page on every template bound to the layout.",
       'Use for site-wide chrome ("a footer on every page", "a global header banner"). For one page use add_module_to_page; for one template use add_module_to_template.',
+      "CONTENT: layout chrome has no content_instance binding — every `{{field}}` must carry its value in the field `default` (a footer nav is a `link-list` default; copyright is a `text` default). Do NOT use create_content_instance/set_placement_content here.",
     ];
     if (state.layouts.length === 0) {
       lines.push(
@@ -74,7 +78,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
       );
     }
     lines.push(
-      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `"0"`) — quoted/over-quoted forms are normalized at the boundary, not rejected.',
     );
     return lines.join(" ");
   },
@@ -93,32 +97,38 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
         ],
       },
       displayName: { type: "string", minLength: 1, maxLength: 128 },
+      // issue #106 (step-13 round-4) — accept the same description/kind/type
+      // metadata as add_module_to_page. The AI authors layout chrome with the
+      // identical pattern it uses for page modules (CLAUDE.md §1A); omitting
+      // these here while keeping additionalProperties:false rejected that
+      // pattern with `unrecognized_keys`. See `_module-fields-schema.ts`.
+      ...MODULE_META_JSON_SCHEMA_PROPS,
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
       js: { type: "string", maxLength: 50_000 },
-      // v0.5.21 — module field schema (v0.4.0 split). See edit_module
-      // for the per-field shape; same validation rules apply here.
-      fields: {
-        type: "array",
-        maxItems: 64,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name", "kind", "label"],
-          properties: {
-            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-            kind: {
-              type: "string",
-              enum: ["text", "richtext", "url", "image", "number", "boolean", "link"],
-            },
-            label: { type: "string", minLength: 1, maxLength: 128 },
-            default: {},
-          },
-        },
-      },
+      // issue #106 — shared field schema (full kind enum incl. list +
+      // nested-module kinds). A footer nav is a `link-list` field per
+      // CLAUDE.md §1A; the old restricted 7-primitive enum made that
+      // unrepresentable, so the provider could not emit a valid footer-nav
+      // call and silently ended the turn. See `_module-fields-schema.ts`.
+      fields: MODULE_FIELDS_JSON_SCHEMA,
     },
   },
   handler: async (ctx, input, toolCtx) => {
+    // issue #106 (step-13 round-5) — chrome renders from field defaults only
+    // (layout placements have no content_instance binding). This is pure input
+    // validation, so it runs FIRST — fail fast before any DB round-trip when a
+    // declared field can't render from a default, so the AI re-authors with
+    // defaults instead of shipping raw `{{…}}` site-wide and (as observed)
+    // wrongly reaching for content_instances.
+    const unrenderable = findUnrenderableLayoutFields(input.fields);
+    if (unrenderable.length > 0) {
+      return {
+        ok: false,
+        content: unrenderableLayoutFieldsError("add_module_to_layout", "layout", unrenderable),
+      };
+    }
+
     // v0.11.4 (issue #76 follow-up) — cold-start gate.
     const gate = await checkColdStartGate(ctx, toolCtx, "add_module_to_layout");
     if (gate.blocked) return gate.gateResult!;
@@ -159,10 +169,16 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
         },
       };
     }
-    const slug = slugify(input.displayName);
+    const slug = slugifyModuleName(input.displayName);
     const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
       slug,
       displayName: input.displayName,
+      // issue #106 — forward the decision-support metadata so layout chrome
+      // lands in `## Modules` with the same context page modules carry.
+      // modules.create derives `type` from displayName when omitted.
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.type !== undefined ? { type: input.type } : {}),
       html: input.html,
       css: input.css ?? "",
       js: input.js ?? "",

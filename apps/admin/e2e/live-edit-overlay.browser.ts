@@ -84,8 +84,8 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
         // fields array on the live row, the update stores the AI's
         // HTML literal as-is.
         const mod = await tx\`
-          INSERT INTO modules (slug, display_name, html, fields)
-          VALUES (\${process.env.MOD_SLUG}, 'le mod', '<h1>HERO_BEFORE</h1>', '[{"name":"hero","kind":"text","label":"Hero","default":"HERO_BEFORE"}]'::jsonb)
+          INSERT INTO modules (slug, display_name, type, html, fields)
+          VALUES (\${process.env.MOD_SLUG}, 'le mod', \${process.env.MOD_SLUG}, '<h1>HERO_BEFORE</h1>', '[{"name":"hero","kind":"text","label":"Hero","default":"HERO_BEFORE"}]'::jsonb)
           RETURNING id::text AS id\`;
         out.mod = mod[0].id;
         const pg = await tx\`

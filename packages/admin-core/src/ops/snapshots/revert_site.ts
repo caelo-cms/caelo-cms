@@ -112,7 +112,7 @@ export const revertSiteOp = defineOperation({
       const t = r.state;
       await tx.execute(sql`
         UPDATE modules SET
-          slug = ${t.slug}, display_name = ${t.displayName}, html = ${t.html},
+          slug = ${t.slug}, display_name = ${t.displayName}, type = ${t.type}, html = ${t.html},
           css = ${t.css}, js = ${t.js}, deleted_at = ${t.deletedAt}, updated_at = now()
         WHERE id = ${r.entity_id}::uuid
       `);

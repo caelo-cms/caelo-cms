@@ -16,8 +16,13 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { addModuleToPageToolInput } from "@caelo-cms/shared";
+import { addModuleToPageToolInput, slugifyModuleName } from "@caelo-cms/shared";
+import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
+import {
+  MODULE_FIELDS_JSON_SCHEMA,
+  MODULE_META_JSON_SCHEMA_PROPS,
+} from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
@@ -43,15 +48,37 @@ function describeError(error: unknown): string {
   return e.kind ?? "unknown";
 }
 
-function slugify(displayName: string): string {
-  const base = displayName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-  const stem = base.length > 0 ? base : "module";
-  return `${stem}-${Date.now().toString(36)}`;
-}
+/**
+ * Static JSON Schema for the provider. `describeSchema` (below) clones
+ * this per-turn and pins `blockName` to an enum of the focused page's
+ * real blocks when one is in context.
+ */
+const ADD_MODULE_TO_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["pageId", "blockName", "position", "displayName", "html"],
+  properties: {
+    pageId: { type: "string", format: "uuid" },
+    blockName: { type: "string", minLength: 1, maxLength: 80 },
+    position: {
+      oneOf: [
+        { type: "string", enum: ["top", "bottom"] },
+        { type: "integer", minimum: 0, maximum: 1000 },
+      ],
+    },
+    displayName: { type: "string", minLength: 1, maxLength: 128 },
+    // issue #106 — shared decision-support metadata (description/kind/type).
+    // Spread from the single source of truth so the three module-authoring
+    // tools can never drift apart again. See `_module-fields-schema.ts`.
+    ...MODULE_META_JSON_SCHEMA_PROPS,
+    html: { type: "string", minLength: 1, maxLength: 50_000 },
+    css: { type: "string", maxLength: 50_000 },
+    js: { type: "string", maxLength: 50_000 },
+    // issue #106 — shared field schema (single source of truth across all
+    // module-authoring tools). See `_module-fields-schema.ts`.
+    fields: MODULE_FIELDS_JSON_SCHEMA,
+  },
+};
 
 export const addModuleToPageTool: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").AddModuleToPageToolInput
@@ -64,14 +91,13 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
     "**Server-side extractor fallback** still exists when you pass HTML without fields, but the names it mints are heuristic — relying on it pollutes `## Modules` with garbage. Author explicitly. " +
     "Use when the operator describes adding new content (a button, a banner, a menu, a section). For site-wide chrome use add_module_to_layout; for template-wide use add_module_to_template. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
-    'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+    'Prefer a bare integer (`0`, not `"0"`) — quoted/over-quoted forms are normalized at the boundary, not rejected.',
   // v0.6.0 W1 — state-aware: this tool takes a pageId (not pageSlug), and
   // the per-page block set depends on the template the page is bound to.
-  // The system-prompt's `## Pages` block already lists every page +
-  // templateId, so we keep this describe focused on the routing decision
-  // (page vs template vs layout) + the position-format gotcha; per-page
-  // block enumeration is the handler's job and is delivered as a
-  // structured error if the AI guesses wrong.
+  // v0.12.3 (issue #106) — `blockName` is constrained at GENERATION time
+  // by `describeSchema` (enum of the focused page's real blocks), so we no
+  // longer tell the AI to "guess"; we tell it to read the authoritative
+  // block list in the `# Current page` block.
   describe: (state) => {
     const lines: string[] = [
       "Add a NEW module to ONE page's block. Use for one-off content; for site-wide chrome use add_module_to_layout, for template-wide use add_module_to_template.",
@@ -80,80 +106,33 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
       lines.push(
         "NO templates exist on this site yet — every page would also be missing. Bootstrap first via create_layout + create_template + create_page.",
       );
+    } else if (state.activePage && state.activePage.blockNames.length > 0) {
+      lines.push(
+        `Pass \`pageId\` (UUID, see \`## Pages\`). \`blockName\` MUST be one of this page's template blocks: ${state.activePage.blockNames
+          .map((b) => `\`${b}\``)
+          .join(
+            ", ",
+          )}. A block name is a slot on the template — NOT a module \`kind\` (chrome/hero/content/cta/utility). A "hero" module usually goes into the \`content\` block.`,
+      );
     } else {
       lines.push(
-        "Pass `pageId` (UUID, see `## Pages` for the list). Block names come from the page's template <caelo-slot> tags — if you guess wrong, the failure surfaces the available block names.",
+        "Pass `pageId` (UUID, see `## Pages` for the list). `blockName` must be one of the page's template block names listed in the `# Current page` block — not a module `kind`.",
       );
     }
     lines.push(
-      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Quoted-string numbers like "0" fail validation.',
+      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Prefer a bare integer; quoted forms are normalized at the boundary, not rejected.',
     );
     return lines.join(" ");
   },
   schema: addModuleToPageToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["pageId", "blockName", "position", "displayName", "html"],
-    properties: {
-      pageId: { type: "string", format: "uuid" },
-      blockName: { type: "string", minLength: 1, maxLength: 80 },
-      position: {
-        oneOf: [
-          { type: "string", enum: ["top", "bottom"] },
-          { type: "integer", minimum: 0, maximum: 1000 },
-        ],
-      },
-      displayName: { type: "string", minLength: 1, maxLength: 128 },
-      description: { type: "string", maxLength: 1000 },
-      kind: {
-        type: "string",
-        enum: ["chrome", "hero", "content", "cta", "utility"],
-      },
-      html: { type: "string", minLength: 1, maxLength: 50_000 },
-      css: { type: "string", maxLength: 50_000 },
-      js: { type: "string", maxLength: 50_000 },
-      fields: {
-        type: "array",
-        maxItems: 64,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name", "kind", "label"],
-          properties: {
-            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-            kind: {
-              type: "string",
-              enum: [
-                "text",
-                "richtext",
-                "url",
-                "image",
-                "number",
-                "boolean",
-                "link",
-                "text-list",
-                "link-list",
-                "module",
-                "module-list",
-              ],
-            },
-            label: { type: "string", minLength: 1, maxLength: 128 },
-            default: {},
-            allowedModuleSlugs: { type: "array", items: { type: "string" } },
-            min: { type: "integer", minimum: 0 },
-            max: { type: "integer", minimum: 1 },
-          },
-        },
-      },
-    },
-  },
+  inputSchema: ADD_MODULE_TO_PAGE_INPUT_SCHEMA,
+  describeSchema: (state) => withBlockNameEnum(ADD_MODULE_TO_PAGE_INPUT_SCHEMA, state, "blockName"),
   handler: async (ctx, input, toolCtx) => {
     // v0.11.4 (issue #76 follow-up) — cold-start gate.
     const gate = await checkColdStartGate(ctx, toolCtx, "add_module_to_page");
     if (gate.blocked) return gate.gateResult!;
 
-    const slug = slugify(input.displayName);
+    const slug = slugifyModuleName(input.displayName);
     const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
       slug,
       displayName: input.displayName,
@@ -163,6 +142,9 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
       // for why the AI SHOULD pass them.
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      // v0.12.3 (issue #106) — forward an AI-authored stable type; the op
+      // derives it from displayName when omitted.
+      ...(input.type !== undefined ? { type: input.type } : {}),
       html: input.html,
       css: input.css ?? "",
       js: input.js ?? "",
@@ -188,20 +170,15 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
     const page = (got.value as { page: PageWithModules }).page;
     const targetBlock = page.blocks.find((b) => b.blockName === input.blockName);
     if (!targetBlock) {
-      const allowed = page.blocks.map((b) => b.blockName).join(", ");
-      // v0.6.0 W3 — surface a nextAction pointing at inspect_page_render
-      // so the AI sees the live block names without a list_* call.
-      // Not autoExecute (the recovery doesn't mechanically rewrite the
-      // failed args — the AI has to pick a different blockName).
-      return {
-        ok: false,
-        content: `block "${input.blockName}" does not exist on this page's template. Available blocks: ${allowed}`,
-        nextAction: {
-          tool: "inspect_page_render",
-          args: { pageId: input.pageId },
-          reason: `the page's template defines blocks [${allowed}]; pick one of those for blockName and retry`,
-        },
-      };
+      // v0.12.3 (issue #106) — shared AI-actionable error (identical body
+      // to move_module) so the two block-name failure paths can't drift.
+      // Not autoExecute: the AI must pick a different blockName.
+      return blockNotFoundError({
+        blockName: input.blockName,
+        blockNames: page.blocks.map((b) => b.blockName),
+        pageId: input.pageId,
+        argName: "blockName",
+      });
     }
 
     const existingIds = targetBlock.modules.map((m) => m.moduleId);

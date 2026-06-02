@@ -22,6 +22,7 @@ import {
   MODULE_JS_MAX,
   moduleFieldSchema,
   setPlacementContentSchema,
+  slugSchema,
 } from "./content.js";
 
 /**
@@ -35,14 +36,36 @@ import {
  * description explicitly says to use bare integers; the coercion
  * removes that ergonomic gotcha while still rejecting non-numeric
  * strings (`"abc"` → still fails the int check cleanly).
+ *
+ * issue #106 (step-13 round-6) — an OUTER preprocess strips one layer of
+ * surrounding matching quotes first. The model occasionally over-quotes the
+ * literal: it emitted `position` as the JSON string `"\"bottom\""` (the
+ * 8-char value including the quote characters), which matched neither union
+ * branch and failed with a bare `Invalid input`. Unwrapping `"bottom"` →
+ * `bottom` (and `"\"0\""` → `0`, which the integer branch then coerces) turns
+ * that recurring first-call rejection into a clean accept. This is input
+ * NORMALISATION at the boundary (decoding a malformed encoding of a value the
+ * caller did supply), not a missing-data fallback — `undefined`/`null`/`""`
+ * still fall through to a loud rejection, per CLAUDE.md §2.
  */
-export const positionInputSchema = z.union([
-  z.enum(["top", "bottom"]),
-  z.preprocess(
-    (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
-    z.number().int().min(0).max(1000),
-  ),
-]);
+function stripSurroundingQuotes(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  // Only when BOTH ends are the same quote char and there is at least one
+  // inner character — so a bare `"bottom"` / `"0"` is untouched and an empty
+  // `""` is not collapsed into a match here.
+  const m = v.match(/^(["'])([\s\S]+)\1$/);
+  return m ? m[2] : v;
+}
+export const positionInputSchema = z.preprocess(
+  stripSurroundingQuotes,
+  z.union([
+    z.enum(["top", "bottom"]),
+    z.preprocess(
+      (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
+      z.number().int().min(0).max(1000),
+    ),
+  ]),
+);
 
 export const editModuleToolInput = z
   .object({
@@ -55,6 +78,13 @@ export const editModuleToolInput = z
     description: z.string().max(1000).optional(),
     /** v0.12.0 — re-classify the module's role tag. */
     kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
+    /**
+     * v0.12.3 (issue #106) — re-classify the module's stable `type` (the
+     * class a parent's `allowedModuleTypes` whitelist matches against,
+     * e.g. `button`). Rarely needed; usually derived from displayName at
+     * create time. Set it to make this module satisfy a parent's allowlist.
+     */
+    type: slugSchema.optional(),
     html: z.string().max(MODULE_HTML_MAX).optional(),
     css: z.string().max(MODULE_CSS_MAX).optional(),
     js: z.string().max(MODULE_JS_MAX).optional(),
@@ -119,6 +149,15 @@ export const addModuleToPageToolInput = z
     description: z.string().max(1000).optional(),
     /** v0.12.0 — coarse role tag for the `## Modules` block. */
     kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
+    /**
+     * v0.12.3 (issue #106) — stable `type` (the reusable class, e.g.
+     * `button`) a parent module's `allowedModuleTypes` whitelist matches
+     * against. Optional — derived from displayName when omitted. Pass it
+     * to mint an instance of an existing class (a second `button`
+     * variant should share `type: "button"` so it satisfies a CTA's
+     * allowlist).
+     */
+    type: slugSchema.optional(),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
@@ -145,6 +184,16 @@ export const addModuleToTemplateToolInput = z
     blockName: z.string().min(1).max(80),
     position: positionInputSchema,
     displayName: z.string().min(1).max(128),
+    /**
+     * issue #106 (step-13 round-4) — same decision-support metadata as
+     * addModuleToPageToolInput. Omitting these while the page tool accepted
+     * them meant the AI's one authoring pattern (CLAUDE.md §1A) was rejected
+     * with `unrecognized_keys` on the template/layout tools. All optional —
+     * modules.create derives `type` from displayName when absent.
+     */
+    description: z.string().max(1000).optional(),
+    kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
+    type: slugSchema.optional(),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
@@ -529,6 +578,16 @@ export const addModuleToLayoutToolInput = z
     blockName: z.string().min(1).max(80),
     position: positionInputSchema,
     displayName: z.string().min(1).max(128),
+    /**
+     * issue #106 (step-13 round-4) — same decision-support metadata as
+     * addModuleToPageToolInput. Layout chrome is authored with the identical
+     * pattern page modules use (CLAUDE.md §1A); these were missing here, so a
+     * call carrying them was rejected with `unrecognized_keys`. All optional —
+     * modules.create derives `type` from displayName when absent.
+     */
+    description: z.string().max(1000).optional(),
+    kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
+    type: slugSchema.optional(),
     html: z.string().min(1).max(50_000),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),

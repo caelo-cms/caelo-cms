@@ -25,9 +25,9 @@ test.beforeAll(() => {
     await c.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const tplId = ((await tx\`SELECT id::text AS id FROM templates WHERE slug = 'home-template' LIMIT 1\`)[0])?.id;
-      const a = ((await tx\`INSERT INTO modules (slug, display_name, html) VALUES (\${process.env.MOD_A}, 'a', '<p>A</p>') RETURNING id::text AS id\`)[0])?.id;
-      const b = ((await tx\`INSERT INTO modules (slug, display_name, html) VALUES (\${process.env.MOD_B}, 'b', '<p>B</p>') RETURNING id::text AS id\`)[0])?.id;
-      const cc = ((await tx\`INSERT INTO modules (slug, display_name, html) VALUES (\${process.env.MOD_C}, 'c', '<p>C</p>') RETURNING id::text AS id\`)[0])?.id;
+      const a = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.MOD_A}, 'a', \${process.env.MOD_A}, '<p>A</p>') RETURNING id::text AS id\`)[0])?.id;
+      const b = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.MOD_B}, 'b', \${process.env.MOD_B}, '<p>B</p>') RETURNING id::text AS id\`)[0])?.id;
+      const cc = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.MOD_C}, 'c', \${process.env.MOD_C}, '<p>C</p>') RETURNING id::text AS id\`)[0])?.id;
       const pg = ((await tx\`INSERT INTO pages (slug, locale, name, title, template_id, status) VALUES (\${process.env.PAGE_SLUG}, 'en', 'RO', 'RO', \${tplId}::uuid, 'draft') RETURNING id::text AS id\`)[0])?.id;
       // v0.12.0 — page_modules.content_instance_id is NOT NULL. Mint
       // one unsynced content_instance per placement before inserting.

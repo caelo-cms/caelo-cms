@@ -144,6 +144,14 @@ export interface ToolResult {
   readonly value?: unknown;
 }
 
+/**
+ * JSON Schema (draft-07-ish) object handed to the AI provider for a tool's
+ * arguments. Hand-authored next to each tool's Zod schema (we don't ship a
+ * zod-to-json-schema dep). Aliased so the per-turn `describeSchema` hook and
+ * the static `inputSchema` share one self-documenting contract.
+ */
+export type ToolInputSchema = Record<string, unknown>;
+
 export interface ToolDefinitionWithHandler<I> {
   readonly name: string;
   /** Static fallback description. Used when `describe()` is absent, when
@@ -160,6 +168,22 @@ export interface ToolDefinitionWithHandler<I> {
    * description. Throwing from `describe()` falls back to the static
    * description silently. */
   readonly describe?: (state: ToolDescribeState) => string;
+  /**
+   * v0.12.3 (issue #106) — optional state-aware `inputSchema` builder.
+   * When set AND a `ToolDescribeState` is passed to `catalogue()`, the
+   * returned JSON Schema REPLACES the static `inputSchema` for that
+   * per-turn provider call. This is the generation-time constraint lever:
+   * `add_module_to_page` / `move_module` use it to narrow `blockName` to
+   * an `enum` of the focused page's actual template blocks, so the model
+   * cannot emit a block name that doesn't exist (CLAUDE.md §1A — constrain
+   * at generation rather than guess-then-fail). The op-layer Validator
+   * still rejects an out-of-set block as defense-in-depth (enum adherence
+   * isn't guaranteed across providers).
+   *
+   * Throwing falls back to the static `inputSchema` silently (mirrors
+   * `describe`). Return the FULL schema object, not a patch.
+   */
+  readonly describeSchema?: (state: ToolDescribeState) => ToolInputSchema;
   /**
    * v0.6.0 W5 — SDK-6-inspired approval gate. When set and returns
    * `true` for the parsed args, the dispatcher emits a structured
@@ -199,8 +223,107 @@ export interface ToolDefinitionWithHandler<I> {
   /** JSON Schema for the provider — Zod doesn't ship this directly so we
    * hand-author next to the schema. Easier to keep aligned than to install
    * a Zod-to-JSON-Schema dependency for two tools. */
-  readonly inputSchema: Record<string, unknown>;
+  readonly inputSchema: ToolInputSchema;
   readonly handler: (ctx: ExecutionContext, input: I, toolCtx: ToolContext) => Promise<ToolResult>;
+}
+
+/**
+ * issue #106 (step-13 round-4) — build an AI-actionable argument-rejection
+ * message instead of dumping raw Zod issues.
+ *
+ * When the provider emits a tool call the Zod `schema` rejects, the AI's only
+ * recovery path is the error string we hand back. A raw `JSON.stringify(issues)`
+ * dump ("unrecognized_keys [...]") tells the model *what* failed but not *what
+ * shape to emit instead*, so it has to guess — exactly the round-trip CLAUDE.md
+ * §11 ("failure surfaces are AI-actionable") and §1A (don't punt) tell us to
+ * close. We translate the common Zod codes to plain instructions AND append the
+ * tool's expected argument shape (required + optional property names) derived
+ * from its static JSON `inputSchema`, so the model can re-emit a valid call in
+ * one turn without a human round-trip.
+ *
+ * The static `inputSchema` is authoritative for the *key set* even when a tool
+ * uses a per-turn `describeSchema` (those only narrow value enums, never the
+ * allowed keys), so a key-level error like `unrecognized_keys` is always
+ * described correctly here.
+ */
+
+/**
+ * issue #106 (step-13 round-6, opt 5) — describe the allowed forms of a
+ * polymorphic (`oneOf`/`anyOf`) argument from its JSON schema, so an
+ * `invalid_union` rejection can say "expected \"top\" | \"bottom\", or an
+ * integer 0..1000" instead of the bare "Invalid input" Zod emits for a union.
+ * Returns null when the schema isn't a recognizable union (caller falls back
+ * to the raw message).
+ */
+function describeAllowedForms(propSchema: unknown): string | null {
+  if (!propSchema || typeof propSchema !== "object") return null;
+  const branches =
+    (propSchema as { oneOf?: unknown[] }).oneOf ?? (propSchema as { anyOf?: unknown[] }).anyOf;
+  if (!Array.isArray(branches) || branches.length === 0) return null;
+  const parts: string[] = [];
+  for (const b of branches) {
+    if (!b || typeof b !== "object") continue;
+    const branch = b as { enum?: unknown[]; type?: string; minimum?: number; maximum?: number };
+    if (Array.isArray(branch.enum)) {
+      parts.push(branch.enum.map((v) => JSON.stringify(v)).join(" | "));
+    } else if (branch.type === "integer" || branch.type === "number") {
+      const lo = typeof branch.minimum === "number" ? branch.minimum : null;
+      const hi = typeof branch.maximum === "number" ? branch.maximum : null;
+      parts.push(
+        lo !== null && hi !== null ? `an ${branch.type} ${lo}..${hi}` : `a ${branch.type}`,
+      );
+    } else if (typeof branch.type === "string") {
+      parts.push(`a ${branch.type}`);
+    }
+  }
+  return parts.length > 0 ? parts.join(", or ") : null;
+}
+
+function formatToolArgError(
+  name: string,
+  issues: readonly z.ZodIssue[],
+  inputSchema: ToolInputSchema,
+): string {
+  const props = (inputSchema.properties ?? {}) as Record<string, unknown>;
+  const allKeys = Object.keys(props);
+  const required = Array.isArray(inputSchema.required) ? (inputSchema.required as string[]) : [];
+  const optional = allKeys.filter((k) => !required.includes(k));
+
+  const lines = issues.slice(0, 6).map((issue) => {
+    const path = issue.path.join(".") || "(root)";
+    switch (issue.code) {
+      case "unrecognized_keys":
+        return `Unrecognized argument(s): ${issue.keys
+          .map((k) => `\`${k}\``)
+          .join(", ")} — this tool does not accept ${
+          issue.keys.length > 1 ? "those keys" : "that key"
+        }.`;
+      case "invalid_type":
+        return `\`${path}\`: expected ${issue.expected} (${issue.message}).`;
+      case "invalid_union": {
+        // Zod emits a bare "Invalid input" for a failed union; surface the
+        // allowed forms from the arg's JSON schema so the model can re-emit.
+        const forms = describeAllowedForms(props[String(issue.path[0])]);
+        return forms
+          ? `\`${path}\`: invalid value — expected ${forms}.`
+          : `\`${path}\`: ${issue.message} (did not match any allowed form for this argument).`;
+      }
+      default:
+        return `\`${path}\`: ${issue.message}`;
+    }
+  });
+
+  const shape =
+    `Expected arguments for \`${name}\` — ` +
+    `required: ${required.length ? required.map((k) => `\`${k}\``).join(", ") : "(none)"}; ` +
+    `optional: ${optional.length ? optional.map((k) => `\`${k}\``).join(", ") : "(none)"}.`;
+
+  return (
+    `invalid arguments for ${name}:\n` +
+    lines.map((l) => `- ${l}`).join("\n") +
+    `\n${shape}\n` +
+    `Re-call \`${name}\` with only the listed properties (drop any unrecognized keys) and retry — do not ask the operator.`
+  );
 }
 
 export class ToolRegistry {
@@ -226,7 +349,7 @@ export class ToolRegistry {
    */
   catalogue(
     state?: ToolDescribeState,
-  ): { name: string; description: string; inputSchema: Record<string, unknown> }[] {
+  ): { name: string; description: string; inputSchema: ToolInputSchema }[] {
     return [...this.#tools.values()].map((t) => {
       let description = t.description;
       if (state && t.describe) {
@@ -239,10 +362,24 @@ export class ToolRegistry {
           );
         }
       }
+      // v0.12.3 (issue #106) — per-turn inputSchema. Lets a tool narrow
+      // an argument to a state-scoped enum (e.g. blockName) at generation
+      // time. Falls back to the static schema if absent or on throw.
+      let inputSchema = t.inputSchema;
+      if (state && t.describeSchema) {
+        try {
+          inputSchema = t.describeSchema(state);
+        } catch (err) {
+          console.error(
+            `[tool.describeSchema] ${t.name} threw — falling back to static inputSchema`,
+            err,
+          );
+        }
+      }
       return {
         name: t.name,
         description,
-        inputSchema: t.inputSchema,
+        inputSchema,
       };
     });
   }
@@ -259,9 +396,12 @@ export class ToolRegistry {
     }
     const parsed = tool.schema.safeParse(rawArgs);
     if (!parsed.success) {
+      // issue #106 — hand back an AI-actionable shape (named problem + the
+      // tool's expected argument set) so the model self-corrects in one turn
+      // rather than guessing or punting to the operator. See formatToolArgError.
       return {
         ok: false,
-        content: `invalid arguments for ${name}: ${JSON.stringify(parsed.error.issues)}`,
+        content: formatToolArgError(name, parsed.error.issues, tool.inputSchema),
       };
     }
     // v0.6.0 W5 — approval gate. When the tool declares

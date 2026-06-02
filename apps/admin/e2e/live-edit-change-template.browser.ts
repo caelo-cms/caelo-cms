@@ -43,8 +43,8 @@ test.beforeAll(() => {
         VALUES (\${newSlug}, 'CT new', '<body><caelo-slot name="content">_</caelo-slot></body>', '', \${layout}::uuid)
         RETURNING id::text AS id\`)[0])?.id;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${newTpl}::uuid, 'content', 'Content', 0), (\${newTpl}::uuid, 'footer', 'Footer', 1)\`;
-      const kept = ((await tx\`INSERT INTO modules (slug, display_name, html) VALUES (\${process.env.KEPT_MOD_SLUG}, 'k', '<p>K</p>') RETURNING id::text AS id\`)[0])?.id;
-      const orphan = ((await tx\`INSERT INTO modules (slug, display_name, html) VALUES (\${process.env.ORPHAN_MOD_SLUG}, 'o', '<p>O</p>') RETURNING id::text AS id\`)[0])?.id;
+      const kept = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.KEPT_MOD_SLUG}, 'k', \${process.env.KEPT_MOD_SLUG}, '<p>K</p>') RETURNING id::text AS id\`)[0])?.id;
+      const orphan = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.ORPHAN_MOD_SLUG}, 'o', \${process.env.ORPHAN_MOD_SLUG}, '<p>O</p>') RETURNING id::text AS id\`)[0])?.id;
       const pg = ((await tx\`
         INSERT INTO pages (slug, locale, name, title, template_id, status)
         VALUES (\${process.env.TEST_PAGE}, 'en', 'CT', 'CT', \${oldTpl}::uuid, 'draft')

@@ -150,7 +150,10 @@ export function formatModulesBlock(
     displayName: string;
     description: string;
     kind: "chrome" | "hero" | "content" | "cta" | "utility";
-    fields: readonly { name: string; kind: string }[];
+    /** v0.12.3 (issue #106) — stable class the AI references when
+     *  satisfying a parent's `allowedModuleTypes`. */
+    type?: string;
+    fields: readonly { name: string; kind: string; allowedModuleTypes?: readonly string[] }[];
   }[],
   usageByModuleId: ReadonlyMap<string, { placementCount: number; sampleSlugs: readonly string[] }>,
 ): string {
@@ -203,17 +206,39 @@ export function formatModulesBlock(
             }`
           : " — unplaced";
       const desc = m.description.trim() === "" ? "(no description)" : m.description.trim();
-      // Field summary: at most 5 names + their kinds. Lets the AI see
-      // the content shape without a separate modules.get round-trip.
-      const fieldSummary =
-        m.fields.length === 0
+      // v0.12.3 (issue #106) — field summary. Primitive fields are capped
+      // at 5 (name:kind) to bound the prompt, but `module`/`module-list`
+      // fields are ALWAYS shown in full with their `allowedModuleTypes`
+      // whitelist: that constraint is exactly what the AI needs to pick a
+      // valid nested module without guessing (and then punting the
+      // validator failure to the operator).
+      const nestedFields = m.fields.filter((f) => f.kind === "module" || f.kind === "module-list");
+      const plainFields = m.fields.filter((f) => f.kind !== "module" && f.kind !== "module-list");
+      const plainSummary =
+        plainFields.length === 0
           ? ""
-          : ` fields=[${m.fields
+          : ` fields=[${plainFields
               .slice(0, 5)
               .map((f) => `${f.name}:${f.kind}`)
-              .join(", ")}${m.fields.length > 5 ? ", …" : ""}]`;
-      lines.push(`- \`${m.slug}\` "${m.displayName}"${usage}`);
-      lines.push(`    ${desc}${fieldSummary}`);
+              .join(", ")}${plainFields.length > 5 ? ", …" : ""}]`;
+      const nestedSummary =
+        nestedFields.length === 0
+          ? ""
+          : ` nested=[${nestedFields
+              .map((f) => {
+                const allow =
+                  f.allowedModuleTypes && f.allowedModuleTypes.length > 0
+                    ? ` allowedModuleTypes=[${f.allowedModuleTypes.join(", ")}]`
+                    : " (any type)";
+                return `${f.name}:${f.kind}${allow}`;
+              })
+              .join(", ")}]`;
+      // v0.12.3 — surface `type` (the reusable class) distinctly from the
+      // unique `slug`, so the AI references the right value in a parent's
+      // allowedModuleTypes.
+      const typeTag = m.type ? ` type=\`${m.type}\`` : "";
+      lines.push(`- \`${m.slug}\`${typeTag} "${m.displayName}"${usage}`);
+      lines.push(`    ${desc}${plainSummary}${nestedSummary}`);
       emitted += 1;
     }
   }
@@ -323,6 +348,14 @@ const BASE_SYSTEM = [
   "Editors describe what they want changed; you respond conversationally and use tools",
   "to make the changes. Briefly state what you're about to do (one sentence), then call",
   "the tools that do it. Never call tools other than the ones listed below.",
+  // v0.12.3 (issue #106) — recover, don't punt. The operator is
+  // non-technical and describes OUTCOMES; you decide the implementation.
+  "When a tool call fails validation with an error that names a valid set of choices",
+  "(available blocks, allowedModuleTypes, candidate modules, etc.), DO NOT ask the operator",
+  "to fix it and DO NOT defer it — pick a value from the named set (or take the next step the",
+  "error suggests, e.g. widen an allowlist via edit_module) and retry within this same turn.",
+  "Never tell the operator to perform an editor-UI action or hand them an implementation",
+  "detail (block names, module slugs/types, field shapes) — that is your job to resolve.",
 ].join(" ");
 
 // v0.4.0 — module model. Tells the AI when to use edit_module
@@ -340,6 +373,12 @@ const MODULE_MODEL_BLOCK = [
   "  Module HTML references slots as `{{fieldName}}`. Field kinds: text, richtext, url, image, number, boolean, link, **module**, **module-list**.",
   "  The last two are NESTED module references — use `{{>fieldName}}` for a single nested module, `{{#fieldName}}…{{/fieldName}}` for a list. Value shape: `{ moduleId, contentInstanceId }`.",
   "  Module-code edits are CHAT-BRANCHED until publish.",
+  // v0.12.3 (issue #106) — the type-vs-slug distinction + nested-ref
+  // contract, surfaced so the AI satisfies allowedModuleTypes without a
+  // round-trip.
+  "- Every module has a stable **`type`** (its reusable class, e.g. `button`) separate from its unique **`slug`** (`button-mpqxq3ch`). The `## Modules` block shows both.",
+  "  A `module`/`module-list` field may declare **`allowedModuleTypes`** — a whitelist of `type`s permitted in that slot. To fill such a slot, reference an existing module whose `type` is in the list (check `## Modules`); REUSE one of that type rather than minting a near-duplicate. The whitelist matches the referenced module's `type`, NEVER its slug.",
+  "  If no existing module of an allowed type fits, create one and pass `type: \"<an-allowed-type>\"` so it satisfies the whitelist. If a module SHOULD be allowed but isn't, widen the field's `allowedModuleTypes` via `edit_module` on the PARENT module.",
   "- **A content_instance** is a typed bag of values for one module. Two placements can bind to the SAME content_instance (`sync_mode='synced'`) so editing it propagates to every page bound to it.",
   "  An UNSYNCED placement (the default) holds a private content_instance — edits stay local to that page.",
   "  Content edits are CHAT-BRANCHED until publish; the new content_instance lock prevents two chats from racing on a shared row.",

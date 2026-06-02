@@ -750,6 +750,17 @@ export const renderPagePreviewOp = defineOperation({
 
     // P6.7.6 — load layout modules (chrome) for every layout block
     // except `content` (which is filled by the rendered template).
+    // issue #106 — load `m.fields` for layout/chrome modules too. A
+    // layout module (footer/header/nav) has NO content_instance binding
+    // (the `layout_modules` table carries no content_instance_id), so its
+    // content lives in the authored field `default`s. The composer's
+    // applyFieldSubstitution renders those defaults — but only if it
+    // receives the fields. Omitting them shipped raw `{{nav_links}}` /
+    // `{{copyright}}` placeholders to the live-edit preview iframe while
+    // page-content modules (bound to content_instances) interpolated
+    // fine. The static generator already loads fields here; the preview
+    // op was the lone divergence. See CLAUDE.md §1A (repeating content is
+    // a list field) — the footer nav is a `link-list` default.
     const layoutModRows = (await tx.execute(sql`
       SELECT lm.block_name AS block_name,
              lm.position   AS position,
@@ -758,7 +769,8 @@ export const renderPagePreviewOp = defineOperation({
              m.display_name AS display_name,
              m.html        AS html,
              m.css         AS css,
-             m.js          AS js
+             m.js          AS js,
+             m.fields      AS fields
       FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
       WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
       ORDER BY lm.block_name ASC, lm.position ASC
@@ -772,6 +784,7 @@ export const renderPagePreviewOp = defineOperation({
         html: string;
         css: string;
         js: string;
+        fields: { name: string; kind: ModuleFieldKind; default?: unknown }[];
       }[]
     >();
     for (const r of layoutModRows) {
@@ -783,6 +796,7 @@ export const renderPagePreviewOp = defineOperation({
         html: r.html,
         css: r.css,
         js: r.js,
+        fields: parseFields(r.fields),
       });
       layoutGrouped.set(r.block_name, arr);
     }

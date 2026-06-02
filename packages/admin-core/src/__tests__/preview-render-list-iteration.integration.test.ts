@@ -124,10 +124,11 @@ beforeAll(async () => {
 
       // text-list module + content_instance + page placement.
       const tagsMod = (await tx`
-        INSERT INTO modules (slug, display_name, html, fields)
+        INSERT INTO modules (slug, display_name, type, html, fields)
         VALUES (
           ${MOD_SLUGS.tags},
           'Tags',
+          ${MOD_SLUGS.tags},
           '<ul>{{#tags}}<li>{{.}}</li>{{/tags}}</ul>',
           '[{"name":"tags","kind":"text-list","label":"Tags"}]'::jsonb
         )
@@ -152,10 +153,11 @@ beforeAll(async () => {
 
       // link-list module (AC #1 fixture) + content_instance + page.
       const navMod = (await tx`
-        INSERT INTO modules (slug, display_name, html, fields)
+        INSERT INTO modules (slug, display_name, type, html, fields)
         VALUES (
           ${MOD_SLUGS.nav},
           'Nav',
+          ${MOD_SLUGS.nav},
           '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
           '[{"name":"nav_items","kind":"link-list","label":"Nav items"}]'::jsonb
         )
@@ -183,10 +185,11 @@ beforeAll(async () => {
 
       // module-list — parent + child module + nested content_instances.
       const cardsMod = (await tx`
-        INSERT INTO modules (slug, display_name, html, fields)
+        INSERT INTO modules (slug, display_name, type, html, fields)
         VALUES (
           ${MOD_SLUGS.cards},
           'Cards',
+          ${MOD_SLUGS.cards},
           '<section>{{#cards}}ignored{{/cards}}</section>',
           '[{"name":"cards","kind":"module-list","label":"Cards"}]'::jsonb
         )
@@ -194,10 +197,11 @@ beforeAll(async () => {
       `) as unknown as { id: string }[];
       seeded.cardsModuleId = cardsMod[0]?.id ?? "";
       const cardMod = (await tx`
-        INSERT INTO modules (slug, display_name, html, fields)
+        INSERT INTO modules (slug, display_name, type, html, fields)
         VALUES (
           ${MOD_SLUGS.card},
           'Card',
+          ${MOD_SLUGS.card},
           '<article>{{title}}</article>',
           '[{"name":"title","kind":"text","label":"Title"}]'::jsonb
         )
@@ -239,10 +243,11 @@ beforeAll(async () => {
 
       // Loud-raw on missing nested content_instance.
       const missingMod = (await tx`
-        INSERT INTO modules (slug, display_name, html, fields)
+        INSERT INTO modules (slug, display_name, type, html, fields)
         VALUES (
           ${MOD_SLUGS.missingParent},
           'Missing parent',
+          ${MOD_SLUGS.missingParent},
           '<section>{{#cards}}x{{/cards}}</section>',
           '[{"name":"cards","kind":"module-list","label":"Cards"}]'::jsonb
         )
