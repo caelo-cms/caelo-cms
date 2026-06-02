@@ -13,6 +13,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -64,10 +65,10 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
 
-  mediaRoot = join(tmpdir(), `caelo-media-deploy-${Date.now()}`);
-  buildDir = join(tmpdir(), `caelo-media-build-${Date.now()}`);
-  await mkdir(mediaRoot, { recursive: true });
-  await mkdir(buildDir, { recursive: true });
+  // mkdtempSync: unique dir, random suffix, mode 0700, created atomically
+  // (CodeQL js/insecure-temporary-file).
+  mediaRoot = mkdtempSync(join(tmpdir(), "caelo-media-deploy-"));
+  buildDir = mkdtempSync(join(tmpdir(), "caelo-media-build-"));
 
   const upload = await execute(registry, adapter, systemCtx, "media.upload", {
     sha256: SHA,

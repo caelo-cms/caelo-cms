@@ -60,15 +60,20 @@ import { getQueryContext } from "$lib/server/query.js";
 if (!process.env.CAELO_SECRET_KEK && process.env.NODE_ENV !== "production") {
   const devDir = resolvePath(process.cwd(), ".caelo");
   const devFile = resolvePath(devDir, "dev-kek");
-  if (existsSync(devFile)) {
-    process.env.CAELO_SECRET_KEK = readFileSync(devFile, "utf8").trim();
-  } else {
-    const hex = generateKekHex();
+  // Read-or-generate without an existsSync pre-check: the gap between the
+  // check and the read/write is a TOCTOU race against a parallel boot
+  // (CodeQL js/file-system-race). A failed read means "not there yet" →
+  // generate and persist.
+  let hex: string;
+  try {
+    hex = readFileSync(devFile, "utf8").trim();
+  } catch {
+    hex = generateKekHex();
     mkdirSync(devDir, { recursive: true });
     writeFileSync(devFile, hex, { mode: 0o600 });
-    process.env.CAELO_SECRET_KEK = hex;
     console.log(`[hooks] generated dev KEK → ${devFile}`);
   }
+  process.env.CAELO_SECRET_KEK = hex;
 }
 
 const SYSTEM_CTX: ExecutionContext = {

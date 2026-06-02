@@ -255,4 +255,8 @@ try {
   await sql.end();
 }
 
-console.log(`dev owner ready: ${EMAIL} / ${PASSWORD}`);
+// Never echo the password: even in a dev script, logging a credential in
+// clear text is a finding (CodeQL js/clear-text-logging, must-fix per #113).
+// The value is the DEV_OWNER_PASSWORD env var (default documented in this
+// file's header), so the operator already knows it.
+console.log(`dev owner ready: ${EMAIL} (password: $DEV_OWNER_PASSWORD)`);
