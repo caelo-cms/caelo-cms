@@ -16,6 +16,7 @@
 import { createHash } from "node:crypto";
 import type { PluginContext, PluginContextTier1, PluginDefinition } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { isUnsafeKey } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { AIProvider } from "./types.js";
 
@@ -353,7 +354,7 @@ function redactSensitive(value: unknown): unknown {
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+      if (isUnsafeKey(k)) continue;
       out[k] = SENSITIVE_KEY_RE.test(k) ? "[redacted]" : redactSensitive(v);
     }
     return out;
