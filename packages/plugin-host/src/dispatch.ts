@@ -337,6 +337,46 @@ export async function runPluginOperation(
   }
 }
 
+/** Field names whose values are redacted before the audit digest is taken. */
+const SENSITIVE_KEY_RE = /pass(word|wd|phrase)?|secret|token|api[-_]?key|credential|private[-_]?key/i;
+
+/**
+ * Deep-copy `value`, replacing the value of any sensitive-named field with
+ * a fixed placeholder. Prototype-polluting keys are dropped (never assigned)
+ * so this helper introduces no pollution of its own. Object key order is
+ * preserved, so the resulting JSON — and therefore the digest — is
+ * deterministic for equal inputs.
+ */
+function redactSensitive(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+      out[k] = SENSITIVE_KEY_RE.test(k) ? "[redacted]" : redactSensitive(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Audit integrity digest of a plugin op's input arguments. This is NOT a
+ * password hash — it is a one-way fingerprint stored in
+ * `audit_events.input_hash` so the operator can correlate and tamper-check
+ * op calls. Sensitive-named fields (`*password*`, `*secret*`, tokens, …)
+ * are redacted first, so the digest can never act as an offline oracle for
+ * a secret and its input carries no credential-shaped data
+ * (CodeQL js/insufficient-password-hash). SHA-256 is the correct primitive
+ * for a deterministic integrity fingerprint; a slow salted password KDF
+ * would be wrong here (non-deterministic, defeats correlation).
+ */
+export function auditInputDigest(inputArgs: unknown): string {
+  return createHash("sha256")
+    .update(JSON.stringify(redactSensitive(inputArgs ?? null)))
+    .digest("hex");
+}
+
 /**
  * v0.2.16 — write an audit_events row for a plugin op. Mirrors the
  * shape `recordAudit` in admin-core uses, but runs raw SQL because
@@ -355,9 +395,7 @@ async function emitPluginAuditRow(
     succeeded: boolean;
   },
 ): Promise<void> {
-  const hash = createHash("sha256")
-    .update(JSON.stringify(args.inputArgs ?? null))
-    .digest("hex");
+  const hash = auditInputDigest(args.inputArgs);
   await adapter.withAdminTransaction(
     {
       actorId: args.actorId,
