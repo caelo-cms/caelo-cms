@@ -24,7 +24,15 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, type LocaleConfig, ok, PROPOSAL_STATUSES, proposalStatus, resolveLocaleUrl } from "@caelo-cms/shared";
+import {
+  err,
+  type LocaleConfig,
+  ok,
+  PROPOSAL_STATUSES,
+  type ProposalStatus,
+  proposalStatus,
+  resolveLocaleUrl,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -133,7 +141,7 @@ interface ProposalDbRow {
   preview: unknown;
   proposed_by: string;
   proposed_at: string | Date;
-  status: "pending" | "applied" | "rejected" | "superseded";
+  status: ProposalStatus;
   decided_by: string | null;
   decided_at: string | Date | null;
   decision_note: string | null;
@@ -594,7 +602,7 @@ export const executeLocaleProposalOp = defineOperation({
       id: string;
       action_kind: "create" | "delete" | "set_default" | "update_strategy";
       payload: unknown;
-      status: "pending" | "applied" | "rejected" | "superseded";
+      status: ProposalStatus;
     }[];
     const proposal = rows[0];
     if (!proposal) {
@@ -799,7 +807,7 @@ export const rejectLocaleProposalOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT status FROM locale_pending_actions
       WHERE id = ${input.proposalId}::uuid LIMIT 1
-    `)) as unknown as { status: "pending" | "applied" | "rejected" | "superseded" }[];
+    `)) as unknown as { status: ProposalStatus }[];
     const proposal = rows[0];
     if (!proposal) {
       return err({

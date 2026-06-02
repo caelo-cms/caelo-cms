@@ -33,9 +33,10 @@ import {
   mergeRampIntoTokens,
   normalizeTokens,
   ok,
+  PROPOSAL_STATUSES,
   type PresetName,
   PresetNotFound,
-  PROPOSAL_STATUSES,
+  type ProposalStatus,
   type ThemeDocument,
   TokenCategoryMismatch,
   UnknownTokenName,
@@ -586,7 +587,7 @@ export const listPendingThemeProposalsOp = defineOperation({
       theme_id: string | null;
       payload: unknown;
       preview: unknown;
-      status: "pending" | "applied" | "rejected" | "superseded" | "cancelled";
+      status: ProposalStatus | "cancelled";
       created_at: string | Date;
       decided_at: string | Date | null;
       decided_by: string | null;

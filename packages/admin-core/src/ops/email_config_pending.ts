@@ -20,7 +20,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok, proposalStatus } from "@caelo-cms/shared";
+import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -317,7 +317,7 @@ export const listPendingEmailConfigProposalsOp = defineOperation({
       proposed_by: string;
       payload: unknown;
       preview: unknown;
-      status: "pending" | "applied" | "rejected" | "superseded";
+      status: ProposalStatus;
       created_at: string | Date;
       decided_at: string | Date | null;
       decided_by: string | null;
