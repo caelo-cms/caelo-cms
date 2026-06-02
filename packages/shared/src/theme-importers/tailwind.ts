@@ -49,7 +49,11 @@ export function importTailwind(body: string): ThemeDocument {
  * outer whitespace) or null when no block is present.
  */
 function extractAtThemeBlock(body: string): string | null {
-  const stripped = body.replace(/\/\*[\s\S]*?\*\//g, "");
+  // Tempered-dot comment strip — `(?:(?!\*\/)[\s\S])*` instead of a lazy
+  // `[\s\S]*?` — so a comment that is never closed cannot drive O(n²)
+  // backtracking (CodeQL js/polynomial-redos). Stops at the first `*/`,
+  // identical output to the lazy form on valid CSS.
+  const stripped = body.replace(/\/\*(?:(?!\*\/)[\s\S])*\*\//g, "");
   const match = /@theme\s+(?:inline\s+)?\{/i.exec(stripped);
   if (!match) return null;
   const start = match.index + match[0].length;

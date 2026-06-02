@@ -27,7 +27,9 @@ export interface ExtractedPage {
 }
 
 export function extractTitle(html: string): string {
-  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  // Tempered-dot body (see the comment block on `extractThemeTokens`) — the
+  // lazy `[\s\S]*?` is O(n²) on an unclosed `<title>` (CodeQL js/polynomial-redos).
+  const m = html.match(/<title[^>]*>((?:(?!<\/title>)[\s\S])*)<\/title>/i);
   if (!m) return "";
   return decodeEntities(m[1]?.trim() ?? "").slice(0, 200);
 }
@@ -109,16 +111,26 @@ export function extractModulesFromHtml(html: string): ExtractedModule[] {
  */
 export function extractThemeTokens(html: string): Record<string, string> {
   const tokens: Record<string, string> = {};
-  const styleBlocks = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)];
+  // All three patterns below replace a lazy `[\s\S]*?` (or an ambiguous
+  // `([^;]+?)\s*$`) that backtracks O(n²) on unclosed/large input
+  // (CodeQL js/polynomial-redos):
+  //   - `<style>…</style>` and `:root { … }` use the tempered-dot form
+  //     `(?:(?!CLOSE)[\s\S])*`, which has a single unambiguous match path
+  //     and stops at the first close — identical output on valid CSS.
+  //   - the per-declaration parse captures the value greedily to end-of-line
+  //     (`([\s\S]*)$`, one path) and trims in code, avoiding the
+  //     `([^;]+?)\s*$` overlap between the lazy body and the trailing `\s*`.
+  const styleBlocks = [...html.matchAll(/<style[^>]*>((?:(?!<\/style>)[\s\S])*)<\/style>/gi)];
   for (const block of styleBlocks) {
     const css = block[1] ?? "";
-    const root = css.match(/:root\s*\{([\s\S]*?)\}/);
+    const root = css.match(/:root\s*\{((?:(?!\})[\s\S])*)\}/);
     if (!root) continue;
     const decls = root[1] ?? "";
     for (const line of decls.split(";")) {
-      const m = line.match(/^\s*(--[a-zA-Z0-9-]+)\s*:\s*([^;]+?)\s*$/);
-      if (m?.[1] && m?.[2]) {
-        tokens[m[1]] = m[2].trim();
+      const m = line.match(/^\s*(--[a-zA-Z0-9-]+)\s*:([\s\S]*)$/);
+      const value = m?.[2]?.trim();
+      if (m?.[1] && value) {
+        tokens[m[1]] = value;
       }
     }
   }
@@ -128,7 +140,11 @@ export function extractThemeTokens(html: string): Record<string, string> {
 // ---- helpers ----------------------------------------------------------------
 
 function sliceBody(html: string): string {
-  const m = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  // Tempered-dot body — non-backtracking replacement for the greedy
+  // `([\s\S]*)<\/body>` that CodeQL flags as polynomial. A well-formed
+  // document has a single `</body>`, so first-match equals the greedy
+  // last-match here.
+  const m = html.match(/<body[^>]*>((?:(?!<\/body>)[\s\S])*)<\/body>/i);
   return m ? (m[1] ?? "") : html;
 }
 

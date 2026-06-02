@@ -122,7 +122,15 @@ interface NestedRef {
 // between `{{` and the sigil (#, >, /) is permitted to match the
 // Mustache spec — an extractor that pretty-prints AI-authored HTML
 // shouldn't silently break section / partial dispatch.
-const SECTION_RE = /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}([\s\S]*?)\{\{\s*\/\s*\1\s*\}\}/g;
+// The section body uses a "tempered dot" — `(?:(?!CLOSE)[\s\S])*` — instead
+// of a lazy `[\s\S]*?`. The lazy form makes the engine try, then backtrack,
+// the close-tag match at every interior position, which is O(n²) on
+// unclosed/large input (CodeQL js/polynomial-redos). The tempered form
+// consumes one character only when the close tag does not start there, so
+// there is a single unambiguous path. The capture stops at the first close
+// tag for the captured name, exactly as the lazy form did — same output.
+const SECTION_RE =
+  /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}((?:(?!\{\{\s*\/\s*\1\s*\}\})[\s\S])*)\{\{\s*\/\s*\1\s*\}\}/g;
 const PARTIAL_RE = /\{\{\s*>\s*([a-z][a-z0-9_]*)\s*\}\}/g;
 const PRIMITIVE_RE = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
 

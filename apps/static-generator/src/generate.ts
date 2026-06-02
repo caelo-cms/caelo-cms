@@ -33,6 +33,7 @@ import {
   type ModuleFieldKind,
   resolveLocaleUrl,
   type ThemeDocument,
+  trimSlashes,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
@@ -210,7 +211,7 @@ export function pageOutputPath(
   locale?: PageLocaleConfig,
   pageUrlStyle: "directory" | "no-extension" = "directory",
 ): string {
-  const trimmed = slug.replace(/^\/+|\/+$/g, "");
+  const trimmed = trimSlashes(slug);
   const isHome = trimmed === "" || trimmed === "home" || trimmed === "index";
   // Home page stays at `index.html` regardless of style — the bucket
   // root must serve something for `/`, and browsers + GCS expect

@@ -75,7 +75,9 @@ export function importShadcn(body: string): ThemeDocument {
  * inside the matching braces. Strips block comments before matching.
  */
 function extractBlock(body: string, selector: string): string | null {
-  const stripped = body.replace(/\/\*[\s\S]*?\*\//g, "");
+  // Tempered-dot comment strip (see tailwind.ts) — non-backtracking
+  // replacement for the lazy `/\/\*[\s\S]*?\*\//g` (CodeQL js/polynomial-redos).
+  const stripped = body.replace(/\/\*(?:(?!\*\/)[\s\S])*\*\//g, "");
   // Escape regex specials in the selector (`.` for `.dark`).
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(`${escaped}\\s*\\{`).exec(stripped);
