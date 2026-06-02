@@ -16,7 +16,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok, templateUpdateSchema } from "@caelo-cms/shared";
+import { err, ok, proposalStatus, templateUpdateSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -234,7 +234,7 @@ const proposalRowSchema = z.object({
   templateId: z.string(),
   payload: z.record(z.string(), z.unknown()),
   preview: z.record(z.string(), z.unknown()),
-  status: z.enum(["pending", "applied", "rejected", "superseded"]),
+  status: proposalStatus,
   createdAt: z.string(),
   decidedAt: z.string().nullable(),
   decidedBy: z.string().nullable(),

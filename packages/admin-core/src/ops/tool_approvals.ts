@@ -19,7 +19,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { err, ok, proposalStatus } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -213,7 +213,7 @@ const toolApprovalRowSchema = z.object({
   preview: z.record(z.string(), z.unknown()),
   chatSessionId: z.string().nullable(),
   proposedBy: z.string(),
-  status: z.enum(["pending", "applied", "rejected", "superseded"]),
+  status: proposalStatus,
   createdAt: z.string(),
   decidedAt: z.string().nullable(),
   decidedBy: z.string().nullable(),

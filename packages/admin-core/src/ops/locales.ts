@@ -24,7 +24,7 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, type LocaleConfig, ok, resolveLocaleUrl } from "@caelo-cms/shared";
+import { err, type LocaleConfig, ok, PROPOSAL_STATUSES, proposalStatus, resolveLocaleUrl } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -120,7 +120,7 @@ const proposalRowSchema = z.object({
   preview: z.unknown(),
   proposedBy: z.string(),
   proposedAt: z.string(),
-  status: z.enum(["pending", "applied", "rejected", "superseded"]),
+  status: proposalStatus,
   decidedBy: z.string().nullable(),
   decidedAt: z.string().nullable(),
   decisionNote: z.string().nullable(),
@@ -472,7 +472,7 @@ export const listPendingLocaleProposalsOp = defineOperation({
   database: "cms_admin",
   input: z
     .object({
-      status: z.enum(["pending", "applied", "rejected", "superseded", "all"]).default("pending"),
+      status: z.enum([...PROPOSAL_STATUSES, "all"] as const).default("pending"),
     })
     .strict(),
   output: z.object({ proposals: z.array(proposalRowSchema) }),
