@@ -139,6 +139,20 @@ one `propose_<action>` tool per action that wraps the op.
    - `parsePayload<T>(row.payload)` — bun-postgres jsonb parse.
    - `DUPLICATE_PROPOSAL_MESSAGE` — standard error string.
 
+   For the row schema's `status` field, import the canonical enum from
+   `@caelo-cms/shared` — do NOT re-type the literal (issue #20):
+   - `proposalStatus` — the four-state Zod enum; use it directly.
+   - `ProposalStatus` — the matching TS type for any hand-written
+     interface / SQL-row cast.
+   - List-filter ops that accept `"all"`:
+     `z.enum([...PROPOSAL_STATUSES, "all"] as const)`.
+   - Extra states (e.g. themes' `"cancelled"`):
+     `z.enum([...PROPOSAL_STATUSES, "cancelled"] as const)`.
+   - A subset (e.g. deploy has no `"superseded"`):
+     `proposalStatus.exclude(["superseded"])`.
+   A meta-test (`ops/__tests__/no-inline-status-enum.test.ts`) fails
+   the build if the 4-tuple literal is re-inlined.
+
 3. **Register** in `register.ts` alongside the existing entries.
 
 4. **Owner UI route**: `apps/admin/src/routes/(authed)/security/<domain>/pending/`
