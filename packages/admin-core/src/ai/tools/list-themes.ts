@@ -27,9 +27,10 @@ export const listThemesTool: ToolDefinitionWithHandler<ListThemesToolInput> = {
   name: "list_themes",
   description:
     "List every theme on this site (one row is active; the rest are variants). " +
-    "Returns each theme's id, slug, displayName, and isActive flag. Use when the operator " +
-    "mentions a theme by name and you need its slug — or before proposing activation of an " +
-    "existing variant.",
+    "Returns each theme's id (UUID), slug, displayName, and isActive flag. Use when the operator " +
+    "mentions a theme by name and you need its slug or id — the id is what `propose_activate_theme` " +
+    "takes as `themeId`, so you can activate a variant straight from this list without a get_theme " +
+    "round-trip.",
   schema: listThemesToolInput,
   inputSchema: { type: "object", additionalProperties: false, properties: {} },
   handler: async (ctx, input, toolCtx) => {
@@ -39,8 +40,11 @@ export const listThemesTool: ToolDefinitionWithHandler<ListThemesToolInput> = {
     if (themes.length === 0) {
       return { ok: true, content: "No themes on this site yet." };
     }
+    // issue #106 (step-13 deviation) — surface the id. `propose_activate_theme`
+    // requires the theme UUID; omitting it here forced the AI into an extra
+    // get_theme / DTCG read just to learn the id of a theme it had just listed.
     const lines = themes.map(
-      (t) => `- ${t.slug} ("${t.displayName}")${t.isActive ? " [active]" : ""}`,
+      (t) => `- ${t.slug} ("${t.displayName}")${t.isActive ? " [active]" : ""} — id ${t.id}`,
     );
     return { ok: true, content: lines.join("\n") };
   },

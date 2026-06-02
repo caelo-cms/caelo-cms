@@ -179,13 +179,13 @@ describe("validateTemplatizedModule", () => {
         name: "cta",
         kind: "module",
         label: "CTA",
-        allowedModuleSlugs: ["button"],
+        allowedModuleTypes: ["button"],
       } as never,
       {
         name: "items",
         kind: "module-list",
         label: "Items",
-        allowedModuleSlugs: ["card"],
+        allowedModuleTypes: ["card"],
       } as never,
       { name: "title", kind: "text", label: "Title" },
     ]);

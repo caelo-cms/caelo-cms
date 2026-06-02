@@ -63,8 +63,8 @@ test("toolbar-toggle gating: no chip when off; chip when on", async ({ page }) =
         RETURNING id::text AS id\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${tpl[0].id}::uuid, 'content', 'Content', 0)\`;
       const mod = await tx\`
-        INSERT INTO modules (slug, display_name, html)
-        VALUES (\${process.env.MOD_SLUG}, 'mod', '<h1>HERO_MOD_TEST</h1>')
+        INSERT INTO modules (slug, display_name, type, html)
+        VALUES (\${process.env.MOD_SLUG}, 'mod', \${process.env.MOD_SLUG}, '<h1>HERO_MOD_TEST</h1>')
         RETURNING id::text AS id\`;
       const pg = await tx\`
         INSERT INTO pages (slug, locale, title, template_id, status)

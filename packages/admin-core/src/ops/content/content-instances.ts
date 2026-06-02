@@ -134,7 +134,7 @@ async function validateNestedRefs(
   type Field = {
     name: string;
     kind: string;
-    allowedModuleSlugs?: string[];
+    allowedModuleTypes?: string[];
     min?: number;
     max?: number;
   };
@@ -276,13 +276,13 @@ async function validateNestedRefs(
 
   const allModuleIds = [...new Set(refsToCheck.map((r) => r.ref.moduleId))];
   const modRows2 = (await tx.execute(sql`
-    SELECT id::text AS id, slug, deleted_at
+    SELECT id::text AS id, slug, type, deleted_at
     FROM modules
     WHERE id IN (${sql.join(
       allModuleIds.map((id) => sql`${id}::uuid`),
       sql`, `,
     )})
-  `)) as unknown as { id: string; slug: string; deleted_at: Date | null }[];
+  `)) as unknown as { id: string; slug: string; type: string; deleted_at: Date | null }[];
   const moduleMap = new Map(modRows2.map((r) => [r.id, r]));
 
   for (const c of refsToCheck) {
@@ -307,14 +307,27 @@ async function validateNestedRefs(
         message: `field "${where}" content_instance ${c.ref.contentInstanceId} is for module ${ci.module_id}, but the ref declares module ${c.ref.moduleId}`,
       };
     }
-    // allowedModuleSlugs whitelist (when present, the renderer enforces
-    // at runtime but we mirror it at write time for the AI's benefit).
+    // v0.12.3 (issue #106) — allowedModuleTypes whitelist. This is the
+    // ONLY enforcement site (the renderer does NOT enforce it — the
+    // stale "renderer enforces at runtime" comment that lived here was
+    // wrong). Match against the referenced module's STABLE `type`, not
+    // its unique `slug`: an AI-minted module's slug carries a uniqueness
+    // suffix (`button-mpqxq3ch`) that could never match an authored
+    // allowlist, whereas its `type` is the reusable class (`button`).
     const declared = fields.find((f) => f.name === c.fieldName);
-    if (declared?.allowedModuleSlugs && declared.allowedModuleSlugs.length > 0) {
-      if (!declared.allowedModuleSlugs.includes(m.slug)) {
+    if (declared?.allowedModuleTypes && declared.allowedModuleTypes.length > 0) {
+      if (!declared.allowedModuleTypes.includes(m.type)) {
+        const allowed = declared.allowedModuleTypes.join(", ");
         return {
           ok: false,
-          message: `field "${where}" module slug "${m.slug}" is not in allowedModuleSlugs [${declared.allowedModuleSlugs.join(", ")}]`,
+          // AI-actionable per CLAUDE.md §11.A: name the valid set + the
+          // exact next step so the AI self-corrects instead of punting
+          // the implementation detail to a non-technical operator (§1A).
+          message:
+            `field "${where}" references module "${m.slug}" (type "${m.type}"), which is not in this field's allowedModuleTypes [${allowed}]. ` +
+            `Next step: reference an existing module whose type is one of [${allowed}] (see \`## Modules\` for each module's type), ` +
+            `or, if this module SHOULD be allowed here, add "${m.type}" to the field's allowedModuleTypes via edit_module on the parent module. ` +
+            `Do not ask the operator to fix this — pick a valid module or widen the allowlist and retry.`,
         };
       }
     }

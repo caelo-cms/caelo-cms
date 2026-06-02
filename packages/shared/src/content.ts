@@ -20,6 +20,70 @@ export const slugSchema = z
     "slug must be lowercase letters, digits, or hyphens (1–64 chars, no leading/trailing hyphen)",
   );
 
+/**
+ * v0.12.3 (issue #106) — derive a module's stable `type` from its
+ * displayName. The `type` is the semantic class of a module (`button`,
+ * `hero`, `pricing-card`) shared by every instance of that class — it is
+ * what a parent module's `allowedModuleTypes` whitelist matches against.
+ *
+ * This is the slug *base* WITHOUT the `-<timestamp>` uniqueness suffix
+ * that `slugify()` appends: a module's `slug` is its unique row identity
+ * (`button-mpqxq3ch`), its `type` is the reusable class (`button`). The
+ * tool-side `slugify` composes as `deriveModuleType(name) + "-" + suffix`
+ * so the two can never diverge.
+ *
+ * Mirrors `slugify`'s normalization (lowercase, non-alphanumerics → single
+ * hyphen, trim hyphens, 40-char cap, `"module"` stem fallback) so a
+ * round-trip is predictable.
+ */
+export function deriveModuleType(displayName: string): string {
+  const base = displayName
+    .toLowerCase()
+    // Collapse every run of non-alphanumerics to a SINGLE hyphen first, so the
+    // string can never contain consecutive hyphens after this point.
+    .replace(/[^a-z0-9]+/g, "-")
+    // Cap BEFORE trimming the edge hyphen — trimming first then slicing could
+    // truncate mid-token and leave a trailing hyphen (e.g. the 40th char is a
+    // hyphen), which would make `slug = type + "-" + suffix` double-hyphenate.
+    .slice(0, 40)
+    // Trim a single leading/trailing hyphen. `^-|-$` (not `^-+|-+$`) is both
+    // sufficient — the collapse above guarantees no `--` runs — and free of the
+    // polynomial backtracking CodeQL flags on `-+$` over uncontrolled input.
+    .replace(/^-|-$/g, "");
+  return base.length > 0 ? base : "module";
+}
+
+/**
+ * v0.12.3 (issue #106) — mint a unique module slug from a displayName:
+ * the stable `type` base (`deriveModuleType`) + a base36 timestamp
+ * suffix. Because the slug is always `type + "-" + suffix`, a module's
+ * `type` is guaranteed to be a prefix of its `slug` — the two can never
+ * drift. Shared by every module-minting AI tool so the rule lives in one
+ * place.
+ *
+ * @param suffix - override the uniqueness suffix (defaults to a base36
+ *   timestamp). Pass a stable value in tests for determinism.
+ */
+export function slugifyModuleName(
+  displayName: string,
+  suffix: string = Date.now().toString(36),
+): string {
+  return `${deriveModuleType(displayName)}-${suffix}`;
+}
+
+/**
+ * v0.12.3 (issue #106) — slug for a module minted per page-section
+ * (`compose_page_from_spec`). Includes the section index so two sections
+ * sharing a displayName don't collide on the unique slug constraint.
+ */
+export function slugifyModuleSection(
+  displayName: string,
+  idx: number,
+  suffix: string = Date.now().toString(36),
+): string {
+  return `${deriveModuleType(displayName)}-${idx}-${suffix}`;
+}
+
 /** BCP-47 shape: 2-letter language with optional 2-letter region. P9 widens this. */
 export const localeSchema = z
   .string()
@@ -56,7 +120,7 @@ const moduleJs = z.string().max(MODULE_JS_MAX, `js exceeds ${MODULE_JS_MAX} byte
  *     per element. Value shape: `Array<{ moduleId, contentInstanceId }>`.
  *
  * Schema is a discriminated union by `kind` so the validator rejects, e.g., a
- * `text` kind that carries `allowedModuleSlugs` (which only nested kinds use)
+ * `text` kind that carries `allowedModuleTypes` (which only nested kinds use)
  * or a `module-list` that carries a `default` (nested kinds populate from
  * referenced content_instances, not from defaults).
  */
@@ -136,11 +200,16 @@ const moduleFieldModuleSchema = z
     kind: z.literal("module"),
     label: moduleFieldLabel,
     /**
-     * Optional whitelist of module slugs that may fill this slot. When
-     * absent, any module is permitted. The op-layer validator enforces
-     * the whitelist at `set_content_instance_values` time.
+     * Optional whitelist of module *types* that may fill this slot (the
+     * stable `modules.type` class, e.g. `button` — NOT the unique
+     * `modules.slug` like `button-mpqxq3ch`). When absent, any module is
+     * permitted. The op-layer validator enforces the whitelist against
+     * the referenced module's `type` at `set_content_instance_values`
+     * time. v0.12.3 (issue #106) renamed this from `allowedModuleSlugs`:
+     * an exact-slug whitelist could never match an AI-minted module
+     * because every minted slug carries a uniqueness suffix.
      */
-    allowedModuleSlugs: z.array(slugSchema).max(32).optional(),
+    allowedModuleTypes: z.array(slugSchema).max(32).optional(),
   })
   .strict();
 
@@ -149,7 +218,9 @@ const moduleFieldModuleListSchema = z
     name: moduleFieldName,
     kind: z.literal("module-list"),
     label: moduleFieldLabel,
-    allowedModuleSlugs: z.array(slugSchema).max(32).optional(),
+    /** v0.12.3 (issue #106) — whitelist of stable module `type`s (not
+     *  unique slugs). See `moduleFieldModuleSchema.allowedModuleTypes`. */
+    allowedModuleTypes: z.array(slugSchema).max(32).optional(),
     /** Minimum count of elements. Validator enforces at write time. */
     min: z.number().int().nonnegative().optional(),
     /** Maximum count of elements. Validator enforces at write time. */
@@ -250,6 +321,15 @@ export const moduleCreateSchema = z
     displayName: displayNameSchema,
     description: moduleDescription.default(""),
     kind: moduleKindSchema.default("content"),
+    /**
+     * v0.12.3 (issue #106) — stable semantic class shared by every
+     * instance of this module (`button`, `pricing-card`). What a parent
+     * module's `allowedModuleTypes` whitelist matches against. Optional:
+     * when omitted, `modules.create` derives it from `displayName` via
+     * `deriveModuleType()`. Pass it explicitly to reuse an existing
+     * class (e.g. a second `button` variant should share `type: "button"`).
+     */
+    type: slugSchema.optional(),
     html: moduleHtml,
     css: moduleCss.default(""),
     js: moduleJs.default(""),
@@ -263,6 +343,8 @@ export const moduleUpdateSchema = z
     displayName: displayNameSchema.optional(),
     description: moduleDescription.optional(),
     kind: moduleKindSchema.optional(),
+    /** v0.12.3 (issue #106) — re-classify a module's stable `type`. */
+    type: slugSchema.optional(),
     html: moduleHtml.optional(),
     css: moduleCss.optional(),
     js: moduleJs.optional(),

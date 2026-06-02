@@ -66,8 +66,8 @@ test("clicking an element in the live-preview iframe appends a chip", async ({ p
         RETURNING id::text AS id\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${tpl[0].id}::uuid, 'content', 'Content', 0)\`;
       const mod = await tx\`
-        INSERT INTO modules (slug, display_name, html)
-        VALUES (\${process.env.MOD_SLUG}, 'le mod', '<h1>HERO_CLICK_TARGET</h1>')
+        INSERT INTO modules (slug, display_name, type, html)
+        VALUES (\${process.env.MOD_SLUG}, 'le mod', \${process.env.MOD_SLUG}, '<h1>HERO_CLICK_TARGET</h1>')
         RETURNING id::text AS id\`;
       const pg = await tx\`
         INSERT INTO pages (slug, locale, title, template_id, status)

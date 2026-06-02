@@ -51,8 +51,8 @@ beforeAll(async () => {
       `) as unknown as { id: string }[];
       seededTemplateId = tpl[0]?.id ?? "";
       const mod = (await tx`
-        INSERT INTO modules (slug, display_name, html)
-        VALUES (${MOD_SLUG}, 'RLS M', '<p>x</p>')
+        INSERT INTO modules (slug, display_name, type, html)
+        VALUES (${MOD_SLUG}, 'RLS M', ${MOD_SLUG}, '<p>x</p>')
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seededModuleId = mod[0]?.id ?? "";

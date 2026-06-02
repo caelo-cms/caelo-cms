@@ -11,6 +11,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { moveModuleToolInput } from "@caelo-cms/shared";
+import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -18,6 +19,29 @@ interface PageWithModules {
   id: string;
   blocks: { blockName: string; modules: { moduleId: string }[] }[];
 }
+
+/**
+ * Static JSON Schema for the provider. `describeSchema` clones this
+ * per-turn and pins `toBlockName` to an enum of the focused page's real
+ * blocks (issue #106), so the AI can't move a module into a block that
+ * doesn't exist.
+ */
+const MOVE_MODULE_INPUT_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["pageId", "moduleId", "toBlockName", "position"],
+  properties: {
+    pageId: { type: "string", format: "uuid" },
+    moduleId: { type: "string", format: "uuid" },
+    toBlockName: { type: "string", minLength: 1, maxLength: 80 },
+    position: {
+      oneOf: [
+        { type: "string", enum: ["top", "bottom"] },
+        { type: "integer", minimum: 0, maximum: 1000 },
+      ],
+    },
+  },
+};
 
 export const moveModuleTool: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").MoveModuleToolInput
@@ -28,22 +52,8 @@ export const moveModuleTool: ToolDefinitionWithHandler<
     "Use when the user says 'move the hero into the header' or 'put this banner above the footer'. " +
     "For changing order within the same block, use `reorder_module` instead.",
   schema: moveModuleToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["pageId", "moduleId", "toBlockName", "position"],
-    properties: {
-      pageId: { type: "string", format: "uuid" },
-      moduleId: { type: "string", format: "uuid" },
-      toBlockName: { type: "string", minLength: 1, maxLength: 80 },
-      position: {
-        oneOf: [
-          { type: "string", enum: ["top", "bottom"] },
-          { type: "integer", minimum: 0, maximum: 1000 },
-        ],
-      },
-    },
-  },
+  inputSchema: MOVE_MODULE_INPUT_SCHEMA,
+  describeSchema: (state) => withBlockNameEnum(MOVE_MODULE_INPUT_SCHEMA, state, "toBlockName"),
   handler: async (ctx, input, toolCtx) => {
     const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
       pageId: input.pageId,
@@ -71,6 +81,20 @@ export const moveModuleTool: ToolDefinitionWithHandler<
         content: `module is already in block "${input.toBlockName}" — use reorder_module to change its position within the block`,
       };
     }
+    // v0.12.3 (issue #106) — pages.get_with_modules returns ALL template
+    // blocks (incl. empty ones), so a toBlockName absent from this list is
+    // genuinely not a slot on the page's template. Fail loud + AI-actionable
+    // here (matching add_module_to_page) instead of pushing a phantom block
+    // and leaning on pages.set_modules' generic rejection. Defense-in-depth:
+    // set_modules still validates too.
+    if (!detail.blocks.some((b) => b.blockName === input.toBlockName)) {
+      return blockNotFoundError({
+        blockName: input.toBlockName,
+        blockNames: detail.blocks.map((b) => b.blockName),
+        pageId: input.pageId,
+        argName: "toBlockName",
+      });
+    }
     const blocks = detail.blocks.map((b) => {
       if (b.blockName === fromBlock) {
         return {
@@ -96,12 +120,6 @@ export const moveModuleTool: ToolDefinitionWithHandler<
         moduleIds: b.modules.map((m) => m.moduleId),
       };
     });
-    // If the destination block isn't currently on the page (no modules
-    // there yet), set_modules's template-block check will accept it;
-    // we add a fresh entry so the splice persists.
-    if (!blocks.some((b) => b.blockName === input.toBlockName)) {
-      blocks.push({ blockName: input.toBlockName, moduleIds: [input.moduleId] });
-    }
     const setRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_modules", {
       pageId: input.pageId,
       blocks,

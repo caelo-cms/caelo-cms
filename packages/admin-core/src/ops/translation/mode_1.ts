@@ -388,8 +388,8 @@ export const translationModeOneOp = defineOperation({
       // can clone the same source module without conflict.
       const variantSlug = `${s.moduleSlug}--${input.targetLocale}`;
       const inserted = (await tx.execute(sql`
-        INSERT INTO modules (slug, display_name, html, css, js)
-        SELECT ${variantSlug}, display_name, ${t.html}, css, js
+        INSERT INTO modules (slug, display_name, type, html, css, js)
+        SELECT ${variantSlug}, display_name, type, ${t.html}, css, js
         FROM modules WHERE id = ${s.moduleId}::uuid
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];

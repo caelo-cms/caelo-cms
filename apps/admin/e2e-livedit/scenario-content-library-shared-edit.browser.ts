@@ -53,9 +53,10 @@ function seedSharedContentInstance(): SeedResult {
 
           // Create a module with one text field.
           const mod = await tx\`
-            INSERT INTO modules (slug, display_name, html, css, js, fields)
+            INSERT INTO modules (slug, display_name, type, html, css, js, fields)
             VALUES ('shared-hero-' || floor(random()*100000)::text,
                     'Shared hero',
+                    'shared-hero',
                     '<h1>{{title}}</h1>',
                     '', '',
                     '[{"name":"title","kind":"text","label":"Title","default":"Original"}]'::jsonb)

@@ -62,14 +62,12 @@ export async function checkColdStartGate(
   // Humans + system actors bypass — only AI calls are gated.
   if (ctx.actorKind !== "ai") return { blocked: false };
 
-  const identityCheck = await execute(
-    toolCtx.registry,
-    toolCtx.adapter,
-    ctx,
-    "site_defaults.get",
-    {},
-  );
-  const themeCheck = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {});
+  // The two reads are independent — run them concurrently so the gate
+  // adds one round-trip, not two, to every AI module-creation call.
+  const [identityCheck, themeCheck] = await Promise.all([
+    execute(toolCtx.registry, toolCtx.adapter, ctx, "site_defaults.get", {}),
+    execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {}),
+  ]);
 
   if (!identityCheck.ok || !themeCheck.ok) return { blocked: false };
 
@@ -88,12 +86,62 @@ export async function checkColdStartGate(
     !defaults ||
     ((!defaults.siteName || defaults.siteName.trim().length === 0) &&
       (!defaults.sitePurpose || defaults.sitePurpose.trim().length === 0));
-  const seedTheme = !theme || theme.origin === "seed";
+  // `themes.get_active` returns null when NO theme is active at all (a
+  // fresh install before any theme is created/activated) — distinct from
+  // an active-but-seed-origin theme. The two need different setup steps:
+  // a seed theme can be mutated in place via set_theme_tokens, but with
+  // no active theme those calls fail ("no active theme") and the AI burns
+  // two doomed tool calls. issue #106 (step-13 deviation) — branch on it.
+  const noActiveTheme = !theme;
+  const seedTheme = noActiveTheme || theme.origin === "seed";
 
   if (!noIdentity && !seedTheme) return { blocked: false };
 
-  // Compose the AI-actionable instruction. List the exact tool the AI
-  // is retrying so it doesn't lose track across the round-trips.
+  // Compose the AI-actionable instruction as an ordered step list so the
+  // numbering stays correct across the identity / theme / no-active-theme
+  // permutations (the previous nested-ternary numbering was brittle and
+  // mis-ordered the no-active-theme case). List the exact tool the AI is
+  // retrying so it doesn't lose track across the round-trips.
+  const steps: string[] = [];
+  if (noIdentity) {
+    steps.push(
+      "`set_site_identity({siteName: '<inferred from user prompt>', sitePurpose: '<one or two sentences>'})`. " +
+        "Example: user says 'build me a homepage for an AI-first CMS called Caelo, trustworthy and developer-focused' → " +
+        "siteName 'Caelo', sitePurpose 'An AI-first CMS for developers — trustworthy, branched edits, plugin sandbox'.",
+    );
+  }
+  if (seedTheme && noActiveTheme) {
+    // No theme exists yet — set_theme_tokens/set_theme_meta would fail
+    // ("no active theme"). The AI must create + activate one first. Both
+    // are AI-proposable: propose them yourself, then ask the operator for
+    // the single approval click each — do NOT ask the operator to run the
+    // propose ops (CLAUDE.md §1A recover-don't-punt).
+    steps.push(
+      "`propose_create_theme({name: '<brand name>', preset: 'shadcn-default'})` to mint a theme, " +
+        "then tell the operator to approve it at /security/themes/pending. " +
+        "Pick a brand-fitting primary color to set next: #4f46e5 indigo (SaaS / dev tools), #7c3aed violet (creative / AI), " +
+        "#06b6d4 cyan (data / analytics), #10b981 emerald (sustainability / finance), #f59e0b amber (warm / lifestyle), " +
+        "#0f172a slate (luxury / enterprise).",
+    );
+    steps.push(
+      "`propose_activate_theme({themeId: '<id from list_themes>'})` so it becomes the active theme, " +
+        "then tell the operator to approve that too. (You propose both; the operator just clicks Approve.)",
+    );
+    steps.push(
+      "Once the theme is active: `set_theme_tokens({set: {primaryColor: '<hex>'}})` and " +
+        "`set_theme_meta({description: '<why this palette fits>'})`.",
+    );
+  } else if (seedTheme) {
+    // An active seed theme exists — mutate it in place.
+    steps.push(
+      "`set_theme_tokens({set: {primaryColor: '<hex>'}})`. Pick a brand-fitting color: #4f46e5 indigo (SaaS / dev tools), " +
+        "#7c3aed violet (creative / AI), #06b6d4 cyan (data / analytics), #10b981 emerald (sustainability / finance), " +
+        "#f59e0b amber (warm / lifestyle), #0f172a slate (luxury / enterprise).",
+    );
+    steps.push("`set_theme_meta({description: '<why this palette fits>'})`.");
+  }
+  steps.push(`Retry \`${toolName}\` with the same arguments.`);
+
   return {
     blocked: true,
     gateResult: {
@@ -102,23 +150,19 @@ export async function checkColdStartGate(
         `${toolName}: cold-start install detected — ` +
         `${noIdentity ? "no site identity captured" : "site identity captured"}` +
         ` AND ` +
-        `${seedTheme ? "theme is still seed-origin (grayscale)" : "theme has been evolved"}.\n\n` +
+        `${
+          noActiveTheme
+            ? "no active theme yet"
+            : seedTheme
+              ? "theme is still seed-origin (grayscale)"
+              : "theme has been evolved"
+        }.\n\n` +
         `Caelo is chat-first (CLAUDE.md §1A) — the AI captures brand context AND evolves the theme ` +
         `BEFORE authoring any modules. The page would otherwise render against the seed-grayscale ` +
         `palette and lose the operator's intent.\n\n` +
         `Required setup (run these in order, then retry your \`${toolName}\` call):\n\n` +
-        `${
-          noIdentity
-            ? "1. `set_site_identity({siteName: '<inferred from user prompt>', sitePurpose: '<one or two sentences>'})`. Example: user says 'build me a homepage for an AI-first CMS called Caelo, trustworthy and developer-focused' → siteName 'Caelo', sitePurpose 'An AI-first CMS for developers — trustworthy, branched edits, plugin sandbox'.\n"
-            : ""
-        }` +
-        `${
-          seedTheme
-            ? `${noIdentity ? "2" : "1"}. \`set_theme_tokens({set: {primaryColor: '<hex>'}})\`. Pick a brand-fitting color: #4f46e5 indigo (SaaS / dev tools), #7c3aed violet (creative / AI), #06b6d4 cyan (data / analytics), #10b981 emerald (sustainability / finance), #f59e0b amber (warm / lifestyle), #0f172a slate (luxury / enterprise).\n${noIdentity ? "3" : "2"}. \`set_theme_meta({description: '<why this palette fits>'})\`.\n`
-            : ""
-        }` +
-        `\n${noIdentity && seedTheme ? "4" : noIdentity || seedTheme ? "3" : "1"}. Retry \`${toolName}\` with the same arguments.\n\n` +
-        `If the operator's prompt is too vague to infer identity, ASK ONE concise question ` +
+        steps.map((s, i) => `${i + 1}. ${s}`).join("\n") +
+        `\n\nIf the operator's prompt is too vague to infer identity, ASK ONE concise question ` +
         `("What's this site for?") before guessing.`,
     },
   };

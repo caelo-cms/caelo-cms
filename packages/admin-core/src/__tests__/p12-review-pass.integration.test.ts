@@ -7,7 +7,7 @@
  *  - forms plugin honeypot path lands as status='spam', not 'new'.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from "bun:test";
 import authPlugin from "@caelo-cms/plugin-auth";
 import formsPlugin from "@caelo-cms/plugin-forms";
 import {
@@ -63,6 +63,14 @@ async function wipePlugins(): Promise<void> {
     await pub.end();
   }
 }
+
+// Each Tier-2/plugin-host op spawns a Deno sandbox subprocess. Under the
+// full `bun test --isolate` run (154 files in parallel) subprocess startup
+// contends for CPU and the default 30s per-test budget can be exceeded even
+// though these tests finish quickly in isolation. Raise the budget so the
+// real-Postgres + Deno-subprocess path is not a false timeout (issue #106
+// step-12 follow-up; mirrors forms-plugin.integration.test.ts).
+setDefaultTimeout(120_000);
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });

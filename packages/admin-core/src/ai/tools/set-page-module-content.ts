@@ -33,6 +33,7 @@ export const setPageModuleContentTool: ToolDefinitionWithHandler<
     "Use this when the operator says 'change the hero heading on /home to X' or 'set the about page subtitle to Y'. " +
     "Use `edit_module` (NOT this tool) when the change should affect every page using the module (structural / styling / field-schema change). " +
     "`contentValues` is keyed by the module's declared field names (`{{fieldName}}` placeholders). " +
+    "For nested fields (kind `module` / `module-list`) the value is `{ moduleId, contentInstanceId }` (or an array of them); the referenced module's stable `type` must be in the field's `allowedModuleTypes` when set (reuse a module of an allowed type — see `## Modules`). " +
     "Missing fields fall back to the module field's `default`. " +
     "Pass an empty object to reset a placement to all defaults.",
   schema: setPageModuleContentToolInput,

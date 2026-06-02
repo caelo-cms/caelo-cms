@@ -23,6 +23,7 @@ export const setContentInstanceValuesTool: ToolDefinitionWithHandler<
     "Edit a content_instance's values. **BLAST RADIUS = placementCount in `## Content Library`** — this propagates to EVERY placement bound with sync_mode='synced'. " +
     "**Read `## Content Library` first** to see the row's `purpose` + sample pages + placement count before editing. If the operator described an edit that should ONLY affect one page, this is the WRONG tool — use `set_page_module_content` (unsynced placements) or `fork_placement_content` first (synced placements that need to be detached). " +
     "`values` fully replaces existing values (zero-merge); read first via `get_content_instance` if you need to preserve other fields. " +
+    "**Nested fields (kind `module` / `module-list`):** the value is `{ moduleId, contentInstanceId }` (single) or an array of them (list). The referenced module's stable `type` MUST be in the field's `allowedModuleTypes` when that whitelist is set — see each module's `type` in `## Modules`. Reuse an existing module of an allowed type rather than minting a duplicate; if none fits, create one with `type` set to an allowed value. " +
     "Optional metadata edits in the same write: `slug` + `displayName` (pass `null` to clear), and v0.12.0 `purpose` (rewrite the rationale when the operator's intent for this shared row has shifted — keeps `## Content Library` accurate for your future self).",
   schema: setContentInstanceValuesToolInput,
   inputSchema: {
