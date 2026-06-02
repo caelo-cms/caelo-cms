@@ -27,10 +27,11 @@ export interface ExtractedPage {
 }
 
 export function extractTitle(html: string): string {
-  // Unrolled-loop body `(?:[^<]|<(?!\/title>))*` (see `extractThemeTokens`) —
-  // provably linear, the CodeQL-recommended replacement for a lazy `[\s\S]*?`
-  // on uncontrolled input (js/polynomial-redos). Stops at the first `</title>`.
-  const m = html.match(/<title[^>]*>((?:[^<]|<(?!\/title>))*)<\/title>/i);
+  // Linear on uncontrolled input (js/polynomial-redos): the opening uses
+  // `[^<>]*` (tag attributes can't contain `<`), so a stream of `<title<title…`
+  // can't drive O(n²) unanchored retries of the open tag; the body is the
+  // unrolled-loop form `(?:[^<]|<(?!\/title>))*`, each char consumed once.
+  const m = html.match(/<title[^<>]*>((?:[^<]|<(?!\/title>))*)<\/title>/i);
   if (!m) return "";
   return decodeEntities(m[1]?.trim() ?? "").slice(0, 200);
 }
@@ -115,14 +116,15 @@ export function extractThemeTokens(html: string): Record<string, string> {
   // The patterns below replace a lazy `[\s\S]*?` (or an ambiguous
   // `([^;]+?)\s*$`) that backtracks O(n²) on unclosed/large input
   // (CodeQL js/polynomial-redos):
-  //   - `<style>…</style>` uses the unrolled-loop form `(?:[^<]|<(?!CLOSE))*`,
-  //     which is provably linear (each char consumed once) and the
-  //     CodeQL-recommended shape for matching up to a multi-char close tag;
-  //     `:root { … }` keeps the single-char tempered-dot (CodeQL accepts it).
+  //   - `<style>…</style>` is linear: the opening `[^<>]*` (attributes can't
+  //     contain `<`) blocks O(n²) unanchored retries on a `<style<style…`
+  //     stream, and the body is the unrolled-loop form `(?:[^<]|<(?!CLOSE))*`
+  //     (each char consumed once). `:root { … }` keeps the single-char
+  //     tempered-dot (CodeQL accepts a single-char delimiter).
   //   - the per-declaration parse captures the value greedily to end-of-line
   //     (`([\s\S]*)$`, one path) and trims in code, avoiding the
   //     `([^;]+?)\s*$` overlap between the lazy body and the trailing `\s*`.
-  const styleBlocks = [...html.matchAll(/<style[^>]*>((?:[^<]|<(?!\/style>))*)<\/style>/gi)];
+  const styleBlocks = [...html.matchAll(/<style[^<>]*>((?:[^<]|<(?!\/style>))*)<\/style>/gi)];
   for (const block of styleBlocks) {
     const css = block[1] ?? "";
     const root = css.match(/:root\s*\{((?:(?!\})[\s\S])*)\}/);
@@ -142,11 +144,11 @@ export function extractThemeTokens(html: string): Record<string, string> {
 // ---- helpers ----------------------------------------------------------------
 
 function sliceBody(html: string): string {
-  // Unrolled-loop body `(?:[^<]|<(?!\/body>))*` — provably linear replacement
-  // for the greedy `([\s\S]*)<\/body>` CodeQL flagged as polynomial. A
-  // well-formed document has a single `</body>`, so first-match equals the
-  // greedy last-match here.
-  const m = html.match(/<body[^>]*>((?:[^<]|<(?!\/body>))*)<\/body>/i);
+  // Linear replacement for the greedy `([\s\S]*)<\/body>` CodeQL flagged as
+  // polynomial: opening `[^<>]*` blocks O(n²) retries on a `<body<body…`
+  // stream, body is the unrolled-loop form. A well-formed document has a
+  // single `</body>`, so first-match equals the greedy last-match here.
+  const m = html.match(/<body[^<>]*>((?:[^<]|<(?!\/body>))*)<\/body>/i);
   return m ? (m[1] ?? "") : html;
 }
 

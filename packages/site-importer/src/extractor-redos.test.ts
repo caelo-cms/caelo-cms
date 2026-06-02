@@ -11,7 +11,12 @@
 import { describe, expect, it } from "bun:test";
 import { extractModulesFromHtml, extractThemeTokens, extractTitle } from "./extractor.js";
 
-const BUDGET_MS = 100;
+// Generous bound: a linear regex finishes a 100k-char scan in tens of ms even
+// on a slow CI runner, while the O(n²) backtracking this guards against would
+// take many seconds on the same input — so 1s cleanly separates the two
+// without flaking on runner-speed variance.
+const BUDGET_MS = 1000;
+const N = 100_000;
 
 function underBudget(fn: () => void): number {
   const t0 = performance.now();
@@ -21,23 +26,32 @@ function underBudget(fn: () => void): number {
 
 describe("extractor ReDoS termination (S4)", () => {
   it("extractTitle bounds an unclosed <title> with a huge body", () => {
-    const evil = `<title>${"a".repeat(300_000)}`;
+    const evil = `<title>${"a".repeat(N)}`;
     expect(underBudget(() => extractTitle(evil))).toBeLessThan(BUDGET_MS);
   });
 
   it("extractThemeTokens bounds unclosed <style> / :root { with huge bodies", () => {
-    const evilStyle = `<style>${"a".repeat(300_000)}`;
-    const evilRoot = `<style>:root{${"a".repeat(300_000)}</style>`;
+    const evilStyle = `<style>${"a".repeat(N)}`;
+    const evilRoot = `<style>:root{${"a".repeat(N)}</style>`;
     expect(underBudget(() => extractThemeTokens(evilStyle))).toBeLessThan(BUDGET_MS);
     expect(underBudget(() => extractThemeTokens(evilRoot))).toBeLessThan(BUDGET_MS);
   });
 
-  it("sliceBody scans a huge body text linearly (tempered-dot <body> slice)", () => {
+  it("sliceBody scans a huge body text linearly", () => {
     // Isolates the hardened sliceBody regex: a large plain-text body with no
     // section tags. (Deeply-nested-tag cost lives in htmlparser2, not the
     // regex this fix touched, so the input is intentionally tag-light.)
-    const big = `<body>${"a".repeat(300_000)}</body>`;
+    const big = `<body>${"a".repeat(N)}</body>`;
     expect(underBudget(() => extractModulesFromHtml(big))).toBeLessThan(BUDGET_MS);
+  });
+
+  it("open-tag scan is linear on a stream of repeated open tags", () => {
+    // The real polynomial was the open tag `<title[^>]*>` whose `[^>]*` spanned
+    // `<`: a `<title<title<title…` stream drove O(n²) unanchored retries. The
+    // `[^<>]*` opening makes each retry fail in O(1). These must stay fast.
+    expect(underBudget(() => extractTitle("<title".repeat(N)))).toBeLessThan(BUDGET_MS);
+    expect(underBudget(() => extractThemeTokens("<style".repeat(N)))).toBeLessThan(BUDGET_MS);
+    expect(underBudget(() => extractModulesFromHtml("<body".repeat(N)))).toBeLessThan(BUDGET_MS);
   });
 });
 
