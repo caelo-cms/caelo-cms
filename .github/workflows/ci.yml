@@ -151,7 +151,7 @@ jobs:
         # when the gate step above fails — that's exactly when you want to
         # inspect what dropped below the floor.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage/
