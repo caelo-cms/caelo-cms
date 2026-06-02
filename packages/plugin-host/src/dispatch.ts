@@ -338,7 +338,8 @@ export async function runPluginOperation(
 }
 
 /** Field names whose values are redacted before the audit digest is taken. */
-const SENSITIVE_KEY_RE = /pass(word|wd|phrase)?|secret|token|api[-_]?key|credential|private[-_]?key/i;
+const SENSITIVE_KEY_RE =
+  /pass(word|wd|phrase)?|secret|token|api[-_]?key|credential|private[-_]?key/i;
 
 /**
  * Deep-copy `value`, replacing the value of any sensitive-named field with
