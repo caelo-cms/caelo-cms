@@ -59,6 +59,8 @@ An open-source, AI-first Content Management System that enables users to design,
 - When AI proposes a module change, the admin panel shows which pages will be affected before confirming
 - Modules are included in site snapshots alongside pages — full rollback safety at site and individual module level
 - Pages are built by composing modules — AI cannot write raw HTML directly onto a page
+- Every module has a stable **`type`** (its reusable class, e.g. `button`) distinct from its unique **`slug`** (e.g. `button-mpqxq3ch`, which carries a uniqueness suffix). The `type` is what nested-composition constraints match against; the `slug` is row identity. New modules derive `type` from their display name unless the AI authors one explicitly (so a second `button` variant can share `type: "button"`).
+- A nested-module field (kind `module` / `module-list`) may declare **`allowedModuleTypes`** — a whitelist of module `type`s permitted in that slot, matched against the referenced module's `type` (never its slug). This is the standard parent-declares-allowed-children composition constraint (cf. Gutenberg `InnerBlocks.allowedBlocks`). The op-layer Validator is the single enforcement site; the renderer does not enforce it.
 
 **Template grammar (Mustache subset):**
 

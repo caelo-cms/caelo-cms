@@ -20,7 +20,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { composePageFromSpecToolInput } from "@caelo-cms/shared";
+import { composePageFromSpecToolInput, slugifyModuleSection } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -29,18 +29,6 @@ interface PageWithModules {
   id: string;
   templateId: string;
   blocks: { blockName: string; modules: { moduleId: string }[] }[];
-}
-
-function slugify(displayName: string, idx: number): string {
-  const base = displayName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-  const stem = base.length > 0 ? base : "section";
-  // Include an index so two sections with the same displayName don't
-  // collide on the unique slug constraint.
-  return `${stem}-${idx}-${Date.now().toString(36)}`;
 }
 
 export const composePageFromSpecTool: ToolDefinitionWithHandler<
@@ -191,7 +179,7 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
     for (let i = 0; i < input.sections.length; i++) {
       const section = input.sections[i];
       if (!section) continue;
-      const slug = slugify(section.displayName, i);
+      const slug = slugifyModuleSection(section.displayName, i);
       const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
         slug,
         displayName: section.displayName,

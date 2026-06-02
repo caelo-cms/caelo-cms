@@ -28,8 +28,12 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { addModuleToTemplateToolInput } from "@caelo-cms/shared";
+import { addModuleToTemplateToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
+import {
+  MODULE_FIELDS_JSON_SCHEMA,
+  MODULE_META_JSON_SCHEMA_PROPS,
+} from "./_module-fields-schema.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageRow {
@@ -62,16 +66,6 @@ function describeError(error: unknown): string {
   return e.kind ?? "unknown";
 }
 
-function slugify(displayName: string): string {
-  const base = displayName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-  const stem = base.length > 0 ? base : "module";
-  return `${stem}-${Date.now().toString(36)}`;
-}
-
 export const addModuleToTemplateTool: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").AddModuleToTemplateToolInput
 > = {
@@ -81,8 +75,12 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     'Use for template-wide changes ("add a sidebar to every blog post"). ' +
     "For a single-page change, use add_module_to_page. " +
     "For site-wide chrome (header / footer / nav across every page on every template), use add_module_to_layout. " +
+    "**CONTENT: give each field a `default` holding the shared content** — the fan-out mints a fresh (empty) " +
+    "content_instance per page, so a field with no default renders a raw `{{field}}` on every page until filled. " +
+    "Defaults render everywhere; to vary the content on one page, override that page's placement later with " +
+    "set_placement_content. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
-    'Quoted-string numbers like "0" fail validation — pass `0` not `"0"`.',
+    'Prefer a bare integer (`0`, not `"0"`) — quoted/over-quoted forms are normalized at the boundary, not rejected.',
   // v0.6.0 W1 — state-aware: list the available template UUIDs +
   // their slugs so the AI can pick a `templateId` without a separate
   // templates.list round-trip. Block names live on the template's
@@ -110,7 +108,7 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
       );
     }
     lines.push(
-      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Quoted-string numbers like "0" fail validation.',
+      'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer. Prefer a bare integer; quoted forms are normalized at the boundary, not rejected.',
     );
     return lines.join(" ");
   },
@@ -129,30 +127,17 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
         ],
       },
       displayName: { type: "string", minLength: 1, maxLength: 128 },
+      // issue #106 (step-13 round-4) — same description/kind/type metadata as
+      // add_module_to_page so the AI's one authoring pattern (CLAUDE.md §1A)
+      // is accepted on every module-authoring tool. See `_module-fields-schema.ts`.
+      ...MODULE_META_JSON_SCHEMA_PROPS,
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
       js: { type: "string", maxLength: 50_000 },
-      // v0.5.21 — module field schema (v0.4.0 split). When the AI
-      // creates a module that uses {{name}} substitutions, declare
-      // them here. Page placements fill via set_page_module_content.
-      fields: {
-        type: "array",
-        maxItems: 64,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["name", "kind", "label"],
-          properties: {
-            name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-            kind: {
-              type: "string",
-              enum: ["text", "richtext", "url", "image", "number", "boolean", "link"],
-            },
-            label: { type: "string", minLength: 1, maxLength: 128 },
-            default: {},
-          },
-        },
-      },
+      // issue #106 — shared field schema (full kind enum incl. list +
+      // nested-module kinds), so a template-wide nav/list module is
+      // representable. See `_module-fields-schema.ts`.
+      fields: MODULE_FIELDS_JSON_SCHEMA,
     },
   },
   handler: async (ctx, input, toolCtx) => {
@@ -160,10 +145,15 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     const gate = await checkColdStartGate(ctx, toolCtx, "add_module_to_template");
     if (gate.blocked) return gate.gateResult!;
 
-    const slug = slugify(input.displayName);
+    const slug = slugifyModuleName(input.displayName);
     const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
       slug,
       displayName: input.displayName,
+      // issue #106 — forward decision-support metadata; type derived from
+      // displayName by modules.create when omitted.
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.type !== undefined ? { type: input.type } : {}),
       html: input.html,
       css: input.css ?? "",
       js: input.js ?? "",

@@ -25,6 +25,10 @@ const moduleStateV1 = z
     schemaVersion: z.literal(1),
     slug: z.string(),
     displayName: z.string(),
+    /** v0.12.3 (issue #106) — stable module `type`. Defaults to "" for
+     *  snapshots written before 0103; `parseAndUpgradeModuleState`
+     *  fills it from `slug` when empty (matching the 0103 backfill). */
+    type: z.string().default(""),
     html: z.string(),
     css: z.string(),
     js: z.string(),
@@ -125,7 +129,10 @@ export function parseAndUpgradeModuleState(raw: unknown): ModuleState {
   if (v === 1) {
     const r = moduleStateV1.safeParse(raw);
     if (!r.success) throw new SnapshotSchemaError("module", v, r.error.issues);
-    return r.data;
+    // v0.12.3 — a pre-0103 snapshot has no `type`; fall back to `slug`
+    // so revert restores the column the same way the migration backfilled
+    // the live rows (type = slug), never NULL.
+    return r.data.type === "" ? { ...r.data, type: r.data.slug } : r.data;
   }
   throw new SnapshotSchemaError("module", v, "no upgrade path from this version");
 }

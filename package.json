@@ -25,6 +25,8 @@
     "plugins:sign": "bun run apps/admin/scripts/sign-tier1-manifest.ts",
     "rulesets:apply": "bun run scripts/apply-rulesets.ts",
     "rulesets:check": "bun run scripts/apply-rulesets.ts --check",
+    "security:enable": "bun run scripts/enable-security-features.ts",
+    "security:check": "bun run scripts/enable-security-features.ts --check",
     "knip": "knip",
     "knip:strict": "knip --reporter github-actions",
     "knip:fix": "knip --fix",

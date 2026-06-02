@@ -51,6 +51,10 @@
           {
             "context": "Admin production image — boot smoke",
             "_note": "Job in .github/workflows/ci.yml (admin-prod-image). Added in #55 — release-images catches build-time regressions; this catches boot-time `Cannot find module` regressions that the build-only matrix can't (the bug class #53 fixed crashes on `docker run`, not on `docker build`)."
+          },
+          {
+            "context": "CodeQL",
+            "_note": "Code-scanning RESULTS check emitted by GitHub for .github/workflows/codeql.yml (issue #26). This is GitHub's single tool-named check ('CodeQL'), distinct from the per-language 'Analyze (javascript-typescript)' / 'Analyze (actions)' Actions job checks — it is the severity-aware merge blocker AC#4 needs. Confirmed against PR #103: a check literally named 'CodeQL' was emitted and passed, so this context is correct. Blocks merge until CodeQL analysis passes; high-or-higher-severity findings fail it. The merge-time severity threshold is set in repo Settings -> Code security -> Protection rules."
           }
         ]
       }

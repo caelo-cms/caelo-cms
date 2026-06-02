@@ -13,7 +13,7 @@
  *     registry — chat-runner won't surface them on the next turn.
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, setDefaultTimeout } from "bun:test";
 import {
   applyPluginLifecycle,
   bootstrap,
@@ -72,6 +72,14 @@ const stubMode1 = defineOperation({
       costMicrocents: 12345,
     }),
 });
+
+// Each Tier-2/plugin-host op spawns a Deno sandbox subprocess. Under the
+// full `bun test --isolate` run (154 files in parallel) subprocess startup
+// contends for CPU and the default 30s per-test budget can be exceeded even
+// though these tests finish quickly in isolation. Raise the budget so the
+// real-Postgres + Deno-subprocess path is not a false timeout (issue #106
+// step-12 follow-up; mirrors forms-plugin.integration.test.ts).
+setDefaultTimeout(120_000);
 
 beforeAll(async () => {
   resetPluginHost();

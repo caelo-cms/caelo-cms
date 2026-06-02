@@ -87,6 +87,7 @@ These cannot be violated by any change, AI-generated or human:
 
 - **Refactor when the shape is wrong — no quick fixes, no TODO-for-later hacks, no commented-out code.** If the right fix is three files, do three files; if that's too big for one PR, open an issue and plan it — do not leave the codebase in an interim state. The exception is a truly temporary workaround behind an explicit `// FIXME(issue #N):` pointing to a tracked issue.
 - **Root-cause bugs.** Do not paper over symptoms. If a test is flaky, fix the race; do not retry.
+- **Never write off a failure as "the LLM is non-deterministic" or "the model did it wrong."** A capable model sits behind every AI surface; the routine things it is asked to do here — author valid HTML, emit a well-formed tool call, fill semantic fields, pick the right block — do not "just randomly fail." When an AI-driven action misbehaves, assume the cause is in *our* code, prompts, tool schemas, or context plumbing (a missing primer, a malformed tool description, a truncated context, a turn that ends before the tool block, a validator rejecting silently) and **find that root cause**. "Probably model flakiness" is not a diagnosis — it is the thing you say when you have not looked yet. If after genuine investigation you can show the failure is true provider nondeterminism, prove it (reproduce, vary the seed/prompt, cite the evidence) and then *still* fix it in our layer (retry-on-empty, stricter tool-choice, schema-forced output) rather than shrugging. The bar is the same as for any other bug: reproduce, explain, fix.
 - **TypeScript strict.** No `any`, no `@ts-ignore` without a comment explaining why and what unblocks its removal.
 - **Zod at every boundary** — HTTP requests, Query API ops, plugin SDK surfaces, AI tool-call arguments. Internal code trusts its types.
 - **Small, composable modules.** If a file exceeds ~300 lines, consider splitting. If a function exceeds ~50 lines, consider extracting.
@@ -143,7 +144,7 @@ Landed in P6.5. Conventions any session touching admin UI should follow:
 - **Input validation before the Query API, not inside it.** The Validator enforces shape; handlers trust their inputs.
 - **Public writes require CAPTCHA/PoW, rate limits, and honeypots.** No exceptions — AI-authored plugin endpoints must honour this.
 - **All AI actions and DB ops pass through the audit log.** Logging is not optional; a code path that skips it is a bug.
-- **Dependency review on every PR.** New deps justified in the PR description.
+- **Dependency review on every PR.** New deps justified in the PR description. Enforced mechanically by CodeQL static analysis (merge-blocking), the dependency-review workflow (high-severity vulns + license allow-list), and repo secret scanning + push protection — see [`docs/dev/codeql.md`](./docs/dev/codeql.md).
 
 ---
 

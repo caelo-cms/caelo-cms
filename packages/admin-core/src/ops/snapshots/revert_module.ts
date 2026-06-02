@@ -59,6 +59,7 @@ export const revertModuleOp = defineOperation({
       UPDATE modules SET
         slug = ${target.slug},
         display_name = ${target.displayName},
+        type = ${target.type},
         html = ${target.html},
         css = ${target.css},
         js = ${target.js},

@@ -34,6 +34,15 @@ export const modules = pgTable("modules", {
    * `## Modules` block as the primary grouping key.
    */
   kind: text("kind").notNull().default("content"),
+  /**
+   * v0.12.3 (issue #106) — stable semantic class shared by every
+   * instance of this module (`button`, `pricing-card`). This is what a
+   * parent module's `allowedModuleTypes` field-whitelist matches against,
+   * NOT the unique `slug` (which carries a `-<suffix>` and can never
+   * match an authored allowlist). Backfilled `type = slug` in migration
+   * 0103 (non-lossy). NOT unique — many instances share one type.
+   */
+  type: text("type").notNull(),
   html: text("html").notNull(),
   css: text("css").notNull().default(""),
   js: text("js").notNull().default(""),

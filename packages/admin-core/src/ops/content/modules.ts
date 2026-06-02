@@ -8,6 +8,7 @@
 
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  deriveModuleType,
   err,
   extractMediaRefs,
   type ModuleField,
@@ -63,6 +64,9 @@ const moduleRowSchema = z.object({
   description: z.string(),
   /** v0.12.0 — coarse role tag for the AI's `## Modules` catalog. */
   kind: z.enum(["chrome", "hero", "content", "cta", "utility"]),
+  /** v0.12.3 (issue #106) — stable semantic class; what a parent's
+   *  `allowedModuleTypes` whitelist matches against (not the unique slug). */
+  type: z.string(),
   html: z.string(),
   css: z.string(),
   js: z.string(),
@@ -79,6 +83,7 @@ function rowToModule(r: {
   display_name: string;
   description?: string | null;
   kind?: string | null;
+  type?: string | null;
   html: string;
   css: string;
   js: string;
@@ -103,6 +108,9 @@ function rowToModule(r: {
     displayName: r.display_name,
     description: r.description ?? "",
     kind: kindRaw,
+    // v0.12.3 — `type` is NOT NULL post-0103; fall back to slug only for
+    // an in-flight branched row whose snapshot predates the column.
+    type: r.type ?? r.slug,
     html: r.html,
     css: r.css,
     js: r.js,
@@ -206,12 +214,12 @@ export const listModulesOp = defineOperation({
     const rows = (await tx.execute(
       input.includeDeleted
         ? sql`
-            SELECT id::text AS id, slug, display_name, description, kind, html, css, js, fields,
+            SELECT id::text AS id, slug, display_name, description, kind, type, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules WHERE 1=1 ${branchFilter} ORDER BY created_at ASC
           `
         : sql`
-            SELECT id::text AS id, slug, display_name, description, kind, html, css, js, fields,
+            SELECT id::text AS id, slug, display_name, description, kind, type, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
           `,
@@ -232,7 +240,7 @@ export const getModuleOp = defineOperation({
     // branched-create modules immediately after creating them.
     const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, display_name, html, css, js, fields,
+      SELECT id::text AS id, slug, display_name, description, kind, type, html, css, js, fields,
              created_at, updated_at, deleted_at
       FROM modules WHERE id = ${input.moduleId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as Parameters<typeof rowToModule>[0][];
@@ -347,13 +355,20 @@ export const createModuleOp = defineOperation({
     // working; AI tool descriptions push the AI to pass them
     // explicitly so the `## Modules` block can render decision-support
     // context (CLAUDE.md §1A).
+    // v0.12.3 (issue #106) — derive the stable `type` from displayName
+    // when the caller didn't author one explicitly. Every minting path
+    // (add_module_to_page/template/layout, compose_page_from_spec) flows
+    // through here, so this single chokepoint guarantees every module
+    // gets a type without each tool repeating the derivation.
+    const moduleType = input.type ?? deriveModuleType(input.displayName);
     const rows = (await tx.execute(sql`
-      INSERT INTO modules (slug, display_name, description, kind, html, css, js, fields, chat_branch_id)
+      INSERT INTO modules (slug, display_name, description, kind, type, html, css, js, fields, chat_branch_id)
       VALUES (
         ${input.slug},
         ${input.displayName},
         ${input.description},
         ${input.kind},
+        ${moduleType},
         ${persistedHtml},
         ${input.css},
         ${input.js},
@@ -435,13 +450,14 @@ export const updateModuleOp = defineOperation({
     // (v0.5.1) the branched-write path where we construct the new state
     // in-memory without touching the live `modules` row.
     const prevRows = (await tx.execute(sql`
-      SELECT slug, display_name, description, kind, html, css, js, fields, deleted_at
+      SELECT slug, display_name, description, kind, type, html, css, js, fields, deleted_at
       FROM modules WHERE id = ${input.moduleId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as {
       slug: string;
       display_name: string;
       description: string;
       kind: string;
+      type: string | null;
       html: string;
       css: string;
       js: string;
@@ -513,6 +529,7 @@ export const updateModuleOp = defineOperation({
         display_name: input.displayName,
         description: input.description,
         kind: input.kind,
+        type: input.type,
         html: persistedHtml,
         css: input.css,
         js: input.js,
@@ -570,6 +587,7 @@ export const updateModuleOp = defineOperation({
       state = {
         ...base,
         displayName: input.displayName ?? base.displayName,
+        type: input.type ?? base.type,
         html: persistedHtml ?? base.html,
         css: input.css ?? base.css,
         js: input.js ?? base.js,

@@ -59,7 +59,10 @@ import {
   formatStructuredSetsBlock,
   formatThemeBlock,
 } from "./system-prompt.js";
-import { buildToolDescribeState } from "./tools/describe-state.js";
+import {
+  buildToolDescribeState,
+  type ToolDescribeStateActivePage,
+} from "./tools/describe-state.js";
 import type { ToolRegistry } from "./tools/index.js";
 
 export type ClientEvent =
@@ -168,6 +171,57 @@ const DEFAULT_OUTPUT_COST_PER_M = 75;
  * tune higher (up to 200k) per provider via /security/ai.
  */
 const MAX_OUTPUT_TOKENS_DEFAULT = 16384;
+
+/**
+ * issue #106 — in-memory nudge re-prompted to the model when it narrates an
+ * imminent action but ends the turn without emitting the tool call. NOT
+ * persisted to chat history, so the operator never sees a synthetic turn —
+ * they only see the model self-correct into the real tool call.
+ */
+const PASSIVE_ACTION_NUDGE =
+  "You described an action you were about to take but did not emit any tool call, so nothing actually happened. If you intended to perform it, call the appropriate tool now with the concrete arguments. If you genuinely need information or a decision from the operator first, ask one direct question instead.";
+
+/**
+ * issue #106 — classify a loop-0 text-only `end_turn` as a LEGITIMATE stop
+ * (so the passive-turn nudge skips it) vs. the passive failure (an announced
+ * or implied action the model never carried out — the step-13 footer
+ * regression, where it said "A site-wide footer belongs on the layout's
+ * footer block …" and stopped without calling add_module_to_layout).
+ *
+ * The legitimate stops are: a clarifying question, and a message awaiting an
+ * Owner approval click (the propose/execute gate — CLAUDE.md §11.A). Anything
+ * else on a loop-0 text-only turn is treated as the passive failure and gets
+ * ONE nudge. This is the inverse of the earlier narrow verb-matcher
+ * (`looksLikeAnnouncedAction`), which only fired on first-person commitment
+ * phrasing ("I'll add…", "adding it now") and so missed footer-style
+ * declaratives that announce the placement without a commitment verb.
+ *
+ * Why "nudge unless legitimate" and not "warn on every text-only turn" (the
+ * v0.5.9 noise we removed): a nudge re-prompt the operator never sees is
+ * functional recovery, not noise — worst case on a genuine info-only answer
+ * is one extra round-trip, bounded to once per turn by `passiveNudged`.
+ */
+export function isLegitimateTextOnlyTurn(text: string): boolean {
+  const t = text.trim();
+  if (t.length === 0) return false; // empty → the empty-response path, not a nudge
+  // A clarifying question is a legitimate text-only turn.
+  if (/\?\s*$/.test(t)) return true;
+  if (
+    /\b(would you|should i|do you want|want me to|shall i|let me know|which (option|one)|or should i)\b/i.test(
+      t,
+    )
+  )
+    return true;
+  // Awaiting an Owner approval click (propose/execute gate) — a real
+  // human-in-the-loop stop, not a dropped tool call.
+  if (
+    /(\/security\/[a-z-]+\/pending|click +approve|once (you|it'?s) (approve|active)|approve (it|the|that|this)|awaiting your approval|need you to approve)/i.test(
+      t,
+    )
+  )
+    return true;
+  return false;
+}
 
 function microcents(usd: number): number {
   // 1 USD = 1e8 microcents.
@@ -365,6 +419,10 @@ export async function* runChatTurn(
   // button at the top" → add_module_to_page; "make the hero red" →
   // edit_module on the matching module-id).
   let pageContextBlock: string | undefined;
+  // v0.12.3 (issue #106) — captured for ToolDescribeState so the
+  // add_module_to_page / move_module describeSchema can pin blockName to
+  // a generation-time enum of THIS page's actual template blocks.
+  let activePageForState: ToolDescribeStateActivePage | null = null;
   if (input.activePageId) {
     const pageR = await execute(registry, adapter, humanCtxWithBranch, "pages.get_with_modules", {
       pageId: input.activePageId,
@@ -384,6 +442,11 @@ export async function* runChatTurn(
           }[];
         };
       };
+      activePageForState = {
+        id: v.page.id,
+        templateId: v.page.templateId,
+        blockNames: v.page.blocks.map((b) => b.blockName),
+      };
       // P6.7.4 — render the page like a visitor would see it, with each
       // module's full HTML wrapped in BEGIN/END markers carrying the
       // module id + slug + block + position. The AI gets both the
@@ -394,7 +457,17 @@ export async function* runChatTurn(
         "# Current page",
         `Page: ${v.page.slug} (locale=${v.page.locale}, status=${v.page.status}, id=${v.page.id})`,
         `Template id: ${v.page.templateId}`,
-        `Blocks (in render order): ${v.page.blocks.map((b) => b.blockName).join(", ") || "(none)"}`,
+        // v0.12.3 (issue #106) — this list is AUTHORITATIVE + EXHAUSTIVE.
+        // `blockName` for add_module_to_page / move_module MUST be one of
+        // these exact strings — do not invent others. A block name is NOT
+        // the same thing as a module `kind` (chrome/hero/content/cta/
+        // utility): `kind` classifies a module, a block name is a slot on
+        // THIS page's template. e.g. a "hero" module goes INTO whichever
+        // block exists below, often `content` — there is usually no block
+        // literally named "hero".
+        `Blocks on this page's template (the ONLY valid blockName values — exhaustive): ${
+          v.page.blocks.map((b) => `\`${b.blockName}\``).join(", ") || "(none)"
+        }`,
         "",
         "## Page content (rendered with module boundaries)",
         "",
@@ -573,7 +646,10 @@ export async function* runChatTurn(
         displayName: string;
         description: string;
         kind: "chrome" | "hero" | "content" | "cta" | "utility";
-        fields: { name: string; kind: string }[];
+        // v0.12.3 (issue #106) — surfaced so the `## Modules` block shows
+        // each module's stable type + each nested field's allowedModuleTypes.
+        type: string;
+        fields: { name: string; kind: string; allowedModuleTypes?: string[] }[];
       }[];
     };
     // Real usage signal: one query joins page_modules → pages,
@@ -1136,6 +1212,8 @@ export async function* runChatTurn(
     layoutsValue: layoutsR.ok ? layoutsR.value : null,
     templatesValue: tplsR.ok ? tplsR.value : null,
     siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,
+    // v0.12.3 (issue #106) — feeds the per-page blockName enum.
+    activePage: activePageForState,
   });
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion. The
@@ -1143,8 +1221,34 @@ export async function* runChatTurn(
   // passes {spawn_subagent, spawn_subagents}); chat-runner itself
   // doesn't branch on "is this a subagent."
   const excluded = options.excludedToolNames;
-  const builtinTools = tools.catalogue(toolDescribeState).filter((t) => {
-    if (allowedToolNames && !allowedToolNames.has(t.name)) return false;
+  const fullCatalogue = tools.catalogue(toolDescribeState);
+  // issue #106 (step-13 root cause) — an engaged skill's allowlist that
+  // matches ZERO live tools is a misconfiguration, never an intent. The
+  // step-13 footer walk hit this: "add a footer with navigation links"
+  // auto-engaged the `menu-auditor` skill, whose `allowlistedTools` list
+  // Query-API op names (`structured_sets.list`, `pages.list`, …) instead of
+  // the AI tool names the catalogue uses (`list_structured_sets`,
+  // `list_pages`, …). The intersection was empty, so the AI was handed ZERO
+  // tools, couldn't call add_module_to_layout, and narrated the footer
+  // instead of building it (and the passive-turn nudge correctly couldn't
+  // fire — there was nothing to nudge toward). Narrowing the AI to zero
+  // tools strands it; treat a zero-match allowlist as absent: fall back to
+  // the full catalogue and warn loudly so the broken skill data gets fixed.
+  let effectiveAllowed = allowedToolNames;
+  if (effectiveAllowed) {
+    const matchCount = fullCatalogue.filter((t) => effectiveAllowed!.has(t.name)).length;
+    if (matchCount === 0) {
+      console.error("[chat-runner] skill-allowlist-zero-match", {
+        chatSessionId: input.chatSessionId,
+        allowlist: [...effectiveAllowed],
+        engagedSkills: engagedSkills.map((e) => e.slug),
+        note: "allowlist matched no live tool (likely op-names vs tool-names) — ignoring it",
+      });
+      effectiveAllowed = null;
+    }
+  }
+  const builtinTools = fullCatalogue.filter((t) => {
+    if (effectiveAllowed && !effectiveAllowed.has(t.name)) return false;
     if (excluded?.has(t.name)) return false;
     return true;
   });
@@ -1154,7 +1258,7 @@ export async function* runChatTurn(
   // discovers them per turn so disabling a plugin removes its tools from
   // the AI's catalogue on the next call.
   const pluginTools = pluginToolsRegistry.list().filter(({ spec }) => {
-    if (allowedToolNames && !allowedToolNames.has(spec.name)) return false;
+    if (effectiveAllowed && !effectiveAllowed.has(spec.name)) return false;
     if (excluded?.has(spec.name)) return false;
     return true;
   });
@@ -1310,6 +1414,10 @@ export async function* runChatTurn(
   // looks identical to a normal end_turn finish — the UI shows no
   // signal, and the user thinks the AI just stopped for no reason.
   let lastLoopStop: StopReason | null = null;
+  // issue #106 — one-shot guard for the passive-turn nudge (see
+  // looksLikeAnnouncedAction). At most one automatic re-prompt per turn so
+  // a model that stays passive can't spin the loop.
+  let passiveNudged = false;
 
   for (let loop = 0; loop < maxLoops; loop++) {
     if (aborted()) break;
@@ -1590,6 +1698,43 @@ export async function* runChatTurn(
     if (aborted()) break;
     lastLoopStop = loopStop;
     if (loopStop !== "tool_use" || accumulatedToolCalls.length === 0) {
+      // issue #106 — passive-turn recovery (CLAUDE.md §4). The model
+      // sometimes describes the change it's about to make ("A site-wide
+      // footer belongs on the layout's footer block …") and then ends the
+      // turn on its FIRST response WITHOUT emitting the tool call
+      // (loop 0, loopStop='end_turn', zero tool calls) — the footer-path
+      // regression step 13 caught, where the operator had to type
+      // "go ahead" to get add_module_to_layout to fire. Nudge once and
+      // re-run. The nudge rides in-memory only (never persisted), so the
+      // visible chat shows the model self-correcting into the real tool
+      // call rather than a synthetic operator turn.
+      //
+      // Gated to: a single retry per turn (`passiveNudged`); loop 0 only,
+      // so a legitimate completion summary after tool calls (loop > 0)
+      // isn't nudged; turns with tools available; and non-empty text that
+      // is NOT a clarifying question or an awaiting-approval message
+      // (isLegitimateTextOnlyTurn). The earlier narrow verb-matcher missed
+      // footer-style declaratives, so this nudges UNLESS the turn is a
+      // recognised legitimate stop.
+      if (
+        !passiveNudged &&
+        loop === 0 &&
+        loopStop === "end_turn" &&
+        accumulatedToolCalls.length === 0 &&
+        filteredTools.length > 0 &&
+        !aborted() &&
+        accumulatedText.join("").trim().length > 0 &&
+        !isLegitimateTextOnlyTurn(accumulatedText.join(""))
+      ) {
+        passiveNudged = true;
+        console.error("[chat-runner] passive-action-nudge", {
+          chatSessionId: input.chatSessionId,
+          textChars: accumulatedText.join("").length,
+          rawFinishReason: stoppingDiagnostics?.rawFinishReason ?? null,
+        });
+        messages = [...messages, { role: "user", content: PASSIVE_ACTION_NUDGE }];
+        continue;
+      }
       stopReason = loopStop;
       break;
     }

@@ -583,6 +583,7 @@ export async function mergeBranchSnapshotsToMain(
         UPDATE modules
         SET slug = ${e.state.slug},
             display_name = ${e.state.displayName},
+            type = ${e.state.type},
             html = ${e.state.html},
             css = ${e.state.css},
             js = ${e.state.js},
