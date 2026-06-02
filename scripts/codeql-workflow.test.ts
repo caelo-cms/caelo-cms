@@ -53,8 +53,8 @@ describe("codeql.yml workflow", () => {
   });
 
   it("CQ5: pins codeql-action init + analyze by major tag, no floating ref", () => {
-    expect(codeql).toMatch(/github\/codeql-action\/init@v3/);
-    expect(codeql).toMatch(/github\/codeql-action\/analyze@v3/);
+    expect(codeql).toMatch(/github\/codeql-action\/init@v4/);
+    expect(codeql).toMatch(/github\/codeql-action\/analyze@v4/);
     // No floating @main / branch refs on the codeql action.
     expect(codeql).not.toMatch(/github\/codeql-action\/\w+@main/);
     for (const ref of codeql.match(/github\/codeql-action\/\w+@\S+/g) ?? []) {
