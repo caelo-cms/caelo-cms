@@ -16,7 +16,6 @@
 import { createHash } from "node:crypto";
 import type { PluginContext, PluginContextTier1, PluginDefinition } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { isUnsafeKey } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { AIProvider } from "./types.js";
 
@@ -343,40 +342,33 @@ const SENSITIVE_KEY_RE =
   /pass(word|wd|phrase)?|secret|token|api[-_]?key|credential|private[-_]?key/i;
 
 /**
- * Deep-copy `value`, replacing the value of any sensitive-named field with
- * a fixed placeholder. Prototype-polluting keys are dropped (never assigned)
- * so this helper introduces no pollution of its own. Object key order is
- * preserved, so the resulting JSON — and therefore the digest — is
- * deterministic for equal inputs.
+ * `JSON.stringify` replacer that strips credential-shaped data before it can
+ * reach the audit digest: sensitive-named fields are replaced with a fixed
+ * placeholder, and prototype-polluting keys are dropped entirely. Using a
+ * replacer (rather than a recursive clone) keeps the redaction on the
+ * serialization path the digest actually consumes, so no value read from a
+ * `*password*`/`*secret*`/token field flows into the hash
+ * (CodeQL js/insufficient-password-hash). Deterministic for equal inputs.
  */
-function redactSensitive(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactSensitive);
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (isUnsafeKey(k)) continue;
-      out[k] = SENSITIVE_KEY_RE.test(k) ? "[redacted]" : redactSensitive(v);
-    }
-    return out;
-  }
-  return value;
+function redactingReplacer(key: string, value: unknown): unknown {
+  if (key === "__proto__" || key === "constructor" || key === "prototype") return undefined;
+  return SENSITIVE_KEY_RE.test(key) ? "[redacted]" : value;
 }
 
 /**
  * Audit integrity digest of a plugin op's input arguments. This is NOT a
  * password hash — it is a one-way fingerprint stored in
  * `audit_events.input_hash` so the operator can correlate and tamper-check
- * op calls. Sensitive-named fields (`*password*`, `*secret*`, tokens, …)
- * are redacted first, so the digest can never act as an offline oracle for
- * a secret and its input carries no credential-shaped data
- * (CodeQL js/insufficient-password-hash). SHA-256 is the correct primitive
- * for a deterministic integrity fingerprint; a slow salted password KDF
- * would be wrong here (non-deterministic, defeats correlation).
+ * op calls. Sensitive-named fields are redacted on the serialization path
+ * (see `redactingReplacer`), so the digest can never act as an offline
+ * oracle for a secret and its input carries no credential-shaped data.
+ * SHA-256 is the correct primitive for a deterministic integrity
+ * fingerprint; a slow salted password KDF would be wrong here
+ * (non-deterministic, defeats correlation).
  */
 export function auditInputDigest(inputArgs: unknown): string {
-  return createHash("sha256")
-    .update(JSON.stringify(redactSensitive(inputArgs ?? null)))
-    .digest("hex");
+  const json = JSON.stringify(inputArgs ?? null, redactingReplacer) ?? "null";
+  return createHash("sha256").update(json).digest("hex");
 }
 
 /**
