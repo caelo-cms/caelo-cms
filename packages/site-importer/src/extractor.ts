@@ -27,9 +27,10 @@ export interface ExtractedPage {
 }
 
 export function extractTitle(html: string): string {
-  // Tempered-dot body (see the comment block on `extractThemeTokens`) — the
-  // lazy `[\s\S]*?` is O(n²) on an unclosed `<title>` (CodeQL js/polynomial-redos).
-  const m = html.match(/<title[^>]*>((?:(?!<\/title>)[\s\S])*)<\/title>/i);
+  // Unrolled-loop body `(?:[^<]|<(?!\/title>))*` (see `extractThemeTokens`) —
+  // provably linear, the CodeQL-recommended replacement for a lazy `[\s\S]*?`
+  // on uncontrolled input (js/polynomial-redos). Stops at the first `</title>`.
+  const m = html.match(/<title[^>]*>((?:[^<]|<(?!\/title>))*)<\/title>/i);
   if (!m) return "";
   return decodeEntities(m[1]?.trim() ?? "").slice(0, 200);
 }
@@ -111,16 +112,17 @@ export function extractModulesFromHtml(html: string): ExtractedModule[] {
  */
 export function extractThemeTokens(html: string): Record<string, string> {
   const tokens: Record<string, string> = {};
-  // All three patterns below replace a lazy `[\s\S]*?` (or an ambiguous
+  // The patterns below replace a lazy `[\s\S]*?` (or an ambiguous
   // `([^;]+?)\s*$`) that backtracks O(n²) on unclosed/large input
   // (CodeQL js/polynomial-redos):
-  //   - `<style>…</style>` and `:root { … }` use the tempered-dot form
-  //     `(?:(?!CLOSE)[\s\S])*`, which has a single unambiguous match path
-  //     and stops at the first close — identical output on valid CSS.
+  //   - `<style>…</style>` uses the unrolled-loop form `(?:[^<]|<(?!CLOSE))*`,
+  //     which is provably linear (each char consumed once) and the
+  //     CodeQL-recommended shape for matching up to a multi-char close tag;
+  //     `:root { … }` keeps the single-char tempered-dot (CodeQL accepts it).
   //   - the per-declaration parse captures the value greedily to end-of-line
   //     (`([\s\S]*)$`, one path) and trims in code, avoiding the
   //     `([^;]+?)\s*$` overlap between the lazy body and the trailing `\s*`.
-  const styleBlocks = [...html.matchAll(/<style[^>]*>((?:(?!<\/style>)[\s\S])*)<\/style>/gi)];
+  const styleBlocks = [...html.matchAll(/<style[^>]*>((?:[^<]|<(?!\/style>))*)<\/style>/gi)];
   for (const block of styleBlocks) {
     const css = block[1] ?? "";
     const root = css.match(/:root\s*\{((?:(?!\})[\s\S])*)\}/);
@@ -140,11 +142,11 @@ export function extractThemeTokens(html: string): Record<string, string> {
 // ---- helpers ----------------------------------------------------------------
 
 function sliceBody(html: string): string {
-  // Tempered-dot body — non-backtracking replacement for the greedy
-  // `([\s\S]*)<\/body>` that CodeQL flags as polynomial. A well-formed
-  // document has a single `</body>`, so first-match equals the greedy
-  // last-match here.
-  const m = html.match(/<body[^>]*>((?:(?!<\/body>)[\s\S])*)<\/body>/i);
+  // Unrolled-loop body `(?:[^<]|<(?!\/body>))*` — provably linear replacement
+  // for the greedy `([\s\S]*)<\/body>` CodeQL flagged as polynomial. A
+  // well-formed document has a single `</body>`, so first-match equals the
+  // greedy last-match here.
+  const m = html.match(/<body[^>]*>((?:[^<]|<(?!\/body>))*)<\/body>/i);
   return m ? (m[1] ?? "") : html;
 }
 
