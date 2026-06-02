@@ -46,18 +46,23 @@ describe("no inlined shared primitives under admin-core/src (issue #20 guard)", 
   });
 
   it("does not re-inline the propose/execute status 4-tuple", () => {
-    // Built from parts so the needle isn't present verbatim in this file.
+    // Whitespace-tolerant so a differently-spaced/newlined re-inline
+    // (`z.enum(["pending","applied",…])`) can't slip past the guard.
+    // Built from parts so the literal isn't present verbatim in this file.
     const states = ["pending", "applied", "rejected", "superseded"];
-    const needle = `z.enum([${states.map((s) => `"${s}"`).join(", ")}]`;
-    const offenders = files.filter((f) => readFileSync(f, "utf8").includes(needle));
+    const needle = new RegExp(
+      `z\\.enum\\(\\s*\\[\\s*${states.map((s) => `"${s}"`).join("\\s*,\\s*")}`,
+    );
+    const offenders = files.filter((f) => needle.test(readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
   });
 
   it("defines describeError only in the canonical _describe-error.ts", () => {
+    // Match `function describeError`, `const/let/var describeError =`, and
+    // extra-whitespace variants so a re-decl can't evade the substring check.
+    const decl = /(?:function\s+describeError\b|(?:const|let|var)\s+describeError\s*=)/;
     const offenders = files.filter(
-      (f) =>
-        f.endsWith("_describe-error.ts") === false &&
-        readFileSync(f, "utf8").includes("function describeError"),
+      (f) => f.endsWith("_describe-error.ts") === false && decl.test(readFileSync(f, "utf8")),
     );
     expect(offenders).toEqual([]);
   });
