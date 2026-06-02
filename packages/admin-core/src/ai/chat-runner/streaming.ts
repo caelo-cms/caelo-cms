@@ -14,7 +14,7 @@
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import { costCapUsd, microcents } from "./limits.js";
 import type { FilteredTool } from "./tool-catalogue.js";
-import type { ClientEvent, StoppingDiagnostics } from "./types.js";
+import type { AccumulatedToolCall, ClientEvent, StoppingDiagnostics } from "./types.js";
 
 /** Running usage totals mutated in place across the turn's loop iterations. */
 export interface UsageAccumulator {
@@ -25,7 +25,7 @@ export interface UsageAccumulator {
 
 export interface StreamTurnResult {
   accumulatedText: string[];
-  accumulatedToolCalls: { id: string; name: string; arguments: unknown }[];
+  accumulatedToolCalls: AccumulatedToolCall[];
   accumulatedThinking: { thinking: string; signature: string }[];
   loopStop: "end_turn" | "tool_use" | "max_tokens" | "error" | "max_loops" | "session_gone";
   providerErr: boolean;
@@ -50,7 +50,7 @@ export async function* streamProviderTurn(args: {
   const aborted = (): boolean => abortSignal?.aborted === true;
 
   const accumulatedText: string[] = [];
-  const accumulatedToolCalls: { id: string; name: string; arguments: unknown }[] = [];
+  const accumulatedToolCalls: AccumulatedToolCall[] = [];
   // v0.2.54 — accumulate thinking blocks emitted on this turn for
   // persistence + round-trip on the next loop's provider call.
   const accumulatedThinking: { thinking: string; signature: string }[] = [];

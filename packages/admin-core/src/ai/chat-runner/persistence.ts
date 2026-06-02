@@ -11,6 +11,8 @@ import type { DatabaseAdapter, OperationRegistry, QueryError } from "@caelo-cms/
 import { execute } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
+import type { AccumulatedToolCall } from "./types.js";
+
 /** The session aggregate `chat.get_session` returns. */
 export interface LoadedSession {
   session: {
@@ -118,7 +120,7 @@ export async function persistAssistantTurn(
   args: {
     chatSessionId: string;
     content: string;
-    toolCalls: { id: string; name: string; arguments: unknown }[] | null;
+    toolCalls: AccumulatedToolCall[] | null;
     thinkingBlocks: { thinking: string; signature: string }[] | null;
     status: "interrupted" | "complete";
   },

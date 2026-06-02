@@ -121,6 +121,17 @@ export interface StoppingDiagnostics {
   responseModelId: string | null;
 }
 
+/**
+ * A tool call accumulated from the provider stream. The shape the runner
+ * threads from `streamProviderTurn` through persistence and `dispatchToolCall`;
+ * structurally compatible with `ChatMessageInput["toolCalls"]`.
+ */
+export interface AccumulatedToolCall {
+  id: string;
+  name: string;
+  arguments: unknown;
+}
+
 /** Loop terminal states tracked across the chat-runner turn. */
 export type StopReason =
   | "end_turn"

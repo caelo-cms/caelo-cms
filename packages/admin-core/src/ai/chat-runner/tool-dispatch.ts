@@ -18,7 +18,13 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { tryAutoRecover } from "../auto-recovery.js";
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import type { ToolRegistry } from "../tools/index.js";
-import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn, ToolDispatchResult } from "./types.js";
+import type {
+  AccumulatedToolCall,
+  ChatRunnerOptions,
+  ClientEvent,
+  RunChatTurnFn,
+  ToolDispatchResult,
+} from "./types.js";
 
 /** Everything `dispatchToolCall` needs from the orchestrator. */
 export interface DispatchDeps {
@@ -41,7 +47,7 @@ export interface DispatchDeps {
  * `messages` in place.
  */
 export async function* dispatchToolCall(
-  call: { id: string; name: string; arguments: unknown },
+  call: AccumulatedToolCall,
   messages: ChatMessageInput[],
   deps: DispatchDeps,
 ): AsyncGenerator<ClientEvent, void> {

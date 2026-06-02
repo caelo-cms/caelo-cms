@@ -41,7 +41,7 @@ import {
 } from "./persistence.js";
 import type { UsageAccumulator } from "./streaming.js";
 import { buildToolCatalogue } from "./tool-catalogue.js";
-import type { ChatRunnerOptions, ClientEvent } from "./types.js";
+import type { AccumulatedToolCall, ChatRunnerOptions, ClientEvent } from "./types.js";
 
 export { isLegitimateTextOnlyTurn } from "./passive-turn.js";
 // Public surface re-exports — the `../chat-runner.ts` shim does `export *`
@@ -115,9 +115,7 @@ export async function* runChatTurn(
   const baseMessages: ChatMessageInput[] = session.messages.map((m) => ({
     role: m.role,
     content: m.content,
-    toolCalls: Array.isArray(m.toolCalls)
-      ? (m.toolCalls as { id: string; name: string; arguments: unknown }[])
-      : undefined,
+    toolCalls: Array.isArray(m.toolCalls) ? (m.toolCalls as AccumulatedToolCall[]) : undefined,
     toolCallId: m.toolCallId ?? undefined,
     ...(m.thinkingBlocks && m.thinkingBlocks.length > 0
       ? { thinkingBlocks: m.thinkingBlocks }
