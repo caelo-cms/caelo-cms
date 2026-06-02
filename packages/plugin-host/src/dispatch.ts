@@ -337,6 +337,40 @@ export async function runPluginOperation(
   }
 }
 
+/** Field names whose values are redacted before the audit digest is taken. */
+const SENSITIVE_KEY_RE =
+  /pass(word|wd|phrase)?|secret|token|api[-_]?key|credential|private[-_]?key/i;
+
+/**
+ * `JSON.stringify` replacer that strips credential-shaped data before it can
+ * reach the audit digest: sensitive-named fields are replaced with a fixed
+ * placeholder, and prototype-polluting keys are dropped entirely. Using a
+ * replacer (rather than a recursive clone) keeps the redaction on the
+ * serialization path the digest actually consumes, so no value read from a
+ * `*password*`/`*secret*`/token field flows into the hash
+ * (CodeQL js/insufficient-password-hash). Deterministic for equal inputs.
+ */
+function redactingReplacer(key: string, value: unknown): unknown {
+  if (key === "__proto__" || key === "constructor" || key === "prototype") return undefined;
+  return SENSITIVE_KEY_RE.test(key) ? "[redacted]" : value;
+}
+
+/**
+ * Audit integrity digest of a plugin op's input arguments. This is NOT a
+ * password hash — it is a one-way fingerprint stored in
+ * `audit_events.input_hash` so the operator can correlate and tamper-check
+ * op calls. Sensitive-named fields are redacted on the serialization path
+ * (see `redactingReplacer`), so the digest can never act as an offline
+ * oracle for a secret and its input carries no credential-shaped data.
+ * SHA-256 is the correct primitive for a deterministic integrity
+ * fingerprint; a slow salted password KDF would be wrong here
+ * (non-deterministic, defeats correlation).
+ */
+export function auditInputDigest(inputArgs: unknown): string {
+  const json = JSON.stringify(inputArgs ?? null, redactingReplacer) ?? "null";
+  return createHash("sha256").update(json).digest("hex");
+}
+
 /**
  * v0.2.16 — write an audit_events row for a plugin op. Mirrors the
  * shape `recordAudit` in admin-core uses, but runs raw SQL because
@@ -355,9 +389,7 @@ async function emitPluginAuditRow(
     succeeded: boolean;
   },
 ): Promise<void> {
-  const hash = createHash("sha256")
-    .update(JSON.stringify(args.inputArgs ?? null))
-    .digest("hex");
+  const hash = auditInputDigest(args.inputArgs);
   await adapter.withAdminTransaction(
     {
       actorId: args.actorId,

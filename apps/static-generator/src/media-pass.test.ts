@@ -12,6 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,10 +59,11 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
 
-  mediaRoot = join(tmpdir(), `caelo-media-pass-${Date.now()}`);
-  buildDir = join(tmpdir(), `caelo-media-pass-build-${Date.now()}`);
-  await mkdir(mediaRoot, { recursive: true });
-  await mkdir(buildDir, { recursive: true });
+  // mkdtempSync creates a uniquely-named dir (random suffix, mode 0700)
+  // atomically — no predictable path in the world-readable temp dir
+  // (CodeQL js/insecure-temporary-file).
+  mediaRoot = mkdtempSync(join(tmpdir(), "caelo-media-pass-"));
+  buildDir = mkdtempSync(join(tmpdir(), "caelo-media-pass-build-"));
 
   // Seed an asset row + a fake `orig.png` blob in mediaRoot at the
   // expected storage key.

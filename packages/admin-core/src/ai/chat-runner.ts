@@ -50,6 +50,7 @@ import {
 } from "@caelo-cms/shared";
 
 import { tryAutoRecover } from "./auto-recovery.js";
+import { sanitizeMarkerDisplayName } from "./marker-text.js";
 import type { AIProvider, ChatMessageInput } from "./provider.js";
 import {
   composeSystemPromptChunks,
@@ -480,7 +481,7 @@ export async function* runChatTurn(
         for (let i = 0; i < b.modules.length; i++) {
           const m = b.modules[i];
           if (!m) continue;
-          const safeName = m.displayName.replace(/"/g, '\\"');
+          const safeName = sanitizeMarkerDisplayName(m.displayName);
           lines.push(
             `<!-- BEGIN module=${m.moduleId} slug=${m.slug} block=${b.blockName} position=${i} displayName="${safeName}" -->`,
           );

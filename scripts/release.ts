@@ -96,8 +96,15 @@ function bumpJsonVersions(newVersion: string, dryRun: boolean): string[] {
   );
   const paths = new TextDecoder().decode(proc.stdout).trim().split("\n").filter(Boolean);
   for (const p of paths) {
-    if (!existsSync(p)) continue;
-    const raw = readFileSync(p, "utf8");
+    // Read directly and skip on failure rather than existsSync-then-read:
+    // the gap between the check and the read is a TOCTOU race (CodeQL
+    // js/file-system-race).
+    let raw: string;
+    try {
+      raw = readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
     const pkg = JSON.parse(raw) as { version?: string };
     if (pkg.version && pkg.version !== newVersion) {
       pkg.version = newVersion;
@@ -330,7 +337,14 @@ async function main(): Promise<void> {
   const changelogPath = resolve(REPO_ROOT, "CHANGELOG.md");
   const HEADER = "# Changelog\n\n";
   if (!dryRun) {
-    const prior = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8") : HEADER;
+    // Read-or-default instead of existsSync-then-read (TOCTOU race, CodeQL
+    // js/file-system-race): a missing CHANGELOG.md starts from the header.
+    let prior: string;
+    try {
+      prior = readFileSync(changelogPath, "utf8");
+    } catch {
+      prior = HEADER;
+    }
     const body = prior.startsWith(HEADER) ? prior.slice(HEADER.length) : prior;
     writeFileSync(changelogPath, `${HEADER}${stanza}\n${body}`);
     console.log(`✓ CHANGELOG.md ${prevTag ? `appended commits since ${prevTag}` : "initialised"}`);

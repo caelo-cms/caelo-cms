@@ -24,6 +24,7 @@
 
 import { type ThemeDocument, validateThemeTokens } from "../themes.js";
 import { NotShadcnShape } from "../themes-errors.js";
+import { stripCssComments } from "./css-comments.js";
 
 interface CssVarMap {
   readonly [name: string]: string;
@@ -75,7 +76,7 @@ export function importShadcn(body: string): ThemeDocument {
  * inside the matching braces. Strips block comments before matching.
  */
 function extractBlock(body: string, selector: string): string | null {
-  const stripped = body.replace(/\/\*[\s\S]*?\*\//g, "");
+  const stripped = stripCssComments(body);
   // Escape regex specials in the selector (`.` for `.dark`).
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(`${escaped}\\s*\\{`).exec(stripped);

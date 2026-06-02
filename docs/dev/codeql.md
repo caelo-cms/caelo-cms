@@ -28,6 +28,41 @@ Both run the **`security-extended`** query suite. If first-run noise on the
 existing tree is too high, downgrade to the default `security` suite by editing
 the single `queries:` line in the workflow — that is the noise lever.
 
+### Action pinning policy (`actions/unpinned-tag`)
+
+The `actions` analysis flags actions that aren't pinned to an immutable ref.
+The repo convention (issue #113):
+
+- **Third-party actions** (anything outside the `actions/*` and `github/*`
+  GitHub-owned namespaces — e.g. `oven-sh/setup-bun`, `docker/*`,
+  `sigstore/cosign-installer`, `google-github-actions/auth`,
+  `softprops/action-gh-release`) are pinned to a **full 40-character commit
+  SHA** with a trailing `# vN` comment, e.g.
+  `uses: oven-sh/setup-bun@0c5077e…21857d6 # v2`. The SHA is the security
+  boundary; the comment lets Dependabot's `github-actions` ecosystem keep the
+  pin current.
+- **First-party `actions/*` and `github/*`** stay on a **major tag** (`@v4`).
+  CodeQL does not flag these (GitHub's own trust model), and
+  `codeql.yml` / `dependency-review.yml` pin `github/codeql-action` and
+  `actions/*` this way.
+
+`scripts/codeql-workflow.test.ts` encodes this split and fails CI if a
+third-party action regresses to a floating tag, if a SHA pin loses its version
+comment, or if a least-privilege job loses its `permissions:` block. Resolve a
+new `actions/missing-workflow-permissions` alert by adding the narrowest
+`permissions:` block the job needs (usually `contents: read`, or `{}` when the
+job touches no GitHub API).
+
+### Triaging + dismissing alerts
+
+Prefer **fix-at-source**. Dismiss (Security tab → the alert → *Dismiss*) only
+for a genuine false positive or test-only finding, and always **with a written
+rationale** — never mute wholesale (CLAUDE.md §4). Example: the
+`js/file-access-to-http` findings in the operator-run provisioning/release
+scripts (`packages/provisioning/*`, `scripts/apply-rulesets.ts`) are dismissed
+because the data is operator-controlled config / IaC output, not untrusted
+request-path input. A dismissal without a rationale is a review failure.
+
 ### Where findings surface
 
 The repo **Security tab → Code scanning alerts**. The `analyze` step uploads

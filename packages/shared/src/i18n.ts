@@ -26,6 +26,34 @@
 
 const TEXT_ENCODER = new TextEncoder();
 
+/**
+ * Strip leading and trailing `/` characters with a single linear scan.
+ *
+ * Replaces the regex `/^\/+|\/+$/g`, whose trailing-slash branch
+ * backtracks O(n²) on a long run of slashes that is not at end-of-string
+ * (CodeQL js/polynomial-redos). This char-index walk is unconditionally
+ * linear and produces byte-identical output for every input.
+ */
+export function trimSlashes(s: string): string {
+  let start = 0;
+  let end = s.length;
+  while (start < end && s.charCodeAt(start) === 47 /* '/' */) start += 1;
+  while (end > start && s.charCodeAt(end - 1) === 47 /* '/' */) end -= 1;
+  return s.slice(start, end);
+}
+
+/**
+ * Strip only trailing `/` characters with a single linear scan — the
+ * non-backtracking replacement for `/\/+$/` (same ReDoS class as above).
+ * Used for base URLs, which carry a scheme and must keep their leading
+ * characters.
+ */
+export function trimTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47 /* '/' */) end -= 1;
+  return s.slice(0, end);
+}
+
 export interface LocaleConfig {
   code: string;
   displayName: string;
@@ -56,7 +84,7 @@ export function resolveLocaleUrl(
   // page is always `<base>/` regardless of style.
   pageUrlStyle: "directory" | "no-extension" = "directory",
 ): string {
-  const stripped = slug.replace(/^\/+|\/+$/g, "");
+  const stripped = trimSlashes(slug);
   const isHome = stripped === "" || stripped === "home" || stripped === "index";
   // tail: the path component appended after `<base>/` or `<base>/<locale>/`.
   // 'directory' style: trailing slash for non-home so the URL points at
@@ -64,7 +92,7 @@ export function resolveLocaleUrl(
   // 'no-extension' style: no trailing slash, no extension — the URL
   // points at the bare-slug object the bucket serves directly.
   const tail = isHome ? "" : pageUrlStyle === "no-extension" ? stripped : `${stripped}/`;
-  const base = siteBaseUrl.replace(/\/+$/, "");
+  const base = trimTrailingSlashes(siteBaseUrl);
   switch (locale.urlStrategy) {
     case "none":
       return tail ? `${base}/${tail}` : `${base}/`;
