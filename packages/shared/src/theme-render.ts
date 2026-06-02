@@ -455,8 +455,20 @@ function asString(value: unknown): string {
  * (`typography.X.fontFamily`, `$description` if it ever lands in CSS).
  */
 function sanitizeCssTokenValue(value: string): string {
-  return value
-    .replace(/<\/style/gi, "")
-    .replace(/<!--/g, "")
-    .replace(/-->/g, "");
+  // Run to a fixed point: removing one sequence can re-create another
+  // (e.g. `<!--</style>-->` → `</style` only appears after the comment
+  // tokens go), which a single pass would leave behind (CodeQL
+  // js/incomplete-multi-character-sanitization). `--!>` is the HTML5
+  // alternative comment-close and must be scrubbed alongside `-->`
+  // (CodeQL js/bad-tag-filter).
+  let out = value;
+  let prev: string;
+  do {
+    prev = out;
+    out = out
+      .replace(/<\/style/gi, "")
+      .replace(/<!--/g, "")
+      .replace(/--!?>/g, "");
+  } while (out !== prev);
+  return out;
 }

@@ -240,10 +240,15 @@ function sliceFromOpenAt(html: string, _hint: number, tag: string): string | nul
 }
 
 function decodeEntities(s: string): string {
+  // `&amp;` is decoded LAST. Decoding it first would turn an encoded
+  // `&amp;lt;` (the literal text "&lt;") into a live "<" via the next
+  // replace — a double-unescape (CodeQL js/double-escaping). Decoding the
+  // other entities first, then `&amp;`, yields the correct single-level
+  // decode: `&amp;lt;` → `&lt;`, while `&lt;` → `<`.
   return s
-    .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
 }
