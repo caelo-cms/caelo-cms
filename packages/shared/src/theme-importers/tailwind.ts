@@ -22,6 +22,7 @@
  * instead of silently-truncated output.
  */
 
+import { isUnsafeKey } from "../safe-keys.js";
 import { type ThemeDocument, validateThemeTokens } from "../themes.js";
 import { NotTailwindShape, TailwindImportError } from "../themes-errors.js";
 
@@ -167,6 +168,12 @@ function mapEntriesToDtcg(entries: readonly CssVarEntry[]): ThemeDocument {
         leafName = rest;
     }
 
+    // `category` and `leafName` are derived from the imported CSS variable
+    // name, so a hostile token like `--__proto__-x` could otherwise pollute
+    // the prototype chain via `out[category]` / `group[leafName]` (CodeQL
+    // js/prototype-polluting-assignment). Skip the entry on any unsafe key.
+    if (isUnsafeKey(category) || isUnsafeKey(leafName)) continue;
+
     if (!out[category]) out[category] = {};
     const group = out[category]!;
     if (extraSubField !== null) {
@@ -196,6 +203,10 @@ function mapEntriesToDtcg(entries: readonly CssVarEntry[]): ThemeDocument {
       };
       if (rampMatch && category === "color") {
         const [, baseName, stop] = rampMatch as unknown as [string, string, string];
+        // `baseName` is the ramp prefix parsed from the token name; guard it
+        // before it becomes a `group[baseName]` assignment target. `stop` is
+        // a fixed enum (50…900|DEFAULT), so it needs no guard.
+        if (isUnsafeKey(baseName)) continue;
         if (!group[baseName] || typeof group[baseName] !== "object") {
           group[baseName] = {};
         }

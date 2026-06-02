@@ -23,6 +23,7 @@
  */
 
 import { z } from "zod";
+import { isUnsafeKey } from "./safe-keys.js";
 
 // ────────────────────────────────────────────────────────────────────
 // Primitives
@@ -536,6 +537,12 @@ function readLeafAtPath(doc: Record<string, unknown>, path: string): unknown {
  */
 function setLeafAtPath(doc: Record<string, unknown>, path: string, leaf: unknown): void {
   const parts = path.split(".");
+  // The dotted path comes from the caller's `writes` map (form / AI input),
+  // so a segment like `__proto__` or `constructor` would let the walk below
+  // (`cur[k] = {}`, `cur[last] = leaf`) pollute the prototype chain (CodeQL
+  // js/prototype-pollution-utility). Reject the whole write on any unsafe
+  // segment rather than partially applying it.
+  if (parts.some(isUnsafeKey)) return;
   let cur: Record<string, unknown> = doc;
   for (let i = 0; i < parts.length - 1; i++) {
     const k = parts[i];
