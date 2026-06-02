@@ -19,6 +19,7 @@ import { execute } from "@caelo-cms/query-api";
 import { addModuleToPageToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
+import { describeError } from "./_describe-error.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -29,23 +30,6 @@ interface PageWithModules {
   id: string;
   templateId: string;
   blocks: { blockName: string; modules: { moduleId: string }[] }[];
-}
-
-function describeError(error: unknown): string {
-  if (!error || typeof error !== "object") return "unknown";
-  const e = error as { kind?: string; message?: string; issues?: unknown[]; detail?: string };
-  if (e.kind === "ValidationFailed" && Array.isArray(e.issues)) {
-    return `validation: ${e.issues
-      .slice(0, 3)
-      .map((i) => {
-        const z = i as { path?: unknown[]; message?: string };
-        return `${(z.path ?? []).join(".")}: ${z.message ?? "?"}`;
-      })
-      .join("; ")}`;
-  }
-  if (typeof e.message === "string") return e.message;
-  if (typeof e.detail === "string") return e.detail;
-  return e.kind ?? "unknown";
 }
 
 /**

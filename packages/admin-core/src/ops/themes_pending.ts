@@ -33,8 +33,10 @@ import {
   mergeRampIntoTokens,
   normalizeTokens,
   ok,
+  PROPOSAL_STATUSES,
   type PresetName,
   PresetNotFound,
+  type ProposalStatus,
   type ThemeDocument,
   TokenCategoryMismatch,
   UnknownTokenName,
@@ -546,7 +548,7 @@ const proposalRowSchema = z.object({
   themeId: z.string().nullable(),
   payload: z.record(z.string(), z.unknown()),
   preview: z.record(z.string(), z.unknown()),
-  status: z.enum(["pending", "applied", "rejected", "superseded", "cancelled"]),
+  status: z.enum([...PROPOSAL_STATUSES, "cancelled"] as const),
   createdAt: z.string(),
   decidedAt: z.string().nullable(),
   decidedBy: z.string().nullable(),
@@ -585,7 +587,7 @@ export const listPendingThemeProposalsOp = defineOperation({
       theme_id: string | null;
       payload: unknown;
       preview: unknown;
-      status: "pending" | "applied" | "rejected" | "superseded" | "cancelled";
+      status: ProposalStatus | "cancelled";
       created_at: string | Date;
       decided_at: string | Date | null;
       decided_by: string | null;

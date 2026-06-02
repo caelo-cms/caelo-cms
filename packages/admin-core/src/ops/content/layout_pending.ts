@@ -17,7 +17,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -331,7 +331,7 @@ const proposalRowSchema = z.object({
   layoutId: z.string().nullable(),
   payload: z.record(z.string(), z.unknown()),
   preview: z.record(z.string(), z.unknown()),
-  status: z.enum(["pending", "applied", "rejected", "superseded"]),
+  status: proposalStatus,
   createdAt: z.string(),
   decidedAt: z.string().nullable(),
   decidedBy: z.string().nullable(),
@@ -374,7 +374,7 @@ export const listPendingLayoutProposalsOp = defineOperation({
       layout_id: string | null;
       payload: unknown;
       preview: unknown;
-      status: "pending" | "applied" | "rejected" | "superseded";
+      status: ProposalStatus;
       created_at: string | Date;
       decided_at: string | Date | null;
       decided_by: string | null;

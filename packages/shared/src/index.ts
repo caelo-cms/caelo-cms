@@ -22,6 +22,7 @@ export {
 export * from "./media.js";
 export * from "./preview-compose.js";
 export * from "./preview-scanner.js";
+export * from "./proposal-status.js";
 export * from "./result.js";
 export * from "./safe-keys.js";
 export * from "./seo.js";
