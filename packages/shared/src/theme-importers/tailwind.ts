@@ -25,6 +25,7 @@
 import { isUnsafeKey } from "../safe-keys.js";
 import { type ThemeDocument, validateThemeTokens } from "../themes.js";
 import { NotTailwindShape, TailwindImportError } from "../themes-errors.js";
+import { stripCssComments } from "./css-comments.js";
 
 interface CssVarEntry {
   readonly name: string;
@@ -50,11 +51,7 @@ export function importTailwind(body: string): ThemeDocument {
  * outer whitespace) or null when no block is present.
  */
 function extractAtThemeBlock(body: string): string | null {
-  // Tempered-dot comment strip — `(?:(?!\*\/)[\s\S])*` instead of a lazy
-  // `[\s\S]*?` — so a comment that is never closed cannot drive O(n²)
-  // backtracking (CodeQL js/polynomial-redos). Stops at the first `*/`,
-  // identical output to the lazy form on valid CSS.
-  const stripped = body.replace(/\/\*(?:(?!\*\/)[\s\S])*\*\//g, "");
+  const stripped = stripCssComments(body);
   const match = /@theme\s+(?:inline\s+)?\{/i.exec(stripped);
   if (!match) return null;
   const start = match.index + match[0].length;
