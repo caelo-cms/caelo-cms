@@ -26,11 +26,36 @@ interface QueryContext {
   readonly loginLimiter: PostgresRateLimiter;
 }
 
-let _ctx: QueryContext | null = null;
-let _verifyPromise: Promise<void> | null = null;
+interface QueryContextSlot {
+  ctx: QueryContext | null;
+  verifyPromise: Promise<void> | null;
+}
+
+/**
+ * The context singleton lives on `globalThis` rather than in a module-level
+ * `let` so it survives Vite HMR. In dev, Vite re-evaluates this module (and
+ * its importers) on every source change; a module-level singleton would reset
+ * to `null` and `getQueryContext()` would build a *fresh* `DatabaseAdapter`
+ * each reload, orphaning the previous adapter's two connection pools. Those
+ * pools are never closed, so ~20 idle Postgres connections leaked per reload
+ * until the database ran out of slots (errno 53300) — starving every other
+ * client on the same Postgres, including the test runner. Anchoring on
+ * `globalThis` makes each reload reuse the same adapter and pools.
+ *
+ * In production there is no HMR, so this is an ordinary process-wide singleton
+ * — identical behaviour to the previous module-level field.
+ */
+const SLOT_KEY = Symbol.for("caelo.admin.queryContextSlot");
+const globalSlots = globalThis as unknown as Record<symbol, QueryContextSlot | undefined>;
+let existing = globalSlots[SLOT_KEY];
+if (!existing) {
+  existing = { ctx: null, verifyPromise: null };
+  globalSlots[SLOT_KEY] = existing;
+}
+const slot: QueryContextSlot = existing;
 
 export function getQueryContext(): QueryContext {
-  if (_ctx) return _ctx;
+  if (slot.ctx) return slot.ctx;
 
   const adminUrl = process.env.ADMIN_DATABASE_URL;
   const publicUrl = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_DATABASE_URL;
@@ -75,12 +100,12 @@ export function getQueryContext(): QueryContext {
     setMediaStorage(factory(process.env), providerName);
   }
 
-  _ctx = { adapter, registry, loginLimiter };
-  return _ctx;
+  slot.ctx = { adapter, registry, loginLimiter };
+  return slot.ctx;
 }
 
 export function verifyQueryContextRoles(): Promise<void> {
-  if (_verifyPromise) return _verifyPromise;
-  _verifyPromise = getQueryContext().adapter.verifyRoles();
-  return _verifyPromise;
+  if (slot.verifyPromise) return slot.verifyPromise;
+  slot.verifyPromise = getQueryContext().adapter.verifyRoles();
+  return slot.verifyPromise;
 }
