@@ -109,10 +109,10 @@ export async function buildSiteBlocks(
     ).defaults;
     const tpls = (tplsR.value as { templates: { id: string; slug: string; layoutId: string }[] })
       .templates;
-    const layoutBySlug = new Map<string, string>();
+    const slugByLayoutId = new Map<string, string>();
     if (layoutsR.ok) {
       for (const l of (layoutsR.value as { layouts: { id: string; slug: string }[] }).layouts) {
-        layoutBySlug.set(l.id, l.slug);
+        slugByLayoutId.set(l.id, l.slug);
       }
     }
     // P18 — include each template's UUID so the AI can pass it as
@@ -122,7 +122,7 @@ export async function buildSiteBlocks(
     // site_defaults; this is for the "use a non-default template" path.)
     const templateLines = tpls.map(
       (t) =>
-        `- ${t.slug} (id=${t.id}) → ${layoutBySlug.get(t.layoutId) ?? "(unknown layout)"} (id=${t.layoutId})`,
+        `- ${t.slug} (id=${t.id}) → ${slugByLayoutId.get(t.layoutId) ?? "(unknown layout)"} (id=${t.layoutId})`,
     );
     siteDefaultsBlock = [
       "# Site defaults (used when caller omits a layout/template)",
