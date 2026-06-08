@@ -11,9 +11,14 @@ import { err } from "@caelo-cms/shared";
 import type { SQL as SQLType } from "bun";
 
 type SQL = SQLType;
-const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
-  ?.SQL as unknown as new (
+/** Subset of `Bun.SQL.Options` we set explicitly. `max` caps the pool size. */
+interface PoolOptions {
+  readonly max: number;
+}
+const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOptions) => SQLType } })
+  .Bun?.SQL as unknown as new (
   url: string,
+  options?: PoolOptions,
 ) => SQLType;
 
 import { sql } from "drizzle-orm";
@@ -39,6 +44,42 @@ export interface AdapterConfig {
   readonly publicDatabaseUrl: string;
   /** Disable the startup self-check. Only for tests that deliberately assert it triggers. */
   readonly skipRoleVerification?: boolean;
+  /**
+   * Max connections per pool (the admin + public pools are sized separately,
+   * each gets this `max`). Precedence: this option > `CAELO_DB_POOL_MAX` env >
+   * Bun's default (10). Left unset in production — the env is only ever set by
+   * the test preload to bound the suite's footprint under `max_connections`.
+   */
+  readonly poolMax?: number;
+}
+
+/**
+ * Resolve the per-pool `max` connection cap. Returns `undefined` when neither
+ * the explicit option nor `CAELO_DB_POOL_MAX` is set, so the caller keeps the
+ * original 1-arg `new SQL(url)` path and inherits Bun's default of 10 — making
+ * this a no-op in production where neither knob is present.
+ *
+ * Per CLAUDE.md §2 (no silent fallbacks pre-1.0): a value that is *present* but
+ * malformed or below the safe floor throws loudly rather than quietly picking a
+ * default. The floor is 2 because a single-connection pool self-deadlocks any
+ * path that needs a second concurrent checkout (e.g. `verifyRoles` probing while
+ * an op opens a transaction, or a test firing concurrent `.begin()` calls).
+ */
+export function resolvePoolMax(explicit?: number): number | undefined {
+  if (explicit !== undefined) return validatePoolMax(explicit, "poolMax option");
+  const raw = process.env.CAELO_DB_POOL_MAX;
+  if (raw === undefined || raw === "") return undefined;
+  return validatePoolMax(Number(raw), "CAELO_DB_POOL_MAX");
+}
+
+function validatePoolMax(value: number, source: string): number {
+  if (!Number.isInteger(value) || value < 2) {
+    throw new Error(
+      `${source} must be an integer >= 2 (got ${value}); ` +
+        `1 self-deadlocks the pool. Leave it unset for the Bun default of 10.`,
+    );
+  }
+  return value;
 }
 
 interface ConnectionIdentity {
@@ -55,8 +96,16 @@ export class DatabaseAdapter {
   #verifyPromise: Promise<void> | null = null;
 
   constructor(config: AdapterConfig) {
-    this.#adminRaw = new SQL(config.adminDatabaseUrl);
-    this.#publicRaw = new SQL(config.publicDatabaseUrl);
+    // When no pool cap is configured (the production case) keep the original
+    // 1-arg construction so behaviour is byte-for-byte unchanged: Bun default 10.
+    const poolMax = resolvePoolMax(config.poolMax);
+    if (poolMax === undefined) {
+      this.#adminRaw = new SQL(config.adminDatabaseUrl);
+      this.#publicRaw = new SQL(config.publicDatabaseUrl);
+    } else {
+      this.#adminRaw = new SQL(config.adminDatabaseUrl, { max: poolMax });
+      this.#publicRaw = new SQL(config.publicDatabaseUrl, { max: poolMax });
+    }
     this.#admin = drizzle(this.#adminRaw);
     this.#public = drizzle(this.#publicRaw);
     this.#skipVerify = config.skipRoleVerification === true;

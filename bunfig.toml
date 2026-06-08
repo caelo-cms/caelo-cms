@@ -31,7 +31,18 @@ linker = "hoisted"
 # for the full rationale + the curated PRESERVE allowlist.
 #
 # Paired with `bun test --isolate` in package.json's `test` script —
-# `--isolate` gives every file a fresh global, which re-runs the
-# preload's `beforeAll` registration, so the reset fires per file.
+# `--isolate` gives every file a fresh global, which re-runs the preload's
+# `beforeAll` registration, so the reset fires per file. Files run
+# SEQUENTIALLY: the per-file `TRUNCATE` reset shares one database across the
+# whole suite, so concurrent files (`--parallel`) would deadlock on
+# overlapping CASCADE truncates AND race each other's seed rows. Keep this
+# sequential — do not add `--parallel`.
+#
+# To bound the Postgres connection footprint, the preload sets
+# `CAELO_DB_POOL_MAX=3` (see scripts/test-preload.ts): each file's adapter
+# holds 2 pools x 3 = 6 connections instead of Bun's default 2 x 10 = 20.
+# Sequential execution means only one file's pools are live at a time, so the
+# suite peaks well under the 100-slot `max_connections` cap with headroom to
+# spare for a co-running dev server.
 preload = ["./scripts/test-preload.ts"]
 timeout = 30000
