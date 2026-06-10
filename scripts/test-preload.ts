@@ -65,6 +65,18 @@
 import { beforeAll, setDefaultTimeout } from "bun:test";
 import { SQL } from "bun";
 
+// Bound every DatabaseAdapter constructed during the test run. This preload
+// runs before any test module builds an adapter, so all ~83 inline
+// `new DatabaseAdapter(...)` call sites inherit this cap without per-file
+// edits — the adapter reads `CAELO_DB_POOL_MAX` (see packages/query-api
+// resolvePoolMax). Two pools per adapter (admin + public) x 3 = 6 connections
+// instead of Bun's default 2 x 10 = 20. The suite runs sequentially (one file
+// at a time under `--isolate`; see bunfig.toml on why it must not be made
+// parallel), so only one file's pools are live at once, keeping the suite well
+// under Postgres `max_connections` (100). `??=` lets an explicit override win.
+// 3 (not 1) avoids the single-connection self-deadlock; see resolvePoolMax.
+process.env.CAELO_DB_POOL_MAX ??= "3";
+
 // Default hook + test timeout. Integration `wipe()` helpers open a
 // fresh Bun.SQL pool every call; the cold-connect path can spike past
 // the 5-second Bun default under load. 30s matches the longest
@@ -120,7 +132,10 @@ const PUBLIC_PRESERVE: ReadonlySet<string> = new Set(["__drizzle_migrations", "r
 const DELETE_NOT_TRUNCATE: ReadonlySet<string> = new Set(["plugins"]);
 
 async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promise<void> {
-  const sql = new SQL(url);
+  // The reset runs one `.begin()` (a single connection) plus a table
+  // enumeration query — cap the transient pool so it cannot contribute to
+  // connection-slot pressure when many workers reset concurrently.
+  const sql = new SQL(url, { max: 2 });
   try {
     const allTables = (await sql`
       SELECT tablename
