@@ -34,9 +34,19 @@ import {
   verifyPublishedPageWithVision,
 } from "./helpers.js";
 
+// issue #112 — the prompt states design intent the way a real operator
+// would ("nicely designed", "fitting color scheme", "nice header
+// background"). Run 27357551606 showed the AI can satisfy the
+// cold-start gate (origin flipped + description recorded) while
+// leaving the seed-grayscale primary (#171717) untouched when the
+// operator never mentions design; the on-brand assertion below then
+// rightly fails. Naming the intent here keeps the scenario realistic
+// AND gives the model the brand context §1A expects it to act on.
 const HOMEPAGE_PROMPT =
-  "Create a homepage for an AI-first CMS called Caelo. Include a header module with " +
-  "the Caelo brand and a simple top navigation, a hero section with a headline, " +
+  "Create a homepage for an AI-first CMS called Caelo — a nicely designed page with a " +
+  "fitting color scheme for a trustworthy, developer-focused brand (pick real brand colors; " +
+  "don't leave it black-and-white) and a nice background for the header. Include a header " +
+  "module with the Caelo brand and a simple top navigation, a hero section with a headline, " +
   "a 3-column feature grid below the hero with three features about branched edits, plugin sandbox, " +
   "and snapshot revert, and a footer module with copyright text mentioning Caelo and MPL 2.0.";
 
@@ -141,6 +151,105 @@ function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | nu
   const trimmed = raw.stdout.trim();
   if (trimmed === "null" || trimmed.length === 0) return null;
   return JSON.parse(trimmed) as PageModuleSnapshot;
+}
+
+interface ActiveThemeBrand {
+  readonly origin: string;
+  readonly description: string | null;
+  readonly primaryValue: string | null;
+}
+
+/**
+ * issue #112 (AC #4) — read the active theme's provenance + primary
+ * color straight from the DB. `primaryValue` resolves `color.primary`
+ * (base token) or the `color.primary.500` ramp stop, whichever the AI
+ * authored.
+ */
+function snapshotActiveThemeBrand(): ActiveThemeBrand {
+  const raw = spawnSync(
+    "bun",
+    [
+      "-e",
+      `
+        import { SQL } from "bun";
+        const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+        let out = null;
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          const rows = await tx\`
+            SELECT origin, description, tokens FROM themes WHERE is_active = true LIMIT 1
+          \`;
+          const row = rows[0];
+          if (!row) return;
+          const tokens = typeof row.tokens === "string" ? JSON.parse(row.tokens) : row.tokens;
+          const primary = tokens?.color?.primary ?? null;
+          const primaryValue =
+            (primary && typeof primary.$value === "string" && primary.$value) ||
+            (primary && primary["500"] && typeof primary["500"].$value === "string" && primary["500"].$value) ||
+            null;
+          out = { origin: row.origin, description: row.description, primaryValue };
+        });
+        await sql.end();
+        process.stdout.write(JSON.stringify(out));
+      `,
+    ],
+    { env: { ...process.env }, encoding: "utf8" },
+  );
+  if (raw.status !== 0) {
+    throw new Error(`snapshotActiveThemeBrand failed: ${raw.stderr || raw.stdout}`);
+  }
+  const trimmed = raw.stdout.trim();
+  if (trimmed === "null" || trimmed.length === 0) {
+    throw new Error("snapshotActiveThemeBrand: no active theme row found");
+  }
+  return JSON.parse(trimmed) as ActiveThemeBrand;
+}
+
+/**
+ * issue #112 (AC #4) — fail when the primary color is grayscale. The
+ * scenario prompt names a SaaS / dev-tools brand, so a chromatic
+ * primary is the only correct outcome HERE (a deliberately monochrome
+ * brand would be a different scenario). Accepts hex and oklch() —
+ * anything else fails loudly so a format drift surfaces instead of
+ * silently passing.
+ */
+function assertChromaticPrimary(value: string): void {
+  const SEED_GRAYS = new Set(["#171717", "#000000", "#0a0a0a"]);
+  const normalized = value.trim().toLowerCase();
+  if (SEED_GRAYS.has(normalized)) {
+    throw new Error(
+      `active theme primary ${value} is a seed grayscale value — issue #112 regression`,
+    );
+  }
+  const hex = /^#([0-9a-f]{6})$/.exec(normalized);
+  if (hex?.[1] !== undefined) {
+    const n = Number.parseInt(hex[1], 16);
+    /* eslint-disable no-bitwise */
+    const r = (n >> 16) & 0xff;
+    const g = (n >> 8) & 0xff;
+    const b = n & 0xff;
+    /* eslint-enable no-bitwise */
+    const spread = Math.max(r, g, b) - Math.min(r, g, b);
+    if (spread <= 24) {
+      throw new Error(
+        `active theme primary ${value} has RGB spread ${spread} (≤24 ≈ grayscale) — the AI shipped an off-brand neutral palette (issue #112)`,
+      );
+    }
+    return;
+  }
+  const oklch = /^oklch\(\s*[\d.]+%?\s+([\d.]+)\s/.exec(normalized);
+  if (oklch?.[1] !== undefined) {
+    const chroma = Number.parseFloat(oklch[1]);
+    if (chroma <= 0.03) {
+      throw new Error(
+        `active theme primary ${value} has OKLCh chroma ${chroma} (≤0.03 ≈ grayscale) — issue #112 regression`,
+      );
+    }
+    return;
+  }
+  throw new Error(
+    `active theme primary ${value} is in an unrecognised color format — extend assertChromaticPrimary rather than skipping the on-brand check`,
+  );
 }
 
 test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
@@ -297,6 +406,29 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // Regression guards (AC #7).
     assertNoOrphanLocks(chatSessionId);
     assertNoChatRunnerDiagWarnings();
+
+    // ── On-brand theme (issue #112) ────────────────────────────────
+    // The operator named a brand ("Caelo … trustworthy, developer-
+    // focused"), so the AI must have composed a brand-derived theme:
+    // non-seed origin, recorded design rationale, and a primary with
+    // real chroma. This is the assertion the PR #107 run would have
+    // failed (black logo, black buttons — shadcn-default minted via
+    // the old preset menu and left grayscale).
+    const themeBrand = snapshotActiveThemeBrand();
+    expect(
+      themeBrand.origin,
+      "Active theme origin must have flipped off 'seed' during the cold-start sequence",
+    ).not.toBe("seed");
+    expect(
+      (themeBrand.description ?? "").trim().length,
+      "Active theme must carry a recorded design rationale (set_theme_meta / propose_create_theme description)",
+    ).toBeGreaterThan(0);
+    expect(
+      themeBrand.primaryValue,
+      "Active theme tokens must define color.primary (base token or 500 ramp stop)",
+    ).not.toBeNull();
+    if (themeBrand.primaryValue === null) throw new Error("unreachable");
+    assertChromaticPrimary(themeBrand.primaryValue);
 
     // ── Step 7: Re-edit the hero headline (AC #2 part 2) ───────────
     const preReeditSnapshot = snapshotMostRecentPage(startTimestamp);

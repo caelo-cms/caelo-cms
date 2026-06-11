@@ -28,7 +28,7 @@ import type { ToolContext } from "../tools/dispatch.js";
 const registry = new OperationRegistry();
 registerAdminOps(registry);
 
-type Theme = { origin: "seed" | "ai" | "operator" } | null;
+type Theme = { origin: "seed" | "ai" | "operator"; description: string | null } | null;
 type Defaults = { siteName: string | null; sitePurpose: string | null } | null;
 
 /** Fake adapter: returns controlled values for the two reads the gate makes. */
@@ -57,17 +57,20 @@ describe("checkColdStartGate (issue #106)", () => {
     expect(content).toContain("no active theme yet");
     expect(content).toContain("propose_create_theme");
     expect(content).toContain("propose_activate_theme");
-    // The operator clicks Approve; the AI proposes — must not tell the AI
-    // to set tokens on a theme that doesn't exist yet as step 1.
+    // issue #112 — the AI composes the document itself; no preset menu.
+    expect(content).toContain("tokens");
+    expect(content.toLowerCase()).not.toContain("preset:");
+    // Create before activate — must not tell the AI to activate a theme
+    // that doesn't exist yet.
     expect(content.indexOf("propose_create_theme")).toBeLessThan(
-      content.indexOf("set_theme_tokens"),
+      content.indexOf("propose_activate_theme"),
     );
   });
 
   it("with an active SEED theme, points the AI at set_theme_tokens (mutate in place)", async () => {
     const res = await checkColdStartGate(
       AI,
-      toolCtxWith({ origin: "seed" }, null),
+      toolCtxWith({ origin: "seed", description: null }, null),
       "add_module_to_page",
     );
     expect(res.blocked).toBe(true);
@@ -78,10 +81,45 @@ describe("checkColdStartGate (issue #106)", () => {
     expect(content).not.toContain("propose_create_theme");
   });
 
-  it("does not block once identity is captured AND the theme is evolved", async () => {
+  it("issue #112 — origin alone does NOT clear the gate: evolved but undescribed blocks", async () => {
     const res = await checkColdStartGate(
       AI,
-      toolCtxWith({ origin: "ai" }, { siteName: "Caelo", sitePurpose: "An AI-first CMS" }),
+      toolCtxWith(
+        { origin: "ai", description: null },
+        { siteName: "Caelo", sitePurpose: "An AI-first CMS" },
+      ),
+      "add_module_to_page",
+    );
+    expect(res.blocked).toBe(true);
+    const content = res.gateResult?.content ?? "";
+    expect(content).toContain("no recorded design rationale");
+  });
+
+  it("issue #112 — evolved-but-undescribed theme gets set_theme_meta-only guidance (no recompose)", async () => {
+    const res = await checkColdStartGate(
+      AI,
+      toolCtxWith(
+        { origin: "operator", description: null },
+        { siteName: "Caelo", sitePurpose: "An AI-first CMS" },
+      ),
+      "add_module_to_page",
+    );
+    expect(res.blocked).toBe(true);
+    const content = res.gateResult?.content ?? "";
+    expect(content).toContain("set_theme_meta");
+    // The theme already exists and is evolved — the fix is recording
+    // the rationale, never re-creating or re-tokening the theme.
+    expect(content).not.toContain("propose_create_theme");
+    expect(content).not.toContain("set_theme_tokens");
+  });
+
+  it("does not block once identity is captured AND the theme is evolved + described", async () => {
+    const res = await checkColdStartGate(
+      AI,
+      toolCtxWith(
+        { origin: "ai", description: "Indigo primary for a developer-tools brand" },
+        { siteName: "Caelo", sitePurpose: "An AI-first CMS" },
+      ),
       "add_module_to_page",
     );
     expect(res.blocked).toBe(false);

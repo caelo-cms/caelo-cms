@@ -38,7 +38,6 @@ export * from "./theme-importers/shadcn.js";
 export * from "./theme-importers/style-dictionary.js";
 export * from "./theme-importers/tailwind.js";
 export * from "./theme-normalize.js";
-export { getPreset, PRESET_NAMES, type PresetName } from "./theme-presets/index.js";
 export * from "./theme-ramp.js";
 export * from "./theme-render.js";
 export * from "./themes.js";

@@ -8,7 +8,7 @@
  * layer wraps these as `err({kind:"HandlerError", message})`; the AI
  * tool layer returns them in `content`. Inline classes (vs ad-hoc
  * strings) so callers can `instanceof` to surface structured fields
- * (suggestions, available presets) to the UI / system-prompt later.
+ * (suggestions, supported formats) to the UI / system-prompt later.
  */
 
 /**
@@ -57,25 +57,6 @@ export class InvalidColorValue extends Error {
     );
     this.name = "InvalidColorValue";
     this.input = input;
-  }
-}
-
-/**
- * Preset name passed to create_theme is unknown. Message lists every
- * preset shipped this release.
- */
-export class PresetNotFound extends Error {
-  readonly input: string;
-  readonly available: readonly string[];
-  constructor(input: string, available: readonly string[]) {
-    super(
-      `PresetNotFound: '${input}' is not a known preset — pick one of ${available
-        .map((p) => `'${p}'`)
-        .join(", ")}.`,
-    );
-    this.name = "PresetNotFound";
-    this.input = input;
-    this.available = available;
   }
 }
 

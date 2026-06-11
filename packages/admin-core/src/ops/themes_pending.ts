@@ -5,10 +5,12 @@
  *
  * Three gated kinds:
  *
- *   - `create`   — minting a new theme variant. Optional `preset` +
- *                  brand `overrides` (loose names normalized server-side
- *                  at propose time so the preview reflects the resolved
- *                  tokens, not the operator's loose input).
+ *   - `create`   — minting a new theme variant from a caller-authored
+ *                  DTCG token document (issue #112 — no presets; the AI
+ *                  composes the palette from brand context). Optional
+ *                  loose-name `overrides` are normalized server-side at
+ *                  propose time so the preview reflects the resolved
+ *                  tokens, not the caller's loose input.
  *   - `activate` — flipping `is_active=true` to a different row. The
  *                  execute uses one tx + the `themes_one_active` partial
  *                  unique index to make the flip atomic. **DB flip only**
@@ -27,23 +29,23 @@ import {
   deriveOklchPrimaryRamp,
   err,
   extractPrimaryColorSeed,
-  getPreset,
+  flattenTokens,
   InvalidColorValue,
   InvalidSeedColor,
   mergeRampIntoTokens,
   normalizeTokens,
   ok,
   PROPOSAL_STATUSES,
-  type PresetName,
-  PresetNotFound,
   type ProposalStatus,
-  type ThemeDocument,
+  summarizeTokens,
   TokenCategoryMismatch,
   UnknownTokenName,
+  validateThemeTokens,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { boundedThemeDocument } from "../theme-document-input.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -66,18 +68,26 @@ const proposeCreateInput = z
   .object({
     slug: slugSchema,
     displayName: z.string().min(1).max(200),
-    description: z.string().max(1000).optional(),
     /**
-     * Required — every new theme starts from a preset. Operators that
-     * want a blank slate pass "minimal" and overwrite. Forcing a
-     * preset keeps the dogfood install from accumulating half-themed
-     * variants.
+     * Required — the design rationale ("why this palette fits the
+     * brand"). The cold-start gate treats a non-empty description on
+     * the active theme as the signal that it is brand-derived (issue
+     * #112), so a create without rationale is rejected at the boundary.
      */
-    preset: z.enum(["shadcn-default", "minimal", "warm", "playful"]),
+    description: z.string().min(1).max(1000),
     /**
-     * Loose-name brand overrides applied on top of the preset. Server
+     * Required — the complete DTCG token document the caller composed
+     * from brand context (issue #112; no presets exist). The AI authors
+     * every category itself: color, typography, spacing, radius,
+     * shadow, motion. Validated by the shared DTCG schema plus the
+     * size cap from theme-document-input.ts.
+     */
+    tokens: boundedThemeDocument,
+    /**
+     * Loose-name brand overrides applied on top of `tokens`. Server
      * normalizes via theme-normalize.ts; ambiguous inputs surface as
-     * `UnknownTokenName` so the AI's retry lands.
+     * `UnknownTokenName` so the AI's retry lands. `primaryColor`
+     * additionally derives a 50–900 OKLCh ramp.
      */
     overrides: z.record(z.string(), z.unknown()).optional(),
   })
@@ -105,23 +115,9 @@ export const proposeCreateThemeOp = defineOperation({
       });
     }
 
-    // Resolve preset + overrides at propose time so the preview
-    // carries the realised tokens (operator sees what they'd be
-    // approving). Throws → AI-actionable error.
-    let presetTokens: ThemeDocument;
-    try {
-      presetTokens = getPreset(input.preset);
-    } catch (e) {
-      if (e instanceof PresetNotFound) {
-        return err({
-          kind: "HandlerError",
-          operation: "themes.propose_create",
-          message: e.message,
-        });
-      }
-      throw e;
-    }
-
+    // `input.tokens` already passed the DTCG boundary schema — resolve
+    // the overrides at propose time so the preview carries the realised
+    // tokens (the Owner sees what they'd be approving).
     let overridesNormalized: { wrote: readonly string[]; types: Record<string, string> } = {
       wrote: [],
       types: {},
@@ -133,7 +129,7 @@ export const proposeCreateThemeOp = defineOperation({
     // v0.11.1 (issue #76 round-2 opt #3) — surface a structured error
     // when `overrides.primaryColor` is present but not a CSS-color
     // string. Pre-fix, a non-string seed (e.g. `42` from a malformed
-    // AI tool call) was silently dropped: the operator got the preset
+    // AI tool call) was silently dropped: the operator got the document
     // verbatim without the ramp, no warning. Now we look at the raw
     // value BEFORE extractPrimaryColorSeed's typeof narrowing and
     // throw an AI-actionable error per CLAUDE.md §11.
@@ -193,8 +189,10 @@ export const proposeCreateThemeOp = defineOperation({
     const preview: Record<string, unknown> = {
       slug: input.slug,
       displayName: input.displayName,
-      preset: input.preset,
-      presetTokenCount: Object.keys(presetTokens).length,
+      // The Owner approves a document they can read at a glance —
+      // token count + the same category summary the system prompt uses.
+      tokenCount: flattenTokens(input.tokens).length,
+      tokensSummary: summarizeTokens(input.tokens),
       overrideCount: overridesNormalized.wrote.length + (rampSeed !== undefined ? 1 : 0),
       overridePaths: [
         ...overridesNormalized.wrote,
@@ -350,13 +348,38 @@ export const executeThemeProposalOp = defineOperation({
     let resultThemeId: string | null = row.theme_id;
 
     if (row.kind === "create") {
+      // Guard the post-#112 contract before touching the payload: a
+      // pending row queued before the preset removal carries `preset`
+      // and no `tokens`/`description`. Executing it would either throw
+      // a raw ZodError or persist literal "undefined" as the design
+      // rationale (which the cold-start gate reads as "described").
+      // Surface an actionable error instead — the Owner rejects the
+      // stale proposal and the AI re-proposes under the new contract.
+      if (
+        typeof payload.tokens !== "object" ||
+        payload.tokens === null ||
+        typeof payload.description !== "string" ||
+        payload.description.trim().length === 0
+      ) {
+        return err({
+          kind: "HandlerError",
+          operation: "themes.execute_proposal",
+          message:
+            "this create proposal predates the AI-composed theme contract (issue #112) — it has no " +
+            "tokens document and/or no description. Reject it at /security/themes/pending and " +
+            "re-propose via themes.propose_create.",
+        });
+      }
       const slug = String(payload.slug);
       const displayName = String(payload.displayName);
-      const description = (payload.description as string | undefined) ?? null;
-      const presetName = String(payload.preset) as PresetName;
+      const description = payload.description;
       const overrides = (payload.overrides as Record<string, unknown> | undefined) ?? {};
 
-      let tokens = getPreset(presetName);
+      // Re-validate the persisted document at execute time — the
+      // payload jsonb sat in the queue between propose and execute and
+      // is not trusted (same posture as the overrides re-normalize
+      // below). Throws ZodError → fail loudly per CLAUDE.md §2.
+      let tokens = validateThemeTokens(payload.tokens);
       // v0.11.1 (issue #76) — same primaryColor-then-rest split as
       // propose-time, applied to the actual write. If the operator
       // also supplied explicit `color.primary.<stop>` paths in
@@ -634,6 +657,11 @@ async function queueProposal(
   const payloadHash = await hashProposalPayload(payload);
   const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
   let rows: { id: string }[];
+  // The double cast (::text::jsonb) matters: a bare ::jsonb on a string
+  // parameter stores the payload as a jsonb *string* scalar (issue #112
+  // step-13 finding), which breaks `payload->>'key'` reads and renders
+  // the Owner queue's preview as an escaped blob. text→jsonb parses it
+  // into a real object. The execute path tolerates legacy string rows.
   try {
     rows = (await tx.execute(sql`
       INSERT INTO theme_pending_actions
@@ -642,8 +670,8 @@ async function queueProposal(
         ${kind},
         ${ctx.actorId}::uuid,
         ${themeId === null ? null : sql`${themeId}::uuid`},
-        ${JSON.stringify(payload)}::jsonb,
-        ${JSON.stringify(preview)}::jsonb,
+        ${JSON.stringify(payload)}::text::jsonb,
+        ${JSON.stringify(preview)}::text::jsonb,
         'pending',
         ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
         ${payloadHash}

@@ -43,7 +43,7 @@
     onTokensChange,
   }: Props = $props();
 
-  // Canonical color slot list. Mirrors the shadcn-default preset's
+  // Canonical color slot list. Mirrors the seeded default theme's
   // color group + the optional semantic warning/success names.
   const COLOR_SLOTS = [
     "background",

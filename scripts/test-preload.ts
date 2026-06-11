@@ -93,7 +93,7 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_D
  * the wrong layer to do that at. New entries here only when a NEW
  * seed-bearing table lands in a migration.
  */
-const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
+export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "__drizzle_migrations",
   "actors",
   "ai_pricing",
@@ -114,6 +114,14 @@ const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "telemetry_settings",
   "template_blocks",
   "templates",
+  // Seed-bearing since 0097/0099 (the `site-default` row + its tokens).
+  // Truncating it left dev installs with NO active theme: the themes UI
+  // showed an empty state, POST_CHAT_SEED's fast-forward UPDATE matched
+  // no row, and the cold-start gate fired on every mock-AI spec (#112).
+  // Tests that mutate themes wipe their own slug-prefixed rows and
+  // restore the active flag themselves (see
+  // themes-pending.integration.test.ts).
+  "themes",
 ]);
 
 /**
@@ -122,14 +130,29 @@ const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
  * pool can read its own DB; preserve it so those tests don't false-fail
  * after a reset.
  */
-const PUBLIC_PRESERVE: ReadonlySet<string> = new Set(["__drizzle_migrations", "rls_sentinel"]);
+export const PUBLIC_PRESERVE: ReadonlySet<string> = new Set([
+  "__drizzle_migrations",
+  "rls_sentinel",
+]);
 
 /**
- * `actors.plugin_id` has `ON DELETE SET NULL`. TRUNCATE plugins CASCADE
- * would cascade *into* actors (clearing the system-actor seed); plain
- * DELETE respects the SET NULL rule and preserves the seed row.
+ * Tables whose churn rows must go, but whose TRUNCATE ... CASCADE would
+ * wipe a PRESERVE table that references them — CASCADE truncates every
+ * referencing table regardless of the allowlist, while plain DELETE
+ * honours the FK's ON DELETE action:
+ *
+ *   - `plugins`: `actors.plugin_id` is ON DELETE SET NULL; CASCADE
+ *     would clear the system-actor seed.
+ *   - `media_assets` (#112): the seeded `themes` row's asset slots
+ *     (`logo_media_id` etc.) are ON DELETE SET NULL; CASCADE truncated
+ *     `themes` and left installs with no active theme (empty themes UI,
+ *     cold-start gate firing on every mock-AI spec).
+ *
+ * These DELETEs run AFTER the truncate so plain NO ACTION references
+ * from churn tables (e.g. `pages_seo.og_image_asset_id`) are already
+ * gone and can't block the DELETE.
  */
-const DELETE_NOT_TRUNCATE: ReadonlySet<string> = new Set(["plugins"]);
+export const DELETE_NOT_TRUNCATE: ReadonlySet<string> = new Set(["plugins", "media_assets"]);
 
 async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promise<void> {
   // The reset runs one `.begin()` (a single connection) plus a table
@@ -160,18 +183,20 @@ async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promis
       // var defensively.
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
 
-      // DELETE first — clears `plugins` rows while letting
-      // `actors.plugin_id` SET NULL preserve the system-actor seed.
-      for (const t of deleteTargets) {
-        await tx.unsafe(`DELETE FROM "${t}"`);
-      }
-
-      // TRUNCATE everything else in one statement. CASCADE propagates
-      // only within the truncate set; the PRESERVE list is the
-      // dependency root, so no cascade can reach a seeded table.
+      // TRUNCATE the churn set in one statement. CASCADE propagates to
+      // referencing tables, which is why any table a PRESERVE table
+      // references must sit in DELETE_NOT_TRUNCATE instead — see its
+      // doc comment.
       if (truncateTargets.length > 0) {
         const quoted = truncateTargets.map((t) => `"${t}"`).join(", ");
         await tx.unsafe(`TRUNCATE TABLE ${quoted} RESTART IDENTITY CASCADE`);
+      }
+
+      // DELETE after the truncate: churn rows referencing these tables
+      // are already gone, and the FKs' ON DELETE SET NULL keeps the
+      // seeded rows in `actors` / `themes` alive.
+      for (const t of deleteTargets) {
+        await tx.unsafe(`DELETE FROM "${t}"`);
       }
     });
   } finally {

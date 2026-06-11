@@ -160,6 +160,13 @@ export const SETUP_SCRIPT = `
  *
  * Idempotent via COALESCE + WHERE origin='seed'. Re-running never
  * overwrites operator-customised state.
+ *
+ * #112 self-heal: if NO active theme exists (the table was emptied —
+ * e.g. by a pre-fix test-preload truncation, or a hand-wiped dev DB),
+ * re-create the post-chat state directly: an active operator-origin
+ * theme with a described indigo document. Inline jsonb literals, not
+ * parameters — Bun.SQL string params into jsonb columns double-encode
+ * (stored as a JSON string), which breaks jsonb_set and ->> reads.
  */
 export const POST_CHAT_SEED_SCRIPT = `
   import { SQL } from "bun";
@@ -172,6 +179,57 @@ export const POST_CHAT_SEED_SCRIPT = `
           site_purpose = COALESCE(site_purpose,
             'A content management system built around an AI co-editor. Modern, developer-focused, trustworthy.')
       WHERE id = 1
+    \`;
+    await tx.unsafe(\`
+      INSERT INTO themes (slug, display_name, description, origin, is_active, tokens)
+      SELECT 'site-default', 'Caelo',
+             'Indigo primary chosen during setup to signal a modern, trustworthy AI-first product for developers.',
+             'operator', true,
+             '{
+               "color": {
+                 "background": {"$type": "color", "$value": "#ffffff"},
+                 "foreground": {"$type": "color", "$value": "#0a0a0a"},
+                 "primary": {"$type": "color", "$value": "#4f46e5"},
+                 "primary-foreground": {"$type": "color", "$value": "#eef2ff"},
+                 "secondary": {"$type": "color", "$value": "#f5f5f5"},
+                 "secondary-foreground": {"$type": "color", "$value": "#171717"},
+                 "accent": {"$type": "color", "$value": "#f5f5f5"},
+                 "accent-foreground": {"$type": "color", "$value": "#171717"},
+                 "muted": {"$type": "color", "$value": "#f5f5f5"},
+                 "muted-foreground": {"$type": "color", "$value": "#737373"},
+                 "card": {"$type": "color", "$value": "#ffffff"},
+                 "card-foreground": {"$type": "color", "$value": "#0a0a0a"},
+                 "border": {"$type": "color", "$value": "#e5e5e5"},
+                 "ring": {"$type": "color", "$value": "#4f46e5"},
+                 "destructive": {"$type": "color", "$value": "#dc2626"},
+                 "destructive-foreground": {"$type": "color", "$value": "#fafafa"}
+               },
+               "typography": {
+                 "body": {"$type": "typography", "$value": {"fontFamily": "system-ui, sans-serif", "fontSize": "1rem", "fontWeight": 400, "lineHeight": 1.5}},
+                 "heading": {"$type": "typography", "$value": {"fontFamily": "system-ui, sans-serif", "fontSize": "1.875rem", "fontWeight": 700, "lineHeight": 1.2}},
+                 "mono": {"$type": "typography", "$value": {"fontFamily": "ui-monospace, monospace", "fontSize": "0.875rem", "fontWeight": 400, "lineHeight": 1.5}}
+               },
+               "spacing": {
+                 "xs": {"$type": "dimension", "$value": "0.25rem"},
+                 "sm": {"$type": "dimension", "$value": "0.5rem"},
+                 "md": {"$type": "dimension", "$value": "1rem"},
+                 "lg": {"$type": "dimension", "$value": "1.5rem"},
+                 "xl": {"$type": "dimension", "$value": "2rem"},
+                 "2xl": {"$type": "dimension", "$value": "3rem"}
+               },
+               "radius": {
+                 "sm": {"$type": "dimension", "$value": "0.25rem"},
+                 "md": {"$type": "dimension", "$value": "0.5rem"},
+                 "lg": {"$type": "dimension", "$value": "0.75rem"}
+               }
+             }'::jsonb
+      WHERE NOT EXISTS (SELECT 1 FROM themes WHERE is_active = true)
+      ON CONFLICT (slug) DO NOTHING
+    \`);
+    await tx\`
+      UPDATE themes SET is_active = true
+      WHERE slug = 'site-default'
+        AND NOT EXISTS (SELECT 1 FROM themes WHERE is_active = true)
     \`;
     await tx\`
       UPDATE themes
