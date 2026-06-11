@@ -309,6 +309,42 @@ describe("themes.propose_create — AI-composed document (issue #112)", () => {
     expect(r.error.kind).toBe("ActorScopeRejected");
   });
 
+  it("legacy pre-#112 pending payload (preset, no tokens) gets an actionable execute error", async () => {
+    // Simulate a pending row queued before the preset removal: payload
+    // carries `preset` and no tokens/description. Inserted directly —
+    // the current propose op can no longer produce this shape.
+    const proposalId = await inspect(async (tx) => {
+      const rows = await tx`
+        INSERT INTO theme_pending_actions (kind, proposed_by, payload, preview, status, payload_hash)
+        VALUES ('create', ${AI.actorId}::uuid,
+                ${'{"slug": "v112pe-legacy", "displayName": "Legacy preset proposal", "preset": "warm"}'}::text::jsonb,
+                ${'{"preset": "warm"}'}::text::jsonb,
+                'pending', ${"v112pe-legacy-hash"})
+        RETURNING id::text AS id
+      `;
+      return (rows[0] as { id: string }).id;
+    });
+
+    const r = await execute(registry, adapter, SYSTEM, "themes.execute_proposal", { proposalId });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    // Actionable per CLAUDE.md §11 — names the fix, doesn't throw raw Zod,
+    // and never persists "undefined" as a description the gate would trust.
+    expect(JSON.stringify(r.error)).toContain("predates the AI-composed theme contract");
+
+    const proposal = await inspect(async (tx) => {
+      const rows =
+        await tx`SELECT status FROM theme_pending_actions WHERE id = ${proposalId}::uuid`;
+      return (rows[0] as { status: string }).status;
+    });
+    expect(proposal).toBe("pending");
+    const themeCount = await inspect(async (tx) => {
+      const rows = await tx`SELECT count(*)::int AS n FROM themes WHERE slug = ${"v112pe-legacy"}`;
+      return (rows[0] as { n: number }).n;
+    });
+    expect(themeCount).toBe(0);
+  });
+
   it("duplicate pending propose (same payload) is rejected at the DB layer", async () => {
     const slug = `${TEST_TAG}-dup`;
     await proposeCreate(slug);

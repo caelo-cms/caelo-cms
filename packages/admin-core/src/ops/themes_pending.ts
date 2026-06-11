@@ -348,9 +348,31 @@ export const executeThemeProposalOp = defineOperation({
     let resultThemeId: string | null = row.theme_id;
 
     if (row.kind === "create") {
+      // Guard the post-#112 contract before touching the payload: a
+      // pending row queued before the preset removal carries `preset`
+      // and no `tokens`/`description`. Executing it would either throw
+      // a raw ZodError or persist literal "undefined" as the design
+      // rationale (which the cold-start gate reads as "described").
+      // Surface an actionable error instead — the Owner rejects the
+      // stale proposal and the AI re-proposes under the new contract.
+      if (
+        typeof payload.tokens !== "object" ||
+        payload.tokens === null ||
+        typeof payload.description !== "string" ||
+        payload.description.trim().length === 0
+      ) {
+        return err({
+          kind: "HandlerError",
+          operation: "themes.execute_proposal",
+          message:
+            "this create proposal predates the AI-composed theme contract (issue #112) — it has no " +
+            "tokens document and/or no description. Reject it at /security/themes/pending and " +
+            "re-propose via themes.propose_create.",
+        });
+      }
       const slug = String(payload.slug);
       const displayName = String(payload.displayName);
-      const description = String(payload.description);
+      const description = payload.description;
       const overrides = (payload.overrides as Record<string, unknown> | undefined) ?? {};
 
       // Re-validate the persisted document at execute time — the
