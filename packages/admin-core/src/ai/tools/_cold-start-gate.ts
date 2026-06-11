@@ -11,7 +11,8 @@
  *
  * The gate enforces the order. When the AI calls any module-creation
  * tool on an install that's still in cold-start state (no site
- * identity captured AND theme is still seed-origin), the gate returns
+ * identity captured, or no brand-derived described theme active), the
+ * gate returns
  * a structured AI-actionable error (per CLAUDE.md §11) telling the AI
  * what to call BEFORE retrying. Without the gate, the AI prioritises
  * the user's concrete page-build request over the upfront setup
@@ -25,10 +26,14 @@
  * directly may legitimately want a blank install, and (2) system
  * callers (migrations, scripts) shouldn't be blocked.
  *
- * Idempotent: the gate clears the moment either condition is no
- * longer met (identity captured OR theme origin flipped off `seed`),
- * so once the AI calls `set_site_identity` + `set_theme_tokens`, the
- * retry sails through.
+ * Idempotent: the gate clears the moment both conditions are met —
+ * identity captured AND a brand-derived theme is active. "Brand-
+ * derived" (issue #112) means `origin != 'seed'` AND a non-empty
+ * `description` (the recorded design rationale): origin alone is not
+ * enough, because flipping it was previously satisfiable by minting a
+ * grayscale preset and stopping. Once the AI calls
+ * `set_site_identity` + composes/describes the theme, the retry sails
+ * through.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -46,8 +51,10 @@ export interface ColdStartCheckResult {
  * Detect cold-start state and return a gate result the caller can
  * forward directly. Returns `{ blocked: false }` when:
  * - the actor isn't AI (humans + system bypass),
- * - identity has been captured (siteName OR sitePurpose non-empty),
- * - the active theme's origin is no longer `seed`,
+ * - identity has been captured (siteName OR sitePurpose non-empty)
+ *   AND the active theme is brand-derived (`origin != 'seed'` AND a
+ *   non-empty `description` recording the design rationale — issue
+ *   #112: origin alone cleared the gate for grayscale presets),
  * - the state lookups themselves fail (don't block on infra errors;
  *   the underlying tool will surface them).
  *
@@ -78,7 +85,7 @@ export async function checkColdStartGate(
   ).defaults;
   const theme = (
     themeCheck.value as {
-      theme: { origin: "seed" | "ai" | "operator" } | null;
+      theme: { origin: "seed" | "ai" | "operator"; description: string | null } | null;
     }
   ).theme;
 
@@ -94,8 +101,14 @@ export async function checkColdStartGate(
   // two doomed tool calls. issue #106 (step-13 deviation) — branch on it.
   const noActiveTheme = !theme;
   const seedTheme = noActiveTheme || theme.origin === "seed";
+  // issue #112 — a third blocked state: the theme was evolved (origin
+  // flipped) but no design rationale was recorded (reachable via
+  // import_theme / duplicate_theme / a pre-#112 row). The fix is to
+  // record the rationale, NOT to recompose a theme that already exists.
+  const undescribedTheme =
+    !seedTheme && (!theme?.description || theme.description.trim().length === 0);
 
-  if (!noIdentity && !seedTheme) return { blocked: false };
+  if (!noIdentity && !seedTheme && !undescribedTheme) return { blocked: false };
 
   // Compose the AI-actionable instruction as an ordered step list so the
   // numbering stays correct across the identity / theme / no-active-theme
@@ -117,28 +130,43 @@ export async function checkColdStartGate(
     // the single approval click each — do NOT ask the operator to run the
     // propose ops (CLAUDE.md §1A recover-don't-punt).
     steps.push(
-      "`propose_create_theme({name: '<brand name>', preset: 'shadcn-default'})` to mint a theme, " +
-        "then tell the operator to approve it at /security/themes/pending. " +
-        "Pick a brand-fitting primary color to set next: #4f46e5 indigo (SaaS / dev tools), #7c3aed violet (creative / AI), " +
-        "#06b6d4 cyan (data / analytics), #10b981 emerald (sustainability / finance), #f59e0b amber (warm / lifestyle), " +
-        "#0f172a slate (luxury / enterprise).",
+      "`propose_create_theme({slug, displayName, description, tokens})` — COMPOSE the complete DTCG token " +
+        "document yourself from the brand context (site identity, the operator's wording, the industry): a full " +
+        "`color` group (background, foreground, primary, primary-foreground, secondary, accent, muted, card, " +
+        "border, ring, destructive + foregrounds), `typography` (body, heading, mono), `spacing`, `radius`, " +
+        "`shadow`. The primary must carry real chroma — never default to neutral grayscale on a real site. " +
+        "Anchor-hue inspiration: #4f46e5 indigo (SaaS / dev tools), #7c3aed violet (creative / AI), " +
+        "#06b6d4 cyan (data / analytics), #10b981 emerald (sustainability / finance), #f59e0b amber " +
+        "(warm / lifestyle), #0f172a slate (luxury / enterprise) — the hue anchors the palette, the rest of the " +
+        "document is still yours to compose. `description` records WHY the palette fits the brand. " +
+        "Then tell the operator to approve it at /security/themes/pending.",
     );
     steps.push(
       "`propose_activate_theme({themeId: '<id from list_themes>'})` so it becomes the active theme, " +
         "then tell the operator to approve that too. (You propose both; the operator just clicks Approve.)",
     );
-    steps.push(
-      "Once the theme is active: `set_theme_tokens({set: {primaryColor: '<hex>'}})` and " +
-        "`set_theme_meta({description: '<why this palette fits>'})`.",
-    );
   } else if (seedTheme) {
-    // An active seed theme exists — mutate it in place.
+    // An active seed theme exists — evolve it in place into a full
+    // brand palette (not just one color swap).
     steps.push(
-      "`set_theme_tokens({set: {primaryColor: '<hex>'}})`. Pick a brand-fitting color: #4f46e5 indigo (SaaS / dev tools), " +
-        "#7c3aed violet (creative / AI), #06b6d4 cyan (data / analytics), #10b981 emerald (sustainability / finance), " +
-        "#f59e0b amber (warm / lifestyle), #0f172a slate (luxury / enterprise).",
+      "`set_theme_tokens({set: {…}})` — evolve the seed grayscale into a full brand palette in ONE call: " +
+        "primaryColor with real chroma plus the supporting colors that should follow it (accent, ring, " +
+        "secondary where the brand calls for it), and typography if the brand voice suggests one. " +
+        "Anchor-hue inspiration: #4f46e5 indigo (SaaS / dev tools), #7c3aed violet (creative / AI), " +
+        "#06b6d4 cyan (data / analytics), #10b981 emerald (sustainability / finance), #f59e0b amber " +
+        "(warm / lifestyle), #0f172a slate (luxury / enterprise). Never leave a real site on the neutral " +
+        "grayscale seed.",
     );
-    steps.push("`set_theme_meta({description: '<why this palette fits>'})`.");
+    steps.push(
+      "`set_theme_meta({description: '<why this palette fits the brand>'})` — required: the gate clears only " +
+        "once the active theme is non-seed AND described.",
+    );
+  } else if (undescribedTheme) {
+    // The theme is already brand-evolved; only the rationale is missing.
+    steps.push(
+      "`set_theme_meta({description: '<why the current palette fits the brand>'})` — the active theme is " +
+        "already evolved; record the design rationale. Do NOT recompose or re-create the theme.",
+    );
   }
   steps.push(`Retry \`${toolName}\` with the same arguments.`);
 
@@ -155,11 +183,13 @@ export async function checkColdStartGate(
             ? "no active theme yet"
             : seedTheme
               ? "theme is still seed-origin (grayscale)"
-              : "theme has been evolved"
+              : undescribedTheme
+                ? "theme is evolved but has no recorded design rationale (description)"
+                : "theme is brand-derived and described"
         }.\n\n` +
-        `Caelo is chat-first (CLAUDE.md §1A) — the AI captures brand context AND evolves the theme ` +
-        `BEFORE authoring any modules. The page would otherwise render against the seed-grayscale ` +
-        `palette and lose the operator's intent.\n\n` +
+        `Caelo is chat-first (CLAUDE.md §1A) — the AI captures brand context AND composes a ` +
+        `brand-derived theme BEFORE authoring any modules. The page would otherwise render against ` +
+        `the seed-grayscale palette and lose the operator's intent.\n\n` +
         `Required setup (run these in order, then retry your \`${toolName}\` call):\n\n` +
         steps.map((s, i) => `${i + 1}. ${s}`).join("\n") +
         `\n\nIf the operator's prompt is too vague to infer identity, ASK ONE concise question ` +

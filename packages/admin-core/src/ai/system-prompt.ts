@@ -757,16 +757,16 @@ export function formatThemeBlock(
           "",
           "> ⚠️ **This theme is a SEED** — neutral placeholders (primary, accent, etc. are all gray). Pages rendered against it look monochrome.",
           ">",
-          "> **Required action when you create or restyle ANY visitor-facing page** (homepage, landing, product, marketing — anything that isn't pure admin chrome): pick a primary color that fits the site's name / content / industry, and run this BEFORE authoring modules:",
+          "> **Required action when you create or restyle ANY visitor-facing page** (homepage, landing, product, marketing — anything that isn't pure admin chrome): compose a full brand palette from what you know about the site (name, content, industry, the operator's wording) and apply it BEFORE authoring modules:",
           ">",
           "> ```",
-          "> set_theme_tokens({set: {primaryColor: '#4f46e5'}})  // example: indigo",
+          "> set_theme_tokens({set: {primaryColor: '#4f46e5', accentColor: '...', fontHeading: '...'}})  // full palette in ONE call, not just one color",
           "> set_theme_meta({description: 'Indigo primary chosen because ...'})",
           "> ```",
           ">",
-          "> Common picks by feel: `#4f46e5` indigo (SaaS / dev tools), `#7c3aed` violet (creative / AI products), `#06b6d4` cyan (data / analytics), `#10b981` emerald (sustainability / finance), `#f59e0b` amber (warm / lifestyle), `#ef4444` red (urgency / news), `#0f172a` slate (luxury / enterprise). Pick the closest match — don't default to neutral on a real site.",
+          "> Anchor-hue inspiration by feel: `#4f46e5` indigo (SaaS / dev tools), `#7c3aed` violet (creative / AI products), `#06b6d4` cyan (data / analytics), `#10b981` emerald (sustainability / finance), `#f59e0b` amber (warm / lifestyle), `#ef4444` red (urgency / news), `#0f172a` slate (luxury / enterprise). The hue anchors the palette — the supporting colors and typography are yours to compose. Never default to neutral grayscale on a real site.",
           ">",
-          "> After the first `set_theme_tokens` + `set_theme_meta` call, `origin` flips off `seed` and this warning disappears.",
+          "> This warning clears once the theme is non-seed AND has a recorded `description` — `set_theme_meta` is not optional.",
         ].join("\n")
       : "";
   return [
@@ -799,7 +799,7 @@ export function formatThemeBlock(
     "- `import_theme({themeSlug, body})` — auto-detects DTCG / Style Dictionary / Tailwind 4 / shadcn / loose. `export_theme({themeSlug})` — DTCG out.",
     "",
     "Gated (each is a §11.A propose/execute; the AI proposes, an Owner clicks Approve at `/security/themes/pending`):",
-    "- `propose_create_theme({slug, displayName, preset, overrides?})` — preset is one of `shadcn-default` / `minimal` / `warm` / `playful`. `overrides.primaryColor` triggers a 50–900 OKLCh ramp (each stop `_derived: true`).",
+    "- `propose_create_theme({slug, displayName, description, tokens, overrides?})` — YOU compose the complete DTCG `tokens` document from brand context (color + typography + spacing + radius + shadow; primary with real chroma — no presets exist). `description` records why the palette fits. `overrides.primaryColor` triggers a 50–900 OKLCh ramp (each stop `_derived: true`).",
     "- `propose_activate_theme({themeId})` — flips the DB row only. A deploy must be approved separately via `propose_deploy_promote` for the new CSS to ship.",
     "- `propose_delete_theme({themeId})` — inactive themes only.",
   ].join("\n");
