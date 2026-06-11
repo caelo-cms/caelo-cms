@@ -24,7 +24,7 @@ import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared"
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { withAudit } from "./_audit.js";
-import { mapRowToOutput, opError, toIso } from "./_helpers.js";
+import { mapRowToOutput, opError, toIso, toIsoRequired } from "./_helpers.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -70,7 +70,7 @@ function rowToOutput(r: ProposalDbRow): z.infer<typeof proposalRowSchema> {
     payload: row.payload as Record<string, unknown>,
     preview: row.preview as Record<string, unknown>,
     status: row.status,
-    createdAt: toIso(row.created_at) ?? new Date(0).toISOString(),
+    createdAt: toIsoRequired(row.created_at, "deploy_pending_actions.created_at"),
     decidedAt: toIso(row.decided_at),
     decidedBy: row.decided_by,
     decisionReason: row.decision_reason,
@@ -141,7 +141,7 @@ export const proposeDeployPromoteOp = defineOperation({
         sourceRunId: from.run_id,
         pageCount: from.page_count ?? 0,
         fileCount: from.file_count ?? 0,
-        sourceBuildAt: toIso(from.started_at) ?? new Date(0).toISOString(),
+        sourceBuildAt: toIsoRequired(from.started_at, "deploy_runs.started_at"),
       };
       const payloadHash = await hashProposalPayload(input);
       const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);

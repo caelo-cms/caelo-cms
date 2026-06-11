@@ -23,7 +23,7 @@ import { deriveModuleType, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { mapRowToOutput, toIso } from "./_helpers.js";
+import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
@@ -101,7 +101,7 @@ function toRunApi(r: RunDb): z.infer<typeof runRow> {
     pagesSeen: row.pages_seen,
     pagesExtracted: row.pages_extracted,
     errorMessage: row.error_message,
-    createdAt: toIso(row.created_at) ?? new Date(0).toISOString(),
+    createdAt: toIsoRequired(row.created_at, "import_runs.created_at"),
   }));
 }
 

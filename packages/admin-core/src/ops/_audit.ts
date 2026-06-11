@@ -6,12 +6,16 @@ import { recordAuditFromCtx } from "../audit.js";
 
 interface AuditOptions<I, O> {
   operation: string;
+  /** Optional extractor for the audited entity id. `null`/`undefined` are both stored as NULL. */
   entityId?: (input: I, result: Result<O, QueryError>) => string | null | undefined;
+  /** Optional summary extractor. `null`/`undefined` mean "no explicit summary". */
   resultSummary?: (input: I, result: Result<O, QueryError>) => string | null | undefined;
 }
 
 /**
- * Wrap an op handler and emit its audit row in one place.
+ * Wrap an operation handler and emit exactly one audit row from the same
+ * execution context/transaction. The wrapper records success/failure and can
+ * attach optional entity-id + summary metadata via extractors.
  */
 export function withAudit<I, O>(
   handler: OperationHandler<I, O>,

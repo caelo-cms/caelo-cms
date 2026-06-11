@@ -21,7 +21,7 @@ import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { mapRowToOutput, toIso } from "../_helpers.js";
+import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
 
 const jobScope = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("all-stale") }).strict(),
@@ -99,7 +99,7 @@ function jobToOut(r: DbJobRow): z.infer<typeof jobRow> {
         : typeof row.cap_microcents === "string"
           ? Number.parseInt(row.cap_microcents, 10)
           : row.cap_microcents,
-    createdAt: toIso(row.created_at) ?? new Date(0).toISOString(),
+    createdAt: toIsoRequired(row.created_at, "translation_jobs.created_at"),
     finishedAt: toIso(row.finished_at),
     errorSummary: row.error_summary,
   }));

@@ -29,7 +29,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { mapRowToOutput, toIso } from "../_helpers.js";
+import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
 
 // ---------------------------------------------------------------------------
 // Output shapes.
@@ -119,8 +119,8 @@ function rowToOut(r: PluginDb): z.infer<typeof pluginRow> {
     rejectedBy: row.rejected_by,
     rejectedAt: toIso(row.rejected_at),
     rejectionReason: row.rejection_reason,
-    createdAt: toIso(row.created_at) ?? "",
-    updatedAt: toIso(row.updated_at) ?? "",
+    createdAt: toIsoRequired(row.created_at, "plugins.created_at"),
+    updatedAt: toIsoRequired(row.updated_at, "plugins.updated_at"),
   }));
 }
 

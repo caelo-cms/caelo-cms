@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
-import { mapRowToOutput, opError, toIso } from "../_helpers.js";
+import { mapRowToOutput, opError, toIso, toIsoRequired } from "../_helpers.js";
 
 describe("ops helpers", () => {
   it("builds canonical HandlerError objects", () => {
@@ -18,6 +18,7 @@ describe("ops helpers", () => {
     expect(toIso(undefined)).toBeNull();
     expect(toIso("2026-01-01T00:00:00.000Z")).toBe("2026-01-01T00:00:00.000Z");
     expect(toIso(new Date("2026-01-01T00:00:00.000Z"))).toBe("2026-01-01T00:00:00.000Z");
+    expect(() => toIsoRequired(null, "created_at")).toThrow("created_at is required");
   });
 
   it("maps and validates rows against the output schema", () => {
