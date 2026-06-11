@@ -69,7 +69,10 @@ test("create dialog has no preset picker, requires description, queues a proposa
   // Form action returns ok + message; the layout-level toast surfaces it.
   await expect(page.getByText(/Proposal queued/i)).toBeVisible({ timeout: 15_000 });
 
-  // §11.A — the proposal waits for the Owner at the pending queue.
+  // §11.A — the proposal waits for the Owner at the pending queue. The
+  // slug appears in BOTH the preview <pre> and the collapsed
+  // original-payload <pre>, so anchor on the first match — the intent
+  // is "the proposal is visible in the queue", not "exactly one node".
   await page.goto("/security/themes/pending");
-  await expect(page.getByText(SLUG)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(SLUG).first()).toBeVisible({ timeout: 15_000 });
 });
