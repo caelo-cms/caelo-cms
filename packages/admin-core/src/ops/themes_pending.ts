@@ -635,6 +635,11 @@ async function queueProposal(
   const payloadHash = await hashProposalPayload(payload);
   const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
   let rows: { id: string }[];
+  // The double cast (::text::jsonb) matters: a bare ::jsonb on a string
+  // parameter stores the payload as a jsonb *string* scalar (issue #112
+  // step-13 finding), which breaks `payload->>'key'` reads and renders
+  // the Owner queue's preview as an escaped blob. text→jsonb parses it
+  // into a real object. The execute path tolerates legacy string rows.
   try {
     rows = (await tx.execute(sql`
       INSERT INTO theme_pending_actions
@@ -643,8 +648,8 @@ async function queueProposal(
         ${kind},
         ${ctx.actorId}::uuid,
         ${themeId === null ? null : sql`${themeId}::uuid`},
-        ${JSON.stringify(payload)}::jsonb,
-        ${JSON.stringify(preview)}::jsonb,
+        ${JSON.stringify(payload)}::text::jsonb,
+        ${JSON.stringify(preview)}::text::jsonb,
         'pending',
         ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
         ${payloadHash}

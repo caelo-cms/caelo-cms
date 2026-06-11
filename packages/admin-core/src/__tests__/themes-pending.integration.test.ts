@@ -163,19 +163,25 @@ describe("themes.propose_create — AI-composed document (issue #112)", () => {
 
     const row = await inspect(async (tx) => {
       const rows = await tx`
-        SELECT status, payload_hash, payload::text AS payload
+        SELECT status, payload_hash, jsonb_typeof(payload) AS payload_type,
+               payload->>'slug' AS payload_slug
         FROM theme_pending_actions WHERE id = ${proposalId}::uuid
       `;
       return rows[0] as
-        | { status: string; payload_hash: string | null; payload: string }
+        | {
+            status: string;
+            payload_hash: string | null;
+            payload_type: string;
+            payload_slug: string | null;
+          }
         | undefined;
     });
     expect(row?.status).toBe("pending");
     expect(row?.payload_hash).not.toBeNull();
-    // payload may persist as a jsonb object or a double-encoded string
-    // depending on the driver (execute_proposal handles both) — assert
-    // on the text either way.
-    expect(row?.payload).toContain(`${TEST_TAG}-happy`);
+    // Pins the ::text::jsonb write fix: payload is a real jsonb object
+    // (queryable by path), not a double-encoded string scalar.
+    expect(row?.payload_type).toBe("object");
+    expect(row?.payload_slug).toBe(`${TEST_TAG}-happy`);
   });
 
   it("regression pin: a payload carrying `preset` is rejected by the strict schema, no row inserted", async () => {
