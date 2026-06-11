@@ -4,8 +4,8 @@
  * v0.11.0 — AI tool: duplicate_theme. Clones an existing theme's
  * tokens + asset FKs under a fresh slug (inactive). Operators reach
  * for this when they want to spin a brand variant from the current
- * active theme without going through propose_create (no preset
- * resolution needed; the duplicate IS the preset).
+ * active theme without going through propose_create (no token
+ * document to compose; the duplicate IS the starting point).
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -38,7 +38,8 @@ export const duplicateThemeTool: ToolDefinitionWithHandler<DuplicateThemeToolInp
     "verbatim; the new theme has `is_active=false` so activation goes through " +
     "`propose_activate_theme`. Use when the operator wants a brand variant of the current " +
     "theme without enumerating tokens. For brand variants WITHOUT a source theme to clone, " +
-    "use `propose_create_theme({preset, overrides})` instead.",
+    "use `propose_create_theme({slug, displayName, description, tokens})` and compose the " +
+    "token document yourself instead.",
   schema: duplicateThemeToolInput,
   inputSchema: {
     type: "object",

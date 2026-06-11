@@ -106,8 +106,8 @@ export const themeDimensionToken = z
   .strict();
 
 /**
- * Typography composite. Each sub-field is independently optional so
- * presets can ship a heading family without forcing a size, and vice
+ * Typography composite. Each sub-field is independently optional so a
+ * document can ship a heading family without forcing a size, and vice
  * versa. The renderer emits one CSS variable per declared sub-field
  * (`--font-<name>`, `--text-<name>`, `--font-weight-<name>`, ...).
  */
@@ -217,7 +217,7 @@ const anyThemeToken = z.union([
  *
  * Per DTCG spec, any group (including the document root) MAY carry
  * `$description` / `$extensions` metadata alongside its real children.
- * The four shipped presets do this at the root, and Figma / Tokens
+ * AI-composed documents do this at the root, and Figma / Tokens
  * Studio / Style Dictionary exports do it at every level.
  */
 type TokenGroup = Record<string, unknown>;
@@ -262,8 +262,8 @@ const tokenGroupSchema: z.ZodType<TokenGroup> = z.lazy(() =>
  * category vocabulary open — we don't want to reject a future
  * `effect` or `gradient` category that operators bring from Figma.
  * Root-level `$description` / `$extensions` are also tolerated (DTCG
- * presets routinely carry these — e.g. the shipped shadcn-default /
- * minimal / warm / playful JSONs all have `$description`).
+ * documents routinely carry these — the seeded default theme and
+ * Figma/Tokens Studio exports all have a root `$description`).
  */
 export const themeDocument: z.ZodType<TokenGroup> = tokenGroupSchema;
 
@@ -466,7 +466,7 @@ function pluralise(category: string, n: number): string {
  * the right shape to consumers.
  *
  * Both themes.update_tokens (loose-input set path) and
- * themes.propose_create's execute branch (preset + overrides merge)
+ * themes.propose_create's execute branch (tokens + overrides merge)
  * use this same logic — extracted so the dotted-path merge lives in
  * one place and v0.11.1's OKLCH auto-ramp can extend it without
  * forking.
