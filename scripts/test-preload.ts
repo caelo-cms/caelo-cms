@@ -93,7 +93,7 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_D
  * the wrong layer to do that at. New entries here only when a NEW
  * seed-bearing table lands in a migration.
  */
-const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
+export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "__drizzle_migrations",
   "actors",
   "ai_pricing",
@@ -130,7 +130,7 @@ const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
  * pool can read its own DB; preserve it so those tests don't false-fail
  * after a reset.
  */
-const PUBLIC_PRESERVE: ReadonlySet<string> = new Set(["__drizzle_migrations", "rls_sentinel"]);
+export const PUBLIC_PRESERVE: ReadonlySet<string> = new Set(["__drizzle_migrations", "rls_sentinel"]);
 
 /**
  * Tables whose churn rows must go, but whose TRUNCATE ... CASCADE would
@@ -149,7 +149,7 @@ const PUBLIC_PRESERVE: ReadonlySet<string> = new Set(["__drizzle_migrations", "r
  * from churn tables (e.g. `pages_seo.og_image_asset_id`) are already
  * gone and can't block the DELETE.
  */
-const DELETE_NOT_TRUNCATE: ReadonlySet<string> = new Set(["plugins", "media_assets"]);
+export const DELETE_NOT_TRUNCATE: ReadonlySet<string> = new Set(["plugins", "media_assets"]);
 
 async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promise<void> {
   // The reset runs one `.begin()` (a single connection) plus a table
