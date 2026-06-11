@@ -178,9 +178,10 @@
     <DialogHeader>
       <DialogTitle>Create theme</DialogTitle>
       <DialogDescription>
-        Pick a preset and (optionally) a brand primary color. Setting a primary color derives a
-        50–900 OKLCh lightness ramp on the server so you get a full palette out of the box. Approval
-        happens at <code>/security/themes/pending</code>.
+        The new variant starts from the active theme's tokens. Optionally set a brand primary color
+        — the server derives a 50–900 OKLCh lightness ramp from it so you get a full palette out of
+        the box. For a fully new palette, ask the AI in chat instead. Approval happens at
+        <code>/security/themes/pending</code>.
       </DialogDescription>
     </DialogHeader>
     <form method="post" action="?/create" class="grid gap-3 py-2">
@@ -194,19 +195,6 @@
         <Input id="ct-displayName" name="displayName" required placeholder="Brand orange" />
       </div>
       <div class="grid gap-1.5">
-        <Label for="ct-preset">Preset</Label>
-        <select
-          id="ct-preset"
-          name="preset"
-          class="rounded-md border bg-background p-2 text-sm"
-        >
-          <option value="shadcn-default">shadcn-default — neutral palette</option>
-          <option value="minimal">minimal — high-contrast grayscale</option>
-          <option value="warm">warm — earthy palette, serif headings</option>
-          <option value="playful">playful — saturated, large radii</option>
-        </select>
-      </div>
-      <div class="grid gap-1.5">
         <Label for="ct-primaryColor">Primary color (optional)</Label>
         <Input
           id="ct-primaryColor"
@@ -218,8 +206,17 @@
         </p>
       </div>
       <div class="grid gap-1.5">
-        <Label for="ct-description">Description (optional)</Label>
-        <Input id="ct-description" name="description" placeholder="Campaign-page variant" />
+        <Label for="ct-description">Description</Label>
+        <Input
+          id="ct-description"
+          name="description"
+          required
+          placeholder="Why this variant exists / fits the brand"
+        />
+        <p class="text-xs text-muted-foreground">
+          Required — the design rationale is what tells the AI (and the next operator) why this
+          palette looks the way it does.
+        </p>
       </div>
       <DialogFooter>
         <Button type="button" variant="ghost" onclick={() => (createOpen = false)}>Cancel</Button>

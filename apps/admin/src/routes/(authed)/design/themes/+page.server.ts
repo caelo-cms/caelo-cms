@@ -14,8 +14,12 @@
  *     approval queue link).
  *
  * Plus a Create action (form action `create`) that submits to
- * themes.propose_create with optional primaryColor (triggers the
- * v0.11.1 OKLCh ramp on the server).
+ * themes.propose_create. Since issue #112 there are no presets: the
+ * new variant starts from the ACTIVE theme's token document
+ * (duplicate-then-tweak — the §1A-consistent flow for a non-technical
+ * operator; fully new palettes are composed by the AI in chat), with
+ * optional primaryColor (triggers the v0.11.1 OKLCh ramp server-side)
+ * and a required description recording the design rationale.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -53,23 +57,38 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const slug = String(form.get("slug") ?? "").trim();
     const displayName = String(form.get("displayName") ?? "").trim();
-    const preset = String(form.get("preset") ?? "shadcn-default");
     const primaryColor = String(form.get("primaryColor") ?? "").trim();
     const description = String(form.get("description") ?? "").trim();
 
-    if (slug.length === 0 || displayName.length === 0) {
-      return fail(400, { error: "slug and displayName are required" });
+    if (slug.length === 0 || displayName.length === 0 || description.length === 0) {
+      return fail(400, { error: "slug, displayName and description are required" });
     }
 
     const overrides: Record<string, string> = {};
     if (primaryColor.length > 0) overrides.primaryColor = primaryColor;
 
     const { adapter, registry } = getQueryContext();
+    // issue #112 — no presets: the new variant starts from the active
+    // theme's full token document. Fail loudly when there is no active
+    // theme (CLAUDE.md §2 no-fallbacks): a fresh install always has the
+    // seeded active theme, so this only fires on genuinely broken state.
+    const activeR = await execute(registry, adapter, locals.ctx, "themes.get_active", {});
+    if (!activeR.ok) {
+      return fail(400, { error: extractErrorMessage(activeR.error, "could not read active theme") });
+    }
+    const active = (activeR.value as { theme: Theme | null }).theme;
+    if (!active) {
+      return fail(400, {
+        error:
+          "no active theme to base the new variant on — activate a theme first (or let the AI compose one in chat).",
+      });
+    }
+
     const r = await execute(registry, adapter, locals.ctx, "themes.propose_create", {
       slug,
       displayName,
-      preset,
-      ...(description.length > 0 ? { description } : {}),
+      description,
+      tokens: active.tokens,
       ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
     });
     if (!r.ok) {
