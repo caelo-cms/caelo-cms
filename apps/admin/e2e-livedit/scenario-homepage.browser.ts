@@ -34,9 +34,19 @@ import {
   verifyPublishedPageWithVision,
 } from "./helpers.js";
 
+// issue #112 — the prompt states design intent the way a real operator
+// would ("nicely designed", "fitting color scheme", "nice header
+// background"). Run 27357551606 showed the AI can satisfy the
+// cold-start gate (origin flipped + description recorded) while
+// leaving the seed-grayscale primary (#171717) untouched when the
+// operator never mentions design; the on-brand assertion below then
+// rightly fails. Naming the intent here keeps the scenario realistic
+// AND gives the model the brand context §1A expects it to act on.
 const HOMEPAGE_PROMPT =
-  "Create a homepage for an AI-first CMS called Caelo. Include a header module with " +
-  "the Caelo brand and a simple top navigation, a hero section with a headline, " +
+  "Create a homepage for an AI-first CMS called Caelo — a nicely designed page with a " +
+  "fitting color scheme for a trustworthy, developer-focused brand (pick real brand colors; " +
+  "don't leave it black-and-white) and a nice background for the header. Include a header " +
+  "module with the Caelo brand and a simple top navigation, a hero section with a headline, " +
   "a 3-column feature grid below the hero with three features about branched edits, plugin sandbox, " +
   "and snapshot revert, and a footer module with copyright text mentioning Caelo and MPL 2.0.";
 
