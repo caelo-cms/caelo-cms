@@ -23,6 +23,7 @@ import { deriveModuleType, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
@@ -86,24 +87,22 @@ interface RunDb {
 }
 
 function toRunApi(r: RunDb): z.infer<typeof runRow> {
-  const iso = (v: string | Date | null): string | null =>
-    v ? (v instanceof Date ? v.toISOString() : String(v)) : null;
-  return {
-    id: r.id,
-    sourceUrl: r.source_url,
-    depth: r.depth,
-    maxPages: r.max_pages,
-    status: r.status,
-    proposedBy: r.proposed_by,
-    approvedBy: r.approved_by,
-    approvedAt: iso(r.approved_at),
-    startedAt: iso(r.started_at),
-    finishedAt: iso(r.finished_at),
-    pagesSeen: r.pages_seen,
-    pagesExtracted: r.pages_extracted,
-    errorMessage: r.error_message,
-    createdAt: iso(r.created_at) ?? new Date(0).toISOString(),
-  };
+  return mapRowToOutput(r, runRow, (row) => ({
+    id: row.id,
+    sourceUrl: row.source_url,
+    depth: row.depth,
+    maxPages: row.max_pages,
+    status: row.status,
+    proposedBy: row.proposed_by,
+    approvedBy: row.approved_by,
+    approvedAt: toIso(row.approved_at),
+    startedAt: toIso(row.started_at),
+    finishedAt: toIso(row.finished_at),
+    pagesSeen: row.pages_seen,
+    pagesExtracted: row.pages_extracted,
+    errorMessage: row.error_message,
+    createdAt: toIsoRequired(row.created_at, "import_runs.created_at"),
+  }));
 }
 
 export const listImportRunsOp = defineOperation({

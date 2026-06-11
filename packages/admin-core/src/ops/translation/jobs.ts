@@ -21,6 +21,7 @@ import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
 
 const jobScope = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("all-stale") }).strict(),
@@ -80,33 +81,28 @@ interface DbJobRow {
 }
 
 function jobToOut(r: DbJobRow): z.infer<typeof jobRow> {
-  return {
-    id: r.id,
-    initiatedBy: r.initiated_by,
-    scope: typeof r.scope === "string" ? JSON.parse(r.scope) : r.scope,
-    status: r.status,
-    totalUnits: r.total_units,
-    completedUnits: r.completed_units,
-    erroredUnits: r.errored_units,
+  return mapRowToOutput(r, jobRow, (row) => ({
+    id: row.id,
+    initiatedBy: row.initiated_by,
+    scope: typeof row.scope === "string" ? JSON.parse(row.scope) : row.scope,
+    status: row.status,
+    totalUnits: row.total_units,
+    completedUnits: row.completed_units,
+    erroredUnits: row.errored_units,
     costMicrocents:
-      typeof r.cost_microcents === "string"
-        ? Number.parseInt(r.cost_microcents, 10)
-        : r.cost_microcents,
+      typeof row.cost_microcents === "string"
+        ? Number.parseInt(row.cost_microcents, 10)
+        : row.cost_microcents,
     capMicrocents:
-      r.cap_microcents === null
+      row.cap_microcents === null
         ? null
-        : typeof r.cap_microcents === "string"
-          ? Number.parseInt(r.cap_microcents, 10)
-          : r.cap_microcents,
-    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
-    finishedAt:
-      r.finished_at === null
-        ? null
-        : r.finished_at instanceof Date
-          ? r.finished_at.toISOString()
-          : String(r.finished_at),
-    errorSummary: r.error_summary,
-  };
+        : typeof row.cap_microcents === "string"
+          ? Number.parseInt(row.cap_microcents, 10)
+          : row.cap_microcents,
+    createdAt: toIsoRequired(row.created_at, "translation_jobs.created_at"),
+    finishedAt: toIso(row.finished_at),
+    errorSummary: row.error_summary,
+  }));
 }
 
 // ---------------------------------------------------------------------

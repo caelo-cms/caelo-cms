@@ -23,7 +23,8 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { recordAudit } from "../audit.js";
+import { withAudit } from "./_audit.js";
+import { mapRowToOutput, opError, toIso, toIsoRequired } from "./_helpers.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -62,25 +63,19 @@ interface ProposalDbRow {
 }
 
 function rowToOutput(r: ProposalDbRow): z.infer<typeof proposalRowSchema> {
-  const created = r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at);
-  const decided = r.decided_at
-    ? r.decided_at instanceof Date
-      ? r.decided_at.toISOString()
-      : String(r.decided_at)
-    : null;
-  return {
-    id: r.id,
-    kind: r.kind,
-    proposedBy: r.proposed_by,
-    payload: r.payload as Record<string, unknown>,
-    preview: r.preview as Record<string, unknown>,
-    status: r.status,
-    createdAt: created,
-    decidedAt: decided,
-    decidedBy: r.decided_by,
-    decisionReason: r.decision_reason,
-    appliedRunId: r.applied_run_id,
-  };
+  return mapRowToOutput(r, proposalRowSchema, (row) => ({
+    id: row.id,
+    kind: row.kind,
+    proposedBy: row.proposed_by,
+    payload: row.payload as Record<string, unknown>,
+    preview: row.preview as Record<string, unknown>,
+    status: row.status,
+    createdAt: toIsoRequired(row.created_at, "deploy_pending_actions.created_at"),
+    decidedAt: toIso(row.decided_at),
+    decidedBy: row.decided_by,
+    decisionReason: row.decision_reason,
+    appliedRunId: row.applied_run_id,
+  }));
 }
 
 const proposePromoteInput = z
@@ -100,17 +95,14 @@ export const proposeDeployPromoteOp = defineOperation({
     proposalId: z.string(),
     preview: z.record(z.string(), z.unknown()),
   }),
-  handler: async (ctx, input, tx) => {
-    if (input.fromTarget === input.toTarget) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.propose_promote",
-        message: "fromTarget and toTarget must differ",
-      });
-    }
-    // Compute preview: pull the latest succeeded build from fromTarget
-    // so the Owner sees what will be promoted before clicking Approve.
-    const fromRunRows = (await tx.execute(sql`
+  handler: withAudit(
+    async (ctx, input, tx) => {
+      if (input.fromTarget === input.toTarget) {
+        return err(opError("deploy.propose_promote", "fromTarget and toTarget must differ"));
+      }
+      // Compute preview: pull the latest succeeded build from fromTarget
+      // so the Owner sees what will be promoted before clicking Approve.
+      const fromRunRows = (await tx.execute(sql`
       SELECT
         r.id::text          AS run_id,
         r.build_id          AS build_id,
@@ -126,36 +118,36 @@ export const proposeDeployPromoteOp = defineOperation({
       ORDER BY r.started_at DESC
       LIMIT 1
     `)) as unknown as Array<{
-      run_id: string;
-      build_id: string | null;
-      page_count: number | null;
-      file_count: number | null;
-      started_at: string | Date;
-      target_name: string;
-    }>;
-    const from = fromRunRows[0];
-    if (!from?.build_id) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.propose_promote",
-        message: `no succeeded build to promote from "${input.fromTarget}". Run \`deploy.trigger\` for ${input.fromTarget} first.`,
-      });
-    }
-    const preview = {
-      fromTarget: input.fromTarget,
-      toTarget: input.toTarget,
-      sourceBuildId: from.build_id,
-      sourceRunId: from.run_id,
-      pageCount: from.page_count ?? 0,
-      fileCount: from.file_count ?? 0,
-      sourceBuildAt:
-        from.started_at instanceof Date ? from.started_at.toISOString() : String(from.started_at),
-    };
-    const payloadHash = await hashProposalPayload(input);
-    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
-    let rows: { id: string }[];
-    try {
-      rows = (await tx.execute(sql`
+        run_id: string;
+        build_id: string | null;
+        page_count: number | null;
+        file_count: number | null;
+        started_at: string | Date;
+        target_name: string;
+      }>;
+      const from = fromRunRows[0];
+      if (!from?.build_id) {
+        return err(
+          opError(
+            "deploy.propose_promote",
+            `no succeeded build to promote from "${input.fromTarget}". Run \`deploy.trigger\` for ${input.fromTarget} first.`,
+          ),
+        );
+      }
+      const preview = {
+        fromTarget: input.fromTarget,
+        toTarget: input.toTarget,
+        sourceBuildId: from.build_id,
+        sourceRunId: from.run_id,
+        pageCount: from.page_count ?? 0,
+        fileCount: from.file_count ?? 0,
+        sourceBuildAt: toIsoRequired(from.started_at, "deploy_runs.started_at"),
+      };
+      const payloadHash = await hashProposalPayload(input);
+      const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+      let rows: { id: string }[];
+      try {
+        rows = (await tx.execute(sql`
         INSERT INTO deploy_pending_actions
           (kind, proposed_by, payload, preview, status, chat_session_id, payload_hash)
         VALUES (
@@ -169,35 +161,27 @@ export const proposeDeployPromoteOp = defineOperation({
         )
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];
-    } catch (e) {
-      if (isDuplicatePendingError(e)) {
-        return err({
-          kind: "HandlerError",
-          operation: "deploy.propose_promote",
-          message: DUPLICATE_PROPOSAL_MESSAGE,
-        });
+      } catch (e) {
+        if (isDuplicatePendingError(e)) {
+          return err(opError("deploy.propose_promote", DUPLICATE_PROPOSAL_MESSAGE));
+        }
+        throw e;
       }
-      throw e;
-    }
-    const proposalId = rows[0]?.id;
-    if (!proposalId) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.propose_promote",
-        message: "insert returned no id",
-      });
-    }
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
+      const proposalId = rows[0]?.id;
+      if (!proposalId) {
+        return err(opError("deploy.propose_promote", "insert returned no id"));
+      }
+      return ok({ proposalId, preview });
+    },
+    {
       operation: "deploy.propose_promote",
-      input,
-      succeeded: true,
-      entityId: proposalId,
-      resultSummary: `${input.fromTarget} → ${input.toTarget} (build=${from.build_id})`,
-    });
-    return ok({ proposalId, preview });
-  },
+      entityId: (_input, result) => (result.ok ? result.value.proposalId : null),
+      resultSummary: (input, result) =>
+        result.ok
+          ? `${input.fromTarget} → ${input.toTarget} (build=${(result.value.preview.sourceBuildId as string | undefined) ?? "unknown"})`
+          : null,
+    },
+  ),
 });
 
 const proposeRollbackInput = z
@@ -216,9 +200,10 @@ export const proposeDeployRollbackOp = defineOperation({
     proposalId: z.string(),
     preview: z.record(z.string(), z.unknown()),
   }),
-  handler: async (ctx, input, tx) => {
-    // Preview: identify the prior succeeded build that rollback would restore.
-    const rows = (await tx.execute(sql`
+  handler: withAudit(
+    async (ctx, input, tx) => {
+      // Preview: identify the prior succeeded build that rollback would restore.
+      const rows = (await tx.execute(sql`
       SELECT r.id::text AS run_id, r.build_id, r.started_at
       FROM deploy_runs r
       JOIN deploy_targets t ON t.id = r.target_id
@@ -228,37 +213,34 @@ export const proposeDeployRollbackOp = defineOperation({
       ORDER BY r.started_at DESC
       LIMIT 2
     `)) as unknown as Array<{
-      run_id: string;
-      build_id: string | null;
-      started_at: string | Date;
-    }>;
-    if (rows.length < 2) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.propose_rollback",
-        message: `not enough successful builds on "${input.target}" to roll back`,
-      });
-    }
-    const current = rows[0];
-    const prior = rows[1];
-    if (!current?.build_id || !prior?.build_id) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.propose_rollback",
-        message: "succeeded builds missing build_id",
-      });
-    }
-    const preview = {
-      target: input.target,
-      currentBuildId: current.build_id,
-      restoreBuildId: prior.build_id,
-      restoreRunId: prior.run_id,
-    };
-    const payloadHash = await hashProposalPayload(input);
-    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
-    let ins: { id: string }[];
-    try {
-      ins = (await tx.execute(sql`
+        run_id: string;
+        build_id: string | null;
+        started_at: string | Date;
+      }>;
+      if (rows.length < 2) {
+        return err(
+          opError(
+            "deploy.propose_rollback",
+            `not enough successful builds on "${input.target}" to roll back`,
+          ),
+        );
+      }
+      const current = rows[0];
+      const prior = rows[1];
+      if (!current?.build_id || !prior?.build_id) {
+        return err(opError("deploy.propose_rollback", "succeeded builds missing build_id"));
+      }
+      const preview = {
+        target: input.target,
+        currentBuildId: current.build_id,
+        restoreBuildId: prior.build_id,
+        restoreRunId: prior.run_id,
+      };
+      const payloadHash = await hashProposalPayload(input);
+      const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+      let ins: { id: string }[];
+      try {
+        ins = (await tx.execute(sql`
         INSERT INTO deploy_pending_actions
           (kind, proposed_by, payload, preview, status, chat_session_id, payload_hash)
         VALUES (
@@ -272,35 +254,27 @@ export const proposeDeployRollbackOp = defineOperation({
         )
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];
-    } catch (e) {
-      if (isDuplicatePendingError(e)) {
-        return err({
-          kind: "HandlerError",
-          operation: "deploy.propose_rollback",
-          message: DUPLICATE_PROPOSAL_MESSAGE,
-        });
+      } catch (e) {
+        if (isDuplicatePendingError(e)) {
+          return err(opError("deploy.propose_rollback", DUPLICATE_PROPOSAL_MESSAGE));
+        }
+        throw e;
       }
-      throw e;
-    }
-    const proposalId = ins[0]?.id;
-    if (!proposalId) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.propose_rollback",
-        message: "insert returned no id",
-      });
-    }
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
+      const proposalId = ins[0]?.id;
+      if (!proposalId) {
+        return err(opError("deploy.propose_rollback", "insert returned no id"));
+      }
+      return ok({ proposalId, preview });
+    },
+    {
       operation: "deploy.propose_rollback",
-      input,
-      succeeded: true,
-      entityId: proposalId,
-      resultSummary: `${input.target}: ${current.build_id} → ${prior.build_id}`,
-    });
-    return ok({ proposalId, preview });
-  },
+      entityId: (_input, result) => (result.ok ? result.value.proposalId : null),
+      resultSummary: (input, result) =>
+        result.ok
+          ? `${input.target}: ${(result.value.preview.currentBuildId as string | undefined) ?? "unknown"} → ${(result.value.preview.restoreBuildId as string | undefined) ?? "unknown"}`
+          : null,
+    },
+  ),
 });
 
 export const executeDeployProposalOp = defineOperation({
@@ -311,88 +285,81 @@ export const executeDeployProposalOp = defineOperation({
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
   output: z.object({ runId: z.string().nullable() }),
-  handler: async (ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
+  handler: withAudit(
+    async (ctx, input, tx) => {
+      const rows = (await tx.execute(sql`
       SELECT id::text AS id, kind, payload, status
       FROM deploy_pending_actions
       WHERE id = ${input.proposalId}::uuid
       LIMIT 1
     `)) as unknown as Array<{
-      id: string;
-      kind: "promote" | "rollback";
-      payload: unknown;
-      status: string;
-    }>;
-    const row = rows[0];
-    if (!row) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.execute_proposal",
-        message: "proposal not found",
-      });
-    }
-    if (row.status !== "pending") {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.execute_proposal",
-        message: `proposal is already ${row.status}`,
-      });
-    }
-    // Dispatch the underlying op's handler directly with the same tx so
-    // execute + status flip are atomic. The promoteDeploy / rollbackDeploy
-    // handlers expect a system context (their actorScope is human+system);
-    // ctx here is human (the Owner clicking Approve).
-    const payload = parsePayload<Record<string, unknown>>(row.payload);
-    let runId: string | null = null;
-    if (row.kind === "promote") {
-      const r = await promoteDeployOp.handler(
-        ctx,
-        payload as { fromTarget: string; toTarget: string; repoRoot?: string },
-        tx,
-      );
-      if (!r.ok) {
-        return err({
-          kind: "HandlerError",
-          operation: "deploy.execute_proposal",
-          message: `underlying promote failed: ${r.error.kind in r.error && "message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
-        });
+        id: string;
+        kind: "promote" | "rollback";
+        payload: unknown;
+        status: string;
+      }>;
+      const row = rows[0];
+      if (!row) {
+        return err(opError("deploy.execute_proposal", "proposal not found"));
       }
-      runId = (r.value as { toRunId: string }).toRunId;
-    } else if (row.kind === "rollback") {
-      // Rollback's underlying op needs the explicit runId to restore.
-      // The propose-time preview captured `restoreRunId`; pass it
-      // along so the Owner's click reproduces what they previewed.
-      const previewRows = (await tx.execute(sql`
+      if (row.status !== "pending") {
+        return err(opError("deploy.execute_proposal", `proposal is already ${row.status}`));
+      }
+      // Dispatch the underlying op's handler directly with the same tx so
+      // execute + status flip are atomic. The promoteDeploy / rollbackDeploy
+      // handlers expect a system context (their actorScope is human+system);
+      // ctx here is human (the Owner clicking Approve).
+      const payload = parsePayload<Record<string, unknown>>(row.payload);
+      let runId: string | null = null;
+      if (row.kind === "promote") {
+        const r = await promoteDeployOp.handler(
+          ctx,
+          payload as { fromTarget: string; toTarget: string; repoRoot?: string },
+          tx,
+        );
+        if (!r.ok) {
+          return err(
+            opError(
+              "deploy.execute_proposal",
+              `underlying promote failed: ${r.error.kind in r.error && "message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
+            ),
+          );
+        }
+        runId = (r.value as { toRunId: string }).toRunId;
+      } else if (row.kind === "rollback") {
+        // Rollback's underlying op needs the explicit runId to restore.
+        // The propose-time preview captured `restoreRunId`; pass it
+        // along so the Owner's click reproduces what they previewed.
+        const previewRows = (await tx.execute(sql`
         SELECT preview FROM deploy_pending_actions
         WHERE id = ${input.proposalId}::uuid
       `)) as unknown as Array<{ preview: { restoreRunId?: string } }>;
-      const restoreRunId = previewRows[0]?.preview?.restoreRunId;
-      if (!restoreRunId) {
-        return err({
-          kind: "HandlerError",
-          operation: "deploy.execute_proposal",
-          message: "rollback proposal preview missing restoreRunId",
-        });
+        const restoreRunId = previewRows[0]?.preview?.restoreRunId;
+        if (!restoreRunId) {
+          return err(
+            opError("deploy.execute_proposal", "rollback proposal preview missing restoreRunId"),
+          );
+        }
+        const r = await rollbackDeployOp.handler(
+          ctx,
+          {
+            targetName: (payload as { target: string }).target,
+            runId: restoreRunId,
+            ...(payload as { repoRoot?: string }),
+          },
+          tx,
+        );
+        if (!r.ok) {
+          return err(
+            opError(
+              "deploy.execute_proposal",
+              `underlying rollback failed: ${r.error.kind in r.error && "message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
+            ),
+          );
+        }
+        runId = (r.value as { newRunId: string }).newRunId;
       }
-      const r = await rollbackDeployOp.handler(
-        ctx,
-        {
-          targetName: (payload as { target: string }).target,
-          runId: restoreRunId,
-          ...(payload as { repoRoot?: string }),
-        },
-        tx,
-      );
-      if (!r.ok) {
-        return err({
-          kind: "HandlerError",
-          operation: "deploy.execute_proposal",
-          message: `underlying rollback failed: ${r.error.kind in r.error && "message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
-        });
-      }
-      runId = (r.value as { newRunId: string }).newRunId;
-    }
-    await tx.execute(sql`
+      await tx.execute(sql`
       UPDATE deploy_pending_actions
       SET status = 'applied',
           decided_at = now(),
@@ -400,17 +367,15 @@ export const executeDeployProposalOp = defineOperation({
           applied_run_id = ${runId === null ? null : sql`${runId}::uuid`}
       WHERE id = ${input.proposalId}::uuid
     `);
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
+      return ok({ runId });
+    },
+    {
       operation: "deploy.execute_proposal",
-      input,
-      succeeded: true,
-      entityId: input.proposalId,
-      resultSummary: `${row.kind} applied (runId=${runId ?? "(none)"})`,
-    });
-    return ok({ runId });
-  },
+      entityId: (input) => input.proposalId,
+      resultSummary: (_input, result) =>
+        result.ok ? `applied (runId=${result.value.runId ?? "(none)"})` : null,
+    },
+  ),
 });
 
 export const rejectDeployProposalOp = defineOperation({
@@ -424,27 +389,25 @@ export const rejectDeployProposalOp = defineOperation({
     })
     .strict(),
   output: z.object({}),
-  handler: async (ctx, input, tx) => {
-    const r = await tx.execute(sql`
-      UPDATE deploy_pending_actions
-      SET status = 'rejected',
-          decided_at = now(),
-          decided_by = ${ctx.actorId}::uuid,
-          decision_reason = ${input.reason ?? null}
-      WHERE id = ${input.proposalId}::uuid AND status = 'pending'
-    `);
-    void r;
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
+  handler: withAudit(
+    async (ctx, input, tx) => {
+      const r = await tx.execute(sql`
+        UPDATE deploy_pending_actions
+        SET status = 'rejected',
+            decided_at = now(),
+            decided_by = ${ctx.actorId}::uuid,
+            decision_reason = ${input.reason ?? null}
+        WHERE id = ${input.proposalId}::uuid AND status = 'pending'
+      `);
+      void r;
+      return ok({});
+    },
+    {
       operation: "deploy.reject_proposal",
-      input,
-      succeeded: true,
-      entityId: input.proposalId,
-      resultSummary: input.reason ?? "(no reason)",
-    });
-    return ok({});
-  },
+      entityId: (input) => input.proposalId,
+      resultSummary: (input) => input.reason ?? "(no reason)",
+    },
+  ),
 });
 
 export const listPendingDeployProposalsOp = defineOperation({

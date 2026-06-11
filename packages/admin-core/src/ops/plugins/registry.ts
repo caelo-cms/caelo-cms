@@ -29,6 +29,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
 
 // ---------------------------------------------------------------------------
 // Output shapes.
@@ -98,34 +99,29 @@ interface PluginDb {
 }
 
 function rowToOut(r: PluginDb): z.infer<typeof pluginRow> {
-  return {
-    id: r.id,
-    slug: r.slug,
-    version: r.version,
-    tier: r.tier === 1 ? 1 : 2,
-    status: r.status as z.infer<typeof pluginStatus>,
+  return mapRowToOutput(r, pluginRow, (row) => ({
+    id: row.id,
+    slug: row.slug,
+    version: row.version,
+    tier: row.tier === 1 ? 1 : 2,
+    status: row.status as z.infer<typeof pluginStatus>,
     manifestJson:
-      typeof r.manifest_json === "string" ? JSON.parse(r.manifest_json) : r.manifest_json,
-    sourceCode: r.source_code,
-    sourcePath: r.source_path,
-    validationErrors: parseValidationErrors(r.validation_errors),
-    manifestSignature: r.manifest_signature,
-    submittedBy: r.submitted_by,
-    activatedBy: r.activated_by,
-    activatedAt: tsToIso(r.activated_at),
-    disabledBy: r.disabled_by,
-    disabledAt: tsToIso(r.disabled_at),
-    rejectedBy: r.rejected_by,
-    rejectedAt: tsToIso(r.rejected_at),
-    rejectionReason: r.rejection_reason,
-    createdAt: tsToIso(r.created_at) ?? "",
-    updatedAt: tsToIso(r.updated_at) ?? "",
-  };
-}
-
-function tsToIso(v: string | Date | null | undefined): string | null {
-  if (v === null || v === undefined) return null;
-  return v instanceof Date ? v.toISOString() : String(v);
+      typeof row.manifest_json === "string" ? JSON.parse(row.manifest_json) : row.manifest_json,
+    sourceCode: row.source_code,
+    sourcePath: row.source_path,
+    validationErrors: parseValidationErrors(row.validation_errors),
+    manifestSignature: row.manifest_signature,
+    submittedBy: row.submitted_by,
+    activatedBy: row.activated_by,
+    activatedAt: toIso(row.activated_at),
+    disabledBy: row.disabled_by,
+    disabledAt: toIso(row.disabled_at),
+    rejectedBy: row.rejected_by,
+    rejectedAt: toIso(row.rejected_at),
+    rejectionReason: row.rejection_reason,
+    createdAt: toIsoRequired(row.created_at, "plugins.created_at"),
+    updatedAt: toIsoRequired(row.updated_at, "plugins.updated_at"),
+  }));
 }
 
 function parseValidationErrors(v: unknown): z.infer<typeof validationFailureRow>[] {
