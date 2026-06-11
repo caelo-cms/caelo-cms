@@ -74,7 +74,9 @@ export const actions: Actions = {
     // seeded active theme, so this only fires on genuinely broken state.
     const activeR = await execute(registry, adapter, locals.ctx, "themes.get_active", {});
     if (!activeR.ok) {
-      return fail(400, { error: extractErrorMessage(activeR.error, "could not read active theme") });
+      return fail(400, {
+        error: extractErrorMessage(activeR.error, "could not read active theme"),
+      });
     }
     const active = (activeR.value as { theme: Theme | null }).theme;
     if (!active) {

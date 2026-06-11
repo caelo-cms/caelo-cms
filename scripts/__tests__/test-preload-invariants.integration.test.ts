@@ -20,11 +20,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { SQL } from "bun";
-import {
-  ADMIN_PRESERVE,
-  DELETE_NOT_TRUNCATE,
-  PUBLIC_PRESERVE,
-} from "../test-preload.js";
+import { ADMIN_PRESERVE, DELETE_NOT_TRUNCATE, PUBLIC_PRESERVE } from "../test-preload.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;

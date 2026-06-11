@@ -130,7 +130,10 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
  * pool can read its own DB; preserve it so those tests don't false-fail
  * after a reset.
  */
-export const PUBLIC_PRESERVE: ReadonlySet<string> = new Set(["__drizzle_migrations", "rls_sentinel"]);
+export const PUBLIC_PRESERVE: ReadonlySet<string> = new Set([
+  "__drizzle_migrations",
+  "rls_sentinel",
+]);
 
 /**
  * Tables whose churn rows must go, but whose TRUNCATE ... CASCADE would

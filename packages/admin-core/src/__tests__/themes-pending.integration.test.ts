@@ -186,7 +186,8 @@ describe("themes.propose_create — AI-composed document (issue #112)", () => {
 
   it("regression pin: a payload carrying `preset` is rejected by the strict schema, no row inserted", async () => {
     const countBefore = await inspect(async (tx) => {
-      const rows = await tx`SELECT count(*)::int AS n FROM theme_pending_actions WHERE proposed_by = ${AI.actorId}::uuid`;
+      const rows =
+        await tx`SELECT count(*)::int AS n FROM theme_pending_actions WHERE proposed_by = ${AI.actorId}::uuid`;
       return (rows[0] as { n: number }).n;
     });
 
@@ -202,7 +203,8 @@ describe("themes.propose_create — AI-composed document (issue #112)", () => {
     expect(r.error.kind).toBe("ValidationFailed");
 
     const countAfter = await inspect(async (tx) => {
-      const rows = await tx`SELECT count(*)::int AS n FROM theme_pending_actions WHERE proposed_by = ${AI.actorId}::uuid`;
+      const rows =
+        await tx`SELECT count(*)::int AS n FROM theme_pending_actions WHERE proposed_by = ${AI.actorId}::uuid`;
       return (rows[0] as { n: number }).n;
     });
     expect(countAfter).toBe(countBefore);

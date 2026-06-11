@@ -207,7 +207,9 @@ function assertChromaticPrimary(value: string): void {
   const SEED_GRAYS = new Set(["#171717", "#000000", "#0a0a0a"]);
   const normalized = value.trim().toLowerCase();
   if (SEED_GRAYS.has(normalized)) {
-    throw new Error(`active theme primary ${value} is a seed grayscale value — issue #112 regression`);
+    throw new Error(
+      `active theme primary ${value} is a seed grayscale value — issue #112 regression`,
+    );
   }
   const hex = /^#([0-9a-f]{6})$/.exec(normalized);
   if (hex?.[1] !== undefined) {
