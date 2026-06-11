@@ -190,14 +190,19 @@ describe("v0.10.22 — system-prompt primer references the unified tools", () =>
     // wording is explicit: "Required action when you create or restyle
     // ANY visitor-facing page".
     expect(block).toContain("Required action");
-    expect(block).toContain("primary color");
+    // issue #112 — the notice instructs composing a full brand palette,
+    // not a single color swap, and never offers a preset to pick (the
+    // only "preset" mention left is the "no presets exist" reminder).
+    expect(block).toContain("full brand palette");
+    expect(block.toLowerCase()).not.toContain("shadcn-default");
+    expect(block.toLowerCase()).not.toContain("preset:");
     // A concrete `set_theme_tokens` example with a real hex must render
     // so the AI sees the exact shape to call.
     expect(block).toContain("set_theme_tokens({set: {primaryColor:");
     expect(block).toContain("#4f46e5");
-    // Palette-by-feel guidance helps the AI pick when the brand isn't
+    // Anchor-hue guidance helps the AI pick when the brand isn't
     // overtly color-coded.
-    expect(block).toContain("Common picks");
+    expect(block).toContain("Anchor-hue inspiration");
     expect(block).toContain("set_theme_meta");
     // The module-CSS-uses-vars primer always renders.
     expect(block).toContain("var(--color-primary)");
