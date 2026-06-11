@@ -26,6 +26,7 @@
  *   ai_memory.set                    — site-memory-propose.ts
  */
 
+import { themeDocument } from "@caelo-cms/shared";
 import { z } from "zod";
 import { makeProposeTool } from "./_make-propose-tool.js";
 
@@ -655,15 +656,19 @@ export const proposeCreateThemeTool = makeProposeTool({
   opName: "themes.propose_create",
   pendingQueuePath: "/security/themes/pending",
   when:
-    "Create a new theme. Pick a preset (`shadcn-default`, `minimal`, `warm`, `playful`) " +
-    "and override the keys you care about with brand-friendly names: " +
-    "`{primaryColor: '#ff6600', fontHeading: 'Inter', radius: '0.75rem'}`. " +
-    "Server fills in every other category from the preset. Returns the canonical token " +
-    "paths it wrote so you can edit specific tokens afterward. " +
-    "If `overrides.primaryColor` is set, the server derives a 50–900 OKLCh lightness ramp " +
-    "from it (each stop annotated `_derived: true`); operator can override any individual " +
-    "stop via `overrides[\"color.primary.500\"] = '#…'` etc. — explicit stops win over " +
-    "derived ones.",
+    "Create a new theme by COMPOSING the complete DTCG token document yourself from the " +
+    "brand context you already have (site identity, the operator's wording, the industry, " +
+    "the content you're about to write). There are no presets — you author every category: " +
+    "`tokens: {color: {background, foreground, primary, primary-foreground, secondary, " +
+    "secondary-foreground, accent, accent-foreground, muted, muted-foreground, card, " +
+    "card-foreground, border, ring, destructive, destructive-foreground}, typography: " +
+    "{body, heading, mono}, spacing: {xs…2xl}, radius: {sm…lg}, shadow, motion}` — each " +
+    "leaf is `{$type, $value}` (e.g. `{$type: 'color', $value: '#4f46e5'}`). Pick a primary " +
+    "with real chroma that fits the brand; do NOT default to neutral/grayscale on a real " +
+    "site. `description` is required — record WHY this palette fits (the cold-start gate " +
+    "reads it). If `overrides.primaryColor` is set, the server derives a 50–900 OKLCh " +
+    "lightness ramp from it (each stop annotated `_derived: true`); explicit stops via " +
+    "`overrides[\"color.primary.500\"] = '#…'` win over derived ones.",
   schema: z
     .object({
       slug: z
@@ -672,25 +677,27 @@ export const proposeCreateThemeTool = makeProposeTool({
         .max(120)
         .regex(/^[a-z0-9][a-z0-9-]*$/),
       displayName: z.string().min(1).max(200),
-      description: z.string().max(1000).optional(),
-      preset: z.enum(["shadcn-default", "minimal", "warm", "playful"]),
+      description: z.string().min(1).max(1000),
+      tokens: themeDocument,
       overrides: z.record(z.string(), z.unknown()).optional(),
     })
     .strict(),
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["slug", "displayName", "preset"],
+    required: ["slug", "displayName", "description", "tokens"],
     properties: {
       slug: { type: "string", minLength: 1, maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
-      description: { type: "string", maxLength: 1000 },
-      preset: { type: "string", enum: ["shadcn-default", "minimal", "warm", "playful"] },
+      description: { type: "string", minLength: 1, maxLength: 1000 },
+      // Full DTCG can't be expressed in provider JSON Schema — the Zod
+      // boundary (shared `themeDocument`) does the real validation.
+      tokens: { type: "object", additionalProperties: true },
       overrides: { type: "object", additionalProperties: true },
     },
   },
   summarize: (input) =>
-    `create theme "${input.displayName}" (${input.slug}) from preset "${input.preset}"`,
+    `create theme "${input.displayName}" (${input.slug}) from an AI-composed token document`,
 });
 
 export const proposeActivateThemeTool = makeProposeTool({
