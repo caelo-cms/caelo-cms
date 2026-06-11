@@ -71,6 +71,16 @@ describe("propose_create_theme tool boundary (issue #112)", () => {
     ).toBe(true);
   });
 
+  it("rejects a token document over the 256 KB cap with an actionable message", () => {
+    const r = proposeCreateThemeTool.schema.safeParse({
+      ...VALID_INPUT,
+      tokens: { ...BRAND_DOC, $description: "x".repeat(300_000) },
+    });
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error("unreachable");
+    expect(JSON.stringify(r.error.issues)).toContain("max 256 KB");
+  });
+
   it("provider-facing inputSchema requires slug/displayName/description/tokens and has no preset", () => {
     const inputSchema = proposeCreateThemeTool.inputSchema as {
       required: string[];

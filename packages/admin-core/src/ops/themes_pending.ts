@@ -38,7 +38,6 @@ import {
   PROPOSAL_STATUSES,
   type ProposalStatus,
   summarizeTokens,
-  themeDocument,
   TokenCategoryMismatch,
   UnknownTokenName,
   validateThemeTokens,
@@ -46,6 +45,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { boundedThemeDocument } from "../theme-document-input.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -79,9 +79,10 @@ const proposeCreateInput = z
      * Required — the complete DTCG token document the caller composed
      * from brand context (issue #112; no presets exist). The AI authors
      * every category itself: color, typography, spacing, radius,
-     * shadow, motion. Validated by the shared DTCG schema.
+     * shadow, motion. Validated by the shared DTCG schema plus the
+     * size cap from theme-document-input.ts.
      */
-    tokens: themeDocument,
+    tokens: boundedThemeDocument,
     /**
      * Loose-name brand overrides applied on top of `tokens`. Server
      * normalizes via theme-normalize.ts; ambiguous inputs surface as

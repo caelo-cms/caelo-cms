@@ -26,8 +26,8 @@
  *   ai_memory.set                    — site-memory-propose.ts
  */
 
-import { themeDocument } from "@caelo-cms/shared";
 import { z } from "zod";
+import { boundedThemeDocument } from "../../theme-document-input.js";
 import { ANCHOR_HUE_HINTS, THEME_DOCUMENT_SKELETON } from "../theme-guidance.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 
@@ -677,7 +677,7 @@ export const proposeCreateThemeTool = makeProposeTool({
         .regex(/^[a-z0-9][a-z0-9-]*$/),
       displayName: z.string().min(1).max(200),
       description: z.string().min(1).max(1000),
-      tokens: themeDocument,
+      tokens: boundedThemeDocument,
       overrides: z.record(z.string(), z.unknown()).optional(),
     })
     .strict(),
