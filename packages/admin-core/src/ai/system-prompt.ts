@@ -337,6 +337,7 @@ export function formatContentLibraryBlock(
 // SystemPromptChunk is defined in ./provider.ts so adapters can import
 // it without pulling in the system-prompt composer; we re-use that type here.
 import type { SystemPromptChunk } from "./provider.js";
+import { ANCHOR_HUE_HINTS } from "./theme-guidance.js";
 
 export type { SystemPromptChunk } from "./provider.js";
 
@@ -764,7 +765,7 @@ export function formatThemeBlock(
           "> set_theme_meta({description: 'Indigo primary chosen because ...'})",
           "> ```",
           ">",
-          "> Anchor-hue inspiration by feel: `#4f46e5` indigo (SaaS / dev tools), `#7c3aed` violet (creative / AI products), `#06b6d4` cyan (data / analytics), `#10b981` emerald (sustainability / finance), `#f59e0b` amber (warm / lifestyle), `#ef4444` red (urgency / news), `#0f172a` slate (luxury / enterprise). The hue anchors the palette — the supporting colors and typography are yours to compose. Never default to neutral grayscale on a real site.",
+          `> Anchor-hue inspiration by feel: ${ANCHOR_HUE_HINTS}. The hue anchors the palette — the supporting colors and typography are yours to compose. Never default to neutral grayscale on a real site.`,
           ">",
           "> This warning clears once the theme is non-seed AND has a recorded `description` — `set_theme_meta` is not optional.",
         ].join("\n")

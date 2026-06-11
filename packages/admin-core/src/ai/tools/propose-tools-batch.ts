@@ -28,6 +28,7 @@
 
 import { themeDocument } from "@caelo-cms/shared";
 import { z } from "zod";
+import { ANCHOR_HUE_HINTS, THEME_DOCUMENT_SKELETON } from "../theme-guidance.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 
 const uuid = z.string().uuid();
@@ -659,13 +660,11 @@ export const proposeCreateThemeTool = makeProposeTool({
     "Create a new theme by COMPOSING the complete DTCG token document yourself from the " +
     "brand context you already have (site identity, the operator's wording, the industry, " +
     "the content you're about to write). There are no presets — you author every category: " +
-    "`tokens: {color: {background, foreground, primary, primary-foreground, secondary, " +
-    "secondary-foreground, accent, accent-foreground, muted, muted-foreground, card, " +
-    "card-foreground, border, ring, destructive, destructive-foreground}, typography: " +
-    "{body, heading, mono}, spacing: {xs…2xl}, radius: {sm…lg}, shadow, motion}` — each " +
+    `\`tokens:\` ${THEME_DOCUMENT_SKELETON} — each ` +
     "leaf is `{$type, $value}` (e.g. `{$type: 'color', $value: '#4f46e5'}`). Pick a primary " +
     "with real chroma that fits the brand; do NOT default to neutral/grayscale on a real " +
-    "site. `description` is required — record WHY this palette fits (the cold-start gate " +
+    `site. Anchor-hue inspiration: ${ANCHOR_HUE_HINTS}. ` +
+    "`description` is required — record WHY this palette fits (the cold-start gate " +
     "reads it). If `overrides.primaryColor` is set, the server derives a 50–900 OKLCh " +
     "lightness ramp from it (each stop annotated `_derived: true`); explicit stops via " +
     "`overrides[\"color.primary.500\"] = '#…'` win over derived ones.",

@@ -38,6 +38,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { ANCHOR_HUE_HINTS, THEME_DOCUMENT_SKELETON } from "../theme-guidance.js";
 import type { ToolContext, ToolResult } from "./dispatch.js";
 
 export interface ColdStartCheckResult {
@@ -131,14 +132,10 @@ export async function checkColdStartGate(
     // propose ops (CLAUDE.md §1A recover-don't-punt).
     steps.push(
       "`propose_create_theme({slug, displayName, description, tokens})` — COMPOSE the complete DTCG token " +
-        "document yourself from the brand context (site identity, the operator's wording, the industry): a full " +
-        "`color` group (background, foreground, primary, primary-foreground, secondary, accent, muted, card, " +
-        "border, ring, destructive + foregrounds), `typography` (body, heading, mono), `spacing`, `radius`, " +
-        "`shadow`. The primary must carry real chroma — never default to neutral grayscale on a real site. " +
-        "Anchor-hue inspiration: #4f46e5 indigo (SaaS / dev tools), #7c3aed violet (creative / AI), " +
-        "#06b6d4 cyan (data / analytics), #10b981 emerald (sustainability / finance), #f59e0b amber " +
-        "(warm / lifestyle), #0f172a slate (luxury / enterprise) — the hue anchors the palette, the rest of the " +
-        "document is still yours to compose. `description` records WHY the palette fits the brand. " +
+        "document yourself from the brand context (site identity, the operator's wording, the industry): " +
+        `${THEME_DOCUMENT_SKELETON}. The primary must carry real chroma — never default to neutral grayscale ` +
+        `on a real site. Anchor-hue inspiration: ${ANCHOR_HUE_HINTS} — the hue anchors the palette, the rest ` +
+        "of the document is still yours to compose. `description` records WHY the palette fits the brand. " +
         "Then tell the operator to approve it at /security/themes/pending.",
     );
     steps.push(
@@ -152,9 +149,7 @@ export async function checkColdStartGate(
       "`set_theme_tokens({set: {…}})` — evolve the seed grayscale into a full brand palette in ONE call: " +
         "primaryColor with real chroma plus the supporting colors that should follow it (accent, ring, " +
         "secondary where the brand calls for it), and typography if the brand voice suggests one. " +
-        "Anchor-hue inspiration: #4f46e5 indigo (SaaS / dev tools), #7c3aed violet (creative / AI), " +
-        "#06b6d4 cyan (data / analytics), #10b981 emerald (sustainability / finance), #f59e0b amber " +
-        "(warm / lifestyle), #0f172a slate (luxury / enterprise). Never leave a real site on the neutral " +
+        `Anchor-hue inspiration: ${ANCHOR_HUE_HINTS}. Never leave a real site on the neutral ` +
         "grayscale seed.",
     );
     steps.push(
