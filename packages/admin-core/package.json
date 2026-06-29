@@ -23,13 +23,13 @@
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
     "@caelo-cms/static-generator": "workspace:*",
-    "@google-cloud/storage": "^7.19.0",
+    "@google-cloud/storage": "^7.21.0",
     "ai": "^6.0.183",
     "drizzle-orm": "0.45.2",
-    "google-auth-library": "^10.6.2",
+    "google-auth-library": "^10.9.0",
     "htmlparser2": "^12.0.0",
-    "sharp": "^0.34",
-    "zod": "4.3.6"
+    "sharp": "^0.35",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@caelo-cms/api-gateway": "workspace:*",
