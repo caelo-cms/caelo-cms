@@ -215,9 +215,12 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
  * `streaming`; when the SSE turn finishes (the streaming $state goes
  * false), it flips back to `idle`.
  *
- * 240s default handles a multi-tool homepage build at Opus 4.7.
+ * 480s default: a multi-tool homepage build PLUS the #155 self-review
+ * rounds (each a browser-mediated screenshot + a model turn). The
+ * timeout guards hangs, not the design loop — same rationale as the
+ * 600s per-test budget in playwright.livedit.config.ts.
  */
-export async function waitForChatTurnIdle(page: Page, timeoutMs = 240_000): Promise<void> {
+export async function waitForChatTurnIdle(page: Page, timeoutMs = 480_000): Promise<void> {
   // The status element is `hidden`; assert against the attribute, not
   // visibility.
   await expect(page.getByTestId("chat-turn-status")).toHaveAttribute("data-turn-state", "idle", {
@@ -358,7 +361,9 @@ export function assertNoBrowserConsoleErrors(tracker: BrowserConsoleErrorTracker
 export async function awaitStageComplete(page: Page): Promise<void> {
   const responsePromise = page.waitForResponse(
     (r: Response) => r.url().includes("?/stageAndDeployStaging") && r.request().method() === "POST",
-    { timeout: 180_000 },
+    // 360s since #155 — see waitForChatTurnIdle's rationale (hang guard,
+    // not a race against legitimately longer turns/builds on a busy runner).
+    { timeout: 360_000 },
   );
   await page.getByTestId("stage-btn").click();
   await page.getByTestId("stage-submit-btn").click();
@@ -373,7 +378,9 @@ export async function awaitStageComplete(page: Page): Promise<void> {
 export async function awaitPublishComplete(page: Page): Promise<void> {
   const responsePromise = page.waitForResponse(
     (r: Response) => r.url().includes("?/promoteToProduction") && r.request().method() === "POST",
-    { timeout: 180_000 },
+    // 360s since #155 — see waitForChatTurnIdle's rationale (hang guard,
+    // not a race against legitimately longer turns/builds on a busy runner).
+    { timeout: 360_000 },
   );
   // Both `promote-btn` (chat-not-published case) and `promote-only-btn`
   // (chat-already-published case) map to the same form action. Click

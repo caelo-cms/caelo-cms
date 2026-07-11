@@ -90,7 +90,11 @@ export async function checkColdStartGate(
   ).defaults;
   const theme = (
     themeCheck.value as {
-      theme: { origin: "seed" | "ai" | "operator"; description: string | null } | null;
+      theme: {
+        origin: "seed" | "ai" | "operator";
+        description: string | null;
+        tokens?: unknown;
+      } | null;
     }
   ).theme;
 
@@ -112,8 +116,17 @@ export async function checkColdStartGate(
   // record the rationale, NOT to recompose a theme that already exists.
   const undescribedTheme =
     !seedTheme && (!theme?.description || theme.description.trim().length === 0);
+  // issue #149 follow-up — the last loophole in the #112 class: the AI
+  // can flip origin + write a description while leaving color.primary
+  // at the seed grayscale (#171717), and every downstream page renders
+  // monochrome (observed live: PR #180 run, twice in a row). Origin +
+  // description are PROXIES for "a brand palette exists"; the primary's
+  // chroma is the thing itself, so the gate checks it mechanically.
+  const grayscalePrimary = !seedTheme && !undescribedTheme && primaryIsGrayscale(theme?.tokens);
 
-  if (!noIdentity && !seedTheme && !undescribedTheme) return { blocked: false };
+  if (!noIdentity && !seedTheme && !undescribedTheme && !grayscalePrimary) {
+    return { blocked: false };
+  }
 
   // Compose the AI-actionable instruction as an ordered step list so the
   // numbering stays correct across the identity / theme / no-active-theme
@@ -167,6 +180,15 @@ export async function checkColdStartGate(
       "`set_theme_meta({description: '<why the current palette fits the brand>'})` — the active theme is " +
         "already evolved; record the design rationale. Do NOT recompose or re-create the theme.",
     );
+  } else if (grayscalePrimary) {
+    // Origin + description are set but color.primary is still a
+    // grayscale value — the palette was never actually branded.
+    steps.push(
+      "`set_theme_tokens({set: {primaryColor: '#<real chroma>', ...}})` — the active theme's " +
+        "`color.primary` is still GRAYSCALE, so every page renders monochrome regardless of the " +
+        `description. Pick a primary that fits the brand (${ANCHOR_HUE_HINTS}) and the supporting ` +
+        `colors with it. ${DEPTH_AND_SURFACE_HINTS}`,
+    );
   }
   steps.push(`Retry \`${toolName}\` with the same arguments.`);
 
@@ -196,4 +218,48 @@ export async function checkColdStartGate(
         `("What's this site for?") before guessing.`,
     },
   };
+}
+
+/**
+ * True when the active theme's `color.primary` (base `$value` or the
+ * `500` ramp stop) parses as a grayscale value. Unparseable / exotic
+ * color forms count as chromatic — the gate must never false-block a
+ * legitimately branded theme (oklch, named colors, etc. are handled
+ * leniently; hex is the case the regression class actually ships).
+ */
+function primaryIsGrayscale(tokens: unknown): boolean {
+  if (tokens === null || typeof tokens !== "object") return false;
+  const doc = typeof tokens === "string" ? safeParseJson(tokens) : tokens;
+  if (doc === null || typeof doc !== "object") return false;
+  const color = (doc as { color?: unknown }).color;
+  if (color === null || typeof color !== "object") return false;
+  const primary = (color as { primary?: unknown }).primary;
+  if (primary === null || typeof primary !== "object") return false;
+  const p = primary as { $value?: unknown; [k: string]: unknown };
+  const stop500 = p["500"] as { $value?: unknown } | undefined;
+  const raw =
+    (typeof p.$value === "string" && p.$value) ||
+    (stop500 && typeof stop500.$value === "string" && stop500.$value) ||
+    null;
+  if (raw === null) return false;
+  const m = /^#([0-9a-f]{6})/i.exec(raw.trim());
+  if (!m) {
+    // oklch(L C H): chroma below 0.03 is effectively gray.
+    const ok = /^oklch\(\s*[\d.]+%?\s+([\d.]+)/i.exec(raw.trim());
+    if (ok?.[1]) return Number.parseFloat(ok[1]) < 0.03;
+    return false;
+  }
+  const hex = m[1] as string;
+  const r = Number.parseInt(hex.slice(0, 2), 16);
+  const g = Number.parseInt(hex.slice(2, 4), 16);
+  const b = Number.parseInt(hex.slice(4, 6), 16);
+  return Math.max(r, g, b) - Math.min(r, g, b) <= 24;
+}
+
+function safeParseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }

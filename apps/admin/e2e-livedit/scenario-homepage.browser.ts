@@ -153,10 +153,19 @@ function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | nu
   return JSON.parse(trimmed) as PageModuleSnapshot;
 }
 
+interface ThemeDesignReport {
+  readonly chromaticColorCount: number;
+  readonly hasGradient: boolean;
+  readonly hasSurfaceAlt: boolean;
+  readonly webFontFamilies: readonly string[];
+}
+
 interface ActiveThemeBrand {
   readonly origin: string;
   readonly description: string | null;
   readonly primaryValue: string | null;
+  /** issue #161 — deterministic design analysis of the tokens document. */
+  readonly designReport: ThemeDesignReport;
 }
 
 /**
@@ -187,7 +196,39 @@ function snapshotActiveThemeBrand(): ActiveThemeBrand {
             (primary && typeof primary.$value === "string" && primary.$value) ||
             (primary && primary["500"] && typeof primary["500"].$value === "string" && primary["500"].$value) ||
             null;
-          out = { origin: row.origin, description: row.description, primaryValue };
+          // issue #161 — deterministic design analysis of the document.
+          const chromatic = new Set();
+          const isChromaticHex = (v) => {
+            const m = /^#([0-9a-f]{6})/i.exec(v);
+            if (!m) return !v.startsWith("#"); // oklch/rgb() etc: count as chromatic
+            const r = parseInt(m[1].slice(0, 2), 16), g = parseInt(m[1].slice(2, 4), 16), b = parseInt(m[1].slice(4, 6), 16);
+            return Math.max(r, g, b) - Math.min(r, g, b) > 24;
+          };
+          const walkColors = (node) => {
+            if (!node || typeof node !== "object") return;
+            for (const [k, v] of Object.entries(node)) {
+              if (k.startsWith("$")) continue;
+              if (v && typeof v === "object") {
+                if (typeof v.$value === "string") {
+                  if (isChromaticHex(v.$value.toLowerCase())) chromatic.add(v.$value.toLowerCase());
+                } else walkColors(v);
+              }
+            }
+          };
+          walkColors(tokens?.color ?? null);
+          const SYSTEM_FONTS = new Set(["serif","sans-serif","monospace","system-ui","ui-sans-serif","ui-serif","ui-monospace","arial","helvetica","georgia","menlo","monaco"]);
+          const webFonts = [];
+          for (const t of Object.values(tokens?.typography ?? {})) {
+            const fam = t && t.$value && typeof t.$value.fontFamily === "string" ? t.$value.fontFamily.split(",")[0].trim().replace(/^["']|["']$/g, "") : null;
+            if (fam && !SYSTEM_FONTS.has(fam.toLowerCase()) && !webFonts.includes(fam)) webFonts.push(fam);
+          }
+          const designReport = {
+            chromaticColorCount: chromatic.size,
+            hasGradient: !!tokens?.gradient && Object.keys(tokens.gradient).some((k) => !k.startsWith("$")),
+            hasSurfaceAlt: !!(tokens?.color && (tokens.color["surface-alt"] || tokens.color.surfaceAlt)),
+            webFontFamilies: webFonts,
+          };
+          out = { origin: row.origin, description: row.description, primaryValue, designReport };
         });
         await sql.end();
         process.stdout.write(JSON.stringify(out));
@@ -429,6 +470,28 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     ).not.toBeNull();
     if (themeBrand.primaryValue === null) throw new Error("unreachable");
     assertChromaticPrimary(themeBrand.primaryValue);
+
+    // ── Design floor (issue #161) ──────────────────────────────────
+    // Hard-assert only the deterministic minimum the #153 palette-pair
+    // guidance makes stable: a real palette carries at least two
+    // DISTINCT chromatic colors (primary + accent/secondary), not one
+    // hue with neutrals. Everything richer (gradient, surface-alt,
+    // web fonts) is logged as a design-report warning first — promote
+    // to hard assertions once the 10x determinism runs show they hold
+    // (docs/internal/e2e-livedit.md recipe).
+    const design = themeBrand.designReport;
+    expect(
+      design.chromaticColorCount,
+      "Composed palette must carry at least two distinct chromatic colors (flat single-hue reads as unfinished — DEPTH_AND_SURFACE_HINTS)",
+    ).toBeGreaterThanOrEqual(2);
+    const designWarnings: string[] = [];
+    if (!design.hasGradient) designWarnings.push("no gradient.* token composed");
+    if (!design.hasSurfaceAlt) designWarnings.push("no color.surface-alt for section alternation");
+    if (design.webFontFamilies.length === 0)
+      designWarnings.push("typography uses system stacks only");
+    for (const w of designWarnings) {
+      console.warn(`[design-report] ${w} — candidate for promotion to a hard assertion`);
+    }
 
     // ── Step 7: Re-edit the hero headline (AC #2 part 2) ───────────
     const preReeditSnapshot = snapshotMostRecentPage(startTimestamp);

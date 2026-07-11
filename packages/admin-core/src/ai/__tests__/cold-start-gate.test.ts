@@ -28,7 +28,11 @@ import type { ToolContext } from "../tools/dispatch.js";
 const registry = new OperationRegistry();
 registerAdminOps(registry);
 
-type Theme = { origin: "seed" | "ai" | "operator"; description: string | null } | null;
+type Theme = {
+  origin: "seed" | "ai" | "operator";
+  description: string | null;
+  tokens?: unknown;
+} | null;
 type Defaults = { siteName: string | null; sitePurpose: string | null } | null;
 
 /** Fake adapter: returns controlled values for the two reads the gate makes. */
@@ -134,5 +138,68 @@ describe("checkColdStartGate (issue #106)", () => {
   it("always ends with a numbered 'Retry' step naming the tool", async () => {
     const res = await checkColdStartGate(AI, toolCtxWith(null, null), "add_module_to_layout");
     expect(res.gateResult?.content ?? "").toContain("Retry `add_module_to_layout`");
+  });
+
+  it("blocks when origin+description are set but color.primary is still grayscale (#149 follow-up)", async () => {
+    const res = await checkColdStartGate(
+      AI,
+      toolCtxWith(
+        {
+          origin: "ai",
+          description: "Dark modern look",
+          tokens: { color: { primary: { $type: "color", $value: "#171717" } } },
+        },
+        { siteName: "Acme", sitePurpose: "SaaS" },
+      ),
+      "add_module_to_page",
+    );
+    expect(res.blocked).toBe(true);
+    const content = res.gateResult?.content ?? "";
+    expect(content).toContain("GRAYSCALE");
+    expect(content).toContain("set_theme_tokens");
+  });
+
+  it("clears with a chromatic primary (hex) and with unparseable color forms (lenient)", async () => {
+    const chromatic = await checkColdStartGate(
+      AI,
+      toolCtxWith(
+        {
+          origin: "ai",
+          description: "Indigo B2B",
+          tokens: { color: { primary: { $type: "color", $value: "#4f46e5" } } },
+        },
+        { siteName: "Acme", sitePurpose: "SaaS" },
+      ),
+      "add_module_to_page",
+    );
+    expect(chromatic.blocked).toBe(false);
+
+    const exotic = await checkColdStartGate(
+      AI,
+      toolCtxWith(
+        {
+          origin: "ai",
+          description: "Branded",
+          tokens: { color: { primary: { $type: "color", $value: "rebeccapurple" } } },
+        },
+        { siteName: "Acme", sitePurpose: "SaaS" },
+      ),
+      "add_module_to_page",
+    );
+    expect(exotic.blocked).toBe(false);
+
+    const grayOklch = await checkColdStartGate(
+      AI,
+      toolCtxWith(
+        {
+          origin: "ai",
+          description: "Branded",
+          tokens: { color: { primary: { $type: "color", $value: "oklch(20% 0.01 260)" } } },
+        },
+        { siteName: "Acme", sitePurpose: "SaaS" },
+      ),
+      "add_module_to_page",
+    );
+    expect(grayOklch.blocked).toBe(true);
   });
 });
