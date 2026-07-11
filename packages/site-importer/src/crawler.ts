@@ -12,6 +12,7 @@
  */
 
 import { extractModulesFromHtml, extractThemeTokens, extractTitle } from "./extractor.js";
+import { isExternalUrlBlockedError, safeExternalFetch } from "./safe-fetch.js";
 
 export interface CrawlOptions {
   readonly sourceUrl: string;
@@ -23,6 +24,12 @@ export interface CrawlOptions {
   readonly throttleMs?: number;
   /** Optional fetch override for tests. */
   readonly fetcher?: (url: string) => Promise<{ ok: boolean; html: string; contentType: string }>;
+  /**
+   * issue #191 — exact hostnames exempt from the SSRF guard's
+   * public-address check (test fixtures, deliberate private crawls).
+   * Ignored when a custom `fetcher` is injected.
+   */
+  readonly allowedHosts?: readonly string[];
 }
 
 export interface CrawledPage {
@@ -45,7 +52,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   const depth = opts.depth ?? 2;
   const maxPages = opts.maxPages ?? 50;
   const throttle = opts.throttleMs ?? 100;
-  const fetcher = opts.fetcher ?? defaultFetcher;
+  const fetcher = opts.fetcher ?? makeDefaultFetcher(opts.allowedHosts ?? []);
 
   const sourceParsed = new URL(opts.sourceUrl);
   const seen = new Set<string>();
@@ -65,6 +72,10 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     try {
       res = await fetcher(next.url);
     } catch (e) {
+      // A blocked ROOT URL means the whole crawl is pointless — fail the
+      // run loudly (no-fallbacks pre-1.0) instead of returning an empty
+      // "ready for review" result. Blocked in-site links merely record.
+      if (next.depth === 0 && isExternalUrlBlockedError(e)) throw e;
       errors.push({ url: next.url, reason: (e as Error).message });
       continue;
     }
@@ -109,20 +120,29 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   return { pages, seenCount: seen.size, errors };
 }
 
-async function defaultFetcher(
-  url: string,
-): Promise<{ ok: boolean; html: string; contentType: string }> {
-  const res = await fetch(url, {
-    method: "GET",
-    redirect: "follow",
-    headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/xhtml+xml" },
-  });
-  const contentType = res.headers.get("content-type") ?? "";
-  if (!res.ok || !contentType.includes("text/html")) {
-    return { ok: res.ok, html: "", contentType };
-  }
-  const html = await res.text();
-  return { ok: true, html, contentType };
+/**
+ * issue #191 — the default fetcher routes through the SSRF guard
+ * (connect-time DNS validation, re-validated redirects, byte cap) and
+ * keeps the documented "declines redirects to a different host" policy
+ * by checking the post-redirect final URL.
+ */
+function makeDefaultFetcher(
+  allowedHosts: readonly string[],
+): (url: string) => Promise<{ ok: boolean; html: string; contentType: string }> {
+  return async (url: string) => {
+    const res = await safeExternalFetch(url, {
+      allowedHosts,
+      headers: { "User-Agent": USER_AGENT },
+      maxBytes: 2 * 1024 * 1024,
+    });
+    if (new URL(res.finalUrl).host !== new URL(url).host) {
+      return { ok: false, html: "", contentType: "redirected-off-host" };
+    }
+    if (!res.ok || !res.contentType.includes("text/html")) {
+      return { ok: res.ok, html: "", contentType: res.contentType };
+    }
+    return { ok: true, html: res.bodyText, contentType: res.contentType };
+  };
 }
 
 function extractLinks(html: string): string[] {
