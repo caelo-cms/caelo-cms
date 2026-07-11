@@ -123,7 +123,14 @@ describe("pages.render_preview", () => {
     // P6.7.6 — site-default layout adds header/footer slots that this
     // page leaves empty; they show up as missing (no layout_modules
     // attached). That's expected behaviour, not a regression.
-    expect(missingSlots.sort()).toEqual(["footer", "header"]);
+    //
+    // issue #156 — `unknown-css-var:*` markers are filtered here: this
+    // test pins SLOT accounting, not CSS health. Until migration 0104
+    // (#157, PR #168) lands, the seeded layout legitimately triggers
+    // unknown-css-var:--color-bg/--color-fg — the scanner catching our
+    // own seed bug is correct behaviour, asserted in its own suite.
+    const slotMarkers = missingSlots.filter((m) => !m.startsWith("unknown-css-var:"));
+    expect(slotMarkers.sort()).toEqual(["footer", "header"]);
     expect(html).toContain("HELLO_A");
     expect(html).toContain("HELLO_B");
     expect(html.indexOf("HELLO_A")).toBeLessThan(html.indexOf("HELLO_B"));
