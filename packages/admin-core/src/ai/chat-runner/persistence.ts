@@ -26,6 +26,8 @@ export interface LoadedSession {
     toolCalls: unknown;
     toolCallId: string | null;
     thinkingBlocks: { thinking: string; signature: string }[] | null;
+    /** issue #190 — operator-attached images on user messages. */
+    attachments: import("@caelo-cms/shared").ChatAttachment[] | null;
   }[];
 }
 
@@ -54,6 +56,12 @@ export async function persistUserMessage(
     chatSessionId: input.chatSessionId,
     role: "user",
     content: buildUserContent(input),
+    // issue #190 — persist attachments so the transcript keeps its
+    // thumbnails and the provider-history assembly sees them. The ?? []
+    // matters: Zod's .default([]) only fires on PARSED input; internal
+    // callers (subagents, MCP bridge, tests) construct the object
+    // literally and may omit the field.
+    ...((input.attachments ?? []).length > 0 ? { attachments: input.attachments } : {}),
   });
   return userMsg.ok;
 }

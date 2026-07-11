@@ -372,6 +372,24 @@ export const chatCreateSessionInput = z
   })
   .strict();
 
+/**
+ * issue #190 — an operator-attached image riding a user chat message.
+ * References a media_assets row (the upload endpoint owns validation
+ * + storage); image/* only in v1 so the provider mapping is always an
+ * image part.
+ */
+export const chatAttachmentSchema = z
+  .object({
+    assetId: z.string().uuid(),
+    mime: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]),
+    alt: z.string().max(2048).optional(),
+  })
+  .strict();
+export type ChatAttachment = z.infer<typeof chatAttachmentSchema>;
+
+/** issue #190 — attachments-per-message cap; bounds provider payload size. */
+export const CHAT_MAX_ATTACHMENTS = 4;
+
 export const chatSendMessageInput = z
   .object({
     chatSessionId: z.string().uuid(),
@@ -388,6 +406,8 @@ export const chatSendMessageInput = z
           .strict(),
       )
       .default([]),
+    /** issue #190 — operator-attached images (see chatAttachmentSchema). */
+    attachments: z.array(chatAttachmentSchema).max(CHAT_MAX_ATTACHMENTS).default([]),
     /**
      * P6.7.3 — the active /edit page id, threaded so the chat-runner can
      * compose a Current-page volatile chunk in the system prompt and so
