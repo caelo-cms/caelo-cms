@@ -21,6 +21,7 @@ import {
   type ComposeFonts,
   type ComposeTheme,
   composePageWithLayout,
+  enrichResponsiveImages,
   err,
   fontUnresolvableMarker,
   injectSeoIntoHead,
@@ -925,6 +926,35 @@ export const renderPagePreviewOp = defineOperation({
     // generator's seo-pass.ts. Missing rows (unfilled SEO) are
     // tolerated — we just emit a head with whatever's present.
     let html = composed.html;
+
+    // issue #162 — preview/production image parity: the SAME srcset/
+    // sizes/loading/decoding enrichment the static generator's media
+    // pass applies, with URLs kept on the admin's media route. Without
+    // this, the operator (and the #155 self-review loop) tunes visuals
+    // against markup that differs from what visitors get.
+    const previewAssetIds = [
+      ...new Set(
+        [...html.matchAll(/\/_caelo\/media\/([0-9a-f-]{36})\//g)].map((m) => m[1] as string),
+      ),
+    ];
+    if (previewAssetIds.length > 0) {
+      const idFrags = previewAssetIds.map((id) => sql`${id}::uuid`);
+      const variantRows = (await tx.execute(sql`
+        SELECT asset_id::text AS asset_id, variant, format
+        FROM media_variants
+        WHERE asset_id IN (${sql.join(idFrags, sql`, `)})
+      `)) as unknown as { asset_id: string; variant: string; format: string }[];
+      const variantsByAsset = new Map<string, { variant: string; format: string }[]>();
+      for (const r of variantRows) {
+        const list = variantsByAsset.get(r.asset_id) ?? [];
+        list.push({ variant: r.variant, format: r.format });
+        variantsByAsset.set(r.asset_id, list);
+      }
+      html = enrichResponsiveImages(html, variantsByAsset, {
+        rewriteSrc: false,
+        urlFor: (assetId, variant) => `/_caelo/media/${assetId}/${variant}`,
+      });
+    }
     const seoRows = (await tx.execute(sql`
       SELECT meta_description, og_image_asset_id::text AS og_image_asset_id,
              canonical_url, noindex
