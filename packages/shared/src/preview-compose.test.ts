@@ -487,6 +487,35 @@ describe("composePageWithLayout", () => {
     expect(out.html).not.toContain('rel="preload"');
   });
 
+  it("renders a responsive nav with once-per-page functional assets (issue #160)", () => {
+    const navModule = {
+      ...blankModule,
+      moduleId: "33333333-3333-4333-8333-333333333303",
+      slug: "nav-menu-header",
+      html: "<nav>replaced</nav>",
+    };
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [{ blockName: "content", modules: [navModule, navModule] }],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+      structuredSets: {
+        byKindSlug: { "nav-menu/header": [{ label: "Docs", href: "/docs" }] },
+      },
+    });
+    expect(out.html).toContain('class="caelo-nav-toggle"');
+    expect(out.html).toContain('aria-expanded="false"');
+    expect(out.html).toContain('data-nav-open="false"');
+    // Functional assets exactly once, even with two nav placements.
+    expect(out.html.split("caelo-nav-toggle{display:none").length - 1).toBe(1);
+    expect(out.html.split("data-nav-open','false'").length - 1).toBe(1);
+    // Zero aesthetics in the functional css: no colors beyond currentColor.
+    expect(out.html).not.toMatch(/caelo-nav-toggle\{[^}]*#[0-9a-f]{3}/i);
+  });
+
   it("injects the invisible technical baseline between theme and modules (issue #151)", () => {
     const out = composePageWithLayout({
       templateHtml,

@@ -27,6 +27,7 @@
 
 import { BASE_TECHNICAL_CSS } from "./base-css.js";
 import type { ModuleFieldKind } from "./content.js";
+import { NAV_FUNCTIONAL_CSS, NAV_TOGGLE_JS } from "./interactions.js";
 import {
   applySlotReplacements,
   extractInnerOfTopLevelContentSlot,
@@ -194,6 +195,8 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   const contentByName = new Map<string, string>();
   const allCss: string[] = [];
   const allJs: string[] = [];
+  // issue #160 — see composePageWithLayout.
+  let navRendered = false;
   // issue #158 — same per-module dedup as composePageWithLayout.
   const seenAssetModules = new Set<string>();
   // Template CSS first so module CSS can override it via source-order specificity.
@@ -213,6 +216,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       const langSelector = lookupLanguageSelector(m.slug, input);
       let baseHtml: string;
       if (navMenuItems !== null) {
+        navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
       } else if (langSelector !== null) {
         baseHtml = langSelector;
@@ -229,6 +233,11 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       if (m.css.trim().length > 0) allCss.push(m.css);
       if (m.js.trim().length > 0) allJs.push(m.js);
     }
+  }
+
+  if (navRendered) {
+    allCss.push(NAV_FUNCTIONAL_CSS);
+    allJs.push(NAV_TOGGLE_JS);
   }
 
   const replaced = applySlotReplacements(input.templateHtml, { contentByName });
@@ -362,7 +371,14 @@ function renderNavMenuHtml(items: readonly unknown[]): string {
     const o = it as { label?: unknown; href?: unknown };
     return typeof o.label === "string" && typeof o.href === "string";
   });
-  return `<nav class="caelo-nav-menu"><ul>${safeItems.map(renderNavItem).join("")}</ul></nav>`;
+  // issue #160 — mobile-ready markup: toggle button (three functional
+  // bars via currentColor) + collapsible list. The functional CSS/JS
+  // ships once per page from ./interactions.ts when a nav rendered.
+  const toggle =
+    '<button type="button" class="caelo-nav-toggle" aria-expanded="false" aria-label="Menu">' +
+    '<span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span>' +
+    "</button>";
+  return `<nav class="caelo-nav-menu" data-nav-open="false">${toggle}<ul>${safeItems.map(renderNavItem).join("")}</ul></nav>`;
 }
 function renderNavItem(item: NavMenuItem): string {
   const target = item.target === "_blank" ? ' target="_blank" rel="noopener"' : "";
@@ -556,6 +572,9 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   // brittle and reads as a bug).
   const cssParts: string[] = [];
   const jsParts: string[] = [];
+  // issue #160 — set when any nav-menu module rendered; pulls the
+  // functional nav CSS/JS in exactly once per page.
+  let navRendered = false;
   // issue #158 — a module placed N times contributes its CSS/JS ONCE
   // (first occurrence wins; source order is otherwise preserved).
   // Duplicate rule blocks made the cascade order-dependent and bloated
@@ -573,6 +592,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       const langSelector = lookupLanguageSelector(m.slug, input);
       let baseHtml: string;
       if (navMenuItems !== null) {
+        navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
       } else if (langSelector !== null) {
         baseHtml = langSelector;
@@ -607,6 +627,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       const langSelector = lookupLanguageSelector(m.slug, input);
       let baseHtml: string;
       if (navMenuItems !== null) {
+        navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
       } else if (langSelector !== null) {
         baseHtml = langSelector;
@@ -622,6 +643,11 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
       if (m.css.trim().length > 0) cssParts.push(m.css);
       if (m.js.trim().length > 0) jsParts.push(m.js);
     }
+  }
+
+  if (navRendered) {
+    cssParts.push(NAV_FUNCTIONAL_CSS);
+    jsParts.push(NAV_TOGGLE_JS);
   }
 
   // 3. Render the layout HTML, substituting all named slots.
