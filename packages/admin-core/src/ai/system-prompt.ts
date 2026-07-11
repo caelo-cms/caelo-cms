@@ -337,7 +337,7 @@ export function formatContentLibraryBlock(
 // SystemPromptChunk is defined in ./provider.ts so adapters can import
 // it without pulling in the system-prompt composer; we re-use that type here.
 import type { SystemPromptChunk } from "./provider.js";
-import { ANCHOR_HUE_HINTS } from "./theme-guidance.js";
+import { ANCHOR_HUE_HINTS, DEPTH_AND_SURFACE_HINTS } from "./theme-guidance.js";
 
 export type { SystemPromptChunk } from "./provider.js";
 
@@ -766,6 +766,8 @@ export function formatThemeBlock(
           "> ```",
           ">",
           `> Anchor-hue inspiration by feel: ${ANCHOR_HUE_HINTS}. The hue anchors the palette — the supporting colors and typography are yours to compose. Never default to neutral grayscale on a real site.`,
+          ">",
+          `> ${DEPTH_AND_SURFACE_HINTS}`,
           ">",
           "> This warning clears once the theme is non-seed AND has a recorded `description` — `set_theme_meta` is not optional.",
         ].join("\n")

@@ -349,10 +349,16 @@ function emitTokenLines(
     case "ease":
       emitEase(baseName, value, lightLines);
       break;
+    case "gradient":
+      // issue #153 — first-class since v0.13: CSS gradient string →
+      // `--gradient-<name>` (value scrubbed by sanitizeCssTokenValue
+      // like every emitted token).
+      emitSimple(baseName, value, lightLines);
+      break;
     default:
       // Unknown category — emit as `--<category>-<rest>: <value>` so
-      // forward-compat tokens (e.g. future `gradient.X`) still appear
-      // in CSS rather than silently disappearing.
+      // forward-compat tokens still appear in CSS rather than silently
+      // disappearing.
       emitSimple(baseName, value, lightLines);
   }
 }

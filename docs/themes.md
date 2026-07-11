@@ -11,10 +11,22 @@ the site".
 
 A theme's `tokens` column holds one DTCG-aligned document (schema:
 `packages/shared/src/themes.ts`, `themeDocument`). Categories: `color`,
-`typography`, `spacing`, `radius`, `shadow`, `motion`, `breakpoint` — each
-leaf is `{$type, $value}`. The renderer emits one CSS variable per token
+`gradient` (issue #153 — CSS gradient strings, e.g.
+`linear-gradient(135deg, #4f46e5, #7c3aed)`, emitted as
+`--gradient-<name>`; no `url()`, no declaration breakout), `typography`,
+`spacing`, `radius`, `shadow`, `motion`, `breakpoint` — each leaf is
+`{$type, $value}`. The renderer emits one CSS variable per token
 (`--color-primary`, `--spacing-md`, …); module CSS must reference those
 variables so token edits cascade.
+
+Since #153 the document boundary enforces leaf values **per known
+category**: inside `color`/`gradient`/`typography`/… any object carrying
+`$value` must match that category's token schema (previously an invalid
+leaf silently validated as a metadata-only "group" but was still emitted
+into CSS — the silent-acceptance shape CLAUDE.md §2 forbids). Unknown
+root categories stay open-vocabulary for Figma / Tokens Studio imports.
+The AI guidance (skeleton, palette pairs, depth hints) is single-sourced
+in `packages/admin-core/src/ai/theme-guidance.ts`.
 
 Creating a theme requires the **caller to author the complete document**:
 

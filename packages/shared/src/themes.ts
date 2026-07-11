@@ -187,6 +187,35 @@ export const themeCubicBezierToken = z
   .strict();
 
 /**
+ * issue #153 — first-class gradient token. Pragmatic CSS-string form
+ * (`linear-gradient(135deg, #4f46e5, #7c3aed)`) rather than DTCG's
+ * structured-stops draft: the renderer emits values verbatim into
+ * `--gradient-<name>` and module CSS consumes them via `var()`, so the
+ * CSS string IS the useful representation. The value regex uses an
+ * unambiguous char class (ReDoS-aware per issue #113) and excludes
+ * `;<>{}` so a token can never break out of the emitted declaration;
+ * `sanitizeCssTokenValue` still runs at render as defense-in-depth.
+ */
+const gradientValueString = z
+  .string()
+  .min(12)
+  .max(600)
+  .regex(
+    /^(?:repeating-)?(?:linear|radial|conic)-gradient\([^;<>{}]*\)$/i,
+    "gradient must be a CSS *-gradient(...) value (no url(), no declarations)",
+  )
+  .refine((v) => !/url\s*\(/i.test(v), "gradient must not contain url()");
+
+export const themeGradientToken = z
+  .object({
+    $value: z.union([gradientValueString, aliasString]),
+    $type: z.literal("gradient").optional(),
+    $description: optionalDescription,
+    $extensions: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+
+/**
  * Any token, in any category. The discriminator is the parent group
  * key (`color.*` → color, `spacing.*` → dimension, ...), but DTCG
  * doesn't strictly require `$type` so we accept any leaf carrying a
@@ -201,6 +230,7 @@ const anyThemeToken = z.union([
   themeShadowComposite,
   themeDurationToken,
   themeCubicBezierToken,
+  themeGradientToken,
 ]);
 
 // ────────────────────────────────────────────────────────────────────
@@ -253,25 +283,91 @@ const tokenGroupSchema: z.ZodType<TokenGroup> = z.lazy(() =>
 );
 
 /**
- * Top-level DTCG document. Known category keys at v0.11.0:
+ * issue #153 — per-category leaf enforcement for the KNOWN vocabulary.
+ *
+ * The recursive group walker deliberately tolerates unknown shapes
+ * (DTCG leaves the category vocabulary open), but that tolerance had a
+ * hole: a leaf whose `$value` failed every token schema fell back to
+ * validating as a "group" whose `$`-keys pass through — so an invalid
+ * `color.primary` (or a `url()`-smuggling `gradient.hero`) passed the
+ * document boundary silently and STILL got emitted into CSS by the
+ * renderer. That is the exact silent-acceptance CLAUDE.md §2 forbids.
+ *
+ * Fix: inside the known categories, any object carrying `$value` IS a
+ * token and must match that category's schema. Unknown root categories
+ * keep the open-vocabulary tolerance (Figma / Tokens Studio imports).
+ */
+const CATEGORY_TOKEN_SCHEMAS: Record<string, z.ZodTypeAny> = {
+  color: themeColorToken,
+  gradient: themeGradientToken,
+  spacing: themeDimensionToken,
+  radius: themeDimensionToken,
+  breakpoint: themeDimensionToken,
+  typography: themeTypographyComposite,
+  shadow: themeShadowComposite,
+  // motion mixes duration + easing leaves (duration.fast, ease.smooth
+  // nested under motion or flat); accept either shape.
+  motion: z.union([themeDurationToken, themeCubicBezierToken, themeDimensionToken]),
+  duration: themeDurationToken,
+  ease: themeCubicBezierToken,
+};
+
+function refineKnownCategoryLeaves(
+  category: string,
+  schema: z.ZodTypeAny,
+  node: unknown,
+  path: (string | number)[],
+  ctx: z.RefinementCtx,
+): void {
+  if (node === null || typeof node !== "object" || Array.isArray(node)) return;
+  const obj = node as Record<string, unknown>;
+  if ("$value" in obj) {
+    const sub = schema.safeParse(obj);
+    if (!sub.success) {
+      for (const issue of sub.error.issues) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...path, ...issue.path],
+          message: `${category} token invalid: ${issue.message}`,
+        });
+      }
+    }
+    return;
+  }
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.startsWith("$")) continue;
+    refineKnownCategoryLeaves(category, schema, v, [...path, k], ctx);
+  }
+}
+
+/**
+ * Top-level DTCG document. Known category keys:
  *
  *   color, typography, spacing, radius, shadow, motion (duration +
- *   cubicBezier sub-groups), breakpoint.
+ *   cubicBezier sub-groups), breakpoint, gradient (issue #153 — CSS
+ *   gradient strings emitted as `--gradient-<name>`).
  *
  * Unknown root keys are tolerated because DTCG explicitly leaves the
  * category vocabulary open — we don't want to reject a future
- * `effect` or `gradient` category that operators bring from Figma.
+ * `effect` category that operators bring from Figma.
  * Root-level `$description` / `$extensions` are also tolerated (DTCG
  * documents routinely carry these — the seeded default theme and
  * Figma/Tokens Studio exports all have a root `$description`).
  */
-export const themeDocument: z.ZodType<TokenGroup> = tokenGroupSchema;
+export const themeDocument: z.ZodType<TokenGroup> = tokenGroupSchema.superRefine((doc, ctx) => {
+  for (const [category, schema] of Object.entries(CATEGORY_TOKEN_SCHEMAS)) {
+    if (category in doc) {
+      refineKnownCategoryLeaves(category, schema, doc[category], [category], ctx);
+    }
+  }
+});
 
 export type ThemeDocument = z.infer<typeof themeDocument>;
 export type ThemeColorToken = z.infer<typeof themeColorToken>;
 export type ThemeDimensionToken = z.infer<typeof themeDimensionToken>;
 export type ThemeTypographyComposite = z.infer<typeof themeTypographyComposite>;
 export type ThemeShadowComposite = z.infer<typeof themeShadowComposite>;
+export type ThemeGradientToken = z.infer<typeof themeGradientToken>;
 export type ThemeDurationToken = z.infer<typeof themeDurationToken>;
 export type ThemeCubicBezierToken = z.infer<typeof themeCubicBezierToken>;
 export type AnyThemeToken = z.infer<typeof anyThemeToken>;
