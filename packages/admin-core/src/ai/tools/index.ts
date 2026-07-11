@@ -17,6 +17,7 @@ import {
 import { cancelProposalTool } from "./cancel-proposal.js";
 import { changePageSlugTool } from "./change-page-slug.js";
 import { changeTemplateTool } from "./change-template.js";
+import { checkGenesisParityTool } from "./check-genesis-parity.js";
 import { composeFromImportTool } from "./compose-from-import.js";
 import { composePageFromSpecTool } from "./compose-page-from-spec.js";
 import { createContentInstanceTool } from "./create-content-instance.js";
@@ -155,6 +156,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(selectGenesisDraftTool);
   // issue #164 — compiler stage 1: draft fact base for materialisation.
   registry.register(inspectGenesisDraftTool);
+  // issue #164 slice 3 — the screenshot-parity verification gate.
+  registry.register(checkGenesisParityTool);
   // issue #165 — per-site design language writer.
   registry.register(setDesignManifestTool);
   registry.register(siteMemoryProposeTool);
