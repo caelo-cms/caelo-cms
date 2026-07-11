@@ -95,6 +95,8 @@ export const editModuleToolInput = z
      * to replace the declared schema.
      */
     fields: z.array(moduleFieldSchema).max(64).optional(),
+    /** issue #164 slice 2 — see addModuleToPageToolInput.bindThemeLiterals. */
+    bindThemeLiterals: z.boolean().optional(),
   })
   .strict();
 
@@ -183,6 +185,13 @@ export const addModuleToPageToolInput = z
      * field schema are static HTML.
      */
     fields: z.array(moduleFieldSchema).max(64).optional(),
+    /**
+     * issue #164 slice 2 — mechanically rewrite color/gradient literals
+     * that EQUAL active-theme token values to `var(--…)` before the
+     * write. Opt-in: the Genesis materialisation path sets it so draft
+     * palettes bind to the tokens they were extracted into.
+     */
+    bindThemeLiterals: z.boolean().optional(),
   })
   .strict()
   .superRefine((input, ctx) => {
@@ -190,7 +199,17 @@ export const addModuleToPageToolInput = z
     // the existing module, or mint a near-duplicate?) so it fails loud
     // with the two valid shapes named.
     const authoringKeys = (
-      ["displayName", "html", "css", "js", "fields", "description", "kind", "type"] as const
+      [
+        "displayName",
+        "html",
+        "css",
+        "js",
+        "fields",
+        "description",
+        "kind",
+        "type",
+        "bindThemeLiterals",
+      ] as const
     ).filter((k) => input[k] !== undefined);
     if (input.moduleId !== undefined) {
       if (authoringKeys.length > 0) {
