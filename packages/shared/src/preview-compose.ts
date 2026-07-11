@@ -25,6 +25,7 @@
  * the admin; in P11, plugin Web Components inside Shadow DOM).
  */
 
+import { BASE_TECHNICAL_CSS } from "./base-css.js";
 import type { ModuleFieldKind } from "./content.js";
 import { NAV_FUNCTIONAL_CSS, NAV_TOGGLE_JS } from "./interactions.js";
 import {
@@ -196,6 +197,8 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   const allJs: string[] = [];
   // issue #160 — see composePageWithLayout.
   let navRendered = false;
+  // issue #158 — same per-module dedup as composePageWithLayout.
+  const seenAssetModules = new Set<string>();
   // Template CSS first so module CSS can override it via source-order specificity.
   if (input.templateCss.trim().length > 0) allCss.push(input.templateCss);
 
@@ -225,6 +228,8 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     const html = renderedModuleHtml.join("\n");
     contentByName.set(block.blockName, html);
     for (const m of block.modules) {
+      if (seenAssetModules.has(m.moduleId)) continue;
+      seenAssetModules.add(m.moduleId);
       if (m.css.trim().length > 0) allCss.push(m.css);
       if (m.js.trim().length > 0) allJs.push(m.js);
     }
@@ -255,6 +260,12 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     const styleTag = `<style data-source="theme">${themeCss}</style>`;
     html = injectBefore(html, HEAD_CLOSE_RE, styleTag);
   }
+  // issue #151 — invisible technical baseline (see composePageWithLayout).
+  html = injectBefore(
+    html,
+    HEAD_CLOSE_RE,
+    `<style data-source="base">${BASE_TECHNICAL_CSS}</style>`,
+  );
 
   if (allCss.length > 0) {
     const styleTag = `<style data-source="modules">\n${allCss.join("\n")}\n</style>`;
@@ -564,6 +575,11 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   // issue #160 — set when any nav-menu module rendered; pulls the
   // functional nav CSS/JS in exactly once per page.
   let navRendered = false;
+  // issue #158 — a module placed N times contributes its CSS/JS ONCE
+  // (first occurrence wins; source order is otherwise preserved).
+  // Duplicate rule blocks made the cascade order-dependent and bloated
+  // every page the same module appeared on twice.
+  const seenAssetModules = new Set<string>();
   if (input.layoutCss.trim().length > 0) cssParts.push(input.layoutCss);
   if (input.templateCss.trim().length > 0) cssParts.push(input.templateCss);
 
@@ -587,6 +603,8 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     });
     templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) {
+      if (seenAssetModules.has(m.moduleId)) continue;
+      seenAssetModules.add(m.moduleId);
       if (m.css.trim().length > 0) cssParts.push(m.css);
       if (m.js.trim().length > 0) jsParts.push(m.js);
     }
@@ -620,6 +638,8 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     });
     layoutContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) {
+      if (seenAssetModules.has(m.moduleId)) continue;
+      seenAssetModules.add(m.moduleId);
       if (m.css.trim().length > 0) cssParts.push(m.css);
       if (m.js.trim().length > 0) jsParts.push(m.js);
     }
@@ -646,6 +666,13 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   if (themeCss !== null) {
     html = injectBefore(html, HEAD_CLOSE_RE, `<style data-source="theme">${themeCss}</style>`);
   }
+  // issue #151 — invisible technical baseline (reset only, zero design
+  // opinion); module CSS follows and overrides trivially.
+  html = injectBefore(
+    html,
+    HEAD_CLOSE_RE,
+    `<style data-source="base">${BASE_TECHNICAL_CSS}</style>`,
+  );
   if (cssParts.length > 0) {
     html = injectBefore(
       html,
