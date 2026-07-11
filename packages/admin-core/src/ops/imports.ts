@@ -886,6 +886,219 @@ export const assignImportPageClusterOp = defineOperation({
   },
 });
 
+const noteCategory = z.enum(["typo", "dead_link", "missing_alt", "thin_content", "improvement"]);
+
+/**
+ * issue #197 — record findings made while rebuilding a page. Bulk per
+ * page (§11: one call, one tx); notes APPEND to what's already there
+ * so multiple passes (content rebuild, then a11y sweep) accumulate.
+ */
+export const addImportPageNotesOp = defineOperation({
+  name: "imports.add_page_notes",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      importPageId: z.string().uuid(),
+      notes: z
+        .array(
+          z
+            .object({
+              category: noteCategory,
+              note: z.string().min(1).max(1000),
+              /** true = the AI fixed it during the rebuild; false = suggested only. */
+              applied: z.boolean(),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(50),
+    })
+    .strict(),
+  output: z.object({ totalNotes: z.number().int() }),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE import_pages
+      -- (::text)::jsonb, not ::jsonb: bun-postgres infers a jsonb
+      -- parameter type from the direct cast and double-encodes the
+      -- string, turning the array into ONE jsonb string element.
+      -- Forcing the text path keeps it an array. (INSERT targets
+      -- coerce via the column type and don't hit this.)
+      SET notes = COALESCE(notes, '[]'::jsonb) || (${JSON.stringify(input.notes)}::text)::jsonb
+      WHERE id = ${input.importPageId}::uuid
+      RETURNING jsonb_array_length(notes) AS total
+    `)) as unknown as Array<{ total: number }>;
+    const r = rows[0];
+    if (!r) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.add_page_notes",
+        message: "import page not found — list the run with imports.get for valid page ids",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.add_page_notes",
+      input,
+      succeeded: true,
+      resultSummary: `+${input.notes.length} notes (total ${r.total})`,
+    });
+    return ok({ totalNotes: r.total });
+  },
+});
+
+/**
+ * issue #197 — the run-level rollup the migration CLOSES with: pages
+ * per confirmed type, redirects created, crawl fetch errors (#192
+ * checkpoints them), and the AI's notes grouped by category with
+ * applied/suggested split. One read; the skill turns it into the
+ * plain-words closing message.
+ */
+export const getImportRunReportOp = defineOperation({
+  name: "imports.get_run_report",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ runId: z.string().uuid() }).strict(),
+  output: z.object({
+    sourceUrl: z.string(),
+    status: runStatus,
+    pagesSeen: z.number(),
+    pagesExtracted: z.number(),
+    acceptedPages: z.number(),
+    clusters: z.array(
+      z.object({ clusterKey: z.string(), label: z.string().nullable(), count: z.number() }),
+    ),
+    redirectsCreated: z.number(),
+    crawlErrors: z.array(z.object({ url: z.string(), reason: z.string() })),
+    notes: z.array(
+      z.object({
+        category: noteCategory,
+        applied: z.number(),
+        suggested: z.number(),
+        samples: z.array(
+          z.object({ sourceUrl: z.string(), note: z.string(), applied: z.boolean() }),
+        ),
+      }),
+    ),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const runRows = (await tx.execute(sql`
+      SELECT source_url, status, pages_seen, pages_extracted, crawl_state
+      FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
+    `)) as unknown as Array<{
+      source_url: string;
+      status: z.infer<typeof runStatus>;
+      pages_seen: number;
+      pages_extracted: number;
+      crawl_state: unknown;
+    }>;
+    const run = runRows[0];
+    if (!run) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.get_run_report",
+        message: "import run not found",
+      });
+    }
+    const pages = (await tx.execute(sql`
+      SELECT source_url, proposed_slug, accepted_page_id,
+             COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
+             cluster_label, notes
+      FROM import_pages WHERE run_id = ${input.runId}::uuid
+      ORDER BY created_at ASC
+    `)) as unknown as Array<{
+      source_url: string;
+      proposed_slug: string;
+      accepted_page_id: string | null;
+      cluster_key: string;
+      cluster_label: string | null;
+      notes: unknown;
+    }>;
+
+    // Clusters.
+    const clusterMap = new Map<string, { label: string | null; count: number }>();
+    for (const p of pages) {
+      const entry = clusterMap.get(p.cluster_key) ?? { label: p.cluster_label, count: 0 };
+      entry.count += 1;
+      if (!entry.label && p.cluster_label) entry.label = p.cluster_label;
+      clusterMap.set(p.cluster_key, entry);
+    }
+
+    // Redirects: same rule the compose tx applies (#196) — accepted
+    // pages whose old path differs from the Caelo path, root excluded.
+    let redirectsCreated = 0;
+    for (const p of pages) {
+      if (!p.accepted_page_id) continue;
+      try {
+        const path = new URL(p.source_url).pathname.replace(/\/$/, "") || "/";
+        if (path !== "/" && path !== `/${p.proposed_slug}`) redirectsCreated += 1;
+      } catch {
+        // unparseable source_url — no redirect was created for it
+      }
+    }
+
+    // Crawl errors from the #192 checkpoint slice.
+    const state =
+      typeof run.crawl_state === "string"
+        ? (JSON.parse(run.crawl_state) as { errors?: unknown })
+        : ((run.crawl_state ?? {}) as { errors?: unknown });
+    const crawlErrors = (Array.isArray(state.errors) ? state.errors : [])
+      .filter(
+        (e): e is { url: string; reason: string } =>
+          typeof e === "object" &&
+          e !== null &&
+          typeof (e as { url?: unknown }).url === "string" &&
+          typeof (e as { reason?: unknown }).reason === "string",
+      )
+      .slice(0, 50);
+
+    // Notes grouped by category, applied/suggested split, ≤5 samples.
+    type Note = { category: z.infer<typeof noteCategory>; note: string; applied: boolean };
+    const byCategory = new Map<
+      string,
+      {
+        applied: number;
+        suggested: number;
+        samples: { sourceUrl: string; note: string; applied: boolean }[];
+      }
+    >();
+    for (const p of pages) {
+      const parsed = typeof p.notes === "string" ? (JSON.parse(p.notes) as unknown) : p.notes;
+      if (!Array.isArray(parsed)) continue;
+      for (const n of parsed as Note[]) {
+        if (!n || typeof n.note !== "string") continue;
+        const entry = byCategory.get(n.category) ?? { applied: 0, suggested: 0, samples: [] };
+        if (n.applied) entry.applied += 1;
+        else entry.suggested += 1;
+        if (entry.samples.length < 5) {
+          entry.samples.push({ sourceUrl: p.source_url, note: n.note, applied: n.applied });
+        }
+        byCategory.set(n.category, entry);
+      }
+    }
+
+    return ok({
+      sourceUrl: run.source_url,
+      status: run.status,
+      pagesSeen: run.pages_seen,
+      pagesExtracted: run.pages_extracted,
+      acceptedPages: pages.filter((p) => p.accepted_page_id !== null).length,
+      clusters: [...clusterMap.entries()].map(([clusterKey, v]) => ({
+        clusterKey,
+        label: v.label,
+        count: v.count,
+      })),
+      redirectsCreated,
+      crawlErrors,
+      notes: [...byCategory.entries()].map(([category, v]) => ({
+        category: category as z.infer<typeof noteCategory>,
+        ...v,
+      })),
+    });
+  },
+});
+
 export const cleanupImportRunOp = defineOperation({
   name: "imports.cleanup_run",
   actorScope: ["human", "system"],
