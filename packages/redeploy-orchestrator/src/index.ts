@@ -32,6 +32,19 @@ import {
 } from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
 
+/**
+ * issue #191 — hostnames the importer's SSRF guard exempts. Set
+ * CAELO_IMPORTER_ALLOWED_HOSTS to a comma-list of exact hostnames.
+ * Exists for e2e fixture servers and deliberate private-network
+ * crawls; empty (fully guarded) everywhere else.
+ */
+function importerAllowedHosts(): readonly string[] {
+  return (process.env.CAELO_IMPORTER_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((h) => h.trim())
+    .filter((h) => h.length > 0);
+}
+
 const SYSTEM_CTX = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
   actorKind: "system" as const,
@@ -302,7 +315,15 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       sourceUrl = r.source_url;
       depth = r.depth;
       maxPages = r.max_pages;
-      const result = await crawlSite({ sourceUrl, depth, maxPages, throttleMs: 100 });
+      const result = await crawlSite({
+        sourceUrl,
+        depth,
+        maxPages,
+        throttleMs: 100,
+        // issue #191 — explicit, visible exemption list for the SSRF
+        // guard (e2e fixture servers, deliberate private crawls).
+        allowedHosts: importerAllowedHosts(),
+      });
       await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "imports.write_extracted_pages", {
         runId,
         pages: result.pages.map((p) => ({
@@ -422,7 +443,9 @@ export async function captureImportDiffs(args: {
   readonly screenshotter?: Screenshotter | null;
 }): Promise<{ captured: number; failed: number }> {
   const screenshotter =
-    args.screenshotter !== undefined ? args.screenshotter : await createPlaywrightScreenshotter();
+    args.screenshotter !== undefined
+      ? args.screenshotter
+      : await createPlaywrightScreenshotter({ allowedHosts: importerAllowedHosts() });
   if (!screenshotter) return { captured: 0, failed: 0 };
 
   let captured = 0;
@@ -437,7 +460,10 @@ export async function captureImportDiffs(args: {
     };
     for (const p of v.pages) {
       try {
-        const sourceShot = await screenshotter.capture(p.sourceUrl);
+        // issue #191 — the source URL is third-party: guard it. The
+        // staged capture below targets Caelo's own localhost preview
+        // and must stay unguarded.
+        const sourceShot = await screenshotter.capture(p.sourceUrl, { external: true });
         // The staged "rendered" view: the admin's edit-by-path
         // endpoint serves the live preview of the proposed page. We
         // hit it under `staged-import:<importPageId>` so the route can

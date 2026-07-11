@@ -21,6 +21,18 @@
  * abstraction + a thin Playwright-backed factory.
  */
 
+import { lookup as dnsLookup } from "node:dns";
+import { isIP } from "node:net";
+import { assertPublicHttpUrl, isPublicIpAddress } from "./safe-fetch.js";
+
+/** Minimal Playwright route surface — typed locally so the package
+ * doesn't need @types/playwright (Playwright stays a dynamic import). */
+interface PlaywrightRoute {
+  request(): { url(): string };
+  abort(errorCode?: string): Promise<void>;
+  continue(): Promise<void>;
+}
+
 export interface Screenshot {
   /** PNG bytes. */
   readonly bytes: Uint8Array;
@@ -33,8 +45,17 @@ export interface Screenshotter {
    * Capture a single full-page screenshot of `url` at the given viewport.
    * Caller is responsible for closing the underlying browser via
    * `dispose()` when done with all captures.
+   *
+   * issue #191 — pass `external: true` for third-party URLs: the page
+   * then refuses navigations AND subresource loads that target
+   * non-public addresses (the staged-preview captures of Caelo's own
+   * localhost admin must NOT set it, which is why this is per-capture
+   * rather than per-screenshotter).
    */
-  capture(url: string, opts?: { width?: number; height?: number }): Promise<Screenshot>;
+  capture(
+    url: string,
+    opts?: { width?: number; height?: number; external?: boolean },
+  ): Promise<Screenshot>;
   dispose(): Promise<void>;
 }
 
@@ -49,7 +70,10 @@ export interface Screenshotter {
  * a self-hosted install that didn't pre-install chromium) degrades to
  * "no screenshots" instead of crashing the orchestrator tick.
  */
-export async function createPlaywrightScreenshotter(): Promise<Screenshotter | null> {
+export async function createPlaywrightScreenshotter(guardOpts?: {
+  /** issue #191 — hostnames exempt from the external-capture guard. */
+  readonly allowedHosts?: readonly string[];
+}): Promise<Screenshotter | null> {
   // Playwright is intentionally NOT a static dependency — see file
   // header. Dynamic + cast-to-unknown so the type-check doesn't need
   // @types/playwright in this package.
@@ -71,11 +95,48 @@ export async function createPlaywrightScreenshotter(): Promise<Screenshotter | n
     );
     return null;
   }
+  const allowedHosts = guardOpts?.allowedHosts ?? [];
   return {
     async capture(url, opts) {
+      if (opts?.external) {
+        // Static pre-check: scheme/port/IP-literal blocks fire before a
+        // browser context is even opened.
+        assertPublicHttpUrl(url, { allowedHosts });
+      }
       const ctx = await browser.newContext({
         viewport: { width: opts?.width ?? 1280, height: opts?.height ?? 800 },
       });
+      if (opts?.external) {
+        // Guard every request the page makes (navigation + subresources).
+        // Hostnames are resolved at route time; the browser resolves
+        // again to connect, so a rebinding race is narrowed rather than
+        // eliminated here — the primary target (direct navigation or an
+        // <img>/fetch to a metadata/loopback address) is fully blocked.
+        // The socket-level guarantee lives in safe-fetch.ts for HTML
+        // fetching; screenshots are pixels-only exposure.
+        await ctx.route("**/*", async (route: PlaywrightRoute) => {
+          const requestUrl = route.request().url();
+          try {
+            const u = assertPublicHttpUrl(requestUrl, { allowedHosts });
+            const bareHost = u.hostname.startsWith("[") ? u.hostname.slice(1, -1) : u.hostname;
+            if (isIP(bareHost) === 0 && !allowedHosts.includes(bareHost.toLowerCase())) {
+              const addresses = await new Promise<Array<{ address: string }>>((resolve, reject) => {
+                dnsLookup(bareHost, { all: true }, (err, addrs) => {
+                  if (err) reject(err);
+                  else resolve(addrs as Array<{ address: string }>);
+                });
+              });
+              if (addresses.some((a) => !isPublicIpAddress(a.address))) {
+                await route.abort("blockedbyclient");
+                return;
+              }
+            }
+            await route.continue();
+          } catch {
+            await route.abort("blockedbyclient");
+          }
+        });
+      }
       const page = await ctx.newPage();
       try {
         await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });

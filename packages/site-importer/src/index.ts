@@ -24,6 +24,16 @@ export {
   extractTitle,
 } from "./extractor.js";
 export {
+  assertPublicHttpUrl,
+  EXTERNAL_URL_BLOCKED,
+  ExternalUrlBlockedError,
+  isExternalUrlBlockedError,
+  isPublicIpAddress,
+  type SafeFetchOptions,
+  type SafeFetchResponse,
+  safeExternalFetch,
+} from "./safe-fetch.js";
+export {
   computePixelDiff,
   createPlaywrightScreenshotter,
   type Screenshot,
