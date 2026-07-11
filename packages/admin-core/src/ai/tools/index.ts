@@ -45,6 +45,7 @@ import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
+import { inspectGenesisDraftTool } from "./inspect-genesis-draft.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listLayoutsTool } from "./list-layouts.js";
@@ -152,6 +153,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(saveGenesisDraftTool);
   registry.register(listGenesisDraftsTool);
   registry.register(selectGenesisDraftTool);
+  // issue #164 — compiler stage 1: draft fact base for materialisation.
+  registry.register(inspectGenesisDraftTool);
   // issue #165 — per-site design language writer.
   registry.register(setDesignManifestTool);
   registry.register(siteMemoryProposeTool);
