@@ -1365,9 +1365,7 @@ export const composeFromImportRunOp = defineOperation({
       const homeHtml = parseModules(homeSample.proposed_modules)
         .map((m) => m.html)
         .join("\n");
-      const inv = inventoryGenesisDraft(
-        `${homeHtml}\n<style>${homeSample.page_css ?? ""}</style>`,
-      );
+      const inv = inventoryGenesisDraft(`${homeHtml}\n<style>${homeSample.page_css ?? ""}</style>`);
       designInventory = formatGenesisInventory(inv);
       await tx.execute(sql`
         UPDATE import_runs SET design_inventory = ${designInventory}
