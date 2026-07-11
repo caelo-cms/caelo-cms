@@ -56,7 +56,11 @@ export async function buildSiteBlocks(
   const identityDefaults = defaultsR.ok
     ? (
         defaultsR.value as {
-          defaults: { siteName: string | null; sitePurpose: string | null } | null;
+          defaults: {
+            siteName: string | null;
+            sitePurpose: string | null;
+            designBrief: import("@caelo-cms/shared").DesignBrief | null;
+          } | null;
         }
       ).defaults
     : null;

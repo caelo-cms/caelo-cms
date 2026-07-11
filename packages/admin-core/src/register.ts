@@ -179,6 +179,7 @@ import {
   setRateLimitOverrideOp,
   setRateLimitProfileOp,
 } from "./ops/gateway.js";
+import { addGenesisDraftOp, listGenesisDraftsOp, selectGenesisDraftOp } from "./ops/genesis.js";
 import {
   acceptImportedPageOp,
   acknowledgeImportPageDiffOp,
@@ -701,6 +702,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setSiteDefaultsOp);
   // v0.11.4 (issue #76 follow-up) — site identity onboarding writer.
   registry.register(setSiteIdentityOp);
+  // issue #163 — Site Genesis draft storage.
+  registry.register(addGenesisDraftOp);
+  registry.register(listGenesisDraftsOp);
+  registry.register(selectGenesisDraftOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
