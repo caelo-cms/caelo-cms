@@ -37,6 +37,10 @@ export const GENESIS_DRAFT_MAX_HTML_BYTES = 300_000;
 export const genesisDraftStatus = z.enum(["candidate", "selected", "discarded"]);
 export type GenesisDraftStatus = z.infer<typeof genesisDraftStatus>;
 
+/** issue #199 — where a draft came from. */
+export const genesisDraftSourceKind = z.enum(["genesis", "byod_image", "byod_html"]);
+export type GenesisDraftSourceKind = z.infer<typeof genesisDraftSourceKind>;
+
 export const genesisAddDraftInput = z
   .object({
     /** Human-readable design direction ("bold editorial"). */
@@ -45,6 +49,39 @@ export const genesisAddDraftInput = z
     rationale: z.string().max(1000).default(""),
     /** Complete self-contained single-file HTML. */
     html: z.string().min(200).max(GENESIS_DRAFT_MAX_HTML_BYTES),
+    /** issue #199 — 'byod_image' (AI reproduction of an operator
+     *  mockup) / 'byod_html' (operator HTML, sanitised at the op). */
+    sourceKind: genesisDraftSourceKind.default("genesis"),
+    /** issue #199 — byod_image only: the uploaded mockup's media
+     *  asset. The parity gate uses THIS image as the reference. */
+    referenceAssetId: z.string().uuid().optional(),
   })
   .strict();
 export type GenesisAddDraftInput = z.infer<typeof genesisAddDraftInput>;
+
+/**
+ * issue #199 — strip <script> blocks from operator-provided draft
+ * HTML. Defense in depth: drafts render inside sandbox="" iframes
+ * (scripts never execute there), but stored HTML flows onward into
+ * materialisation, so the boundary removes them outright. Linear
+ * scan per the #113 discipline; case-insensitive; unterminated
+ * script blocks drop everything to EOF (never leak half a script).
+ */
+export function sanitizeDraftHtml(html: string): string {
+  const lower = html.toLowerCase();
+  let out = "";
+  let from = 0;
+  while (true) {
+    const open = lower.indexOf("<script", from);
+    if (open === -1) {
+      out += html.slice(from);
+      return out;
+    }
+    out += html.slice(from, open);
+    const close = lower.indexOf("</script", open);
+    if (close === -1) return out;
+    const closeEnd = lower.indexOf(">", close);
+    if (closeEnd === -1) return out;
+    from = closeEnd + 1;
+  }
+}

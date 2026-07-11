@@ -18,7 +18,14 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, genesisAddDraftInput, genesisDraftStatus, ok } from "@caelo-cms/shared";
+import {
+  err,
+  genesisAddDraftInput,
+  genesisDraftSourceKind,
+  genesisDraftStatus,
+  ok,
+  sanitizeDraftHtml,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -29,6 +36,9 @@ const draftRow = z.object({
   direction: z.string(),
   rationale: z.string(),
   status: genesisDraftStatus,
+  /** issue #199 — provenance + the byod_image parity reference. */
+  sourceKind: genesisDraftSourceKind,
+  referenceAssetId: z.string().nullable(),
   createdAt: z.string(),
   /** Byte size instead of the body — listing is a decision surface. */
   htmlBytes: z.number().int().nonnegative(),
@@ -43,9 +53,22 @@ export const addGenesisDraftOp = defineOperation({
   input: genesisAddDraftInput,
   output: z.object({ draftId: z.string(), candidateCount: z.number().int() }),
   handler: async (ctx, input, tx) => {
+    // issue #199 — operator-provided HTML is sanitised at the boundary;
+    // AI-authored drafts pass through (they never contain scripts by
+    // the authoring rules, and sanitising anyway costs nothing).
+    const html = sanitizeDraftHtml(input.html);
+    if (input.sourceKind === "byod_image" && !input.referenceAssetId) {
+      return err({
+        kind: "HandlerError",
+        operation: "genesis.add_draft",
+        message:
+          "byod_image drafts need referenceAssetId (the uploaded mockup) — the parity gate compares against the operator's asset",
+      });
+    }
     const rows = (await tx.execute(sql`
-      INSERT INTO genesis_drafts (direction, rationale, html)
-      VALUES (${input.direction}, ${input.rationale}, ${input.html})
+      INSERT INTO genesis_drafts (direction, rationale, html, source_kind, reference_asset_id)
+      VALUES (${input.direction}, ${input.rationale}, ${html},
+              ${input.sourceKind}, ${input.referenceAssetId ?? null}::uuid)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const draftId = rows[0]?.id;
@@ -80,6 +103,7 @@ export const listGenesisDraftsOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, direction, rationale, status,
+             source_kind, reference_asset_id::text AS reference_asset_id,
              created_at, length(html)::int AS html_bytes
              ${input.includeHtml ? sql`, html` : sql``}
       FROM genesis_drafts
@@ -90,6 +114,8 @@ export const listGenesisDraftsOp = defineOperation({
       direction: string;
       rationale: string;
       status: "candidate" | "selected" | "discarded";
+      source_kind: "genesis" | "byod_image" | "byod_html";
+      reference_asset_id: string | null;
       created_at: string | Date;
       html_bytes: number;
       html?: string;
@@ -100,6 +126,8 @@ export const listGenesisDraftsOp = defineOperation({
         direction: r.direction,
         rationale: r.rationale,
         status: r.status,
+        sourceKind: r.source_kind,
+        referenceAssetId: r.reference_asset_id,
         createdAt: toIsoRequired(r.created_at, "genesis_drafts.created_at"),
         htmlBytes: r.html_bytes,
         ...(r.html !== undefined ? { html: r.html } : {}),

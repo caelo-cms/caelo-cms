@@ -26,7 +26,8 @@ export const saveGenesisDraftTool: ToolDefinitionWithHandler<
     "Part of the site-genesis flow — save each draft your parallel subagents return, then point the operator at /design/genesis to compare them side-by-side. " +
     "Do NOT paste draft HTML into the chat (it's huge and unreadable there); this tool is where drafts live. " +
     "`direction` names the design angle ('bold editorial'); `rationale` says why it fits the brief — both render beside the preview so the operator can choose without reading code. " +
-    "To revise a draft after feedback, save a NEW draft with the same direction and a rationale noting the change.",
+    "To revise a draft after feedback, save a NEW draft with the same direction and a rationale noting the change. " +
+    "BRING-YOUR-OWN-DESIGN (issue #199): when the operator supplied the design, set sourceKind — 'byod_image' for your faithful reproduction of their attached mockup (referenceAssetId REQUIRED: the attachment's assetId; the parity gate then verifies against THEIR image, not your reproduction) or 'byod_html' for HTML they provided (scripts are stripped at the boundary — tell them if theirs relied on scripts).",
   schema: genesisAddDraftInput,
   inputSchema: {
     type: "object",
@@ -36,6 +37,16 @@ export const saveGenesisDraftTool: ToolDefinitionWithHandler<
       direction: { type: "string", minLength: 3, maxLength: 120 },
       rationale: { type: "string", maxLength: 1000 },
       html: { type: "string", minLength: 200, maxLength: GENESIS_DRAFT_MAX_HTML_BYTES },
+      sourceKind: {
+        type: "string",
+        enum: ["genesis", "byod_image", "byod_html"],
+        description: "Where this draft came from. Default 'genesis' (divergent AI drafts).",
+      },
+      referenceAssetId: {
+        type: "string",
+        format: "uuid",
+        description: "byod_image only: the operator's uploaded mockup asset.",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {

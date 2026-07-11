@@ -31,6 +31,7 @@ import {
   type Screenshotter,
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
+import { getMediaStorage } from "../../media/storage.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -89,8 +90,17 @@ export const checkGenesisParityTool: ToolDefinitionWithHandler<ParityInput> = {
         content: `genesis.list_drafts failed: ${describeError(draftsRes.error)}`,
       };
     }
-    const drafts = (draftsRes.value as { drafts: { id: string; status: string; html?: string }[] })
-      .drafts;
+    const drafts = (
+      draftsRes.value as {
+        drafts: {
+          id: string;
+          status: string;
+          html?: string;
+          sourceKind?: string;
+          referenceAssetId?: string | null;
+        }[];
+      }
+    ).drafts;
     const draft =
       input.draftId !== undefined
         ? drafts.find((d) => d.id === input.draftId)
@@ -133,8 +143,43 @@ export const checkGenesisParityTool: ToolDefinitionWithHandler<ParityInput> = {
       };
     }
     try {
+      // issue #199 — byod_image drafts verify against the OPERATOR'S
+      // uploaded mockup, not the AI's HTML reproduction of it: their
+      // asset is the contract. Missing asset = loud failure.
+      let referenceUrl: string;
+      if (draft.sourceKind === "byod_image" && draft.referenceAssetId) {
+        const assetRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "media.get", {
+          assetId: draft.referenceAssetId,
+        });
+        const asset = assetRes.ok
+          ? (assetRes.value as { asset: { storageKey: string; mime: string } | null }).asset
+          : null;
+        if (!asset) {
+          return {
+            ok: false,
+            content:
+              "parity UNCHECKED — the draft's reference mockup asset is missing (deleted?). Tell the operator the visual gate could not compare against their design.",
+          };
+        }
+        let bytes: Uint8Array;
+        try {
+          bytes = await getMediaStorage().get(asset.storageKey);
+        } catch (e) {
+          return {
+            ok: false,
+            content: `parity UNCHECKED — the reference mockup could not be read from storage: ${e instanceof Error ? e.message : String(e)}.`,
+          };
+        }
+        // Wrap in a minimal page so both sides render as full-width
+        // documents in the same viewport.
+        referenceUrl = toDataUrl(
+          `<!doctype html><body style="margin:0"><img src="data:${asset.mime};base64,${Buffer.from(bytes).toString("base64")}" style="width:100%;display:block"></body>`,
+        );
+      } else {
+        referenceUrl = toDataUrl(draft.html);
+      }
       const [draftShot, composedShot] = [
-        await shotter.capture(toDataUrl(draft.html), { width: 1280, height: 800 }),
+        await shotter.capture(referenceUrl, { width: 1280, height: 800 }),
         await shotter.capture(toDataUrl(composedHtml), { width: 1280, height: 800 }),
       ];
       const diffPct = await pixelDiff(draftShot, composedShot);
