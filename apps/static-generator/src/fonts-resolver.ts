@@ -19,6 +19,11 @@
  * editor render on fonts-CDN reachability would punish the operator for
  * a network condition, but the miss still lands in the missing-content
  * surface.
+ *
+ * Lives in the static-generator (not admin-core) because admin-core
+ * already imports this app for deploy publishing — a resolver in
+ * admin-core imported from generate.ts closes a module cycle (madge
+ * gate). admin-core re-exports it for the preview op + fonts route.
  */
 
 import { createHash } from "node:crypto";
@@ -36,6 +41,14 @@ import {
   selectPreloadFaces,
   type ThemeDocument,
 } from "@caelo-cms/shared";
+
+/**
+ * Face bytes are only fetched from the fonts CDN. The srcUrl comes out
+ * of a remotely-served CSS payload — without this pin, a compromised or
+ * spoofed css2 response could point the server at arbitrary URLs
+ * (request-forgery surface).
+ */
+const ALLOWED_FONT_FILE_HOSTS: ReadonlySet<string> = new Set(["fonts.gstatic.com"]);
 
 /** css2 serves woff2 (+ unicode-range splits) only to modern-browser UAs. */
 const WOFF2_UA =
@@ -111,6 +124,10 @@ async function fetchFamily(
   const familyDir = join(cacheDir, fontFamilySlug(req.family));
   const faces: CachedFace[] = [];
   for (const face of parsed) {
+    const srcHost = new URL(face.srcUrl).host;
+    if (!ALLOWED_FONT_FILE_HOSTS.has(srcHost)) {
+      throw new Error(`font file host not allowed: ${srcHost} (${face.srcUrl})`);
+    }
     const fileName = `${createHash("sha256").update(face.srcUrl).digest("hex").slice(0, 16)}.woff2`;
     const target = join(familyDir, fileName);
     const bytesRes = await fetcher(face.srcUrl);

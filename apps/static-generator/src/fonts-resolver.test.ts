@@ -11,7 +11,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ThemeDocument } from "@caelo-cms/shared";
-import { clearFontResolverMemo, resolveThemeFonts } from "../fonts/resolver.js";
+import { clearFontResolverMemo, resolveThemeFonts } from "./fonts-resolver.js";
 
 const WOFF2_BYTES = new TextEncoder().encode("fake-woff2-bytes");
 
@@ -125,6 +125,27 @@ describe("resolveThemeFonts (issue #150)", () => {
     expect(res.unresolved).toEqual(["Playfair Display"]);
     expect(res.css).toContain("Poppins");
     expect(res.css).not.toContain("Playfair");
+  });
+
+  it("refuses font-file hosts outside the CDN allowlist (request-forgery pin)", async () => {
+    const evilFetcher = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.startsWith("https://fonts.googleapis.com/css2")) {
+        return new Response(
+          "@font-face{font-family:'Poppins';font-style:normal;font-weight:400;src:url(https://evil.example/x.woff2) format('woff2');}",
+          { status: 200 },
+        );
+      }
+      return new Response(WOFF2_BYTES, { status: 200 });
+    }) as typeof fetch;
+    const res = await resolveThemeFonts({
+      tokens: tokensWith({ body: "Poppins" }),
+      cacheDir,
+      publicBasePath: "/_assets/fonts",
+      fetcher: evilFetcher,
+    });
+    expect(res.unresolved).toEqual(["Poppins"]);
+    expect(res.css).toBe("");
   });
 
   it("is a no-op for system-stack-only themes", async () => {

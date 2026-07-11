@@ -1,5 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// issue #150 — theme web-font resolver. Canonical implementation lives
+// in the static-generator (admin-core already depends on that app for
+// deploy publishing; hosting it here would close a module cycle).
+export {
+  clearFontResolverMemo,
+  defaultFontsCacheDir,
+  type ResolvedThemeFonts,
+  type ResolveThemeFontsArgs,
+  resolveThemeFonts,
+} from "@caelo-cms/static-generator";
 export * from "./ai/chat-runner.js";
 export * from "./ai/pricing-cache.js";
 export * from "./ai/provider.js";
@@ -28,8 +38,6 @@ export * from "./audit.js";
 export * from "./csrf.js";
 // P12 review pass — email transport factory (consumed by hooks.server.ts).
 export { buildEmailTransport, type EmailConfigRow } from "./email/transport.js";
-// issue #150 — theme web-font resolver (shared by preview + static-gen).
-export * from "./fonts/resolver.js";
 export * from "./media/pipeline.js";
 export * from "./media/storage.js";
 export * from "./ops/auth.js";

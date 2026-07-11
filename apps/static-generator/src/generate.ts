@@ -24,7 +24,6 @@
 
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { defaultFontsCacheDir, resolveThemeFonts } from "@caelo-cms/admin-core";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -39,6 +38,7 @@ import {
   trimSlashes,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { buildRobotsTxtWithSitemap, readSeoSettings, runSeoPass } from "./seo-pass.js";

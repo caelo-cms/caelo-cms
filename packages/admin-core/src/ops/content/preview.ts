@@ -32,9 +32,9 @@ import {
   type SiteSeoSettings,
   type ThemeDocument,
 } from "@caelo-cms/shared";
+import { defaultFontsCacheDir, resolveThemeFonts } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { defaultFontsCacheDir, resolveThemeFonts } from "../../fonts/resolver.js";
 import {
   type ContentInstanceResource,
   collectNestedRefs,
