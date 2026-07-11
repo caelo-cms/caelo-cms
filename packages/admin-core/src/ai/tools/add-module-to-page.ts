@@ -21,6 +21,7 @@ import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
+import { designGuardSuffix } from "./_design-guard.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -133,6 +134,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
     let placedExisting = false;
     let extractedFields: { name: string; kind: string }[] | undefined;
     let bindingReport = "";
+    let boundCss = "";
     if (input.moduleId !== undefined) {
       const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.get", {
         moduleId: input.moduleId,
@@ -162,7 +164,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
       }
       slug = slugifyModuleName(displayName);
       // issue #164 slice 2 — opt-in mechanical token binding.
-      let boundCss = input.css ?? "";
+      boundCss = input.css ?? "";
       if (input.bindThemeLiterals === true && boundCss.length > 0) {
         const bound = await bindCssToTheme(ctx, toolCtx, boundCss);
         boundCss = bound.css;
@@ -267,7 +269,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
         : "";
     return {
       ok: true,
-      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}.${bindingReport}${extractedHint}${missingMetaHint}${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
+      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}.${bindingReport}${extractedHint}${missingMetaHint}${await cssVarWarningSuffix(ctx, toolCtx, boundCss)}${await designGuardSuffix(ctx, toolCtx, { css: boundCss, displayName: input.displayName, kind: input.kind, type: input.type })}`,
     };
   },
 };
