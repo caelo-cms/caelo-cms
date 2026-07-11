@@ -34,6 +34,13 @@ export {
   extractThemeTokens,
   extractTitle,
 } from "./extractor.js";
+export {
+  type ClusterSummary,
+  computePageSignature,
+  type PageSignatureInput,
+  pathShape,
+  summariseClusters,
+} from "./page-signature.js";
 export { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 export {
   assertPublicHttpUrl,

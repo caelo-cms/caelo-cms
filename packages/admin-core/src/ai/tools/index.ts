@@ -44,6 +44,7 @@ import {
 import { getContentInstanceTool } from "./get-content-instance.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
+import { assignImportPageClusterTool, listImportPageClustersTool } from "./import-page-clusters.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
@@ -165,6 +166,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #189 — single-page external-site sensing (migration glance).
   registry.register(inspectExternalPageTool);
   registry.register(screenshotExternalPageTool);
+  // issue #194 — page-type clusters for the migration flow.
+  registry.register(listImportPageClustersTool);
+  registry.register(assignImportPageClusterTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);

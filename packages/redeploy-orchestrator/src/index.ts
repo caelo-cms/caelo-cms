@@ -382,6 +382,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
               displayName: m.displayName,
             })),
             proposedThemeTokens: p.themeTokens,
+            signature: p.signature,
           })),
         });
       };
