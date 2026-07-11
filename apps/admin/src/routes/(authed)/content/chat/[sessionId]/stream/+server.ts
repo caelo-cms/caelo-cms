@@ -44,7 +44,19 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     content: string;
     chips?: unknown[];
     activePageId?: string;
+    attachments?: unknown;
   };
+  // issue #190 — Zod at the boundary for operator-attached images.
+  const { CHAT_MAX_ATTACHMENTS, chatAttachmentSchema } = await import("@caelo-cms/shared");
+  const { z } = await import("zod");
+  const attachmentsParse = z
+    .array(chatAttachmentSchema)
+    .max(CHAT_MAX_ATTACHMENTS)
+    .default([])
+    .safeParse(body.attachments ?? []);
+  if (!attachmentsParse.success) {
+    throw error(400, `invalid attachments: ${attachmentsParse.error.message}`);
+  }
   const { adapter, registry } = getQueryContext();
 
   let aiProvider: import("@caelo-cms/admin-core").AIProvider | null = null;
@@ -160,6 +172,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             chips: Array.isArray(body.chips)
               ? (body.chips as { moduleId: string; selector: string; label: string }[])
               : [],
+            attachments: attachmentsParse.data,
             ...(typeof body.activePageId === "string" && body.activePageId.length > 0
               ? { activePageId: body.activePageId }
               : {}),

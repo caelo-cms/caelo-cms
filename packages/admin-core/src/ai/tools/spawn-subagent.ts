@@ -177,6 +177,7 @@ async function runOneSubagent(
         chatSessionId: subagentChatSessionId,
         content: spec.task,
         chips: [],
+        attachments: [],
         ...(spec.activePageId ? { activePageId: spec.activePageId } : {}),
       },
       aiCtx: childAiCtx,

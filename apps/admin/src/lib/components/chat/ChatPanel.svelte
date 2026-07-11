@@ -630,6 +630,10 @@
   let dragOver = $state(false);
   // Inline upload error state — shown briefly under the composer.
   let uploadError = $state<string | null>(null);
+  /** issue #190 — images attached to the NEXT message (chips above the
+   *  composer). Uploaded immediately on drop; sent as attachment refs. */
+  let pendingAttachments = $state<{ assetId: string; mime: string; alt: string }[]>([]);
+  const MAX_PENDING_ATTACHMENTS = 4;
 
   /** Hardcoded tool hints for the slash menu. Not the full 80-tool
    *  catalogue — that would overwhelm the popup. The list covers the
@@ -741,44 +745,53 @@
     }
   }
 
-  /** Drag-drop media upload. The drop handler sends the first file to
-   *  /api/media/upload and pastes the resulting URL into the composer
-   *  at the current caret. Reuses the existing media upload route +
-   *  the `caelo:insert-into-composer` event the media picker fires. */
+  /** issue #190 — drag-drop image attach. Uploads to /api/media/upload
+   *  immediately, then records an attachment CHIP on the pending
+   *  message — the model receives the image as a real image part, not
+   *  a URL string it can't see. (The pre-#190 handler spliced an
+   *  `<img>` tag into the composer text; besides being invisible to
+   *  the model, it expected a `url` field the upload endpoint never
+   *  returned, so it was broken end-to-end.) */
+  const ATTACHABLE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
   async function onComposerDrop(e: DragEvent): Promise<void> {
     e.preventDefault();
     dragOver = false;
-    const file = e.dataTransfer?.files?.[0];
-    if (!file) return;
+    const files = [...(e.dataTransfer?.files ?? [])];
+    if (files.length === 0) return;
     uploadError = null;
-    const fd = new FormData();
-    fd.append("file", file);
-    try {
-      const res = await fetch("/api/media/upload", {
-        method: "POST",
-        headers: { "x-csrf-token": csrfToken },
-        body: fd,
-      });
-      if (!res.ok) {
-        uploadError = `Upload failed (${res.status}). Drop a smaller file or use the media picker.`;
-        return;
+    for (const file of files) {
+      if (pendingAttachments.length >= MAX_PENDING_ATTACHMENTS) {
+        uploadError = `Max ${MAX_PENDING_ATTACHMENTS} images per message.`;
+        break;
       }
-      const v = (await res.json()) as { url?: string; mediaId?: string; alt?: string };
-      const url = v.url ?? "";
-      const alt = v.alt ?? file.name;
-      if (!url) {
-        uploadError = "Upload returned no URL.";
-        return;
+      if (!ATTACHABLE_MIMES.has(file.type)) {
+        uploadError = `"${file.name}" is ${file.type || "an unknown type"} — only PNG/JPEG/WebP/GIF images can be attached to the chat.`;
+        continue;
       }
-      const snippet = file.type.startsWith("image/")
-        ? `<img src="${url}" alt="${alt}">`
-        : url;
-      // Reuse the existing inserter so caret position is respected.
-      document.dispatchEvent(
-        new CustomEvent("caelo:insert-into-composer", { detail: { text: snippet } }),
-      );
-    } catch (err) {
-      uploadError = `Upload failed: ${(err as Error).message ?? "unknown"}`;
+      const fd = new FormData();
+      fd.append("file", file);
+      try {
+        const res = await fetch("/api/media/upload", {
+          method: "POST",
+          headers: { "x-csrf-token": csrfToken },
+          body: fd,
+        });
+        if (!res.ok) {
+          uploadError = `Upload failed (${res.status}). Drop a smaller file or use the media picker.`;
+          continue;
+        }
+        const v = (await res.json()) as { assetId?: string; mime?: string };
+        if (!v.assetId || !v.mime || !ATTACHABLE_MIMES.has(v.mime)) {
+          uploadError = `Upload of "${file.name}" returned no usable image asset.`;
+          continue;
+        }
+        pendingAttachments = [
+          ...pendingAttachments,
+          { assetId: v.assetId, mime: v.mime, alt: file.name },
+        ];
+      } catch (err) {
+        uploadError = `Upload failed: ${(err as Error).message ?? "unknown"}`;
+      }
     }
   }
 
@@ -886,9 +899,13 @@
   });
 
   async function sendMessage(): Promise<void> {
-    if (composer.trim().length === 0 || streaming) return;
-    const text = composer;
+    if ((composer.trim().length === 0 && pendingAttachments.length === 0) || streaming) return;
+    // Attachment-only sends get a minimal text body (the op requires
+    // non-empty content; the images carry the actual intent).
+    const text = composer.trim().length > 0 ? composer : "(see attached image)";
     const sentChips = chips;
+    const sentAttachments = pendingAttachments;
+    pendingAttachments = [];
     composer = "";
     chatError = null;
     chatWarning = null;
@@ -902,13 +919,24 @@
     currentActivity = "Sending…";
     // Snap the composer back to one row after clearing it.
     queueMicrotask(autoSizeComposer);
-    messages = [...messages, { id: `local-${Date.now()}`, role: "user", content: text }];
+    messages = [
+      ...messages,
+      {
+        id: `local-${Date.now()}`,
+        role: "user",
+        content: text,
+        ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
+      },
+    ];
     const res = await fetch(`/content/chat/${session.id}/stream`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
       body: JSON.stringify({
         content: text,
         chips: sentChips,
+        ...(sentAttachments.length > 0
+          ? { attachments: sentAttachments.map((a) => ({ assetId: a.assetId, mime: a.mime, alt: a.alt })) }
+          : {}),
         ...(activePageId ? { activePageId } : {}),
       }),
     });
@@ -1386,6 +1414,19 @@
                   <strong>{m.role === "user" ? "You" : "AI"}:</strong>
                   {#if m.role === "user"}
                     <pre class="m-0 whitespace-pre-wrap font-sans">{m.content}</pre>
+                    {#if m.attachments && m.attachments.length > 0}
+                      <!-- issue #190 — persisted attachment thumbnails. -->
+                      <div class="mt-2 flex flex-wrap gap-2" data-testid="chat-message-attachments">
+                        {#each m.attachments as att (att.assetId)}
+                          <img
+                            src={`/_caelo/media/${att.assetId}/orig`}
+                            alt={att.alt ?? "attached image"}
+                            class="h-20 w-20 rounded-md border border-border object-cover"
+                            loading="lazy"
+                          />
+                        {/each}
+                      </div>
+                    {/if}
                   {:else}
                     {#if m.thinkingText}
                       <details class="mt-1 rounded border border-muted-foreground/20 bg-background/50 px-2 py-1 text-xs">
@@ -1577,6 +1618,32 @@
             data-testid="chat-turn-status"
             data-turn-state={streaming ? "streaming" : "idle"}
           ></span>
+          {#if pendingAttachments.length > 0}
+            <!-- issue #190 — attachment chips riding the next message. -->
+            <div class="mb-1.5 flex flex-wrap gap-2" data-testid="chat-pending-attachments">
+              {#each pendingAttachments as att (att.assetId)}
+                <div class="relative">
+                  <img
+                    src={`/_caelo/media/${att.assetId}/orig`}
+                    alt={att.alt}
+                    class="h-14 w-14 rounded-md border border-border object-cover"
+                  />
+                  <button
+                    type="button"
+                    aria-label={`Remove ${att.alt}`}
+                    class="absolute -right-1.5 -top-1.5 flex size-4 items-center justify-center rounded-full bg-foreground text-[10px] leading-none text-background"
+                    onclick={() => {
+                      pendingAttachments = pendingAttachments.filter(
+                        (x) => x.assetId !== att.assetId,
+                      );
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/if}
           <Textarea
             bind:value={composer}
             bind:ref={composerEl}
