@@ -46,6 +46,7 @@ import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
 import { assignImportPageClusterTool, listImportPageClustersTool } from "./import-page-clusters.js";
+import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
@@ -172,6 +173,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(assignImportPageClusterTool);
   // issue #198 — stored crawl screenshots as model-visible pixels.
   registry.register(getImportPageScreenshotTool);
+  // issue #197 — rebuild notes + the migration's closing report.
+  registry.register(addImportPageNotesTool);
+  registry.register(getImportRunReportTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);
