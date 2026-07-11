@@ -10,6 +10,18 @@ import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
+/** issue #193 — the stored crawl-scope estimate (or its loud failure). */
+type ImportEstimate =
+  | { failed: true; reason: string }
+  | {
+      failed?: false;
+      pages: number;
+      basis: "sitemap" | "sample";
+      truncated: boolean;
+      crawlMinutes: number;
+      aiCostUsd: { low: number; high: number };
+    };
+
 interface ImportRun {
   id: string;
   sourceUrl: string;
@@ -17,6 +29,7 @@ interface ImportRun {
   maxPages: number;
   proposedBy: string;
   createdAt: string;
+  estimate: ImportEstimate | null;
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
