@@ -16,6 +16,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { createTemplateToolInput } from "@caelo-cms/shared";
+import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -94,7 +95,7 @@ export const createTemplateTool: ToolDefinitionWithHandler<
     const templateId = (r.value as { templateId: string }).templateId;
     return {
       ok: true,
-      content: `template created: id=${templateId} slug=${input.slug} displayName="${input.displayName}"`,
+      content: `template created: id=${templateId} slug=${input.slug} displayName="${input.displayName}"${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
     };
   },
 };

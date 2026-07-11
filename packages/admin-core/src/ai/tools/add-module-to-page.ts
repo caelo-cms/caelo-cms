@@ -19,6 +19,7 @@ import { execute } from "@caelo-cms/query-api";
 import { addModuleToPageToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
+import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
@@ -208,7 +209,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
         : "";
     return {
       ok: true,
-      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}.${extractedHint}${missingMetaHint}`,
+      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}.${extractedHint}${missingMetaHint}${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
     };
   },
 };
