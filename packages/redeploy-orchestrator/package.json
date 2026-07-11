@@ -16,5 +16,8 @@
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/site-importer": "workspace:*",
     "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "@caelo-cms/admin-core": "workspace:*"
   }
 }

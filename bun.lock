@@ -280,6 +280,9 @@
         "@caelo-cms/site-importer": "workspace:*",
         "drizzle-orm": "0.45.2",
       },
+      "devDependencies": {
+        "@caelo-cms/admin-core": "workspace:*",
+      },
     },
     "packages/shared": {
       "name": "@caelo-cms/shared",

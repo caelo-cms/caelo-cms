@@ -96,6 +96,14 @@ export interface OrchestratorConfig {
   readonly pollIntervalMs?: number;
   /** Defaults to one hour. */
   readonly gcIntervalMs?: number;
+  /**
+   * issue #198 — sink for import screenshots (the admin app wires its
+   * media storage in). Absent = captures are diffed but not persisted
+   * (pre-#198 behaviour), which the run records via the NULL keys.
+   */
+  readonly screenshotStorage?: {
+    put(key: string, body: Uint8Array, contentType: string): Promise<void>;
+  };
 }
 
 export interface OrchestratorHandle {
@@ -424,6 +432,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           stagedPreviewBaseUrl: process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:5173",
           adapter: cfg.adapter,
           registry: cfg.registry,
+          ...(cfg.screenshotStorage ? { screenshotStorage: cfg.screenshotStorage } : {}),
         });
       }
       await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "imports.update_run_status", {
@@ -522,6 +531,11 @@ export async function captureImportDiffs(args: {
   readonly registry: OperationRegistry;
   /** Optional override for tests; defaults to Playwright via dynamic import. */
   readonly screenshotter?: Screenshotter | null;
+  /** issue #198 — when present, both captures are uploaded and their
+   *  keys land on the import_pages row. */
+  readonly screenshotStorage?: {
+    put(key: string, body: Uint8Array, contentType: string): Promise<void>;
+  };
 }): Promise<{ captured: number; failed: number }> {
   const screenshotter =
     args.screenshotter !== undefined
@@ -563,10 +577,34 @@ export async function captureImportDiffs(args: {
         }
         const diffPct = stagedShot ? await computePixelDiff(sourceShot, stagedShot) : 1;
         const classified = computeDiffStatus(diffPct);
+        // issue #198 — persist the pixels, not just the verdict. Keys
+        // are deterministic per page so re-captures overwrite instead
+        // of accumulating. Upload failures null the key (loud in the
+        // review UI), never block the diff write.
+        let sourceKey: string | undefined;
+        let stagedKey: string | undefined;
+        if (args.screenshotStorage) {
+          try {
+            sourceKey = `import-screenshots/${args.runId}/${p.id}-source.png`;
+            await args.screenshotStorage.put(sourceKey, sourceShot.bytes, "image/png");
+          } catch {
+            sourceKey = undefined;
+          }
+          if (stagedShot) {
+            try {
+              stagedKey = `import-screenshots/${args.runId}/${p.id}-staged.png`;
+              await args.screenshotStorage.put(stagedKey, stagedShot.bytes, "image/png");
+            } catch {
+              stagedKey = undefined;
+            }
+          }
+        }
         await execute(args.registry, args.adapter, SYSTEM_CTX, "imports.update_page_diff", {
           importPageId: p.id,
           diffStatus: classified.status,
           diffPct: classified.diffPct,
+          ...(sourceKey ? { screenshotObjectKey: sourceKey } : {}),
+          ...(stagedKey ? { stagedScreenshotObjectKey: stagedKey } : {}),
         });
         captured += 1;
       } catch {

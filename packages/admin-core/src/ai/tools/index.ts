@@ -42,6 +42,7 @@ import {
   selectGenesisDraftTool,
 } from "./genesis-tools.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
+import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
 import { assignImportPageClusterTool, listImportPageClustersTool } from "./import-page-clusters.js";
@@ -169,6 +170,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #194 — page-type clusters for the migration flow.
   registry.register(listImportPageClustersTool);
   registry.register(assignImportPageClusterTool);
+  // issue #198 — stored crawl screenshots as model-visible pixels.
+  registry.register(getImportPageScreenshotTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);
