@@ -38,7 +38,11 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { ANCHOR_HUE_HINTS, THEME_DOCUMENT_SKELETON } from "../theme-guidance.js";
+import {
+  ANCHOR_HUE_HINTS,
+  DEPTH_AND_SURFACE_HINTS,
+  THEME_DOCUMENT_SKELETON,
+} from "../theme-guidance.js";
 import type { ToolContext, ToolResult } from "./dispatch.js";
 
 export interface ColdStartCheckResult {
@@ -135,7 +139,8 @@ export async function checkColdStartGate(
         "document yourself from the brand context (site identity, the operator's wording, the industry): " +
         `${THEME_DOCUMENT_SKELETON}. The primary must carry real chroma — never default to neutral grayscale ` +
         `on a real site. Anchor-hue inspiration: ${ANCHOR_HUE_HINTS} — the hue anchors the palette, the rest ` +
-        "of the document is still yours to compose. `description` records WHY the palette fits the brand. " +
+        `of the document is still yours to compose. ${DEPTH_AND_SURFACE_HINTS} ` +
+        "`description` records WHY the palette fits the brand. " +
         "Then tell the operator to approve it at /security/themes/pending.",
     );
     steps.push(
@@ -149,8 +154,8 @@ export async function checkColdStartGate(
       "`set_theme_tokens({set: {…}})` — evolve the seed grayscale into a full brand palette in ONE call: " +
         "primaryColor with real chroma plus the supporting colors that should follow it (accent, ring, " +
         "secondary where the brand calls for it), and typography if the brand voice suggests one. " +
-        `Anchor-hue inspiration: ${ANCHOR_HUE_HINTS}. Never leave a real site on the neutral ` +
-        "grayscale seed.",
+        `Anchor-hue inspiration: ${ANCHOR_HUE_HINTS}. ${DEPTH_AND_SURFACE_HINTS} Never leave a real site on ` +
+        "the neutral grayscale seed.",
     );
     steps.push(
       "`set_theme_meta({description: '<why this palette fits the brand>'})` — required: the gate clears only " +

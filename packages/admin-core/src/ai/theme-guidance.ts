@@ -21,17 +21,35 @@
 export const THEME_DOCUMENT_SKELETON =
   "`{color: {background, foreground, primary, primary-foreground, secondary, " +
   "secondary-foreground, accent, accent-foreground, muted, muted-foreground, card, " +
-  "card-foreground, border, ring, destructive, destructive-foreground}, typography: " +
-  "{body, heading, mono}, spacing: {xs…2xl}, radius: {sm…lg}, shadow, motion}`";
+  "card-foreground, border, ring, destructive, destructive-foreground, surface, " +
+  "surface-alt}, gradient: {hero, subtle}, typography: {body, heading, mono}, " +
+  "spacing: {xs…2xl}, radius: {sm…lg}, shadow: {sm…xl}, motion}`";
 
 /**
- * Hue-by-industry starting points. The hue anchors the palette; the
- * rest of the document is still the AI's to compose — these exist so
- * the model doesn't fall back to neutral when the brand isn't overtly
- * color-coded.
+ * Palette starting points by industry feel (issue #153: pairs, not
+ * single hues — one flat hue reads as unfinished). The pair anchors
+ * the palette; the rest of the document is still the AI's to compose —
+ * these exist so the model doesn't fall back to neutral when the brand
+ * isn't overtly color-coded.
  */
 export const ANCHOR_HUE_HINTS =
-  "`#4f46e5` indigo (SaaS / dev tools), `#7c3aed` violet (creative / AI products), " +
-  "`#06b6d4` cyan (data / analytics), `#10b981` emerald (sustainability / finance), " +
-  "`#f59e0b` amber (warm / lifestyle), `#ef4444` red (urgency / news), " +
-  "`#0f172a` slate (luxury / enterprise)";
+  "`#4f46e5` indigo + violet accent (SaaS / dev tools), " +
+  "`#7c3aed` violet + cyan accent (creative / AI products), " +
+  "`#06b6d4` cyan + deep-navy neutrals (data / analytics), " +
+  "`#10b981` emerald + warm-sand neutrals (sustainability / finance), " +
+  "`#f59e0b` amber + terracotta accent (warm / lifestyle), " +
+  "`#ef4444` red + cool-slate neutrals (urgency / news), " +
+  "`#0f172a` slate + gold accent (luxury / enterprise)";
+
+/**
+ * issue #153 — the anti-flat primer. #112 killed grayscale; the next
+ * ceiling was flat single-hue documents (no gradients, one shadow, no
+ * surface tinting). Shared verbatim by the same three surfaces as the
+ * skeleton so the copies can't drift.
+ */
+export const DEPTH_AND_SURFACE_HINTS =
+  "Compose DEPTH, not just hue: give `gradient.hero` a real two-stop CSS gradient in the " +
+  "primary's family (e.g. `linear-gradient(135deg, <primary>, <accent>)`) and `gradient.subtle` " +
+  "a near-invisible background wash; tint `color.surface-alt` a few percent off `background` so " +
+  "sections can alternate; grade `shadow.sm…xl` as a real elevation ramp. Flat single-hue " +
+  "palettes read as unfinished — reserve strict flatness for brands that explicitly demand it.";
