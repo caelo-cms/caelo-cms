@@ -127,6 +127,18 @@ export interface ComposeTheme {
   };
 }
 
+/**
+ * issue #150 — self-hosted web fonts resolved by the caller (font
+ * resolver in admin-core; static generator + preview op thread the
+ * same shape so both surfaces load identical fonts). `css` is the
+ * @font-face block; `preloads` are woff2 URLs worth a
+ * `<link rel="preload">` (body/heading faces, capped upstream).
+ */
+export interface ComposeFonts {
+  readonly css: string;
+  readonly preloads: readonly string[];
+}
+
 export interface ComposeInput {
   readonly templateHtml: string;
   readonly templateCss: string;
@@ -140,6 +152,8 @@ export interface ComposeInput {
    * both cases, preserving legacy parity).
    */
   readonly theme?: ComposeTheme;
+  /** issue #150 — resolved web fonts; undefined = system stacks only. */
+  readonly fonts?: ComposeFonts;
 }
 
 export interface ComposeOutput {
@@ -156,6 +170,23 @@ function injectBefore(source: string, marker: RegExp, fragment: string): string 
   if (!m) return source + fragment; // template lacks the tag — append as fallback
   const idx = m.index;
   return source.slice(0, idx) + fragment + source.slice(idx);
+}
+
+/**
+ * issue #150 — head fragment for resolved web fonts: preload links (the
+ * `crossorigin` attribute is REQUIRED for font preloads even same-origin,
+ * per the fetch spec's font-destination CORS rule) + the @font-face
+ * block. Empty css with no preloads → null (system-stack-only theme).
+ */
+function fontsHeadFragment(fonts: ComposeFonts | undefined): string | null {
+  if (fonts === undefined) return null;
+  const links = fonts.preloads
+    .map((href) => `<link rel="preload" as="font" type="font/woff2" crossorigin href="${href}">`)
+    .join("");
+  const style =
+    fonts.css.trim().length > 0 ? `<style data-source="fonts">${fonts.css}</style>` : "";
+  const fragment = links + style;
+  return fragment.length > 0 ? fragment : null;
 }
 
 export function composePagePreview(input: ComposeInput): ComposeOutput {
@@ -197,6 +228,13 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
 
   const replaced = applySlotReplacements(input.templateHtml, { contentByName });
   let html = replaced.html;
+
+  // issue #150 — @font-face + preloads before everything else so the
+  // browser discovers font URLs as early as possible.
+  const fontsFragment = fontsHeadFragment(input.fonts);
+  if (fontsFragment !== null) {
+    html = injectBefore(html, HEAD_CLOSE_RE, fontsFragment);
+  }
 
   // v0.11.0 — theme tokens become CSS custom properties on :root + (when
   // dark variants exist) :root.dark. Goes first so module CSS can
@@ -572,6 +610,12 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   });
   let html = replaced.html;
 
+  // issue #150 — fonts first (URL discovery), then theme vars, then
+  // aggregated CSS; source order in <head> mirrors injection order.
+  const fontsFragment = fontsHeadFragment(input.fonts);
+  if (fontsFragment !== null) {
+    html = injectBefore(html, HEAD_CLOSE_RE, fontsFragment);
+  }
   const themeCss = renderThemeCss(input.theme);
   if (themeCss !== null) {
     html = injectBefore(html, HEAD_CLOSE_RE, `<style data-source="theme">${themeCss}</style>`);

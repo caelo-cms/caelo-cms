@@ -448,6 +448,45 @@ describe("composePageWithLayout", () => {
     expect(modIdx).toBeGreaterThan(tplIdx);
   });
 
+  it("injects fonts (preloads + @font-face) before the theme style (issue #150)", () => {
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+      fonts: {
+        css: "@font-face{font-family:\"Poppins\";src:url(/_assets/fonts/poppins/aa.woff2) format('woff2');}",
+        preloads: ["/_assets/fonts/poppins/aa.woff2"],
+      },
+    });
+    expect(out.html).toContain('<style data-source="fonts">');
+    // Font preloads MUST carry crossorigin even same-origin (fetch spec
+    // font-destination CORS rule) or the browser double-downloads.
+    expect(out.html).toContain(
+      '<link rel="preload" as="font" type="font/woff2" crossorigin href="/_assets/fonts/poppins/aa.woff2">',
+    );
+    const headEnd = out.html.indexOf("</head>");
+    expect(out.html.indexOf('<style data-source="fonts">')).toBeLessThan(headEnd);
+  });
+
+  it("omits the fonts fragment entirely for system-stack-only themes (issue #150)", () => {
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+      fonts: { css: "", preloads: [] },
+    });
+    expect(out.html).not.toContain('data-source="fonts"');
+    expect(out.html).not.toContain('rel="preload"');
+  });
+
   it("throws ComposeError when the layout lacks a content slot", () => {
     expect(() =>
       composePageWithLayout({

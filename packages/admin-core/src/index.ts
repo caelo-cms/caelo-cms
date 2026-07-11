@@ -1,5 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// issue #150 — theme web-font resolver. Canonical implementation lives
+// in the static-generator (admin-core already depends on that app for
+// deploy publishing; hosting it here would close a module cycle).
+export {
+  clearFontResolverMemo,
+  defaultFontsCacheDir,
+  type ResolvedThemeFonts,
+  type ResolveThemeFontsArgs,
+  resolveThemeFonts,
+} from "@caelo-cms/static-generator";
 export * from "./ai/chat-runner.js";
 export * from "./ai/pricing-cache.js";
 export * from "./ai/provider.js";

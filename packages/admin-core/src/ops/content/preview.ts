@@ -18,9 +18,11 @@ import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   ComposeError,
+  type ComposeFonts,
   type ComposeTheme,
   composePageWithLayout,
   err,
+  fontUnresolvableMarker,
   injectSeoIntoHead,
   type ModuleFieldKind,
   ok,
@@ -30,6 +32,7 @@ import {
   type SiteSeoSettings,
   type ThemeDocument,
 } from "@caelo-cms/shared";
+import { defaultFontsCacheDir, resolveThemeFonts } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -861,6 +864,32 @@ export const renderPagePreviewOp = defineOperation({
     // `{{theme_logo_url}}` substitution (v0.11.1, issue #76). Same row
     // flows into composePageWithLayout's <style data-source="theme">
     // injection below.
+    //
+    // issue #150 — preview/production font parity: resolve the theme's
+    // web fonts through the SAME resolver the static generator uses, so
+    // the editor previews the design in the real typefaces. Served from
+    // the admin's /_caelo/fonts route (disk cache; network only on the
+    // first render after a font change). Unresolvable families do NOT
+    // fail the preview — blocking every editor render on fonts-CDN
+    // reachability punishes the operator for a network condition — but
+    // they surface as `theme-font-unresolvable:<family>` in missingSlots
+    // (loud, CLAUDE.md §2); the deploy path hard-fails on the same state.
+    let previewFonts: ComposeFonts | undefined;
+    const fontMarkers: string[] = [];
+    if (composeTheme !== undefined) {
+      const resolvedFonts = await resolveThemeFonts({
+        tokens: composeTheme.tokens,
+        cacheDir: defaultFontsCacheDir(process.cwd()),
+        publicBasePath: "/_caelo/fonts",
+      });
+      if (resolvedFonts.css.length > 0) {
+        previewFonts = { css: resolvedFonts.css, preloads: resolvedFonts.preloads };
+      }
+      for (const family of resolvedFonts.unresolved) {
+        fontMarkers.push(fontUnresolvableMarker(family));
+      }
+    }
+
     let composed: ReturnType<typeof composePageWithLayout>;
     try {
       composed = composePageWithLayout({
@@ -869,6 +898,7 @@ export const renderPagePreviewOp = defineOperation({
         blocks,
         structuredSets: { byKindSlug },
         theme: composeTheme,
+        fonts: previewFonts,
         layoutHtml: pageRow.layout_html,
         layoutCss: pageRow.layout_css,
         layoutBlocks,
@@ -1028,7 +1058,10 @@ export const renderPagePreviewOp = defineOperation({
     return ok({
       html,
       replacedSlots: [...composed.replacedSlots],
-      missingSlots: [...composed.missingSlots],
+      // issue #150 — unresolvable web fonts ride the missing-content
+      // surface (`theme-font-unresolvable:<family>`), same convention
+      // as theme-asset-unbound markers.
+      missingSlots: [...composed.missingSlots, ...fontMarkers],
       pageSlug: pageRow.slug,
       pageLocale: pageRow.locale,
     });

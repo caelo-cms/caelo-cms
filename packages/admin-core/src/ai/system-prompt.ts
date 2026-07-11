@@ -779,6 +779,12 @@ export function formatThemeBlock(
     "",
     "**Module CSS must reference theme vars** so token edits cascade: `background: var(--color-primary)`, `padding: var(--spacing-md)`, `font-family: var(--font-heading)`. Hardcoded hex defeats the theme — the operator can no longer tune the site by editing tokens.",
     "",
+    // issue #150 — the AI picks families knowing they actually render:
+    // web fonts are fetched + self-hosted automatically, so any Google
+    // Fonts family is safe; a family that is neither a system stack nor
+    // resolvable fails the deploy loudly.
+    '**Web fonts are self-hosted automatically.** Any Google Fonts family in `typography.*.fontFamily` (e.g. `"Poppins", sans-serif`) is downloaded at deploy and served from the site — pick real typefaces that fit the brand instead of defaulting to system stacks. System stacks (`system-ui`, `Georgia`, …) load nothing. A family that is neither resolves as `theme-font-unresolvable:<family>` in the preview\'s missing-content list and BLOCKS the deploy — fix it via `set_theme_tokens` when you see that marker.',
+    "",
     // v0.11.4 (issue #76 follow-up) — list the EXACT CSS var names the
     // renderer emits for THIS theme. Without this the AI guesses
     // (--color-text, --color-surface, etc. — names that look reasonable

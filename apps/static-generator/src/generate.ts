@@ -23,19 +23,22 @@
  */
 
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   ComposeError,
+  type ComposeFonts,
   type ComposeTheme,
   composePageWithLayout,
+  fontUnresolvableMarker,
   type ModuleFieldKind,
   resolveLocaleUrl,
   type ThemeDocument,
   trimSlashes,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { buildRobotsTxtWithSitemap, readSeoSettings, runSeoPass } from "./seo-pass.js";
@@ -479,6 +482,35 @@ export async function generateSite(args: {
     };
   }
 
+  // issue #150 — font pass. Resolve the theme's web fonts ONCE per
+  // build (self-hosted: hotlinking fonts.googleapis.com is a GDPR
+  // liability and a third-party request on the critical path), copy the
+  // cached woff2 files into _assets/fonts/, and thread the @font-face
+  // CSS + preload URLs into every page's compose input. An unresolvable
+  // family fails the deploy loudly (CLAUDE.md §2) — the preview surface
+  // already flagged it as `theme-font-unresolvable:<family>`, so a
+  // deploy reaching this state is stale theme data, not a surprise.
+  let themeFonts: ComposeFonts | undefined;
+  let themeFontFiles: readonly { cachePath: string; relPath: string }[] = [];
+  if (activeTheme !== undefined) {
+    const resolved = await resolveThemeFonts({
+      tokens: activeTheme.tokens,
+      cacheDir: defaultFontsCacheDir(root),
+      publicBasePath: "/_assets/fonts",
+    });
+    if (resolved.unresolved.length > 0) {
+      throw new Error(
+        `static-generator: ${resolved.unresolved.map(fontUnresolvableMarker).join(", ")} — ` +
+          "the active theme names web fonts that could not be fetched/parsed. " +
+          "Fix the typography tokens (set_theme_tokens) or restore access to the fonts source, then redeploy.",
+      );
+    }
+    if (resolved.files.length > 0) {
+      themeFonts = { css: resolved.css, preloads: resolved.preloads };
+      themeFontFiles = resolved.files;
+    }
+  }
+
   // P9 — build the per-slug published-locale matrix once so the
   // language-selector renderer can list cross-locale URLs without a
   // per-page round-trip. Same shape the seo-pass hreflang block uses.
@@ -597,6 +629,7 @@ export async function generateSite(args: {
         blocks,
         structuredSets,
         theme: activeTheme,
+        fonts: themeFonts,
         layoutHtml: page.layout_html,
         layoutCss: page.layout_css,
         layoutBlocks,
@@ -662,6 +695,18 @@ export async function generateSite(args: {
   // into <buildDir>/_assets/<asset-id>/<variant>.<ext>; emits the CDN
   // manifest (always, even when CDN copy is off — manifest is empty
   // then). No-op when the build references no media at all.
+  // issue #150 — copy the resolved woff2 files into the build so the
+  // @font-face URLs injected by the composer resolve on the deployed
+  // site. Resolution happened before the compose loop (the CSS is part
+  // of every page); the byte copy belongs here with the other output
+  // passes.
+  for (const f of themeFontFiles) {
+    const target = join(buildDir, "_assets", "fonts", f.relPath);
+    await mkdir(dirname(target), { recursive: true });
+    await copyFile(f.cachePath, target);
+    fileCount += 1;
+  }
+
   const mediaSettings = await readMediaSettings(tx);
   const mediaRoot = resolve(root, process.env.MEDIA_ROOT_DIR ?? "data/media");
   await runMediaPass({
