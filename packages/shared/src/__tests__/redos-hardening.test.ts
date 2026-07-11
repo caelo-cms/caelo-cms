@@ -15,7 +15,12 @@ import { trimSlashes, trimTrailingSlashes } from "../i18n.js";
 import { renderTemplate } from "../template-engine.js";
 import { stripCssComments } from "../theme-importers/css-comments.js";
 
-const BUDGET_MS = 100;
+// 250ms, not 100: under CI coverage instrumentation on a loaded runner
+// the LINEAR 100k-char scans measured up to ~113ms (PR #170 flake). A
+// quadratic regression blows this by orders of magnitude (seconds), so
+// the wider bound loses no detection power — it only stops punishing
+// slow runners for being slow.
+const BUDGET_MS = 250;
 
 function underBudget(fn: () => void): number {
   const t0 = performance.now();
