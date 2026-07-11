@@ -108,6 +108,11 @@ export default async function globalSetup(): Promise<void> {
     // Pin the chat model + temperature via the resolver's env hooks.
     CAELO_CHAT_MODEL_OVERRIDE: E2E_LIVEDIT_MODEL,
     CAELO_CHAT_TEMPERATURE: "0",
+    // issue #200 — the migration scenarios serve their fixture site on
+    // 127.0.0.1; the SSRF guard (#191) must exempt it INSIDE the test
+    // admin (crawler, estimator, inspection tools). Test admin only —
+    // production never sets this.
+    CAELO_IMPORTER_ALLOWED_HOSTS: "127.0.0.1,localhost",
   };
 
   // Spawn the admin from the built output. The npm script
