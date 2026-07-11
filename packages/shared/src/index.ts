@@ -42,6 +42,7 @@ export * from "./theme-importers/loose.js";
 export * from "./theme-importers/shadcn.js";
 export * from "./theme-importers/style-dictionary.js";
 export * from "./theme-importers/tailwind.js";
+export * from "./theme-literal-binding.js";
 export * from "./theme-normalize.js";
 export * from "./theme-ramp.js";
 export * from "./theme-render.js";

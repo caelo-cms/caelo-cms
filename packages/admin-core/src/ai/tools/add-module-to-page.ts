@@ -25,6 +25,7 @@ import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
+import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
@@ -64,6 +65,7 @@ const ADD_MODULE_TO_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
     html: { type: "string", minLength: 1, maxLength: 50_000 },
     css: { type: "string", maxLength: 50_000 },
     js: { type: "string", maxLength: 50_000 },
+    bindThemeLiterals: { type: "boolean" },
     // issue #106 — shared field schema (single source of truth across all
     // module-authoring tools). See `_module-fields-schema.ts`.
     fields: MODULE_FIELDS_JSON_SCHEMA,
@@ -130,6 +132,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
     let slug: string;
     let placedExisting = false;
     let extractedFields: { name: string; kind: string }[] | undefined;
+    let bindingReport = "";
     if (input.moduleId !== undefined) {
       const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.get", {
         moduleId: input.moduleId,
@@ -158,6 +161,13 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
         };
       }
       slug = slugifyModuleName(displayName);
+      // issue #164 slice 2 — opt-in mechanical token binding.
+      let boundCss = input.css ?? "";
+      if (input.bindThemeLiterals === true && boundCss.length > 0) {
+        const bound = await bindCssToTheme(ctx, toolCtx, boundCss);
+        boundCss = bound.css;
+        bindingReport = bound.report;
+      }
       const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
         slug,
         displayName,
@@ -171,7 +181,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
         // derives it from displayName when omitted.
         ...(input.type !== undefined ? { type: input.type } : {}),
         html,
-        css: input.css ?? "",
+        css: boundCss,
         js: input.js ?? "",
         ...(input.fields ? { fields: input.fields } : {}),
       });
@@ -257,7 +267,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
         : "";
     return {
       ok: true,
-      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}.${extractedHint}${missingMetaHint}${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
+      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}.${bindingReport}${extractedHint}${missingMetaHint}${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
     };
   },
 };
