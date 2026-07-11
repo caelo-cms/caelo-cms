@@ -8,7 +8,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { CHAT_MAX_ATTACHMENTS, chatAttachmentSchema, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { lookupPricing } from "../../ai/pricing-cache.js";
@@ -39,6 +39,8 @@ export const appendChatMessageOp = defineOperation({
         .array(z.object({ thinking: z.string(), signature: z.string() }))
         .nullable()
         .optional(),
+      // issue #190 — operator-attached images on user messages.
+      attachments: z.array(chatAttachmentSchema).max(CHAT_MAX_ATTACHMENTS).nullable().optional(),
     })
     .strict(),
   output: messageRow,
@@ -73,7 +75,7 @@ export const appendChatMessageOp = defineOperation({
       rows = (await tx.execute(sql`
         INSERT INTO chat_messages (
           chat_session_id, role, content, tool_calls, tool_call_id,
-          tokens_in, tokens_out, cached_tokens, status, thinking_blocks
+          tokens_in, tokens_out, cached_tokens, status, thinking_blocks, attachments
         )
         SELECT
           ${input.chatSessionId}::uuid,
@@ -85,7 +87,8 @@ export const appendChatMessageOp = defineOperation({
           ${input.tokensOut ?? null}::int,
           ${input.cachedTokens ?? null}::int,
           ${input.status ?? "complete"},
-          ${input.thinkingBlocks && input.thinkingBlocks.length > 0 ? JSON.stringify(input.thinkingBlocks) : null}::jsonb
+          ${input.thinkingBlocks && input.thinkingBlocks.length > 0 ? JSON.stringify(input.thinkingBlocks) : null}::jsonb,
+          ${input.attachments && input.attachments.length > 0 ? JSON.stringify(input.attachments) : null}::jsonb
         WHERE EXISTS (
           SELECT 1 FROM chat_sessions WHERE id = ${input.chatSessionId}::uuid
         )

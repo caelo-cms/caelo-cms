@@ -23,6 +23,7 @@ import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
 import { buildToolDescribeState } from "../tools/describe-state.js";
+import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
 import { buildPostCatalogueBlocks } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import {
@@ -41,7 +42,7 @@ import {
 } from "./persistence.js";
 import type { UsageAccumulator } from "./streaming.js";
 import { buildToolCatalogue } from "./tool-catalogue.js";
-import type { AccumulatedToolCall, ChatRunnerOptions, ClientEvent } from "./types.js";
+import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
 export { isLegitimateTextOnlyTurn } from "./passive-turn.js";
 // Public surface re-exports — the `../chat-runner.ts` shim does `export *`
@@ -112,15 +113,12 @@ export async function* runChatTurn(
   // Provider message history is everything in the chat now (the user message
   // we just appended is in there too). v0.2.54 — prior thinking blocks are
   // included so Anthropic can verify signatures across tool-use boundaries.
-  const baseMessages: ChatMessageInput[] = session.messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-    toolCalls: Array.isArray(m.toolCalls) ? (m.toolCalls as AccumulatedToolCall[]) : undefined,
-    toolCallId: m.toolCallId ?? undefined,
-    ...(m.thinkingBlocks && m.thinkingBlocks.length > 0
-      ? { thinkingBlocks: m.thinkingBlocks }
-      : {}),
-  }));
+  // issue #190 — the most recent user message's attachments are inlined
+  // as image parts; older ones become text markers (see attachments.ts).
+  const baseMessages: ChatMessageInput[] = await buildProviderHistory(
+    session.messages,
+    createMediaAttachmentLoader(registry, adapter, humanCtx),
+  );
 
   // Build all pre-catalogue system-prompt context blocks + skill engagement.
   const ctx = await buildSystemContextBlocks({
