@@ -16,7 +16,7 @@ const proposeSiteImportInput = z
   .object({
     sourceUrl: z.string().url(),
     depth: z.number().int().min(1).max(5).default(2),
-    maxPages: z.number().int().min(1).max(500).default(50),
+    maxPages: z.number().int().min(1).max(2000).default(50),
   })
   .strict();
 
