@@ -32,6 +32,7 @@ export const editModuleTool: ToolDefinitionWithHandler<
     "**Lists are lists, not numbered scalars.** A menu with 10 items is ONE `link-list` field with 10 elements — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `text-list`. Cards with rich per-item structure use `module-list` pointing at a sub-module. " +
     "**Update description + kind when the module's purpose drifts.** The `## Modules` block exposes them to your future self; stale descriptions hurt your own decision-making. " +
     "**Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `## Modules` block. Treat it as a fallback, not the default path. " +
+    "**Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158). " +
     "Edits are CHAT-BRANCHED until publish. " +
     "Use this for structure, styling, fields list, or `description`/`kind` updates. " +
     "DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. " +

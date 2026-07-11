@@ -193,6 +193,8 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   const contentByName = new Map<string, string>();
   const allCss: string[] = [];
   const allJs: string[] = [];
+  // issue #158 — same per-module dedup as composePageWithLayout.
+  const seenAssetModules = new Set<string>();
   // Template CSS first so module CSS can override it via source-order specificity.
   if (input.templateCss.trim().length > 0) allCss.push(input.templateCss);
 
@@ -221,6 +223,8 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     const html = renderedModuleHtml.join("\n");
     contentByName.set(block.blockName, html);
     for (const m of block.modules) {
+      if (seenAssetModules.has(m.moduleId)) continue;
+      seenAssetModules.add(m.moduleId);
       if (m.css.trim().length > 0) allCss.push(m.css);
       if (m.js.trim().length > 0) allJs.push(m.js);
     }
@@ -545,6 +549,11 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   // brittle and reads as a bug).
   const cssParts: string[] = [];
   const jsParts: string[] = [];
+  // issue #158 — a module placed N times contributes its CSS/JS ONCE
+  // (first occurrence wins; source order is otherwise preserved).
+  // Duplicate rule blocks made the cascade order-dependent and bloated
+  // every page the same module appeared on twice.
+  const seenAssetModules = new Set<string>();
   if (input.layoutCss.trim().length > 0) cssParts.push(input.layoutCss);
   if (input.templateCss.trim().length > 0) cssParts.push(input.templateCss);
 
@@ -567,6 +576,8 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     });
     templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) {
+      if (seenAssetModules.has(m.moduleId)) continue;
+      seenAssetModules.add(m.moduleId);
       if (m.css.trim().length > 0) cssParts.push(m.css);
       if (m.js.trim().length > 0) jsParts.push(m.js);
     }
@@ -599,6 +610,8 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     });
     layoutContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) {
+      if (seenAssetModules.has(m.moduleId)) continue;
+      seenAssetModules.add(m.moduleId);
       if (m.css.trim().length > 0) cssParts.push(m.css);
       if (m.js.trim().length > 0) jsParts.push(m.js);
     }

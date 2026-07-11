@@ -610,7 +610,7 @@ export const renderPagePreviewOp = defineOperation({
 
     // Collect CSS/JS from every nested module touched during recursion
     // so the page's <style>/<script> tags include them. Dedup by
-    // moduleId; the composer further dedupes by slug.
+    // moduleId; the composer dedupes by moduleId as well (issue #158).
     const nestedCssJsByModuleId = new Map<string, ModuleResource>();
     for (const m of modRows) {
       const binding = placementBindings.get(`${m.block_name}#${m.position}`);
