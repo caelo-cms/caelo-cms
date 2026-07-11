@@ -487,6 +487,30 @@ describe("composePageWithLayout", () => {
     expect(out.html).not.toContain('rel="preload"');
   });
 
+  it("emits a twice-placed module's CSS/JS exactly once (issue #158)", () => {
+    const shared = {
+      ...blankModule,
+      moduleId: "22222222-2222-4222-8222-222222222202",
+      html: "<p>x</p>",
+      css: "/* SHARED-CSS */",
+      js: "/* SHARED-JS */",
+    };
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [
+        { blockName: "content", modules: [shared, shared] },
+        { blockName: "header", modules: [shared] },
+      ],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+    });
+    expect(out.html.split("/* SHARED-CSS */").length - 1).toBe(1);
+    expect(out.html.split("/* SHARED-JS */").length - 1).toBe(1);
+  });
+
   it("throws ComposeError when the layout lacks a content slot", () => {
     expect(() =>
       composePageWithLayout({
