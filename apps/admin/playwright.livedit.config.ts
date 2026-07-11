@@ -50,7 +50,12 @@ export default defineConfig({
   globalTeardown: "./e2e-livedit/global-teardown.ts",
   // Per-test timeout — a full chat→Stage→Publish→re-edit loop with
   // real Anthropic latency can run 3-4 min on a cold compose stack.
-  timeout: 300_000,
+  // 600s since #155: compose turns now legitimately include up to two
+  // screenshot self-review rounds (browser-mediated capture + a model
+  // turn each), which pushed the heaviest scenario past the old 300s
+  // budget reproducibly (PR #175 runs). The timeout's job is to catch
+  // HANGS, not to race the design loop — 600s still does that.
+  timeout: 600_000,
   fullyParallel: false,
   // Single worker. `fullyParallel: false` alone is NOT enough — that
   // only stops within-file parallelism; Playwright still spawns up to
