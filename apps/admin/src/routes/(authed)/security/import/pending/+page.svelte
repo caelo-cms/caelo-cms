@@ -54,6 +54,27 @@
               <Badge variant="outline">max {r.maxPages}</Badge>
               <span class="text-xs text-muted-foreground">{fmt(r.createdAt)}</span>
             </div>
+            <!-- issue #193 — blast-radius summary (§11.A): the Owner
+                 approves with numbers. Unknown scope is shown as
+                 unknown, never omitted. -->
+            {#if r.estimate}
+              {#if r.estimate.failed}
+                <p class="mb-2 text-sm text-amber-600 dark:text-amber-400" data-testid="import-estimate">
+                  Scope unknown — estimate failed: {r.estimate.reason}
+                </p>
+              {:else}
+                <p
+                  class="mb-2 text-sm {r.estimate.pages > 500 ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}"
+                  data-testid="import-estimate"
+                >
+                  {#if r.estimate.pages > 500}⚠ Large site:{/if}
+                  ~{r.estimate.pages}{r.estimate.truncated ? "+" : ""} pages
+                  ({r.estimate.basis === "sitemap" ? "from sitemap" : "rough sample"})
+                  · crawl ≈ {r.estimate.crawlMinutes} min
+                  · AI rebuild ≈ ${r.estimate.aiCostUsd.low}–${r.estimate.aiCostUsd.high}
+                </p>
+              {/if}
+            {/if}
             <div class="flex gap-2">
               <form method="post" action="?/approve" use:enhance>
                 <input type="hidden" name="runId" value={r.id} />

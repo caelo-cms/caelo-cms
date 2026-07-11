@@ -23,6 +23,11 @@ export {
   crawlSite,
 } from "./crawler.js";
 export {
+  type CrawlScopeEstimate,
+  type EstimateOptions,
+  estimateCrawlScope,
+} from "./estimate.js";
+export {
   type ExtractedModule,
   type ExtractedPage,
   extractModulesFromHtml,

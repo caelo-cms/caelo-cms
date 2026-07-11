@@ -42,6 +42,9 @@ const runRow = z.object({
   pagesSeen: z.number(),
   pagesExtracted: z.number(),
   errorMessage: z.string().nullable(),
+  /** issue #193 — crawl-scope estimate ({pages, basis, crawlMinutes,
+   *  aiCostUsd} or {failed, reason}); null on Owner-direct runs. */
+  estimate: z.unknown().nullable(),
   createdAt: z.string(),
 });
 
@@ -83,6 +86,7 @@ interface RunDb {
   pages_seen: number;
   pages_extracted: number;
   error_message: string | null;
+  estimate: unknown;
   created_at: string | Date;
 }
 
@@ -101,6 +105,7 @@ function toRunApi(r: RunDb): z.infer<typeof runRow> {
     pagesSeen: row.pages_seen,
     pagesExtracted: row.pages_extracted,
     errorMessage: row.error_message,
+    estimate: typeof row.estimate === "string" ? JSON.parse(row.estimate) : (row.estimate ?? null),
     createdAt: toIsoRequired(row.created_at, "import_runs.created_at"),
   }));
 }
@@ -120,7 +125,7 @@ export const listImportRunsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate,
              error_message, created_at
       FROM import_runs
       ${filter}
@@ -144,7 +149,7 @@ export const getImportRunOp = defineOperation({
     const runs = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate,
              error_message, created_at
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as RunDb[];
@@ -258,13 +263,32 @@ export const proposeImportRunOp = defineOperation({
       sourceUrl: z.string().url(),
       depth: z.number().int().min(1).max(5).default(2),
       maxPages: z.number().int().min(1).max(2000).default(50),
+      /** issue #193 — computed by the proposing tool BEFORE this op
+       *  (network work stays out of the DB tx). Stored verbatim for
+       *  the Owner queue; {failed, reason} is a valid value. */
+      estimate: z
+        .union([
+          z
+            .object({
+              pages: z.number().int().min(0),
+              basis: z.enum(["sitemap", "sample"]),
+              truncated: z.boolean(),
+              crawlMinutes: z.number().min(0),
+              aiCostUsd: z.object({ low: z.number().min(0), high: z.number().min(0) }),
+            })
+            .strict(),
+          z.object({ failed: z.literal(true), reason: z.string().max(1000) }).strict(),
+        ])
+        .nullable()
+        .optional(),
     })
     .strict(),
   output: z.object({ runId: z.string() }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by)
-      VALUES (${input.sourceUrl}, ${input.depth}, ${input.maxPages}, 'proposed', ${ctx.actorId}::uuid)
+      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate)
+      VALUES (${input.sourceUrl}, ${input.depth}, ${input.maxPages}, 'proposed', ${ctx.actorId}::uuid,
+              ${input.estimate ? JSON.stringify(input.estimate) : null}::jsonb)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const id = rows[0]?.id;
@@ -297,7 +321,7 @@ export const listPendingImportProposalsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate,
              error_message, created_at
       FROM import_runs
       WHERE status = 'proposed'
