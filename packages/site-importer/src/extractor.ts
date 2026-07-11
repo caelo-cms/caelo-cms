@@ -256,3 +256,29 @@ function decodeEntities(s: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&amp;/g, "&");
 }
+
+/**
+ * issue #195 — every <style> block's contents, concatenated. The
+ * pre-#195 pipeline kept only :root custom properties and THREW AWAY
+ * the stylesheet, which is why imported pages rendered unstyled
+ * ("design behalten" without the design). Linear scan, 512KB cap.
+ */
+export function extractPageCss(html: string): string {
+  const parts: string[] = [];
+  const lower = html.toLowerCase();
+  let from = 0;
+  let total = 0;
+  while (total < 512 * 1024) {
+    const open = lower.indexOf("<style", from);
+    if (open === -1) break;
+    const openEnd = lower.indexOf(">", open);
+    if (openEnd === -1) break;
+    const close = lower.indexOf("</style", openEnd);
+    if (close === -1) break;
+    const chunk = html.slice(openEnd + 1, close);
+    parts.push(chunk);
+    total += chunk.length;
+    from = close + 8;
+  }
+  return parts.join("\n");
+}

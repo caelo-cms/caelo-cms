@@ -23,7 +23,12 @@
  *     request-start gate (same-host politeness stays intact)
  */
 
-import { extractModulesFromHtml, extractThemeTokens, extractTitle } from "./extractor.js";
+import {
+  extractModulesFromHtml,
+  extractPageCss,
+  extractThemeTokens,
+  extractTitle,
+} from "./extractor.js";
 import { computePageSignature } from "./page-signature.js";
 import { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 import { isExternalUrlBlockedError, safeExternalFetch } from "./safe-fetch.js";
@@ -83,6 +88,9 @@ export interface CrawledPage {
   /** issue #194 — deterministic structural signature ("home" for the
    *  source URL); equal signatures form one page-type cluster. */
   readonly signature: string;
+  /** issue #195 — the page's <style> contents; compose attaches it to
+   *  the cluster template so imported pages keep their design. */
+  readonly pageCss: string;
 }
 
 export interface CrawlResult {
@@ -214,6 +222,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       modules: extractModulesFromHtml(res.html),
       themeTokens: extractThemeTokens(res.html),
       signature: computePageSignature({ url: next.url, sourceUrl: opts.sourceUrl, html: res.html }),
+      pageCss: extractPageCss(res.html),
     };
     pagesCrawled += 1;
     sinceFlush += 1;

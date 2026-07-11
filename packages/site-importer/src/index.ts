@@ -31,6 +31,7 @@ export {
   type ExtractedModule,
   type ExtractedPage,
   extractModulesFromHtml,
+  extractPageCss,
   extractThemeTokens,
   extractTitle,
 } from "./extractor.js";
