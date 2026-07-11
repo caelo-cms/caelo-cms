@@ -69,4 +69,11 @@ export interface ChatMessage {
    * the assistant content.
    */
   thinkingText?: string;
+  /**
+   * issue #190 — operator-attached images on user messages. Rendered
+   * as thumbnails in the transcript (served from /_caelo/media); the
+   * chat-runner inlines the most recent message's images as provider
+   * image parts.
+   */
+  attachments?: { assetId: string; mime: string; alt?: string }[] | null;
 }

@@ -362,6 +362,7 @@ export const mcpSendChatOp = defineOperation({
         chatSessionId,
         content: input.message,
         chips: [],
+        attachments: [],
         ...(input.pageId ? { activePageId: input.pageId } : {}),
       },
     );

@@ -11,7 +11,13 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { chatCreateSessionInput, chatRenameSessionInput, err, ok } from "@caelo-cms/shared";
+import {
+  chatAttachmentSchema,
+  chatCreateSessionInput,
+  chatRenameSessionInput,
+  err,
+  ok,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -240,6 +246,8 @@ const sessionMessagesRow = z.object({
   createdAt: z.string(),
   /** v0.2.54 — extended-thinking blocks for assistant turns. */
   thinkingBlocks: z.array(z.object({ thinking: z.string(), signature: z.string() })).nullable(),
+  /** issue #190 — operator-attached images on user messages. */
+  attachments: z.array(chatAttachmentSchema).nullable(),
 });
 
 export const getChatSessionOp = defineOperation({
@@ -293,7 +301,7 @@ export const getChatSessionOp = defineOperation({
     }
     const msgs = (await tx.execute(sql`
       SELECT id::text AS id, role, content, tool_calls, tool_call_id,
-             tokens_in, tokens_out, created_at, thinking_blocks
+             tokens_in, tokens_out, created_at, thinking_blocks, attachments
       FROM chat_messages
       WHERE chat_session_id = ${input.chatSessionId}::uuid
       ORDER BY created_at ASC
@@ -307,6 +315,7 @@ export const getChatSessionOp = defineOperation({
       tokens_out: number | null;
       created_at: string | Date;
       thinking_blocks: unknown;
+      attachments: unknown;
     }[];
     const iso = (v: string | Date | null): string | null => {
       if (v === null) return null;
@@ -336,6 +345,10 @@ export const getChatSessionOp = defineOperation({
           typeof m.thinking_blocks === "string"
             ? (JSON.parse(m.thinking_blocks) as unknown)
             : m.thinking_blocks;
+        const parsedAttachments =
+          typeof m.attachments === "string"
+            ? (JSON.parse(m.attachments) as unknown)
+            : m.attachments;
         return {
           id: m.id,
           role: m.role,
@@ -348,6 +361,10 @@ export const getChatSessionOp = defineOperation({
           thinkingBlocks:
             Array.isArray(parsedThinking) && parsedThinking.length > 0
               ? (parsedThinking as { thinking: string; signature: string }[])
+              : null,
+          attachments:
+            Array.isArray(parsedAttachments) && parsedAttachments.length > 0
+              ? (parsedAttachments as import("@caelo-cms/shared").ChatAttachment[])
               : null,
         };
       }),
