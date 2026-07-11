@@ -25,6 +25,7 @@
  * the admin; in P11, plugin Web Components inside Shadow DOM).
  */
 
+import { BASE_TECHNICAL_CSS } from "./base-css.js";
 import type { ModuleFieldKind } from "./content.js";
 import {
   applySlotReplacements,
@@ -246,6 +247,12 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     const styleTag = `<style data-source="theme">${themeCss}</style>`;
     html = injectBefore(html, HEAD_CLOSE_RE, styleTag);
   }
+  // issue #151 — invisible technical baseline (see composePageWithLayout).
+  html = injectBefore(
+    html,
+    HEAD_CLOSE_RE,
+    `<style data-source="base">${BASE_TECHNICAL_CSS}</style>`,
+  );
 
   if (allCss.length > 0) {
     const styleTag = `<style data-source="modules">\n${allCss.join("\n")}\n</style>`;
@@ -620,6 +627,13 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   if (themeCss !== null) {
     html = injectBefore(html, HEAD_CLOSE_RE, `<style data-source="theme">${themeCss}</style>`);
   }
+  // issue #151 — invisible technical baseline (reset only, zero design
+  // opinion); module CSS follows and overrides trivially.
+  html = injectBefore(
+    html,
+    HEAD_CLOSE_RE,
+    `<style data-source="base">${BASE_TECHNICAL_CSS}</style>`,
+  );
   if (cssParts.length > 0) {
     html = injectBefore(
       html,
