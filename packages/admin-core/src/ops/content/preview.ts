@@ -24,13 +24,16 @@ import {
   err,
   fontUnresolvableMarker,
   injectSeoIntoHead,
+  listThemeCssVarNames,
   type ModuleFieldKind,
   ok,
   renderSeoHead,
   resolveCanonicalUrl,
   resolveLocaleUrl,
   type SiteSeoSettings,
+  scanCssVars,
   type ThemeDocument,
+  unknownCssVarMarker,
 } from "@caelo-cms/shared";
 import { defaultFontsCacheDir, resolveThemeFonts } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
@@ -1055,13 +1058,36 @@ export const renderPagePreviewOp = defineOperation({
     });
     html = injectSeoIntoHead(html, headBlock);
 
+    // issue #156 — surface unknown `var(--…)` references in the page's
+    // CSS bundle (layout + template + placed modules) on the existing
+    // missing-content channel. Same silent-fallback trap class as
+    // `theme-asset-unbound:<slot>`: the page renders "fine" but ignores
+    // the theme, so the miss must be loud (CLAUDE.md §2). Scanned as
+    // one bundle so custom properties defined by the layout for its
+    // modules count as known.
+    const cssVarMarkers: string[] = [];
+    if (composeTheme !== undefined) {
+      const cssBundle = [
+        pageRow.layout_css,
+        pageRow.template_css,
+        ...modRows.map((m) => m.css),
+        ...layoutModRows.map((m) => m.css),
+      ].join("\n");
+      for (const u of scanCssVars({
+        css: cssBundle,
+        knownVars: listThemeCssVarNames(composeTheme.tokens),
+      })) {
+        cssVarMarkers.push(unknownCssVarMarker(u.name));
+      }
+    }
+
     return ok({
       html,
       replacedSlots: [...composed.replacedSlots],
-      // issue #150 — unresolvable web fonts ride the missing-content
-      // surface (`theme-font-unresolvable:<family>`), same convention
-      // as theme-asset-unbound markers.
-      missingSlots: [...composed.missingSlots, ...fontMarkers],
+      // issue #150 + #156 — unresolvable web fonts and unknown CSS vars
+      // ride the missing-content surface (`theme-font-unresolvable:` /
+      // `unknown-css-var:`), same convention as theme-asset-unbound.
+      missingSlots: [...composed.missingSlots, ...fontMarkers, ...cssVarMarkers],
       pageSlug: pageRow.slug,
       pageLocale: pageRow.locale,
     });

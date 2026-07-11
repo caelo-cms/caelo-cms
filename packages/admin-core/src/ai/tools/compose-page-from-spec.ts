@@ -22,6 +22,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { composePageFromSpecToolInput, slugifyModuleSection } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
+import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -290,7 +291,14 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
     ]
       .filter((s): s is string => s !== null)
       .join("\n");
-    return { ok: failed.length === 0, content: summary };
+    // issue #156 — scan the aggregated section CSS once; unknown var
+    // names ride the summary so the AI fixes drift in the same turn.
+    const cssWarn = await cssVarWarningSuffix(
+      ctx,
+      toolCtx,
+      input.sections.map((s) => s.css ?? "").join("\n"),
+    );
+    return { ok: failed.length === 0, content: `${summary}${cssWarn}` };
   },
 };
 

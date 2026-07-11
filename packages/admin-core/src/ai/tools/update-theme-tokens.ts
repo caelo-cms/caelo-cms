@@ -11,9 +11,15 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import {
+  type ExecutionContext,
+  listThemeCssVarNames,
+  scanCssVars,
+  type ThemeDocument,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 const setThemeTokensToolInput = z
   .object({
@@ -69,6 +75,13 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
     }
     if (v.canonicalPathsRemoved.length > 0) {
       parts.push(`removed ${v.canonicalPathsRemoved.join(", ")}`);
+      // issue #156 — a removed token may still be referenced by stored
+      // CSS; those references now silently fall back (the monochrome
+      // trap). Scan modules + templates + layouts against the theme as
+      // it stands POST-removal and name the affected entities so the
+      // AI repairs them in the same turn instead of shipping drift.
+      const dangling = await danglingCssVarReport(ctx, toolCtx);
+      if (dangling !== null) parts.push(dangling);
     }
     return {
       ok: true,
@@ -76,3 +89,57 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
     };
   },
 };
+
+/**
+ * Scan every stored module/template/layout CSS against the ACTIVE
+ * theme's emitted vars. Returns a capped, slug-attributed report of
+ * unknown references, or null when everything resolves.
+ */
+async function danglingCssVarReport(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+): Promise<string | null> {
+  const themeRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {});
+  if (!themeRes.ok) return null;
+  const theme = (themeRes.value as { theme: { tokens: ThemeDocument } | null }).theme;
+  if (theme === null) return null;
+  const knownVars = listThemeCssVarNames(theme.tokens);
+
+  const entities: { slug: string; css: string }[] = [];
+  const [mods, tpls, lays] = await Promise.all([
+    execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.list", { includeDeleted: false }),
+    execute(toolCtx.registry, toolCtx.adapter, ctx, "templates.list", {}),
+    execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.list", {}),
+  ]);
+  if (mods.ok) {
+    for (const m of (mods.value as { modules: { slug: string; css: string }[] }).modules) {
+      entities.push({ slug: `module:${m.slug}`, css: m.css });
+    }
+  }
+  if (tpls.ok) {
+    for (const t of (tpls.value as { templates: { slug: string; css: string }[] }).templates) {
+      entities.push({ slug: `template:${t.slug}`, css: t.css });
+    }
+  }
+  if (lays.ok) {
+    for (const l of (lays.value as { layouts: { slug: string; css: string }[] }).layouts) {
+      entities.push({ slug: `layout:${l.slug}`, css: l.css });
+    }
+  }
+
+  const hits: string[] = [];
+  for (const e of entities) {
+    if (e.css.trim().length === 0) continue;
+    const unknown = scanCssVars({ css: e.css, knownVars });
+    if (unknown.length > 0) {
+      hits.push(`${e.slug} (${unknown.map((u) => u.name).join(", ")})`);
+    }
+  }
+  if (hits.length === 0) return null;
+  const shown = hits.slice(0, 10);
+  const more = hits.length > shown.length ? ` … and ${hits.length - shown.length} more` : "";
+  return (
+    `⚠️ ${hits.length} stored CSS source(s) now reference vars this theme no longer emits: ` +
+    `${shown.join("; ")}${more}. Update their CSS (edit_module / template / layout) or restore the token.`
+  );
+}

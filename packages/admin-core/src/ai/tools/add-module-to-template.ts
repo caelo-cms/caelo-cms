@@ -30,6 +30,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { addModuleToTemplateToolInput, slugifyModuleName } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
+import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
@@ -168,7 +169,7 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
       // here is technically ok=true (module created, just unplaced).
       return {
         ok: true,
-        content: `module ${newModuleId} (slug=${slug}) created; no pages currently use this template, so nothing was placed`,
+        content: `module ${newModuleId} (slug=${slug}) created; no pages currently use this template, so nothing was placed${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
         nextAction: {
           tool: "list_templates",
           reason:
@@ -232,7 +233,7 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     }
 
     const summary = [
-      `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" on ${placements.length} of ${targetPages.length} pages using this template`,
+      `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" on ${placements.length} of ${targetPages.length} pages using this template${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
       placements.length > 0
         ? `placed: ${placements.map((p) => `${p.slug}@${p.position}`).join(", ")}`
         : null,
