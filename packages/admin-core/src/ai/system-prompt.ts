@@ -670,7 +670,11 @@ export function formatSiteIdentityBlock(
       "",
       "If the operator's prompt is too vague to infer (e.g. *'add a contact form'* on an unconfigured install with no brand signal), ASK ONE concise question for the essentials (\"What's this site for?\") before proceeding. Don't guess silently.",
       "",
-      "**Building a whole new site?** Run Site Genesis instead of composing directly: capture a design brief (`set_site_identity` with `designBrief`), spawn 3 parallel draft subagents for distinct design directions, `save_genesis_draft` each, and let the operator pick at /design/genesis — the site-genesis skill carries the full workflow.",
+      "**Route the FIRST conversation by what the operator already has** (issue #187 — the operator answers in chat; never send them to a form or wizard):",
+      "",
+      "- **Building a whole new site from scratch?** Run Site Genesis instead of composing directly: capture a design brief (`set_site_identity` with `designBrief`), spawn 3 parallel draft subagents for distinct design directions, `save_genesis_draft` each, and let the operator pick at /design/genesis — the site-genesis skill carries the full workflow.",
+      "- **They already have a website** (they name a domain/URL, or say they want to move/migrate/import their site)? That is a MIGRATION, not Genesis. Inspect their site first, then ask ONE question — keep the current design, or redesign — and propose the crawl via `propose_site_import` (the Owner approves at /security/import/pending; never claim the crawl already ran). Do NOT rebuild an existing site from memory or from the operator's description alone.",
+      "- **They already have a finished design** (a mockup image, a styleguide export, existing HTML)? Ask them to share it in the chat and build on THAT design — do not generate divergent Genesis drafts that discard their asset.",
     ].join("\n");
   }
 

@@ -23,6 +23,24 @@ interface PageRow {
   status: "draft" | "published";
 }
 
+/**
+ * issue #187 — the server-authored first assistant turn on untouched
+ * installs. Three entry points, answered conversationally — the
+ * operator never fills a form (CLAUDE.md §1A). Keep in sync with the
+ * cold-start routing in admin-core's `formatSiteIdentityBlock`.
+ */
+const FIRST_RUN_WELCOME = [
+  "Welcome — let's set up your website. I'm the AI that builds and runs this site with you: you describe what you want, I do the work, and you approve the big steps.",
+  "",
+  "Which of these fits you best?",
+  "",
+  "1. **You already have a website** — paste its address (like `https://example.com`). I'll take a look, then we decide together: keep its design or start a redesign — and I migrate your content and URLs either way.",
+  "2. **Starting from scratch** — tell me what the site is for and who it's for. I'll propose a few complete design directions and you pick the one you like.",
+  "3. **You already have a design** — share a mockup image or the HTML here in the chat and I'll build the site on exactly that design.",
+  "",
+  "Just answer in your own words — there's nothing to fill out.",
+].join("\n");
+
 export const load: PageServerLoad = async ({ locals, url }) => {
   requirePermission(locals, "content.write");
   const { adapter, registry } = getQueryContext();
@@ -207,6 +225,41 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     });
     if (sR.ok) {
       messages = (sR.value as { messages: ChatMessage[] }).messages;
+    }
+  }
+
+  // issue #187 — first-run welcome. On an untouched install (no pages,
+  // no site identity) an empty chat is a dead end: the operator doesn't
+  // know the three entry points exist. Seed ONE assistant message
+  // presenting them, persisted via the normal message op so it renders,
+  // survives reloads, and lands in the AI's own transcript context.
+  // The `messages.length === 0` guard makes the seed idempotent per
+  // chat; once identity or pages exist the branch never fires again.
+  if (activeChat && messages.length === 0 && pages.length === 0) {
+    const defaultsR = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
+    const identity = defaultsR.ok
+      ? (
+          defaultsR.value as {
+            defaults: { siteName: string | null; sitePurpose: string | null } | null;
+          }
+        ).defaults
+      : null;
+    if (!identity?.siteName && !identity?.sitePurpose) {
+      const seeded = await execute(registry, adapter, locals.ctx, "chat.append_message", {
+        chatSessionId: activeChat.id,
+        role: "assistant",
+        content: FIRST_RUN_WELCOME,
+      });
+      if (seeded.ok) {
+        const reread = await execute(registry, adapter, locals.ctx, "chat.get_session", {
+          chatSessionId: activeChat.id,
+        });
+        if (reread.ok) {
+          messages = (reread.value as { messages: ChatMessage[] }).messages;
+        }
+      } else {
+        console.error("[edit] first-run welcome seed failed", { error: seeded.error });
+      }
     }
   }
   const modulesR = await execute(registry, adapter, ctxWithBranch, "modules.list", {});

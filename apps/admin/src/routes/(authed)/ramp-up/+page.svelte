@@ -47,6 +47,12 @@
       AI synthesises a layout, template, and draft pages. You review and publish — nothing goes live
       automatically.
     </p>
+    <!-- issue #187 — the chat is the primary onboarding surface; this
+         wizard remains the manual fallback. -->
+    <p class="mt-2 text-sm text-muted-foreground">
+      Tip: you can do all of this by simply <a href="/edit" class="underline">telling the AI in the
+      chat</a> — this wizard is the manual fallback.
+    </p>
   </div>
 
   {#if form?.error}

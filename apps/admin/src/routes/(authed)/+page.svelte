@@ -37,18 +37,21 @@
     <p class="text-sm text-muted-foreground">Signed in as <strong>{data.user.email}</strong></p>
   </div>
 
+  <!-- issue #187 — the chat is the front door: this hero routes to /edit,
+       whose first-run welcome offers migrate / from-scratch / own-design.
+       The /ramp-up wizard stays in the sidebar as the fallback surface. -->
   {#if showRampUpHero}
-    <a href="/ramp-up" class="block">
+    <a href="/edit" class="block">
       <Card class="border-primary/40 bg-primary/5 transition-colors hover:bg-primary/10">
         <CardHeader>
           <CardTitle class="flex items-center gap-2 text-base">
             <Sailboat class="size-5" />
-            Ramp up your site
+            Set up your site
           </CardTitle>
           <CardDescription>
-            Point Caelo at an existing URL or start fresh — the AI extracts theme tokens, builds a
-            template, and stages draft pages you can publish in one click. Recommended first step
-            for new installs.
+            Open the chat and tell the AI where to start — migrate an existing website, build from
+            scratch, or bring your own design. You answer questions and approve the big steps; the
+            AI does the work. Recommended first step for new installs.
           </CardDescription>
         </CardHeader>
       </Card>
