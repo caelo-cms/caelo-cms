@@ -24,6 +24,8 @@
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import {
+  type CrawlCheckpoint,
+  type CrawledPage,
   computeDiffStatus,
   computePixelDiff,
   crawlSite,
@@ -43,6 +45,42 @@ function importerAllowedHosts(): readonly string[] {
     .split(",")
     .map((h) => h.trim())
     .filter((h) => h.length > 0);
+}
+
+/**
+ * issue #192 — revive a checkpointed frontier from the claimed row.
+ * Shape-checked defensively: a malformed checkpoint (schema drift,
+ * manual edit) restarts the crawl instead of crashing the tick — the
+ * DB's UNIQUE(run_id, source_url) absorbs the replay.
+ */
+function parseCrawlCheckpoint(raw: unknown): CrawlCheckpoint | null {
+  const v = typeof raw === "string" ? safeJsonParse(raw) : raw;
+  if (typeof v !== "object" || v === null) return null;
+  const cp = v as Partial<CrawlCheckpoint>;
+  if (!Array.isArray(cp.queue) || !Array.isArray(cp.seen)) return null;
+  if (typeof cp.pagesCrawled !== "number") return null;
+  return {
+    queue: cp.queue.filter(
+      (q): q is { url: string; depth: number } =>
+        typeof q === "object" && q !== null && typeof (q as { url?: unknown }).url === "string",
+    ),
+    seen: cp.seen.filter((x): x is string => typeof x === "string"),
+    pagesCrawled: cp.pagesCrawled,
+    errors: Array.isArray(cp.errors)
+      ? cp.errors.filter(
+          (e): e is { url: string; reason: string } =>
+            typeof e === "object" && e !== null && typeof (e as { url?: unknown }).url === "string",
+        )
+      : [],
+  };
+}
+
+function safeJsonParse(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
 const SYSTEM_CTX = {
@@ -287,12 +325,24 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       // multi-replica orchestrator can't double-claim a row even if both
       // poll on the same tick. The UPDATE that flips started_at runs
       // inside the same tx so the row is owned for the whole crawl
-      // window — concurrent ticks see started_at IS NOT NULL and skip.
+      // window.
+      //
+      // issue #192 — two claimable shapes:
+      //   - fresh runs (started_at IS NULL), and
+      //   - ZOMBIES: 'crawling' runs whose heartbeat went stale (worker
+      //     crashed mid-crawl). Pre-#192 these sat in 'crawling'
+      //     forever. The 15-minute staleness window comfortably exceeds
+      //     the worst-case gap between batch flushes (25 pages × 20s
+      //     fetch timeout ≈ 8 min).
       const rows = await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
         const claim = (await tx.execute(sql`
-            SELECT id::text AS id, source_url, depth, max_pages
+            SELECT id::text AS id, source_url, depth, max_pages, crawl_state
             FROM import_runs
-            WHERE status = 'crawling' AND started_at IS NULL
+            WHERE status = 'crawling'
+              AND (
+                started_at IS NULL
+                OR COALESCE(heartbeat_at, started_at) < now() - interval '15 minutes'
+              )
             ORDER BY created_at ASC
             LIMIT 1
             FOR UPDATE SKIP LOCKED
@@ -301,10 +351,11 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           source_url: string;
           depth: number;
           max_pages: number;
+          crawl_state: unknown;
         }>;
         if (claim.length > 0) {
           await tx.execute(
-            sql`UPDATE import_runs SET started_at = now() WHERE id = ${claim[0]?.id}::uuid`,
+            sql`UPDATE import_runs SET started_at = now(), heartbeat_at = now() WHERE id = ${claim[0]?.id}::uuid`,
           );
         }
         return claim;
@@ -315,6 +366,25 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       sourceUrl = r.source_url;
       depth = r.depth;
       maxPages = r.max_pages;
+      const resumeFrom = parseCrawlCheckpoint(r.crawl_state);
+      const claimedRunId = runId;
+      const flushBatch = async (pages: CrawledPage[]): Promise<void> => {
+        await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "imports.write_extracted_pages", {
+          runId: claimedRunId,
+          pages: pages.map((p) => ({
+            sourceUrl: p.url,
+            proposedSlug: p.proposedSlug,
+            proposedTitle: p.title,
+            proposedModules: p.modules.map((m) => ({
+              blockName: m.blockName,
+              position: m.position,
+              html: m.html,
+              displayName: m.displayName,
+            })),
+            proposedThemeTokens: p.themeTokens,
+          })),
+        });
+      };
       const result = await crawlSite({
         sourceUrl,
         depth,
@@ -323,21 +393,20 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         // issue #191 — explicit, visible exemption list for the SSRF
         // guard (e2e fixture servers, deliberate private crawls).
         allowedHosts: importerAllowedHosts(),
-      });
-      await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "imports.write_extracted_pages", {
-        runId,
-        pages: result.pages.map((p) => ({
-          sourceUrl: p.url,
-          proposedSlug: p.proposedSlug,
-          proposedTitle: p.title,
-          proposedModules: p.modules.map((m) => ({
-            blockName: m.blockName,
-            position: m.position,
-            html: m.html,
-            displayName: m.displayName,
-          })),
-          proposedThemeTokens: p.themeTokens,
-        })),
+        // issue #192 — stream batches to the DB (UNIQUE(run_id,
+        // source_url) makes resume replays idempotent) + checkpoint the
+        // frontier so a crash resumes instead of restarting.
+        ...(resumeFrom ? { resumeFrom } : {}),
+        onBatch: flushBatch,
+        onCheckpoint: async (cp) => {
+          await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
+            await tx.execute(sql`
+              UPDATE import_runs
+              SET crawl_state = ${JSON.stringify(cp)}::jsonb, heartbeat_at = now()
+              WHERE id = ${claimedRunId}::uuid
+            `);
+          });
+        },
       });
       // P14 polish — screenshot diff pass. For every page we just
       // staged, take a "ground truth" screenshot of the source URL +
@@ -360,7 +429,18 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         runId,
         status: "ready_for_review",
         pagesSeen: result.seenCount,
-        pagesExtracted: result.pages.length,
+        pagesExtracted: result.pagesCrawled,
+      });
+      // Frontier no longer needed once the run left 'crawling'; keep
+      // the error list queryable for the migration report (#197) by
+      // storing only that slice.
+      await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
+        await tx.execute(sql`
+          UPDATE import_runs
+          SET crawl_state = ${JSON.stringify({ errors: result.errors })}::jsonb,
+              heartbeat_at = NULL
+          WHERE id = ${claimedRunId}::uuid
+        `);
       });
     } catch (e) {
       if (runId) {

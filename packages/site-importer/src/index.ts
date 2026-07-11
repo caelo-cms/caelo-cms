@@ -15,7 +15,13 @@
  * once the dep tree is willing to carry the binary).
  */
 
-export { type CrawlOptions, type CrawlResult, crawlSite } from "./crawler.js";
+export {
+  type CrawlCheckpoint,
+  type CrawledPage,
+  type CrawlOptions,
+  type CrawlResult,
+  crawlSite,
+} from "./crawler.js";
 export {
   type ExtractedModule,
   type ExtractedPage,
@@ -23,6 +29,7 @@ export {
   extractThemeTokens,
   extractTitle,
 } from "./extractor.js";
+export { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 export {
   assertPublicHttpUrl,
   EXTERNAL_URL_BLOCKED,
@@ -44,3 +51,9 @@ export {
   type DiffResult,
   type DiffStatus,
 } from "./screenshot-diff.js";
+export {
+  discoverSitemapUrls,
+  extractLocValues,
+  type SitemapDiscovery,
+  type TextFetcher,
+} from "./sitemap.js";

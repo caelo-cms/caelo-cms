@@ -186,7 +186,7 @@
             </div>
             <div class="space-y-2">
               <Label for="maxPages">Max pages</Label>
-              <Input id="maxPages" name="maxPages" type="number" min="1" max="500" value="20" />
+              <Input id="maxPages" name="maxPages" type="number" min="1" max="2000" value="20" />
               <p class="text-xs text-muted-foreground">Crawler stops at this many extracted pages.</p>
             </div>
           </div>
