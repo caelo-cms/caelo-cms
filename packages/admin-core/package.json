@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.78",
-    "@ai-sdk/google": "^3.0.74",
+    "@ai-sdk/google": "^4.0.10",
     "@ai-sdk/openai": "^3.0.64",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*",
