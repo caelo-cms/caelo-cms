@@ -28,6 +28,8 @@ export * from "./audit.js";
 export * from "./csrf.js";
 // P12 review pass — email transport factory (consumed by hooks.server.ts).
 export { buildEmailTransport, type EmailConfigRow } from "./email/transport.js";
+// issue #150 — theme web-font resolver (shared by preview + static-gen).
+export * from "./fonts/resolver.js";
 export * from "./media/pipeline.js";
 export * from "./media/storage.js";
 export * from "./ops/auth.js";

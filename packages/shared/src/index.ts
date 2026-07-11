@@ -7,6 +7,7 @@ export * from "./auth-forms.js";
 export * from "./cap-failures.js";
 export * from "./content.js";
 export * from "./context.js";
+export * from "./fonts.js";
 export * from "./i18n.js";
 export {
   type LogContext,
