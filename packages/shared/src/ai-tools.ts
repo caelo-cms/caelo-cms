@@ -127,10 +127,18 @@ export const siteMemoryProposeToolInput = z
  * entry; the dispatcher walks this map at registration time.
  */
 /**
- * P6.7.3 — `add_module_to_page` AI tool. Creates a new module and
- * inserts it into a target page's block at the requested position. The
- * AI passes html (and optionally css/js) and a sluggable displayName;
- * the tool generates a unique slug.
+ * P6.7.3 — `add_module_to_page` AI tool. Two modes (issue #159):
+ *
+ *   - **Mint mode** (`displayName` + `html`): creates a new module and
+ *     inserts it into a target page's block at the requested position.
+ *     The tool generates a unique slug.
+ *   - **Place mode** (`moduleId`): inserts an EXISTING module — the
+ *     reuse path CLAUDE.md §1A demands. Authoring fields must be absent;
+ *     the module renders live-referenced, so shared edits cascade.
+ *
+ * Exactly one mode per call, enforced by the superRefine below so a
+ * mixed call fails at the boundary with a named problem instead of
+ * silently preferring one interpretation.
  */
 export const addModuleToPageToolInput = z
   .object({
@@ -138,7 +146,13 @@ export const addModuleToPageToolInput = z
     blockName: z.string().min(1).max(80),
     /** "top" | "bottom" | a 0-based integer index. */
     position: positionInputSchema,
-    displayName: z.string().min(1).max(128),
+    /**
+     * issue #159 — place-existing mode. Pass the id of a module from the
+     * `## Modules` catalog to add it to this page without minting a
+     * duplicate. Mutually exclusive with every authoring field below.
+     */
+    moduleId: z.string().uuid().optional(),
+    displayName: z.string().min(1).max(128).optional(),
     /**
      * v0.12.0 — what this module is for + when to use it. Surfaced in
      * the AI's `## Modules` block; passing a meaningful value lets the
@@ -158,7 +172,7 @@ export const addModuleToPageToolInput = z
      * allowlist).
      */
     type: slugSchema.optional(),
-    html: z.string().min(1).max(50_000),
+    html: z.string().min(1).max(50_000).optional(),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
     /**
@@ -170,7 +184,34 @@ export const addModuleToPageToolInput = z
      */
     fields: z.array(moduleFieldSchema).max(64).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, ctx) => {
+    // issue #159 — exactly one mode. A mixed call is ambiguous (place
+    // the existing module, or mint a near-duplicate?) so it fails loud
+    // with the two valid shapes named.
+    const authoringKeys = (
+      ["displayName", "html", "css", "js", "fields", "description", "kind", "type"] as const
+    ).filter((k) => input[k] !== undefined);
+    if (input.moduleId !== undefined) {
+      if (authoringKeys.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `moduleId places an EXISTING module — drop ${authoringKeys.join(", ")}. ` +
+            "To change a shared module's structure use edit_module; to mint a new one omit moduleId.",
+        });
+      }
+      return;
+    }
+    if (input.displayName === undefined || input.html === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Pass either `moduleId` (place an existing module from ## Modules) " +
+          "or `displayName` + `html` (mint a new module).",
+      });
+    }
+  });
 
 /**
  * P6.7.3 — `add_module_to_template` AI tool. Same shape as

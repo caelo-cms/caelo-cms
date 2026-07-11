@@ -162,15 +162,15 @@ export function formatModulesBlock(
     "",
     'The full module catalog on this install. Pick modules by **kind** + **description** — the operator describes outcomes ("add a footer to the blog"), you decide which module fits.',
     "",
-    "Tools: `list_modules` (full set), `add_module_to_page` (place existing), `create_module` (mint new; REQUIRES `description` + `kind` + semantic snake_case field names), `edit_module` (modify HTML/fields/description).",
+    "Tools: `list_modules` (full catalog; filter by kind/search), `add_module_to_page` (pass `moduleId` to place an existing module — reuse first; or `displayName` + `html` + `fields` to mint new, REQUIRES `description` + `kind` + semantic snake_case field names), `add_module_to_template` / `add_module_to_layout` (template-/site-wide variants), `edit_module` (modify HTML/fields/description).",
     "",
-    "**When the catalog has no fit:** call `create_module` with a meaningful `description` (what the module is for, when to use it) before placing it. Don't ask the operator which module to use — pick the closest fit by kind, or mint a new one.",
+    "**When the catalog has no fit:** mint a new module directly through `add_module_to_page` (or the template/layout variant) with a meaningful `description` (what the module is for, when to use it) — authoring and placement happen in one call; there is no separate create step. Don't ask the operator which module to use — pick the closest fit by kind, or mint a new one.",
   ].join("\n");
   if (modules.length === 0) {
     return [
       primer,
       "",
-      "_0 modules on this install — every page composition starts with `create_module`._",
+      "_0 modules on this install — every page composition starts by minting modules via `add_module_to_page` (or `compose_page_from_spec` for a whole page)._",
     ].join("\n");
   }
   // Group by kind so the AI scans by intent.
@@ -778,6 +778,12 @@ export function formatThemeBlock(
     seedNotice,
     "",
     "**Module CSS must reference theme vars** so token edits cascade: `background: var(--color-primary)`, `padding: var(--spacing-md)`, `font-family: var(--font-heading)`. Hardcoded hex defeats the theme — the operator can no longer tune the site by editing tokens.",
+    "",
+    // issue #150 — the AI picks families knowing they actually render:
+    // web fonts are fetched + self-hosted automatically, so any Google
+    // Fonts family is safe; a family that is neither a system stack nor
+    // resolvable fails the deploy loudly.
+    '**Web fonts are self-hosted automatically.** Any Google Fonts family in `typography.*.fontFamily` (e.g. `"Poppins", sans-serif`) is downloaded at deploy and served from the site — pick real typefaces that fit the brand instead of defaulting to system stacks. System stacks (`system-ui`, `Georgia`, …) load nothing. A family that is neither resolves as `theme-font-unresolvable:<family>` in the preview\'s missing-content list and BLOCKS the deploy — fix it via `set_theme_tokens` when you see that marker.',
     "",
     // v0.11.4 (issue #76 follow-up) — list the EXACT CSS var names the
     // renderer emits for THIS theme. Without this the AI guesses

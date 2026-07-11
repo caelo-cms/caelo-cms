@@ -43,6 +43,7 @@ import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listLayoutsTool } from "./list-layouts.js";
+import { listModulesTool } from "./list-modules.js";
 import { listPagesTool } from "./list-pages.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
@@ -139,6 +140,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listLayoutsTool);
   registry.register(listTemplatesTool);
   registry.register(listPagesTool);
+  // issue #159 — the `## Modules` block's full-catalog escape hatch.
+  registry.register(listModulesTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);
