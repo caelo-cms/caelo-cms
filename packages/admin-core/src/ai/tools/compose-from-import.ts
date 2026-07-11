@@ -62,13 +62,25 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
       themeTokensApplied: number;
       layoutId: string;
       templateId: string;
+      templatesByCluster: Record<string, string>;
       pageIds: string[];
       homepageId: string | null;
       skippedAlreadyAccepted: number;
+      designInventory: string | null;
     };
+    const clusterList = Object.entries(v.templatesByCluster)
+      .map(([k, id]) => `${k}→${id.slice(0, 8)}`)
+      .join(", ");
     return {
       ok: true,
-      content: `composed import run: theme=${v.themeTokensApplied} tokens, layout=${v.layoutId}, template=${v.templateId}, pages=${v.pageIds.length} created${v.skippedAlreadyAccepted > 0 ? ` (${v.skippedAlreadyAccepted} already accepted, skipped)` : ""}${v.homepageId ? `, homepage=${v.homepageId}` : ""}`,
+      content: [
+        `composed import run: theme=${v.themeTokensApplied} tokens, layout=${v.layoutId}, ${Object.keys(v.templatesByCluster).length} template(s) by cluster [${clusterList}], pages=${v.pageIds.length} created${v.skippedAlreadyAccepted > 0 ? ` (${v.skippedAlreadyAccepted} already accepted, skipped)` : ""}${v.homepageId ? `, homepage=${v.homepageId}` : ""}.`,
+        v.designInventory
+          ? `Original design fact base (issue #195 — use it for your theme decisions, then verify with the stored screenshots):\n${v.designInventory}`
+          : "",
+      ]
+        .filter((x) => x.length > 0)
+        .join("\n"),
     };
   },
 };

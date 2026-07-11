@@ -19,7 +19,13 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { deriveModuleType, err, ok } from "@caelo-cms/shared";
+import {
+  deriveModuleType,
+  err,
+  formatGenesisInventory,
+  inventoryGenesisDraft,
+  ok,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -562,6 +568,8 @@ export const writeExtractedPagesOp = defineOperation({
             proposedThemeTokens: z.record(z.string(), z.string()),
             /** issue #194 — crawler-computed structural signature. */
             signature: z.string().max(200).optional(),
+            /** issue #195 — the page's <style> contents. */
+            pageCss: z.string().max(600_000).optional(),
           }),
         )
         .max(500),
@@ -575,12 +583,12 @@ export const writeExtractedPagesOp = defineOperation({
         INSERT INTO import_pages (
           run_id, source_url, proposed_slug, proposed_title,
           proposed_modules, proposed_theme_tokens,
-          structural_signature, cluster_key
+          structural_signature, cluster_key, page_css
         ) VALUES (
           ${input.runId}::uuid, ${p.sourceUrl}, ${p.proposedSlug}, ${p.proposedTitle},
           ${JSON.stringify(p.proposedModules)}::jsonb,
           ${JSON.stringify(p.proposedThemeTokens)}::jsonb,
-          ${p.signature ?? null}, ${p.signature ?? null}
+          ${p.signature ?? null}, ${p.signature ?? null}, ${p.pageCss ?? null}
         )
         ON CONFLICT (run_id, source_url) DO NOTHING
         RETURNING id
@@ -957,10 +965,15 @@ export const composeFromImportRunOp = defineOperation({
   output: z.object({
     themeTokensApplied: z.number().int(),
     layoutId: z.string(),
+    /** The homepage cluster's template (first template when no home). */
     templateId: z.string(),
+    /** issue #195 — one template per confirmed page-type cluster. */
+    templatesByCluster: z.record(z.string(), z.string()),
     pageIds: z.array(z.string()),
     homepageId: z.string().nullable(),
     skippedAlreadyAccepted: z.number().int(),
+    /** issue #195 — formatted genesis-inventory over the homepage. */
+    designInventory: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
     // 1. Run must exist + be reviewable.
@@ -988,7 +1001,9 @@ export const composeFromImportRunOp = defineOperation({
     const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, proposed_slug, proposed_title,
              proposed_modules, proposed_theme_tokens, accepted_page_id,
-             diff_status, acknowledged_at
+             diff_status, acknowledged_at,
+             COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
+             cluster_label, page_css
       FROM import_pages
       WHERE run_id = ${input.runId}::uuid
       ORDER BY created_at ASC
@@ -1001,6 +1016,9 @@ export const composeFromImportRunOp = defineOperation({
       accepted_page_id: string | null;
       diff_status: "pass" | "warn" | "fail" | null;
       acknowledged_at: string | Date | null;
+      cluster_key: string;
+      cluster_label: string | null;
+      page_css: string | null;
     }>;
 
     const filterSet = input.includeImportPageIds ? new Set(input.includeImportPageIds) : null;
@@ -1110,133 +1128,258 @@ export const composeFromImportRunOp = defineOperation({
       }
     }
 
-    // 6. Find or create the target template. Fresh-on-conflict pattern
-    // keeps `compose_from_run` re-runnable: a second run targeting the
-    // same templateSlug just appends new pages to it.
-    let templateId: string;
-    const existingTplRows = (await tx.execute(sql`
-      SELECT id::text AS id FROM templates
-      WHERE slug = ${input.templateSlug} AND deleted_at IS NULL LIMIT 1
-    `)) as unknown as { id: string }[];
-    if (existingTplRows[0]) {
-      templateId = existingTplRows[0].id;
-    } else {
+    // 6. issue #195 — ONE TEMPLATE PER CONFIRMED CLUSTER (#194), not
+    // one template for the whole site. The homepage cluster ('home')
+    // always gets its own template: it is the design contract.
+    //
+    // Every cluster template carries header/content/footer blocks and
+    // the cluster sample's page_css — pre-#195 the template was a bare
+    // content slot with css='' and a literal bug remapped EVERY
+    // header/footer module into `content`
+    // (`m.blockName === "content" ? "content" : "content"`).
+    interface ParsedModule {
+      blockName: "header" | "content" | "footer";
+      position: number;
+      html: string;
+      displayName: string;
+    }
+    const parseModules = (raw: unknown): ParsedModule[] =>
+      (typeof raw === "string" ? JSON.parse(raw) : (raw ?? [])) as ParsedModule[];
+
+    const slugify = (v: string): string =>
+      v
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 60) || "pages";
+
+    const clusters = new Map<string, typeof eligible>();
+    for (const r of eligible) {
+      const list = clusters.get(r.cluster_key) ?? [];
+      list.push(r);
+      clusters.set(r.cluster_key, list);
+    }
+
+    // Chrome is SHARED per run: one header module + one footer module
+    // minted from the first page that has them, referenced by every
+    // composed page with a single synced content instance — editing
+    // the imported header once updates the whole site (§1A reuse).
+    const chromeModules = new Map<
+      "header" | "footer",
+      { moduleId: string; contentInstanceId: string }
+    >();
+    const ensureChromeModule = async (
+      block: "header" | "footer",
+      src: ParsedModule,
+    ): Promise<{ moduleId: string; contentInstanceId: string } | null> => {
+      const existing = chromeModules.get(block);
+      if (existing) return existing;
+      const modInsert = (await tx.execute(sql`
+        INSERT INTO modules (slug, display_name, type, html, css, js, kind, description)
+        VALUES (
+          ${`imported-${input.runId.slice(0, 8)}-${block}`},
+          ${src.displayName || `Imported ${block}`},
+          ${deriveModuleType(src.displayName || block)},
+          ${src.html}, '', '',
+          'chrome',
+          ${`Imported site ${block} — shared across every migrated page; edit once, updates everywhere.`}
+        )
+        ON CONFLICT (slug, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
+          WHERE deleted_at IS NULL
+          DO UPDATE SET html = EXCLUDED.html
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+      const moduleId = modInsert[0]?.id;
+      if (!moduleId) return null;
+      const ciInsert = (await tx.execute(sql`
+        INSERT INTO content_instances (module_id, "values")
+        VALUES (${moduleId}::uuid, '{}'::jsonb)
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+      const contentInstanceId = ciInsert[0]?.id;
+      if (!contentInstanceId) return null;
+      const entry = { moduleId, contentInstanceId };
+      chromeModules.set(block, entry);
+      return entry;
+    };
+
+    const ensureClusterTemplate = async (
+      clusterKey: string,
+      label: string | null,
+      sampleCss: string,
+    ): Promise<string | null> => {
+      const suffix = clusterKey === "home" ? "home" : slugify(label ?? clusterKey);
+      const slug = `${input.templateSlug}-${suffix}`.slice(0, 120);
+      const existingTplRows = (await tx.execute(sql`
+        SELECT id::text AS id FROM templates
+        WHERE slug = ${slug} AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as { id: string }[];
+      if (existingTplRows[0]) return existingTplRows[0].id;
+      const displayName =
+        clusterKey === "home"
+          ? `Imported homepage (${run.source_url.slice(0, 50)})`
+          : `Imported: ${label ?? clusterKey} (${run.source_url.slice(0, 40)})`;
       const tplInsert = (await tx.execute(sql`
         INSERT INTO templates (slug, display_name, html, css, layout_id)
         VALUES (
-          ${input.templateSlug},
-          ${`Imported page (${run.source_url.slice(0, 60)})`},
-          '<div data-template="imported-page"><caelo-slot name="content">_</caelo-slot></div>',
-          '',
+          ${slug},
+          ${displayName},
+          '<div data-template="imported-page"><caelo-slot name="header">_</caelo-slot><caelo-slot name="content">_</caelo-slot><caelo-slot name="footer">_</caelo-slot></div>',
+          ${sampleCss},
           ${layoutId}::uuid
         )
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];
       const newId = tplInsert[0]?.id;
-      if (!newId) {
+      if (!newId) return null;
+      await tx.execute(sql`
+        INSERT INTO template_blocks (template_id, name, display_name, position)
+        VALUES
+          (${newId}::uuid, 'header', 'Header', 0),
+          (${newId}::uuid, 'content', 'Content', 1),
+          (${newId}::uuid, 'footer', 'Footer', 2)
+      `);
+      return newId;
+    };
+
+    // 7. Per cluster → template; per page → page + modules. Home first
+    // so the homepage lands before the fan-out (homepage-first is the
+    // migration contract).
+    const createdPageIds: string[] = [];
+    const templateIdsByCluster = new Map<string, string>();
+    let homepageId: string | null = null;
+    const orderedClusterKeys = [...clusters.keys()].sort((a, b) =>
+      a === "home" ? -1 : b === "home" ? 1 : a.localeCompare(b),
+    );
+    for (const clusterKey of orderedClusterKeys) {
+      const members = clusters.get(clusterKey) ?? [];
+      const sample = members[0];
+      if (!sample) continue;
+      const templateIdForCluster = await ensureClusterTemplate(
+        clusterKey,
+        sample.cluster_label,
+        sample.page_css ?? "",
+      );
+      if (!templateIdForCluster) {
         return err({
           kind: "HandlerError",
           operation: "imports.compose_from_run",
-          message: "template insert returned no id",
+          message: `template creation failed for cluster ${clusterKey}`,
         });
       }
-      templateId = newId;
-      // Template wraps a single `content` block — match the layout's content slot.
+      templateIdsByCluster.set(clusterKey, templateIdForCluster);
+
+      for (const r of members) {
+        // Block on unacknowledged screenshot fail — same gate as accept_page.
+        if (r.diff_status === "fail" && !r.acknowledged_at) {
+          continue;
+        }
+        const proposedModules = parseModules(r.proposed_modules);
+        const pageInsert = (await tx.execute(sql`
+          INSERT INTO pages (slug, locale, title, name, status, template_id, version)
+          VALUES (
+            ${r.proposed_slug}, 'en',
+            ${r.proposed_title || r.proposed_slug},
+            ${r.proposed_title || r.proposed_slug},
+            'draft', ${templateIdForCluster}::uuid, 1
+          )
+          ON CONFLICT (slug, locale, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
+            WHERE deleted_at IS NULL
+            DO UPDATE SET title = EXCLUDED.title, name = EXCLUDED.name,
+                          template_id = EXCLUDED.template_id
+          RETURNING id::text AS id
+        `)) as unknown as { id: string }[];
+        const pageId = pageInsert[0]?.id;
+        if (!pageId) continue;
+        createdPageIds.push(pageId);
+        if (clusterKey === "home" || r.proposed_slug === "home" || homepageId === null) {
+          if (clusterKey === "home" || r.proposed_slug === "home" || homepageId === null) {
+            homepageId = pageId;
+          }
+        }
+        // Replace any existing page_modules for this page (idempotent re-run).
+        await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${pageId}::uuid`);
+        for (const m of proposedModules) {
+          if (m.blockName === "header" || m.blockName === "footer") {
+            // issue #195 — chrome lands in the CHROME block via the
+            // run-shared module (regression: pre-#195 this line read
+            // `m.blockName === "content" ? "content" : "content"`).
+            const chrome = await ensureChromeModule(m.blockName, m);
+            if (!chrome) continue;
+            await tx.execute(sql`
+              INSERT INTO page_modules
+                (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+              VALUES (
+                ${pageId}::uuid, ${m.blockName}, ${m.position},
+                ${chrome.moduleId}::uuid, ${chrome.contentInstanceId}::uuid, 'synced'
+              )
+            `);
+            continue;
+          }
+          const modDisplayName = m.displayName || `${m.blockName} ${m.position}`;
+          const modInsert = (await tx.execute(sql`
+            INSERT INTO modules (slug, display_name, type, html, css, js)
+            VALUES (
+              ${`imported-${pageId.slice(0, 8)}-${m.blockName}-${m.position}`},
+              ${modDisplayName},
+              ${deriveModuleType(modDisplayName)},
+              ${m.html}, '', ''
+            )
+            RETURNING id::text AS id
+          `)) as unknown as { id: string }[];
+          const moduleId = modInsert[0]?.id;
+          if (!moduleId) continue;
+          // v0.12.0 — mint a fresh unsynced content_instance per placement
+          // so page_modules.content_instance_id NOT NULL is satisfied.
+          const ciInsert = (await tx.execute(sql`
+            INSERT INTO content_instances (module_id, "values")
+            VALUES (${moduleId}::uuid, '{}'::jsonb)
+            RETURNING id::text AS id
+          `)) as unknown as { id: string }[];
+          const newCiId = ciInsert[0]?.id;
+          if (!newCiId) continue;
+          await tx.execute(sql`
+            INSERT INTO page_modules
+              (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+            VALUES (
+              ${pageId}::uuid, 'content', ${m.position},
+              ${moduleId}::uuid, ${newCiId}::uuid, 'unsynced'
+            )
+          `);
+        }
+        // Mark the staging row as accepted.
+        await tx.execute(sql`
+          UPDATE import_pages
+             SET accepted_page_id = ${pageId}::uuid, accepted_at = now()
+           WHERE id = ${r.id}::uuid
+        `);
+      }
+    }
+
+    // issue #195 — persist the design fact base for the AI's theme
+    // decisions ("AI decides, code executes": facts are code-computed;
+    // the model reads them from the run + the op result).
+    const homeSample = clusters.get("home")?.[0];
+    let designInventory: string | null = null;
+    if (homeSample) {
+      const homeHtml = parseModules(homeSample.proposed_modules)
+        .map((m) => m.html)
+        .join("\n");
+      const inv = inventoryGenesisDraft(`${homeHtml}\n<style>${homeSample.page_css ?? ""}</style>`);
+      designInventory = formatGenesisInventory(inv);
       await tx.execute(sql`
-        INSERT INTO template_blocks (template_id, name, display_name, position)
-        VALUES (${templateId}::uuid, 'content', 'Content', 0)
+        UPDATE import_runs SET design_inventory = ${designInventory}
+        WHERE id = ${input.runId}::uuid
       `);
     }
 
-    // 7. Per import_page → page + modules + page_modules.
-    const createdPageIds: string[] = [];
-    let homepageId: string | null = null;
-    for (const r of eligible) {
-      // Block on unacknowledged screenshot fail — same gate as accept_page.
-      if (r.diff_status === "fail" && !r.acknowledged_at) {
-        continue;
-      }
-      const proposedModules = (
-        typeof r.proposed_modules === "string"
-          ? JSON.parse(r.proposed_modules)
-          : (r.proposed_modules ?? [])
-      ) as Array<{
-        blockName: string;
-        position: number;
-        html: string;
-        displayName: string;
-      }>;
-      const pageInsert = (await tx.execute(sql`
-        INSERT INTO pages (slug, locale, title, name, status, template_id, version)
-        VALUES (
-          ${r.proposed_slug}, 'en',
-          ${r.proposed_title || r.proposed_slug},
-          ${r.proposed_title || r.proposed_slug},
-          'draft', ${templateId}::uuid, 1
-        )
-        ON CONFLICT (slug, locale) WHERE deleted_at IS NULL
-          DO UPDATE SET title = EXCLUDED.title, name = EXCLUDED.name
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-      const pageId = pageInsert[0]?.id;
-      if (!pageId) continue;
-      createdPageIds.push(pageId);
-      if (r.proposed_slug === "home" || r.proposed_slug === "index" || homepageId === null) {
-        // First page wins as the "homepage" in the absence of an explicit
-        // home/index slug. The /ramp-up wizard surfaces this for the
-        // "View your homepage" CTA.
-        if (r.proposed_slug === "home" || r.proposed_slug === "index" || homepageId === null) {
-          homepageId = pageId;
-        }
-      }
-      // Replace any existing page_modules for this page (idempotent re-run).
-      await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${pageId}::uuid`);
-      for (const m of proposedModules) {
-        // Template only has a `content` block; remap header/footer to
-        // content for v1 (a follow-up will let the AI propose adding a
-        // header block to the layout).
-        const blockName = m.blockName === "content" ? "content" : "content";
-        const modDisplayName = m.displayName || `${m.blockName} ${m.position}`;
-        const modInsert = (await tx.execute(sql`
-          INSERT INTO modules (slug, display_name, type, html, css, js)
-          VALUES (
-            ${`imported-${pageId.slice(0, 8)}-${m.blockName}-${m.position}`},
-            ${modDisplayName},
-            ${deriveModuleType(modDisplayName)},
-            ${m.html}, '', ''
-          )
-          RETURNING id::text AS id
-        `)) as unknown as { id: string }[];
-        const moduleId = modInsert[0]?.id;
-        if (!moduleId) continue;
-        // v0.12.0 — mint a fresh unsynced content_instance per placement
-        // so page_modules.content_instance_id NOT NULL is satisfied.
-        const ciInsert = (await tx.execute(sql`
-          INSERT INTO content_instances (module_id, "values")
-          VALUES (${moduleId}::uuid, '{}'::jsonb)
-          RETURNING id::text AS id
-        `)) as unknown as { id: string }[];
-        const newCiId = ciInsert[0]?.id;
-        if (!newCiId) continue;
-        await tx.execute(sql`
-          INSERT INTO page_modules
-            (page_id, block_name, position, module_id, content_instance_id, sync_mode)
-          VALUES (
-            ${pageId}::uuid,
-            ${blockName},
-            ${m.position},
-            ${moduleId}::uuid,
-            ${newCiId}::uuid,
-            'unsynced'
-          )
-        `);
-      }
-      // Mark the staging row as accepted.
-      await tx.execute(sql`
-        UPDATE import_pages
-           SET accepted_page_id = ${pageId}::uuid, accepted_at = now()
-         WHERE id = ${r.id}::uuid
-      `);
+    const templateId = templateIdsByCluster.get("home") ?? [...templateIdsByCluster.values()][0];
+    if (!templateId) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.compose_from_run",
+        message: "no template was created — every page was blocked or filtered",
+      });
     }
 
     await recordAudit(tx, {
@@ -1253,9 +1396,11 @@ export const composeFromImportRunOp = defineOperation({
       themeTokensApplied: aggregatedTokens.length,
       layoutId,
       templateId,
+      templatesByCluster: Object.fromEntries(templateIdsByCluster),
       pageIds: createdPageIds,
       homepageId,
       skippedAlreadyAccepted,
+      designInventory,
     });
   },
 });

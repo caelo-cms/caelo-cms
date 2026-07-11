@@ -391,6 +391,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
             })),
             proposedThemeTokens: p.themeTokens,
             signature: p.signature,
+            pageCss: p.pageCss,
           })),
         });
       };
