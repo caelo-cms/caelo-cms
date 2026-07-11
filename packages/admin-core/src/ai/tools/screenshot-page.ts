@@ -38,6 +38,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
   name: "screenshot_page",
   description:
     "Capture a screenshot of the rendered page (operator's browser does the capture via html2canvas; you see the result as an image attached to the next user turn). Use for VISUAL feedback — 'is the spacing right?', 'does the hero feel crowded?', 'what's the overall layout impression?'. " +
+    "ALWAYS call this after composing a page or making structural/styling changes — desktop AND mobile viewports — and fix what the screenshot reveals BEFORE telling the operator you're done (max two review rounds; skip for content-only edits). " +
     "For CSS pathology (white halo around the header, wrong colors, broken layout) prefer `inspect_page_render` — it returns the HTML + every CSS layer separately and is faster + cheaper. " +
     "Pass `chatBranchId` to capture the chat-branch preview (with pending edits). REQUIRES an active operator browser session — fails with a 30s timeout if the operator closed the tab. Only call this once per visual check; the image is attached to ONE follow-up user turn, not persisted across the chat.",
   schema: screenshotInput,
