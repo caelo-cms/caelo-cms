@@ -128,3 +128,33 @@ describe("fonts.ts patterns (issue #150 CodeQL follow-up)", () => {
     expect(fontFamilySlug("--Weird--Name--")).toBe("weird-name");
   });
 });
+
+describe("css gradient scanner + binding decl parse (issue #164 CodeQL follow-up)", () => {
+  it("scans a wall of unclosed gradient heads linearly", async () => {
+    const { scanCssGradients } = await import("../css-gradient-scan.js");
+    const evil = "conic-gradient(".repeat(20_000);
+    expect(underBudget(() => scanCssGradients(evil))).toBeLessThan(BUDGET_MS);
+    expect(scanCssGradients(evil)).toEqual([]);
+  });
+
+  it("still extracts nested-paren gradients correctly (behaviour equivalence)", async () => {
+    const { scanCssGradients } = await import("../css-gradient-scan.js");
+    const css =
+      "a{background:linear-gradient(135deg, rgba(15,23,42,0.5), #fff)} b{x:repeating-linear-gradient(45deg, #000 0 2px)}";
+    const found = scanCssGradients(css).map((m) => m.literal);
+    expect(found).toEqual([
+      "linear-gradient(135deg, rgba(15,23,42,0.5), #fff)",
+      "repeating-linear-gradient(45deg, #000 0 2px)",
+    ]);
+  });
+
+  it("builds the theme value map linearly on adversarial dash runs", async () => {
+    const { buildThemeValueMap } = await import("../theme-literal-binding.js");
+    const tokens = {
+      color: { primary: { $type: "color", $value: "#4f46e5" } },
+    } as unknown as import("../themes.js").ThemeDocument;
+    // The map parse consumes renderer OUTPUT, but harden the parse
+    // itself against pathological documents producing long dash names.
+    expect(underBudget(() => buildThemeValueMap(tokens))).toBeLessThan(BUDGET_MS);
+  });
+});
