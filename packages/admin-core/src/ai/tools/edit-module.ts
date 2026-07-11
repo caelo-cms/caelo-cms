@@ -18,6 +18,7 @@ import { execute } from "@caelo-cms/query-api";
 import { editModuleToolInput } from "@caelo-cms/shared";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
+import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const editModuleTool: ToolDefinitionWithHandler<
@@ -67,15 +68,29 @@ export const editModuleTool: ToolDefinitionWithHandler<
       // issue #106 — shared field schema (single source of truth across all
       // module-authoring tools). See `_module-fields-schema.ts`.
       fields: MODULE_FIELDS_JSON_SCHEMA,
+      bindThemeLiterals: { type: "boolean" },
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const result = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.update", input);
+    // issue #164 slice 2 — opt-in mechanical token binding before write.
+    let bindingReport = "";
+    let opInput: Record<string, unknown> = { ...input };
+    delete opInput.bindThemeLiterals;
+    if (input.bindThemeLiterals === true && typeof input.css === "string") {
+      const bound = await bindCssToTheme(ctx, toolCtx, input.css);
+      opInput = { ...opInput, css: bound.css };
+      bindingReport = bound.report;
+    }
+    const result = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.update", opInput);
     if (result.ok) {
       // issue #156 — scan freshly-written CSS against the active theme's
       // emitted vars; unknown names ride the result so the AI fixes
       // drift in the same turn.
-      const cssWarn = await cssVarWarningSuffix(ctx, toolCtx, input.css);
+      const cssWarn = await cssVarWarningSuffix(
+        ctx,
+        toolCtx,
+        (opInput.css as string | undefined) ?? input.css,
+      );
       // v0.12.2 — surface the extractor's inferred fields when present
       // so the AI's next turn sees the auto-minted names verbatim.
       const value = result.value as {
@@ -95,7 +110,7 @@ export const editModuleTool: ToolDefinitionWithHandler<
           content: `⚠️ Extractor fallback used — module ${input.moduleId} updated with heuristic field names: ${list}. **Next time, author HTML + fields together** with semantic snake_case names (e.g. \`hero_title\`, \`primary_cta_href\`) so the \`## Modules\` block stays useful. Rename via a follow-up edit_module with explicit \`fields\` if these names are confusing.${cssWarn}`,
         };
       }
-      return { ok: true, content: `module ${input.moduleId} updated${cssWarn}` };
+      return { ok: true, content: `module ${input.moduleId} updated${bindingReport}${cssWarn}` };
     }
     const message = (result.error as { message?: string }).message ?? "unknown error";
     return { ok: false, content: message };

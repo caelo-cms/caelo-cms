@@ -18,6 +18,8 @@
  * budget must hold on adversarial input too).
  */
 
+import { scanCssGradients } from "./css-gradient-scan.js";
+
 /** One distinct color literal with where/how often the draft uses it. */
 export interface ColorUsage {
   readonly value: string;
@@ -58,7 +60,6 @@ export function extractDraftCss(html: string): string {
 
 const DECLARATION_RE = /([a-zA-Z-]+)\s*:\s*([^;{}]+)/g;
 const COLOR_LITERAL_RE = /#[0-9a-fA-F]{3,8}\b|(?:oklch|rgba?|hsla?|lab|lch|hwb)\([^()]*\)/g;
-const GRADIENT_RE = /(?:repeating-)?(?:linear|radial|conic)-gradient\([^;{}]*\)/gi;
 const LENGTH_RE = /-?\d+(?:\.\d+)?(?:rem|em|px|vh|vw|ch|%)\b/g;
 
 const SPACING_PROPS = new Set([
@@ -124,8 +125,8 @@ export function inventoryGenesisDraft(html: string): GenesisDraftInventory {
     const prop = (decl[1] ?? "").toLowerCase();
     const value = (decl[2] ?? "").trim();
 
-    for (const g of value.matchAll(GRADIENT_RE)) {
-      pushCount(gradients, g[0]);
+    for (const g of scanCssGradients(value)) {
+      pushCount(gradients, g.literal);
     }
     // Colors inside gradients still count — a gradient stop color is a
     // palette member the token map must name.
