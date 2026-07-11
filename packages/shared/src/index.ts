@@ -10,6 +10,7 @@ export * from "./context.js";
 export * from "./css-var-scan.js";
 export * from "./fonts.js";
 export * from "./genesis.js";
+export * from "./genesis-inventory.js";
 export * from "./i18n.js";
 export {
   type LogContext,
