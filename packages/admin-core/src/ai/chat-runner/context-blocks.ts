@@ -29,6 +29,7 @@ export interface PreCatalogueBlocks {
   pageContextBlock: string | undefined;
   allPagesBlock: string | undefined;
   siteIdentityBlock: string | undefined;
+  designSystemBlock: string | undefined;
   themeBlock: string | undefined;
   structuredSetsBlock: string | undefined;
   modulesBlock: string | undefined;
@@ -101,6 +102,7 @@ export async function buildSystemContextBlocks(deps: {
       pageContextBlock,
       allPagesBlock,
       siteIdentityBlock: site.siteIdentityBlock,
+      designSystemBlock: site.designSystemBlock,
       themeBlock: catalog.themeBlock,
       structuredSetsBlock: catalog.structuredSetsBlock,
       modulesBlock: catalog.modulesBlock,

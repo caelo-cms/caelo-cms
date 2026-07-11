@@ -8,6 +8,7 @@ export * from "./cap-failures.js";
 export * from "./content.js";
 export * from "./context.js";
 export * from "./css-var-scan.js";
+export * from "./design-manifest.js";
 export * from "./fonts.js";
 export * from "./genesis.js";
 export * from "./i18n.js";

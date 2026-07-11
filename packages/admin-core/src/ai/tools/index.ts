@@ -100,6 +100,7 @@ import { reorderModuleTool } from "./reorder-module.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotPageTool } from "./screenshot-page.js";
 import { setContentInstanceValuesTool } from "./set-content-instance-values.js";
+import { setDesignManifestTool } from "./set-design-manifest.js";
 import { setMediaAltTool } from "./set-media-alt.js";
 import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageSeoTool } from "./set-page-seo.js";
@@ -151,6 +152,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(saveGenesisDraftTool);
   registry.register(listGenesisDraftsTool);
   registry.register(selectGenesisDraftTool);
+  // issue #165 — per-site design language writer.
+  registry.register(setDesignManifestTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);
