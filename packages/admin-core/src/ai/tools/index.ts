@@ -46,6 +46,7 @@ import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
+import { inspectExternalPageTool } from "./inspect-external-page.js";
 import { inspectGenesisDraftTool } from "./inspect-genesis-draft.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
@@ -100,6 +101,7 @@ import { removeModuleFromPageTool } from "./remove-module-from-page.js";
 import { renamePageTool } from "./rename-page.js";
 import { reorderModuleTool } from "./reorder-module.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
+import { screenshotExternalPageTool } from "./screenshot-external-page.js";
 import { screenshotPageTool } from "./screenshot-page.js";
 import { setContentInstanceValuesTool } from "./set-content-instance-values.js";
 import { setDesignManifestTool } from "./set-design-manifest.js";
@@ -160,6 +162,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(checkGenesisParityTool);
   // issue #165 — per-site design language writer.
   registry.register(setDesignManifestTool);
+  // issue #189 — single-page external-site sensing (migration glance).
+  registry.register(inspectExternalPageTool);
+  registry.register(screenshotExternalPageTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);

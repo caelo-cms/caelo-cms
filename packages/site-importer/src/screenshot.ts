@@ -54,7 +54,14 @@ export interface Screenshotter {
    */
   capture(
     url: string,
-    opts?: { width?: number; height?: number; external?: boolean },
+    opts?: {
+      width?: number;
+      height?: number;
+      external?: boolean;
+      /** Default true (import-diff behaviour). issue #189's glance
+       *  tools pass false: one viewport of pixels, not an archive. */
+      fullPage?: boolean;
+    },
   ): Promise<Screenshot>;
   dispose(): Promise<void>;
 }
@@ -140,7 +147,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       const page = await ctx.newPage();
       try {
         await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });
-        const png = await page.screenshot({ fullPage: true, type: "png" });
+        const png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
         return {
           bytes: new Uint8Array(png),
           width: opts?.width ?? 1280,
