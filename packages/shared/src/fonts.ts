@@ -173,7 +173,17 @@ export function googleFontsCssUrl(request: FontRequest): string {
   return `https://fonts.googleapis.com/css2?family=${family}:wght@${weights}&display=swap`;
 }
 
-const FONT_FACE_BLOCK_RE = /@font-face\s*\{([^}]*)\}/g;
+/**
+ * `[^{}]*` (not `[^}]*`): the char class excluding BOTH braces makes the
+ * pattern unambiguous — on adversarial payloads full of unclosed
+ * `@font-face{` starts, a failed match aborts at the next `{` instead of
+ * rescanning to end-of-input per start position (the polynomial-ReDoS
+ * shape CodeQL flags; this file parses remotely-served CSS).
+ */
+const FONT_FACE_BLOCK_RE = /@font-face\s*\{([^{}]*)\}/g;
+
+/** css2 responses are ~10–50 KB; anything past this is not a fonts CSS. */
+const MAX_FONTS_CSS_BYTES = 1_000_000;
 
 function declValue(block: string, prop: string): string | null {
   const m = new RegExp(`${prop}\\s*:\\s*([^;]+);`, "i").exec(block);
@@ -184,22 +194,31 @@ function declValue(block: string, prop: string): string | null {
  * Parse a fonts-CSS payload (css2 response shape) into face records.
  * Faces without a woff2/woff URL are dropped; a payload yielding zero
  * faces is the caller's loud-failure signal, not a silent empty set.
+ * Oversized payloads short-circuit to [] for the same loud path —
+ * a legitimate css2 response is orders of magnitude smaller.
  */
 export function parseFontsCss(cssText: string): ParsedFontFace[] {
+  if (cssText.length > MAX_FONTS_CSS_BYTES) return [];
   const faces: ParsedFontFace[] = [];
   for (const m of cssText.matchAll(FONT_FACE_BLOCK_RE)) {
     const block = m[1] ?? "";
     const familyRaw = declValue(block, "font-family");
     const src = declValue(block, "src");
     if (familyRaw === null || src === null) continue;
-    const urlMatch = /url\(([^)]+\.woff2?)\)/i.exec(src);
+    // Capture the whole url(...) argument with an unambiguous class,
+    // then check the extension in code — `[^)]+\.woff2?` is the classic
+    // ambiguous-suffix polynomial pattern.
+    const urlMatch = /url\(([^()]*)\)/i.exec(src);
     if (!urlMatch) continue;
+    const srcUrl = (urlMatch[1] ?? "").trim().replace(/^["']|["']$/g, "");
+    const lower = srcUrl.toLowerCase();
+    if (!(lower.endsWith(".woff2") || lower.endsWith(".woff"))) continue;
     faces.push({
       family: cleanFamilyName(familyRaw),
       style: declValue(block, "font-style") ?? "normal",
       weight: declValue(block, "font-weight") ?? "400",
       unicodeRange: declValue(block, "unicode-range"),
-      srcUrl: (urlMatch[1] ?? "").trim().replace(/^["']|["']$/g, ""),
+      srcUrl,
     });
   }
   return faces;
@@ -265,9 +284,13 @@ export function fontUnresolvableMarker(family: string): string {
  * (reads the same path from the URL) so the two can't drift.
  */
 export function fontFamilySlug(family: string): string {
+  // After the collapse pass, dash RUNS no longer exist — at most one
+  // leading + one trailing dash remain, so the trim pattern needs no
+  // quantifier (a `-+$` here is the polynomial-ReDoS shape on
+  // adversarial all-dash input; this runs on library-supplied strings).
   return family
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-|-$/g, "");
 }

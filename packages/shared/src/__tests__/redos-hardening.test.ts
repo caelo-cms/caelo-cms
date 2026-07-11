@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { fontFamilySlug, parseFontsCss } from "../fonts.js";
 import { trimSlashes, trimTrailingSlashes } from "../i18n.js";
 import { renderTemplate } from "../template-engine.js";
 import { stripCssComments } from "../theme-importers/css-comments.js";
@@ -83,5 +84,42 @@ describe("renderTemplate SECTION_RE (S4)", () => {
       },
     });
     expect(out.html).toBe('<nav><a href="/docs">Docs</a><a href="/blog">Blog</a></nav>');
+  });
+});
+
+describe("fonts.ts patterns (issue #150 CodeQL follow-up)", () => {
+  it("scans a payload of unclosed @font-face starts linearly", () => {
+    // [^{}]* aborts at the next `{`; the old [^}]* rescanned to EOF per
+    // start position (quadratic across matchAll).
+    const evil = "@font-face{".repeat(30_000);
+    expect(underBudget(() => parseFontsCss(evil))).toBeLessThan(BUDGET_MS);
+  });
+
+  it("scans an ambiguous url( run linearly and rejects oversized payloads", () => {
+    const evil = `@font-face{font-family:'X';src:${"url((".repeat(20_000)};}`;
+    expect(underBudget(() => parseFontsCss(evil))).toBeLessThan(BUDGET_MS);
+    expect(parseFontsCss(`x${"y".repeat(1_000_001)}`)).toEqual([]);
+  });
+
+  it("still parses a valid css2 block identically (behaviour equivalence)", () => {
+    const faces = parseFontsCss(
+      "@font-face{font-family:'Poppins';font-style:normal;font-weight:400;src:url(https://fonts.gstatic.com/a.woff2) format('woff2');unicode-range:U+0000-00FF;}",
+    );
+    expect(faces).toEqual([
+      {
+        family: "Poppins",
+        style: "normal",
+        weight: "400",
+        unicodeRange: "U+0000-00FF",
+        srcUrl: "https://fonts.gstatic.com/a.woff2",
+      },
+    ]);
+  });
+
+  it("slugs an all-dash family name linearly (no -+$ backtracking)", () => {
+    const evil = "-".repeat(200_000);
+    expect(underBudget(() => fontFamilySlug(evil))).toBeLessThan(BUDGET_MS);
+    expect(fontFamilySlug("  Playfair Display  ")).toBe("playfair-display");
+    expect(fontFamilySlug("--Weird--Name--")).toBe("weird-name");
   });
 });
