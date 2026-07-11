@@ -184,11 +184,13 @@ import { addGenesisDraftOp, listGenesisDraftsOp, selectGenesisDraftOp } from "./
 import {
   acceptImportedPageOp,
   acknowledgeImportPageDiffOp,
+  assignImportPageClusterOp,
   cleanupImportRunOp,
   composeFromImportRunOp,
   createImportRunOp,
   executeImportProposalOp,
   getImportRunOp,
+  listImportPageClustersOp,
   listImportRunsOp,
   listPendingImportProposalsOp,
   proposeImportRunOp,
@@ -743,6 +745,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createImportRunOp);
   registry.register(proposeImportRunOp);
   registry.register(listPendingImportProposalsOp);
+  // issue #194 — page-type clusters (list + bulk assign/label).
+  registry.register(listImportPageClustersOp);
+  registry.register(assignImportPageClusterOp);
   registry.register(executeImportProposalOp);
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);

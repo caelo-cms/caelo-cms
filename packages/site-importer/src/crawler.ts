@@ -24,6 +24,7 @@
  */
 
 import { extractModulesFromHtml, extractThemeTokens, extractTitle } from "./extractor.js";
+import { computePageSignature } from "./page-signature.js";
 import { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 import { isExternalUrlBlockedError, safeExternalFetch } from "./safe-fetch.js";
 import { discoverSitemapUrls, type TextFetcher } from "./sitemap.js";
@@ -79,6 +80,9 @@ export interface CrawledPage {
   readonly title: string;
   readonly modules: ReturnType<typeof extractModulesFromHtml>;
   readonly themeTokens: Record<string, string>;
+  /** issue #194 — deterministic structural signature ("home" for the
+   *  source URL); equal signatures form one page-type cluster. */
+  readonly signature: string;
 }
 
 export interface CrawlResult {
@@ -209,6 +213,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       title: extractTitle(res.html),
       modules: extractModulesFromHtml(res.html),
       themeTokens: extractThemeTokens(res.html),
+      signature: computePageSignature({ url: next.url, sourceUrl: opts.sourceUrl, html: res.html }),
     };
     pagesCrawled += 1;
     sinceFlush += 1;

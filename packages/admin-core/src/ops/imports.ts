@@ -63,6 +63,10 @@ const pageRow = z.object({
     }),
   ),
   proposedThemeTokens: z.record(z.string(), z.string()),
+  /** issue #194 — structural signature + current cluster + AI label. */
+  structuralSignature: z.string().nullable(),
+  clusterKey: z.string().nullable(),
+  clusterLabel: z.string().nullable(),
   screenshotObjectKey: z.string().nullable(),
   diffStatus: z.enum(["pass", "warn", "fail"]).nullable(),
   diffPct: z.number().nullable(),
@@ -157,6 +161,7 @@ export const getImportRunOp = defineOperation({
     const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, run_id::text AS run_id, source_url,
              proposed_slug, proposed_title, proposed_modules, proposed_theme_tokens,
+             structural_signature, cluster_key, cluster_label,
              screenshot_object_key, diff_status, diff_pct,
              accepted_page_id::text AS accepted_page_id, accepted_at, rejected_at, created_at
       FROM import_pages
@@ -175,6 +180,9 @@ export const getImportRunOp = defineOperation({
         displayName: string;
       }>;
       proposed_theme_tokens: Record<string, string>;
+      structural_signature: string | null;
+      cluster_key: string | null;
+      cluster_label: string | null;
       screenshot_object_key: string | null;
       diff_status: "pass" | "warn" | "fail" | null;
       diff_pct: number | null;
@@ -193,6 +201,9 @@ export const getImportRunOp = defineOperation({
         proposedTitle: p.proposed_title,
         proposedModules: p.proposed_modules ?? [],
         proposedThemeTokens: p.proposed_theme_tokens ?? {},
+        structuralSignature: p.structural_signature,
+        clusterKey: p.cluster_key,
+        clusterLabel: p.cluster_label,
         screenshotObjectKey: p.screenshot_object_key,
         diffStatus: p.diff_status,
         diffPct: p.diff_pct,
@@ -503,6 +514,8 @@ export const writeExtractedPagesOp = defineOperation({
               }),
             ),
             proposedThemeTokens: z.record(z.string(), z.string()),
+            /** issue #194 — crawler-computed structural signature. */
+            signature: z.string().max(200).optional(),
           }),
         )
         .max(500),
@@ -515,11 +528,13 @@ export const writeExtractedPagesOp = defineOperation({
       const r = (await tx.execute(sql`
         INSERT INTO import_pages (
           run_id, source_url, proposed_slug, proposed_title,
-          proposed_modules, proposed_theme_tokens
+          proposed_modules, proposed_theme_tokens,
+          structural_signature, cluster_key
         ) VALUES (
           ${input.runId}::uuid, ${p.sourceUrl}, ${p.proposedSlug}, ${p.proposedTitle},
           ${JSON.stringify(p.proposedModules)}::jsonb,
-          ${JSON.stringify(p.proposedThemeTokens)}::jsonb
+          ${JSON.stringify(p.proposedThemeTokens)}::jsonb,
+          ${p.signature ?? null}, ${p.signature ?? null}
         )
         ON CONFLICT (run_id, source_url) DO NOTHING
         RETURNING id
@@ -668,6 +683,152 @@ export const acceptImportedPageOp = defineOperation({
       resultSummary: `promoted ${r.proposed_slug} → page ${pageId}`,
     });
     return ok({ pageId });
+  },
+});
+
+/**
+ * issue #194 — page-type clusters over a crawled run. The crawler
+ * computed deterministic structural signatures; this read groups the
+ * run's pages by their CURRENT cluster_key so the AI can present
+ * "45 pages look like blog posts" and the operator confirms in chat.
+ * Open to all actor kinds per §11 (broad read plans good writes).
+ */
+export const listImportPageClustersOp = defineOperation({
+  name: "imports.list_page_clusters",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ runId: z.string().uuid() }).strict(),
+  output: z.object({
+    clusters: z.array(
+      z.object({
+        clusterKey: z.string(),
+        label: z.string().nullable(),
+        count: z.number(),
+        samples: z.array(
+          z.object({
+            importPageId: z.string(),
+            sourceUrl: z.string(),
+            proposedTitle: z.string(),
+            proposedSlug: z.string(),
+          }),
+        ),
+      }),
+    ),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, source_url, proposed_title, proposed_slug,
+             COALESCE(cluster_key, structural_signature, 'unclustered') AS cluster_key,
+             cluster_label
+      FROM import_pages
+      WHERE run_id = ${input.runId}::uuid
+      ORDER BY created_at ASC
+    `)) as unknown as Array<{
+      id: string;
+      source_url: string;
+      proposed_title: string;
+      proposed_slug: string;
+      cluster_key: string;
+      cluster_label: string | null;
+    }>;
+    const byKey = new Map<string, typeof rows>();
+    for (const r of rows) {
+      const list = byKey.get(r.cluster_key) ?? [];
+      list.push(r);
+      byKey.set(r.cluster_key, list);
+    }
+    const clusters = [...byKey.entries()]
+      .map(([clusterKey, members]) => ({
+        clusterKey,
+        label: members.find((m) => m.cluster_label)?.cluster_label ?? null,
+        count: members.length,
+        samples: members.slice(0, 5).map((m) => ({
+          importPageId: m.id,
+          sourceUrl: m.source_url,
+          proposedTitle: m.proposed_title,
+          proposedSlug: m.proposed_slug,
+        })),
+      }))
+      // Largest first; "home" pinned to the front — it is the design
+      // contract and the AI presents it first.
+      .sort((a, b) =>
+        a.clusterKey === "home" ? -1 : b.clusterKey === "home" ? 1 : b.count - a.count,
+      );
+    return ok({ clusters });
+  },
+});
+
+/**
+ * issue #194 — bulk cluster re-assignment + labelling in ONE tx (§11:
+ * the AI posts a multi-row change as one call). Two shapes, both
+ * optional but at least one required:
+ *   - importPageIds → move those pages into clusterKey;
+ *   - label → set the human name on every page currently in clusterKey.
+ */
+export const assignImportPageClusterOp = defineOperation({
+  name: "imports.assign_page_cluster",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      clusterKey: z.string().min(1).max(200),
+      importPageIds: z.array(z.string().uuid()).max(2000).optional(),
+      label: z.string().min(1).max(120).optional(),
+    })
+    .strict()
+    .refine((v) => (v.importPageIds && v.importPageIds.length > 0) || v.label !== undefined, {
+      message: "pass importPageIds (re-assign), label (name the cluster), or both",
+    }),
+  output: z.object({ reassigned: z.number(), labelled: z.number() }),
+  handler: async (ctx, input, tx) => {
+    let reassigned = 0;
+    if (input.importPageIds && input.importPageIds.length > 0) {
+      // Zod validated each id as a UUID, so the raw ARRAY literal is
+      // injection-safe (same pattern as pages.delete_many).
+      const idArray = `ARRAY[${input.importPageIds.map((id) => `'${id}'::uuid`).join(",")}]`;
+      const moved = (await tx.execute(sql`
+        UPDATE import_pages
+        SET cluster_key = ${input.clusterKey}
+        WHERE run_id = ${input.runId}::uuid
+          AND id = ANY(${sql.raw(idArray)})
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      reassigned = moved.length;
+      if (reassigned !== input.importPageIds.length) {
+        return err({
+          kind: "HandlerError",
+          operation: "imports.assign_page_cluster",
+          message: `only ${reassigned}/${input.importPageIds.length} pages matched this run — re-list with list_page_clusters and retry with valid importPageIds`,
+        });
+      }
+    }
+    let labelled = 0;
+    if (input.label !== undefined) {
+      const named = (await tx.execute(sql`
+        UPDATE import_pages
+        SET cluster_label = ${input.label}
+        WHERE run_id = ${input.runId}::uuid AND cluster_key = ${input.clusterKey}
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      labelled = named.length;
+      if (labelled === 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "imports.assign_page_cluster",
+          message: `no pages in cluster '${input.clusterKey}' for this run — check list_page_clusters for valid keys`,
+        });
+      }
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.assign_page_cluster",
+      input,
+      succeeded: true,
+      resultSummary: `cluster ${input.clusterKey}: reassigned=${reassigned} labelled=${labelled}`,
+    });
+    return ok({ reassigned, labelled });
   },
 });
 
