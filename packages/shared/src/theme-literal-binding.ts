@@ -20,12 +20,11 @@
  * no second resolution path to drift.
  */
 
+import { replaceCssGradients } from "./css-gradient-scan.js";
 import { renderThemeCss } from "./theme-render.js";
 import type { ThemeDocument } from "./themes.js";
 
-const VAR_DECL_RE = /(--[a-zA-Z0-9-]+):([^;]+);/g;
 const COLOR_LITERAL_RE = /#[0-9a-fA-F]{3,8}\b|(?:oklch|rgba?|hsla?|lab|lch|hwb)\([^()]*\)/g;
-const GRADIENT_LITERAL_RE = /(?:repeating-)?(?:linear|radial|conic)-gradient\([^;{}]*\)/gi;
 const DIMENSION_VALUE_RE = /^-?\d+(\.\d+)?(rem|em|px|%)$/;
 
 export interface ThemeValueMap {
@@ -57,9 +56,16 @@ export function buildThemeValueMap(tokens: ThemeDocument): ThemeValueMap {
   const colors = new Map<string, string>();
   const gradients = new Map<string, string>();
   const dimensions = new Map<string, string>();
-  for (const m of light.matchAll(VAR_DECL_RE)) {
-    const name = m[1] ?? "";
-    const value = (m[2] ?? "").trim();
+  // Regex-free declaration split (a `(--name):(value);` regex is the
+  // #113 polynomial shape on adversarial dash runs). The light block
+  // is `:root{--a:v;--b:v;}` — split on `;`, take name:value pairs.
+  for (const rawSeg of light.split(";")) {
+    const seg = rawSeg.slice(rawSeg.lastIndexOf("{") + 1);
+    const colon = seg.indexOf(":");
+    if (colon <= 0) continue;
+    const name = seg.slice(0, colon).trim();
+    const value = seg.slice(colon + 1).trim();
+    if (!name.startsWith("--") || value.length === 0) continue;
     if (name.startsWith("--gradient-")) {
       const key = normalizeGradient(value);
       if (!gradients.has(key)) gradients.set(key, name);
@@ -91,7 +97,7 @@ export function applyThemeLiteralBinding(css: string, tokens: ThemeDocument): Li
   const counts = new Map<string, { to: string; count: number }>();
   let out = css;
 
-  out = out.replace(GRADIENT_LITERAL_RE, (literal) => {
+  out = replaceCssGradients(out, (literal) => {
     const varName = map.gradients.get(normalizeGradient(literal));
     if (varName === undefined) return literal;
     const entry = counts.get(literal) ?? { to: varName, count: 0 };
