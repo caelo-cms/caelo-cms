@@ -67,6 +67,7 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
       homepageId: string | null;
       skippedAlreadyAccepted: number;
       designInventory: string | null;
+      redirectsCreated: number;
     };
     const clusterList = Object.entries(v.templatesByCluster)
       .map(([k, id]) => `${k}→${id.slice(0, 8)}`)
@@ -74,7 +75,7 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
     return {
       ok: true,
       content: [
-        `composed import run: theme=${v.themeTokensApplied} tokens, layout=${v.layoutId}, ${Object.keys(v.templatesByCluster).length} template(s) by cluster [${clusterList}], pages=${v.pageIds.length} created${v.skippedAlreadyAccepted > 0 ? ` (${v.skippedAlreadyAccepted} already accepted, skipped)` : ""}${v.homepageId ? `, homepage=${v.homepageId}` : ""}.`,
+        `composed import run: theme=${v.themeTokensApplied} tokens, layout=${v.layoutId}, ${Object.keys(v.templatesByCluster).length} template(s) by cluster [${clusterList}], pages=${v.pageIds.length} created, redirects=${v.redirectsCreated} (old URLs 301 to the new paths)${v.skippedAlreadyAccepted > 0 ? ` (${v.skippedAlreadyAccepted} already accepted, skipped)` : ""}${v.homepageId ? `, homepage=${v.homepageId}` : ""}.`,
         v.designInventory
           ? `Original design fact base (issue #195 — use it for your theme decisions, then verify with the stored screenshots):\n${v.designInventory}`
           : "",

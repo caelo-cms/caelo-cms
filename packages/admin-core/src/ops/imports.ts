@@ -974,6 +974,8 @@ export const composeFromImportRunOp = defineOperation({
     skippedAlreadyAccepted: z.number().int(),
     /** issue #195 — formatted genesis-inventory over the homepage. */
     designInventory: z.string().nullable(),
+    /** issue #196 — 301s written from old URLs to new Caelo paths. */
+    redirectsCreated: z.number().int(),
   }),
   handler: async (ctx, input, tx) => {
     // 1. Run must exist + be reviewable.
@@ -999,7 +1001,7 @@ export const composeFromImportRunOp = defineOperation({
 
     // 2. Load every (or filtered) import_pages row.
     const pageRows = (await tx.execute(sql`
-      SELECT id::text AS id, proposed_slug, proposed_title,
+      SELECT id::text AS id, source_url, proposed_slug, proposed_title,
              proposed_modules, proposed_theme_tokens, accepted_page_id,
              diff_status, acknowledged_at,
              COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
@@ -1009,6 +1011,7 @@ export const composeFromImportRunOp = defineOperation({
       ORDER BY created_at ASC
     `)) as unknown as Array<{
       id: string;
+      source_url: string;
       proposed_slug: string;
       proposed_title: string;
       proposed_modules: unknown;
@@ -1248,6 +1251,7 @@ export const composeFromImportRunOp = defineOperation({
     const createdPageIds: string[] = [];
     const templateIdsByCluster = new Map<string, string>();
     let homepageId: string | null = null;
+    let redirectsCreated = 0;
     const orderedClusterKeys = [...clusters.keys()].sort((a, b) =>
       a === "home" ? -1 : b === "home" ? 1 : a.localeCompare(b),
     );
@@ -1317,6 +1321,9 @@ export const composeFromImportRunOp = defineOperation({
             continue;
           }
           const modDisplayName = m.displayName || `${m.blockName} ${m.position}`;
+          // Upsert: a re-compose over the same pages reuses their page
+          // ids (pages upsert above), so the deterministic module slug
+          // collides with run 1's orphaned module row — refresh it.
           const modInsert = (await tx.execute(sql`
             INSERT INTO modules (slug, display_name, type, html, css, js)
             VALUES (
@@ -1325,6 +1332,9 @@ export const composeFromImportRunOp = defineOperation({
               ${deriveModuleType(modDisplayName)},
               ${m.html}, '', ''
             )
+            ON CONFLICT (slug, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
+              WHERE deleted_at IS NULL
+              DO UPDATE SET html = EXCLUDED.html, display_name = EXCLUDED.display_name
             RETURNING id::text AS id
           `)) as unknown as { id: string }[];
           const moduleId = modInsert[0]?.id;
@@ -1353,6 +1363,46 @@ export const composeFromImportRunOp = defineOperation({
              SET accepted_page_id = ${pageId}::uuid, accepted_at = now()
            WHERE id = ${r.id}::uuid
         `);
+
+        // issue #196 — URL continuity. The old URL's path 301s to the
+        // new Caelo path whenever they differ. Root ("/") never
+        // redirects — the site root serves the migrated homepage.
+        // Same tx as the page write: a migration cannot half-apply
+        // its redirects (§11: cross-domain patches in one boundary).
+        let sourcePath: string;
+        try {
+          const u = new URL(r.source_url);
+          sourcePath = u.pathname.replace(/\/$/, "") || "/";
+        } catch {
+          sourcePath = "/";
+        }
+        const caeloPath = `/${r.proposed_slug}`;
+        if (sourcePath !== "/" && sourcePath !== caeloPath) {
+          // A LIVE page already owning the old path means the redirect
+          // would shadow real content — that is an operator decision,
+          // not a silent skip or overwrite (no-fallbacks pre-1.0).
+          const shadow = (await tx.execute(sql`
+            SELECT id::text AS id FROM pages
+            WHERE slug = ${sourcePath.slice(1)} AND locale = 'en'
+              AND deleted_at IS NULL AND id <> ${pageId}::uuid
+            LIMIT 1
+          `)) as unknown as { id: string }[];
+          if (shadow[0]) {
+            return err({
+              kind: "HandlerError",
+              operation: "imports.compose_from_run",
+              message: `redirect ${sourcePath} → ${caeloPath} would shadow the existing page '${sourcePath.slice(1)}' (${shadow[0].id}). Rename one of them (change_page_slug) or exclude this import page, then re-run compose.`,
+            });
+          }
+          // Upsert keeps re-composes idempotent; pointing an existing
+          // redirect at a NEW target is legitimate on re-run.
+          await tx.execute(sql`
+            INSERT INTO redirects (from_path, to_path, status_code, created_by)
+            VALUES (${sourcePath}, ${caeloPath}, 301, ${ctx.actorId}::uuid)
+            ON CONFLICT (from_path) DO UPDATE SET to_path = EXCLUDED.to_path
+          `);
+          redirectsCreated += 1;
+        }
       }
     }
 
@@ -1389,7 +1439,7 @@ export const composeFromImportRunOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.runId,
-      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} skipped=${skippedAlreadyAccepted}`,
+      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} redirects=${redirectsCreated} skipped=${skippedAlreadyAccepted}`,
     });
 
     return ok({
@@ -1401,6 +1451,7 @@ export const composeFromImportRunOp = defineOperation({
       homepageId,
       skippedAlreadyAccepted,
       designInventory,
+      redirectsCreated,
     });
   },
 });
