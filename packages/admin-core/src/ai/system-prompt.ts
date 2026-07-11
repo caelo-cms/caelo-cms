@@ -638,7 +638,12 @@ export function composeSystemPrompt(
  * cold-start instructions the AI needs to read.
  */
 export function formatSiteIdentityBlock(
-  identity: { siteName: string | null; sitePurpose: string | null } | null,
+  identity: {
+    siteName: string | null;
+    sitePurpose: string | null;
+    /** issue #163 — structured Design Brief captured by Site Genesis. */
+    designBrief?: import("@caelo-cms/shared").DesignBrief | null;
+  } | null,
 ): string | null {
   const hasName = identity && identity.siteName && identity.siteName.trim().length > 0;
   const hasPurpose = identity && identity.sitePurpose && identity.sitePurpose.trim().length > 0;
@@ -659,6 +664,8 @@ export function formatSiteIdentityBlock(
       "4. **Then** author the modules the operator asked for.",
       "",
       "If the operator's prompt is too vague to infer (e.g. *'add a contact form'* on an unconfigured install with no brand signal), ASK ONE concise question for the essentials (\"What's this site for?\") before proceeding. Don't guess silently.",
+      "",
+      "**Building a whole new site?** Run Site Genesis instead of composing directly: capture a design brief (`set_site_identity` with `designBrief`), spawn 3 parallel draft subagents for distinct design directions, `save_genesis_draft` each, and let the operator pick at /design/genesis — the site-genesis skill carries the full workflow.",
     ].join("\n");
   }
 
@@ -668,6 +675,23 @@ export function formatSiteIdentityBlock(
     lines.push("");
     lines.push(`What this site is for:`);
     lines.push(`> ${identity?.sitePurpose}`);
+  }
+  const brief = identity?.designBrief;
+  if (brief) {
+    const briefParts: string[] = [];
+    if (brief.audience) briefParts.push(`audience: ${brief.audience}`);
+    if (brief.moodWords && brief.moodWords.length > 0)
+      briefParts.push(`mood: ${brief.moodWords.join(", ")}`);
+    if (brief.tone) briefParts.push(`tone: ${brief.tone}`);
+    if (brief.industry) briefParts.push(`industry: ${brief.industry}`);
+    if (brief.differentiators) briefParts.push(`differentiators: ${brief.differentiators}`);
+    if (brief.imageryDirection) briefParts.push(`imagery: ${brief.imageryDirection}`);
+    if (brief.avoid) briefParts.push(`avoid: ${brief.avoid}`);
+    if (briefParts.length > 0) {
+      lines.push("");
+      lines.push("Design brief (issue #163 — every design decision honours this):");
+      for (const part of briefParts) lines.push(`> ${part}`);
+    }
   }
   lines.push("");
   lines.push(

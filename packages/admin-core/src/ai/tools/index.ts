@@ -35,6 +35,11 @@ import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
 import { forkPlacementContentTool } from "./fork-placement-content.js";
 import { generateImageTool } from "./generate-image.js";
+import {
+  listGenesisDraftsTool,
+  saveGenesisDraftTool,
+  selectGenesisDraftTool,
+} from "./genesis-tools.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
@@ -142,6 +147,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listPagesTool);
   // issue #159 — the `## Modules` block's full-catalog escape hatch.
   registry.register(listModulesTool);
+  // issue #163 — Site Genesis draft storage (workflow lives in the site-genesis skill).
+  registry.register(saveGenesisDraftTool);
+  registry.register(listGenesisDraftsTool);
+  registry.register(selectGenesisDraftTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);

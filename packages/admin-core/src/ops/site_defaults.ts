@@ -20,7 +20,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { type DesignBrief, designBriefSchema, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -36,8 +36,17 @@ const siteDefaultsRow = z.object({
   // the operator skipped the optional fields.
   siteName: z.string().nullable(),
   sitePurpose: z.string().nullable(),
+  /** issue #163 — structured Design Brief from the Genesis discovery dialog. */
+  designBrief: designBriefSchema.nullable(),
   updatedAt: z.string(),
 });
+
+/** jsonb → DesignBrief | null; malformed rows read as null (write path validates). */
+function parseDesignBrief(raw: unknown): DesignBrief | null {
+  if (raw === null || raw === undefined) return null;
+  const parsed = designBriefSchema.safeParse(typeof raw === "string" ? JSON.parse(raw) : raw);
+  return parsed.success ? parsed.data : null;
+}
 
 export const getSiteDefaultsOp = defineOperation({
   name: "site_defaults.get",
@@ -54,6 +63,7 @@ export const getSiteDefaultsOp = defineOperation({
         t.slug                        AS default_template_slug,
         sd.site_name                  AS site_name,
         sd.site_purpose               AS site_purpose,
+        sd.design_brief               AS design_brief,
         sd.updated_at                 AS updated_at
       FROM site_defaults sd
       JOIN layouts l   ON l.id   = sd.default_layout_id
@@ -67,6 +77,7 @@ export const getSiteDefaultsOp = defineOperation({
       default_template_slug: string;
       site_name: string | null;
       site_purpose: string | null;
+      design_brief: unknown;
       updated_at: string | Date;
     }[];
     const r = rows[0];
@@ -79,6 +90,7 @@ export const getSiteDefaultsOp = defineOperation({
         defaultTemplateSlug: r.default_template_slug,
         siteName: r.site_name,
         sitePurpose: r.site_purpose,
+        designBrief: parseDesignBrief(r.design_brief),
         updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
       },
     });
@@ -204,11 +216,14 @@ export const setSiteIdentityOp = defineOperation({
     .object({
       siteName: z.string().min(1).max(200).nullable().optional(),
       sitePurpose: z.string().min(1).max(2000).nullable().optional(),
+      /** issue #163 — structured Design Brief from the Genesis discovery dialog. */
+      designBrief: designBriefSchema.nullable().optional(),
     })
     .strict()
-    .refine((v) => v.siteName !== undefined || v.sitePurpose !== undefined, {
-      message: "pass at least one of `siteName` or `sitePurpose`",
-    }),
+    .refine(
+      (v) => v.siteName !== undefined || v.sitePurpose !== undefined || v.designBrief !== undefined,
+      { message: "pass at least one of `siteName`, `sitePurpose`, or `designBrief`" },
+    ),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
     const exists = (await tx.execute(
@@ -231,6 +246,11 @@ export const setSiteIdentityOp = defineOperation({
     if (input.sitePurpose !== undefined) {
       setClauses.push(sql`site_purpose = ${input.sitePurpose}`);
     }
+    if (input.designBrief !== undefined) {
+      setClauses.push(
+        sql`design_brief = ${input.designBrief === null ? null : JSON.stringify(input.designBrief)}::jsonb`,
+      );
+    }
     setClauses.push(sql`updated_at = now()`);
     setClauses.push(sql`updated_by = ${ctx.actorId}::uuid`);
     // Stitch clauses with literal `, ` separators. Drizzle's sql.join
@@ -248,7 +268,7 @@ export const setSiteIdentityOp = defineOperation({
       operation: "site_defaults.set_identity",
       input,
       succeeded: true,
-      resultSummary: `siteName=${input.siteName !== undefined} sitePurpose=${input.sitePurpose !== undefined}`,
+      resultSummary: `siteName=${input.siteName !== undefined} sitePurpose=${input.sitePurpose !== undefined} designBrief=${input.designBrief !== undefined}`,
     });
     return ok({});
   },

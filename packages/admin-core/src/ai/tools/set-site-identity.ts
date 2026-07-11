@@ -19,6 +19,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { designBriefSchema } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -37,6 +38,12 @@ const setSiteIdentityToolInput = z
      * future chat has the brand context.
      */
     sitePurpose: z.string().min(1).max(2000).nullable().optional(),
+    /**
+     * issue #163 — structured Design Brief from the Genesis discovery
+     * dialog (audience, moodWords, tone, industry, differentiators,
+     * imageryDirection, avoid). Drives the parallel draft subagents.
+     */
+    designBrief: designBriefSchema.nullable().optional(),
   })
   .strict();
 type SetSiteIdentityToolInput = z.infer<typeof setSiteIdentityToolInput>;
@@ -52,7 +59,8 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
     "AI-first CMS for developers — trustworthy, branched edits, plugin sandbox'})`. If the operator " +
     "hasn't given you enough to infer (e.g. they ask 'add a contact form' on an unconfigured install), " +
     "ASK them for the missing essentials before guessing. " +
-    "Pass `null` to clear a field.",
+    "Pass `null` to clear a field. " +
+    "During Site Genesis, ALSO pass `designBrief` ({audience, moodWords, tone, industry, differentiators, imageryDirection, avoid}) — it feeds the parallel draft subagents and every future design decision.",
   schema: setSiteIdentityToolInput,
   inputSchema: {
     type: "object",
@@ -60,13 +68,35 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
     properties: {
       siteName: { type: ["string", "null"], minLength: 1, maxLength: 200 },
       sitePurpose: { type: ["string", "null"], minLength: 1, maxLength: 2000 },
+      designBrief: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          audience: { type: "string", minLength: 1, maxLength: 500 },
+          moodWords: {
+            type: "array",
+            items: { type: "string", minLength: 1, maxLength: 40 },
+            maxItems: 12,
+          },
+          tone: { type: "string", minLength: 1, maxLength: 300 },
+          industry: { type: "string", minLength: 1, maxLength: 200 },
+          differentiators: { type: "string", minLength: 1, maxLength: 1000 },
+          imageryDirection: { type: "string", minLength: 1, maxLength: 500 },
+          avoid: { type: "string", minLength: 1, maxLength: 500 },
+        },
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    if (input.siteName === undefined && input.sitePurpose === undefined) {
+    if (
+      input.siteName === undefined &&
+      input.sitePurpose === undefined &&
+      input.designBrief === undefined
+    ) {
       return {
         ok: false,
-        content: "set_site_identity needs at least one of `siteName` or `sitePurpose`.",
+        content:
+          "set_site_identity needs at least one of `siteName`, `sitePurpose`, or `designBrief`.",
       };
     }
     const r = await execute(
