@@ -20,6 +20,7 @@ import { addModuleToLayoutToolInput, slugifyModuleName } from "@caelo-cms/shared
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
+import { designGuardSuffix } from "./_design-guard.js";
 import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
@@ -228,7 +229,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     }
     return {
       ok: true,
-      content: `module ${newModuleId} (slug=${slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${insertIdx}; chrome now reaches every page on every template bound to this layout${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
+      content: `module ${newModuleId} (slug=${slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${insertIdx}; chrome now reaches every page on every template bound to this layout${await cssVarWarningSuffix(ctx, toolCtx, input.css)}${await designGuardSuffix(ctx, toolCtx, { css: input.css, displayName: input.displayName, kind: input.kind, type: input.type })}`,
     };
   },
 };

@@ -17,6 +17,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { editModuleToolInput } from "@caelo-cms/shared";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
+import { designGuardSuffix } from "./_design-guard.js";
 import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -86,11 +87,11 @@ export const editModuleTool: ToolDefinitionWithHandler<
       // issue #156 — scan freshly-written CSS against the active theme's
       // emitted vars; unknown names ride the result so the AI fixes
       // drift in the same turn.
-      const cssWarn = await cssVarWarningSuffix(
-        ctx,
-        toolCtx,
-        (opInput.css as string | undefined) ?? input.css,
-      );
+      const effectiveCss = (opInput.css as string | undefined) ?? input.css;
+      const cssWarn = await cssVarWarningSuffix(ctx, toolCtx, effectiveCss);
+      // issue #166 — static consistency findings against the Design Manifest
+      // (checked on the css as written, i.e. post-binding).
+      const guard = await designGuardSuffix(ctx, toolCtx, { css: effectiveCss });
       // v0.12.2 — surface the extractor's inferred fields when present
       // so the AI's next turn sees the auto-minted names verbatim.
       const value = result.value as {
@@ -110,7 +111,10 @@ export const editModuleTool: ToolDefinitionWithHandler<
           content: `⚠️ Extractor fallback used — module ${input.moduleId} updated with heuristic field names: ${list}. **Next time, author HTML + fields together** with semantic snake_case names (e.g. \`hero_title\`, \`primary_cta_href\`) so the \`## Modules\` block stays useful. Rename via a follow-up edit_module with explicit \`fields\` if these names are confusing.${cssWarn}`,
         };
       }
-      return { ok: true, content: `module ${input.moduleId} updated${bindingReport}${cssWarn}` };
+      return {
+        ok: true,
+        content: `module ${input.moduleId} updated${bindingReport}${cssWarn}${guard}`,
+      };
     }
     const message = (result.error as { message?: string }).message ?? "unknown error";
     return { ok: false, content: message };

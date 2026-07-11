@@ -32,6 +32,7 @@ import { addModuleToTemplateToolInput, slugifyModuleName } from "@caelo-cms/shar
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
+import { designGuardSuffix } from "./_design-guard.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -169,7 +170,7 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
       // here is technically ok=true (module created, just unplaced).
       return {
         ok: true,
-        content: `module ${newModuleId} (slug=${slug}) created; no pages currently use this template, so nothing was placed${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
+        content: `module ${newModuleId} (slug=${slug}) created; no pages currently use this template, so nothing was placed${await cssVarWarningSuffix(ctx, toolCtx, input.css)}${await designGuardSuffix(ctx, toolCtx, { css: input.css, displayName: input.displayName, kind: input.kind, type: input.type })}`,
         nextAction: {
           tool: "list_templates",
           reason:
@@ -233,7 +234,7 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
     }
 
     const summary = [
-      `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" on ${placements.length} of ${targetPages.length} pages using this template${await cssVarWarningSuffix(ctx, toolCtx, input.css)}`,
+      `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" on ${placements.length} of ${targetPages.length} pages using this template${await cssVarWarningSuffix(ctx, toolCtx, input.css)}${await designGuardSuffix(ctx, toolCtx, { css: input.css, displayName: input.displayName, kind: input.kind, type: input.type })}`,
       placements.length > 0
         ? `placed: ${placements.map((p) => `${p.slug}@${p.position}`).join(", ")}`
         : null,
