@@ -9,7 +9,8 @@
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import type { DesignManifest, ExecutionContext } from "@caelo-cms/shared";
+import { formatDesignSystemBlock } from "@caelo-cms/shared";
 
 import { formatSiteIdentityBlock } from "../../system-prompt.js";
 
@@ -17,6 +18,8 @@ export interface SiteBlocks {
   layoutsBlock: string | undefined;
   siteDefaultsBlock: string | undefined;
   siteIdentityBlock: string | undefined;
+  /** issue #165 — `## Design system` from the Design Manifest. */
+  designSystemBlock: string | undefined;
   /** Raw op values for buildToolDescribeState (null when the read failed). */
   layoutsValue: unknown;
   templatesValue: unknown;
@@ -64,6 +67,15 @@ export async function buildSiteBlocks(
         }
       ).defaults
     : null;
+  // issue #165 — Design Manifest → `## Design system` block.
+  let designSystemBlock: string | undefined;
+  const manifestR = await execute(registry, adapter, humanCtxWithBranch, "design_manifest.get", {});
+  if (manifestR.ok) {
+    const manifest = (manifestR.value as { manifest: DesignManifest | null }).manifest;
+    const rendered = formatDesignSystemBlock(manifest);
+    if (rendered !== null) designSystemBlock = rendered;
+  }
+
   const identityRender = formatSiteIdentityBlock(identityDefaults);
   if (identityRender) siteIdentityBlock = identityRender;
   if (layoutsR.ok) {
@@ -166,6 +178,7 @@ export async function buildSiteBlocks(
     layoutsBlock,
     siteDefaultsBlock,
     siteIdentityBlock,
+    designSystemBlock,
     layoutsValue: layoutsR.ok ? layoutsR.value : null,
     templatesValue: tplsR.ok ? tplsR.value : null,
     siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,

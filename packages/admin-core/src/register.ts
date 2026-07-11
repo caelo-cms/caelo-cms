@@ -129,6 +129,7 @@ import {
   proposeDeployRollbackOp,
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
+import { getDesignManifestOp, setDesignManifestOp } from "./ops/design_manifest.js";
 import {
   executeDomainProposalOp,
   listPendingDomainProposalsOp,
@@ -706,6 +707,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(addGenesisDraftOp);
   registry.register(listGenesisDraftsOp);
   registry.register(selectGenesisDraftOp);
+  // issue #165 — Design Manifest (per-site design language).
+  registry.register(getDesignManifestOp);
+  registry.register(setDesignManifestOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);

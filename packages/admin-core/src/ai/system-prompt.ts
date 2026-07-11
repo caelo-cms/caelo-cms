@@ -432,6 +432,8 @@ export interface VolatileContext {
   readonly allPagesBlock?: string;
   /** P6.7.5 — current theme tokens (CSS variables). */
   readonly themeBlock?: string;
+  /** issue #165 — `## Design system` rendered from the Design Manifest. */
+  readonly designSystemBlock?: string;
   /**
    * v0.11.4 (issue #76 follow-up) — operator-captured site name +
    * purpose (from /onboarding ?/identity). Brand context the AI uses
@@ -549,6 +551,9 @@ export function composeSystemPromptChunks(
   }
   if (volatile.themeBlock && volatile.themeBlock.trim().length > 0) {
     chunks.push({ body: volatile.themeBlock, cacheable: false, label: "theme" });
+  }
+  if (volatile.designSystemBlock && volatile.designSystemBlock.trim().length > 0) {
+    chunks.push({ body: volatile.designSystemBlock, cacheable: false, label: "design-system" });
   }
   if (volatile.allPagesBlock && volatile.allPagesBlock.trim().length > 0) {
     chunks.push({ body: volatile.allPagesBlock, cacheable: false, label: "all-pages" });
