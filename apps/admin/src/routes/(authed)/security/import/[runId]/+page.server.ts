@@ -34,6 +34,9 @@ interface ImportPage {
     displayName: string;
   }>;
   proposedThemeTokens: Record<string, string>;
+  /** issue #198 — persisted capture keys (side-by-side rendering). */
+  screenshotObjectKey: string | null;
+  stagedScreenshotObjectKey: string | null;
   diffStatus: "pass" | "warn" | "fail" | null;
   diffPct: number | null;
   acceptedPageId: string | null;
@@ -84,10 +87,32 @@ export const actions: Actions = {
     const runId = form.get("runId");
     if (typeof runId !== "string") return fail(400, { error: "runId required" });
     const { adapter, registry } = getQueryContext();
+    // issue #198 — collect the run's screenshot keys BEFORE cleanup
+    // drops the rows, then delete the objects best-effort after. The
+    // DB tx stays free of storage IO; a failed object delete leaves a
+    // harmless orphan, never a broken run.
+    const keys: string[] = [];
+    const before = await execute(registry, adapter, locals.ctx, "imports.get", { runId });
+    if (before.ok) {
+      for (const pg of (
+        before.value as {
+          pages: {
+            screenshotObjectKey: string | null;
+            stagedScreenshotObjectKey: string | null;
+          }[];
+        }
+      ).pages) {
+        if (pg.screenshotObjectKey) keys.push(pg.screenshotObjectKey);
+        if (pg.stagedScreenshotObjectKey) keys.push(pg.stagedScreenshotObjectKey);
+      }
+    }
     const r = await execute(registry, adapter, locals.ctx, "imports.cleanup_run", {
       runId,
     });
     if (!r.ok) return fail(400, { error: r.error.kind });
+    const { getMediaStorage } = await import("@caelo-cms/admin-core");
+    const storage = getMediaStorage();
+    await Promise.all(keys.map((k) => storage.delete(k).catch(() => undefined)));
     return { ok: true, message: "Run cleaned up. Accepted pages stay; un-accepted rows dropped." };
   },
 };

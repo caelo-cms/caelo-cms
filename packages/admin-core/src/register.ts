@@ -189,6 +189,7 @@ import {
   composeFromImportRunOp,
   createImportRunOp,
   executeImportProposalOp,
+  getImportPageScreenshotKeysOp,
   getImportRunOp,
   listImportPageClustersOp,
   listImportRunsOp,
@@ -748,6 +749,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #194 — page-type clusters (list + bulk assign/label).
   registry.register(listImportPageClustersOp);
   registry.register(assignImportPageClusterOp);
+  // issue #198 — per-page screenshot keys (serve route + AI tool).
+  registry.register(getImportPageScreenshotKeysOp);
   registry.register(executeImportProposalOp);
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);

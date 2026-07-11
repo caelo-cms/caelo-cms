@@ -25,6 +25,7 @@ import {
   emitSnapshot,
   generateKekHex,
   getActiveProvider,
+  getMediaStorage,
   resetStuckTranslationUnits,
   setMode2Provider,
   setTranslationProvider,
@@ -279,7 +280,9 @@ function bootstrapRedeploy(): void {
   if (redeployBootstrapped) return;
   redeployBootstrapped = true;
   const { adapter, registry } = getQueryContext();
-  startRedeployOrchestrator({ adapter, registry });
+  // issue #198 — hand the importer worker the media storage so crawl
+  // screenshots persist (review side-by-sides + parity references).
+  startRedeployOrchestrator({ adapter, registry, screenshotStorage: getMediaStorage() });
 }
 
 // P21 ship 5 — release-check sidecar. Polls GitHub Releases once

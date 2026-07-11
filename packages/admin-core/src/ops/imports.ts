@@ -68,6 +68,7 @@ const pageRow = z.object({
   clusterKey: z.string().nullable(),
   clusterLabel: z.string().nullable(),
   screenshotObjectKey: z.string().nullable(),
+  stagedScreenshotObjectKey: z.string().nullable(),
   diffStatus: z.enum(["pass", "warn", "fail"]).nullable(),
   diffPct: z.number().nullable(),
   acceptedPageId: z.string().nullable(),
@@ -162,7 +163,7 @@ export const getImportRunOp = defineOperation({
       SELECT id::text AS id, run_id::text AS run_id, source_url,
              proposed_slug, proposed_title, proposed_modules, proposed_theme_tokens,
              structural_signature, cluster_key, cluster_label,
-             screenshot_object_key, diff_status, diff_pct,
+             screenshot_object_key, staged_screenshot_object_key, diff_status, diff_pct,
              accepted_page_id::text AS accepted_page_id, accepted_at, rejected_at, created_at
       FROM import_pages
       WHERE run_id = ${input.runId}::uuid
@@ -184,6 +185,7 @@ export const getImportRunOp = defineOperation({
       cluster_key: string | null;
       cluster_label: string | null;
       screenshot_object_key: string | null;
+      staged_screenshot_object_key: string | null;
       diff_status: "pass" | "warn" | "fail" | null;
       diff_pct: number | null;
       accepted_page_id: string | null;
@@ -205,6 +207,7 @@ export const getImportRunOp = defineOperation({
         clusterKey: p.cluster_key,
         clusterLabel: p.cluster_label,
         screenshotObjectKey: p.screenshot_object_key,
+        stagedScreenshotObjectKey: p.staged_screenshot_object_key,
         diffStatus: p.diff_status,
         diffPct: p.diff_pct,
         acceptedPageId: p.accepted_page_id,
@@ -477,6 +480,8 @@ export const updatePageDiffOp = defineOperation({
       diffStatus: z.enum(["pass", "warn", "fail"]),
       diffPct: z.number().min(0).max(1),
       screenshotObjectKey: z.string().max(500).optional(),
+      /** issue #198 — the rebuilt (staged preview) capture's key. */
+      stagedScreenshotObjectKey: z.string().max(500).optional(),
     })
     .strict(),
   output: z.object({}),
@@ -485,10 +490,51 @@ export const updatePageDiffOp = defineOperation({
       UPDATE import_pages
          SET diff_status = ${input.diffStatus},
              diff_pct = ${input.diffPct},
-             screenshot_object_key = COALESCE(${input.screenshotObjectKey ?? null}, screenshot_object_key)
+             screenshot_object_key = COALESCE(${input.screenshotObjectKey ?? null}, screenshot_object_key),
+             staged_screenshot_object_key = COALESCE(${input.stagedScreenshotObjectKey ?? null}, staged_screenshot_object_key)
        WHERE id = ${input.importPageId}::uuid
     `);
     return ok({});
+  },
+});
+
+/**
+ * issue #198 — screenshot keys for ONE import page. Powers the
+ * authenticated serve route and the AI's look-at-the-original tool
+ * without dragging the whole run through imports.get.
+ */
+export const getImportPageScreenshotKeysOp = defineOperation({
+  name: "imports.get_page_screenshot_keys",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ importPageId: z.string().uuid() }).strict(),
+  output: z.object({
+    sourceUrl: z.string().nullable(),
+    screenshotObjectKey: z.string().nullable(),
+    stagedScreenshotObjectKey: z.string().nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT source_url, screenshot_object_key, staged_screenshot_object_key
+      FROM import_pages WHERE id = ${input.importPageId}::uuid LIMIT 1
+    `)) as unknown as Array<{
+      source_url: string;
+      screenshot_object_key: string | null;
+      staged_screenshot_object_key: string | null;
+    }>;
+    const r = rows[0];
+    if (!r) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.get_page_screenshot_keys",
+        message: "import page not found — list the run with imports.get for valid page ids",
+      });
+    }
+    return ok({
+      sourceUrl: r.source_url,
+      screenshotObjectKey: r.screenshot_object_key,
+      stagedScreenshotObjectKey: r.staged_screenshot_object_key,
+    });
   },
 });
 

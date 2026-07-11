@@ -61,6 +61,40 @@
               {/if}
             </div>
             <p class="mb-3 font-mono text-xs text-muted-foreground">{p.sourceUrl}</p>
+            <!-- issue #198 — side-by-side: original site vs rebuilt
+                 preview, with the pixel-diff verdict. Renders only
+                 when the worker persisted captures. -->
+            {#if p.screenshotObjectKey || p.stagedScreenshotObjectKey}
+              <div class="mb-3 flex flex-wrap gap-4" data-testid="import-screenshots">
+                {#if p.screenshotObjectKey}
+                  <figure class="w-64">
+                    <img
+                      src={`/security/import/screenshot/${p.id}/source`}
+                      alt={`Original: ${p.sourceUrl}`}
+                      class="rounded border border-border"
+                      loading="lazy"
+                    />
+                    <figcaption class="mt-1 text-xs text-muted-foreground">Original site</figcaption>
+                  </figure>
+                {/if}
+                {#if p.stagedScreenshotObjectKey}
+                  <figure class="w-64">
+                    <img
+                      src={`/security/import/screenshot/${p.id}/staged`}
+                      alt={`Rebuilt preview: ${p.proposedSlug}`}
+                      class="rounded border border-border"
+                      loading="lazy"
+                    />
+                    <figcaption class="mt-1 text-xs text-muted-foreground">
+                      Rebuilt in Caelo
+                      {#if p.diffStatus}
+                        · diff {p.diffStatus}{p.diffPct !== null ? ` (${Math.round(p.diffPct * 100)}%)` : ""}
+                      {/if}
+                    </figcaption>
+                  </figure>
+                {/if}
+              </div>
+            {/if}
             <details class="mb-3 text-sm">
               <summary class="cursor-pointer">Module preview</summary>
               <ul class="ml-6 list-disc text-xs">
