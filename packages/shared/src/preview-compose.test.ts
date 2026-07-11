@@ -487,13 +487,26 @@ describe("composePageWithLayout", () => {
     expect(out.html).not.toContain('rel="preload"');
   });
 
-<<<<<<< HEAD
   it("injects the invisible technical baseline between theme and modules (issue #151)", () => {
     const out = composePageWithLayout({
       templateHtml,
       templateCss: "/* TPL */",
       blocks: [],
-=======
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+    });
+    const base = out.html.indexOf('<style data-source="base">');
+    const modules = out.html.indexOf('<style data-source="modules">');
+    expect(base).toBeGreaterThan(-1);
+    expect(out.html).toContain("box-sizing:border-box");
+    expect(base).toBeLessThan(modules); // module CSS overrides the floor
+    // Zero design opinion: no colors, no font sizes, no type scale.
+    const baseBlock = out.html.slice(base, out.html.indexOf("</style>", base));
+    expect(baseBlock).not.toMatch(/#[0-9a-f]{3}|font-size|color:|rem\b/i);
+  });
+
   it("emits a twice-placed module's CSS/JS exactly once (issue #158)", () => {
     const shared = {
       ...blankModule,
@@ -509,25 +522,13 @@ describe("composePageWithLayout", () => {
         { blockName: "content", modules: [shared, shared] },
         { blockName: "header", modules: [shared] },
       ],
->>>>>>> origin/main
       layoutHtml,
       layoutCss: "",
       layoutBlocks: [],
       layoutSlug: "test",
     });
-<<<<<<< HEAD
-    const base = out.html.indexOf('<style data-source="base">');
-    const modules = out.html.indexOf('<style data-source="modules">');
-    expect(base).toBeGreaterThan(-1);
-    expect(out.html).toContain("box-sizing:border-box");
-    expect(base).toBeLessThan(modules); // module CSS overrides the floor
-    // Zero design opinion: no colors, no font sizes, no type scale.
-    const baseBlock = out.html.slice(base, out.html.indexOf("</style>", base));
-    expect(baseBlock).not.toMatch(/#[0-9a-f]{3}|font-size|color:|rem\b/i);
-=======
     expect(out.html.split("/* SHARED-CSS */").length - 1).toBe(1);
     expect(out.html.split("/* SHARED-JS */").length - 1).toBe(1);
->>>>>>> origin/main
   });
 
   it("throws ComposeError when the layout lacks a content slot", () => {
