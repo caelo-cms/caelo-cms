@@ -31,8 +31,8 @@ import { boundedThemeDocument } from "../../theme-document-input.js";
 import {
   ANCHOR_HUE_HINTS,
   DEPTH_AND_SURFACE_HINTS,
-  TOKEN_SHAPE_HINTS,
   THEME_DOCUMENT_SKELETON,
+  TOKEN_SHAPE_HINTS,
 } from "../theme-guidance.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 

@@ -41,8 +41,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import {
   ANCHOR_HUE_HINTS,
   DEPTH_AND_SURFACE_HINTS,
-  TOKEN_SHAPE_HINTS,
   THEME_DOCUMENT_SKELETON,
+  TOKEN_SHAPE_HINTS,
 } from "../theme-guidance.js";
 import type { ToolContext, ToolResult } from "./dispatch.js";
 
