@@ -198,45 +198,47 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
     expect([...v.chromeBound].sort()).toEqual(["footer", "header"]);
     expect(v.chromeNotes).toEqual([]);
 
+    // Raw reads need the RLS actor GUC — every table forces RLS.
     const db = new SQL(ADMIN_URL!);
     try {
-      const layoutBinds = (await db`
-        SELECT block_name, module_id::text AS module_id FROM layout_modules
-        WHERE layout_id = ${v.layoutId}::uuid AND block_name IN ('header', 'footer')
-      `) as { block_name: string; module_id: string }[];
-      expect(layoutBinds.map((b) => b.block_name).sort()).toEqual(["footer", "header"]);
-
-      for (const b of layoutBinds) {
-        const mod = (await db`
-          SELECT kind FROM modules WHERE id = ${b.module_id}::uuid
+      const rows = await db.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const layoutBinds = (await tx`
+          SELECT block_name, module_id::text AS module_id FROM layout_modules
+          WHERE layout_id = ${v.layoutId}::uuid AND block_name IN ('header', 'footer')
+        `) as { block_name: string; module_id: string }[];
+        const chromeKinds = (await tx`
+          SELECT kind FROM modules WHERE id IN (SELECT module_id FROM layout_modules WHERE layout_id = ${v.layoutId}::uuid AND block_name IN ('header', 'footer'))
         `) as { kind: string }[];
-        expect(mod[0]?.kind).toBe("chrome");
-      }
+        const pageChrome = (await tx`
+          SELECT count(*)::int AS n FROM page_modules
+          WHERE page_id = ANY(${v.pageIds}::uuid[]) AND block_name IN ('header', 'footer')
+        `) as { n: number }[];
+        const tpls = (await tx`
+          SELECT id::text AS id, html FROM templates WHERE id = ANY(${Object.values(v.templatesByCluster)}::uuid[])
+        `) as { id: string; html: string }[];
+        const tplChromeBlocks = (await tx`
+          SELECT count(*)::int AS n FROM template_blocks
+          WHERE template_id = ANY(${Object.values(v.templatesByCluster)}::uuid[]) AND name IN ('header', 'footer')
+        `) as { n: number }[];
+        return { layoutBinds, chromeKinds, pageChrome, tpls, tplChromeBlocks };
+      });
+      const { layoutBinds } = rows;
+      expect(layoutBinds.map((b) => b.block_name).sort()).toEqual(["footer", "header"]);
+      for (const m of rows.chromeKinds) expect(m.kind).toBe("chrome");
 
       // No composed page carries a per-page chrome placement.
-      for (const pageId of v.pageIds) {
-        const rows = (await db`
-          SELECT count(*)::int AS n FROM page_modules
-          WHERE page_id = ${pageId}::uuid AND block_name IN ('header', 'footer')
-        `) as { n: number }[];
-        expect(rows[0]?.n).toBe(0);
-      }
+      expect(rows.pageChrome[0]?.n).toBe(0);
 
       // Imported templates are content-only: no chrome slots in the
       // html, no chrome template_blocks.
-      for (const tplId of Object.values(v.templatesByCluster)) {
-        const tpl = (await db`
-          SELECT html FROM templates WHERE id = ${tplId}::uuid
-        `) as { html: string }[];
-        expect(tpl[0]?.html).not.toContain('caelo-slot name="header"');
-        expect(tpl[0]?.html).not.toContain('caelo-slot name="footer"');
-        expect(tpl[0]?.html).toContain('caelo-slot name="content"');
-        const blocks = (await db`
-          SELECT count(*)::int AS n FROM template_blocks
-          WHERE template_id = ${tplId}::uuid AND name IN ('header', 'footer')
-        `) as { n: number }[];
-        expect(blocks[0]?.n).toBe(0);
+      expect(rows.tpls.length).toBe(Object.values(v.templatesByCluster).length);
+      for (const tpl of rows.tpls) {
+        expect(tpl.html).not.toContain('caelo-slot name="header"');
+        expect(tpl.html).not.toContain('caelo-slot name="footer"');
+        expect(tpl.html).toContain('caelo-slot name="content"');
       }
+      expect(rows.tplChromeBlocks[0]?.n).toBe(0);
     } finally {
       await db.end();
     }
@@ -254,12 +256,15 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
 
     const db = new SQL(ADMIN_URL!);
     try {
-      const binds = (await db`
-        SELECT block_name, count(*)::int AS n FROM layout_modules
-        WHERE block_name IN ('header', 'footer')
-          AND module_id IN (SELECT id FROM modules WHERE slug LIKE ${"imported-%"})
-        GROUP BY block_name
-      `) as { block_name: string; n: number }[];
+      const binds = await db.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return (await tx`
+          SELECT block_name, count(*)::int AS n FROM layout_modules
+          WHERE block_name IN ('header', 'footer')
+            AND module_id IN (SELECT id FROM modules WHERE slug LIKE ${"imported-%"})
+          GROUP BY block_name
+        `) as { block_name: string; n: number }[];
+      });
       expect(binds.length).toBe(2);
       for (const b of binds) expect(b.n).toBe(1);
     } finally {
