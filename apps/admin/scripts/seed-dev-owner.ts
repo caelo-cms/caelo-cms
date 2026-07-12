@@ -148,7 +148,6 @@ try {
         VALUES (${tplId}::uuid, 'content', 'Content', 0)
         ON CONFLICT (template_id, name) DO NOTHING
       `;
-
     }
 
     // P6.7.5 — default structured sets so a fresh install has a
