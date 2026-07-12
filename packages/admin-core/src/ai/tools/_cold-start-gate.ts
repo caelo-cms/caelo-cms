@@ -42,6 +42,7 @@ import {
   ANCHOR_HUE_HINTS,
   DEPTH_AND_SURFACE_HINTS,
   THEME_DOCUMENT_SKELETON,
+  TOKEN_SHAPE_HINTS,
 } from "../theme-guidance.js";
 import type { ToolContext, ToolResult } from "./dispatch.js";
 
@@ -152,7 +153,7 @@ export async function checkColdStartGate(
         "document yourself from the brand context (site identity, the operator's wording, the industry): " +
         `${THEME_DOCUMENT_SKELETON}. The primary must carry real chroma — never default to neutral grayscale ` +
         `on a real site. Anchor-hue inspiration: ${ANCHOR_HUE_HINTS} — the hue anchors the palette, the rest ` +
-        `of the document is still yours to compose. ${DEPTH_AND_SURFACE_HINTS} ` +
+        `of the document is still yours to compose. ${DEPTH_AND_SURFACE_HINTS} ${TOKEN_SHAPE_HINTS} ` +
         "`description` records WHY the palette fits the brand. " +
         "Then tell the operator to approve it at /security/themes/pending.",
     );

@@ -420,6 +420,18 @@
 
   $effect(() => {
     return () => stopImportPolling();
+
+  // offer_choices click that landed while the AI was mid-stream —
+  // flushed by the effect below, same contract as approval nudges.
+  let pendingChoiceAnswer = $state<string | null>(null);
+
+  $effect(() => {
+    if (streaming) return;
+    if (pendingChoiceAnswer === null) return;
+    if (composer.trim().length > 0) return;
+    const answer = pendingChoiceAnswer;
+    pendingChoiceAnswer = null;
+    void sendAutoMessage(answer);
   });
 
   $effect(() => {
@@ -1467,6 +1479,15 @@
                     args={m.toolArgs ?? {}}
                     {csrfToken}
                     onApproved={(info) => onProposalApproved(info.kind, info.proposalId)}
+                    onChoose={(answer) => {
+                      // Streaming-safe: queue like approval nudges
+                      // instead of silently dropping the click.
+                      if (streaming) {
+                        pendingChoiceAnswer = answer;
+                        return;
+                      }
+                      void sendAutoMessage(answer);
+                    }}
                   />
                   {#if m.toolName === "edit_module" && typeof m.toolArgs?.moduleId === "string" && typeof m.toolArgs?.html === "string"}
                     {@const moduleId = m.toolArgs.moduleId as string}

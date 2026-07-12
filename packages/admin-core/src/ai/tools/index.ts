@@ -61,6 +61,7 @@ import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
 import { moveModuleTool } from "./move-module.js";
+import { offerChoicesTool } from "./offer-choices.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import { proposeAddLocaleTool } from "./propose-add-locale.js";
 import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
@@ -155,6 +156,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listPagesTool);
   // issue #159 — the `## Modules` block's full-catalog escape hatch.
   registry.register(listModulesTool);
+  // 2026-07-12 — clickable multiple-choice questions in the chat.
+  registry.register(offerChoicesTool);
   // issue #163 — Site Genesis draft storage (workflow lives in the site-genesis skill).
   registry.register(saveGenesisDraftTool);
   registry.register(listGenesisDraftsTool);

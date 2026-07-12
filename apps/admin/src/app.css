@@ -161,3 +161,35 @@
 .subtle-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* Global submit-button loading state — set by SubmitLoadingObserver
+   on event.submitter for any method="post" form. The ring spins; under
+   prefers-reduced-motion it stays a static ring (the disabled state +
+   aria-busy still communicate progress). */
+button[data-loading="true"] {
+  position: relative;
+  cursor: progress;
+}
+button[data-loading="true"]::before {
+  content: "";
+  display: inline-block;
+  width: 0.875em;
+  height: 0.875em;
+  margin-right: 0.5em;
+  vertical-align: -0.125em;
+  border-radius: 9999px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: caelo-submit-spin 0.7s linear infinite;
+}
+@keyframes caelo-submit-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  button[data-loading="true"]::before {
+    animation: none;
+    opacity: 0.6;
+  }
+}
