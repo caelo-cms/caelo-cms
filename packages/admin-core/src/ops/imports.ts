@@ -30,6 +30,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
+import { resolveChatSessionId } from "./_propose-helpers.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
@@ -48,6 +49,9 @@ const runRow = z.object({
   pagesSeen: z.number(),
   pagesExtracted: z.number(),
   errorMessage: z.string().nullable(),
+  /** 0124 — originating chat session; null for Owner-direct runs. The
+   *  chat's crawl-status endpoint uses it to scope reads per chat. */
+  chatSessionId: z.string().nullable(),
   /** issue #193 — crawl-scope estimate ({pages, basis, crawlMinutes,
    *  aiCostUsd} or {failed, reason}); null on Owner-direct runs. */
   estimate: z.unknown().nullable(),
@@ -97,6 +101,7 @@ interface RunDb {
   pages_seen: number;
   pages_extracted: number;
   error_message: string | null;
+  chat_session_id?: string | null;
   estimate: unknown;
   created_at: string | Date;
 }
@@ -116,6 +121,7 @@ function toRunApi(r: RunDb): z.infer<typeof runRow> {
     pagesSeen: row.pages_seen,
     pagesExtracted: row.pages_extracted,
     errorMessage: row.error_message,
+    chatSessionId: row.chat_session_id ?? null,
     estimate: typeof row.estimate === "string" ? JSON.parse(row.estimate) : (row.estimate ?? null),
     createdAt: toIsoRequired(row.created_at, "import_runs.created_at"),
   }));
@@ -136,7 +142,7 @@ export const listImportRunsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs
       ${filter}
@@ -160,7 +166,7 @@ export const getImportRunOp = defineOperation({
     const runs = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as RunDb[];
@@ -305,10 +311,15 @@ export const proposeImportRunOp = defineOperation({
     .strict(),
   output: z.object({ runId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // 0124 — record the originating chat so the chat's pending strip
+    // (pending_proposals.list, filtered per session) can surface this
+    // run's Approve button pinned above the composer.
+    const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
     const rows = (await tx.execute(sql`
-      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate)
+      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate, chat_session_id)
       VALUES (${input.sourceUrl}, ${input.depth}, ${input.maxPages}, 'proposed', ${ctx.actorId}::uuid,
-              ${input.estimate ? JSON.stringify(input.estimate) : null}::jsonb)
+              ${input.estimate ? JSON.stringify(input.estimate) : null}::jsonb,
+              ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const id = rows[0]?.id;
@@ -341,7 +352,7 @@ export const listPendingImportProposalsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs
       WHERE status = 'proposed'
