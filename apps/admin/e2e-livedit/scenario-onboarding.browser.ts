@@ -84,7 +84,7 @@ test.describe("e2e-livedit onboarding — welcome + migration routing", () => {
     page,
   }) => {
     resetToUntouchedInstall();
-    const site = startMigrateFixtureSite();
+    const site = await startMigrateFixtureSite();
     try {
       await loginAsDevOwner(page);
       await page.goto("/edit");
