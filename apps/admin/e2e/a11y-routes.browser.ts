@@ -48,7 +48,7 @@ test.describe("a11y — WCAG2AA across authenticated routes", () => {
     await page.getByLabel("Email").fill("dev-owner@example.com");
     await page.getByLabel("Password").fill("dev owner password");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await expect(page).toHaveURL("/", { timeout: 15_000 });
+    await expect(page).toHaveURL("/edit", { timeout: 15_000 });
   });
 
   for (const route of BASELINE_ROUTES) {

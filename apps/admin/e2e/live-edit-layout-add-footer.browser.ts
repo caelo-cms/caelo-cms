@@ -112,7 +112,7 @@ test("add_module_to_layout reaches every page on the layout", async ({ context, 
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL("/", { timeout: 15_000 });
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
   await page.goto("/edit");
   await page.locator("textarea").fill("add a footer to every page");

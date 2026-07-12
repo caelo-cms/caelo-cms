@@ -22,9 +22,11 @@ test("/edit has no AppShell sidebar/topbar; only the slim toolbar + iframe + ove
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL("/", { timeout: 15_000 });
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  // Sanity: dashboard DOES have the sidebar (Live edit link inside it).
+  // Sanity: the DASHBOARD does have the sidebar (Live edit link inside
+  // it) — visit it explicitly; login lands in /edit now.
+  await page.goto("/");
   await expect(page.getByRole("link", { name: /^Live edit$/ })).toBeVisible();
 
   await page.goto("/edit");

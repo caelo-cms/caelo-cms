@@ -10,7 +10,7 @@ import {
   type OverlayLayout,
 } from "$lib/components/edit/use-overlay-layout.svelte.js";
 import { assertCsrfToken } from "$lib/server/csrf.js";
-import { requirePermission } from "$lib/server/guards.js";
+import { requirePermission, requireUser } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import { stagingPreviewPath } from "$lib/server/staging-preview-path.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -42,7 +42,11 @@ const FIRST_RUN_WELCOME = [
 ].join("\n");
 
 export const load: PageServerLoad = async ({ locals, url }) => {
-  requirePermission(locals, "content.write");
+  // Login lands everyone here (the chat IS the product). The rare
+  // ops-only role without content.write gets the dashboard instead of
+  // a 403 wall — /edit is a front door, not a fence.
+  const editUser = requireUser(locals);
+  if (!editUser.permissions.has("content.write")) throw redirect(303, "/");
   const { adapter, registry } = getQueryContext();
 
   // Load pages + the user's overlay layout in parallel. We can't load

@@ -11,7 +11,13 @@ export const load: PageServerLoad = async ({ locals }) => {
   const setup = await execute(registry, adapter, locals.ctx, "users.is_setup_complete", {});
   const complete = setup.ok ? (setup.value as { complete: boolean }).complete : false;
   if (!complete) throw redirect(303, "/setup");
-  if (locals.user) throw redirect(303, "/");
+  // The chat IS the product (CLAUDE.md §1A / epic #186): anyone who can
+  // edit lands in /edit, not on the admin dashboard — operators should
+  // never NEED the admin area. Users without content.write (ops-only
+  // roles) still get the dashboard.
+  if (locals.user) {
+    throw redirect(303, locals.user.permissions.has("content.write") ? "/edit" : "/");
+  }
   return {};
 };
 
@@ -41,6 +47,10 @@ export const actions: Actions = {
       ...SESSION_COOKIE_OPTIONS,
       expires: new Date(v.expiresAt),
     });
-    throw redirect(303, "/");
+    // Straight into the live editor — same rationale as the load's
+    // logged-in redirect. Permissions aren't resolved in this action
+    // (only the raw token is); /edit's own guard bounces the rare
+    // ops-only role, and the auth hook resolves the user on arrival.
+    throw redirect(303, "/edit");
   },
 };

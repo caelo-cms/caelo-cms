@@ -133,11 +133,10 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL("/", { timeout: 15_000 });
-
-  // Navigate to /edit via the sidebar.
-  await page.getByRole("link", { name: /^Live edit$/ }).click();
-  await expect(page).toHaveURL(/\/edit(\?|$)/, { timeout: 15_000 });
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+  // Login lands directly in /edit now — no sidebar hop needed (the
+  // full-screen editor has no admin chrome; live-edit-no-chrome pins
+  // that).
 
   // Pick the seeded page in the Combobox if not already active.
   // The page-picker auto-selects the first published page on first load,

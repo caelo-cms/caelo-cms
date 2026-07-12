@@ -26,7 +26,7 @@ test("compose a page from a module and preview it", async ({ page, request }) =>
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL("/", { timeout: 15_000 });
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
   // Create a template.
   await page.goto("/content/templates");

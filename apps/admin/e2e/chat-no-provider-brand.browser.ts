@@ -18,7 +18,7 @@ test("chat surface contains no provider-brand strings; /security/ai does", async
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL("/", { timeout: 15_000 });
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
   // Chat index — should be brand-free.
   await page.goto("/content/chat");

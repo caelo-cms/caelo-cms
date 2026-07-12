@@ -47,7 +47,7 @@ test("create dialog has no preset picker, requires description, queues a proposa
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL("/", { timeout: 15_000 });
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
   await page.goto("/design/themes");
   await page.getByRole("button", { name: /create theme/i }).click();
