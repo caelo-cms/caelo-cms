@@ -64,9 +64,11 @@ export {
   ExternalUrlBlockedError,
   isExternalUrlBlockedError,
   isPublicIpAddress,
+  type SafeFetchBinaryResponse,
   type SafeFetchOptions,
   type SafeFetchResponse,
   safeExternalFetch,
+  safeExternalFetchBinary,
 } from "./safe-fetch.js";
 export {
   computePixelDiff,

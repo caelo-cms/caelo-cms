@@ -181,6 +181,7 @@ import {
   setRateLimitProfileOp,
 } from "./ops/gateway.js";
 import { addGenesisDraftOp, listGenesisDraftsOp, selectGenesisDraftOp } from "./ops/genesis.js";
+import { migrateImportMediaOp } from "./ops/import_media.js";
 import {
   acceptImportedPageOp,
   acknowledgeImportPageDiffOp,
@@ -768,6 +769,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acceptImportedPageOp);
   registry.register(cleanupImportRunOp);
   registry.register(composeFromImportRunOp);
+  // issue #249 (WS3) — post-compose media migration.
+  registry.register(migrateImportMediaOp);
   // P13 — gateway hardening surface.
   registry.register(getGatewaySettingsOp);
   registry.register(setGatewaySettingsOp);

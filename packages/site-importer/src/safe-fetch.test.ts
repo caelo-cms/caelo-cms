@@ -15,6 +15,7 @@ import {
   isExternalUrlBlockedError,
   isPublicIpAddress,
   safeExternalFetch,
+  safeExternalFetchBinary,
 } from "./safe-fetch.js";
 
 describe("isPublicIpAddress", () => {
@@ -198,6 +199,29 @@ describe("safeExternalFetch — connect-time DNS guard", () => {
       await expect(safeExternalFetch(`${base}/to-metadata`, { allowedHosts })).rejects.toThrow(
         ExternalUrlBlockedError,
       );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it("safeExternalFetchBinary round-trips raw bytes without a UTF-8 mangle (#249)", async () => {
+    // 0x89 0x50 0x4e 0x47 (PNG magic) + invalid-UTF8 tail — a text
+    // decode/encode round-trip would corrupt these bytes.
+    const payload = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]);
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return new Response(payload, { headers: { "content-type": "image/png" } });
+      },
+    });
+    try {
+      const res = await safeExternalFetchBinary(`http://127.0.0.1:${server.port}/img.png`, {
+        allowedHosts: ["127.0.0.1"],
+      });
+      expect(res.ok).toBe(true);
+      expect(res.contentType).toBe("image/png");
+      expect([...res.bodyBytes]).toEqual([...payload]);
     } finally {
       server.stop(true);
     }

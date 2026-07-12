@@ -28,6 +28,14 @@ export const MEDIA_ALLOWED_MIMES = [
   "image/svg+xml",
   "application/pdf",
   "video/mp4",
+  // issue #249 — webfonts. Migrated sites reference their own font
+  // files from replayed CSS; the media-migration pass downloads them
+  // into the library so the rebuilt site survives the source host
+  // going away. Stored as-is (no derived variants).
+  "font/woff2",
+  "font/woff",
+  "font/ttf",
+  "font/otf",
 ] as const;
 export type MediaMime = (typeof MEDIA_ALLOWED_MIMES)[number];
 
@@ -41,6 +49,10 @@ export const MEDIA_SIZE_CAPS: Record<MediaMime, number> = {
   "image/svg+xml": 1 * 1024 * 1024,
   "application/pdf": 20 * 1024 * 1024,
   "video/mp4": 50 * 1024 * 1024,
+  "font/woff2": 5 * 1024 * 1024,
+  "font/woff": 5 * 1024 * 1024,
+  "font/ttf": 5 * 1024 * 1024,
+  "font/otf": 5 * 1024 * 1024,
 };
 
 /** Hard ceiling on the multipart body. Per-MIME caps narrow further. */
