@@ -85,13 +85,47 @@ export async function buildSkillsContext(
           }
         ).pinDefaults
       : [];
-    // Manual overrides on the chat session row. NULL or {} → no overrides yet.
+    // Manual overrides + sticky auto-engagements on the chat session
+    // row. NULL or {} → no overrides yet.
     const sessRows = (await adapter.rawAdmin().begin(async (tx) => {
       await tx.unsafe(`SET LOCAL caelo.actor_kind = 'system'`);
-      return await tx`SELECT engaged_skills FROM chat_sessions
+      return await tx`SELECT engaged_skills, auto_engaged_skills FROM chat_sessions
         WHERE id = ${args.chatSessionId}::uuid LIMIT 1`;
-    })) as unknown as { engaged_skills: unknown }[];
+    })) as unknown as { engaged_skills: unknown; auto_engaged_skills: unknown }[];
     const stored = sessRows[0]?.engaged_skills;
+
+    // 0125 — sticky engagement: the matcher scores ONLY the current
+    // message, so mid-flow answers ("B — Light refresh", "ja") carry
+    // no keywords and the skill that owns the flow would silently
+    // drop out between turns (live-hit 2026-07-12: site-migrate
+    // vanished for the scope turn and the AI queued a full crawl
+    // unasked). Skills that auto-engaged earlier in THIS chat
+    // re-engage — filtered against the currently ACTIVE set so a
+    // deactivated skill cannot zombie back, and still subject to
+    // manual disengagement via resolveEngagements.
+    const storedAuto = sessRows[0]?.auto_engaged_skills;
+    const activeById = new Map(candidates.map((c) => [c.id, c]));
+    const sticky = (Array.isArray(storedAuto) ? storedAuto : [])
+      .filter(
+        (e): e is { skillId: string } =>
+          typeof e === "object" &&
+          e !== null &&
+          typeof (e as { skillId?: unknown }).skillId === "string",
+      )
+      .filter((e) => activeById.has(e.skillId))
+      .filter((e) => !autoMatches.some((m) => m.skillId === e.skillId))
+      .map((e) => {
+        const c = activeById.get(e.skillId);
+        if (!c) throw new Error("unreachable: filtered above");
+        return {
+          skillId: c.id,
+          slug: c.slug,
+          displayName: c.displayName,
+          score: 1,
+          rationale: "engaged earlier in this chat",
+        };
+      });
+    const autoWithSticky = [...autoMatches, ...sticky];
     const manualOverrides: Array<{
       skillId: string;
       slug: string;
@@ -106,9 +140,21 @@ export async function buildSkillsContext(
         }[])
       : null;
     engagedSkills = resolveEngagements({
-      autoMatches,
+      autoMatches: autoWithSticky,
       manualOverrides,
       pinnedSkills: pinned,
+    });
+
+    // Persist the auto-engaged set for the next turn's stickiness.
+    // Same raw-adapter deviation as the read above (see file NOTE).
+    const nextAuto = engagedSkills
+      .filter((e) => e.source === "auto")
+      .map((e) => ({ skillId: e.skillId, slug: e.slug, displayName: e.displayName }));
+    await adapter.rawAdmin().begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL caelo.actor_kind = 'system'`);
+      await tx`UPDATE chat_sessions
+        SET auto_engaged_skills = (${JSON.stringify(nextAuto)}::text)::jsonb
+        WHERE id = ${args.chatSessionId}::uuid`;
     });
 
     if (engagedSkills.length > 0) {
