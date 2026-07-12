@@ -1691,19 +1691,34 @@ export const composeFromImportRunOp = defineOperation({
  * Scope → category mirrors migration 0097's back-fill so imports land
  * at the same DTCG paths as an upgrade-in-place.
  */
-function prepareLegacyAggregatedToken(t: {
+/** Looks like a single CSS length the `spacing`/`radius` categories accept. */
+function isDimensionValue(v: string): boolean {
+  return /^-?\d+(\.\d+)?(px|rem|em|%|vh|vw|ch|pt)$/.test(v.trim());
+}
+
+export function prepareLegacyAggregatedToken(t: {
   token: string;
   value: string;
   scope?: string;
 }): { canonicalPath: string; value: unknown } | null {
-  // Determine category + basename.
+  // Determine category + basename. Order: explicit scope → name
+  // keywords → value shape. The old tail defaulted every leftover to
+  // `spacing`, which fed crawled junk vars into the wrong category —
+  // live-hit 2026-07-12: WordPress's `--wp--preset--shadow--natural`
+  // (a CSS shadow string) landed in `spacing.*` and the
+  // TokenCategoryMismatch aborted the ENTIRE compose_from_run. No
+  // guessing (CLAUDE.md 2): what we cannot place, we drop below.
+  const name = t.token.toLowerCase();
   let category: string;
   if (t.scope === "color") category = "color";
   else if (t.scope === "font") category = "typography";
   else if (t.scope === "space") category = "spacing";
   else if (t.scope === "radius") category = "radius";
   else if (t.scope === "shadow") category = "shadow";
-  else if (/^#[0-9a-fA-F]{3,8}$/.test(t.value)) category = "color";
+  else if (name.includes("shadow")) category = "shadow";
+  else if (name.includes("radius")) category = "radius";
+  else if (name.includes("font") || name.includes("family")) category = "typography";
+  else if (/^#[0-9a-fA-F]{3,8}$/.test(t.value) || name.includes("color")) category = "color";
   else category = "spacing";
 
   // Drop shadow tokens — legacy stringified shadows don't round-trip
@@ -1724,6 +1739,14 @@ function prepareLegacyAggregatedToken(t: {
   if (!basename) return null;
 
   const canonicalPath = `${category}.${basename}`;
+
+  // Backstop: spacing/radius only accept single CSS lengths. A crawled
+  // var that ends up here with anything else (a gradient, a shadow
+  // list, a font stack) is site-specific noise — dropping ONE junk
+  // token beats aborting the whole compose on a category mismatch.
+  if ((category === "spacing" || category === "radius") && !isDimensionValue(t.value)) {
+    return null;
+  }
 
   // Shape the value: typography needs the composite object envelope;
   // everything else is a flat string.
