@@ -21,7 +21,7 @@
 
   import { enhance } from "$app/forms";
   import { goto, invalidateAll } from "$app/navigation";
-  import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
+  import { ArrowLeft, GitCompareArrows, MousePointerClick, Sparkles } from "lucide-svelte";
   import { onMount } from "svelte";
   import CrossChatBanner from "$lib/components/edit/CrossChatBanner.svelte";
   import DiffPanel from "$lib/components/edit/DiffPanel.svelte";
@@ -494,8 +494,28 @@
         style:pointer-events={overlayDragging ? "none" : "auto"}
       ></iframe>
     {:else}
-      <div class="flex h-full items-center justify-center text-muted-foreground">
-        No page selected.
+      <!-- Operator feedback (2026-07-12): a bare "No page selected."
+           on an empty install reads as a dead end. The canvas points
+           at the chat — the chat IS the product (CLAUDE.md 1A). -->
+      <div class="flex h-full items-center justify-center px-6">
+        {#if data.pages.length === 0}
+          <div class="flex max-w-md flex-col items-center gap-3 text-center">
+            <Sparkles class="size-10 text-muted-foreground" aria-hidden="true" />
+            <p class="text-lg font-semibold">Let&rsquo;s build your site</p>
+            <p class="text-sm text-muted-foreground">
+              There&rsquo;s nothing here yet — and that&rsquo;s the fun part. Tell the AI in the
+              chat what you want (&ldquo;a homepage for my bakery&rdquo;, &ldquo;migrate
+              example.com&rdquo;) and watch it appear right here.
+            </p>
+          </div>
+        {:else}
+          <div class="flex max-w-md flex-col items-center gap-3 text-center">
+            <MousePointerClick class="size-8 text-muted-foreground" aria-hidden="true" />
+            <p class="text-sm text-muted-foreground">
+              Pick a page in the top bar — or just tell the chat which page you want to work on.
+            </p>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
