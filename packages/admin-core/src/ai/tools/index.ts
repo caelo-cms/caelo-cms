@@ -277,7 +277,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // P14 — AI proposes a Site Import crawl (§11.A).
   registry.register(proposeSiteImportTool);
   // v0.2.19 — first deploy gate via §11.A. AI proposes a promote /
-  // rollback; Owner clicks Approve at /security/deployments/pending.
+  // rollback; the operator approves on the chat's proposal card.
   // The execute side stays human-only.
   registry.register(proposeDeployPromoteTool);
   registry.register(proposeDeployRollbackTool);

@@ -7,7 +7,7 @@ const UUID = "d2d5a41a-0ecb-4f70-aab1-73963240e9f1";
 
 describe("parseProposalContent", () => {
   it("parses canonical create_layout output", () => {
-    const content = `Queued proposal ${UUID}: layout-create slug=default (3 blocks). An Owner must click Approve at /security/layouts/pending to apply.`;
+    const content = `Queued proposal ${UUID}: layout-create slug=default (3 blocks). Approve it on the proposal card in this chat (queue: /security/layouts/pending).`;
     const result = parseProposalContent(content);
     expect(result).not.toBeNull();
     expect(result?.proposalId).toBe(UUID);
@@ -16,7 +16,10 @@ describe("parseProposalContent", () => {
     expect(result?.domain).toBe("layouts");
   });
 
-  it("parses canonical propose_add_locale output", () => {
+  // Pre-card-first tail ("An Owner must click Approve at … to apply.")
+  // still lives in persisted chat_messages rows — those must keep
+  // rendering ProposeCards after the wording change.
+  it("parses the legacy pre-card-first tail (persisted messages)", () => {
     const content = `Queued proposal ${UUID}: add locale 'de' (subpath). An Owner must click Approve at /security/locales/pending to apply.`;
     const result = parseProposalContent(content);
     expect(result?.domain).toBe("locales");
@@ -24,13 +27,13 @@ describe("parseProposalContent", () => {
   });
 
   it("parses canonical propose_deploy_promote output", () => {
-    const content = `Queued proposal ${UUID}: promote staging → production (build=abc, pages=10, files=20). An Owner must click Approve at /security/deployments/pending to apply.`;
+    const content = `Queued proposal ${UUID}: promote staging → production (build=abc, pages=10, files=20). Approve it on the proposal card in this chat (queue: /security/deployments/pending).`;
     const result = parseProposalContent(content);
     expect(result?.domain).toBe("deployments");
   });
 
   it("parses canonical tune_rate_limit output", () => {
-    const content = `Queued proposal ${UUID}: rate-limit comments.submit = 5/60s. An Owner must click Approve at /security/gateway/pending to apply.`;
+    const content = `Queued proposal ${UUID}: rate-limit comments.submit = 5/60s. Approve it on the proposal card in this chat (queue: /security/gateway/pending).`;
     const result = parseProposalContent(content);
     expect(result?.domain).toBe("gateway");
     // Summary may truncate at the first period inside the data (e.g.

@@ -158,7 +158,7 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
     }
 
     // STEP 4 — file the propose_revert_site proposal. The actual
-    // revert happens when the Owner clicks Approve at
+    // revert happens when the operator approves on the chat card at
     // /security/snapshots/pending.
     const proposeR = await execute(
       toolCtx.registry,
@@ -180,7 +180,7 @@ export const revertChatChangesTool: ToolDefinitionWithHandler<
       content:
         `Queued proposal ${v.proposalId}: revert_chat_changes — chat ${input.chatSessionId} (${chatSnapshots.length} snapshots, ${totalEntitySnapshotCount} entity-snapshot rows) → rewinds site to pre-chat snapshot ${preChat.id} (${affected} entities will be restored). ` +
         `WARNING: this also reverts any NON-chat edits between then and now. ` +
-        `Owner clicks Approve at /security/snapshots/pending to apply.`,
+        `Approve it on the proposal card in this chat (queue: /security/snapshots/pending).`,
     };
   },
 };

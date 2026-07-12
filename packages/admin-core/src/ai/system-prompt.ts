@@ -840,7 +840,7 @@ export function formatThemeBlock(
     "- `duplicate_theme({sourceSlug, newSlug, newDisplayName})` — clone tokens + assets into an inactive variant.",
     "- `import_theme({themeSlug, body})` — auto-detects DTCG / Style Dictionary / Tailwind 4 / shadcn / loose. `export_theme({themeSlug})` — DTCG out.",
     "",
-    "Gated (each is a §11.A propose/execute; the AI proposes, an Owner clicks Approve at `/security/themes/pending`):",
+    "Gated (each is a §11.A propose/execute; the AI proposes, the operator approves on the proposal card shown right in the chat — queue: `/security/themes/pending`):",
     "- `propose_create_theme({slug, displayName, description, tokens, overrides?})` — YOU compose the complete DTCG `tokens` document from brand context (color + typography + spacing + radius + shadow; primary with real chroma — no presets exist). `description` records why the palette fits. `overrides.primaryColor` triggers a 50–900 OKLCh ramp (each stop `_derived: true`).",
     "- `propose_activate_theme({themeId})` — flips the DB row only. A deploy must be approved separately via `propose_deploy_promote` for the new CSS to ship.",
     "- `propose_delete_theme({themeId})` — inactive themes only.",

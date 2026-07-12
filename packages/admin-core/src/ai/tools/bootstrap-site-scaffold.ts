@@ -71,7 +71,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
   description:
     "Composite: bootstrap a fresh install (layout + template + site_defaults) in as few steps as the propose/execute gate allows. " +
     "Idempotent — each call makes forward progress on the next missing stage. " +
-    "Stage 0 (no layout): queues a layouts.create PROPOSAL; an Owner clicks Approve at /security/layouts/pending. " +
+    "Stage 0 (no layout): queues a layouts.create PROPOSAL; the operator approves it on the proposal card in the chat (queue: /security/layouts/pending). " +
     "Stage 1+2 (layout exists): creates template + pins site_defaults directly (no human click). " +
     "Stage 3 (all three exist): no-op. " +
     "Use on a fresh install when `# Site defaults` says '(none configured yet)'. " +
@@ -83,7 +83,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     if (state.layouts.length === 0) {
       return (
         "Composite bootstrap — STAGE 0. This call will queue a layouts.create proposal " +
-        "(header/content/footer blocks by default). An Owner must click Approve at /security/layouts/pending. " +
+        "(header/content/footer blocks by default). The operator approves on the chat's proposal card (queue: /security/layouts/pending). " +
         "After approval, call this tool AGAIN to continue with the template + site_defaults."
       );
     }
@@ -181,7 +181,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
         ok: true,
         content:
           `Queued proposal ${v.proposalId}: bootstrap stage-0 layout-create slug=${layoutSlug} (${v.preview.blockCount} blocks). ` +
-          `An Owner must click Approve at /security/layouts/pending. After approval, call bootstrap_site_scaffold again to continue with the template + site_defaults.`,
+          `Approve it on the proposal card in this chat (queue: /security/layouts/pending). After approval, call bootstrap_site_scaffold again to continue with the template + site_defaults.`,
       };
     }
 

@@ -2,7 +2,7 @@
 
 /**
  * P9 — `propose_add_locale`. Two-step per CLAUDE.md §11.A: AI queues
- * the proposal; an Owner clicks Approve at /security/locales/pending
+ * the proposal; the operator approves on the chat's proposal card
  * to apply. AI calls to the execute path hit ActorScopeRejected.
  */
 
@@ -15,7 +15,7 @@ export const proposeAddLocaleTool: ToolDefinitionWithHandler<ProposeAddLocaleToo
   name: "propose_add_locale",
   description:
     "Propose adding a new locale (language) to the site. " +
-    "TWO-STEP: this only QUEUES the change — an Owner must click Approve at /security/locales/pending to apply it. " +
+    "TWO-STEP: this only QUEUES the change — approved on the chat's proposal card (queue: /security/locales/pending). " +
     "Do NOT claim the locale was added; tell the user the proposal is queued and link them to the queue. " +
     "Inputs: code (BCP-47, e.g. 'de' or 'de-AT'), displayName, urlStrategy ('none' | 'subdirectory' | 'subdomain' | 'domain'), urlHost (required for subdomain/domain). " +
     "Default urlStrategy is 'subdirectory' — leave it unless the user explicitly asks for subdomain/domain. " +
@@ -57,7 +57,7 @@ export const proposeAddLocaleTool: ToolDefinitionWithHandler<ProposeAddLocaleToo
       content:
         `Queued proposal ${proposalId} to add locale '${input.code}' (${input.urlStrategy}). ` +
         `Preview: ${JSON.stringify(preview)}. ` +
-        `An Owner must click Approve at /security/locales/pending to apply.`,
+        `Approve it on the proposal card in this chat (queue: /security/locales/pending).`,
     };
   },
 };

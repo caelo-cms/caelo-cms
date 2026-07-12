@@ -90,7 +90,7 @@ export async function buildDomainBlocks(
         // v0.5.10 — dropped "per CLAUDE.md §11.A" citation. The AI can't
         // access that file; the citation made it sound like a referenceable
         // external doc. The rule itself stays.
-        "Adding/removing/retargeting a locale is a TWO-STEP propose/execute flow. You propose via `propose_add_locale` / `propose_remove_locale` / `propose_set_default_locale` / `propose_update_locale_strategy`; an Owner clicks Approve at /security/locales/pending to apply. Do not claim the action was applied — tell the user the proposal is queued.",
+        "Adding/removing/retargeting a locale is a TWO-STEP propose/execute flow. You propose via `propose_add_locale` / `propose_remove_locale` / `propose_set_default_locale` / `propose_update_locale_strategy`; the operator approves it on the proposal card that appears right in the chat (queue: /security/locales/pending). Do not claim the action was applied — point at the card's Approve button.",
         ...lines,
         ...(pendingLines.length > 0 ? ["Your pending proposals:", ...pendingLines] : []),
       ].join("\n");

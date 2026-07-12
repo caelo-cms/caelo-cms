@@ -95,7 +95,7 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
     return {
       ok: true,
       // v0.5.11 — canonical shape so ProposeCard renders inline approve.
-      content: `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (depth=${input.depth ?? 2}, max=${input.maxPages ?? 50}). ${describeEstimate(estimate)} An Owner must click Approve at /security/import/pending to apply.`,
+      content: `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (depth=${input.depth ?? 2}, max=${input.maxPages ?? 50}). ${describeEstimate(estimate)} Approve it on the proposal card in this chat (queue: /security/import/pending).`,
     };
   },
 };

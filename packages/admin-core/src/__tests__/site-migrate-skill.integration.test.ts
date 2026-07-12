@@ -59,10 +59,14 @@ describe("site-migrate skill row (#188)", () => {
     expect(b).toContain("always look at the real site first");
     // Exactly one fork question.
     expect(b).toContain("exactly ONE question");
-    // §11.A two-step contract, verbatim style.
+    // §11.A two-step contract — chat-first since 0121: the Approve
+    // click lives on the proposal CARD in the chat, never an admin page.
     expect(b).toContain("TWO-STEP flow");
-    expect(b).toContain("/security/import/pending");
+    expect(b).toContain("APPROVE BUTTON ON THE PROPOSAL CARD");
+    expect(b).toContain("never send them to an admin page");
     expect(b).toContain("NEVER claim the crawl ran");
+    // Background-job honesty: crawl status handling is spelled out.
+    expect(b).toContain("ready_for_review");
     // Scope + cost expectation before approval; pilot alternative.
     expect(b).toContain("AI budget");
     expect(b).toContain("pilot");

@@ -6,8 +6,11 @@
    * makeProposeTool factory (ai/tools/_make-propose-tool.ts) emits
    * this content shape verbatim:
    *
-   *   "Queued proposal <id>: <summary>. An Owner must click Approve at
-   *    /security/<domain>/pending to apply."
+   *   "Queued proposal <id>: <summary>. Approve it on the proposal
+   *    card in this chat (queue: /security/<domain>/pending)."
+   *
+   * (Persisted pre-card-first rows use the older "An Owner must click
+   * Approve at … to apply." tail — the parser accepts both.)
    *
    * v0.2.62 — Inline Approve / Reject. Pre-v0.2.62 the card carried
    * a "Review at /security/<domain>/pending" link button that sent

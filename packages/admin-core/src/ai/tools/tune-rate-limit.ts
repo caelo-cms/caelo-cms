@@ -27,7 +27,7 @@ export const tuneRateLimitTool: ToolDefinitionWithHandler<TuneRateLimitInput> = 
   name: "tune_rate_limit",
   description:
     "TWO-STEP: propose a per-(plugin, operation) rate-limit override. " +
-    "This only QUEUES the proposal — an Owner must click Approve at /security/gateway/pending. " +
+    "This only QUEUES the proposal — approved on the chat's proposal card (queue: /security/gateway/pending). " +
     "DO NOT claim the limit was applied. Use this when monitoring shows abuse on a public " +
     "plugin endpoint (e.g. forms/submit getting hammered) or when the default 30/60s is too " +
     "loose/tight. `proposedWindowSec` is 1–3600.",
@@ -59,7 +59,7 @@ export const tuneRateLimitTool: ToolDefinitionWithHandler<TuneRateLimitInput> = 
       ok: true,
       // v0.5.11 — canonical "Queued proposal <uuid>: <summary>." shape
       // so ProposeCard renders inline Approve / Reject.
-      content: `Queued proposal ${v.proposalId}: rate-limit ${input.pluginSlug}.${input.operation} = ${input.proposedMax}/${input.proposedWindowSec}s. An Owner must click Approve at /security/gateway/pending to apply.`,
+      content: `Queued proposal ${v.proposalId}: rate-limit ${input.pluginSlug}.${input.operation} = ${input.proposedMax}/${input.proposedWindowSec}s. Approve it on the proposal card in this chat (queue: /security/gateway/pending).`,
     };
   },
 };

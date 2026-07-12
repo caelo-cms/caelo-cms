@@ -13,7 +13,7 @@ export const proposeSetDefaultLocaleTool: ToolDefinitionWithHandler<ProposeSetDe
     name: "propose_set_default_locale",
     description:
       "Propose changing which locale is the site's default. " +
-      "TWO-STEP: queues the change; an Owner clicks Approve at /security/locales/pending to apply. " +
+      "TWO-STEP: queues the change; approved on the chat's proposal card (queue: /security/locales/pending). " +
       "Do NOT claim the default was changed. " +
       "Caveat: swapping the default rewrites URL paths for every non-default-locale page (the new default may drop its prefix; the old default may gain one). " +
       "The proposal preview reports how many pages would shift URLs.",
@@ -46,7 +46,7 @@ export const proposeSetDefaultLocaleTool: ToolDefinitionWithHandler<ProposeSetDe
         content:
           `Queued proposal ${proposalId} to set '${input.code}' as the default locale. ` +
           `Preview: ${JSON.stringify(preview)}. ` +
-          `An Owner must click Approve at /security/locales/pending to apply.`,
+          `Approve it on the proposal card in this chat (queue: /security/locales/pending).`,
       };
     },
   };
