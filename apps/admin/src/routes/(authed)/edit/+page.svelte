@@ -21,7 +21,8 @@
 
   import { enhance } from "$app/forms";
   import { goto, invalidateAll } from "$app/navigation";
-  import { ArrowLeft, GitCompareArrows, MousePointerClick, Sparkles } from "lucide-svelte";
+  import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
+  import CaeloMascot from "$lib/components/CaeloMascot.svelte";
   import { onMount } from "svelte";
   import CrossChatBanner from "$lib/components/edit/CrossChatBanner.svelte";
   import DiffPanel from "$lib/components/edit/DiffPanel.svelte";
@@ -497,22 +498,36 @@
       <!-- Operator feedback (2026-07-12): a bare "No page selected."
            on an empty install reads as a dead end. The canvas points
            at the chat — the chat IS the product (CLAUDE.md 1A). -->
-      <div class="flex h-full items-center justify-center px-6">
-        <div class="flex max-w-md flex-col items-center gap-3 text-center">
-          <Sparkles class="size-10 text-muted-foreground" aria-hidden="true" />
-          <p class="text-lg font-semibold">Chat and build your page</p>
-          {#if data.pages.length === 0}
-            <p class="text-sm text-muted-foreground">
-              There&rsquo;s nothing here yet — and that&rsquo;s the fun part. Tell the AI in the
-              chat what you want and watch it appear right here.
-            </p>
-          {:else}
-            <p class="text-sm text-muted-foreground">
-              Tell the AI in the chat which page you want to work on — or pick one in the top
-              bar.
-            </p>
-          {/if}
+      <!-- The stage: Caelo's mascot above a page sketch that draws in
+           once and comes to rest — the calm spot where the first page
+           will materialize. Operator-requested warmth, not tech. -->
+      <div class="flex h-full flex-col items-center justify-center gap-6 px-6">
+        <CaeloMascot size={130} />
+        <div class="caelo-stage w-full max-w-xs space-y-2.5 opacity-60">
+          <div class="h-16 rounded-lg border-2 border-dashed border-muted-foreground/35"></div>
+          <div class="h-2.5 w-3/4 rounded border-2 border-dashed border-muted-foreground/25"></div>
+          <div class="h-2.5 w-1/2 rounded border-2 border-dashed border-muted-foreground/25"></div>
+          <div class="grid grid-cols-3 gap-2.5">
+            <div class="h-10 rounded-md border-2 border-dashed border-muted-foreground/20"></div>
+            <div class="h-10 rounded-md border-2 border-dashed border-muted-foreground/20"></div>
+            <div class="h-10 rounded-md border-2 border-dashed border-muted-foreground/20"></div>
+          </div>
         </div>
+        <div class="space-y-2 text-center">
+          <p class="text-lg font-semibold">Chat and build your page</p>
+          <p class="text-sm text-muted-foreground">
+            {data.pages.length === 0
+              ? "Describe what you want in the chat — your page appears right here."
+              : "Tell the chat which page to open — or pick one in the top bar."}
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onclick={() => window.dispatchEvent(new CustomEvent("caelo:focus-chat"))}
+        >
+          Write your first prompt
+        </Button>
       </div>
     {/if}
   </div>
@@ -569,3 +584,36 @@
     </DialogContent>
   </Dialog>
 </div>
+
+<style>
+  /* One-time draw-in of the page sketch under the mascot (top-down,
+     staggered), then everything rests. One-off CSS animation per
+     CLAUDE.md 6A; reduced-motion users get the static sketch. */
+  .caelo-stage > :global(*) {
+    animation: caelo-stage-sketch 0.7s ease-out both;
+  }
+  .caelo-stage > :global(*:nth-child(2)) {
+    animation-delay: 0.25s;
+  }
+  .caelo-stage > :global(*:nth-child(3)) {
+    animation-delay: 0.45s;
+  }
+  .caelo-stage > :global(*:nth-child(4)) {
+    animation-delay: 0.65s;
+  }
+  @keyframes caelo-stage-sketch {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .caelo-stage > :global(*) {
+      animation: none;
+    }
+  }
+</style>
