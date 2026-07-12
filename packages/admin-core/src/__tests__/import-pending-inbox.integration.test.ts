@@ -92,7 +92,9 @@ describe("pending_proposals.list covers import runs (0124)", () => {
     if (!proposed.ok) return;
     const runId = (proposed.value as { runId: string }).runId;
 
-    const list = await execute(registry, adapter, systemCtx, "pending_proposals.list", {});
+    const list = await execute(registry, adapter, systemCtx, "pending_proposals.list", {
+      limit: 200,
+    });
     expect(list.ok).toBe(true);
     if (!list.ok) return;
     const items = (
@@ -105,5 +107,7 @@ describe("pending_proposals.list covers import runs (0124)", () => {
     expect(row?.domain).toBe("import");
     expect(row?.kind).toBe("site_import");
     expect(row?.summary).toContain("import-inbox-regression.example.com");
+    const byDomain = (list.value as { byDomain: Record<string, number> }).byDomain;
+    expect(byDomain.import ?? 0).toBeGreaterThanOrEqual(1);
   });
 });

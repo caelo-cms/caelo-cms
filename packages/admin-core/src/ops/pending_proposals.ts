@@ -206,6 +206,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'gateway' FROM plugin_rate_limit_proposals WHERE status = 'pending'
         UNION ALL SELECT 'site_memory' FROM site_memory_proposals WHERE status = 'pending'
         UNION ALL SELECT 'skills' FROM skill_proposals WHERE status = 'pending'
+        UNION ALL SELECT 'import' FROM import_runs WHERE status = 'proposed'
       )
       SELECT domain, count(*)::int AS c FROM all_pending GROUP BY domain
     `)) as unknown as Array<{ domain: string; c: number }>;
