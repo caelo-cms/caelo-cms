@@ -101,7 +101,7 @@ test.describe("e2e-livedit migration — keep-design end to end", () => {
     try {
       await loginAsDevOwner(page);
       await page.goto("/edit");
-      await expect(page.getByText("Which of these fits")).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByText("Pick one of the options")).toBeVisible({ timeout: 20_000 });
 
       // Turn 1 — name the site, ask for keep-design migration.
       await sendChatPromptAndWait(

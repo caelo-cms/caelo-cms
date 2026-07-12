@@ -73,6 +73,13 @@
      * overflows when embedded in the floating overlay.
      */
     compact?: boolean;
+    /**
+     * Chat-panel UX — quick-reply choices rendered above the composer
+     * until the operator's first message. The onboarding welcome
+     * carries three entry points; clicking one SENDS the prefilled
+     * answer (zero typing for the choice itself, per CLAUDE.md §1A).
+     */
+    firstRunSuggestions?: { label: string; message: string }[];
     /** P6.7.3 — when set, the runner gets a Current-page system block. */
     activePageId?: string | null;
     onToolResult?: (payload: ToolResultPayload) => void;
@@ -97,6 +104,7 @@
     csrfToken,
     formError = null,
     compact = false,
+    firstRunSuggestions = [],
     activePageId = null,
     onToolResult,
     debug = false,
@@ -154,6 +162,11 @@
     void _msgCount;
     void _streamLen;
     void tick().then(() => {
+      // Before the operator's first message the transcript is the
+      // onboarding welcome — a reader starts at the TOP. Jumping to
+      // the bottom cut its first lines off in the 480px overlay.
+      const hasUserTurn = messages.some((m) => m.role === "user");
+      if (!hasUserTurn && !streaming) return;
       if (followBottom) scrollToBottom();
       else hasNewContent = true;
     });
@@ -1333,7 +1346,15 @@
         {@const failureCount = messages.filter(
           (m) => m.role === "tool" && isFailedToolMessage(m.content),
         ).length}
-        <div class="flex items-center justify-end gap-2 px-1 pb-1 text-xs">
+        <!-- Zero failures is the normal state — don't spend a row on
+             saying so. The count element stays in the DOM (sr-only)
+             because e2e assertions read its text. -->
+        <div
+          class={cn(
+            "flex items-center justify-end gap-2 px-1 text-xs",
+            failureCount > 0 || showFailedOnly ? "pb-1" : "sr-only",
+          )}
+        >
           <span class="text-muted-foreground" data-testid="transcript-failure-count">
             {failureCount} failure{failureCount === 1 ? "" : "s"}
           </span>
@@ -1355,7 +1376,7 @@
           <ul
             bind:this={transcriptEl}
             onscroll={handleTranscriptScroll}
-            class="flex-1 space-y-2 overflow-y-auto"
+            class="subtle-scrollbar flex-1 space-y-2 overflow-y-auto"
           >
             {#each messages.filter((m) => !showFailedOnly || m.role !== "tool" || isFailedToolMessage(m.content)) as m (m.id)}
               {#if m.role === "tool"}
@@ -1618,6 +1639,22 @@
             data-testid="chat-turn-status"
             data-turn-state={streaming ? "streaming" : "idle"}
           ></span>
+          {#if firstRunSuggestions.length > 0 && !streaming && !messages.some((m) => m.role === "user")}
+            <!-- Onboarding quick replies: the choice is a click, not a
+                 typing exercise. Hidden forever after the first user
+                 turn. -->
+            <div class="mb-1.5 flex flex-wrap gap-1.5" data-testid="chat-first-run-suggestions">
+              {#each firstRunSuggestions as sug (sug.label)}
+                <button
+                  type="button"
+                  class="rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-primary/10"
+                  onclick={() => void sendAutoMessage(sug.message)}
+                >
+                  {sug.label}
+                </button>
+              {/each}
+            </div>
+          {/if}
           {#if pendingAttachments.length > 0}
             <!-- issue #190 — attachment chips riding the next message. -->
             <div class="mb-1.5 flex flex-wrap gap-2" data-testid="chat-pending-attachments">
@@ -1648,8 +1685,12 @@
             bind:value={composer}
             bind:ref={composerEl}
             rows={1}
-            placeholder="Tell the AI what to change… (try / for shortcuts, @ for module references)"
-            class={cn("resize-none", dragOver && "border-primary ring-2 ring-primary/30")}
+            placeholder="Tell the AI what to change…"
+            title="Shortcuts: / for commands, @ for module references, drop images to attach"
+            class={cn(
+              "subtle-scrollbar resize-none placeholder:text-muted-foreground/50",
+              dragOver && "border-primary ring-2 ring-primary/30",
+            )}
             data-testid="chat-composer"
             oninput={() => {
               autoSizeComposer();

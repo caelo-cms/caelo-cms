@@ -58,6 +58,8 @@
   }
 
   interface Props {
+    /** Onboarding quick replies forwarded to ChatPanel. */
+    firstRunSuggestions?: { label: string; message: string }[];
     session: ChatSession;
     initialMessages: ChatMessage[];
     modules: ChatModule[];
@@ -81,6 +83,7 @@
     onDragStateChange?: (active: boolean) => void;
   }
   let {
+    firstRunSuggestions = [],
     session,
     initialMessages,
     modules,
@@ -510,6 +513,7 @@
       {modules}
       {csrfToken}
       {activePageId}
+      {firstRunSuggestions}
       compact
       onToolResult={handleToolResult}
     />

@@ -30,16 +30,34 @@ interface PageRow {
  * cold-start routing in admin-core's `formatSiteIdentityBlock`.
  */
 const FIRST_RUN_WELCOME = [
-  "Welcome — let's set up your website. I'm the AI that builds and runs this site with you: you describe what you want, I do the work, and you approve the big steps.",
+  "**Welcome — let's set up your website.** I'm the AI that builds and runs this site with you: you describe, I do the work, you approve the big steps.",
   "",
-  "Which of these fits you best?",
+  "Pick one of the options below, or just tell me in your own words:",
   "",
-  "1. **You already have a website** — paste its address (like `https://example.com`). I'll take a look, then we decide together: keep its design or start a redesign — and I migrate your content and URLs either way.",
-  "2. **Starting from scratch** — tell me what the site is for and who it's for. I'll propose a few complete design directions and you pick the one you like.",
-  "3. **You already have a design** — share a mockup image or the HTML here in the chat and I'll build the site on exactly that design.",
-  "",
-  "Just answer in your own words — there's nothing to fill out.",
+  "1. **You already have a website** — I'll look at it, we keep or refresh its design, and I migrate content and URLs.",
+  "2. **Starting from scratch** — tell me what the site is for; I'll propose complete design directions and you pick.",
+  "3. **You already have a design** — drop a mockup image or HTML into the chat and I'll build on exactly that.",
 ].join("\n");
+
+/**
+ * Quick-reply chips ChatPanel renders under the welcome until the
+ * first user turn. Clicking SENDS the message — the entry-point
+ * choice costs one click, not a typed paragraph (CLAUDE.md §1A).
+ */
+const FIRST_RUN_SUGGESTIONS = [
+  {
+    label: "I already have a website",
+    message: "I already have a website that I'd like to move to Caelo.",
+  },
+  {
+    label: "Start from scratch",
+    message: "I'm starting from scratch — let's design a brand-new site.",
+  },
+  {
+    label: "I already have a design",
+    message: "I already have a design (mockup or HTML) that the site should be built on.",
+  },
+];
 
 export const load: PageServerLoad = async ({ locals, url }) => {
   requirePermission(locals, "content.write");
@@ -235,7 +253,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // survives reloads, and lands in the AI's own transcript context.
   // The `messages.length === 0` guard makes the seed idempotent per
   // chat; once identity or pages exist the branch never fires again.
-  if (activeChat && messages.length === 0 && pages.length === 0) {
+  let firstRunSuggestions: typeof FIRST_RUN_SUGGESTIONS = [];
+  if (activeChat && pages.length === 0) {
     const defaultsR = await execute(registry, adapter, locals.ctx, "site_defaults.get", {});
     const identity = defaultsR.ok
       ? (
@@ -244,7 +263,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
           }
         ).defaults
       : null;
-    if (!identity?.siteName && !identity?.sitePurpose) {
+    const untouched = !identity?.siteName && !identity?.sitePurpose;
+    // Chips render until the FIRST user turn (also across reloads).
+    if (untouched && !messages.some((m) => m.role === "user")) {
+      firstRunSuggestions = FIRST_RUN_SUGGESTIONS;
+    }
+    if (untouched && messages.length === 0) {
       const seeded = await execute(registry, adapter, locals.ctx, "chat.append_message", {
         chatSessionId: activeChat.id,
         role: "assistant",
@@ -462,6 +486,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     activePageId,
     activeChat,
     messages,
+    firstRunSuggestions,
     modules,
     branchEditedModuleIds,
     branchChangeCount,

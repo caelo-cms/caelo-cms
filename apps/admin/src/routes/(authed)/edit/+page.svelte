@@ -504,6 +504,7 @@
   <Overlay
     session={data.activeChat}
     initialMessages={data.messages}
+    firstRunSuggestions={data.firstRunSuggestions}
     modules={data.modules}
     csrfToken={data.csrfToken}
     initialLayout={data.layout}
