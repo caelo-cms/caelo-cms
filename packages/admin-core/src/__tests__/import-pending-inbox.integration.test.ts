@@ -47,8 +47,10 @@ beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
+  // 0003 seeds the Caelo System actor — the only uuid guaranteed to
+  // satisfy audit/actor FKs on a fresh DB.
   const bootstrapCtx: ExecutionContext = {
-    actorId: "00000000-0000-0000-0000-00000000b124",
+    actorId: "00000000-0000-0000-0000-00000000ffff",
     actorKind: "system",
     requestId: "import-inbox-bootstrap",
   };
