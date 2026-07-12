@@ -47,12 +47,12 @@
     if ("noSubmitLoading" in form.dataset) return;
     const btn = e.submitter;
     if (!(btn instanceof HTMLButtonElement) || btn.disabled) return;
-    // Client-side validation vetoed the submit (but use:enhance also
-    // prevents default while the request IS flying — so only skip
-    // when no enhance handler owns the form).
-    if (e.defaultPrevented && !("sveltekitEnhanced" in form.dataset) && form.onsubmit !== null) {
-      return;
-    }
+    // No defaultPrevented check: use:enhance prevents default while
+    // the request IS flying (loading is correct), and SvelteKit sets
+    // no marker to tell that apart from a validation veto. A form
+    // whose own handler vetoes submission opts out via
+    // data-no-submit-loading; the reset paths + failsafe bound the
+    // cost of a rare false positive.
     btn.dataset.loading = "true";
     btn.disabled = true;
     btn.setAttribute("aria-busy", "true");
