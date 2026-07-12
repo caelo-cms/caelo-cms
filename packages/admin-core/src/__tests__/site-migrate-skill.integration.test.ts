@@ -57,8 +57,10 @@ describe("site-migrate skill row (#188)", () => {
     expect(b).toContain("inspect_external_page");
     expect(b).toContain("screenshot_external_page");
     expect(b).toContain("always look at the real site first");
-    // Exactly one fork question.
-    expect(b).toContain("exactly ONE question");
+    // One decision at a time; fork + scope are clickable choices.
+    expect(b).toContain("0. NO URL YET");
+    expect(b).toContain("offer_choices");
+    expect(b).toContain("Full redesign");
     // §11.A two-step contract — chat-first since 0121, strip-anchored
     // since 0122: the Approve click lives on the proposal card /
     // pending strip right above the chat input, never an admin page.
@@ -75,7 +77,7 @@ describe("site-migrate skill row (#188)", () => {
     expect(b).toContain("WAIT for the answer");
     expect(b).toContain("never queue a proposal in the same message");
     expect(b).toContain("AI budget");
-    expect(b).toContain("pilot");
+    expect(b).toContain("Pilot first");
     // Both fork branches route somewhere real.
     expect(b).toContain("compose_from_import");
     expect(b).toContain("site-genesis");

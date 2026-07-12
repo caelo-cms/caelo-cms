@@ -18,6 +18,7 @@
 
   import StreamingMarkdown from "../StreamingMarkdown.svelte";
   import BulkOpCard from "./BulkOpCard.svelte";
+import ChoiceCard from "./ChoiceCard.svelte";
   import EditModuleCard from "./EditModuleCard.svelte";
   import FindResultsCard from "./FindResultsCard.svelte";
   import ProposeCard from "./ProposeCard.svelte";
@@ -36,8 +37,10 @@
     csrfToken?: string;
     /** v0.2.75 — propagated to ProposeCard's Approve. */
     onApproved?: (info: { proposalId: string; kind: string }) => void;
+    /** offer_choices → the clicked option posts back as the operator's message. */
+    onChoose?: (answer: string) => void;
   }
-  let { name, content, ok, args = {}, csrfToken, onApproved }: Props = $props();
+  let { name, content, ok, args = {}, csrfToken, onApproved, onChoose }: Props = $props();
 
   // Domain-prefix bucketing for the propose tools (25 of them across
   // 13 domains; one card handles all).
@@ -73,6 +76,8 @@
   </div>
 {:else if isPropose}
   <ProposeCard {name} {content} {args} {csrfToken} {onApproved} />
+{:else if name === "offer_choices"}
+  <ChoiceCard {content} {onChoose} />
 {:else if name === "edit_module"}
   <EditModuleCard {content} {args} />
 {:else if isBulk}
