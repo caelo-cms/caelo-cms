@@ -10,9 +10,20 @@
  *        - the new chat session id,
  *        - excludedToolNames = {spawn_subagent, spawn_subagents}
  *          (depth cap = 1, expressed as plain configuration),
+ *        - allowedToolNames from the spec (issue #264 — hard narrowing,
+ *          validated against live tool names before the spawn),
+ *        - chatBranchIdOverride = the PARENT chat's branch (issue #264 —
+ *          the subagent reads and writes the orchestrator's preview
+ *          branch, so its edits are visible/publishable/undoable from
+ *          the parent chat; the child session's own branch stays unused),
  *        - parent attribution on aiCtx (parent_chat_session_id +
  *          parent_ai_call_id flow into ai_calls writes),
  *      and consumes the AsyncIterable to completion (or timeout).
+ *
+ *   The child starts with a FRESH context: its transcript is just the
+ *   parent-authored task message — parent history is never inherited.
+ *   Task briefs must therefore be self-contained (ids, ground-truth
+ *   fetch instructions, return-shape contract).
  *   3. Reads the subagent's final assistant message via chat.get_session.
  *   4. Parses against the spec's expectedReturnShape.
  *   5. Persists a subagent_runs metadata row.
@@ -113,6 +124,29 @@ async function runOneSubagent(
     };
   }
 
+  // issue #264 — validate the per-spawn allowlist BEFORE creating the
+  // child session. It is a hard filter in the child's tool catalogue
+  // (no zero-match fallback there — see buildToolCatalogue), so an
+  // allowlist that matches no live tool would strand the subagent with
+  // zero tools. Fail here with the fix in the message instead.
+  if (spec.allowedToolNames && spec.allowedToolNames.length > 0 && toolCtx.tools) {
+    const live = spec.allowedToolNames.filter((n) => toolCtx.tools?.get(n) !== undefined);
+    if (live.length === 0) {
+      return {
+        role: spec.role,
+        status: "errored",
+        resultJson: null,
+        costMicrocents: 0,
+        durationMs: Date.now() - startedAt,
+        subagentChatSessionId: "",
+        errorMessage:
+          `allowedToolNames matched no live tool: [${spec.allowedToolNames.join(", ")}]. ` +
+          "Use AI tool names (e.g. edit_module, set_page_module_content, list_pages), not Query API op names " +
+          "(pages.get, modules.update). Omit allowedToolNames to grant the full catalogue minus the spawn tools.",
+      };
+    }
+  }
+
   // 1. Create ephemeral chat session for the subagent.
   const sessionR = await execute(
     toolCtx.registry,
@@ -183,6 +217,14 @@ async function runOneSubagent(
       aiCtx: childAiCtx,
       humanCtx: childHumanCtx,
       excludedToolNames: EXCLUDED_FOR_CHILD,
+      // issue #264 — per-spawn narrowing (hard filter, validated above).
+      ...(spec.allowedToolNames && spec.allowedToolNames.length > 0
+        ? { allowedToolNames: new Set(spec.allowedToolNames) }
+        : {}),
+      // issue #264 — the child works ON THE PARENT'S BRANCH so its
+      // reads see the orchestrator's branched entities and its writes
+      // land where the operator previews, publishes, and undoes.
+      ...(toolCtx.chatBranchId ? { chatBranchIdOverride: toolCtx.chatBranchId } : {}),
       // P10.5 #3 — pre-emptive cap inside the child's chat-runner.
       costCapMicrocents: spec.maxCostMicrocents,
       abortSignal: controller.signal,
@@ -378,8 +420,10 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
   name: "spawn_subagent",
   description:
     "Spawn ONE subagent to take a fresh, focused angle on a task — its own context window + tool catalogue + auto-engaged skill. The subagent's matcher engages whichever skill its task wording scores highest against (e.g. role='qa', task='QA the new article' → engages qa-check). " +
-    "Use spawn_subagents (plural) when you need MULTIPLE angles in parallel. Single is for one-off deeper-research tasks where you don't have multiple to fan out. " +
-    "BLOCKS until the subagent finishes (typical: 5-30s). Returns the subagent's parsed verdict + cost + duration. Subagents are read-only by default (allowedToolNames defaults exclude writes). " +
+    "Use spawn_subagents (plural) when you need MULTIPLE angles in parallel. Single is for one-off focused tasks — deeper research, or a bounded WRITE task like rebuilding one page cluster during a migration. " +
+    "BLOCKS until the subagent finishes. Returns the subagent's parsed result + cost + duration. " +
+    "The subagent starts with a FRESH context — it knows NOTHING about this chat. Its `task` must be fully self-contained (ids, facts, fetch instructions, return-shape contract). It works on THIS chat's preview branch, so its edits show up in this chat's preview/publish/undo. " +
+    "TOOL ACCESS: by default the subagent gets the full tool catalogue minus the spawn tools (it CAN write). Pass `allowedToolNames` (AI tool names, e.g. list_pages, edit_module) to narrow it, e.g. to read-only tools for review tasks. " +
     "DO NOT use for one-line edits or quick lookups — use a regular tool. Subagents earn their cost when work is multi-step + needs an isolated reasoning context. " +
     // v0.2.68 — explicit return-shape schemas. Pre-v0.2.68 the AI saw
     // only the enum names and had to guess the JSON shape; mismatches
@@ -388,8 +432,9 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
     "RETURN-SHAPE CONTRACT — when you set `expectedReturnShape`, you MUST include the matching JSON instruction VERBATIM in the `task` field so the subagent returns the right structure: " +
     '"verdict" → subagent must return JSON: {pass: boolean, issues: (string|object)[], suggestions?: string[]}. Use for QA / audit / review tasks ("does X meet Y criteria?"). ' +
     '"tree" → subagent must return JSON: {tree: any[], rationale?: string}. Use for hierarchical-structure tasks (sitemap, nav tree, IA outline). ' +
+    '"rebuild" → subagent must return JSON: {pages: [{pageId?: uuid, slug?: string, status: "rebuilt"|"skipped"|"failed", notes?: string}], contentNotes?: string[], skipped?: [{item: string, reason: string}], summary?: string}. Use for migration page-rebuild tasks — the compact per-page summary is all that enters your context. ' +
     '"freeform" → subagent returns either {text: "..."} JSON or raw text (auto-wrapped). Use when the response is prose / narrative without a fixed structure. ' +
-    "When in doubt, pick `freeform` — the parse can't fail. Pick `verdict` or `tree` only when you've explicitly told the subagent to return that shape in the task prompt.",
+    "When in doubt, pick `freeform` — the parse can't fail. Pick `verdict`, `tree`, or `rebuild` only when you've explicitly told the subagent to return that shape in the task prompt.",
   schema: spawnSubagentToolInput,
   inputSchema: {
     type: "object",
@@ -407,9 +452,9 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
       allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
       expectedReturnShape: {
         type: "string",
-        enum: ["verdict", "tree", "freeform"],
+        enum: ["verdict", "tree", "freeform", "rebuild"],
         description:
-          "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; freeform={text:string} or raw text. PICK FREEFORM unless you're explicitly instructing the subagent to emit verdict/tree JSON.",
+          "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or raw text. PICK FREEFORM unless you're explicitly instructing the subagent to emit verdict/tree/rebuild JSON.",
       },
       maxCostMicrocents: { type: "integer", minimum: 0 },
       timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
@@ -431,12 +476,13 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
   description:
     "Spawn MULTIPLE subagents in parallel. Each subagent gets its own context window + auto-engaged skill (matcher fires inside each subagent based on its task wording). All subagents run concurrently; this tool BLOCKS until all finish. " +
     "Use this when a task benefits from multiple angles in parallel — e.g. drafting an article and validating it via QA + legal + brand-voice review (3 parallel verdicts), or auditing a structure via a current-state auditor + a fresh-proposal generator (2 parallel angles). " +
-    "Returns ONE bundled tool result with each subagent's parsed verdict + cost + duration, keeping the prompt-cache prefix clean. Subagents are read-only by default. " +
+    "Returns ONE bundled tool result with each subagent's parsed verdict + cost + duration, keeping the prompt-cache prefix clean. Each subagent starts FRESH (self-contained task required) and gets the full catalogue minus the spawn tools unless narrowed via allowedToolNames. " +
     "Cap: 8 parallel subagents per call. Each subagent has its own per-spawn cost cap (default $0.50) + timeout (default 60s); the batch overall is capped at $2.00 unless overridden via env. " +
     // v0.2.68 — same return-shape guidance as spawn_subagent.
     "RETURN-SHAPE CONTRACT (per subagent) — when you set `expectedReturnShape`, you MUST include the matching JSON instruction VERBATIM in that subagent's `task`: " +
     '"verdict" → {pass: boolean, issues: (string|object)[], suggestions?: string[]}; ' +
     '"tree" → {tree: any[], rationale?: string}; ' +
+    '"rebuild" → {pages: [{pageId?, slug?, status: "rebuilt"|"skipped"|"failed", notes?}], contentNotes?: string[], skipped?: [{item, reason}], summary?: string}; ' +
     '"freeform" → {text: string} or raw text. ' +
     "When in doubt, pick `freeform` per-subagent.",
   schema: spawnSubagentsToolInput,
@@ -465,9 +511,9 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
             allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
             expectedReturnShape: {
               type: "string",
-              enum: ["verdict", "tree", "freeform"],
+              enum: ["verdict", "tree", "freeform", "rebuild"],
               description:
-                "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; freeform={text:string} or raw. PICK FREEFORM when not explicitly instructing the subagent to emit verdict/tree JSON.",
+                "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or raw. PICK FREEFORM when not explicitly instructing the subagent to emit verdict/tree/rebuild JSON.",
             },
             maxCostMicrocents: { type: "integer", minimum: 0 },
             timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },

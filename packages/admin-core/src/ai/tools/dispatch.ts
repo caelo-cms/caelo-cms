@@ -32,6 +32,15 @@ export type SpawnChildChatTurn = (input: {
   readonly aiCtx: ExecutionContext;
   readonly humanCtx: ExecutionContext;
   readonly excludedToolNames: ReadonlySet<string>;
+  /** issue #264 — per-spawn tool allowlist propagated to runChatTurn (hard filter). */
+  readonly allowedToolNames?: ReadonlySet<string>;
+  /**
+   * issue #264 — the PARENT chat's branch id. The child turn runs its
+   * reads/writes/snapshots on this branch (see
+   * `ChatRunnerOptions.chatBranchIdOverride`) so subagent work shares
+   * the orchestrator's preview/publish/undo scope.
+   */
+  readonly chatBranchIdOverride?: string;
   /** P10.5 #3 — per-spawn cost cap propagated to runChatTurn. */
   readonly costCapMicrocents?: number;
   readonly abortSignal?: AbortSignal;

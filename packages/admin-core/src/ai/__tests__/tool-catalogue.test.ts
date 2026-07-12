@@ -123,4 +123,50 @@ describe("buildToolCatalogue", () => {
     });
     expect(result.map((t) => t.name)).toEqual(["edit_module"]);
   });
+
+  it("issue #264: spawnAllowed narrows the catalogue as a hard filter", () => {
+    const tools = registry("edit_module", "add_module_to_page", "list_pages");
+    const result = buildToolCatalogue({
+      tools,
+      toolDescribeState: state,
+      allowedToolNames: null,
+      engagedSkills: [],
+      excluded: undefined,
+      spawnAllowed: new Set(["list_pages"]),
+      chatSessionId,
+    });
+    expect(result.map((t) => t.name)).toEqual(["list_pages"]);
+  });
+
+  it("issue #264: spawnAllowed gets NO zero-match fallback (unlike the skill allowlist)", () => {
+    // The spawn handler validates the allowlist against live tool names
+    // before the child turn starts, so a zero-match here is an upstream
+    // bug — widening back to the full catalogue would silently grant
+    // write tools to a subagent the parent asked to narrow.
+    const tools = registry("edit_module", "add_module_to_page");
+    const result = buildToolCatalogue({
+      tools,
+      toolDescribeState: state,
+      allowedToolNames: null,
+      engagedSkills: [],
+      excluded: undefined,
+      spawnAllowed: new Set(["pages.list"]),
+      chatSessionId,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("issue #264: spawnAllowed composes with exclusion and the skill allowlist", () => {
+    const tools = registry("edit_module", "list_pages", "spawn_subagent");
+    const result = buildToolCatalogue({
+      tools,
+      toolDescribeState: state,
+      allowedToolNames: new Set(["edit_module", "list_pages", "spawn_subagent"]),
+      engagedSkills: [],
+      excluded: new Set(["spawn_subagent"]),
+      spawnAllowed: new Set(["list_pages", "spawn_subagent"]),
+      chatSessionId,
+    });
+    expect(result.map((t) => t.name)).toEqual(["list_pages"]);
+  });
 });

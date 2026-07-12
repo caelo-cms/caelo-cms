@@ -71,6 +71,80 @@ describe("parseSubagentResult — tree", () => {
   });
 });
 
+describe("parseSubagentResult — rebuild (issue #264)", () => {
+  it("validates a full migration-batch summary", () => {
+    const text = JSON.stringify({
+      pages: [
+        {
+          pageId: "11111111-1111-4111-8111-222222222222",
+          slug: "pricing",
+          status: "rebuilt",
+          notes: "table modernised; footnote folded into caption",
+        },
+        { slug: "pricing-archive", status: "skipped", notes: "operator marked obsolete" },
+      ],
+      contentNotes: ["source hero carried a rotating quote widget; kept the first quote only"],
+      skipped: [{ item: "legacy price calculator embed", reason: "third-party script, no data" }],
+      summary: "2-page batch: 1 rebuilt, 1 skipped.",
+    });
+    const r = parseSubagentResult(text, "rebuild");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.shape).toBe("rebuild");
+    if (r.shape !== "rebuild") return;
+    expect(r.value.pages).toHaveLength(2);
+    expect(r.value.pages[0]?.status).toBe("rebuilt");
+    expect(r.value.skipped[0]?.reason).toContain("third-party");
+  });
+
+  it("defaults contentNotes/skipped/summary when omitted", () => {
+    const text = `\`\`\`json\n${JSON.stringify({ pages: [{ slug: "home", status: "rebuilt" }] })}\n\`\`\``;
+    const r = parseSubagentResult(text, "rebuild");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    if (r.shape !== "rebuild") return;
+    expect(r.value.contentNotes).toEqual([]);
+    expect(r.value.skipped).toEqual([]);
+    expect(r.value.summary).toBe("");
+  });
+
+  it("rejects an empty pages array — a rebuild subagent must account for its batch", () => {
+    const r = parseSubagentResult(JSON.stringify({ pages: [] }), "rebuild");
+    expect(r.ok).toBe(false);
+  });
+
+  it("names the expected shape + observed keys on mismatch", () => {
+    const r = parseSubagentResult(JSON.stringify({ pass: true, issues: [] }), "rebuild");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("rebuild shape mismatch");
+    expect(r.error).toContain("pass");
+  });
+
+  it("rejects an out-of-enum page status", () => {
+    const r = parseSubagentResult(
+      JSON.stringify({ pages: [{ slug: "home", status: "done" }] }),
+      "rebuild",
+    );
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("subagentSpec — rebuild shape accepted", () => {
+  it("accepts expectedReturnShape rebuild with migration-scale caps", () => {
+    const r = subagentSpec.safeParse({
+      role: "rebuild:blog",
+      task: "REBUILD TASK — rebuild the blog cluster",
+      expectedReturnShape: "rebuild",
+      timeoutMs: 600_000,
+      maxCostMicrocents: 100_000_000,
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.expectedReturnShape).toBe("rebuild");
+  });
+});
+
 describe("parseSubagentResult — freeform", () => {
   it("accepts {text: ...} JSON", () => {
     const r = parseSubagentResult(JSON.stringify({ text: "summary here" }), "freeform");

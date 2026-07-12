@@ -17,6 +17,7 @@
  *       verdict ({pass, issues[], suggestions[]})
  *       tree    ({tree: [...], rationale})
  *       freeform ({text})
+ *       rebuild ({pages[], contentNotes[], skipped[], summary})
  *   - parseSubagentResult — pulls JSON out of the subagent's final
  *     assistant message (handles ```json fences) and validates against
  *     the requested shape.
@@ -24,7 +25,7 @@
 
 import { z } from "zod";
 
-const expectedReturnShape = z.enum(["verdict", "tree", "freeform"]);
+const expectedReturnShape = z.enum(["verdict", "tree", "freeform", "rebuild"]);
 export type ExpectedReturnShape = z.infer<typeof expectedReturnShape>;
 
 /**
@@ -105,6 +106,50 @@ export const freeformReturnShape = z
   .strict();
 export type FreeformReturn = z.infer<typeof freeformReturnShape>;
 
+/**
+ * issue #264 — compact per-page rebuild summary for migration fan-out
+ * subagents. The orchestrator chat's context grows by THIS shape only
+ * (never by the subagent's full transcript), so it is deliberately
+ * bounded: per-page status + short notes, deliberate omissions with a
+ * reason, and a one-paragraph summary. `pageId`/`slug` are both
+ * optional because a subagent that failed before resolving a page can
+ * still report the slug it was briefed with (or vice versa).
+ */
+export const rebuildReturnShape = z
+  .object({
+    pages: z
+      .array(
+        z
+          .object({
+            pageId: z.string().uuid().optional(),
+            slug: z.string().min(1).max(500).optional(),
+            status: z.enum(["rebuilt", "skipped", "failed"]),
+            /** Content-completeness note: what was dropped/merged and why, or why skipped/failed. */
+            notes: z.string().max(2000).optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(100),
+    /** Cross-page content-completeness observations (e.g. "source pricing table had a footnote row I folded into the caption"). */
+    contentNotes: z.array(z.string().min(1).max(2000)).max(50).default([]),
+    /** Items deliberately left out — the orchestrator relays these verbatim. */
+    skipped: z
+      .array(
+        z
+          .object({
+            item: z.string().min(1).max(500),
+            reason: z.string().min(1).max(1000),
+          })
+          .strict(),
+      )
+      .max(100)
+      .default([]),
+    summary: z.string().max(4000).default(""),
+  })
+  .strict();
+export type RebuildReturn = z.infer<typeof rebuildReturnShape>;
+
 // ---------------------------------------------------------------------
 // Result parser — handles `````json {…} ````` fences + raw JSON.
 // ---------------------------------------------------------------------
@@ -155,7 +200,8 @@ function stripFences(text: string): string {
 export type ParseSuccess =
   | { ok: true; shape: "verdict"; value: VerdictReturn }
   | { ok: true; shape: "tree"; value: TreeReturn }
-  | { ok: true; shape: "freeform"; value: FreeformReturn };
+  | { ok: true; shape: "freeform"; value: FreeformReturn }
+  | { ok: true; shape: "rebuild"; value: RebuildReturn };
 
 export type ParseResult = ParseSuccess | { ok: false; error: string };
 
@@ -217,6 +263,19 @@ export function parseSubagentResult(text: string, shape: ExpectedReturnShape): P
       };
     }
     return { ok: true, shape: "verdict", value: validated.data };
+  }
+  if (shape === "rebuild") {
+    const validated = rebuildReturnShape.safeParse(parsed);
+    if (!validated.success) {
+      return {
+        ok: false,
+        error: `rebuild shape mismatch (expected {pages: [{pageId?, slug?, status: "rebuilt"|"skipped"|"failed", notes?}], contentNotes?: string[], skipped?: [{item, reason}], summary?: string}):${observedSummary}; ${validated.error.issues
+          .slice(0, 3)
+          .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+          .join("; ")}`,
+      };
+    }
+    return { ok: true, shape: "rebuild", value: validated.data };
   }
   // tree
   const validated = treeReturnShape.safeParse(parsed);
