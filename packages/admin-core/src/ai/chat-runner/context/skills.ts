@@ -125,7 +125,10 @@ export async function buildSkillsContext(
           rationale: "engaged earlier in this chat",
         };
       });
-    const autoWithSticky = [...autoMatches, ...sticky];
+    // Cap: fresh matches keep their top-K; sticky re-engagements are
+    // bounded so a long chat cannot accumulate an unbounded skill set
+    // (review finding). 8 total is far above any legitimate flow.
+    const autoWithSticky = [...autoMatches, ...sticky].slice(0, 8);
     const manualOverrides: Array<{
       skillId: string;
       slug: string;
@@ -147,6 +150,8 @@ export async function buildSkillsContext(
 
     // Persist the auto-engaged set for the next turn's stickiness.
     // Same raw-adapter deviation as the read above (see file NOTE).
+    // Archived/deleted sessions: the UPDATE simply matches zero rows —
+    // harmless, and the next read starts from an empty set.
     const nextAuto = engagedSkills
       .filter((e) => e.source === "auto")
       .map((e) => ({ skillId: e.skillId, slug: e.slug, displayName: e.displayName }));
