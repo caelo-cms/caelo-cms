@@ -19,6 +19,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { runChatTurn } from "../ai/chat-runner.js";
+import type { ProviderEvent } from "../ai/provider.js";
+import { FixtureProvider } from "../ai/providers/anthropic.js";
+import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -41,6 +45,7 @@ async function wipe(): Promise<void> {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM subagent_runs WHERE role LIKE 'p10_5_test%'`;
       await tx`DELETE FROM chat_sessions WHERE title LIKE '%p10_5_test%' OR subagent_role LIKE 'p10_5_test%'`;
+      await tx`DELETE FROM modules WHERE slug = 'p264-test-mod'`;
     });
   } finally {
     await sql.end();
@@ -197,6 +202,111 @@ describe("subagent ops", () => {
     expect(slugs).toContain("legal-check");
     expect(slugs).toContain("menu-auditor");
     expect(slugs).toContain("page-categorizer");
+  });
+
+  it("issue #264: a child turn with chatBranchIdOverride writes snapshots to the PARENT's branch", async () => {
+    // The migration fan-out depends on this: a write-capable rebuild
+    // subagent must land its snapshots on the orchestrator chat's
+    // branch (preview/publish/undo scope), NOT on the subagent
+    // session's own (unique, otherwise-unused) branch.
+    const seed = await execute(registry, adapter, systemCtx, "modules.create", {
+      slug: "p264-test-mod",
+      displayName: "P264 Hero",
+      html: "<h1>Hero</h1>",
+      fields: [{ name: "headline", kind: "text", label: "Headline" } as never],
+    });
+    if (!seed.ok) throw new Error("module seed failed");
+    const moduleId = (seed.value as { moduleId: string }).moduleId;
+
+    const parent = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      title: "p10_5_test p264 orchestrator",
+    });
+    if (!parent.ok) throw new Error("parent session create failed");
+    const parentBranchId = (parent.value as { chatBranchId: string }).chatBranchId;
+    const parentId = (parent.value as { chatSessionId: string }).chatSessionId;
+
+    const child = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      title: "[subagent] p10_5_test p264 rebuild",
+      subagentRole: "p10_5_test_rebuild",
+      parentChatSessionId: parentId,
+    });
+    if (!child.ok) throw new Error("child session create failed");
+    const childId = (child.value as { chatSessionId: string }).chatSessionId;
+    const childOwnBranchId = (child.value as { chatBranchId: string }).chatBranchId;
+    expect(childOwnBranchId).not.toBe(parentBranchId);
+
+    // One-tool-call fixture, same pattern as chat-send-edit-module.
+    class QueueProvider extends FixtureProvider {
+      #idx = 0;
+      readonly #queue: ProviderEvent[][] = [
+        [
+          { kind: "text-delta", text: "Rebuilding." },
+          {
+            kind: "tool-call",
+            id: "tu_p264",
+            name: "edit_module",
+            arguments: { moduleId, html: "<h1>Rebuilt hero</h1>" },
+          },
+          { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+          { kind: "done", stopReason: "tool_use" },
+        ],
+        [
+          { kind: "text-delta", text: '{"pages":[],"summary":"done"}' },
+          { kind: "usage", inputTokens: 12, outputTokens: 6, cachedTokens: 0 },
+          { kind: "done", stopReason: "end_turn" },
+        ],
+      ];
+      constructor() {
+        super([], "claude-test-p264");
+      }
+      override async *generate(): AsyncIterable<ProviderEvent> {
+        const events = this.#queue[this.#idx] ?? [
+          { kind: "done" as const, stopReason: "end_turn" as const },
+        ];
+        this.#idx += 1;
+        for (const e of events) yield e;
+      }
+    }
+
+    const aiCtx: ExecutionContext = {
+      actorId: "00000000-0000-0000-0000-000000000a1a",
+      actorKind: "ai",
+      requestId: "p264-subagent-test",
+    };
+    for await (const _ev of runChatTurn(
+      {
+        adapter,
+        registry,
+        provider: new QueueProvider(),
+        tools: createDefaultToolRegistry(),
+        aiCtx,
+        humanCtx: systemCtx,
+        excludedToolNames: new Set(["spawn_subagent", "spawn_subagents"]),
+        chatBranchIdOverride: parentBranchId,
+      },
+      { chatSessionId: childId, content: "REBUILD TASK — rebuild the hero module", chips: [] },
+    )) {
+      // drain
+    }
+
+    const sql = new SQL(ADMIN_URL);
+    try {
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const onParent = (await tx`
+          SELECT count(*)::int AS c FROM site_snapshots
+          WHERE chat_branch_id = ${parentBranchId}::uuid
+        `) as unknown as { c: number }[];
+        expect(onParent[0]?.c).toBeGreaterThanOrEqual(1);
+        const onChildOwn = (await tx`
+          SELECT count(*)::int AS c FROM site_snapshots
+          WHERE chat_branch_id = ${childOwnBranchId}::uuid
+        `) as unknown as { c: number }[];
+        expect(onChildOwn[0]?.c).toBe(0);
+      });
+    } finally {
+      await sql.end();
+    }
   });
 
   it("ai_calls accepts parentChatSessionId + parentAiCallId", async () => {

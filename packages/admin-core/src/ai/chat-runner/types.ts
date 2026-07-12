@@ -82,6 +82,29 @@ export interface ChatRunnerOptions {
    */
   readonly excludedToolNames?: ReadonlySet<string>;
   /**
+   * issue #264 — hard tool allowlist for THIS invocation, intersected
+   * with the catalogue AFTER the engaged-skill allowlist. The
+   * spawn_subagent handler passes the spec's `allowedToolNames` here
+   * so a parent can narrow a subagent to (say) read-only tools. Unlike
+   * a skill allowlist (misconfigured data → warn + fall back), a
+   * zero-match here is a caller error the spawn handler rejects before
+   * the child turn starts. Absent ⇒ no narrowing.
+   */
+  readonly allowedToolNames?: ReadonlySet<string>;
+  /**
+   * issue #264 — run this turn on ANOTHER chat's preview branch
+   * instead of the session's own. spawn_subagent passes the parent
+   * chat's branch so the subagent's reads see the orchestrator's
+   * branched work (e.g. pages compose_from_import created on the
+   * parent branch) and its writes/snapshots land on the branch the
+   * operator will preview, publish, and undo. Without this, a
+   * write-capable subagent works on an invisible branch nobody ever
+   * merges (chat_sessions.chat_branch_id is UNIQUE per session, so
+   * the child cannot simply share the row-level branch id). Absent
+   * for normal turns: the session's own branch is used.
+   */
+  readonly chatBranchIdOverride?: string;
+  /**
    * P10.5 #3 — soft cost cap per turn (microcents). After each
    * provider call's `usage` event, the loop checks accumulated cost;
    * if it exceeds this cap, the loop aborts with stopReason='error'

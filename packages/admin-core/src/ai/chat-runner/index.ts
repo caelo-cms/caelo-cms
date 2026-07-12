@@ -91,9 +91,13 @@ export async function* runChatTurn(
   // v0.9.0 — branch-aware ctx for every downstream read so the AI's
   // pages.list / layouts.list / templates.list / pages.get etc. include the
   // chat's own branched-create entities.
+  // issue #264 — a subagent turn runs on its PARENT chat's branch (the
+  // spawn handler sets chatBranchIdOverride) so its reads and writes
+  // share the orchestrator's preview/publish/undo scope.
+  const chatBranchId = options.chatBranchIdOverride ?? session.session.chatBranchId;
   const humanCtxWithBranch: ExecutionContext = {
     ...humanCtx,
-    chatBranchId: session.session.chatBranchId,
+    chatBranchId,
     chatTaskId: input.chatSessionId,
   };
 
@@ -142,13 +146,15 @@ export async function* runChatTurn(
     activePage: ctx.activePageForState,
   });
 
-  // P10A skill allowlist intersection ∪ P10.5 subagent exclusion.
+  // P10A skill allowlist intersection ∪ P10.5 subagent exclusion
+  // ∪ issue #264 per-spawn allowlist.
   const filteredTools = buildToolCatalogue({
     tools,
     toolDescribeState,
     allowedToolNames: ctx.allowedToolNames,
     engagedSkills: ctx.engagedSkills,
     excluded: options.excludedToolNames,
+    spawnAllowed: options.allowedToolNames,
     chatSessionId: input.chatSessionId,
   });
 
@@ -177,7 +183,7 @@ export async function* runChatTurn(
   // AI calls all run with chatBranchId set so the snapshot lands tagged.
   const aiCtxWithBranch: ExecutionContext = {
     ...aiCtx,
-    chatBranchId: session.session.chatBranchId,
+    chatBranchId,
     chatTaskId: input.chatSessionId,
   };
 
@@ -194,7 +200,7 @@ export async function* runChatTurn(
     options,
     runChatTurn,
     chatSessionId: input.chatSessionId,
-    chatBranchId: session.session.chatBranchId,
+    chatBranchId,
     abortSignal,
     systemChunks,
     filteredTools,

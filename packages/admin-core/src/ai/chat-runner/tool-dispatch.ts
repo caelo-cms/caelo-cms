@@ -125,6 +125,8 @@ export async function* dispatchToolCall(
             aiCtx: childAiCtx,
             humanCtx: childHumanCtx,
             excludedToolNames,
+            allowedToolNames,
+            chatBranchIdOverride,
             costCapMicrocents,
             abortSignal: childAbort,
           }) =>
@@ -140,6 +142,8 @@ export async function* dispatchToolCall(
                 outputCostPerMTok: options.outputCostPerMTok,
                 maxToolLoops: options.maxToolLoops,
                 excludedToolNames,
+                allowedToolNames,
+                chatBranchIdOverride,
                 costCapMicrocents,
                 abortSignal: childAbort,
               },

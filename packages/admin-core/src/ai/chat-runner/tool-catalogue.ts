@@ -2,9 +2,9 @@
 
 /**
  * Tool-catalogue assembly: the skill-allowlist intersection (incl. the
- * issue-#106 zero-match fallback), the P10.5 subagent exclusion, and the
- * P11.5 Tier-1 plugin-tool folding. Extracted verbatim from the pre-split
- * `chat-runner.ts`.
+ * issue-#106 zero-match fallback), the P10.5 subagent exclusion, the
+ * issue-#264 per-spawn allowlist, and the P11.5 Tier-1 plugin-tool
+ * folding. Extracted verbatim from the pre-split `chat-runner.ts`.
  */
 
 import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
@@ -30,10 +30,26 @@ export function buildToolCatalogue(args: {
   allowedToolNames: Set<string> | null;
   engagedSkills: ChatEngagement[];
   excluded: ReadonlySet<string> | undefined;
+  /**
+   * issue #264 — per-spawn allowlist from the parent's subagent spec.
+   * A HARD filter (like `excluded`), never the zero-match fallback the
+   * skill allowlist gets: the spawn handler validates it against live
+   * tool names before the child turn starts, so a zero-match here is
+   * a bug upstream — silently widening back to the full catalogue
+   * would grant write tools to a subagent the parent asked to narrow.
+   */
+  spawnAllowed?: ReadonlySet<string>;
   chatSessionId: string;
 }): FilteredTool[] {
-  const { tools, toolDescribeState, allowedToolNames, engagedSkills, excluded, chatSessionId } =
-    args;
+  const {
+    tools,
+    toolDescribeState,
+    allowedToolNames,
+    engagedSkills,
+    excluded,
+    spawnAllowed,
+    chatSessionId,
+  } = args;
 
   const fullCatalogue = tools.catalogue(toolDescribeState);
   // issue #106 (step-13 root cause) — an engaged skill's allowlist that
@@ -64,6 +80,7 @@ export function buildToolCatalogue(args: {
   const builtinTools = fullCatalogue.filter((t) => {
     if (effectiveAllowed && !effectiveAllowed.has(t.name)) return false;
     if (excluded?.has(t.name)) return false;
+    if (spawnAllowed && !spawnAllowed.has(t.name)) return false;
     return true;
   });
   // P11.5 commit 2 — fold Tier-1 plugin-registered tools into the catalogue.
@@ -74,6 +91,7 @@ export function buildToolCatalogue(args: {
   const pluginTools = pluginToolsRegistry.list().filter(({ spec }) => {
     if (effectiveAllowed && !effectiveAllowed.has(spec.name)) return false;
     if (excluded?.has(spec.name)) return false;
+    if (spawnAllowed && !spawnAllowed.has(spec.name)) return false;
     return true;
   });
   return [
