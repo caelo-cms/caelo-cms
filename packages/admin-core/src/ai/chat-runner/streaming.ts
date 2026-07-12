@@ -12,6 +12,7 @@
  */
 
 import type { AIProvider, ChatMessageInput } from "../provider.js";
+import { isPromptTooLongError } from "./compaction.js";
 import { costCapUsd, microcents } from "./limits.js";
 import type { FilteredTool } from "./tool-catalogue.js";
 import type { AccumulatedToolCall, ClientEvent, StoppingDiagnostics } from "./types.js";
@@ -29,6 +30,13 @@ export interface StreamTurnResult {
   accumulatedThinking: { thinking: string; signature: string }[];
   loopStop: "end_turn" | "tool_use" | "max_tokens" | "error" | "max_loops" | "session_gone";
   providerErr: boolean;
+  /**
+   * issue #261 — set (with the raw provider message) when the provider
+   * rejected the call for exceeding its context window. The raw error
+   * is NOT yielded to the client in that case; loop.ts owns recovery
+   * (compact harder + retry once) and the operator-facing messaging.
+   */
+  promptTooLongMessage: string | null;
   stoppingDiagnostics: StoppingDiagnostics | null;
 }
 
@@ -56,6 +64,7 @@ export async function* streamProviderTurn(args: {
   const accumulatedThinking: { thinking: string; signature: string }[] = [];
   let loopStop: StreamTurnResult["loopStop"] = "end_turn";
   let providerErr = false;
+  let promptTooLongMessage: string | null = null;
   // v0.10.17 — populated by the `done` event when the underlying
   // adapter forwards provider stop metadata. Read by the empty-
   // response detector below to log Anthropic's raw stop_reason etc.
@@ -119,7 +128,13 @@ export async function* streamProviderTurn(args: {
       }
     } else if (ev.kind === "error") {
       providerErr = true;
-      yield { kind: "error", message: ev.message };
+      if (isPromptTooLongError(ev.message)) {
+        // issue #261 — swallow the raw context-overflow error; loop.ts
+        // compacts + retries, and only surfaces a message if that fails.
+        promptTooLongMessage = ev.message;
+      } else {
+        yield { kind: "error", message: ev.message };
+      }
     }
   }
 
@@ -129,6 +144,7 @@ export async function* streamProviderTurn(args: {
     accumulatedThinking,
     loopStop,
     providerErr,
+    promptTooLongMessage,
     stoppingDiagnostics,
   };
 }

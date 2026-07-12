@@ -15,6 +15,14 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import {
+  compactHistory,
+  estimateHistoryTokens,
+  KEEP_RECENT_MESSAGES,
+  parsePromptTooLongLimit,
+  RETRY_TOOL_RESULT_HEAD_CHARS,
+  TOOL_RESULT_HEAD_CHARS,
+} from "./compaction.js";
+import {
   evaluateLoopZeroDiagnostics,
   PASSIVE_ACTION_NUDGE,
   shouldNudgePassiveTurn,
@@ -46,6 +54,12 @@ export interface ToolLoopArgs {
   systemChunks: Parameters<AIProvider["generate"]>[0]["systemPrompt"];
   filteredTools: FilteredTool[];
   initialMessages: ChatMessageInput[];
+  /**
+   * issue #261 — history-size ceiling (estimated tokens) above which
+   * the loop compacts before calling the provider. Threaded from
+   * `resolveCompactionThresholdTokens()` in index.ts.
+   */
+  compactionThresholdTokens: number;
   maxLoops: number;
   maxOutputTokens: number;
   temperature: number | undefined;
@@ -72,9 +86,34 @@ export async function* runToolLoop(
   let lastLoopStop: StopReason | null = null;
   // issue #106 — one-shot guard for the passive-turn nudge.
   let passiveNudged = false;
+  // issue #261 — one-shot guard for the prompt-too-long compact+retry.
+  let promptTooLongRetried = false;
 
   for (let loop = 0; loop < args.maxLoops; loop++) {
     if (aborted()) break;
+
+    // issue #261 — pre-flight compaction. Estimated on every iteration
+    // because tool results appended mid-loop grow the history between
+    // provider calls, not just between operator turns. Compacts the
+    // in-memory provider history only; the persisted transcript is
+    // untouched.
+    const preflightEstimate = estimateHistoryTokens(messages);
+    if (preflightEstimate > args.compactionThresholdTokens) {
+      const compacted = compactHistory(messages, {
+        targetTokens: args.compactionThresholdTokens,
+        keepRecentMessages: KEEP_RECENT_MESSAGES,
+        toolResultHeadChars: TOOL_RESULT_HEAD_CHARS,
+      });
+      messages = compacted.messages;
+      console.error("[chat-runner] history-compacted", {
+        chatSessionId,
+        loop,
+        estimatedTokensBefore: compacted.estimatedTokensBefore,
+        estimatedTokensAfter: compacted.estimatedTokensAfter,
+        toolResultsTruncated: compacted.toolResultsTruncated,
+        summarizedMessages: compacted.summarizedMessages,
+      });
+    }
 
     const {
       accumulatedText,
@@ -82,6 +121,7 @@ export async function* runToolLoop(
       accumulatedThinking,
       loopStop,
       providerErr,
+      promptTooLongMessage,
       stoppingDiagnostics,
     } = yield* streamProviderTurn({
       provider,
@@ -98,6 +138,69 @@ export async function* runToolLoop(
       outputCost: args.outputCost,
     });
     if (providerErr) {
+      if (promptTooLongMessage !== null) {
+        if (!promptTooLongRetried) {
+          // issue #261 — the estimator undercounted (system prompt +
+          // tool catalogue aren't in the history estimate, and chars/4
+          // is rough). Compact HARDER than pre-flight: target half of
+          // the current estimate — guaranteed shrink regardless of
+          // estimator error — capped at half the ceiling the provider
+          // reported, so small-window models get a fitting target too.
+          promptTooLongRetried = true;
+          const reportedLimit = parsePromptTooLongLimit(promptTooLongMessage);
+          const retryTarget = Math.floor(
+            Math.min(
+              estimateHistoryTokens(messages) / 2,
+              reportedLimit !== null ? reportedLimit / 2 : Number.POSITIVE_INFINITY,
+            ),
+          );
+          const compacted = compactHistory(messages, {
+            targetTokens: retryTarget,
+            keepRecentMessages: KEEP_RECENT_MESSAGES,
+            toolResultHeadChars: RETRY_TOOL_RESULT_HEAD_CHARS,
+          });
+          messages = compacted.messages;
+          console.error("[chat-runner] prompt-too-long-retry", {
+            chatSessionId,
+            loop,
+            providerMessage: promptTooLongMessage,
+            retryTarget,
+            estimatedTokensBefore: compacted.estimatedTokensBefore,
+            estimatedTokensAfter: compacted.estimatedTokensAfter,
+            toolResultsTruncated: compacted.toolResultsTruncated,
+            summarizedMessages: compacted.summarizedMessages,
+          });
+          // The retry replaces the failed call — don't burn a loop slot
+          // on a turn the model never produced.
+          loop--;
+          continue;
+        }
+        // Retry already spent and the provider still rejects: tell the
+        // operator what happened + what to do, in the transcript, so
+        // the session isn't run #7's silent dead end.
+        const notice =
+          "This conversation exceeded the AI model's context limit. I compacted the older " +
+          "history and retried, but the request still did not fit. The session history has " +
+          "been compacted — please send your message again; if it still fails, start a new " +
+          "chat for the next task.";
+        console.error("[chat-runner] prompt-too-long-unrecovered", {
+          chatSessionId,
+          loop,
+          providerMessage: promptTooLongMessage,
+        });
+        yield { kind: "text-delta", text: notice };
+        const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+          chatSessionId,
+          role: "assistant",
+          content: notice,
+          status: "complete",
+        });
+        if (noticeSave.ok) {
+          lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+          yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
+        }
+        yield { kind: "error", message: notice };
+      }
       succeeded = false;
       stopReason = "error";
       break;
