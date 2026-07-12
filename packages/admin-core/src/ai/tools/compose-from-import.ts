@@ -60,6 +60,7 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
     }
     const v = r.value as {
       themeTokensApplied: number;
+      designTokenSource: "sampled" | "extractor" | "none";
       layoutId: string;
       templateId: string;
       templatesByCluster: Record<string, string>;
@@ -78,6 +79,13 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
       ok: true,
       content: [
         `composed import run: theme=${v.themeTokensApplied} tokens, layout=${v.layoutId}, ${Object.keys(v.templatesByCluster).length} template(s) by cluster [${clusterList}], pages=${v.pageIds.length} created, redirects=${v.redirectsCreated} (old URLs 301 to the new paths)${v.skippedAlreadyAccepted > 0 ? ` (${v.skippedAlreadyAccepted} already accepted, skipped)` : ""}${v.homepageId ? `, homepage=${v.homepageId}` : ""}.`,
+        // issue #247 — tell the model where the theme values came from
+        // so it trusts sampled ground truth instead of guessing.
+        v.designTokenSource === "sampled"
+          ? "Theme tokens came from COMPUTED-STYLE SAMPLES of the rendered source pages (design ground truth, issue #247) — the applied colors, fonts and radii are what the source site actually painted. Use them as-is for theme decisions; do not invent replacement colors or fonts. Per-page samples are on each import page (sampledDesignTokens via imports.get); the site aggregate is in the run report."
+          : v.designTokenSource === "extractor"
+            ? "Theme tokens came from the inline-CSS extractor only (fetch-only crawl — no rendered computed-style samples exist for this run). Treat them as best-effort; verify against the stored source screenshots before making theme decisions."
+            : "",
         v.chromeBound.length > 0
           ? `Site chrome bound at the LAYOUT (issue #253): ${v.chromeBound.join(" + ")} — one shared module each, rendered on every page. Edit via layout tools, never per page.`
           : "",

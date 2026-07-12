@@ -26,6 +26,11 @@ import {
   inventoryGenesisDraft,
   ok,
 } from "@caelo-cms/shared";
+import {
+  flattenSiteDesignTokens,
+  type PageDesignTokens,
+  type SiteDesignTokens,
+} from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -34,6 +39,41 @@ import { resolveChatSessionId } from "./_propose-helpers.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
+
+// issue #247 (WS1) — Zod at the WRITE boundary for sampled design
+// tokens. The shapes mirror @caelo-cms/site-importer's PageDesignTokens
+// / SiteDesignTokens; the z.ZodType annotations make drift a compile
+// error. Read surfaces expose the stored jsonb as z.unknown() (same
+// precedent as import_runs.estimate) so a schema evolution never bricks
+// list/get.
+const tokenFrequency = z.object({ value: z.string().max(500), count: z.number().int().min(1) });
+const pageDesignTokensSchema: z.ZodType<PageDesignTokens> = z.object({
+  palette: z.array(tokenFrequency).max(16),
+  backgrounds: z.array(tokenFrequency).max(16),
+  fontFamilies: z.array(tokenFrequency).max(16),
+  fontSizes: z.array(tokenFrequency).max(16),
+  fontWeights: z.array(tokenFrequency).max(16),
+  radii: z.array(tokenFrequency).max(16),
+  shadows: z.array(tokenFrequency).max(16),
+  roles: z.record(z.string(), z.record(z.string(), z.string().max(500))),
+});
+const siteDesignTokensSchema: z.ZodType<SiteDesignTokens> = z.object({
+  palette: z.array(tokenFrequency).max(16),
+  backgrounds: z.array(tokenFrequency).max(16),
+  fontFamilies: z.array(tokenFrequency).max(16),
+  fontSizes: z.array(tokenFrequency).max(16),
+  fontWeights: z.array(tokenFrequency).max(16),
+  radii: z.array(tokenFrequency).max(16),
+  shadows: z.array(tokenFrequency).max(16),
+  roles: z.record(z.string(), z.record(z.string(), z.string().max(500))),
+  pageCount: z.number().int().min(0),
+});
+
+/** jsonb columns may come back decoded or as a JSON string depending on
+ *  the SQL client path — normalise like `estimate` does. */
+function parseJsonbColumn(raw: unknown): unknown {
+  return typeof raw === "string" ? JSON.parse(raw) : (raw ?? null);
+}
 
 const runRow = z.object({
   id: z.string(),
@@ -81,6 +121,12 @@ const pageRow = z.object({
   stagedScreenshotObjectKey: z.string().nullable(),
   diffStatus: z.enum(["pass", "warn", "fail"]).nullable(),
   diffPct: z.number().nullable(),
+  /** issue #247 — computed-style token summary sampled in the same
+   *  render pass as the source screenshot; null = never sampled
+   *  (fetch-only crawl or capture failure — see screenshot_missing /
+   *  design_tokens_missing notes). Read as unknown (estimate
+   *  precedent); the write op validates the strict shape. */
+  sampledDesignTokens: z.unknown().nullable(),
   acceptedPageId: z.string().nullable(),
   acceptedAt: z.string().nullable(),
   rejectedAt: z.string().nullable(),
@@ -176,6 +222,7 @@ export const getImportRunOp = defineOperation({
              proposed_slug, proposed_title, proposed_modules, proposed_theme_tokens,
              structural_signature, cluster_key, cluster_label,
              screenshot_object_key, staged_screenshot_object_key, diff_status, diff_pct,
+             sampled_design_tokens,
              accepted_page_id::text AS accepted_page_id, accepted_at, rejected_at, created_at
       FROM import_pages
       WHERE run_id = ${input.runId}::uuid
@@ -200,6 +247,7 @@ export const getImportRunOp = defineOperation({
       staged_screenshot_object_key: string | null;
       diff_status: "pass" | "warn" | "fail" | null;
       diff_pct: number | null;
+      sampled_design_tokens: unknown;
       accepted_page_id: string | null;
       accepted_at: string | Date | null;
       rejected_at: string | Date | null;
@@ -222,6 +270,7 @@ export const getImportRunOp = defineOperation({
         stagedScreenshotObjectKey: p.staged_screenshot_object_key,
         diffStatus: p.diff_status,
         diffPct: p.diff_pct,
+        sampledDesignTokens: parseJsonbColumn(p.sampled_design_tokens),
         acceptedPageId: p.accepted_page_id,
         acceptedAt: p.accepted_at
           ? p.accepted_at instanceof Date
@@ -499,6 +548,9 @@ export const updatePageDiffOp = defineOperation({
       screenshotObjectKey: z.string().max(500).optional(),
       /** issue #198 — the rebuilt (staged preview) capture's key. */
       stagedScreenshotObjectKey: z.string().max(500).optional(),
+      /** issue #247 — per-page computed-style token summary, sampled
+       *  in the same render session as the source screenshot. */
+      sampledDesignTokens: pageDesignTokensSchema.optional(),
     })
     .strict(),
   output: z.object({}),
@@ -508,9 +560,50 @@ export const updatePageDiffOp = defineOperation({
          SET diff_status = ${input.diffStatus},
              diff_pct = ${input.diffPct},
              screenshot_object_key = COALESCE(${input.screenshotObjectKey ?? null}, screenshot_object_key),
-             staged_screenshot_object_key = COALESCE(${input.stagedScreenshotObjectKey ?? null}, staged_screenshot_object_key)
+             staged_screenshot_object_key = COALESCE(${input.stagedScreenshotObjectKey ?? null}, staged_screenshot_object_key),
+             -- (::text)::jsonb keeps bun-postgres on the text path (see
+             -- the add_page_notes comment for the double-encode trap).
+             sampled_design_tokens = COALESCE(
+               (${input.sampledDesignTokens ? JSON.stringify(input.sampledDesignTokens) : null}::text)::jsonb,
+               sampled_design_tokens
+             )
        WHERE id = ${input.importPageId}::uuid
     `);
+    return ok({});
+  },
+});
+
+/**
+ * issue #247 — worker writes the run-level design-token aggregate after
+ * the per-page ground-truth captures. `imports.compose_from_run`
+ * prefers this over the extractor's inline-CSS-derived tokens because
+ * computed styles are what the browser actually rendered.
+ */
+export const setRunDesignTokensOp = defineOperation({
+  name: "imports.set_run_design_tokens",
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      siteDesignTokens: siteDesignTokensSchema,
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE import_runs
+         SET site_design_tokens = (${JSON.stringify(input.siteDesignTokens)}::text)::jsonb
+       WHERE id = ${input.runId}::uuid
+       RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    if (rows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.set_run_design_tokens",
+        message: "import run not found",
+      });
+    }
     return ok({});
   },
 });
@@ -903,7 +996,21 @@ export const assignImportPageClusterOp = defineOperation({
   },
 });
 
-const noteCategory = z.enum(["typo", "dead_link", "missing_alt", "thin_content", "improvement"]);
+// issue #247 — `screenshot_missing` / `design_tokens_missing` are
+// SYSTEM-written by the orchestrator's ground-truth capture pass (a
+// page without a source screenshot is UNVERIFIED, loudly — CLAUDE.md §2
+// no-fallbacks). The AI-facing add_import_page_notes tool deliberately
+// keeps the original five: the model reports content findings, it never
+// asserts capture state.
+const noteCategory = z.enum([
+  "typo",
+  "dead_link",
+  "missing_alt",
+  "thin_content",
+  "improvement",
+  "screenshot_missing",
+  "design_tokens_missing",
+]);
 
 /**
  * issue #197 — record findings made while rebuilding a page. Bulk per
@@ -988,6 +1095,13 @@ export const getImportRunReportOp = defineOperation({
     ),
     redirectsCreated: z.number(),
     crawlErrors: z.array(z.object({ url: z.string(), reason: z.string() })),
+    /** issue #247 — pages with NO source screenshot. Each also carries
+     *  a screenshot_missing note; downstream verification (WS4) treats
+     *  them as UNVERIFIED. */
+    pagesMissingScreenshot: z.number(),
+    /** issue #247 — the site-level computed-style token aggregate;
+     *  null when the run never got a Playwright render pass. */
+    siteDesignTokens: z.unknown().nullable(),
     notes: z.array(
       z.object({
         category: noteCategory,
@@ -1001,7 +1115,7 @@ export const getImportRunReportOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
-      SELECT source_url, status, pages_seen, pages_extracted, crawl_state
+      SELECT source_url, status, pages_seen, pages_extracted, crawl_state, site_design_tokens
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as Array<{
       source_url: string;
@@ -1009,6 +1123,7 @@ export const getImportRunReportOp = defineOperation({
       pages_seen: number;
       pages_extracted: number;
       crawl_state: unknown;
+      site_design_tokens: unknown;
     }>;
     const run = runRows[0];
     if (!run) {
@@ -1019,7 +1134,7 @@ export const getImportRunReportOp = defineOperation({
       });
     }
     const pages = (await tx.execute(sql`
-      SELECT source_url, proposed_slug, accepted_page_id,
+      SELECT source_url, proposed_slug, accepted_page_id, screenshot_object_key,
              COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
              cluster_label, notes
       FROM import_pages WHERE run_id = ${input.runId}::uuid
@@ -1028,6 +1143,7 @@ export const getImportRunReportOp = defineOperation({
       source_url: string;
       proposed_slug: string;
       accepted_page_id: string | null;
+      screenshot_object_key: string | null;
       cluster_key: string;
       cluster_label: string | null;
       notes: unknown;
@@ -1108,6 +1224,8 @@ export const getImportRunReportOp = defineOperation({
       })),
       redirectsCreated,
       crawlErrors,
+      pagesMissingScreenshot: pages.filter((p) => p.screenshot_object_key === null).length,
+      siteDesignTokens: parseJsonbColumn(run.site_design_tokens),
       notes: [...byCategory.entries()].map(([category, v]) => ({
         category: category as z.infer<typeof noteCategory>,
         ...v,
@@ -1194,6 +1312,10 @@ export const composeFromImportRunOp = defineOperation({
     .strict(),
   output: z.object({
     themeTokensApplied: z.number().int(),
+    /** issue #247 — where the applied theme values came from:
+     *  'sampled' = computed-style ground truth (extractor as extras),
+     *  'extractor' = inline-CSS fallback only, 'none' = no tokens. */
+    designTokenSource: z.enum(["sampled", "extractor", "none"]),
     layoutId: z.string(),
     /** The homepage cluster's template (first template when no home). */
     templateId: z.string(),
@@ -1214,9 +1336,14 @@ export const composeFromImportRunOp = defineOperation({
   handler: async (ctx, input, tx) => {
     // 1. Run must exist + be reviewable.
     const runRows = (await tx.execute(sql`
-      SELECT id::text AS id, source_url, status
+      SELECT id::text AS id, source_url, status, site_design_tokens
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
-    `)) as unknown as { id: string; source_url: string; status: string }[];
+    `)) as unknown as {
+      id: string;
+      source_url: string;
+      status: string;
+      site_design_tokens: unknown;
+    }[];
     const run = runRows[0];
     if (!run) {
       return err({
@@ -1304,7 +1431,7 @@ export const composeFromImportRunOp = defineOperation({
         tokenCounts[k][v] = (tokenCounts[k][v] ?? 0) + 1;
       }
     }
-    const aggregatedTokens: Array<{ token: string; value: string; scope?: string }> = [];
+    let aggregatedTokens: Array<{ token: string; value: string; scope?: string }> = [];
     for (const [k, valueMap] of Object.entries(tokenCounts)) {
       let bestValue = "";
       let bestCount = -1;
@@ -1333,6 +1460,35 @@ export const composeFromImportRunOp = defineOperation({
           value: bestValue,
           ...(scope ? { scope } : {}),
         });
+      }
+    }
+
+    // 4b. issue #247 (WS1) — prefer SAMPLED tokens over extractor
+    // tokens. The extractor reads inline-CSS :root vars off raw HTML
+    // (best-effort, survives fetch-only crawls); the sampled aggregate
+    // comes from getComputedStyle in a real render — what the browser
+    // actually painted. Merge = extractor map first, sampled tuples
+    // overwrite same-named keys; extractor-only keys survive as extra
+    // context. Stored-but-malformed tokens fail loudly (no-fallbacks
+    // pre-1.0) instead of silently degrading to extractor-only.
+    let designTokenSource: "sampled" | "extractor" | "none" =
+      aggregatedTokens.length > 0 ? "extractor" : "none";
+    const rawSiteTokens = parseJsonbColumn(run.site_design_tokens);
+    if (rawSiteTokens !== null) {
+      const parsedSiteTokens = siteDesignTokensSchema.safeParse(rawSiteTokens);
+      if (!parsedSiteTokens.success) {
+        return err({
+          kind: "HandlerError",
+          operation: "imports.compose_from_run",
+          message: `import_runs.site_design_tokens is malformed (schema drift?): ${parsedSiteTokens.error.message}. Re-run the ground-truth capture or clear the column.`,
+        });
+      }
+      const sampledFlat = flattenSiteDesignTokens(parsedSiteTokens.data);
+      if (sampledFlat.length > 0) {
+        const byToken = new Map(aggregatedTokens.map((t) => [t.token, t]));
+        for (const t of sampledFlat) byToken.set(t.token, t);
+        aggregatedTokens = [...byToken.values()];
+        designTokenSource = "sampled";
       }
     }
 
@@ -1728,6 +1884,7 @@ export const composeFromImportRunOp = defineOperation({
 
     return ok({
       themeTokensApplied: aggregatedTokens.length,
+      designTokenSource,
       layoutId,
       templateId,
       templatesByCluster: Object.fromEntries(templateIdsByCluster),
