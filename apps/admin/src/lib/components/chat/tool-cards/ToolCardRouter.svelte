@@ -80,10 +80,16 @@
 {:else if isFind}
   <FindResultsCard {name} {content} />
 {:else}
-  <!-- Fallback — plain markdown render of the content. Most generic
-       tool shapes look fine here (no_op tools, status checks, etc.). -->
-  <div class="rounded-md bg-emerald-500/5 p-2 text-xs">
-    <span class="font-mono text-[10px] text-muted-foreground">{name}</span>
+  <!-- Fallback — ALWAYS collapsed (operator decision): generic tool
+       output is the AI's working material, not operator reading. The
+       one-liner keeps the progress trace; details are a click away.
+       Interactive cards (Approve buttons, diff Accept/Reject) and
+       failures never take this branch and stay fully visible. -->
+  <details class="rounded-md bg-emerald-500/5 p-2 text-xs" data-testid="tool-card-collapsed">
+    <summary class="cursor-pointer select-none text-muted-foreground">
+      <span class="font-mono text-[10px]">{name.replaceAll("_", " ")}</span>
+      <span class="ml-1 text-[10px]">— done, click for details</span>
+    </summary>
     <StreamingMarkdown text={content} class="mt-1" />
-  </div>
+  </details>
 {/if}

@@ -104,7 +104,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     browser = await pw.chromium.launch({ headless: true });
   } catch (e) {
     console.warn(
-      "[site-importer] Playwright chromium launch failed — install with `bunx playwright install chromium`. Skipping screenshot capture.",
+      "[site-importer] Playwright chromium launch failed — install the repo-pinned build with `bun node_modules/playwright/cli.js install chromium` (bunx may fetch a mismatched registry version). Skipping screenshot capture.",
       e,
     );
     return null;

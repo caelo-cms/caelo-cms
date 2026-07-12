@@ -69,6 +69,11 @@ export interface ChatMessage {
    * the assistant content.
    */
   thinkingText?: string;
+  /** Persisted on tool rows; pairs with an assistant turn's toolCalls
+   *  entry — the reload path derives the tool NAME through it. */
+  toolCallId?: string | null;
+  /** Raw provider tool_calls on assistant rows ({id, name, …}[]). */
+  toolCalls?: unknown;
   /**
    * issue #190 — operator-attached images on user messages. Rendered
    * as thumbnails in the transcript (served from /_caelo/media); the
