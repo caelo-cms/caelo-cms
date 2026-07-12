@@ -82,7 +82,7 @@ export const screenshotExternalPageTool: ToolDefinitionWithHandler<Input> = {
       return {
         ok: false,
         content:
-          "screenshot_external_page UNAVAILABLE: Playwright/Chromium is not installed in this runtime (`bunx playwright install chromium` fixes it on self-hosted installs). Tell the operator you could not visually inspect the site — use `inspect_external_page` for the non-visual fact base instead. Do NOT claim you saw the page.",
+          "screenshot_external_page UNAVAILABLE: Playwright/Chromium is not installed in this runtime (`bun node_modules/playwright/cli.js install chromium` in the repo root fixes it on self-hosted installs — bunx may fetch a version whose browser build differs). Tell the operator you could not visually inspect the site — use `inspect_external_page` for the non-visual fact base instead. Do NOT claim you saw the page.",
       };
     }
     try {
