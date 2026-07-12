@@ -9,7 +9,7 @@ export const proposeRemoveLocaleTool: ToolDefinitionWithHandler<ProposeRemoveLoc
   name: "propose_remove_locale",
   description:
     "Propose removing a locale from the site. " +
-    "TWO-STEP: queues the change; an Owner clicks Approve at /security/locales/pending to apply. " +
+    "TWO-STEP: queues the change; approved on the chat's proposal card (queue: /security/locales/pending). " +
     "Do NOT claim the locale was removed. The proposal preview reports how many pages currently exist in that locale and how many redirects will be needed to avoid broken links — surface that count to the user. " +
     "The default locale cannot be removed; ask the Owner to set a different default first via `propose_set_default_locale`. " +
     "Removal at execute time fails if pages still exist in the locale; tell the user to delete or move those pages first.",
@@ -39,7 +39,7 @@ export const proposeRemoveLocaleTool: ToolDefinitionWithHandler<ProposeRemoveLoc
       content:
         `Queued proposal ${proposalId} to remove locale '${input.code}'. ` +
         `Preview: ${JSON.stringify(preview)}. ` +
-        `An Owner must click Approve at /security/locales/pending to apply.`,
+        `Approve it on the proposal card in this chat (queue: /security/locales/pending).`,
     };
   },
 };

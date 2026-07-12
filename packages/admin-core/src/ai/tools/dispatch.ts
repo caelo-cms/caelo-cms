@@ -477,7 +477,7 @@ export class ToolRegistry {
               ok: true,
               content:
                 `Queued proposal ${proposalId}: ${name} — needs Owner approval (${previewSummary}). ` +
-                `An Owner must click Approve at /security/tool-approvals/pending to apply.`,
+                `Approve it on the proposal card in this chat (queue: /security/tool-approvals/pending).`,
             };
           }
           // Queue insert failed — emit a non-canonical fallback so the

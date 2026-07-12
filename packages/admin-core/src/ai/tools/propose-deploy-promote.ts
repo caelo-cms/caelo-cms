@@ -8,7 +8,7 @@
  * action that affects visitor traffic. Direct AI execute would
  * violate §11.A; instead the AI queues a proposal with a computed
  * preview (build id, page count, file count) and tells the operator
- * to click Approve at /security/deployments/pending.
+ * to approve on the chat's proposal card (queue: /security/deployments/pending).
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -29,7 +29,7 @@ export const proposeDeployPromoteTool: ToolDefinitionWithHandler<Input> = {
   name: "propose_deploy_promote",
   description:
     "Propose promoting one deploy target's latest succeeded build into another target (typically staging → production). " +
-    "TWO-STEP: this only QUEUES the proposal; an Owner must click Approve at /security/deployments/pending to apply. " +
+    "TWO-STEP: this only QUEUES the proposal; approved on the chat's proposal card (queue: /security/deployments/pending). " +
     "DO NOT claim the deploy is live. The tool returns a proposalId + preview (sourceBuildId, pageCount, fileCount); " +
     "tell the operator to approve at the pending queue. Use when the operator says 'ship to production', 'go live', " +
     "'promote staging'. The fromTarget needs at least one succeeded build (run `deploy.trigger` for staging first if not).",
@@ -66,7 +66,7 @@ export const proposeDeployPromoteTool: ToolDefinitionWithHandler<Input> = {
       content:
         `Queued proposal ${v.proposalId}: promote ${input.fromTarget} → ${input.toTarget} ` +
         `(build=${v.preview.sourceBuildId}, pages=${v.preview.pageCount}, files=${v.preview.fileCount}). ` +
-        `An Owner must click Approve at /security/deployments/pending to apply.`,
+        `Approve it on the proposal card in this chat (queue: /security/deployments/pending).`,
     };
   },
 };
@@ -83,7 +83,7 @@ export const proposeDeployRollbackTool: ToolDefinitionWithHandler<RollbackInput>
   name: "propose_deploy_rollback",
   description:
     "Propose rolling back one deploy target to its previous succeeded build. " +
-    "TWO-STEP: this only QUEUES; an Owner must click Approve at /security/deployments/pending. " +
+    "TWO-STEP: this only QUEUES; approved on the chat's proposal card (queue: /security/deployments/pending). " +
     "DO NOT claim the rollback happened. Use when the operator says 'roll back', 'revert prod', 'undo last deploy'.",
   schema: rollbackInputSchema,
   inputSchema: {
@@ -115,7 +115,7 @@ export const proposeDeployRollbackTool: ToolDefinitionWithHandler<RollbackInput>
       content:
         `Queued proposal ${v.proposalId}: rollback ${input.target} ` +
         `(${v.preview.currentBuildId} → ${v.preview.restoreBuildId}). ` +
-        `An Owner must click Approve at /security/deployments/pending to apply.`,
+        `Approve it on the proposal card in this chat (queue: /security/deployments/pending).`,
     };
   },
 };

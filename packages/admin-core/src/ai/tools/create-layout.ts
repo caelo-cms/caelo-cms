@@ -4,7 +4,7 @@
  * P6.7.6 / v0.2.20 — `create_layout`. AI-callable via the propose/
  * execute gate (CLAUDE.md §11.A): this tool calls
  * `layouts.propose_create` which queues a row at status='pending';
- * the Owner clicks Approve at /security/layouts/pending to actually
+ * the operator approves on the chat's proposal card to actually
  * create the layout. AI does NOT claim the layout exists — it tells
  * the operator to approve.
  */
@@ -19,7 +19,7 @@ export const createLayoutTool: ToolDefinitionWithHandler<
 > = {
   name: "create_layout",
   description:
-    "Propose a new layout (site shell). TWO-STEP: this only QUEUES the proposal at /security/layouts/pending; " +
+    "Propose a new layout (site shell). TWO-STEP: this only QUEUES the proposal — approved on the chat's proposal card (queue: /security/layouts/pending); " +
     "an Owner must click Approve to actually create the layout. DO NOT claim the layout exists. " +
     'Use when the user wants a chrome variant that none of the existing layouts cover (e.g. "a campaign layout ' +
     'with a banner and no footer"). After Approve, you can bind templates to it via `set_template_layout` or ' +
@@ -72,7 +72,7 @@ export const createLayoutTool: ToolDefinitionWithHandler<
       ok: true,
       content:
         `Queued proposal ${v.proposalId}: layout-create slug=${input.slug} (${v.preview.blockCount} blocks). ` +
-        `An Owner must click Approve at /security/layouts/pending to apply.`,
+        `Approve it on the proposal card in this chat (queue: /security/layouts/pending).`,
     };
   },
 };

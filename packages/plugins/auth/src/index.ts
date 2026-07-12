@@ -336,7 +336,7 @@ export default definePlugin<PluginContextTier1>({
     /**
      * P12 review-pass #4 — true §11.A propose op. AI calls this; the
      * row lands at status='pending' in `auth_config_proposals`. The
-     * Owner reviews + clicks Approve at /security/auth/pending; the
+     * operator approves on the chat's proposal card (queue: /security/auth/pending); the
      * admin then calls `execute_proposal` which is Owner-gated. AI
      * calling `execute_proposal` directly hits ActorScopeRejected at
      * the registry layer (not enforced here at the plugin level — see
@@ -462,7 +462,7 @@ export default definePlugin<PluginContextTier1>({
       name: "propose_auth_config",
       description:
         "TWO-STEP: propose changes to the auth plugin's config (signupOpen, passwordMinLength). " +
-        "This only QUEUES the proposal — an Owner must click Approve at /security/auth/pending. " +
+        "This only QUEUES the proposal — the operator approves it on the chat's proposal card (queue: /security/auth/pending). " +
         "DO NOT claim the change is live; tell the user to review the queue.",
       operationName: "propose_auth_config",
       inputJsonSchema: {

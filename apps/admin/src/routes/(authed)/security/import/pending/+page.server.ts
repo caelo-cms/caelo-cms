@@ -44,7 +44,11 @@ export const actions: Actions = {
   approve: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
     const form = await request.formData();
-    const runId = form.get("runId");
+    // The chat's ProposeCard posts `proposalId` (the generic §11.A
+    // field name); this queue's native field is `runId`. Accept both —
+    // the inline Approve in the chat IS the primary path (operator
+    // decision: everything happens in chat context).
+    const runId = form.get("runId") ?? form.get("proposalId");
     if (typeof runId !== "string") return fail(400, { error: "runId required" });
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "imports.execute_proposal", {
@@ -56,7 +60,11 @@ export const actions: Actions = {
   reject: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
     const form = await request.formData();
-    const runId = form.get("runId");
+    // The chat's ProposeCard posts `proposalId` (the generic §11.A
+    // field name); this queue's native field is `runId`. Accept both —
+    // the inline Approve in the chat IS the primary path (operator
+    // decision: everything happens in chat context).
+    const runId = form.get("runId") ?? form.get("proposalId");
     const reason = form.get("reason");
     if (typeof runId !== "string") return fail(400, { error: "runId required" });
     const { adapter, registry } = getQueryContext();

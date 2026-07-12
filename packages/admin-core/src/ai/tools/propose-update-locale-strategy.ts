@@ -13,7 +13,7 @@ export const proposeUpdateLocaleStrategyTool: ToolDefinitionWithHandler<ProposeU
     name: "propose_update_locale_strategy",
     description:
       "Propose changing a locale's URL strategy (e.g. 'subdirectory' → 'subdomain'). " +
-      "TWO-STEP: queues the change; an Owner clicks Approve at /security/locales/pending to apply. " +
+      "TWO-STEP: queues the change; approved on the chat's proposal card (queue: /security/locales/pending). " +
       "Do NOT claim the strategy was changed. " +
       "URL strategies: 'none' (no prefix), 'subdirectory' (/de/page), 'subdomain' (de.example.com), 'domain' (example.de). " +
       "Subdomain + domain require a urlHost AND the Advanced URL Routing toggle (Owner enables under /security/locales) AND SSL/DNS/CDN configuration before publish. " +
@@ -49,7 +49,7 @@ export const proposeUpdateLocaleStrategyTool: ToolDefinitionWithHandler<ProposeU
         content:
           `Queued proposal ${proposalId} to change locale '${input.code}' URL strategy to '${input.urlStrategy}'. ` +
           `Preview: ${JSON.stringify(preview)}. ` +
-          `An Owner must click Approve at /security/locales/pending to apply.`,
+          `Approve it on the proposal card in this chat (queue: /security/locales/pending).`,
       };
     },
   };

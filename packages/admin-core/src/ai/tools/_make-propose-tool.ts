@@ -6,7 +6,7 @@
  * Every gated domain in CLAUDE.md §11.A follows the same shape:
  *  1. AI calls `<domain>.propose_<action>(input)` — returns a
  *     `{proposalId, preview}` result.
- *  2. Tool tells the AI: "Queued — Owner clicks Approve at
+ *  2. Tool tells the AI: "Queued — the operator approves on the chat's
  *     /security/<domain>/pending."
  *
  * Each per-domain tool wrapper used to be ~50 LOC of boilerplate; this
@@ -44,7 +44,7 @@ export interface MakeProposeToolArgs<I> {
 export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinitionWithHandler<I> {
   const description =
     `${args.when} ` +
-    `TWO-STEP: this only QUEUES the proposal; an Owner must click Approve at ${args.pendingQueuePath} to apply. ` +
+    `TWO-STEP: this only QUEUES the proposal; the operator approves it on the proposal card RIGHT IN THE CHAT (queue page: ${args.pendingQueuePath}). Point them at the card's Approve button, not at an admin page. ` +
     `DO NOT claim the change is live. The tool returns proposalId + preview; tell the operator to approve at the queue.`;
   return {
     name: args.toolName,
@@ -60,7 +60,7 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
       const summary = args.summarize(input, v.preview);
       return {
         ok: true,
-        content: `Queued proposal ${v.proposalId}: ${summary}. An Owner must click Approve at ${args.pendingQueuePath} to apply.`,
+        content: `Queued proposal ${v.proposalId}: ${summary}. Approve it on the proposal card in this chat (queue: ${args.pendingQueuePath}).`,
       };
     },
   };

@@ -673,7 +673,7 @@ export function formatSiteIdentityBlock(
       "**Route the FIRST conversation by what the operator already has** (issue #187 — the operator answers in chat; never send them to a form or wizard):",
       "",
       "- **Building a whole new site from scratch?** Run Site Genesis instead of composing directly: capture a design brief (`set_site_identity` with `designBrief`), spawn 3 parallel draft subagents for distinct design directions, `save_genesis_draft` each, and let the operator pick at /design/genesis — the site-genesis skill carries the full workflow.",
-      "- **They already have a website** (they name a domain/URL, or say they want to move/migrate/import their site)? That is a MIGRATION, not Genesis. Inspect their site first, then ask ONE question — keep the current design, or redesign — and propose the crawl via `propose_site_import` (the Owner approves at /security/import/pending; never claim the crawl already ran). Do NOT rebuild an existing site from memory or from the operator's description alone.",
+      "- **They already have a website** (they name a domain/URL, or say they want to move/migrate/import their site)? That is a MIGRATION, not Genesis. Inspect their site first, then ask ONE question — keep the current design, or redesign — and propose the crawl via `propose_site_import` (the proposal renders as a card with an Approve button RIGHT IN THIS CHAT — point the operator at that button, never at an admin page, and never claim the crawl already ran). Do NOT rebuild an existing site from memory or from the operator's description alone.",
       "- **They already have a finished design** (a mockup image, a styleguide export, existing HTML)? Ask them to share it in the chat and build on THAT design — do not generate divergent Genesis drafts that discard their asset.",
     ].join("\n");
   }
@@ -840,7 +840,7 @@ export function formatThemeBlock(
     "- `duplicate_theme({sourceSlug, newSlug, newDisplayName})` — clone tokens + assets into an inactive variant.",
     "- `import_theme({themeSlug, body})` — auto-detects DTCG / Style Dictionary / Tailwind 4 / shadcn / loose. `export_theme({themeSlug})` — DTCG out.",
     "",
-    "Gated (each is a §11.A propose/execute; the AI proposes, an Owner clicks Approve at `/security/themes/pending`):",
+    "Gated (each is a §11.A propose/execute; the AI proposes, the operator approves on the proposal card shown right in the chat — queue: `/security/themes/pending`):",
     "- `propose_create_theme({slug, displayName, description, tokens, overrides?})` — YOU compose the complete DTCG `tokens` document from brand context (color + typography + spacing + radius + shadow; primary with real chroma — no presets exist). `description` records why the palette fits. `overrides.primaryColor` triggers a 50–900 OKLCh ramp (each stop `_derived: true`).",
     "- `propose_activate_theme({themeId})` — flips the DB row only. A deploy must be approved separately via `propose_deploy_promote` for the new CSS to ship.",
     "- `propose_delete_theme({themeId})` — inactive themes only.",
