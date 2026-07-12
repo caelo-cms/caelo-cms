@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { type CrawlCheckpoint, type CrawledPage, crawlSite } from "./crawler.js";
+import { type CrawlCheckpoint, type CrawledPage, crawlSite, USER_AGENT } from "./crawler.js";
 import { isPathAllowed, parseRobotsTxt } from "./robots.js";
 import { discoverSitemapUrls, extractLocValues } from "./sitemap.js";
 
@@ -229,5 +229,13 @@ describe("scale (#192)", () => {
     expect(result.pagesCrawled).toBe(1531); // 1 + 30 + 1500
     expect(streamed).toBe(1531);
     expect(result.pages).toHaveLength(0); // memory stayed out of the result
+  });
+});
+
+describe("crawler UA header (#200 determinism run finding)", () => {
+  it("USER_AGENT is pure ASCII — header values reject anything else at the socket layer", () => {
+    for (const ch of USER_AGENT) {
+      expect(ch.charCodeAt(0), `non-ASCII char '${ch}' in USER_AGENT`).toBeLessThan(128);
+    }
   });
 });
