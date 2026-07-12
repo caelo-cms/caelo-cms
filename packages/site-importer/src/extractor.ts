@@ -51,7 +51,7 @@ export function extractTitle(html: string): string {
  * cleanly when the Owner accepts.
  */
 export function extractModulesFromHtml(html: string): ExtractedModule[] {
-  const body = sliceBody(html);
+  const body = stripConsentNoise(sliceBody(html));
   const modules: ExtractedModule[] = [];
 
   const header = sliceTagBlock(body, "header");
@@ -142,6 +142,55 @@ export function extractThemeTokens(html: string): Record<string, string> {
 }
 
 // ---- helpers ----------------------------------------------------------------
+
+/**
+ * Strip cookie-consent / GDPR-banner subtrees from crawled body HTML.
+ *
+ * Live-hit (searchviu migration, 2026-07-12): the source site's
+ * Complianz "Manage Consent" modal was extracted as page CONTENT and
+ * rendered mid-page in every composed draft. Consent chrome is
+ * plugin-injected noise, never operator content. Heuristic: drop any
+ * element whose id/class matches the known consent-plugin fingerprints
+ * or the generic cookie/consent tokens; matching is attribute-scoped,
+ * so body text ABOUT cookies is untouched.
+ */
+const CONSENT_NOISE_PATTERN =
+  /(cmplz|cookiebot|onetrust|borlabs|usercentrics|didomi|klaro|iubenda|cookie-?(banner|notice|consent|law|bar)|consent-?(banner|modal|manager|popup)|gdpr-?(banner|popup))/i;
+
+export function stripConsentNoise(html: string): string {
+  const ranges: Array<[number, number]> = [];
+  let depth = 0;
+  let skipDepth = -1;
+  let start = -1;
+  const parser = new Parser({
+    onopentag(_name, attrs) {
+      depth += 1;
+      if (skipDepth === -1) {
+        const fingerprint = `${attrs.id ?? ""} ${attrs.class ?? ""} ${attrs["data-nosnippet"] ?? ""}`;
+        if (CONSENT_NOISE_PATTERN.test(fingerprint)) {
+          skipDepth = depth;
+          start = parser.startIndex;
+        }
+      }
+    },
+    onclosetag() {
+      if (skipDepth === depth && start >= 0) {
+        ranges.push([start, parser.endIndex + 1]);
+        skipDepth = -1;
+        start = -1;
+      }
+      depth -= 1;
+    },
+  });
+  parser.write(html);
+  parser.end();
+  if (ranges.length === 0) return html;
+  let out = html;
+  for (const [from, to] of ranges.reverse()) {
+    out = out.slice(0, from) + out.slice(to);
+  }
+  return out;
+}
 
 function sliceBody(html: string): string {
   // Linear replacement for the greedy `([\s\S]*)<\/body>` CodeQL flagged as
