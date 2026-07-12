@@ -212,14 +212,14 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
         `) as { kind: string }[];
         const pageChrome = (await tx`
           SELECT count(*)::int AS n FROM page_modules
-          WHERE page_id = ANY(${v.pageIds}::uuid[]) AND block_name IN ('header', 'footer')
+          WHERE page_id = ANY(string_to_array(${v.pageIds.join(",")}, ',')::uuid[]) AND block_name IN ('header', 'footer')
         `) as { n: number }[];
         const tpls = (await tx`
-          SELECT id::text AS id, html FROM templates WHERE id = ANY(${Object.values(v.templatesByCluster)}::uuid[])
+          SELECT id::text AS id, html FROM templates WHERE id = ANY(string_to_array(${Object.values(v.templatesByCluster).join(",")}, ',')::uuid[])
         `) as { id: string; html: string }[];
         const tplChromeBlocks = (await tx`
           SELECT count(*)::int AS n FROM template_blocks
-          WHERE template_id = ANY(${Object.values(v.templatesByCluster)}::uuid[]) AND name IN ('header', 'footer')
+          WHERE template_id = ANY(string_to_array(${Object.values(v.templatesByCluster).join(",")}, ',')::uuid[]) AND name IN ('header', 'footer')
         `) as { n: number }[];
         return { layoutBinds, chromeKinds, pageChrome, tpls, tplChromeBlocks };
       });
