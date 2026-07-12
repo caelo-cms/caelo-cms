@@ -341,12 +341,16 @@
 
   /**
    * issue #228 — live crawl status. After an approved site_import the
-   * panel polls /content/chat/<id>/import-status every 4s: renders the
+   * panel polls /content/chat/<id>/crawl-status every 4s: renders the
    * progress strip above the composer, and when the run reaches
    * ready_for_review posts the continuation nudge itself — the
    * operator never types "check status" to unstick the AI. v1 state
    * is in-memory: a reload drops the poll (documented in #228).
    */
+  // NOTE: none of these identifiers may START with "import" — knip's
+  // svelte script scanner misreads line-leading `import…` declarations
+  // as import statements and loses every symbol reference below them
+  // (html2canvas then reports as an unused dependency).
   interface ImportRunStatus {
     runId: string;
     status: string;
@@ -355,14 +359,14 @@
     maxPages: number;
     errorMessage: string | null;
   }
-  let importRun = $state<ImportRunStatus | null>(null);
-  let importPollTimer: ReturnType<typeof setInterval> | null = null;
+  let crawlRun = $state<ImportRunStatus | null>(null);
+  let crawlPollTimer: ReturnType<typeof setInterval> | null = null;
   let pendingImportNudge = $state<string | null>(null);
 
   function stopImportPolling(): void {
-    if (importPollTimer !== null) {
-      clearInterval(importPollTimer);
-      importPollTimer = null;
+    if (crawlPollTimer !== null) {
+      clearInterval(crawlPollTimer);
+      crawlPollTimer = null;
     }
   }
 
@@ -371,29 +375,29 @@
     const poll = async (): Promise<void> => {
       try {
         const res = await fetch(
-          `/content/chat/${session.id}/import-status?runId=${encodeURIComponent(runId)}`,
+          `/content/chat/${session.id}/crawl-status?runId=${encodeURIComponent(runId)}`,
           { headers: { accept: "application/json" } },
         );
         if (!res.ok) return; // transient — keep polling
         const data = (await res.json()) as ImportRunStatus;
-        importRun = data;
+        crawlRun = data;
         if (data.status === "ready_for_review") {
           stopImportPolling();
-          importRun = null;
+          crawlRun = null;
           pendingImportNudge = `Crawl finished: run ${runId.slice(0, 8)} reached ready_for_review (${data.pagesExtracted} pages staged). Continue with the cluster review.`;
         } else if (data.status === "failed") {
           stopImportPolling();
           pendingImportNudge = `Crawl failed: run ${runId.slice(0, 8)} — ${data.errorMessage ?? "no error message"}. Tell me what happened and what you'll try instead.`;
         } else if (data.status === "completed") {
           stopImportPolling();
-          importRun = null;
+          crawlRun = null;
         }
       } catch {
         // network blip — next tick retries
       }
     };
     void poll();
-    importPollTimer = setInterval(() => void poll(), 4000);
+    crawlPollTimer = setInterval(() => void poll(), 4000);
   }
 
   $effect(() => {
@@ -1672,11 +1676,13 @@
           </div>
         {/if}
 
-        <!-- issue #228 — live crawl progress. Renders while an approved
-             import run is crawling; the panel polls the status and
-             posts the continuation nudge itself when the run is
-             ready. -->
-        {#if importRun && (importRun.status === "crawling" || importRun.status === "proposed")}
+        <!-- issue #228 — live crawl progress. Renders while an
+             approved crawl run is in flight; the panel polls the
+             status and posts the continuation nudge itself when the
+             run is ready. (No line in this file may start with the
+             token "import" — see the NOTE at the crawl-status
+             declarations.) -->
+        {#if crawlRun && (crawlRun.status === "crawling" || crawlRun.status === "proposed")}
           <div
             class="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-2 text-xs"
             data-testid="chat-import-progress"
@@ -1686,22 +1692,22 @@
               aria-hidden="true"
             ></span>
             <span class="font-medium text-sky-700 dark:text-sky-400">
-              {importRun.status === "proposed" ? "Crawler starting…" : "Crawling…"}
+              {crawlRun.status === "proposed" ? "Crawler starting…" : "Crawling…"}
             </span>
             <span class="text-muted-foreground">
-              {importRun.pagesExtracted}/{importRun.maxPages} pages
-              {#if importRun.maxPages > 0}
-                ({Math.min(100, Math.round((importRun.pagesExtracted / importRun.maxPages) * 100))}%)
+              {crawlRun.pagesExtracted}/{crawlRun.maxPages} pages
+              {#if crawlRun.maxPages > 0}
+                ({Math.min(100, Math.round((crawlRun.pagesExtracted / crawlRun.maxPages) * 100))}%)
               {/if}
             </span>
             <span class="ml-auto text-muted-foreground">I'll continue automatically when it's done.</span>
           </div>
-        {:else if importRun && importRun.status === "failed"}
+        {:else if crawlRun && crawlRun.status === "failed"}
           <div
             class="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive"
             data-testid="chat-import-progress"
           >
-            Crawl failed: {importRun.errorMessage ?? "no error message"}
+            Crawl failed: {crawlRun.errorMessage ?? "no error message"}
           </div>
         {/if}
                 <!-- v0.2.63 — Pending proposals strip. Pinned directly ABOVE

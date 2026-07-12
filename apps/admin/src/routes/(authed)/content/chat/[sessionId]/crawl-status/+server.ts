@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #228 — live crawl status for the chat's progress strip.
+ * issue #228 — live crawl status for the chat's progress strip (route deliberately named crawl-status: knip's regex-based svelte script extractor chokes on the substring `import` in .svelte files).
  *
  * After the operator approves a site-import proposal, ChatPanel polls
  * this endpoint (proposalId == runId) to (a) render "Crawling… n/max
