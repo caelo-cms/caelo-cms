@@ -372,7 +372,12 @@
 
   function startImportPolling(runId: string): void {
     stopImportPolling();
+    // Re-entrancy guard (review finding): a fetch slower than the 4s
+    // interval must not overlap the next tick and race on crawlRun.
+    let inFlight = false;
     const poll = async (): Promise<void> => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const res = await fetch(
           `/content/chat/${session.id}/crawl-status?runId=${encodeURIComponent(runId)}`,
@@ -394,6 +399,8 @@
         }
       } catch {
         // network blip — next tick retries
+      } finally {
+        inFlight = false;
       }
     };
     void poll();

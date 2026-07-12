@@ -19,15 +19,17 @@ import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
-export const GET: RequestHandler = async ({ url, locals }) => {
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const GET: RequestHandler = async ({ params, url, locals }) => {
   requirePermission(locals, "content.read");
   if (!locals.user) throw error(401, "Not authenticated");
   const runId = url.searchParams.get("runId");
-  if (!runId) throw error(400, "runId query param required");
+  if (!runId || !UUID_RE.test(runId)) throw error(400, "runId must be a run UUID");
 
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "imports.get", { runId });
-  if (!r.ok) throw error(400, `imports.get failed: ${r.error.kind}`);
+  if (!r.ok) throw error(404, "run not found");
 
   const run = (
     r.value as {
@@ -38,10 +40,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         pagesSeen: number;
         pagesExtracted: number;
         errorMessage: string | null;
+        chatSessionId: string | null;
       } | null;
     }
   ).run;
-  if (!run) throw error(404, "run not found");
+  // Security (review finding): scope the read to THIS chat. Without
+  // the check any content.read user could poll arbitrary runs through
+  // any session id. 404 for both missing and foreign runs — no
+  // existence oracle. Runs proposed outside a chat (null session)
+  // are not readable through this chat-scoped endpoint.
+  if (!run || run.chatSessionId !== params.sessionId) throw error(404, "run not found");
 
   return json({
     runId: run.id,
