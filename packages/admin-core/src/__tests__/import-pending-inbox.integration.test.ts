@@ -23,14 +23,12 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 
-const AI = "00000000-0000-0000-0000-00000000b124";
 const SOURCE_URL = "https://import-inbox-regression.example.com";
+const ACTOR_EMAIL = "import-inbox-actor@example.com";
 
-const systemCtx: ExecutionContext = {
-  actorId: AI,
-  actorKind: "system",
-  requestId: "import-inbox-test",
-};
+// import_runs.proposed_by carries an FK to users — the actor must be
+// a real row (caught by CI's fresh DB; the local run had one by luck).
+let systemCtx: ExecutionContext;
 
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
@@ -38,6 +36,7 @@ async function wipe(): Promise<void> {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM import_runs WHERE source_url = ${SOURCE_URL}`;
+      await tx`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = ${ACTOR_EMAIL})`;
     });
   } finally {
     await sql.end();
@@ -45,14 +44,40 @@ async function wipe(): Promise<void> {
 }
 
 beforeAll(async () => {
-  await wipe();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
+  const bootstrapCtx: ExecutionContext = {
+    actorId: "00000000-0000-0000-0000-00000000b124",
+    actorKind: "system",
+    requestId: "import-inbox-bootstrap",
+  };
+  const created = await execute(registry, adapter, bootstrapCtx, "users.create", {
+    email: ACTOR_EMAIL,
+    password: "import-inbox-pass",
+    displayName: "Import Inbox Actor",
+    roleNames: [],
+  });
+  if (!created.ok) throw new Error(`users.create failed: ${created.error.kind}`);
+  systemCtx = {
+    actorId: (created.value as { userId: string }).userId,
+    actorKind: "system",
+    requestId: "import-inbox-test",
+  };
+  await wipe();
 });
 
 afterAll(async () => {
   await wipe();
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`DELETE FROM users WHERE email = ${ACTOR_EMAIL}`;
+    });
+  } finally {
+    await sql.end();
+  }
   await adapter.close();
 });
 
