@@ -55,6 +55,24 @@ afterAll(async () => {
   await adapter.close();
 });
 
+describe("users.is_setup_complete actor scope", () => {
+  // Regression (2026-07-12): the op was system-only, but /login and
+  // /setup loads execute it with the REQUEST ctx — a human actor
+  // whenever a session cookie is present. The scope rejection plus a
+  // silent `: false` fallback dumped every signed-in visitor of those
+  // pages onto the setup form.
+  it("accepts a human actor", async () => {
+    const humanCtx: ExecutionContext = {
+      actorId: "00000000-0000-0000-0000-00000000fffe",
+      actorKind: "human",
+      requestId: "users-test-human",
+    };
+    const r = await execute(registry, adapter, humanCtx, "users.is_setup_complete", {});
+    expect(r.ok).toBe(true);
+    if (r.ok) expect((r.value as { complete: boolean }).complete).toBe(true);
+  });
+});
+
 describe("users CRUD", () => {
   it("creates a user and lists them back with the assigned roles", async () => {
     const create = await execute(registry, adapter, systemCtx, "users.create", {

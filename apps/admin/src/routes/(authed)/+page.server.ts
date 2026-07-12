@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo-cms/query-api";
-import { redirect } from "@sveltejs/kit";
+import { error, redirect } from "@sveltejs/kit";
 import { getQueryContext } from "$lib/server/query.js";
 import type { PageServerLoad } from "./$types";
 
@@ -9,8 +9,9 @@ export const load: PageServerLoad = async ({ locals }) => {
   const { adapter, registry } = getQueryContext();
   // Route to /setup when there are no users yet; otherwise require login.
   const setup = await execute(registry, adapter, locals.ctx, "users.is_setup_complete", {});
-  const complete = setup.ok ? (setup.value as { complete: boolean }).complete : true;
-  if (!complete) throw redirect(303, "/setup");
+  // CLAUDE.md §2 no-fallbacks: fail loudly instead of guessing.
+  if (!setup.ok) throw error(500, `users.is_setup_complete failed: ${setup.error.kind}`);
+  if (!(setup.value as { complete: boolean }).complete) throw redirect(303, "/setup");
   if (!locals.user) throw redirect(303, "/login");
 
   // P19 — surface "Ramp up your site" hero card while the install has
