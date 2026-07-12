@@ -311,6 +311,10 @@
       ok: true,
       content: "proposal applied",
     });
+    // issue #228 — an approved import starts a background crawl; the
+    // panel tracks it from this moment (polling is not a message, so
+    // it starts regardless of streaming).
+    if (kind === "site_import") startImportPolling(proposalId);
     if (streaming) {
       // Queue for post-stream flush. The $effect below picks it up
       // when streaming → false. Multiple approvals during the same
@@ -334,6 +338,89 @@
   // mid-stream. The $effect below flushes them as a single combined
   // message when streaming ends.
   let pendingApprovalNudges = $state<{ kind: string | undefined; proposalId: string }[]>([]);
+
+  /**
+   * issue #228 — live crawl status. After an approved site_import the
+   * panel polls /content/chat/<id>/crawl-status every 4s: renders the
+   * progress strip above the composer, and when the run reaches
+   * ready_for_review posts the continuation nudge itself — the
+   * operator never types "check status" to unstick the AI. v1 state
+   * is in-memory: a reload drops the poll (documented in #228).
+   */
+  // NOTE: none of these identifiers may START with "import" — knip's
+  // svelte script scanner misreads line-leading `import…` declarations
+  // as import statements and loses every symbol reference below them
+  // (html2canvas then reports as an unused dependency).
+  interface ImportRunStatus {
+    runId: string;
+    status: string;
+    pagesExtracted: number;
+    pagesSeen: number;
+    maxPages: number;
+    errorMessage: string | null;
+  }
+  let crawlRun = $state<ImportRunStatus | null>(null);
+  let crawlPollTimer: ReturnType<typeof setInterval> | null = null;
+  let pendingImportNudge = $state<string | null>(null);
+
+  function stopImportPolling(): void {
+    if (crawlPollTimer !== null) {
+      clearInterval(crawlPollTimer);
+      crawlPollTimer = null;
+    }
+  }
+
+  function startImportPolling(runId: string): void {
+    stopImportPolling();
+    // Re-entrancy guard (review finding): a fetch slower than the 4s
+    // interval must not overlap the next tick and race on crawlRun.
+    let inFlight = false;
+    const poll = async (): Promise<void> => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const res = await fetch(
+          `/content/chat/${session.id}/crawl-status?runId=${encodeURIComponent(runId)}`,
+          { headers: { accept: "application/json" } },
+        );
+        if (!res.ok) return; // transient — keep polling
+        const data = (await res.json()) as ImportRunStatus;
+        crawlRun = data;
+        if (data.status === "ready_for_review") {
+          stopImportPolling();
+          crawlRun = null;
+          pendingImportNudge = `Crawl finished: run ${runId.slice(0, 8)} reached ready_for_review (${data.pagesExtracted} pages staged). Continue with the cluster review.`;
+        } else if (data.status === "failed") {
+          stopImportPolling();
+          pendingImportNudge = `Crawl failed: run ${runId.slice(0, 8)} — ${data.errorMessage ?? "no error message"}. Tell me what happened and what you'll try instead.`;
+        } else if (data.status === "completed") {
+          stopImportPolling();
+          crawlRun = null;
+        }
+      } catch {
+        // network blip — next tick retries
+      } finally {
+        inFlight = false;
+      }
+    };
+    void poll();
+    crawlPollTimer = setInterval(() => void poll(), 4000);
+  }
+
+  $effect(() => {
+    // Flush the import nudge once the stream is idle — same contract
+    // as the approval-nudge queue below.
+    if (streaming) return;
+    if (pendingImportNudge === null) return;
+    if (composer.trim().length > 0) return;
+    const text = pendingImportNudge;
+    pendingImportNudge = null;
+    void sendAutoMessage(text);
+  });
+
+  $effect(() => {
+    return () => stopImportPolling();
+  });
 
   // offer_choices click that landed while the AI was mid-stream —
   // flushed by the effect below, same contract as approval nudges.
@@ -1618,7 +1705,41 @@
           </div>
         {/if}
 
-        <!-- v0.2.63 — Pending proposals strip. Pinned directly ABOVE
+        <!-- issue #228 — live crawl progress. Renders while an
+             approved crawl run is in flight; the panel polls the
+             status and posts the continuation nudge itself when the
+             run is ready. (No line in this file may start with the
+             token "import" — see the NOTE at the crawl-status
+             declarations.) -->
+        {#if crawlRun && (crawlRun.status === "crawling" || crawlRun.status === "proposed")}
+          <div
+            class="flex items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-2 text-xs"
+            data-testid="chat-import-progress"
+          >
+            <span
+              class="inline-block size-3 animate-spin rounded-full border-2 border-sky-600 border-t-transparent motion-reduce:animate-none"
+              aria-hidden="true"
+            ></span>
+            <span class="font-medium text-sky-700 dark:text-sky-400">
+              {crawlRun.status === "proposed" ? "Crawler starting…" : "Crawling…"}
+            </span>
+            <span class="text-muted-foreground">
+              {crawlRun.pagesExtracted}/{crawlRun.maxPages} pages
+              {#if crawlRun.maxPages > 0}
+                ({Math.min(100, Math.round((crawlRun.pagesExtracted / crawlRun.maxPages) * 100))}%)
+              {/if}
+            </span>
+            <span class="ml-auto text-muted-foreground">I'll continue automatically when it's done.</span>
+          </div>
+        {:else if crawlRun && crawlRun.status === "failed"}
+          <div
+            class="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive"
+            data-testid="chat-import-progress"
+          >
+            Crawl failed: {crawlRun.errorMessage ?? "no error message"}
+          </div>
+        {/if}
+                <!-- v0.2.63 — Pending proposals strip. Pinned directly ABOVE
              THE COMPOSER (operator feedback 2026-07-12: at the top of
              the transcript it sat exactly where the eye is NOT while
              reading the newest message — "missed it nearly"). Click
