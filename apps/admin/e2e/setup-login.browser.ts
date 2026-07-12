@@ -47,6 +47,9 @@ test("setup → login → dashboard end-to-end", async ({ page }) => {
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(password);
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL("/", { timeout: 15_000 });
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+  // The signed-in identity renders on the dashboard, not in the
+  // full-screen editor.
+  await page.goto("/");
   await expect(page.getByText(email)).toBeVisible();
 });

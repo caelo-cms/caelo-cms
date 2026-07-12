@@ -45,7 +45,7 @@ test("Owner creates a layout via /security/layouts/new then deletes it", async (
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL("/", { timeout: 15_000 });
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
   await page.goto("/security/layouts");
   await expect(page.getByRole("heading", { name: "Layouts", exact: true })).toBeVisible();

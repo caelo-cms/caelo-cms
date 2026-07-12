@@ -20,7 +20,11 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL("/", { timeout: 15_000 });
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+
+  // Login lands in the live editor now (chat-first); the shell under
+  // test lives on the admin routes — navigate there explicitly.
+  await page.goto("/");
 
   // Sidebar nav contains the expected items for an Owner.
   const sidebar = page.getByRole("navigation", { name: "Main navigation" });

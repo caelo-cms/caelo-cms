@@ -80,15 +80,12 @@ try {
       ON CONFLICT DO NOTHING
     `;
 
-    // P6.7.2 — default homepage. A fresh install with zero pages has
-    // nothing for /edit to render, so the live-edit surface is dead on
-    // first land. Seed a minimal `home` page (idempotent; checks slug
-    // first) so the user sees a real preview the first time they click
-    // "Live edit". Status stays `draft` — nothing publishes yet.
-    const existingHome = (await tx`
-      SELECT id FROM pages WHERE slug = 'home' AND locale = 'en'
-    `) as unknown as { id: string }[];
-    if (!existingHome[0]) {
+    // epic #186 — the seed deliberately creates NO pages anymore: an
+    // empty install is the wanted first-run state (the /edit chat
+    // greets with the onboarding entry points, which the old seeded
+    // home page suppressed). Template + site_defaults still seed so
+    // the create-time resolver has its stored defaults (CLAUDE.md §2).
+    {
       // P6.7.6 — every template binds to a layout. The migration seeded
       // `site-default`; bind home-template to it explicitly so a fresh
       // install (which runs migrations + seed-dev in sequence) has the
@@ -150,55 +147,6 @@ try {
         INSERT INTO template_blocks (template_id, name, display_name, position)
         VALUES (${tplId}::uuid, 'content', 'Content', 0)
         ON CONFLICT (template_id, name) DO NOTHING
-      `;
-
-      const modExisting = (await tx`
-        SELECT id::text AS id FROM modules
-        WHERE slug = 'home-welcome' AND deleted_at IS NULL
-      `) as unknown as { id: string }[];
-      let modId: string;
-      if (modExisting[0]) {
-        modId = modExisting[0].id;
-      } else {
-        const mod = (await tx`
-          INSERT INTO modules (slug, display_name, type, html, css, js)
-          VALUES (
-            'home-welcome',
-            'Welcome',
-            'home-welcome',
-            '<section style="padding:4rem 2rem;text-align:center;font-family:system-ui;"><h1 style="font-size:2.5rem;margin:0 0 1rem;">Welcome to your new Caelo site</h1><p style="color:#666;font-size:1.1rem;margin:0 0 2rem;">Tell the AI what to change. Hold Option + Control + Command and click any element to scope an edit.</p><a href="/about" style="display:inline-block;padding:0.75rem 1.5rem;background:#3b82f6;color:#fff;text-decoration:none;border-radius:6px;font-weight:500;">Learn more</a></section>',
-            '',
-            ''
-          )
-          RETURNING id::text AS id
-        `) as unknown as { id: string }[];
-        const id = mod[0]?.id;
-        if (!id) throw new Error("seed home module returned no row");
-        modId = id;
-      }
-
-      const pg = (await tx`
-        INSERT INTO pages (slug, locale, name, title, template_id, status)
-        VALUES ('home', 'en', 'Home', 'Home', ${tplId}::uuid, 'draft')
-        RETURNING id::text AS id
-      `) as unknown as { id: string }[];
-      const pgId = pg[0]?.id;
-      if (!pgId) throw new Error("seed home page returned no row");
-
-      // v0.12.0 — page_modules.content_instance_id is NOT NULL. Mint a
-      // fresh unsynced content_instance for the seed placement.
-      const seedCi = (await tx`
-        INSERT INTO content_instances (module_id, "values")
-        VALUES (${modId}::uuid, '{}'::jsonb)
-        RETURNING id::text AS id
-      `) as unknown as { id: string }[];
-      const seedCiId = seedCi[0]?.id;
-      if (!seedCiId) throw new Error("seed home content_instance returned no row");
-
-      await tx`
-        INSERT INTO page_modules
-          (page_id, block_name, position, module_id, content_instance_id, sync_mode)
-        VALUES (${pgId}::uuid, 'content', 0, ${modId}::uuid, ${seedCiId}::uuid, 'unsynced')
       `;
     }
 
