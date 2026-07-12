@@ -15,7 +15,7 @@ directory, so every existing import path keeps resolving.
 | Module | Concern |
 |---|---|
 | `index.ts` | Orchestrator (`runChatTurn`) + public re-exports (`runChatTurn`, `isLegitimateTextOnlyTurn`, `ClientEvent`, `ChatRunnerOptions`). |
-| `loop.ts` | The tool loop (`runToolLoop`): stream → persist assistant → passive-turn recovery → dispatch, plus the `max_loops` cap notice. |
+| `loop.ts` | The tool loop (`runToolLoop`): pre-flight history compaction → stream → persist assistant → passive-turn recovery → dispatch, plus the `max_loops` cap notice and the issue-#261 prompt-too-long compact+retry. |
 | `streaming.ts` | `streamProviderTurn`: consumes one `provider.generate(...)` stream, relays text/thinking deltas, accumulates tool calls, tracks usage + soft cost cap + stop diagnostics. |
 | `tool-catalogue.ts` | `buildToolCatalogue`: skill-allowlist intersection (with the issue-#106 zero-match fallback), subagent exclusion, Tier-1 plugin-tool folding. |
 | `tool-dispatch.ts` | `dispatchToolCall`: dedup cache lookup, plugin-vs-builtin routing, live subagent-event streaming, auto-recovery, result caching, multimodal image append. |
@@ -25,6 +25,7 @@ directory, so every existing import path keeps resolving.
 | `context/site.ts` | Layouts, site defaults, site identity blocks (+ raw values for `buildToolDescribeState`). |
 | `context/domains.ts` | Redirects, locales, pending proposals, users, roles, AI providers, domains blocks. |
 | `context/skills.ts` | Skill engagement + allowlist resolution; the post-catalogue blocks (subagents, plugin submissions, plugin promptContext). |
+| `compaction.ts` | issue-#261 pure history compaction: size estimator (chars/4 heuristic), two-stage compactor (truncate old tool results, then digest the oldest span), prompt-too-long error detection. `loop.ts` compacts pre-flight over a threshold and retries ONCE on a live provider context-overflow rejection. |
 | `persistence.ts` | `chat.*` / `ai_memory.*` wrappers: load memory/session, persist user/assistant turns, mark interrupted, record the `ai_calls` row. |
 | `limits.ts` | Cost/token constants + `microcents` / cost helpers. |
 | `passive-turn.ts` | issue-#106 guards: the nudge constant, `isLegitimateTextOnlyTurn`, loop-0 diagnostics, the nudge predicate. |

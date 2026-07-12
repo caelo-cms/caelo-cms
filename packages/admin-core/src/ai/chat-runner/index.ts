@@ -24,6 +24,7 @@ import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
 import { buildToolDescribeState } from "../tools/describe-state.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
+import { resolveCompactionThresholdTokens } from "./compaction.js";
 import { buildPostCatalogueBlocks } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import {
@@ -198,6 +199,8 @@ export async function* runChatTurn(
     systemChunks,
     filteredTools,
     initialMessages: baseMessages,
+    // issue #261 — compaction trigger; env-tunable, ~600k by default.
+    compactionThresholdTokens: resolveCompactionThresholdTokens(),
     maxLoops,
     maxOutputTokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS_DEFAULT,
     temperature: options.temperature,
