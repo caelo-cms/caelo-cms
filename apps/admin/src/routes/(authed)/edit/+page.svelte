@@ -498,24 +498,21 @@
            on an empty install reads as a dead end. The canvas points
            at the chat — the chat IS the product (CLAUDE.md 1A). -->
       <div class="flex h-full items-center justify-center px-6">
-        {#if data.pages.length === 0}
-          <div class="flex max-w-md flex-col items-center gap-3 text-center">
-            <Sparkles class="size-10 text-muted-foreground" aria-hidden="true" />
-            <p class="text-lg font-semibold">Let&rsquo;s build your site</p>
+        <div class="flex max-w-md flex-col items-center gap-3 text-center">
+          <Sparkles class="size-10 text-muted-foreground" aria-hidden="true" />
+          <p class="text-lg font-semibold">Chat and build your page</p>
+          {#if data.pages.length === 0}
             <p class="text-sm text-muted-foreground">
               There&rsquo;s nothing here yet — and that&rsquo;s the fun part. Tell the AI in the
-              chat what you want (&ldquo;a homepage for my bakery&rdquo;, &ldquo;migrate
-              example.com&rdquo;) and watch it appear right here.
+              chat what you want and watch it appear right here.
             </p>
-          </div>
-        {:else}
-          <div class="flex max-w-md flex-col items-center gap-3 text-center">
-            <MousePointerClick class="size-8 text-muted-foreground" aria-hidden="true" />
+          {:else}
             <p class="text-sm text-muted-foreground">
-              Pick a page in the top bar — or just tell the chat which page you want to work on.
+              Tell the AI in the chat which page you want to work on — or pick one in the top
+              bar.
             </p>
-          </div>
-        {/if}
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
