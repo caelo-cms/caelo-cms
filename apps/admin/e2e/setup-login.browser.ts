@@ -29,7 +29,7 @@ test("setup → login → dashboard end-to-end", async ({ page }) => {
   }
 
   // 2. Fill setup form.
-  await page.getByLabel("Display name").fill("E2E Owner");
+  await page.getByLabel("Your name").fill("E2E Owner");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel(/^Password/).fill(password);
   await page.getByRole("button", { name: /create owner/i }).click();
