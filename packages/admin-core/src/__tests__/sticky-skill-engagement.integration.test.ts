@@ -27,11 +27,11 @@ let registry: OperationRegistry;
 let chatSessionId: string;
 
 const TITLE = "sticky-engagement-regression";
-const ctx: ExecutionContext = {
-  actorId: "00000000-0000-0000-0000-00000000e125",
-  actorKind: "system",
-  requestId: "sticky-test",
-};
+const ACTOR_EMAIL = "sticky-engagement-actor@example.com";
+
+// chat_sessions rows carry FK-enforced actor references — the ctx
+// actor must be a real users row (CI's fresh DB caught the fake uuid).
+let ctx: ExecutionContext;
 
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
@@ -40,6 +40,8 @@ async function wipe(): Promise<void> {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM chat_messages WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title = ${TITLE})`;
       await tx`DELETE FROM chat_sessions WHERE title = ${TITLE}`;
+      await tx`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = ${ACTOR_EMAIL})`;
+      await tx`DELETE FROM users WHERE email = ${ACTOR_EMAIL}`;
     });
   } finally {
     await sql.end();
@@ -51,6 +53,23 @@ beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
+  const bootstrapCtx: ExecutionContext = {
+    actorId: "00000000-0000-0000-0000-00000000e125",
+    actorKind: "system",
+    requestId: "sticky-bootstrap",
+  };
+  const user = await execute(registry, adapter, bootstrapCtx, "users.create", {
+    email: ACTOR_EMAIL,
+    password: "sticky-test-pass",
+    displayName: "Sticky Test Actor",
+    roleNames: [],
+  });
+  if (!user.ok) throw new Error(`users.create failed: ${user.error.kind}`);
+  ctx = {
+    actorId: (user.value as { userId: string }).userId,
+    actorKind: "system",
+    requestId: "sticky-test",
+  };
   const created = await execute(registry, adapter, ctx, "chat.create_session", { title: TITLE });
   if (!created.ok) throw new Error(`chat.create_session failed: ${created.error.kind}`);
   chatSessionId = (created.value as { chatSessionId: string }).chatSessionId;
