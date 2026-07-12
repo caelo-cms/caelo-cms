@@ -12,12 +12,19 @@ BEGIN;
 
 SET LOCAL caelo.actor_kind = 'system';
 
+-- Distinct-rebuild rather than blind append: idempotent even when a
+-- subset of the phrases already exists (review finding).
 UPDATE skills
 SET auto_engagement_hints = jsonb_set(
   auto_engagement_hints,
   '{keywords}',
-  (auto_engagement_hints->'keywords')
-    || '["already have a website", "have a website", "have an existing", "vorhandene website", "habe eine website", "habe schon eine"]'::jsonb
+  (
+    SELECT jsonb_agg(DISTINCT kw)
+    FROM jsonb_array_elements_text(
+      (auto_engagement_hints->'keywords')
+        || '["already have a website", "have a website", "have an existing", "vorhandene website", "habe eine website", "habe schon eine"]'::jsonb
+    ) AS t(kw)
+  )
 )
 WHERE slug = 'site-migrate'
   AND NOT (auto_engagement_hints->'keywords' ? 'already have a website');
