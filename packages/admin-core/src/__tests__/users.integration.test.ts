@@ -25,7 +25,11 @@ const systemCtx: ExecutionContext = {
   requestId: "users-test",
 };
 
-const EMAILS = ["users-crud-editor@example.com", "users-crud-moderator@example.com"] as const;
+const EMAILS = [
+  "users-crud-editor@example.com",
+  "users-crud-moderator@example.com",
+  "users-setup-probe@example.com",
+] as const;
 
 async function wipe(url: string): Promise<void> {
   const sql = new SQL(url);
@@ -61,9 +65,21 @@ describe("users.is_setup_complete actor scope", () => {
   // whenever a session cookie is present. The scope rejection plus a
   // silent `: false` fallback dumped every signed-in visitor of those
   // pages onto the setup form.
-  it("accepts a human actor", async () => {
+  it("accepts a human actor who sees their own row through RLS", async () => {
+    // users RLS is self-or-system: a human actor sees exactly their
+    // own row. The op therefore answers `complete=true` for any
+    // EXISTING human actor — which is the only kind a session cookie
+    // can produce. The actor must exist, so create one first.
+    const create = await execute(registry, adapter, systemCtx, "users.create", {
+      email: EMAILS[2],
+      password: "setup-probe-pass",
+      displayName: "Setup Probe",
+      roleNames: [],
+    });
+    expect(create.ok).toBe(true);
+    if (!create.ok) return;
     const humanCtx: ExecutionContext = {
-      actorId: "00000000-0000-0000-0000-00000000fffe",
+      actorId: (create.value as { userId: string }).userId,
       actorKind: "human",
       requestId: "users-test-human",
     };
