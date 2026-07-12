@@ -77,7 +77,7 @@ describe("site-migrate skill row (#188)", () => {
     expect(b).toContain("WAIT for the answer");
     expect(b).toContain("never queue a proposal in the same message");
     expect(b).toContain("AI budget");
-    expect(b).toContain("pilot");
+    expect(b).toContain("Pilot first");
     // Both fork branches route somewhere real.
     expect(b).toContain("compose_from_import");
     expect(b).toContain("site-genesis");
