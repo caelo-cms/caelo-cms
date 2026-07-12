@@ -113,6 +113,10 @@ describe("site-migrate auto-engagement", () => {
     "wir wollen mit unserer bestehenden website umziehen",
     "can you import my existing website? it's at www.acme-tools.example",
     "our site is at acme.de and we want to move it here",
+    // 0126 — the first-run chip's own message + natural phrasings.
+    "I have an existing website that I'd like to migrate to Caelo.",
+    "I already have a website",
+    "wir haben schon eine website und wollen zu caelo",
   ])("engages for: %s", (message) => {
     expect(engagedFor(message)).toContain("site-migrate");
   });
