@@ -58,12 +58,13 @@
         </div>
       {/if}
       <div class="space-y-2">
-        <Label for="displayName">Display name</Label>
+        <Label for="displayName">Your name</Label>
         <Input
           id="displayName"
           name="displayName"
           type="text"
           required
+          placeholder="e.g. Jane Doe"
           value={form?.displayName ?? ""}
           aria-invalid={setupForm.errors.displayName ? "true" : undefined}
           aria-describedby={setupForm.errors.displayName ? "displayName-err" : undefined}
@@ -75,6 +76,10 @@
             {setupForm.errors.displayName}
           </p>
         {/if}
+        <p class="text-xs text-muted-foreground">
+          Shown next to your edits and in the chat — your personal name, not the site's. You'll
+          name the site itself in your first chat.
+        </p>
       </div>
       <div class="space-y-2">
         <Label for="email">Email</Label>
