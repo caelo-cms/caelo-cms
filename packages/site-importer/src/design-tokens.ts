@@ -165,8 +165,13 @@ export function normalizeColor(value: string): string | null {
   if (/^#[0-9a-f]{3}$/.test(v)) {
     return `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
   }
-  const m = v.match(
-    /^rgba?\(\s*(\d+)\s*[, ]\s*(\d+)\s*[, ]\s*(\d+)\s*(?:[,/]\s*([\d.]+%?)\s*)?\)$/,
+  // Collapse runs of whitespace BEFORE matching — the separator
+  // pattern is then unambiguous, which keeps the regex linear
+  // (CodeQL js/polynomial-redos on the previous `\s*[, ]\s*` form:
+  // overlapping quantifiers backtracked polynomially on long spaces).
+  const canon = v.replace(/\s+/g, " ");
+  const m = canon.match(
+    /^rgba?\( ?(\d{1,3}) ?[, ] ?(\d{1,3}) ?[, ] ?(\d{1,3})(?: ?[,/] ?([\d.]{1,8}%?))? ?\)$/,
   );
   if (!m) return null;
   const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
