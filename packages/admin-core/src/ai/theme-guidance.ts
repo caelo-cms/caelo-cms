@@ -47,6 +47,24 @@ export const ANCHOR_HUE_HINTS =
  * surface tinting). Shared verbatim by the same three surfaces as the
  * skeleton so the copies can't drift.
  */
+/**
+ * 2026-07-12 — composite token shapes. The skeleton alone under-
+ * specified typography + shadow, and every live theme compose burned
+ * 2-3 rejected-retry round-trips (red error cards in the operator's
+ * chat) rediscovering these shapes. Shared by the same three surfaces
+ * as the skeleton.
+ */
+export const TOKEN_SHAPE_HINTS =
+  "Composite shapes — copy these exactly: typography leaves are " +
+  "`{$type: 'typography', $value: {fontFamily: 'Inter, sans-serif', fontSize: '1rem', " +
+  "fontWeight: 400, lineHeight: 1.6}}` (one composite per body/heading/mono — NOT per-property " +
+  "tokens, and fontFamily is a plain string). Shadow leaves are " +
+  "`{$type: 'shadow', $value: {color: '#0b132b33', offsetX: '0px', offsetY: '2px', " +
+  "blur: '8px', spread: '0px'}}` (structured object or array of them — NEVER a raw CSS string). " +
+  "Gradient leaves keep the token envelope with a CSS string $value " +
+  "(`gradient.hero = {$type: 'gradient', $value: 'linear-gradient(...)'}`); never alias " +
+  "({group.token}) unless the target exists.";
+
 export const DEPTH_AND_SURFACE_HINTS =
   "Compose DEPTH, not just hue: give `gradient.hero` a real two-stop CSS gradient in the " +
   "primary's family (e.g. `linear-gradient(135deg, <primary>, <accent>)`) and `gradient.subtle` " +
