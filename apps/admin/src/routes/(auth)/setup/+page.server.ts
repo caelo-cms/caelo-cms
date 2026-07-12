@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo-cms/query-api";
-import { fail, redirect } from "@sveltejs/kit";
+import { error, fail, redirect } from "@sveltejs/kit";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals, url }) => {
   const { adapter, registry } = getQueryContext();
   const setup = await execute(registry, adapter, locals.ctx, "users.is_setup_complete", {});
-  const complete = setup.ok ? (setup.value as { complete: boolean }).complete : false;
-  if (complete) throw redirect(303, "/login");
+  // CLAUDE.md §2 no-fallbacks: a failed probe must not silently count
+  // as "setup incomplete" — that rendered the setup form to signed-in
+  // users (live-hit 2026-07-12, this op was system-only-scoped then).
+  if (!setup.ok) throw error(500, `users.is_setup_complete failed: ${setup.error.kind}`);
+  if ((setup.value as { complete: boolean }).complete) throw redirect(303, "/login");
 
   // P14 — bootstrap-token gate.
   // If any token has ever been issued (cms-provision was run), /setup
@@ -39,7 +42,8 @@ export const actions: Actions = {
     // operator is stuck on a page that GET would have redirected away
     // from. Live-hit on 2026-07-12.
     const setup = await execute(registry, adapter, locals.ctx, "users.is_setup_complete", {});
-    if (setup.ok && (setup.value as { complete: boolean }).complete) {
+    if (!setup.ok) throw error(500, `users.is_setup_complete failed: ${setup.error.kind}`);
+    if ((setup.value as { complete: boolean }).complete) {
       throw redirect(303, "/login");
     }
 

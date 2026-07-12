@@ -77,7 +77,16 @@ export const createFirstOwnerOp = defineOperation({
 
 export const isSetupCompleteOp = defineOperation({
   name: "users.is_setup_complete",
-  actorScope: ["system"],
+  // human + system: the /login and /setup loads run this with the
+  // REQUEST's ctx, which is a human actor whenever a session cookie
+  // is present. System-only scoping made every logged-in visit to
+  // those pages fail the check and (via a since-removed silent
+  // fallback) dumped signed-in users onto the setup form (live-hit
+  // 2026-07-12). Harmless read — it leaks only "an owner exists".
+  // RLS note: users is self-or-system, so a human actor sees exactly
+  // their own row — which is all EXISTS needs, and session cookies
+  // can only produce existing actors.
+  actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({}),
   output: z.object({ complete: z.boolean() }),

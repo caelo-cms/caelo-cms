@@ -1,23 +1,27 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo-cms/query-api";
-import { fail, redirect } from "@sveltejs/kit";
+import { error, fail, redirect } from "@sveltejs/kit";
 import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
-  const { adapter, registry } = getQueryContext();
-  const setup = await execute(registry, adapter, locals.ctx, "users.is_setup_complete", {});
-  const complete = setup.ok ? (setup.value as { complete: boolean }).complete : false;
-  if (!complete) throw redirect(303, "/setup");
   // The chat IS the product (CLAUDE.md §1A / epic #186): anyone who can
   // edit lands in /edit, not on the admin dashboard — operators should
   // never NEED the admin area. Users without content.write (ops-only
-  // roles) still get the dashboard.
+  // roles) still get the dashboard. Checked BEFORE the setup probe: a
+  // signed-in session proves setup is complete.
   if (locals.user) {
     throw redirect(303, locals.user.permissions.has("content.write") ? "/edit" : "/");
   }
+  const { adapter, registry } = getQueryContext();
+  const setup = await execute(registry, adapter, locals.ctx, "users.is_setup_complete", {});
+  // CLAUDE.md §2 no-fallbacks: a failed probe must not silently count
+  // as "no owner yet" — that shoved users onto /setup (live-hit
+  // 2026-07-12, masked exactly this op's actor-scope rejection).
+  if (!setup.ok) throw error(500, `users.is_setup_complete failed: ${setup.error.kind}`);
+  if (!(setup.value as { complete: boolean }).complete) throw redirect(303, "/setup");
   return {};
 };
 
