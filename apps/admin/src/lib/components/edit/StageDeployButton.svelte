@@ -127,6 +127,15 @@
   const listsCount = $derived(countByKind("lists", ["structuredSet"]));
 
   let dialogOpen = $state(false);
+  /**
+   * issue #262 — inline Stage failure text, rendered inside the dialog.
+   * The layout-level toast dedups identical consecutive form results, so
+   * a retried Stage that fails the same way a second time shows NO toast
+   * at all (run #7's "silent no-op" experience). The dialog is where the
+   * operator is looking; the failure must be visible there, persistently,
+   * until the next attempt.
+   */
+  let stageError = $state<string | null>(null);
   let popoverOpen = $state(false);
   let popoverRef = $state<HTMLDivElement | null>(null);
   let pillRef = $state<HTMLButtonElement | null>(null);
@@ -329,6 +338,7 @@
       data-testid="stage-btn"
       onclick={() => {
         popoverOpen = false;
+        stageError = null;
         dialogOpen = true;
       }}
     >
@@ -407,6 +417,7 @@
       action="?/stageAndDeployStaging"
       use:enhance={() => {
         publishing = true;
+        stageError = null;
         return async ({ result, update }) => {
           try {
             await update({ reset: false });
@@ -415,6 +426,14 @@
           }
           if (result.type === "success") {
             dialogOpen = false;
+          } else if (result.type === "failure") {
+            const data = result.data as Record<string, unknown> | undefined;
+            stageError =
+              typeof data?.error === "string"
+                ? data.error
+                : "Stage failed, and the server sent no reason. Check the server logs.";
+          } else if (result.type === "error") {
+            stageError = `Stage request crashed: ${result.error instanceof Error ? result.error.message : String(result.error)}`;
           }
         };
       }}
@@ -425,7 +444,6 @@
         <input type="hidden" name="pageId" value={activePageId} />
       {/if}
       <input type="hidden" name="_csrf" value={csrfToken} />
-      <input type="hidden" name="chatSessionId" value={chatSessionId} />
 
       <ul class="space-y-2 py-2">
         <li>
@@ -518,6 +536,17 @@
           </label>
         </li>
       </ul>
+
+      {#if stageError}
+        <div
+          class="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-800 dark:text-red-200"
+          role="alert"
+          data-testid="stage-error"
+        >
+          <span class="font-semibold">Stage failed:</span>
+          {stageError}
+        </div>
+      {/if}
 
       <DialogFooter>
         <Button

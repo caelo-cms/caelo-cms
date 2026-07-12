@@ -19,6 +19,7 @@ import type { ChatEngagement, ChatSendMessageInput, ExecutionContext } from "@ca
 import type { ToolDescribeStateActivePage } from "../tools/describe-state.js";
 import { buildCatalogBlocks } from "./context/catalog.js";
 import { buildDomainBlocks } from "./context/domains.js";
+import { buildForeignLocksBlock } from "./context/foreign-locks.js";
 import { buildAllPagesBlock, buildPageContext } from "./context/page.js";
 import { buildSiteBlocks } from "./context/site.js";
 import { buildSkillsContext } from "./context/skills.js";
@@ -40,6 +41,8 @@ export interface PreCatalogueBlocks {
   redirectsBlock: string | undefined;
   localesBlock: string | undefined;
   pendingProposalsBlock: string | undefined;
+  /** issue #262 — entities locked by OTHER chats (interim guard until #264 leases). */
+  foreignLocksBlock: string | undefined;
   usersBlock: string | undefined;
   rolesBlock: string | undefined;
   aiProvidersBlock: string | undefined;
@@ -90,6 +93,14 @@ export async function buildSystemContextBlocks(deps: {
   const catalog = await buildCatalogBlocks(registry, adapter, humanCtx, humanCtxWithBranch);
   const site = await buildSiteBlocks(registry, adapter, humanCtxWithBranch);
   const domains = await buildDomainBlocks(registry, adapter, humanCtx, aiActorId);
+  // issue #262 — foreign-lock visibility so the AI warns during planning
+  // instead of hitting Locked errors mid-run (run #7 regression class).
+  const foreignLocksBlock = await buildForeignLocksBlock(
+    registry,
+    adapter,
+    humanCtx,
+    input.chatSessionId,
+  );
   const skills = await buildSkillsContext(registry, adapter, humanCtx, {
     userMessage: input.content,
     chipCount: input.chips.length,
@@ -113,6 +124,7 @@ export async function buildSystemContextBlocks(deps: {
       redirectsBlock: domains.redirectsBlock,
       localesBlock: domains.localesBlock,
       pendingProposalsBlock: domains.pendingProposalsBlock,
+      foreignLocksBlock,
       usersBlock: domains.usersBlock,
       rolesBlock: domains.rolesBlock,
       aiProvidersBlock: domains.aiProvidersBlock,

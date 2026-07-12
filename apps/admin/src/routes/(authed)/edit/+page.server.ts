@@ -680,6 +680,13 @@ export const actions: Actions = {
       chatSessionId,
     });
     if (!merged.ok) {
+      // issue #262 — stderr breadcrumb (same rationale as setPageStatus
+      // v0.10.4): the toast/dialog show describeError()'s stripped text;
+      // the full structured error only survives here.
+      console.error("[stageAndDeployStaging] chat.merge_to_main failed", {
+        chatSessionId,
+        error: merged.error,
+      });
       return fail(500, { error: `Merge to main failed: ${describeError(merged.error)}` });
     }
 
@@ -687,6 +694,15 @@ export const actions: Actions = {
       targetName: "staging",
     });
     if (!stagingDeploy.ok) {
+      // issue #262 — run #7's "silent no-op": deploy.trigger threw
+      // (`require is not defined`), the tx rolled back (so not even a
+      // failed deploy_runs row existed), and nothing was logged. Keep
+      // this breadcrumb so a Stage failure is ALWAYS visible in stderr
+      // even when the UI feedback is missed.
+      console.error("[stageAndDeployStaging] deploy.trigger failed", {
+        chatSessionId,
+        error: stagingDeploy.error,
+      });
       return fail(500, { error: `Staging build failed: ${describeError(stagingDeploy.error)}` });
     }
 

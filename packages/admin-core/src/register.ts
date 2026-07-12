@@ -10,6 +10,7 @@ import {
 } from "./ops/ai_providers_pending.js";
 import { loginOp, logoutOp, resolveSessionOp } from "./ops/auth.js";
 import { cancelProposalOp } from "./ops/cancel_proposal.js";
+import { listForeignLocksOp } from "./ops/chat/foreign-locks.js";
 import {
   appendChatMessageOp,
   cacheToolResultOp,
@@ -580,6 +581,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(recordAiCallOp);
   registry.register(publishChatSessionOp);
   registry.register(mergeChatToMainOp);
+  // issue #262 — pre-run foreign-lock visibility for the chat runner.
+  registry.register(listForeignLocksOp);
   registry.register(listPendingChangesOp);
   registry.register(stageChatChangesOp);
   registry.register(unstageChatChangesOp);

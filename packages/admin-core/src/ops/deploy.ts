@@ -27,6 +27,13 @@
  */
 
 import { spawn } from "node:child_process";
+// Top-level import, NOT a lazy `require()`. issue #262: under vite's dev
+// SSR the module graph is pure ESM on a Node runtime, where `require` is
+// undefined — the lazy call threw inside the deploy.trigger transaction,
+// rolling back the deploy_runs row and killing every Stage in dev with
+// "Staging build failed: require is not defined". Bun tolerates require()
+// in ESM, which is why `bun test` never caught it.
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   type DatabaseAdapter,
@@ -196,7 +203,6 @@ function resolveGeneratorCli(): string {
   // Walk up from cwd until we find apps/static-generator/src/cli.ts.
   // This survives `cd` into a subdir (the test runner's cwd) without
   // requiring the test to plumb a workspace path in.
-  const { existsSync } = require("node:fs") as typeof import("node:fs");
   let dir = process.cwd();
   for (let i = 0; i < 8; i++) {
     const candidate = resolve(dir, "apps/static-generator/src/cli.ts");
