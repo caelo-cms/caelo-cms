@@ -335,6 +335,19 @@
   // message when streaming ends.
   let pendingApprovalNudges = $state<{ kind: string | undefined; proposalId: string }[]>([]);
 
+  // offer_choices click that landed while the AI was mid-stream —
+  // flushed by the effect below, same contract as approval nudges.
+  let pendingChoiceAnswer = $state<string | null>(null);
+
+  $effect(() => {
+    if (streaming) return;
+    if (pendingChoiceAnswer === null) return;
+    if (composer.trim().length > 0) return;
+    const answer = pendingChoiceAnswer;
+    pendingChoiceAnswer = null;
+    void sendAutoMessage(answer);
+  });
+
   $effect(() => {
     // Track `streaming` + `pendingApprovalNudges` reactively. Fires
     // when streaming transitions to false OR a new nudge is enqueued
@@ -1381,7 +1394,12 @@
                     {csrfToken}
                     onApproved={(info) => onProposalApproved(info.kind, info.proposalId)}
                     onChoose={(answer) => {
-                      if (streaming) return;
+                      // Streaming-safe: queue like approval nudges
+                      // instead of silently dropping the click.
+                      if (streaming) {
+                        pendingChoiceAnswer = answer;
+                        return;
+                      }
                       void sendAutoMessage(answer);
                     }}
                   />

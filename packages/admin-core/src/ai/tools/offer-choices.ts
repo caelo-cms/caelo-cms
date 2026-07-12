@@ -18,14 +18,30 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const offerChoicesInput = z
   .object({
-    question: z.string().min(1).max(500),
+    // ChoiceCard parses the content line-based (`<KEY>) <label> — <desc>`)
+    // — newlines inside any field would break the contract, and keys
+    // must stay short + delimiter-free.
+    question: z
+      .string()
+      .min(1)
+      .max(500)
+      .regex(/^[^\n]+$/, "no newlines"),
     options: z
       .array(
         z
           .object({
-            key: z.string().min(1).max(3),
-            label: z.string().min(1).max(120),
-            description: z.string().min(1).max(300).optional(),
+            key: z.string().regex(/^[A-Za-z0-9]{1,3}$/, "1-3 alphanumeric characters"),
+            label: z
+              .string()
+              .min(1)
+              .max(120)
+              .regex(/^[^\n]+$/, "no newlines"),
+            description: z
+              .string()
+              .min(1)
+              .max(300)
+              .regex(/^[^\n]+$/, "no newlines")
+              .optional(),
           })
           .strict(),
       )
@@ -51,7 +67,7 @@ export const offerChoicesTool: ToolDefinitionWithHandler<OfferChoicesInput> = {
     additionalProperties: false,
     required: ["question", "options"],
     properties: {
-      question: { type: "string", minLength: 1, maxLength: 500 },
+      question: { type: "string", minLength: 1, maxLength: 500, pattern: "^[^\\n]+$" },
       options: {
         type: "array",
         minItems: 2,
@@ -61,9 +77,9 @@ export const offerChoicesTool: ToolDefinitionWithHandler<OfferChoicesInput> = {
           additionalProperties: false,
           required: ["key", "label"],
           properties: {
-            key: { type: "string", minLength: 1, maxLength: 3 },
-            label: { type: "string", minLength: 1, maxLength: 120 },
-            description: { type: "string", minLength: 1, maxLength: 300 },
+            key: { type: "string", pattern: "^[A-Za-z0-9]{1,3}$" },
+            label: { type: "string", minLength: 1, maxLength: 120, pattern: "^[^\\n]+$" },
+            description: { type: "string", minLength: 1, maxLength: 300, pattern: "^[^\\n]+$" },
           },
         },
       },
