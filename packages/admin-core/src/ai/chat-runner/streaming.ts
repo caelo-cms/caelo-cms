@@ -81,7 +81,14 @@ export async function* streamProviderTurn(args: {
       // double-buffering.
       yield { kind: "thinking-delta", text: ev.text };
     } else if (ev.kind === "thinking-stop") {
-      accumulatedThinking.push({ thinking: ev.thinking, signature: ev.signature });
+      // Sonnet 5's adaptive thinking sometimes closes a reasoning block
+      // with EMPTY text. Persisting it poisons the session: the replay
+      // on the next turn 400s with "each thinking block must contain
+      // thinking" and the whole chat dies. Empty blocks carry no signed
+      // content worth replaying — drop them at the source.
+      if (ev.thinking.length > 0) {
+        accumulatedThinking.push({ thinking: ev.thinking, signature: ev.signature });
+      }
       yield { kind: "thinking-stop", thinking: ev.thinking, signature: ev.signature };
     } else if (ev.kind === "tool-call") {
       accumulatedToolCalls.push({ id: ev.id, name: ev.name, arguments: ev.arguments });
