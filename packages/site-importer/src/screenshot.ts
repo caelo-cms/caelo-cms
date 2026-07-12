@@ -87,7 +87,14 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
   // biome-ignore lint/suspicious/noExplicitAny: opt-in dynamic import
   let pw: any;
   try {
-    pw = await import("playwright" as string);
+    // The specifier goes through a variable so bundlers CANNOT
+    // statically follow it: rolldown/adapter-bun otherwise inlines
+    // playwright → playwright-core → fsevents.node and the macOS
+    // server build dies on the native binary ("stream did not
+    // contain valid UTF-8"). The old `"playwright" as string` cast
+    // only fooled TypeScript — it compiles to a static specifier.
+    const specifier = "playwright";
+    pw = await import(/* @vite-ignore */ specifier);
   } catch {
     return null;
   }
