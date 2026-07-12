@@ -80,6 +80,9 @@ describe("site-migrate skill row (#188)", () => {
     expect(b).toContain("Pilot first");
     // Both fork branches route somewhere real.
     expect(b).toContain("compose_from_import");
+    // 0127 — light refresh must never blank imported bodies.
+    expect(b).toContain("LIGHT REFRESH (B)");
+    expect(b).toContain("NEVER clear, blank, or hand-rebuild an imported page body");
     expect(b).toContain("site-genesis");
     // Loud-honesty tail.
     expect(b).toContain("never claim a gated action was applied");
