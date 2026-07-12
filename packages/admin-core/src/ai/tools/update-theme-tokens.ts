@@ -18,6 +18,7 @@ import {
   type ThemeDocument,
 } from "@caelo-cms/shared";
 import { z } from "zod";
+import { TOKEN_SHAPE_HINTS } from "../theme-guidance.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -48,7 +49,8 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
     "replacement, use `set_theme_tokens` with all desired tokens (it's an upsert per token, " +
     "not per-theme). When ambiguous (a bare name with no value-shape signal) the tool " +
     "returns `UnknownTokenName` with did-you-mean suggestions; retry with the canonical " +
-    "path.",
+    "path. " +
+    TOKEN_SHAPE_HINTS,
   schema: setThemeTokensToolInput,
   inputSchema: {
     type: "object",
