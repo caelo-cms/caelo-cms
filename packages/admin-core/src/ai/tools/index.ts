@@ -60,6 +60,7 @@ import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
+import { migrateMediaTool } from "./migrate-media.js";
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
@@ -189,6 +190,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(createPageTool);
   registry.register(createTemplateTool);
   registry.register(composeFromImportTool);
+  // issue #249 (WS3) — post-compose media migration: stop hotlinking
+  // the source site; the tool description tells the AI to call it
+  // right after compose_from_import.
+  registry.register(migrateMediaTool);
   registry.register(renamePageTool);
   registry.register(setPageTitleTool);
   registry.register(changePageSlugTool);

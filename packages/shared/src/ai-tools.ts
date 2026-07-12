@@ -518,6 +518,18 @@ export const composeFromImportToolInput = z
   .strict();
 
 /**
+ * issue #249 (WS3) — `migrate_media` AI tool input. Wraps
+ * `imports.migrate_media`: downloads every external asset the composed
+ * pages still hotlink from the source site into the media library and
+ * rewrites the module/template references in place.
+ */
+export const migrateImportMediaToolInput = z
+  .object({
+    runId: z.string().uuid(),
+  })
+  .strict();
+
+/**
  * Input for `ai_providers.clear_key` — Owner-only NULLs the encrypted
  * triplet so the resolver falls back to the env-var path for that
  * provider (or returns null if no env is set, which surfaces the
@@ -974,6 +986,7 @@ export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInp
 export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
 export type ComposeFromImportToolInput = z.infer<typeof composeFromImportToolInput>;
+export type MigrateImportMediaToolInput = z.infer<typeof migrateImportMediaToolInput>;
 export type RenamePageToolInput = z.infer<typeof renamePageToolInput>;
 export type SetPageTitleToolInput = z.infer<typeof setPageTitleToolInput>;
 export type ChangePageSlugToolInput = z.infer<typeof changePageSlugToolInput>;

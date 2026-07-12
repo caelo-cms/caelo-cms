@@ -307,6 +307,14 @@ function pickExtension(mime: MediaMime): string {
       return "pdf";
     case "video/mp4":
       return "mp4";
+    case "font/woff2":
+      return "woff2";
+    case "font/woff":
+      return "woff";
+    case "font/ttf":
+      return "ttf";
+    case "font/otf":
+      return "otf";
   }
 }
 

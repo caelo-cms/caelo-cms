@@ -233,6 +233,17 @@ export interface SafeFetchResponse {
   readonly finalUrl: string;
 }
 
+/** Binary twin of {@link SafeFetchResponse} — raw bytes, no decode. */
+export interface SafeFetchBinaryResponse {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly contentType: string;
+  /** Raw response bytes. Callers gate on contentType before trusting them. */
+  readonly bodyBytes: Uint8Array;
+  /** URL after redirects — callers enforce their own same-host policies on it. */
+  readonly finalUrl: string;
+}
+
 const DEFAULT_MAX_REDIRECTS = 3;
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -355,6 +366,34 @@ export async function safeExternalFetch(
   rawUrl: string,
   opts?: SafeFetchOptions,
 ): Promise<SafeFetchResponse> {
+  const res = await fetchWithRedirects(rawUrl, opts);
+  return {
+    ok: res.ok,
+    status: res.status,
+    contentType: res.contentType,
+    bodyText: Buffer.from(res.bodyBytes).toString("utf8"),
+    finalUrl: res.finalUrl,
+  };
+}
+
+/**
+ * issue #249 — same guard, same redirect policy, same caps as
+ * {@link safeExternalFetch}, but the body stays raw bytes. Media
+ * migration downloads images/fonts/PDFs where a UTF-8 round-trip
+ * would corrupt the payload.
+ */
+export async function safeExternalFetchBinary(
+  rawUrl: string,
+  opts?: SafeFetchOptions,
+): Promise<SafeFetchBinaryResponse> {
+  return fetchWithRedirects(rawUrl, opts);
+}
+
+/** Shared redirect loop — every hop re-runs the full SSRF validation. */
+async function fetchWithRedirects(
+  rawUrl: string,
+  opts?: SafeFetchOptions,
+): Promise<SafeFetchBinaryResponse> {
   const maxRedirects = opts?.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const maxBytes = opts?.maxBytes ?? DEFAULT_MAX_BYTES;
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -374,7 +413,7 @@ export async function safeExternalFetch(
       ok: res.status >= 200 && res.status < 300,
       status: res.status,
       contentType: res.contentType,
-      bodyText: res.bodyText,
+      bodyBytes: res.bodyBytes,
       finalUrl: current,
     };
   }
@@ -387,7 +426,12 @@ function requestOnce(
   timeoutMs: number,
   maxBytes: number,
   opts?: SafeFetchOptions,
-): Promise<{ status: number; contentType: string; bodyText: string; redirectTo: string | null }> {
+): Promise<{
+  status: number;
+  contentType: string;
+  bodyBytes: Uint8Array;
+  redirectTo: string | null;
+}> {
   return new Promise((resolve, reject) => {
     const requestFn = u.protocol === "https:" ? httpsRequest : httpRequest;
     const req: ClientRequest = requestFn(
@@ -408,7 +452,7 @@ function requestOnce(
         const location = res.headers.location;
         if (status >= 301 && status <= 308 && typeof location === "string") {
           res.resume(); // drain — hop handled by the caller
-          resolve({ status, contentType: "", bodyText: "", redirectTo: location });
+          resolve({ status, contentType: "", bodyBytes: new Uint8Array(0), redirectTo: location });
           return;
         }
         const chunks: Buffer[] = [];
@@ -435,7 +479,7 @@ function requestOnce(
           resolve({
             status,
             contentType: res.headers["content-type"] ?? "",
-            bodyText: Buffer.concat(chunks).toString("utf8"),
+            bodyBytes: new Uint8Array(Buffer.concat(chunks)),
             redirectTo: null,
           });
         });
