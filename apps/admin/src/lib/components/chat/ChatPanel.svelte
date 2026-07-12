@@ -115,6 +115,14 @@
   let messages = $state<ChatMessage[]>(initialMessages);
   let composer = $state("");
   let composerEl = $state<HTMLTextAreaElement | null>(null);
+
+  // The /edit canvas empty state ("Chat and build your page") is one
+  // big button; clicking it lands the operator here, cursor ready.
+  $effect(() => {
+    const focus = () => composerEl?.focus();
+    window.addEventListener("caelo:focus-chat", focus);
+    return () => window.removeEventListener("caelo:focus-chat", focus);
+  });
   let streaming = $state(false);
 
   // v0.2.45 — autoscroll + jump-to-latest button.

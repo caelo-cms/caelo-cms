@@ -269,7 +269,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       : null;
     const untouched = !identity?.siteName && !identity?.sitePurpose;
     // Chips render until the FIRST user turn (also across reloads).
-    if (untouched && !messages.some((m) => m.role === "user")) {
+    // Not gated on `untouched`: an install can carry identity but zero
+    // pages (wiped content, aborted migrate) — an empty chat there is
+    // the same dead end (live-hit 2026-07-12). The seeded welcome
+    // below KEEPS the untouched gate; its cold-start entry-point pitch
+    // would be stale advice on an install with identity.
+    if (!messages.some((m) => m.role === "user")) {
       firstRunSuggestions = FIRST_RUN_SUGGESTIONS;
     }
     if (untouched && messages.length === 0) {
