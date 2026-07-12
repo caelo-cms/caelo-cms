@@ -22,7 +22,7 @@ SET auto_engagement_hints = jsonb_set(
     SELECT jsonb_agg(DISTINCT kw)
     FROM jsonb_array_elements_text(
       (auto_engagement_hints->'keywords')
-        || '["already have a website", "have a website", "have an existing", "vorhandene website", "habe eine website", "habe schon eine"]'::jsonb
+        || '["already have a website", "have a website", "have an existing", "vorhandene website", "habe eine website", "schon eine website", "habe schon eine"]'::jsonb
     ) AS t(kw)
   )
 )
