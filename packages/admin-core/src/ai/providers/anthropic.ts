@@ -112,6 +112,21 @@ function buildSystemAndMessages(
   return { messages: [...sysMessages, ...userMessages] };
 }
 
+/**
+ * Maps Caelo's provider-neutral thinking request onto the shape the
+ * target Anthropic model accepts. Claude 4.6+ models (Sonnet 5,
+ * Opus 4.7/4.8, Fable) reject `budget_tokens` with a 400 and take
+ * adaptive thinking instead; older models still need the explicit
+ * budget form.
+ */
+export function resolveThinkingOption(
+  model: string,
+  budgetTokens: number,
+): { type: "adaptive" } | { type: "enabled"; budgetTokens: number } {
+  const adaptiveOnly = /sonnet-5|opus-4-7|opus-4-8|opus-4-6|sonnet-4-6|fable|mythos/.test(model);
+  return adaptiveOnly ? { type: "adaptive" } : { type: "enabled", budgetTokens };
+}
+
 export class AnthropicProvider implements AIProvider {
   readonly name: ProviderName = "anthropic";
   readonly model: string;
@@ -147,10 +162,7 @@ export class AnthropicProvider implements AIProvider {
     if (input.thinking) {
       extraOptions.providerOptions = {
         anthropic: {
-          thinking: {
-            type: "enabled",
-            budgetTokens: input.thinking.budgetTokens,
-          },
+          thinking: resolveThinkingOption(this.model, input.thinking.budgetTokens),
         },
       };
     }
