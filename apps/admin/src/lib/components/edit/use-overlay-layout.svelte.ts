@@ -28,14 +28,19 @@ export interface OverlayLayout {
 }
 
 export const DEFAULT_LAYOUT: OverlayLayout = {
-  pin: "floating",
+  // Chat-panel UX pass: the chat IS the product's primary surface, so
+  // the DEFAULT is a full-height side column (Cursor/Copilot form
+  // factor) instead of a 360×480 floating box that forced the
+  // onboarding welcome behind two scrollbars. Users who prefer
+  // floating drag it out once — the preference persists.
+  pin: "pinned-right",
   collapsed: false,
   x: 24,
   y: 80,
-  width: 360,
-  height: 480,
+  width: 400,
+  height: 560,
   pinnedHeight: 320,
-  pinnedWidth: 380,
+  pinnedWidth: 420,
 };
 
 const PREFERENCE_KEY = "edit_overlay_layout";

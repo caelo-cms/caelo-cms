@@ -90,7 +90,7 @@ test.describe("e2e-livedit onboarding — welcome + migration routing", () => {
       await page.goto("/edit");
 
       // ── The welcome is there BEFORE any operator input ───────────
-      const transcript = page.locator("ul", { hasText: "Which of these fits" }).first();
+      const transcript = page.locator("ul", { hasText: "Pick one of the options" }).first();
       await expect(transcript).toBeVisible({ timeout: 20_000 });
       await expect(page.getByText("You already have a website")).toBeVisible();
 

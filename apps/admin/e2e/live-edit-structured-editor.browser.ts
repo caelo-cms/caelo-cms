@@ -47,9 +47,12 @@ test("Owner creates a tags set via /security/structured then opens its editor", 
 
   await page.goto("/security/structured");
   await expect(page.getByRole("heading", { name: "Structured data", exact: true })).toBeVisible();
-  // Kind groups render.
-  await expect(page.getByText("Nav menus", { exact: false })).toBeVisible();
-  await expect(page.getByText("Tags", { exact: true })).toBeVisible();
+  // Kind groups render. Headings, not getByText: the loose text match
+  // ALSO hits the "No nav menus yet …" empty-state paragraph whenever
+  // the group is empty (fresh DB / subset runs) — a latent strict-mode
+  // violation that only order-dependent seeding papered over.
+  await expect(page.getByRole("heading", { name: "Nav menus" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Tags", exact: true })).toBeVisible();
 
   // Click the "+ New" link for the tags group. Each kind group is a
   // Card sibling. Locating by the heading then climbing to the

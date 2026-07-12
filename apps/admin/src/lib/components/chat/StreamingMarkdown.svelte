@@ -64,7 +64,7 @@
   );
 </script>
 
-<div class={`prose prose-sm max-w-none dark:prose-invert ${className}`}>
+<div class={`chat-markdown text-sm leading-relaxed ${className}`}>
   {#if browser}
     {@html html}
   {:else}
@@ -97,8 +97,14 @@
     padding: 0;
     background: transparent;
   }
-  div :global(ul), div :global(ol) { margin: 0.25rem 0; padding-left: 1.25rem; }
-  div :global(li) { margin: 0.1rem 0; }
+  /* Tailwind preflight strips list markers and the `prose` plugin was
+     never installed (the old class list was dead) — numbered/bulleted
+     lists in assistant messages rendered marker-less. Restore them. */
+  div :global(ul), div :global(ol) { margin: 0.25rem 0; padding-left: 1.4rem; }
+  div :global(ol) { list-style: decimal; }
+  div :global(ul) { list-style: disc; }
+  div :global(li) { margin: 0.25rem 0; }
+  div :global(li::marker) { color: hsl(var(--muted-foreground)); }
   div :global(h1), div :global(h2), div :global(h3) { margin: 0.5rem 0 0.25rem; font-weight: 600; }
   div :global(a) { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 2px; }
   div :global(table) { border-collapse: collapse; margin: 0.5rem 0; font-size: 0.85em; }
