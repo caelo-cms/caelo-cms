@@ -32,6 +32,15 @@ describe("prepareLegacyAggregatedToken", () => {
     ).toBeNull();
   });
 
+  it("keeps bare zero — explicitly valid per the shared dimension schema", () => {
+    expect(
+      prepareLegacyAggregatedToken({ token: "space-none", value: "0", scope: "space" }),
+    ).toEqual({
+      canonicalPath: "spacing.none",
+      value: "0",
+    });
+  });
+
   it("keeps a real spacing dimension", () => {
     expect(
       prepareLegacyAggregatedToken({ token: "space-md", value: "1.5rem", scope: "space" }),

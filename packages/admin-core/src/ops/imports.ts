@@ -1691,9 +1691,12 @@ export const composeFromImportRunOp = defineOperation({
  * Scope → category mirrors migration 0097's back-fill so imports land
  * at the same DTCG paths as an upgrade-in-place.
  */
-/** Looks like a single CSS length the `spacing`/`radius` categories accept. */
+/** Looks like a single CSS length the `spacing`/`radius` categories
+ *  accept — including bare `0` (explicitly valid per the shared
+ *  dimensionValueString schema; review finding). */
 function isDimensionValue(v: string): boolean {
-  return /^-?\d+(\.\d+)?(px|rem|em|%|vh|vw|ch|pt)$/.test(v.trim());
+  const t = v.trim();
+  return t === "0" || /^-?\d+(\.\d+)?(px|rem|em|%|vh|vw|ch|pt)$/.test(t);
 }
 
 export function prepareLegacyAggregatedToken(t: {
