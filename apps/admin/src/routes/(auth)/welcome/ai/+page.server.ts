@@ -30,7 +30,7 @@ type WizardProvider = (typeof WIZARD_PROVIDERS)[number];
 // Same defaults as /security/ai — keep in sync until a shared
 // provider-catalog module exists.
 const DEFAULT_MODEL: Record<WizardProvider, string> = {
-  anthropic: "claude-opus-4-7",
+  anthropic: "claude-sonnet-5",
   openai: "gpt-4o",
   google: "gemini-1.5-pro",
 };

@@ -12,7 +12,7 @@ const KNOWN_PROVIDERS = ["anthropic", "openai", "google", "local-openai-compat"]
 type KnownProvider = (typeof KNOWN_PROVIDERS)[number];
 
 const DEFAULT_MODEL: Record<KnownProvider, string> = {
-  anthropic: "claude-opus-4-7",
+  anthropic: "claude-sonnet-5",
   openai: "gpt-4o",
   google: "gemini-1.5-pro",
   "local-openai-compat": "qwen2.5",
