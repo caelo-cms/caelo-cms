@@ -18,6 +18,7 @@ import type { z } from "zod";
 
 import type { AIProvider } from "../provider.js";
 import type { ToolDescribeState } from "./describe-state.js";
+import { normalizeToolArgs } from "./normalize-args.js";
 
 /**
  * P10.5 — the spawn_subagent tool handler invokes the SAME runChatTurn
@@ -394,7 +395,18 @@ export class ToolRegistry {
     if (!tool) {
       return { ok: false, content: `unknown tool: ${name}` };
     }
-    const parsed = tool.schema.safeParse(rawArgs);
+    // issue #251 (WS5) — repair provider-side encoding damage
+    // (stringified scalars/objects, findings F11/F12/F17) BEFORE the
+    // strict Zod parse. Guided by the declared inputSchema; never
+    // invents values. Coercions are logged as #245 telemetry: the
+    // repair is the seatbelt, the emitter is still the bug to find.
+    const normalized = normalizeToolArgs(rawArgs, tool.inputSchema);
+    if (normalized.coercedPaths.length > 0) {
+      console.warn(
+        `[tool.args-coerced] ${name}: repaired ${normalized.coercedPaths.join(", ")} (issue #245 telemetry)`,
+      );
+    }
+    const parsed = tool.schema.safeParse(normalized.args);
     if (!parsed.success) {
       // issue #106 — hand back an AI-actionable shape (named problem + the
       // tool's expected argument set) so the model self-corrects in one turn
