@@ -59,15 +59,21 @@ describe("site-migrate skill row (#188)", () => {
     expect(b).toContain("always look at the real site first");
     // Exactly one fork question.
     expect(b).toContain("exactly ONE question");
-    // §11.A two-step contract — chat-first since 0121: the Approve
-    // click lives on the proposal CARD in the chat, never an admin page.
+    // §11.A two-step contract — chat-first since 0121, strip-anchored
+    // since 0122: the Approve click lives on the proposal card /
+    // pending strip right above the chat input, never an admin page.
     expect(b).toContain("TWO-STEP flow");
-    expect(b).toContain("APPROVE BUTTON ON THE PROPOSAL CARD");
-    expect(b).toContain("never send them to an admin page");
+    expect(b).toContain("Pending your approval");
+    expect(b).toContain("right above the input box");
+    expect(b).toContain("Never send them to an admin page");
     expect(b).toContain("NEVER claim the crawl ran");
     // Background-job honesty: crawl status handling is spelled out.
     expect(b).toContain("ready_for_review");
-    // Scope + cost expectation before approval; pilot alternative.
+    // 0122: ONE plan question (scope + cost) BEFORE queueing — the AI
+    // must wait for the answer, not pitch and queue in one message.
+    expect(b).toContain("PLAN CHECK");
+    expect(b).toContain("WAIT for the answer");
+    expect(b).toContain("never queue a proposal in the same message");
     expect(b).toContain("AI budget");
     expect(b).toContain("pilot");
     // Both fork branches route somewhere real.

@@ -1321,64 +1321,6 @@
           compact ? "min-h-0 flex-1" : "h-[calc(100vh-12rem)]",
         )}
       >
-        <!-- v0.2.63 — Pending proposals strip. Appears above the
-             transcript whenever AI-queued proposals from THIS chat
-             are awaiting Owner action. Click Approve here instead of
-             scrolling up to the original tool-card OR navigating to
-             /security/<domain>/pending. Drops out as soon as the row
-             flips to applied / rejected. -->
-        {#if pendingProposals.length > 0}
-          <div
-            class="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs"
-            data-testid="chat-pending-strip"
-          >
-            <div class="mb-1.5 flex items-center gap-2 text-amber-700 dark:text-amber-400">
-              <span class="font-semibold">⏳ Pending your approval</span>
-              <span class="text-muted-foreground"
-                >({pendingProposals.length}
-                {pendingProposals.length === 1 ? "proposal" : "proposals"})</span
-              >
-            </div>
-            <ul class="space-y-1.5">
-              {#each pendingProposals as p (p.proposalId)}
-                <li class="flex items-center gap-2 rounded border bg-card p-1.5">
-                  <span class="font-mono text-[10px] text-muted-foreground"
-                    >{p.proposalId.slice(0, 8)}…</span
-                  >
-                  <span class="font-mono text-[10px] text-muted-foreground"
-                    >{p.domain}.{p.kind}</span
-                  >
-                  <span class="truncate">{p.summary}</span>
-                  <span class="ml-auto flex items-center gap-1.5">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={/^(delete|remove|revert|clear|deactivate|cancel)/i.test(p.kind)
-                        ? "destructive"
-                        : "default"}
-                      disabled={pendingActioning[p.proposalId] !== undefined &&
-                        pendingActioning[p.proposalId] !== null}
-                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "approve", `${p.domain}.${p.kind}`)}
-                      data-testid="pending-approve"
-                    >
-                      {pendingActioning[p.proposalId] === "approving" ? "Approving…" : "Approve"}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={pendingActioning[p.proposalId] !== undefined &&
-                        pendingActioning[p.proposalId] !== null}
-                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "reject")}
-                    >
-                      {pendingActioning[p.proposalId] === "rejecting" ? "Rejecting…" : "Reject"}
-                    </Button>
-                  </span>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
         <!-- v0.5.20 — failed-only transcript filter. Shows only tool
              messages whose content matches the failure heuristic. User
              + assistant messages stay visible regardless. The count in
@@ -1654,6 +1596,64 @@
           </div>
         {/if}
 
+        <!-- v0.2.63 — Pending proposals strip. Pinned directly ABOVE
+             THE COMPOSER (operator feedback 2026-07-12: at the top of
+             the transcript it sat exactly where the eye is NOT while
+             reading the newest message — "missed it nearly"). Click
+             Approve here instead of hunting the original tool-card.
+             Drops out as soon as the row flips to applied/rejected. -->
+        {#if pendingProposals.length > 0}
+          <div
+            class="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs"
+            data-testid="chat-pending-strip"
+          >
+            <div class="mb-1.5 flex items-center gap-2 text-amber-700 dark:text-amber-400">
+              <span class="font-semibold">⏳ Pending your approval</span>
+              <span class="text-muted-foreground"
+                >({pendingProposals.length}
+                {pendingProposals.length === 1 ? "proposal" : "proposals"})</span
+              >
+            </div>
+            <ul class="space-y-1.5">
+              {#each pendingProposals as p (p.proposalId)}
+                <li class="flex items-center gap-2 rounded border bg-card p-1.5">
+                  <span class="font-mono text-[10px] text-muted-foreground"
+                    >{p.proposalId.slice(0, 8)}…</span
+                  >
+                  <span class="font-mono text-[10px] text-muted-foreground"
+                    >{p.domain}.{p.kind}</span
+                  >
+                  <span class="truncate">{p.summary}</span>
+                  <span class="ml-auto flex items-center gap-1.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={/^(delete|remove|revert|clear|deactivate|cancel)/i.test(p.kind)
+                        ? "destructive"
+                        : "default"}
+                      disabled={pendingActioning[p.proposalId] !== undefined &&
+                        pendingActioning[p.proposalId] !== null}
+                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "approve", `${p.domain}.${p.kind}`)}
+                      data-testid="pending-approve"
+                    >
+                      {pendingActioning[p.proposalId] === "approving" ? "Approving…" : "Approve"}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={pendingActioning[p.proposalId] !== undefined &&
+                        pendingActioning[p.proposalId] !== null}
+                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "reject")}
+                    >
+                      {pendingActioning[p.proposalId] === "rejecting" ? "Rejecting…" : "Reject"}
+                    </Button>
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
         <form
           onsubmit={(e) => {
             e.preventDefault();
