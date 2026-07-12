@@ -20,10 +20,11 @@
  * partial-index scans, then sort + limit. Cheap enough to call on
  * every chat turn.
  *
- * Schema reality: `media_alt_proposals` (no `status` column) and
- * `import_runs` (`status='proposed'` not `'pending'`, no `preview`)
- * are intentionally NOT included — different shape, surfaced via
- * dedicated alt-proposals + import wizard UIs.
+ * Schema reality: `media_alt_proposals` (no `status` column) stays
+ * out — different shape, surfaced via the dedicated alt-proposals UI.
+ * `import_runs` joined in 0124 (status='proposed' aliased into the
+ * common shape): the chat's pending strip must carry the crawl
+ * Approve button like every other §11.A domain.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -140,6 +141,14 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                chat_session_id::text
           FROM theme_pending_actions WHERE status = 'pending'
         -- Older proposal tables (varying shape; aliased into common columns).
+        UNION ALL
+        -- 0124 — import runs awaiting the crawl approval (status
+        -- 'proposed' in its own lifecycle; aliased into the common
+        -- shape so the chat strip + inbox count them).
+        SELECT 'import', 'site_import', id::text, proposed_by::text, created_at,
+               ('crawl ' || source_url || ' (up to ' || max_pages || ' pages)'),
+               chat_session_id::text
+          FROM import_runs WHERE status = 'proposed'
         UNION ALL
         SELECT 'locales', action_kind, id::text, proposed_by::text, proposed_at,
                COALESCE(payload->>'code', 'locale'),
