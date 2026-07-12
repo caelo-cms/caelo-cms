@@ -20,11 +20,12 @@ import type { LayoutServerLoad } from "./$types";
  * dogfood installs.
  *
  * P18 — first-run AI provider check: if no AI provider is configured
- * anywhere (DB-stored OR env-fallback), redirect to
- * /security/ai?firstRun=1 so the Owner sees a guided "configure your
- * first provider" banner instead of hitting "AI provider not
- * configured" the first time they open chat. Once any provider is
- * configured, this check is a one-query no-op per request.
+ * anywhere (DB-stored OR env-fallback), redirect to the /welcome/ai
+ * wizard (pick provider → paste key → land in chat) instead of
+ * hitting "AI provider not configured" the first time they open
+ * chat. The full management surface stays at /security/ai; the
+ * wizard links to it. Once any provider is configured, this check
+ * is a one-query no-op per request.
  */
 
 const AI_REDIRECT_ALLOWED_PREFIXES = [
@@ -48,7 +49,7 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "ai_providers.any_configured", {});
     if (r.ok && !(r.value as { anyConfigured: boolean }).anyConfigured) {
-      throw redirect(303, "/security/ai?firstRun=1");
+      throw redirect(303, "/welcome/ai");
     }
   }
 
