@@ -23,6 +23,7 @@
 
 import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
+import { COLLECT_STYLE_SAMPLES_SCRIPT, type ElementStyleSample } from "./design-tokens.js";
 import { assertPublicHttpUrl, isPublicIpAddress } from "./safe-fetch.js";
 
 /** Minimal Playwright route surface — typed locally so the package
@@ -38,6 +39,10 @@ export interface Screenshot {
   readonly bytes: Uint8Array;
   readonly width: number;
   readonly height: number;
+  /** issue #247 — raw computed-style samples collected in the SAME
+   *  render session, present only when `sampleStyles: true` was
+   *  requested. Feed into `deriveDesignTokens`. */
+  readonly styleSamples?: readonly ElementStyleSample[];
 }
 
 export interface Screenshotter {
@@ -61,6 +66,12 @@ export interface Screenshotter {
       /** Default true (import-diff behaviour). issue #189's glance
        *  tools pass false: one viewport of pixels, not an archive. */
       fullPage?: boolean;
+      /** issue #247 — also run the computed-style sampling script in
+       *  the rendered page and return `styleSamples`. A sampling
+       *  failure fails the capture (retry + loud note live at the
+       *  caller): screenshot and tokens come from one render session,
+       *  and a page that rendered will evaluate a style read. */
+      sampleStyles?: boolean;
     },
   ): Promise<Screenshot>;
   dispose(): Promise<void>;
@@ -68,14 +79,15 @@ export interface Screenshotter {
 
 /**
  * Returns a Playwright-backed screenshotter, or null if Playwright isn't
- * importable in the current runtime. The orchestrator uses the null
- * return to silently skip screenshot capture (status stays NULL on the
- * import_pages row, which the gating policy treats as "no diff data,
- * publish allowed").
+ * importable in the current runtime. issue #247: a null return is NOT a
+ * silent skip anymore — the orchestrator records a loud
+ * `screenshot_missing` note on every affected import page so the run
+ * report and downstream verification see those pages as UNVERIFIED.
  *
  * The dynamic import is wrapped in try/catch so a missing module (e.g.
  * a self-hosted install that didn't pre-install chromium) degrades to
- * "no screenshots" instead of crashing the orchestrator tick.
+ * "no screenshots, loudly noted" instead of crashing the orchestrator
+ * tick.
  */
 export async function createPlaywrightScreenshotter(guardOpts?: {
   /** issue #191 — hostnames exempt from the external-capture guard. */
@@ -155,10 +167,20 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       try {
         await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });
         const png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
+        // issue #247 — sample AFTER the screenshot so the pixels are
+        // captured even if the evaluate throws mid-flight; the throw
+        // still fails this capture attempt (loud, retried upstream).
+        let styleSamples: ElementStyleSample[] | undefined;
+        if (opts?.sampleStyles) {
+          styleSamples = (await page.evaluate(
+            COLLECT_STYLE_SAMPLES_SCRIPT,
+          )) as ElementStyleSample[];
+        }
         return {
           bytes: new Uint8Array(png),
           width: opts?.width ?? 1280,
           height: opts?.height ?? 800,
+          ...(styleSamples ? { styleSamples } : {}),
         };
       } finally {
         await ctx.close();

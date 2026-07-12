@@ -24,12 +24,16 @@
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import {
+  aggregateSiteDesignTokens,
   type CrawlCheckpoint,
   type CrawledPage,
   computeDiffStatus,
   computePixelDiff,
   crawlSite,
   createPlaywrightScreenshotter,
+  deriveDesignTokens,
+  type PageDesignTokens,
+  type Screenshot,
   type Screenshotter,
 } from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
@@ -418,24 +422,22 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           });
         },
       });
-      // P14 polish — screenshot diff pass. For every page we just
-      // staged, take a "ground truth" screenshot of the source URL +
-      // a "rendered" screenshot of the staged Caelo preview, classify
-      // via computeDiffStatus, and persist per-page. Skip silently when
-      // Playwright isn't available (Tier 2 / cloud installs without
-      // chromium pre-installed) — diff_status stays NULL, the gate
-      // treats NULL as "non-blocking", and operators can still publish.
-      // Gated by env so dev installs (no chromium) don't pay startup
-      // cost: set CAELO_IMPORTER_SCREENSHOTS=1 to enable.
-      if (process.env.CAELO_IMPORTER_SCREENSHOTS === "1") {
-        await captureImportDiffs({
-          runId,
-          stagedPreviewBaseUrl: process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:5173",
-          adapter: cfg.adapter,
-          registry: cfg.registry,
-          ...(cfg.screenshotStorage ? { screenshotStorage: cfg.screenshotStorage } : {}),
-        });
-      }
+      // issue #247 (WS1) — ground-truth pass, ALWAYS on. For every
+      // page we just staged: source screenshot + computed-style token
+      // sampling in one render session, staged-preview screenshot,
+      // pixel diff. The pre-#247 CAELO_IMPORTER_SCREENSHOTS opt-in is
+      // gone: it silently produced runs with zero screenshots (findings
+      // ledger F9) and the AI later rebuilt pages blind. When capture
+      // cannot happen (no Playwright, dead page, no storage) every
+      // affected page gets a loud `screenshot_missing` note instead of
+      // a silent NULL.
+      await captureImportGroundTruth({
+        runId,
+        stagedPreviewBaseUrl: process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:5173",
+        adapter: cfg.adapter,
+        registry: cfg.registry,
+        ...(cfg.screenshotStorage ? { screenshotStorage: cfg.screenshotStorage } : {}),
+      });
       await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "imports.update_run_status", {
         runId,
         status: "ready_for_review",
@@ -517,15 +519,26 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
 }
 
 /**
- * P14 polish — for every import_pages row in `runId`, take a source
- * + staged screenshot pair, classify, and write the diff back. Skips
- * silently if Playwright/sharp aren't available so the importer still
- * works on installs that opted out of the chromium binary.
+ * issue #247 (WS1) — design ground truth for every import_pages row in
+ * `runId`: ONE Playwright render session per source page produces the
+ * source screenshot AND the computed-style token samples; a second
+ * capture of the staged Caelo preview feeds the pixel diff. Per-page
+ * tokens land on `import_pages.sampled_design_tokens`; the run-level
+ * aggregate lands on `import_runs.site_design_tokens` (which
+ * compose_from_run prefers over extractor tokens).
+ *
+ * Failure contract (CLAUDE.md §2 no-fallbacks): a page that ends up
+ * WITHOUT a stored source screenshot always carries a
+ * `screenshot_missing` note naming the cause — Playwright unavailable,
+ * capture failed after a retry, storage missing, or upload failed. The
+ * page's diff_status stays NULL, so downstream verification (WS4)
+ * treats it as UNVERIFIED. There is no code path that skips capture
+ * wholesale without notes.
  *
  * Exported for the integration tests to drive directly without standing
  * up the polling orchestrator.
  */
-export async function captureImportDiffs(args: {
+export async function captureImportGroundTruth(args: {
   readonly runId: string;
   readonly stagedPreviewBaseUrl: string;
   readonly adapter: DatabaseAdapter;
@@ -538,82 +551,194 @@ export async function captureImportDiffs(args: {
     put(key: string, body: Uint8Array, contentType: string): Promise<void>;
   };
 }): Promise<{ captured: number; failed: number }> {
+  const noteMissing = async (
+    importPageId: string,
+    category: "screenshot_missing" | "design_tokens_missing",
+    note: string,
+  ): Promise<void> => {
+    // The note IS the loud marker — losing it silently would recreate
+    // F9. It must not mask the original capture failure either, so a
+    // failed write logs instead of throwing.
+    try {
+      const r = await execute(args.registry, args.adapter, SYSTEM_CTX, "imports.add_page_notes", {
+        importPageId,
+        notes: [{ category, note: note.slice(0, 1000), applied: false }],
+      });
+      if (!r.ok) {
+        console.error(
+          `[redeploy-orchestrator] failed to record ${category} note on import_page ${importPageId}:`,
+          r.error,
+        );
+      }
+    } catch (e) {
+      console.error(
+        `[redeploy-orchestrator] failed to record ${category} note on import_page ${importPageId}:`,
+        e,
+      );
+    }
+  };
+
+  const get = await execute(args.registry, args.adapter, SYSTEM_CTX, "imports.get", {
+    runId: args.runId,
+  });
+  if (!get.ok) return { captured: 0, failed: 0 };
+  const v = get.value as {
+    pages: Array<{ id: string; sourceUrl: string; proposedSlug: string }>;
+  };
+
   const screenshotter =
     args.screenshotter !== undefined
       ? args.screenshotter
       : await createPlaywrightScreenshotter({ allowedHosts: importerAllowedHosts() });
-  if (!screenshotter) return { captured: 0, failed: 0 };
+  if (!screenshotter) {
+    // Pre-#247 this returned silently and the run looked "done" with
+    // zero screenshots (F9). Every page now reads as UNVERIFIED.
+    for (const p of v.pages) {
+      await noteMissing(
+        p.id,
+        "screenshot_missing",
+        "Source screenshot NOT captured: Playwright/chromium is unavailable in this runtime. " +
+          "Install it (`bun node_modules/playwright/cli.js install chromium`) and re-run the import; " +
+          "this page is UNVERIFIED until a source screenshot exists.",
+      );
+    }
+    return { captured: 0, failed: v.pages.length };
+  }
+
+  // One transient hiccup (slow host, flaky network) must not cost the
+  // ground truth — retry exactly once, then note and move on.
+  const captureWithRetry = async (url: string): Promise<Screenshot> => {
+    try {
+      return await screenshotter.capture(url, { external: true, sampleStyles: true });
+    } catch {
+      return await screenshotter.capture(url, { external: true, sampleStyles: true });
+    }
+  };
 
   let captured = 0;
   let failed = 0;
+  const pageTokens: PageDesignTokens[] = [];
   try {
-    const get = await execute(args.registry, args.adapter, SYSTEM_CTX, "imports.get", {
-      runId: args.runId,
-    });
-    if (!get.ok) return { captured: 0, failed: 0 };
-    const v = get.value as {
-      pages: Array<{ id: string; sourceUrl: string; proposedSlug: string }>;
-    };
     for (const p of v.pages) {
+      // issue #191 — the source URL is third-party: guard it. The
+      // staged capture below targets Caelo's own localhost preview
+      // and must stay unguarded.
+      let sourceShot: Screenshot;
       try {
-        // issue #191 — the source URL is third-party: guard it. The
-        // staged capture below targets Caelo's own localhost preview
-        // and must stay unguarded.
-        const sourceShot = await screenshotter.capture(p.sourceUrl, { external: true });
-        // The staged "rendered" view: the admin's edit-by-path
-        // endpoint serves the live preview of the proposed page. We
-        // hit it under `staged-import:<importPageId>` so the route can
-        // resolve the right import_page row even before accept_page
-        // promotes it. Falls back to a no-op screenshot when the route
-        // isn't reachable.
-        let stagedShot: Awaited<ReturnType<typeof screenshotter.capture>> | null = null;
-        try {
-          stagedShot = await screenshotter.capture(
-            `${args.stagedPreviewBaseUrl}/edit/preview-by-path/en/${p.proposedSlug}`,
-          );
-        } catch {
-          // staged preview unreachable — treat as a fail diff so the
-          // operator's queue surfaces "could not render", not silently pass.
-          stagedShot = null;
-        }
-        const diffPct = stagedShot ? await computePixelDiff(sourceShot, stagedShot) : 1;
-        const classified = computeDiffStatus(diffPct);
-        // issue #198 — persist the pixels, not just the verdict. Keys
-        // are deterministic per page so re-captures overwrite instead
-        // of accumulating. Upload failures null the key (loud in the
-        // review UI), never block the diff write.
-        let sourceKey: string | undefined;
-        let stagedKey: string | undefined;
-        if (args.screenshotStorage) {
-          try {
-            sourceKey = `import-screenshots/${args.runId}/${p.id}-source.png`;
-            await args.screenshotStorage.put(sourceKey, sourceShot.bytes, "image/png");
-          } catch {
-            sourceKey = undefined;
-          }
-          if (stagedShot) {
-            try {
-              stagedKey = `import-screenshots/${args.runId}/${p.id}-staged.png`;
-              await args.screenshotStorage.put(stagedKey, stagedShot.bytes, "image/png");
-            } catch {
-              stagedKey = undefined;
-            }
-          }
-        }
-        await execute(args.registry, args.adapter, SYSTEM_CTX, "imports.update_page_diff", {
-          importPageId: p.id,
-          diffStatus: classified.status,
-          diffPct: classified.diffPct,
-          ...(sourceKey ? { screenshotObjectKey: sourceKey } : {}),
-          ...(stagedKey ? { stagedScreenshotObjectKey: stagedKey } : {}),
-        });
-        captured += 1;
-      } catch {
+        sourceShot = await captureWithRetry(p.sourceUrl);
+      } catch (e) {
         failed += 1;
+        await noteMissing(
+          p.id,
+          "screenshot_missing",
+          `Source screenshot NOT captured after a retry (${(e as Error).message}). ` +
+            "This page is UNVERIFIED — the AI has no visual ground truth for it.",
+        );
+        continue;
       }
+
+      // Tokens travel with the diff write below; an empty sample set
+      // from a rendered page is a loud anomaly, not a shrug.
+      const tokens =
+        sourceShot.styleSamples && sourceShot.styleSamples.length > 0
+          ? deriveDesignTokens(sourceShot.styleSamples)
+          : null;
+      if (tokens) pageTokens.push(tokens);
+      else {
+        await noteMissing(
+          p.id,
+          "design_tokens_missing",
+          "Rendered page returned zero computed-style samples — no design tokens for this page. " +
+            "Theme decisions fall back to the run's other pages / extractor tokens.",
+        );
+      }
+
+      // The staged "rendered" view: the admin's edit-by-path endpoint
+      // serves the live preview of the proposed page. Unreachable =
+      // fail diff so the operator's queue surfaces "could not render",
+      // never a silent pass.
+      let stagedShot: Screenshot | null = null;
+      try {
+        stagedShot = await screenshotter.capture(
+          `${args.stagedPreviewBaseUrl}/edit/preview-by-path/en/${p.proposedSlug}`,
+        );
+      } catch {
+        stagedShot = null;
+      }
+      const diffPct = stagedShot ? await computePixelDiff(sourceShot, stagedShot) : 1;
+      const classified = computeDiffStatus(diffPct);
+
+      // issue #198 — persist the pixels, not just the verdict. Keys are
+      // deterministic per page so re-captures overwrite instead of
+      // accumulating. issue #247 — a capture that cannot be PERSISTED
+      // is a missing screenshot: note it (the key stays NULL and the
+      // page stays UNVERIFIED), but still write diff + tokens.
+      let sourceKey: string | undefined;
+      let stagedKey: string | undefined;
+      if (args.screenshotStorage) {
+        try {
+          sourceKey = `import-screenshots/${args.runId}/${p.id}-source.png`;
+          await args.screenshotStorage.put(sourceKey, sourceShot.bytes, "image/png");
+        } catch (e) {
+          sourceKey = undefined;
+          await noteMissing(
+            p.id,
+            "screenshot_missing",
+            `Source screenshot captured but the upload failed (${(e as Error).message}). ` +
+              "This page is UNVERIFIED until a stored source screenshot exists.",
+          );
+        }
+        if (stagedShot) {
+          try {
+            stagedKey = `import-screenshots/${args.runId}/${p.id}-staged.png`;
+            await args.screenshotStorage.put(stagedKey, stagedShot.bytes, "image/png");
+          } catch {
+            stagedKey = undefined;
+          }
+        }
+      } else {
+        await noteMissing(
+          p.id,
+          "screenshot_missing",
+          "Source screenshot captured but NO screenshot storage is configured on this install — " +
+            "the pixels were dropped. Wire screenshotStorage (media storage) into the orchestrator; " +
+            "this page is UNVERIFIED until a stored source screenshot exists.",
+        );
+      }
+
+      await execute(args.registry, args.adapter, SYSTEM_CTX, "imports.update_page_diff", {
+        importPageId: p.id,
+        diffStatus: classified.status,
+        diffPct: classified.diffPct,
+        ...(sourceKey ? { screenshotObjectKey: sourceKey } : {}),
+        ...(stagedKey ? { stagedScreenshotObjectKey: stagedKey } : {}),
+        ...(tokens ? { sampledDesignTokens: tokens } : {}),
+      });
+      captured += 1;
     }
   } finally {
     await screenshotter.dispose().catch(() => undefined);
   }
+
+  // Run-level aggregate — what the theme proposal consumes. Written
+  // even for partial captures: N sampled pages beat zero ground truth,
+  // and pageCount tells the AI how much of the site it represents.
+  if (pageTokens.length > 0) {
+    const wrote = await execute(
+      args.registry,
+      args.adapter,
+      SYSTEM_CTX,
+      "imports.set_run_design_tokens",
+      { runId: args.runId, siteDesignTokens: aggregateSiteDesignTokens(pageTokens) },
+    );
+    if (!wrote.ok) {
+      // System-scoped op fed by our own aggregator — a rejection is a
+      // real bug (schema drift), not an environment quirk. Fail the run
+      // loudly (no-fallbacks pre-1.0) rather than composing a theme
+      // from silently-dropped ground truth.
+      throw new Error(`imports.set_run_design_tokens rejected: ${JSON.stringify(wrote.error)}`);
+    }
+  }
+
   return { captured, failed };
 }

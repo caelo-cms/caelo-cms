@@ -97,6 +97,8 @@ interface Report {
   clusters: { clusterKey: string; label: string | null; count: number }[];
   redirectsCreated: number;
   crawlErrors: { url: string; reason: string }[];
+  pagesMissingScreenshot: number;
+  siteDesignTokens: unknown;
   notes: {
     category: string;
     applied: number;
@@ -140,6 +142,15 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
             .map((e) => `${e.url} (${e.reason})`)
             .join("; ")}${v.crawlErrors.length > 8 ? "; …" : ""}`
         : "Crawl errors: none.",
+      // issue #247 — design ground truth status. Screenshot gaps are
+      // UNVERIFIED pages the operator must hear about; sampled tokens
+      // are what the model should base theme statements on.
+      v.pagesMissingScreenshot > 0
+        ? `WARNING: ${v.pagesMissingScreenshot} page(s) have NO stored source screenshot (see notes/screenshot_missing) — they are UNVERIFIED: nothing confirms their rebuild matches the original. Tell the operator plainly.`
+        : "Source screenshots: every page has one.",
+      v.siteDesignTokens
+        ? `Sampled design tokens (computed-style ground truth) are stored on this run: ${JSON.stringify(v.siteDesignTokens).slice(0, 1500)} — compose_from_import already applied them to the theme; cite THESE values (not guesses) when discussing the site's colors/fonts.`
+        : "No sampled design tokens on this run (fetch-only crawl) — theme values came from the inline-CSS extractor.",
       ...v.notes.map(
         (n) =>
           `Notes/${n.category}: ${n.applied} fixed, ${n.suggested} suggested. Samples: ${n.samples

@@ -174,6 +174,28 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
       ),
     ).toBe(true);
 
+    // issue #247 (WS1) — seed a sampled site-level token aggregate the
+    // way the ground-truth capture pass would. compose must prefer
+    // these computed-style values over the fixture's extractor tokens.
+    const sampled = await execute(registry, adapter, ctx, "imports.set_run_design_tokens", {
+      runId,
+      siteDesignTokens: {
+        palette: [{ value: "#111111", count: 12 }],
+        backgrounds: [{ value: "#ffffff", count: 4 }],
+        fontFamilies: [{ value: "Inter, sans-serif", count: 8 }],
+        fontSizes: [{ value: "16px", count: 8 }],
+        fontWeights: [{ value: "400", count: 8 }],
+        radii: [{ value: "8px", count: 2 }],
+        shadows: [],
+        roles: {
+          body: { color: "#111111", backgroundColor: "#ffffff", fontFamily: "Inter, sans-serif" },
+          button: { color: "#ffffff", backgroundColor: "#dc2626", borderRadius: "8px" },
+        },
+        pageCount: FIXTURE.length,
+      },
+    });
+    expect(sampled.ok).toBe(true);
+
     const r = await execute(registry, adapter, ctx, "imports.compose_from_run", {
       runId,
       templateSlug: `${PREFIX}imported-page`,
@@ -184,12 +206,15 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
       pageIds: string[];
       templatesByCluster: Record<string, string>;
       themeTokensApplied: number;
+      designTokenSource: string;
       layoutId: string;
       chromeBound: string[];
       chromeNotes: string[];
     };
     expect(v.pageIds.length).toBe(FIXTURE.length);
     expect(Object.keys(v.templatesByCluster).length).toBeGreaterThanOrEqual(1);
+    // issue #247 — computed-style ground truth won over the extractor.
+    expect(v.designTokenSource).toBe("sampled");
 
     // issue #253 (WS0) — chrome binds ONCE at the layout; page bodies
     // are content-only. Pre-#253, compose duplicated the crawled

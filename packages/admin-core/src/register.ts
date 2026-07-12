@@ -198,6 +198,7 @@ import {
   listPendingImportProposalsOp,
   proposeImportRunOp,
   rejectImportProposalOp,
+  setRunDesignTokensOp,
   updateImportRunStatusOp,
   updatePageDiffOp,
   writeExtractedPagesOp,
@@ -760,6 +761,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);
   registry.register(updatePageDiffOp);
+  // issue #247 — run-level computed-style token aggregate.
+  registry.register(setRunDesignTokensOp);
   registry.register(acknowledgeImportPageDiffOp);
   registry.register(writeExtractedPagesOp);
   registry.register(acceptImportedPageOp);
