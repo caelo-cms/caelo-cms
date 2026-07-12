@@ -55,8 +55,12 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
   name: "propose_site_import",
   description:
     "TWO-STEP: propose a crawl of an existing site to import pages into Caelo. " +
-    "This QUEUES the proposal at /security/import/pending — Owner must Approve before " +
-    "the headless crawler runs. DO NOT claim the crawl ran. Use this when the user " +
+    "This QUEUES the proposal; the chat renders it as a card with an APPROVE button — tell the " +
+    "operator to click Approve right there (the /security/import/pending page works too). The " +
+    "crawler only runs after that click. DO NOT claim the crawl ran. After approval you receive " +
+    "an automatic 'Approved' message; the crawl runs in the BACKGROUND — check `imports.get` for " +
+    "status, and if it is still 'crawling', say so and continue when it is ready_for_review. " +
+    "Use this when the user " +
     "asks to bring an existing site into Caelo. `depth` defaults to 2 (BFS hops); " +
     "`maxPages` defaults to 50 (cap 2000). " +
     "The tool computes a page-count + cost estimate and returns it: RESTATE the scope, " +

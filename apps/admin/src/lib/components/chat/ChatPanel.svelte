@@ -312,8 +312,13 @@
       return;
     }
     const label = kind ? `${kind} proposal` : "proposal";
+    // Imports are the one gated domain whose approval starts a
+    // BACKGROUND job instead of applying a change — the nudge must
+    // say so or the AI announces results that don't exist yet.
     void sendAutoMessage(
-      `Approved: ${label} ${proposalId.slice(0, 8)} applied to the chat branch. Please continue with what you were doing.`,
+      kind === "site_import"
+        ? `Approved: crawl proposal ${proposalId.slice(0, 8)} — the crawler starts within ~10s and runs in the background. Check the run status and tell me how you'll proceed.`
+        : `Approved: ${label} ${proposalId.slice(0, 8)} applied to the chat branch. Please continue with what you were doing.`,
     );
   }
 
