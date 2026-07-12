@@ -190,7 +190,29 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
   const types: Record<CanonicalPath, NormalizeResult["types"][string]> = {};
   const paths: CanonicalPath[] = [];
 
-  for (const [rawName, rawValue] of Object.entries(input)) {
+  for (const [rawName, rawValueIn] of Object.entries(input)) {
+    // issue #242 (F11) — tolerate the two encodings the AI actually
+    // sends for composite values, then validate content strictly:
+    //  1. a JSON-encoded object string → parse it;
+    //  2. the full DTCG envelope `{$type?, $value}` → unwrap to $value
+    //     (storing the envelope verbatim would nest `$value.$value`
+    //     and bounce off the document schema).
+    let rawValue = rawValueIn;
+    if (typeof rawValue === "string" && rawValue.trim().startsWith("{")) {
+      try {
+        rawValue = JSON.parse(rawValue) as unknown;
+      } catch {
+        // Not JSON after all — keep the literal string.
+      }
+    }
+    if (
+      rawValue !== null &&
+      typeof rawValue === "object" &&
+      !Array.isArray(rawValue) &&
+      "$value" in (rawValue as Record<string, unknown>)
+    ) {
+      rawValue = (rawValue as Record<string, unknown>).$value;
+    }
     const resolved = resolveOne(rawName, rawValue);
     // v0.11.0 fix (#45 review thread on theme-normalize.ts:149) —
     // typography is a composite; `$value` MUST be an object per the
