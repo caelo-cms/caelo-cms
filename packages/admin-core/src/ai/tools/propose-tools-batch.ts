@@ -31,6 +31,7 @@ import { boundedThemeDocument } from "../../theme-document-input.js";
 import {
   ANCHOR_HUE_HINTS,
   DEPTH_AND_SURFACE_HINTS,
+  TOKEN_SHAPE_HINTS,
   THEME_DOCUMENT_SKELETON,
 } from "../theme-guidance.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
@@ -667,7 +668,7 @@ export const proposeCreateThemeTool = makeProposeTool({
     `\`tokens:\` ${THEME_DOCUMENT_SKELETON} — each ` +
     "leaf is `{$type, $value}` (e.g. `{$type: 'color', $value: '#4f46e5'}`). Pick a primary " +
     "with real chroma that fits the brand; do NOT default to neutral/grayscale on a real " +
-    `site. Anchor-hue inspiration: ${ANCHOR_HUE_HINTS}. ${DEPTH_AND_SURFACE_HINTS} ` +
+    `site. Anchor-hue inspiration: ${ANCHOR_HUE_HINTS}. ${DEPTH_AND_SURFACE_HINTS} ${TOKEN_SHAPE_HINTS} ` +
     "`description` is required — record WHY this palette fits (the cold-start gate " +
     "reads it). If `overrides.primaryColor` is set, the server derives a 50–900 OKLCh " +
     "lightness ramp from it (each stop annotated `_derived: true`); explicit stops via " +
