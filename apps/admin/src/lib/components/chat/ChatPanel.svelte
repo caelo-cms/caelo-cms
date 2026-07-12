@@ -739,7 +739,35 @@
     }
   }
 
+  /**
+   * Reloaded transcripts: chat_messages tool rows don't persist the
+   * tool NAME (only tool_call_id); live streaming knows it, a page
+   * reload doesn't — the collapsed cards then read "unknown". Resolve
+   * it from the assistant message that issued the call.
+   */
+  function toolNameFromHistory(m: ChatMessage): string | null {
+    if (!m.toolCallId) return null;
+    for (const candidate of messages) {
+      if (candidate.role !== "assistant" || !Array.isArray(candidate.toolCalls)) continue;
+      const hit = (candidate.toolCalls as { id?: string; name?: string }[]).find(
+        (c) => c?.id === m.toolCallId && typeof c?.name === "string",
+      );
+      if (hit?.name) return hit.name;
+    }
+    return null;
+  }
+
   function onComposerKeydown(e: KeyboardEvent): void {
+    // Standard chat-UI send semantics (operator request): Enter sends,
+    // Shift+Enter / Option+Enter insert a newline. IME composition
+    // (Japanese/Chinese input confirming a candidate with Enter) must
+    // never send. When the mention popup is open, Enter selects the
+    // suggestion instead (handled below).
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.isComposing && mentionKind === null) {
+      e.preventDefault();
+      void sendMessage();
+      return;
+    }
     if (mentionKind === null) return;
     const list = mentionKind === "slash" ? slashSuggestions : atSuggestions;
     if (list.length === 0) return;
@@ -1391,7 +1419,7 @@
                        (plain markdown). Failures now render through
                        ToolCardRouter's destructive style. -->
                   <ToolCardRouter
-                    name={m.toolName ?? "unknown"}
+                    name={m.toolName ?? toolNameFromHistory(m) ?? "tool result"}
                     content={m.content}
                     ok={!isFailedToolMessage(m.content)}
                     args={m.toolArgs ?? {}}
