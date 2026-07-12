@@ -63,6 +63,9 @@ async function wipe(): Promise<void> {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM redirects WHERE to_path LIKE ${"/" + PREFIX + "%"}`;
       await tx`DELETE FROM pages WHERE slug LIKE ${PREFIX + "%"}`;
+      // issue #253 — compose binds imported chrome into the shared
+      // layout; unbind before deleting the modules themselves.
+      await tx`DELETE FROM layout_modules WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${"imported-%"})`;
       await tx`DELETE FROM modules WHERE slug LIKE ${"imported-%"} AND slug NOT IN (SELECT m.slug FROM modules m JOIN page_modules pm ON pm.module_id = m.id)`;
       await tx`DELETE FROM templates WHERE slug LIKE ${PREFIX + "%"}`;
       await tx`DELETE FROM import_runs WHERE source_url = ${"https://svfx-harness.searchviu.example"}`;
@@ -181,8 +184,86 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
       pageIds: string[];
       templatesByCluster: Record<string, string>;
       themeTokensApplied: number;
+      layoutId: string;
+      chromeBound: string[];
+      chromeNotes: string[];
     };
     expect(v.pageIds.length).toBe(FIXTURE.length);
     expect(Object.keys(v.templatesByCluster).length).toBeGreaterThanOrEqual(1);
+
+    // issue #253 (WS0) — chrome binds ONCE at the layout; page bodies
+    // are content-only. Pre-#253, compose duplicated the crawled
+    // header/footer into per-page template blocks while the layout's
+    // chrome slots rendered the loud-raw `_` on every page.
+    expect([...v.chromeBound].sort()).toEqual(["footer", "header"]);
+    expect(v.chromeNotes).toEqual([]);
+
+    const db = new SQL(ADMIN_URL!);
+    try {
+      const layoutBinds = (await db`
+        SELECT block_name, module_id::text AS module_id FROM layout_modules
+        WHERE layout_id = ${v.layoutId}::uuid AND block_name IN ('header', 'footer')
+      `) as { block_name: string; module_id: string }[];
+      expect(layoutBinds.map((b) => b.block_name).sort()).toEqual(["footer", "header"]);
+
+      for (const b of layoutBinds) {
+        const mod = (await db`
+          SELECT kind FROM modules WHERE id = ${b.module_id}::uuid
+        `) as { kind: string }[];
+        expect(mod[0]?.kind).toBe("chrome");
+      }
+
+      // No composed page carries a per-page chrome placement.
+      for (const pageId of v.pageIds) {
+        const rows = (await db`
+          SELECT count(*)::int AS n FROM page_modules
+          WHERE page_id = ${pageId}::uuid AND block_name IN ('header', 'footer')
+        `) as { n: number }[];
+        expect(rows[0]?.n).toBe(0);
+      }
+
+      // Imported templates are content-only: no chrome slots in the
+      // html, no chrome template_blocks.
+      for (const tplId of Object.values(v.templatesByCluster)) {
+        const tpl = (await db`
+          SELECT html FROM templates WHERE id = ${tplId}::uuid
+        `) as { html: string }[];
+        expect(tpl[0]?.html).not.toContain('caelo-slot name="header"');
+        expect(tpl[0]?.html).not.toContain('caelo-slot name="footer"');
+        expect(tpl[0]?.html).toContain('caelo-slot name="content"');
+        const blocks = (await db`
+          SELECT count(*)::int AS n FROM template_blocks
+          WHERE template_id = ${tplId}::uuid AND name IN ('header', 'footer')
+        `) as { n: number }[];
+        expect(blocks[0]?.n).toBe(0);
+      }
+    } finally {
+      await db.end();
+    }
+  });
+
+  it("re-compose keeps chrome bound exactly once at the layout", async () => {
+    // All pages are accepted after the previous test, so compose
+    // refuses to re-run (idempotency contract) — and the layout
+    // binding from the first compose stays single.
+    const r = await execute(registry, adapter, ctx, "imports.compose_from_run", {
+      runId,
+      templateSlug: `${PREFIX}imported-page`,
+    });
+    expect(r.ok).toBe(false);
+
+    const db = new SQL(ADMIN_URL!);
+    try {
+      const binds = (await db`
+        SELECT block_name, count(*)::int AS n FROM layout_modules
+        WHERE block_name IN ('header', 'footer')
+          AND module_id IN (SELECT id FROM modules WHERE slug LIKE ${"imported-%"})
+        GROUP BY block_name
+      `) as { block_name: string; n: number }[];
+      expect(binds.length).toBe(2);
+      for (const b of binds) expect(b.n).toBe(1);
+    } finally {
+      await db.end();
+    }
   });
 });

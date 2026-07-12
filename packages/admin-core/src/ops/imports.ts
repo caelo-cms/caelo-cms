@@ -701,7 +701,13 @@ export const acceptImportedPageOp = defineOperation({
       });
     }
     // Insert modules + page_modules per extracted module.
-    for (const m of proposedModules) {
+    // issue #253 — header/footer are layout-owned chrome; compose_from_run
+    // binds them once at the layout. A per-page accept never mints
+    // per-page chrome placements (the imported templates carry no
+    // header/footer blocks anymore, so such rows would be invisible).
+    for (const m of proposedModules.filter(
+      (pm) => pm.blockName !== "header" && pm.blockName !== "footer",
+    )) {
       const modRows = (await tx.execute(sql`
         INSERT INTO modules (slug, display_name, type, html, css, js)
         VALUES (
@@ -1200,6 +1206,10 @@ export const composeFromImportRunOp = defineOperation({
     designInventory: z.string().nullable(),
     /** issue #196 — 301s written from old URLs to new Caelo paths. */
     redirectsCreated: z.number().int(),
+    /** issue #253 — chrome blocks bound at the layout ("header"/"footer"). */
+    chromeBound: z.array(z.string()),
+    /** issue #253 — loud chrome notes (missing layout block, slot already bound). */
+    chromeNotes: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
     // 1. Run must exist + be reviewable.
@@ -1387,18 +1397,19 @@ export const composeFromImportRunOp = defineOperation({
       clusters.set(r.cluster_key, list);
     }
 
-    // Chrome is SHARED per run: one header module + one footer module
-    // minted from the first page that has them, referenced by every
-    // composed page with a single synced content instance — editing
-    // the imported header once updates the whole site (§1A reuse).
-    const chromeModules = new Map<
-      "header" | "footer",
-      { moduleId: string; contentInstanceId: string }
-    >();
+    // issue #253 (WS0) — chrome binds ONCE at the LAYOUT level, never
+    // per page. Layouts are Caelo's site-wide chrome surface
+    // (layout_modules); the pre-#253 compose duplicated the crawled
+    // header/footer into every page's template blocks while the layout
+    // slots stayed unbound — every page rendered the loud-raw `_` where
+    // the site header belonged. Layout placements render from module
+    // html / field defaults (no content_instance binding), so the
+    // chrome module carries the crawled markup directly.
+    const chromeModules = new Map<"header" | "footer", string>();
     const ensureChromeModule = async (
       block: "header" | "footer",
       src: ParsedModule,
-    ): Promise<{ moduleId: string; contentInstanceId: string } | null> => {
+    ): Promise<string | null> => {
       const existing = chromeModules.get(block);
       if (existing) return existing;
       const modInsert = (await tx.execute(sql`
@@ -1409,7 +1420,7 @@ export const composeFromImportRunOp = defineOperation({
           ${deriveModuleType(src.displayName || block)},
           ${src.html}, '', '',
           'chrome',
-          ${`Imported site ${block} — shared across every migrated page; edit once, updates everywhere.`}
+          ${`Imported site ${block} — bound to the site layout; every page shows it, edit once, updates everywhere.`}
         )
         ON CONFLICT (slug, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
           WHERE deleted_at IS NULL
@@ -1418,16 +1429,55 @@ export const composeFromImportRunOp = defineOperation({
       `)) as unknown as { id: string }[];
       const moduleId = modInsert[0]?.id;
       if (!moduleId) return null;
-      const ciInsert = (await tx.execute(sql`
-        INSERT INTO content_instances (module_id, "values")
-        VALUES (${moduleId}::uuid, '{}'::jsonb)
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-      const contentInstanceId = ciInsert[0]?.id;
-      if (!contentInstanceId) return null;
-      const entry = { moduleId, contentInstanceId };
-      chromeModules.set(block, entry);
-      return entry;
+      chromeModules.set(block, moduleId);
+      return moduleId;
+    };
+
+    // Which chrome blocks does the chosen layout actually declare?
+    // A layout without a header/footer block (e.g. `bare`) gets a loud
+    // note in the result — never a silent skip (CLAUDE.md §2).
+    const layoutBlockRows = (await tx.execute(sql`
+      SELECT name FROM layout_blocks WHERE layout_id = ${layoutId}::uuid
+    `)) as unknown as { name: string }[];
+    const layoutBlockNames = new Set(layoutBlockRows.map((b) => b.name));
+    const chromeBound: string[] = [];
+    const chromeNotes: string[] = [];
+    const chromeHandled = new Set<"header" | "footer">();
+    const bindChromeToLayout = async (
+      block: "header" | "footer",
+      src: ParsedModule,
+    ): Promise<void> => {
+      if (chromeHandled.has(block)) return;
+      chromeHandled.add(block);
+      if (!layoutBlockNames.has(block)) {
+        chromeNotes.push(`layout-missing-${block}-block`);
+        return;
+      }
+      const moduleId = await ensureChromeModule(block, src);
+      if (!moduleId) {
+        chromeNotes.push(`${block}-module-create-failed`);
+        return;
+      }
+      const existingBind = (await tx.execute(sql`
+        SELECT module_id::text AS module_id FROM layout_modules
+        WHERE layout_id = ${layoutId}::uuid AND block_name = ${block}
+        LIMIT 1
+      `)) as unknown as { module_id: string }[];
+      if (existingBind[0]) {
+        if (existingBind[0].module_id === moduleId) {
+          chromeBound.push(block); // idempotent re-run
+        } else {
+          // The operator (or genesis) already has site chrome here —
+          // importing must not clobber it. Loud note, operator decides.
+          chromeNotes.push(`${block}-slot-already-bound-to-other-module`);
+        }
+        return;
+      }
+      await tx.execute(sql`
+        INSERT INTO layout_modules (layout_id, block_name, position, module_id)
+        VALUES (${layoutId}::uuid, ${block}, 0, ${moduleId}::uuid)
+      `);
+      chromeBound.push(block);
     };
 
     const ensureClusterTemplate = async (
@@ -1441,7 +1491,29 @@ export const composeFromImportRunOp = defineOperation({
         SELECT id::text AS id FROM templates
         WHERE slug = ${slug} AND deleted_at IS NULL LIMIT 1
       `)) as unknown as { id: string }[];
-      if (existingTplRows[0]) return existingTplRows[0].id;
+      // issue #253 — imported templates are CONTENT-ONLY; chrome lives
+      // at the layout level. A re-run over a pre-#253 template migrates
+      // it in place: content-only html, legacy chrome blocks dropped,
+      // stale per-page chrome placements removed (their blocks no
+      // longer exist, so the rows would be invisible orphans).
+      const contentOnlyHtml =
+        '<div data-template="imported-page"><caelo-slot name="content">_</caelo-slot></div>';
+      if (existingTplRows[0]) {
+        const tplId = existingTplRows[0].id;
+        await tx.execute(sql`
+          UPDATE templates SET html = ${contentOnlyHtml} WHERE id = ${tplId}::uuid
+        `);
+        await tx.execute(sql`
+          DELETE FROM template_blocks
+          WHERE template_id = ${tplId}::uuid AND name IN ('header', 'footer')
+        `);
+        await tx.execute(sql`
+          DELETE FROM page_modules pm USING pages p
+          WHERE pm.page_id = p.id AND p.template_id = ${tplId}::uuid
+            AND pm.block_name IN ('header', 'footer')
+        `);
+        return tplId;
+      }
       const displayName =
         clusterKey === "home"
           ? `Imported homepage (${run.source_url.slice(0, 50)})`
@@ -1451,7 +1523,7 @@ export const composeFromImportRunOp = defineOperation({
         VALUES (
           ${slug},
           ${displayName},
-          '<div data-template="imported-page"><caelo-slot name="header">_</caelo-slot><caelo-slot name="content">_</caelo-slot><caelo-slot name="footer">_</caelo-slot></div>',
+          ${contentOnlyHtml},
           ${sampleCss},
           ${layoutId}::uuid
         )
@@ -1461,10 +1533,7 @@ export const composeFromImportRunOp = defineOperation({
       if (!newId) return null;
       await tx.execute(sql`
         INSERT INTO template_blocks (template_id, name, display_name, position)
-        VALUES
-          (${newId}::uuid, 'header', 'Header', 0),
-          (${newId}::uuid, 'content', 'Content', 1),
-          (${newId}::uuid, 'footer', 'Footer', 2)
+        VALUES (${newId}::uuid, 'content', 'Content', 0)
       `);
       return newId;
     };
@@ -1529,19 +1598,10 @@ export const composeFromImportRunOp = defineOperation({
         await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${pageId}::uuid`);
         for (const m of proposedModules) {
           if (m.blockName === "header" || m.blockName === "footer") {
-            // issue #195 — chrome lands in the CHROME block via the
-            // run-shared module (regression: pre-#195 this line read
-            // `m.blockName === "content" ? "content" : "content"`).
-            const chrome = await ensureChromeModule(m.blockName, m);
-            if (!chrome) continue;
-            await tx.execute(sql`
-              INSERT INTO page_modules
-                (page_id, block_name, position, module_id, content_instance_id, sync_mode)
-              VALUES (
-                ${pageId}::uuid, ${m.blockName}, ${m.position},
-                ${chrome.moduleId}::uuid, ${chrome.contentInstanceId}::uuid, 'synced'
-              )
-            `);
+            // issue #253 — chrome binds at the LAYOUT, once per run,
+            // never as a per-page placement (pre-#253 this inserted a
+            // page_modules row per page, leaving layout slots unbound).
+            await bindChromeToLayout(m.blockName, m);
             continue;
           }
           const modDisplayName = m.displayName || `${m.blockName} ${m.position}`;
@@ -1676,6 +1736,8 @@ export const composeFromImportRunOp = defineOperation({
       skippedAlreadyAccepted,
       designInventory,
       redirectsCreated,
+      chromeBound,
+      chromeNotes,
     });
   },
 });

@@ -2,9 +2,9 @@
 
 /**
  * issue #195 — compose_from_run v2 against the real Postgres:
- *   - REGRESSION for the imports.ts:967 bug: header/footer modules
- *     land in the header/footer blocks, never remapped to `content`;
- *   - chrome is ONE shared module + synced instance across pages;
+ *   - issue #253 (WS0): chrome binds ONCE at the LAYOUT — one shared
+ *     header/footer module in layout_modules, ZERO per-page chrome
+ *     placements, content-only imported templates;
  *   - one template per cluster, homepage cluster separate + first;
  *   - the cluster sample's page_css survives onto the template;
  *   - the design inventory (facts incl. gradient) lands on the run
@@ -46,6 +46,7 @@ async function cleanupFixtures(): Promise<void> {
     await tx`DELETE FROM content_instances WHERE module_id IN (
       SELECT id FROM modules WHERE slug LIKE 'imported-%'
     ) AND id NOT IN (SELECT content_instance_id FROM page_modules)`;
+    await tx`DELETE FROM layout_modules WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE 'imported-%')`;
     await tx`DELETE FROM modules WHERE slug LIKE 'imported-%'
       AND id NOT IN (SELECT module_id FROM page_modules)`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE 'issue195-imported%')`;
@@ -158,6 +159,9 @@ describe("compose_from_run v2 (#195)", () => {
       pageIds: string[];
       homepageId: string | null;
       designInventory: string | null;
+      layoutId: string;
+      chromeBound: string[];
+      chromeNotes: string[];
     };
 
     // One template per cluster; home separate; templateId = home's.
@@ -192,15 +196,29 @@ describe("compose_from_run v2 (#195)", () => {
       template_slug: string;
     }>;
 
-    // REGRESSION (:967): header/footer land in their own blocks.
+    // issue #253 (WS0): page bodies are content-only — chrome never
+    // lands as a per-page placement.
     const homeBlocks = rows.filter((x) => x.slug === "issue195-home").map((x) => x.block_name);
-    expect(homeBlocks.sort()).toEqual(["content", "footer", "header"]);
+    expect(homeBlocks.sort()).toEqual(["content"]);
+    expect(rows.filter((x) => x.block_name === "header" || x.block_name === "footer")).toHaveLength(
+      0,
+    );
 
-    // Chrome is one SHARED synced module across all three pages.
-    const headerRows = rows.filter((x) => x.block_name === "header");
-    expect(headerRows).toHaveLength(3);
-    expect(new Set(headerRows.map((x) => x.module_id)).size).toBe(1);
-    expect(headerRows.every((x) => x.sync_mode === "synced")).toBe(true);
+    // Chrome is ONE shared module per block, bound at the LAYOUT.
+    expect([...v.chromeBound].sort()).toEqual(["footer", "header"]);
+    expect(v.chromeNotes).toEqual([]);
+    const layoutBinds = (await sqlc.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return await tx`
+        SELECT lm.block_name, count(*)::int AS n
+        FROM layout_modules lm
+        JOIN modules m ON m.id = lm.module_id
+        WHERE lm.layout_id = ${v.layoutId}::uuid AND m.slug LIKE 'imported-%'
+        GROUP BY lm.block_name
+      `;
+    })) as unknown as Array<{ block_name: string; n: number }>;
+    expect(layoutBinds.map((x) => x.block_name).sort()).toEqual(["footer", "header"]);
+    for (const b of layoutBinds) expect(b.n).toBe(1);
 
     // Cluster binding + css preservation.
     const homeRow = rows.find((x) => x.slug === "issue195-home");

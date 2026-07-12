@@ -228,8 +228,10 @@ describe("P14 imports happy path (propose → execute → write → accept)", ()
           WHERE page_id = ${newPageId}::uuid
           ORDER BY block_name, position
         `) as unknown as Array<{ block_name: string; position: number }>;
-        expect(pms).toHaveLength(3);
-        expect(pms.map((p) => p.block_name).sort()).toEqual(["content", "footer", "header"]);
+        // issue #253 (WS0) — accept_page never mints per-page chrome;
+        // header/footer are layout-owned (compose_from_run binds them).
+        expect(pms).toHaveLength(1);
+        expect(pms.map((p) => p.block_name)).toEqual(["content"]);
       });
     } finally {
       await sql.end();
