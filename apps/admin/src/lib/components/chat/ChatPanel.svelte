@@ -573,6 +573,7 @@
     pageId: string;
     chatBranchId?: string;
     viewport: "desktop" | "tablet" | "mobile";
+    selector?: string;
   }): Promise<void> {
     const VIEWPORT_DIMS = {
       desktop: { width: 1280, height: 800 },
@@ -631,12 +632,22 @@
       }
       // Dynamic import keeps html2canvas out of the main bundle —
       // only loaded when the AI actually requests a screenshot.
+      // issue #250 (WS4) — selector-scoped capture: shoot one element
+      // instead of the page. Loud failure when nothing matches.
+      let captureTarget: HTMLElement = doc.body;
+      if (req.selector) {
+        const el = doc.querySelector(req.selector);
+        if (el === null) {
+          await uploadFailure(`selector matched nothing in the rendered page: ${req.selector}`);
+          return;
+        }
+        captureTarget = el as HTMLElement;
+      }
       const { default: html2canvas } = await import("html2canvas");
-      const canvas = await html2canvas(doc.body, {
-        width,
-        height,
-        windowWidth: width,
-        windowHeight: height,
+      const canvas = await html2canvas(captureTarget, {
+        ...(req.selector
+          ? {}
+          : { width, height, windowWidth: width, windowHeight: height }),
         scale: 1,
         // useCORS lets the canvas pull in cross-origin images
         // (CDN media). foreignObjectRendering=false avoids a
