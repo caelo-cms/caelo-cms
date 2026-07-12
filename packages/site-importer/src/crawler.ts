@@ -105,7 +105,8 @@ export interface CrawlResult {
 // the original em-dash here made EVERY real fetch (pages, robots.txt,
 // sitemap.xml) throw "Invalid character in header content" while the
 // injected-fetcher tests sailed past it.
-export const USER_AGENT = "CaleoSiteImporter/1.0 (+https://caleo-cms.com/imports; research-only crawler)";
+export const USER_AGENT =
+  "CaleoSiteImporter/1.0 (+https://caleo-cms.com/imports; research-only crawler)";
 const UA_TOKEN = "caleositeimporter";
 
 export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
