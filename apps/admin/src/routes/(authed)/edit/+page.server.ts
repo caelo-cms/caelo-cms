@@ -47,7 +47,7 @@ const FIRST_RUN_WELCOME = [
 const FIRST_RUN_SUGGESTIONS = [
   {
     label: "I already have a website",
-    message: "I already have a website that I'd like to move to Caelo.",
+    message: "I have an existing website that I'd like to migrate to Caelo.",
   },
   {
     label: "Start from scratch",
