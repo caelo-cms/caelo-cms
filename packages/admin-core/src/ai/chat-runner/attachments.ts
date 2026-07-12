@@ -112,8 +112,11 @@ export async function buildProviderHistory(
       content: m.content,
       toolCalls: Array.isArray(m.toolCalls) ? (m.toolCalls as AccumulatedToolCall[]) : undefined,
       toolCallId: m.toolCallId ?? undefined,
-      ...(m.thinkingBlocks && m.thinkingBlocks.length > 0
-        ? { thinkingBlocks: m.thinkingBlocks }
+      // Defense-in-depth for already-poisoned sessions (see
+      // streaming.ts): filter empty thinking blocks out of the replay —
+      // the API rejects them with a 400 and the chat can never recover.
+      ...(m.thinkingBlocks && m.thinkingBlocks.some((t) => t.thinking.length > 0)
+        ? { thinkingBlocks: m.thinkingBlocks.filter((t) => t.thinking.length > 0) }
         : {}),
     };
     const atts = m.role === "user" && m.attachments ? m.attachments : [];
