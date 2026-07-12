@@ -32,6 +32,17 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 export const actions: Actions = {
   default: async ({ request, locals }) => {
     const { adapter, registry } = getQueryContext();
+
+    // Mirror the load guard for POSTs. Without this, a browser whose
+    // last navigation was the setup POST re-submits on reload, the op
+    // fails ("owner exists") and fail(400) re-renders the form — the
+    // operator is stuck on a page that GET would have redirected away
+    // from. Live-hit on 2026-07-12.
+    const setup = await execute(registry, adapter, locals.ctx, "users.is_setup_complete", {});
+    if (setup.ok && (setup.value as { complete: boolean }).complete) {
+      throw redirect(303, "/login");
+    }
+
     const form = await request.formData();
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
@@ -85,7 +96,11 @@ export const actions: Actions = {
       displayName,
     });
     if (!result.ok) {
-      return fail(400, { email, displayName, error: "Setup failed. Is there already an owner?" });
+      return fail(400, {
+        email,
+        displayName,
+        error: "Setup failed — an owner account already exists. Sign in at /login instead.",
+      });
     }
     throw redirect(303, "/login");
   },
