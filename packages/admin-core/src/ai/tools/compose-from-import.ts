@@ -68,6 +68,8 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
       skippedAlreadyAccepted: number;
       designInventory: string | null;
       redirectsCreated: number;
+      chromeBound: string[];
+      chromeNotes: string[];
     };
     const clusterList = Object.entries(v.templatesByCluster)
       .map(([k, id]) => `${k}→${id.slice(0, 8)}`)
@@ -76,6 +78,12 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
       ok: true,
       content: [
         `composed import run: theme=${v.themeTokensApplied} tokens, layout=${v.layoutId}, ${Object.keys(v.templatesByCluster).length} template(s) by cluster [${clusterList}], pages=${v.pageIds.length} created, redirects=${v.redirectsCreated} (old URLs 301 to the new paths)${v.skippedAlreadyAccepted > 0 ? ` (${v.skippedAlreadyAccepted} already accepted, skipped)` : ""}${v.homepageId ? `, homepage=${v.homepageId}` : ""}.`,
+        v.chromeBound.length > 0
+          ? `Site chrome bound at the LAYOUT (issue #253): ${v.chromeBound.join(" + ")} — one shared module each, rendered on every page. Edit via layout tools, never per page.`
+          : "",
+        v.chromeNotes.length > 0
+          ? `Chrome notes (surface these to the operator, do not work around them silently): ${v.chromeNotes.join(", ")}.`
+          : "",
         v.designInventory
           ? `Original design fact base (issue #195 — use it for your theme decisions, then verify with the stored screenshots):\n${v.designInventory}`
           : "",
