@@ -467,6 +467,11 @@ export interface VolatileContext {
    *  every status='pending' row across the 15 *_pending tables so the
    *  AI doesn't re-queue what the Owner is already reviewing. */
   readonly pendingProposalsBlock?: string;
+  /** issue #262 — `## Locks held by other chats`. Entities locked by
+   *  OTHER chat sessions, so the AI flags collisions in its plan step
+   *  instead of hitting Locked errors mid-run. Interim guard until
+   *  task leases replace chat locks (epic #264). */
+  readonly foreignLocksBlock?: string;
   /** v0.2.38 — `## Users` inventory (email + roleNames per row). */
   readonly usersBlock?: string;
   /** v0.2.38 — `## Roles` inventory (name + permission count + builtin). */
@@ -587,6 +592,13 @@ export function composeSystemPromptChunks(
       body: volatile.pendingProposalsBlock,
       cacheable: false,
       label: "pending_proposals",
+    });
+  }
+  if (volatile.foreignLocksBlock && volatile.foreignLocksBlock.trim().length > 0) {
+    chunks.push({
+      body: volatile.foreignLocksBlock,
+      cacheable: false,
+      label: "foreign_locks",
     });
   }
   if (volatile.usersBlock && volatile.usersBlock.trim().length > 0) {
