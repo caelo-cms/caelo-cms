@@ -313,8 +313,12 @@
     });
     // issue #228 — an approved import starts a background crawl; the
     // panel tracks it from this moment (polling is not a message, so
-    // it starts regardless of streaming).
-    if (kind === "site_import") startImportPolling(proposalId);
+    // it starts regardless of streaming). Callers historically passed
+    // either the raw kind ("site_import") or a domain-qualified form
+    // ("import.site_import") — F8, run #4: the qualified form skipped
+    // this branch and the auto-continue never armed. Normalise here.
+    const isImportApproval = kind === "site_import" || kind?.endsWith(".site_import") === true;
+    if (isImportApproval) startImportPolling(proposalId);
     if (streaming) {
       // Queue for post-stream flush. The $effect below picks it up
       // when streaming → false. Multiple approvals during the same
@@ -328,7 +332,7 @@
     // BACKGROUND job instead of applying a change — the nudge must
     // say so or the AI announces results that don't exist yet.
     void sendAutoMessage(
-      kind === "site_import"
+      isImportApproval
         ? `Approved: crawl proposal ${proposalId.slice(0, 8)} — the crawler starts within ~10s and runs in the background. Check the run status and tell me how you'll proceed.`
         : `Approved: ${label} ${proposalId.slice(0, 8)} applied to the chat branch. Please continue with what you were doing.`,
     );
@@ -1776,7 +1780,7 @@
                         : "default"}
                       disabled={pendingActioning[p.proposalId] !== undefined &&
                         pendingActioning[p.proposalId] !== null}
-                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "approve", `${p.domain}.${p.kind}`)}
+                      onclick={() => actOnPending(p.proposalId, p.queueUrl, "approve", p.kind)}
                       data-testid="pending-approve"
                     >
                       {pendingActioning[p.proposalId] === "approving" ? "Approving…" : "Approve"}
