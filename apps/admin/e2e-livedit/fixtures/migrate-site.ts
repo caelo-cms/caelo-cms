@@ -15,10 +15,13 @@
  *     (/impressum-alt) so the migration report has real findings;
  *   - old-style .html paths so redirects are required.
  *
- * Served by Bun.serve on 127.0.0.1:0 — the admin's crawl worker
- * reaches it because global-setup exports
- * CAELO_IMPORTER_ALLOWED_HOSTS=127.0.0.1,localhost (test admin only).
+ * Served via node:http on 127.0.0.1:0 (Playwright specs run under
+ * Node, not Bun) — the admin's crawl worker reaches it because
+ * global-setup exports CAELO_IMPORTER_ALLOWED_HOSTS=127.0.0.1,localhost
+ * (test admin only).
  */
+
+import { createServer } from "node:http";
 
 const CSS = `
   :root { --brand: #7c2d12; --accent: #f59e0b; --paper: #fef3c7; --ink: #1c1917; }
@@ -133,27 +136,39 @@ export interface FixtureSite {
 }
 
 /** Start the fixture site on a random localhost port. */
-export function startMigrateFixtureSite(): FixtureSite {
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch(req) {
-      const path = new URL(req.url).pathname;
-      const base = `http://127.0.0.1:${server.port}`;
+export function startMigrateFixtureSite(): Promise<FixtureSite> {
+  return new Promise((resolve, reject) => {
+    const server = createServer((req, res) => {
+      const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const base = `http://127.0.0.1:${port}`;
       if (path === "/sitemap.xml") {
-        return new Response(sitemapXml(base), { headers: { "content-type": "application/xml" } });
+        res.writeHead(200, { "content-type": "application/xml" });
+        res.end(sitemapXml(base));
+        return;
       }
       const route = MIGRATE_FIXTURE_ROUTES[path];
-      if (!route) return new Response("Nicht gefunden", { status: 404 });
-      return new Response(route.body.replaceAll("__BASE__", base), {
-        headers: { "content-type": route.contentType },
+      if (!route) {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("Nicht gefunden");
+        return;
+      }
+      res.writeHead(200, { "content-type": `${route.contentType}; charset=utf-8` });
+      res.end(route.body.replaceAll("__BASE__", base));
+    });
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        stop() {
+          server.close();
+          // Don't let lingering keep-alive sockets hold the spec open.
+          server.closeAllConnections?.();
+        },
       });
-    },
+    });
   });
-  return {
-    url: `http://127.0.0.1:${server.port}`,
-    stop() {
-      server.stop(true);
-    },
-  };
 }

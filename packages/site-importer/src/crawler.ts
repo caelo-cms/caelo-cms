@@ -101,7 +101,12 @@ export interface CrawlResult {
   readonly errors: ReadonlyArray<{ url: string; reason: string }>;
 }
 
-const USER_AGENT = "CaleoSiteImporter/1.0 (+https://caleo-cms.com/imports — research-only crawler)";
+// ASCII ONLY: header values reject non-Latin-1 at the socket layer —
+// the original em-dash here made EVERY real fetch (pages, robots.txt,
+// sitemap.xml) throw "Invalid character in header content" while the
+// injected-fetcher tests sailed past it.
+export const USER_AGENT =
+  "CaleoSiteImporter/1.0 (+https://caleo-cms.com/imports; research-only crawler)";
 const UA_TOKEN = "caleositeimporter";
 
 export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {

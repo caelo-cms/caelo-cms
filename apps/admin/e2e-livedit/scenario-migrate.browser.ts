@@ -97,7 +97,7 @@ test.describe("e2e-livedit migration — keep-design end to end", () => {
 
   test("crawl → approve → per-type build with redirects and findings", async ({ page }) => {
     resetToUntouchedInstall();
-    const site = startMigrateFixtureSite();
+    const site = await startMigrateFixtureSite();
     try {
       await loginAsDevOwner(page);
       await page.goto("/edit");
@@ -183,10 +183,27 @@ test.describe("e2e-livedit migration — keep-design end to end", () => {
 
       // #197 — the seeded typo/dead link surfaces somewhere the
       // operator sees: notes on the run, or named in the transcript.
-      const transcript = await page.locator("ul").first().innerText();
-      const findingSurfaced =
+      // A long build can consume the loop budget before the closing
+      // report; asking for it is a natural operator turn (the skill
+      // mandates report-on-done either way), so nudge ONCE before
+      // judging.
+      let transcript = await page.locator("ul").first().innerText();
+      let findingSurfaced =
         summary.notes > 0 ||
         /addresse|impressum-alt|toter link|dead link|schreibfehler|typo/i.test(transcript);
+      if (!findingSurfaced) {
+        await sendChatPromptAndWait(
+          page,
+          "Super — was ist euch beim Übernehmen inhaltlich aufgefallen? Bitte den Abschlussbericht (Tippfehler, tote Links, Verbesserungen).",
+        );
+        transcript = await page.locator("ul").first().innerText();
+        const notesAfter = dbJson<{ n: number }[]>(
+          "return await tx`SELECT count(*)::int AS n FROM import_pages WHERE notes IS NOT NULL`;",
+        );
+        findingSurfaced =
+          (notesAfter[0]?.n ?? 0) > 0 ||
+          /addresse|impressum-alt|toter link|dead link|schreibfehler|typo/i.test(transcript);
+      }
       expect(
         findingSurfaced,
         "the migration must surface the seeded typo or dead link (notes or closing report)",
