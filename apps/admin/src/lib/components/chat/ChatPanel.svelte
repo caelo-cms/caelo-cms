@@ -420,6 +420,7 @@
 
   $effect(() => {
     return () => stopImportPolling();
+  });
 
   // offer_choices click that landed while the AI was mid-stream —
   // flushed by the effect below, same contract as approval nudges.
