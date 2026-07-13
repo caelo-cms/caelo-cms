@@ -183,7 +183,6 @@ import {
 } from "./ops/gateway.js";
 import { addGenesisDraftOp, listGenesisDraftsOp, selectGenesisDraftOp } from "./ops/genesis.js";
 import { migrateImportMediaOp } from "./ops/import_media.js";
-import { regenerateMediaVariantsOp } from "./ops/media_regenerate.js";
 import {
   acceptImportedPageOp,
   acknowledgeImportPageDiffOp,
@@ -245,6 +244,7 @@ import {
   setFocalPointOp,
   setMediaCdnOp,
 } from "./ops/media.js";
+import { regenerateMediaVariantsOp } from "./ops/media_regenerate.js";
 import { aggregateNotificationsOp } from "./ops/notifications.js";
 import {
   anyBootstrapTokenIssuedOp,

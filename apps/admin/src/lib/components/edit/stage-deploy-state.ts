@@ -74,7 +74,7 @@ export function formResultError(result: {
   error?: unknown;
 }): string | null {
   if (result.type === "failure") {
-    const message = result.data?.["error"];
+    const message = result.data?.error;
     return typeof message === "string" && message.length > 0
       ? message
       : "The server rejected the action and sent no reason. Check the server logs.";

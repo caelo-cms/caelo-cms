@@ -37,7 +37,11 @@ describe("publishButtonState", () => {
 
   it("staged build present and live behind: enabled", () => {
     for (const productionMatchesStaging of [false, null]) {
-      const st = publishButtonState({ busy: false, hasStagedBuild: true, productionMatchesStaging });
+      const st = publishButtonState({
+        busy: false,
+        hasStagedBuild: true,
+        productionMatchesStaging,
+      });
       expect(st.disabled).toBe(false);
       expect(st.visibleReason).toBeNull();
     }

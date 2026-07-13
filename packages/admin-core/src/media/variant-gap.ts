@@ -13,11 +13,7 @@
  * that can never grow a webp-800.
  */
 
-import {
-  MEDIA_VARIANT_TAGS,
-  MEDIA_VARIANT_WIDTHS,
-  type MediaVariantTag,
-} from "@caelo-cms/shared";
+import { MEDIA_VARIANT_TAGS, MEDIA_VARIANT_WIDTHS, type MediaVariantTag } from "@caelo-cms/shared";
 
 /** Raster mimes the pipeline derives WebP variants for. */
 const RASTER_MIMES: ReadonlySet<string> = new Set([
@@ -67,9 +63,7 @@ export function computeVariantGap(args: {
     // bytes and fills it, so treat every satisfiable-at-any-width tag
     // as potentially missing rather than skipping silently.
     const missing = MEDIA_VARIANT_TAGS.filter((t) => t !== "orig" && !existing.has(t));
-    return missing.length > 0
-      ? { missing, skipReason: null }
-      : { missing: [], skipReason: null };
+    return missing.length > 0 ? { missing, skipReason: null } : { missing: [], skipReason: null };
   }
 
   const width = args.width;
