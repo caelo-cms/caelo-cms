@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { prepareLegacyAggregatedToken } from "../ops/imports.js";
+import { isPlausibleFontFamilyValue, prepareLegacyAggregatedToken } from "../ops/imports.js";
 
 describe("prepareLegacyAggregatedToken", () => {
   it("drops WP preset shadow vars instead of binning them as spacing", () => {
@@ -58,6 +58,46 @@ describe("prepareLegacyAggregatedToken", () => {
     expect(
       prepareLegacyAggregatedToken({ token: "--card-radius", value: "8px 8px 0 0" }),
     ).toBeNull();
+  });
+
+  // Regression (run #8, 2026-07-13): WordPress `--wp--preset--font-size--*`
+  // vars carry "font" in the NAME but a bare dimension VALUE. Pre-fix they
+  // were wrapped as `{fontFamily: "13px"}` typography tokens; the deploy
+  // then failed hard with `theme-font-unresolvable:36px, 13px, 20px, 42px`.
+  // Numeric-only values must never register as font families — loud skip.
+  it("skips WP preset font sizes with a loud note — the exact run #8 values", () => {
+    const cases: Array<[string, string]> = [
+      ["--wp--preset--font-size--x-large", "36px"],
+      ["--wp--preset--font-size--small", "13px"],
+      ["--wp--preset--font-size--medium", "20px"],
+      ["--wp--preset--font-size--xx-large", "42px"],
+    ];
+    for (const [token, value] of cases) {
+      expect(prepareLegacyAggregatedToken({ token, value })).toEqual({
+        skipNote: `theme-token-skipped-nonfont-typography:${token}=${value}`,
+      });
+    }
+  });
+
+  it("skips numeric font weights and unitless line-heights routed via scope 'font'", () => {
+    expect(
+      prepareLegacyAggregatedToken({ token: "font-weight-bold", value: "700", scope: "font" }),
+    ).toEqual({
+      skipNote: "theme-token-skipped-nonfont-typography:font-weight-bold=700",
+    });
+    expect(
+      prepareLegacyAggregatedToken({ token: "--body-font-line-height", value: "1.5" }),
+    ).toEqual({
+      skipNote: "theme-token-skipped-nonfont-typography:--body-font-line-height=1.5",
+    });
+  });
+
+  it("isPlausibleFontFamilyValue accepts real stacks, rejects dimension lists", () => {
+    expect(isPlausibleFontFamilyValue("Inter, sans-serif")).toBe(true);
+    expect(isPlausibleFontFamilyValue('"Helvetica Neue", Arial')).toBe(true);
+    expect(isPlausibleFontFamilyValue("36px, 13px, 20px, 42px")).toBe(false);
+    expect(isPlausibleFontFamilyValue("1.5rem")).toBe(false);
+    expect(isPlausibleFontFamilyValue("")).toBe(false);
   });
 
   it("keeps hex colors and font families", () => {

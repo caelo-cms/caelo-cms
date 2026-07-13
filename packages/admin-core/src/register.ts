@@ -18,7 +18,7 @@ import {
   markChatMessageInterruptedOp,
   recordAiCallOp,
 } from "./ops/chat/messages.js";
-import { mergeChatToMainOp, publishChatSessionOp } from "./ops/chat/publish.js";
+import { finalizeStageOp, mergeChatToMainOp, publishChatSessionOp } from "./ops/chat/publish.js";
 import {
   archiveChatSessionOp,
   countBranchChangesOp,
@@ -581,6 +581,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(recordAiCallOp);
   registry.register(publishChatSessionOp);
   registry.register(mergeChatToMainOp);
+  registry.register(finalizeStageOp);
   // issue #262 — pre-run foreign-lock visibility for the chat runner.
   registry.register(listForeignLocksOp);
   registry.register(listPendingChangesOp);

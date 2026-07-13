@@ -782,16 +782,37 @@ export const publishChatSessionOp = defineOperation({
  * Use chat.publish (not this op) for the publish-boundary decision
  * that ends a chat session and ships to production.
  */
+const chatMergeToMainInput = chatPublishInput.extend({
+  /**
+   * Run #8 R6 (issue #262) — when true, the merge promotes entity state
+   * to the live tables but SKIPS the branch-consumption side effects
+   * (`last_staged_at` stamp + lock release). The Stage flow merges with
+   * `deferConsume: true`, runs the staging build (a separate process
+   * reading COMMITTED state — a single tx spanning merge + build is
+   * impossible), and calls `chat.finalize_stage` only when the build
+   * SUCCEEDED. On a failed build nothing is consumed: the pending
+   * counter stays up, the Stage button stays offered, and a retry
+   * re-merges the freshest branch state.
+   */
+  deferConsume: z.boolean().optional(),
+});
+
 export const mergeChatToMainOp = defineOperation({
   name: "chat.merge_to_main",
   // Why human-only: same boundary as chat.publish — the operator owns the
   // decision to ship a merge, even when re-stageable.
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: chatPublishInput,
+  input: chatMergeToMainInput,
   output: z.object({
     siteSnapshotId: z.string().nullable(),
     entityCount: z.number().int().nonnegative(),
+    /**
+     * Merge-time timestamp (ISO). `chat.finalize_stage` stamps
+     * `last_staged_at` to exactly this value so branch edits made
+     * WHILE the staging build ran stay pending (they were not built).
+     */
+    mergedAt: z.string(),
   }),
   handler: async (ctx, input, tx) => {
     const merged = await mergeBranchSnapshotsToMain(tx, ctx, input, {
@@ -804,29 +825,46 @@ export const mergeChatToMainOp = defineOperation({
 
     const { siteSnapshotId, entityCount, includeAll } = merged.value;
 
-    // v0.10.8 — stamp `last_staged_at` so chat.branch_change_count /
-    // branch_edited_entities / list_pending_changes can filter out
-    // already-merged snapshots. Without this, the toolbar's pending-
-    // changes pill stays at the chat's lifetime total after Stage
-    // instead of resetting to 0.
-    await tx.execute(sql`
-      UPDATE chat_sessions SET last_staged_at = now()
-      WHERE id = ${input.chatSessionId}::uuid
-    `);
+    // Merge-time boundary for the pending-changes filters. Emitted as a
+    // deterministic ISO string (not a driver-dependent Date/text row) so
+    // chat.finalize_stage can round-trip it through its Zod boundary.
+    const mergedAtRows = (await tx.execute(sql`
+      SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS merged_at
+    `)) as unknown as { merged_at: string }[];
+    const mergedAt = mergedAtRows[0]?.merged_at;
+    if (!mergedAt) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.merge_to_main",
+        message: "could not read merge timestamp",
+      });
+    }
 
-    // v0.10.19 — release per-entity locks at Stage. Pre-v0.10.19 only
-    // chat.publish + chat.archive_session released locks; chat.merge_to_main
-    // didn't. After Stage, branched edits are in main and the chat's
-    // pending-count drops to 0 — the Stage button + Publish button both
-    // disappear from the UI. But the lock persisted, so other chats
-    // editing the same page hit "page X is busy in another chat
-    // ('Live edit')" with no way to release it through the UI
-    // (nothing left to publish). Stage is the merge-to-main boundary;
-    // post-merge, the lock's purpose (prevent divergent unmerged
-    // edits) no longer applies. Re-acquisition is automatic if the
-    // same chat keeps editing the entity afterward (atomic upsert
-    // in checkAndAcquireEntityLock).
-    await releaseChatLocks(tx, input.chatSessionId);
+    if (!input.deferConsume) {
+      // v0.10.8 — stamp `last_staged_at` so chat.branch_change_count /
+      // branch_edited_entities / list_pending_changes can filter out
+      // already-merged snapshots. Without this, the toolbar's pending-
+      // changes pill stays at the chat's lifetime total after Stage
+      // instead of resetting to 0.
+      await tx.execute(sql`
+        UPDATE chat_sessions SET last_staged_at = ${mergedAt}::timestamptz
+        WHERE id = ${input.chatSessionId}::uuid
+      `);
+
+      // v0.10.19 — release per-entity locks at Stage. Pre-v0.10.19 only
+      // chat.publish + chat.archive_session released locks; chat.merge_to_main
+      // didn't. After Stage, branched edits are in main and the chat's
+      // pending-count drops to 0 — the Stage button + Publish button both
+      // disappear from the UI. But the lock persisted, so other chats
+      // editing the same page hit "page X is busy in another chat
+      // ('Live edit')" with no way to release it through the UI
+      // (nothing left to publish). Stage is the merge-to-main boundary;
+      // post-merge, the lock's purpose (prevent divergent unmerged
+      // edits) no longer applies. Re-acquisition is automatic if the
+      // same chat keeps editing the entity afterward (atomic upsert
+      // in checkAndAcquireEntityLock).
+      await releaseChatLocks(tx, input.chatSessionId);
+    }
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -838,6 +876,66 @@ export const mergeChatToMainOp = defineOperation({
       resultSummary: includeAll ? `entities=${entityCount}` : `partial entities=${entityCount}`,
     });
 
-    return ok({ siteSnapshotId, entityCount });
+    return ok({ siteSnapshotId, entityCount, mergedAt });
+  },
+});
+
+/**
+ * Run #8 R6 (issue #262) — second half of the deferred Stage
+ * consumption. The Stage flow is merge (`deferConsume: true`) → staging
+ * build → THIS op on build success. It stamps `last_staged_at` to the
+ * merge timestamp and releases the chat's entity locks — the two side
+ * effects that make the UI treat the branch as "consumed". Never call
+ * it after a FAILED build: leaving it uncalled is exactly what keeps
+ * the pending counter and the Stage button alive for the retry.
+ *
+ * Idempotent: `GREATEST(...)` keeps a newer stamp when a stale retry
+ * lands late, and releasing already-released locks is a no-op.
+ */
+export const finalizeStageOp = defineOperation({
+  name: "chat.finalize_stage",
+  // Why human-only: paired with chat.merge_to_main (same Stage boundary);
+  // only the Stage form action calls it, after deploy.trigger succeeded.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      /** `mergedAt` as returned by the paired chat.merge_to_main call. */
+      stagedAt: z.string().datetime(),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE chat_sessions
+      SET last_staged_at = GREATEST(
+        COALESCE(last_staged_at, '-infinity'::timestamptz),
+        ${input.stagedAt}::timestamptz
+      )
+      WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
+      RETURNING 1
+    `)) as unknown as unknown[];
+    if (rows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.finalize_stage",
+        message: "session not found",
+      });
+    }
+
+    await releaseChatLocks(tx, input.chatSessionId);
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "chat.finalize_stage",
+      input,
+      succeeded: true,
+      entityId: input.chatSessionId,
+      resultSummary: `stagedAt=${input.stagedAt}`,
+    });
+
+    return ok({});
   },
 });
