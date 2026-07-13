@@ -9,6 +9,7 @@ export * from "./chat_messages.js";
 export * from "./chat_sessions.js";
 export * from "./content_instance_snapshots.js";
 export * from "./content_instances.js";
+export * from "./entity_leases.js";
 export * from "./module_snapshots.js";
 export * from "./modules.js";
 export * from "./page_layout_snapshots.js";

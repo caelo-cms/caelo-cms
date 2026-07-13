@@ -81,6 +81,10 @@ const ADMIN_TABLES = [
   "ai_calls",
   "chat_sessions",
 
+  // issue #264 — per-entity sub-leases (branch-scoped, no FK cascade;
+  // wiped alongside chat state so a fresh install starts unleased).
+  "entity_leases",
+
   // Content
   "page_modules", // FK to content_instances — must drop before content_instances
   "content_instances",

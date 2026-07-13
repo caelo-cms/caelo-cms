@@ -17,7 +17,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
+import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 
 const redirectRow = z.object({
   id: z.string(),
@@ -198,10 +198,11 @@ export const deleteRedirectOp = defineOperation({
       kind: "redirect",
       entityId: input.redirectId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
+    if (!lock.permitted) {
       return err(
-        await lockedError(tx, "redirects.delete", "redirect", input.redirectId, lock.holder),
+        await entityWriteBlockedError(tx, "redirects.delete", "redirect", input.redirectId, lock),
       );
     }
     await tx.execute(sql`DELETE FROM redirects WHERE id = ${input.redirectId}::uuid`);
@@ -330,9 +331,12 @@ export const deleteRedirectsManyOp = defineOperation({
           kind: "redirect",
           entityId: id,
           chatBranchId: ctx.chatBranchId,
+          holderKey: ctx.chatTaskId,
         });
-        if (!lock.permitted && lock.holder) {
-          return err(await lockedError(tx, "redirects.delete_many", "redirect", id, lock.holder));
+        if (!lock.permitted) {
+          return err(
+            await entityWriteBlockedError(tx, "redirects.delete_many", "redirect", id, lock),
+          );
         }
       }
       for (const id of input.redirectIds) {
