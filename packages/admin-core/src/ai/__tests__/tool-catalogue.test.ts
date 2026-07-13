@@ -150,6 +150,59 @@ describe("buildToolCatalogue", () => {
     ]);
   });
 
+  it("run #9 R7: an orchestrator keeps spawn_subagent when a co-engaged skill allowlist narrows writes", () => {
+    // The migration run #9 shape: site-migrate (allowlist []) engages
+    // together with compose-page (write allowlist, predates the 0132
+    // subagent contract → no spawn tools listed). The ORCHESTRATOR
+    // session has no `excluded` set — only subagent children do — so
+    // the spawn tools must survive the skill-allowlist narrowing the
+    // same way read tools do, or the skill body says "spawn subagents"
+    // while the catalogue says "no such tool".
+    const composePageAllowlist = new Set([
+      "compose_page_from_spec",
+      "create_page",
+      "add_module_to_page",
+      "edit_module",
+      "set_page_module_content",
+    ]);
+    const tools = registry(
+      "edit_module",
+      "create_page",
+      "delete_page", // write outside the allowlist — must drop
+      "list_pages", // read — immune
+      "spawn_subagent",
+      "spawn_subagents",
+    );
+    const result = buildToolCatalogue({
+      tools,
+      toolDescribeState: state,
+      allowedToolNames: composePageAllowlist,
+      engagedSkills: [],
+      excluded: undefined,
+      chatSessionId,
+    });
+    expect(result.map((t) => t.name).sort()).toEqual([
+      "create_page",
+      "edit_module",
+      "list_pages",
+      "spawn_subagent",
+      "spawn_subagents",
+    ]);
+  });
+
+  it("run #9 R7: the child-session exclusion still strips spawn tools despite the immunity", () => {
+    const tools = registry("edit_module", "list_pages", "spawn_subagent", "spawn_subagents");
+    const result = buildToolCatalogue({
+      tools,
+      toolDescribeState: state,
+      allowedToolNames: new Set(["edit_module"]),
+      engagedSkills: [],
+      excluded: new Set(["spawn_subagent", "spawn_subagents"]),
+      chatSessionId,
+    });
+    expect(result.map((t) => t.name).sort()).toEqual(["edit_module", "list_pages"]);
+  });
+
   it("run #8 R2b: spawnAllowed remains a HARD filter for read tools too", () => {
     // A parent that explicitly narrows a review subagent to two read
     // tools gets exactly those — the read-immunity applies to SKILL

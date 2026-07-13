@@ -19,15 +19,19 @@
  * narrows WRITE tools only; read-only tools (list_/get_/inspect_/find_/
  * screenshot_/check_ by naming convention) always stay in the catalogue,
  * because stripping them blinded the AI mid-session (wrong-module edits)
- * and inside rebuild subagents. The "valid partial allowlist" case below
- * asserts the amended contract.
+ * and inside rebuild subagents. Run #9 R7 amended it again: the
+ * orchestration tools (spawn_subagent / spawn_subagents) are
+ * allowlist-immune too — no allowlist predates the 0132 subagent
+ * contract lists them, so a co-engaged skill's write allowlist was
+ * stripping the migration orchestrator's fan-out primitive. The "valid
+ * partial allowlist" case below asserts the amended contract.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { isReadOnlyToolName } from "../ai/chat-runner/tool-catalogue.js";
+import { isOrchestrationToolName, isReadOnlyToolName } from "../ai/chat-runner/tool-catalogue.js";
 import { runChatTurn } from "../ai/chat-runner.js";
 import type { AIProvider, GenerateInput, ProviderEvent, ProviderName } from "../ai/provider.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
@@ -168,13 +172,20 @@ describe("skill allowlist zero-match guard (issue #106)", () => {
     expect(names).not.toContain("create_page");
     expect(names).not.toContain("set_page_module_content");
     // …and every remaining tool is read-only by the naming convention
-    // (run #8 R2b/R5: skill allowlists never strip the AI's read surface).
+    // (run #8 R2b/R5: skill allowlists never strip the AI's read surface)
+    // or an orchestration tool (run #9 R7: skill allowlists never strip
+    // the fan-out primitive from a main session either).
     for (const name of names) {
       if (name === "edit_module") continue;
-      expect(isReadOnlyToolName(name)).toBe(true);
+      expect(isReadOnlyToolName(name) || isOrchestrationToolName(name)).toBe(true);
     }
     // The read surface is genuinely still there, not vacuously empty.
     expect(names).toContain("list_modules");
     expect(names).toContain("inspect_page_render");
+    // Run #9 R7 — the orchestrator keeps its spawn tools under a
+    // co-engaged write allowlist (this is a MAIN session: no subagent
+    // exclusion, so both spawn tools must survive).
+    expect(names).toContain("spawn_subagent");
+    expect(names).toContain("spawn_subagents");
   });
 });

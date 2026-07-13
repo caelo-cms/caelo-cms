@@ -17,6 +17,7 @@ import {
   defineOperation,
   type ExecuteOptions,
   execute,
+  OperationAbortError,
   OperationRegistry,
 } from "../index.js";
 import { deleteActors, seedActors } from "./_seed.js";
@@ -54,14 +55,37 @@ beforeAll(async () => {
   );
   registry.register(
     defineOperation({
-      name: "rollback.count_mine",
+      // Run #9 R8 — OperationAbortError: same rollback semantics as a
+      // throw, but the caller receives the handler's STRUCTURED error
+      // instead of a wrapped crash message.
+      name: "rollback.write_then_abort",
       actorScope: ["system"],
       database: "cms_admin",
       input: z.object({}),
+      output: z.object({}),
+      handler: async (ctx, _input, tx) => {
+        await tx.execute(sql`
+          INSERT INTO audit_events (actor_id, operation, input_hash, succeeded)
+          VALUES (${ctx.actorId}::uuid, 'rollback.write_then_abort', 'partial', true)
+        `);
+        throw new OperationAbortError({
+          kind: "HandlerError",
+          operation: "rollback.write_then_abort",
+          message: "structured abort after partial write",
+        });
+      },
+    }),
+  );
+  registry.register(
+    defineOperation({
+      name: "rollback.count_mine",
+      actorScope: ["system"],
+      database: "cms_admin",
+      input: z.object({ operation: z.string().default("rollback.write_then_throw") }),
       output: z.object({ count: z.number() }),
-      handler: async (_ctx, _input, tx) => {
+      handler: async (_ctx, input, tx) => {
         const rows = (await tx.execute(
-          sql`SELECT count(*)::int as c FROM audit_events WHERE operation = 'rollback.write_then_throw'`,
+          sql`SELECT count(*)::int as c FROM audit_events WHERE operation = ${input.operation}`,
         )) as unknown as { c: number }[];
         const first = rows[0];
         if (!first) {
@@ -105,6 +129,25 @@ describe("transaction rollback", () => {
     if (!attempt.ok) expect(attempt.error.kind).toBe("HandlerError");
 
     const count = await execute(registry, adapter, ctx, "rollback.count_mine", {});
+    expect(count.ok).toBe(true);
+    if (count.ok) expect((count.value as { count: number }).count).toBe(0);
+  });
+
+  it("run #9 R8: OperationAbortError rolls back AND returns the handler's structured error", async () => {
+    const attempt = await execute(registry, adapter, ctx, "rollback.write_then_abort", {});
+    expect(attempt.ok).toBe(false);
+    if (!attempt.ok) {
+      expect(attempt.error.kind).toBe("HandlerError");
+      if (attempt.error.kind === "HandlerError") {
+        // The structured message survives verbatim — not wrapped in a
+        // generic "Failed query" / crash message.
+        expect(attempt.error.message).toBe("structured abort after partial write");
+      }
+    }
+
+    const count = await execute(registry, adapter, ctx, "rollback.count_mine", {
+      operation: "rollback.write_then_abort",
+    });
     expect(count.ok).toBe(true);
     if (count.ok) expect((count.value as { count: number }).count).toBe(0);
   });
