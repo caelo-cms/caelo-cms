@@ -15,14 +15,24 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { formatMicrocentsAsMoney } from "../../ops/imports-cost.js";
+import { formatMicrocentsAsMoney, roundsToZeroMicrocents } from "../../ops/imports-cost.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const setBudgetInput = z
   .object({
     runId: z.string().uuid(),
-    ceiling: z.number().positive().max(1_000_000),
+    // Reject a ceiling that rounds to 0µ¢ (see roundsToZeroMicrocents):
+    // a sub-microcent "budget" stores as 0 and reads as over budget the
+    // instant it's set, contradicting the confirmed-positive-ceiling intent.
+    ceiling: z
+      .number()
+      .positive()
+      .max(1_000_000)
+      .refine((c) => !roundsToZeroMicrocents(c), {
+        message:
+          "budget too small — this amount rounds to 0 at microcent precision; confirm a larger ceiling with the operator (a fraction of a cent or more)",
+      }),
     currency: z
       .string()
       .trim()

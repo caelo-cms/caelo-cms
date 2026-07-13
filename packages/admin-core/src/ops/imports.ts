@@ -37,7 +37,7 @@ import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
-import { computeRunCost, majorUnitsToMicrocents } from "./imports-cost.js";
+import { computeRunCost, majorUnitsToMicrocents, roundsToZeroMicrocents } from "./imports-cost.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
@@ -1409,8 +1409,17 @@ export const setCostCeilingOp = defineOperation({
   input: z
     .object({
       runId: z.string().uuid(),
-      /** Major-unit budget, e.g. 10 for €10. Positive; whole-run ceiling. */
-      ceiling: z.number().positive().max(1_000_000),
+      /** Major-unit budget, e.g. 10 for €10. Positive; whole-run ceiling.
+       *  Rejected when it rounds to 0µ¢: a sub-microcent "budget" would
+       *  store as 0 and immediately read as over budget. */
+      ceiling: z
+        .number()
+        .positive()
+        .max(1_000_000)
+        .refine((c) => !roundsToZeroMicrocents(c), {
+          message:
+            "budget too small — this amount rounds to 0 at microcent precision; enter a larger ceiling (a fraction of a cent or more)",
+        }),
       /** ISO-4217-ish label the operator confirmed the budget in. */
       currency: z
         .string()

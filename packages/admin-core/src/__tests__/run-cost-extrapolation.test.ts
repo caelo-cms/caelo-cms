@@ -8,13 +8,17 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { setMigrationBudgetTool } from "../ai/tools/migration-budget.js";
+import { setCostCeilingOp } from "../ops/imports.js";
 import {
   computeRunCost,
   extrapolateRunCost,
   formatMicrocentsAsMoney,
   MICROCENTS_PER_MAJOR_UNIT,
+  MIN_CEILING_MAJOR_UNITS,
   majorUnitsToMicrocents,
   microcentsToMajorUnits,
+  roundsToZeroMicrocents,
 } from "../ops/imports-cost.js";
 
 describe("money-unit conversion", () => {
@@ -44,6 +48,52 @@ describe("formatMicrocentsAsMoney", () => {
 
   it("falls back to a code prefix for unknown currencies, never a bare number", () => {
     expect(formatMicrocentsAsMoney(1_000_000_000, "SEK")).toBe("SEK 10.00");
+  });
+
+  it("normalizes casing on the unknown-currency fallback (no leaked lowercase)", () => {
+    // Regression: the fallback used to preserve the caller's casing, so
+    // "sek" leaked through as "sek 10.00" while known codes uppercased.
+    expect(formatMicrocentsAsMoney(1_000_000_000, "sek")).toBe("SEK 10.00");
+    expect(formatMicrocentsAsMoney(1_000_000_000, "Sek")).toBe("SEK 10.00");
+  });
+});
+
+describe("round-to-zero ceiling guard", () => {
+  it("flags a positive amount that rounds below 1 microcent", () => {
+    expect(roundsToZeroMicrocents(1e-9)).toBe(true); // 0.1µ¢ → 0
+    expect(roundsToZeroMicrocents(MIN_CEILING_MAJOR_UNITS)).toBe(false); // 0.5µ¢ → 1
+    expect(roundsToZeroMicrocents(0.01)).toBe(false); // one cent
+    expect(roundsToZeroMicrocents(10)).toBe(false);
+  });
+
+  it("the set_cost_ceiling op rejects a ceiling that rounds to 0µ¢", () => {
+    const bad = setCostCeilingOp.input.safeParse({
+      runId: "00000000-0000-4000-8000-000000000280",
+      ceiling: 1e-9,
+      currency: "EUR",
+    });
+    expect(bad.success).toBe(false);
+    if (!bad.success) {
+      expect(bad.error.issues.some((i) => i.message.includes("rounds to 0"))).toBe(true);
+    }
+    const good = setCostCeilingOp.input.safeParse({
+      runId: "00000000-0000-4000-8000-000000000280",
+      ceiling: 10,
+      currency: "EUR",
+    });
+    expect(good.success).toBe(true);
+  });
+
+  it("the set_migration_budget tool schema rejects a ceiling that rounds to 0µ¢", () => {
+    const bad = setMigrationBudgetTool.schema.safeParse({
+      runId: "00000000-0000-4000-8000-000000000280",
+      ceiling: 1e-9,
+      currency: "EUR",
+    });
+    expect(bad.success).toBe(false);
+    if (!bad.success) {
+      expect(bad.error.issues.some((i) => i.message.includes("rounds to 0"))).toBe(true);
+    }
   });
 });
 

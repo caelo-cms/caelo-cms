@@ -29,6 +29,24 @@ export function microcentsToMajorUnits(microcents: number): number {
   return microcents / MICROCENTS_PER_MAJOR_UNIT;
 }
 
+/**
+ * Smallest major-unit amount that still stores as ≥1 microcent. A positive
+ * ceiling below this rounds to 0µ¢ — a "budget" that is really no budget and
+ * would trip `overBudget` immediately (spend ≥ 0 always). Callers reject it.
+ * At exactly 0.5µ¢, `Math.round` lands on 1µ¢, so the threshold is 0.5µ¢.
+ */
+export const MIN_CEILING_MAJOR_UNITS = 0.5 / MICROCENTS_PER_MAJOR_UNIT;
+
+/**
+ * True when a positive major-unit amount rounds down to 0 microcents — i.e.
+ * it cannot be stored as a meaningful ceiling. The `set_cost_ceiling` op and
+ * the `set_migration_budget` tool both reject such an amount so a "budget
+ * set" state never immediately reads as over budget.
+ */
+export function roundsToZeroMicrocents(major: number): boolean {
+  return majorUnitsToMicrocents(major) < 1;
+}
+
 /** Symbols for the currencies the migration flow commonly meets; anything
  *  else renders as `"<CODE> <amount>"` rather than guessing a glyph. */
 const CURRENCY_SYMBOLS: Readonly<Record<string, string>> = {
@@ -50,8 +68,12 @@ const CURRENCY_SYMBOLS: Readonly<Record<string, string>> = {
 export function formatMicrocentsAsMoney(microcents: number, currency: string): string {
   const major = microcentsToMajorUnits(microcents);
   const amount = major.toFixed(2);
-  const symbol = CURRENCY_SYMBOLS[currency.toUpperCase()];
-  return symbol ? `${symbol}${amount}` : `${currency} ${amount}`;
+  // Normalise casing on BOTH paths so the known-symbol lookup and the
+  // unknown-code fallback are consistent — never leak the caller's casing
+  // ("eur 10.00") into operator-facing text.
+  const code = currency.toUpperCase();
+  const symbol = CURRENCY_SYMBOLS[code];
+  return symbol ? `${symbol}${amount}` : `${code} ${amount}`;
 }
 
 /**
