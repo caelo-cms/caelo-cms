@@ -99,6 +99,38 @@ export type QueryError =
     };
 
 /**
+ * Run #9 R8 — abort sentinel for multi-write op handlers.
+ *
+ * `runOperation` runs each handler inside ONE transaction, but drizzle
+ * only rolls back on a THROW — a handler that `return err(...)` after
+ * partial writes COMMITS those writes (run #9: a failed
+ * `imports.compose_from_run` left 23 mangled pages behind). Handlers
+ * that detect a failure AFTER their first write must `throw new
+ * OperationAbortError(queryError)` instead of returning the err: the
+ * adapter catches the sentinel, lets the transaction roll back, and
+ * returns `err(queryError)` to the caller — same Result shape, zero
+ * residue.
+ *
+ * Handlers that fail BEFORE any write (input/state validation) keep
+ * returning `err(...)` values — that path also preserves any
+ * `recordAudit(succeeded: false)` rows they wrote, which a rollback
+ * would erase (CLAUDE.md §7: audit is not optional).
+ */
+export class OperationAbortError extends Error {
+  readonly queryError: QueryError;
+
+  constructor(queryError: QueryError) {
+    super(
+      queryError.kind === "HandlerError" || queryError.kind === "Locked"
+        ? queryError.message
+        : queryError.kind,
+    );
+    this.name = "OperationAbortError";
+    this.queryError = queryError;
+  }
+}
+
+/**
  * Postgres error codes that mean "RLS denied the row" — either `USING` filtered
  * all rows (read attempts return empty — no error) or `WITH CHECK` rejected a
  * write (error code 42501 = insufficient_privilege).

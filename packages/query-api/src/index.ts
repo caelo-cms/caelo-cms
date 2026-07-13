@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 export { type AdapterConfig, DatabaseAdapter } from "./adapter.js";
-export { isRlsDenial, PG_INSUFFICIENT_PRIVILEGE, type QueryError } from "./errors.js";
+export {
+  isRlsDenial,
+  OperationAbortError,
+  PG_INSUFFICIENT_PRIVILEGE,
+  type QueryError,
+} from "./errors.js";
 export { allowAllRateLimiter, type ExecuteOptions, execute, type RateLimiter } from "./execute.js";
 export {
   defineOperation,

@@ -18,7 +18,7 @@
  *                                    crawler's per-URL extraction batch.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
   err,
@@ -1520,7 +1520,9 @@ export const composeFromImportRunOp = defineOperation({
       if (Object.keys(set).length > 0) {
         const r = await updateThemeTokensOp.handler(ctx, { set }, tx);
         if (!r.ok) {
-          return err({
+          // Run #9 R8 — writes have started; throw so the WHOLE compose
+          // rolls back instead of committing a half-applied theme.
+          throw new OperationAbortError({
             kind: "HandlerError",
             operation: "imports.compose_from_run",
             message: `theme merge failed: ${
@@ -1726,7 +1728,8 @@ export const composeFromImportRunOp = defineOperation({
         sample.page_css ?? "",
       );
       if (!templateIdForCluster) {
-        return err({
+        // Run #9 R8 — abort (rollback), never commit a partial compose.
+        throw new OperationAbortError({
           kind: "HandlerError",
           operation: "imports.compose_from_run",
           message: `template creation failed for cluster ${clusterKey}`,
@@ -1840,10 +1843,13 @@ export const composeFromImportRunOp = defineOperation({
             LIMIT 1
           `)) as unknown as { id: string }[];
           if (shadow[0]) {
-            return err({
+            // Run #9 R8 — abort (rollback). Pre-fix this `return err`
+            // COMMITTED every page inserted before the conflicting one
+            // (23 mangled pages persisted although compose errored).
+            throw new OperationAbortError({
               kind: "HandlerError",
               operation: "imports.compose_from_run",
-              message: `redirect ${sourcePath} → ${caeloPath} would shadow the existing page '${sourcePath.slice(1)}' (${shadow[0].id}). Rename one of them (change_page_slug) or exclude this import page, then re-run compose.`,
+              message: `redirect ${sourcePath} → ${caeloPath} would shadow the existing page '${sourcePath.slice(1)}' (${shadow[0].id}). Rename one of them (change_page_slug) or exclude this import page, then re-run compose. Nothing from this compose was applied.`,
             });
           }
           // Upsert keeps re-composes idempotent; pointing an existing
@@ -1877,7 +1883,9 @@ export const composeFromImportRunOp = defineOperation({
 
     const templateId = templateIdsByCluster.get("home") ?? [...templateIdsByCluster.values()][0];
     if (!templateId) {
-      return err({
+      // Run #9 R8 — abort (rollback): theme/import_runs writes above
+      // must not survive a compose that produced no template.
+      throw new OperationAbortError({
         kind: "HandlerError",
         operation: "imports.compose_from_run",
         message: "no template was created — every page was blocked or filtered",

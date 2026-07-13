@@ -332,10 +332,31 @@ function extractLinks(html: string): string[] {
   return out;
 }
 
-function urlToSlug(url: string, sourceUrl: string): string {
+/**
+ * Derives a Caelo page slug from a crawled URL, relative to the crawl
+ * root. The crawl root's own path (e.g. a locale prefix like `/en`)
+ * is stripped ONLY when the crawled URL actually lives under it.
+ *
+ * Run #9 regression: a crawl rooted at `https://site.com/en/` blindly
+ * sliced `sourcePath.length` chars off EVERY pathname, so pages
+ * outside the prefix lost their leading characters — `/tools` → `ols`,
+ * `/pricing` → `icing`, `/blog` → `og` (23 mangled pages, surfacing
+ * later as "redirect /tools → /ols would shadow the existing page").
+ * Paths that don't start with the root prefix now keep their full
+ * pathname.
+ *
+ * @param url absolute URL of the crawled page.
+ * @param sourceUrl the crawl root URL whose path acts as the prefix.
+ * @returns a cms-safe slug (`a-z0-9-`), `"home"` for the root itself.
+ */
+export function urlToSlug(url: string, sourceUrl: string): string {
   const u = new URL(url);
   const sourcePath = new URL(sourceUrl).pathname.replace(/\/$/, "");
-  let slug = u.pathname.slice(sourcePath.length).replace(/^\//, "").replace(/\/$/, "");
+  let path = u.pathname;
+  if (sourcePath !== "" && (path === sourcePath || path.startsWith(`${sourcePath}/`))) {
+    path = path.slice(sourcePath.length);
+  }
+  let slug = path.replace(/^\//, "").replace(/\/$/, "");
   if (slug === "") slug = "home";
   // Normalize for cms `slug` constraint: lowercase + a-z0-9- only.
   return slug

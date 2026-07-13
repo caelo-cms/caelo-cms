@@ -23,7 +23,7 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOption
 
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
-import { extractPgFields, isRlsDenial, type QueryError } from "./errors.js";
+import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } from "./errors.js";
 import type { OperationDefinition, TransactionRunner } from "./operation.js";
 
 /**
@@ -190,6 +190,12 @@ export class DatabaseAdapter {
         return await op.handler(ctx, validatedInput, tx);
       });
     } catch (thrown) {
+      // Run #9 R8 — handler-requested abort: the throw already rolled the
+      // transaction back; hand the structured error to the caller as a
+      // plain Result. See OperationAbortError for when handlers use this.
+      if (thrown instanceof OperationAbortError) {
+        return err(thrown.queryError);
+      }
       if (isRlsDenial(thrown)) {
         return err({
           kind: "RLSDenied",

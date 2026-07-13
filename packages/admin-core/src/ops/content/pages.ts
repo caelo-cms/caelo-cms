@@ -182,6 +182,52 @@ export const listPagesOp = defineOperation({
       ${buildWhere(filters)}
       ORDER BY pages.created_at ASC
     `)) as unknown as RawPageRow[];
+    // Run #9 R9 — caller-branch page-state overlay. A branched
+    // `pages.delete` emits a page_snapshots row with `deletedAt` set and
+    // leaves the live row untouched until publish (v0.5.3), but this
+    // list read only filtered live `deleted_at` — so a page the chat
+    // just deleted kept appearing in pages.list, in the `## Pages`
+    // context block, and in the /edit sidebar (which lists with the
+    // chat's branch ctx). Same regression class as run #8 R3
+    // (branch-blind reads): apply the latest branched snapshot per page
+    // so deletes (and branched slug/title/status edits) read back.
+    if (ctx.chatBranchId && rows.length > 0) {
+      const overlayRows = (await tx.execute(sql`
+        SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
+          FROM page_snapshots ps
+          JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+         WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+         ORDER BY ps.page_id, ss.created_at DESC
+      `)) as unknown as { page_id: string; state: unknown }[];
+      if (overlayRows.length > 0) {
+        const overlayById = new Map(overlayRows.map((r) => [r.page_id, r.state]));
+        const merged: RawPageRow[] = [];
+        for (const row of rows) {
+          const rawState = overlayById.get(row.id);
+          if (rawState === undefined) {
+            merged.push(row);
+            continue;
+          }
+          const s = (typeof rawState === "string" ? JSON.parse(rawState) : rawState) as {
+            slug?: string;
+            title?: string;
+            status?: "draft" | "published";
+            version?: number;
+            deletedAt?: string | null;
+          };
+          if (s.deletedAt && !input.includeDeleted) continue;
+          merged.push({
+            ...row,
+            slug: s.slug ?? row.slug,
+            title: s.title ?? row.title,
+            status: s.status ?? row.status,
+            version: s.version ?? row.version,
+            deleted_at: s.deletedAt ?? row.deleted_at,
+          });
+        }
+        return ok({ pages: merged.map(rowToPage) });
+      }
+    }
     return ok({ pages: rows.map(rowToPage) });
   },
 });
