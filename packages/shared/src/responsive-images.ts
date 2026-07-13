@@ -33,6 +33,40 @@ export function variantFamily(variant: string): string {
   return m?.[1] ? m[1] : variant;
 }
 
+/**
+ * Pick the variant tag AI-facing surfaces should hand out for an
+ * asset, given the variant tags that ACTUALLY exist on it.
+ *
+ * Run #10 D4: `find_media` and the `## Media` system-prompt block
+ * advertised `webp-800` for every raster mime, but the pipeline never
+ * emits `webp-800` for sources narrower than 800px (no upscaling) or
+ * for animated GIFs — the AI wrote those URLs into module HTML and the
+ * static generator's media pass failed the whole staging build on
+ * "asset/variant pairs missing". Advertising must be grounded in the
+ * `media_variants` rows, not in the mime.
+ *
+ * Preference order: `webp-800` when present; else the LARGEST webp at
+ * or below 800 (best quality that exists without shipping a hero-sized
+ * file); else the smallest webp above 800; else `orig` (always exists).
+ *
+ * @param existingVariants variant tags present in `media_variants` for the asset.
+ */
+export function pickAiImageVariant(existingVariants: readonly string[]): string {
+  const webps = existingVariants
+    .map((v) => ({ variant: v, width: parseVariantWidth(v) }))
+    .filter(
+      (v): v is { variant: string; width: number } =>
+        variantFamily(v.variant) === "webp" && v.width !== null,
+    );
+  const exact = webps.find((v) => v.width === 800);
+  if (exact) return exact.variant;
+  const below = webps.filter((v) => v.width < 800).sort((a, b) => b.width - a.width)[0];
+  if (below) return below.variant;
+  const above = webps.filter((v) => v.width > 800).sort((a, b) => a.width - b.width)[0];
+  if (above) return above.variant;
+  return "orig";
+}
+
 export interface EnrichResponsiveImagesOptions {
   /**
    * Build the URL an enriched attribute should reference for

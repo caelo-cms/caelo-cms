@@ -183,6 +183,7 @@ import {
 } from "./ops/gateway.js";
 import { addGenesisDraftOp, listGenesisDraftsOp, selectGenesisDraftOp } from "./ops/genesis.js";
 import { migrateImportMediaOp } from "./ops/import_media.js";
+import { regenerateMediaVariantsOp } from "./ops/media_regenerate.js";
 import {
   acceptImportedPageOp,
   acknowledgeImportPageDiffOp,
@@ -838,6 +839,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaListUsagesOp);
   registry.register(mediaGetSettingsOp);
   registry.register(setMediaCdnOp);
+  // run #10 D4 — recovery path for missing derived variants.
+  registry.register(regenerateMediaVariantsOp);
   // P7 optimizations — focal-point/crops, processing status, alt proposals.
   registry.register(setFocalPointOp);
   registry.register(addCropOp);

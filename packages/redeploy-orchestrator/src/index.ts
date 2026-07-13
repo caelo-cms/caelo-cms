@@ -396,6 +396,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
             proposedThemeTokens: p.themeTokens,
             signature: p.signature,
             pageCss: p.pageCss,
+            // run #10 D3 — loud counter from the extractor's
+            // comment-thread stripper; persisted as a visible
+            // `comments-stripped:<n>` note on the import page.
+            commentsStripped: p.commentsStripped,
           })),
         });
       };

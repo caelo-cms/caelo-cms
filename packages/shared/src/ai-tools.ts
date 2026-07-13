@@ -821,6 +821,24 @@ export const findMediaToolInput = z
 export type FindMediaToolInput = z.infer<typeof findMediaToolInput>;
 
 /**
+ * run #10 D4 — `regenerate_media_variants`. Recovery tool for the
+ * staging generator's "media references unresolved" failure: re-runs
+ * the image pipeline for the named assets (or every asset with an
+ * incomplete ladder) and reports per-asset what was added or why
+ * nothing could be.
+ */
+export const regenerateMediaVariantsToolInput = z
+  .object({
+    assetIds: z.array(z.string().uuid()).min(1).max(100).optional(),
+    allMissing: z.boolean().default(false),
+  })
+  .strict()
+  .refine((v) => (v.assetIds !== undefined) !== v.allMissing, {
+    message: "pass either assetIds or allMissing: true (exactly one)",
+  });
+export type RegenerateMediaVariantsToolInput = z.infer<typeof regenerateMediaVariantsToolInput>;
+
+/**
  * P7 — `set_media_alt`. AI may improve a11y on an existing asset
  * without a human round-trip (e.g. when the editor uploaded an image
  * with the default alt and the AI reads its content). Updates only

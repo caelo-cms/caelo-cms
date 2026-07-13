@@ -7,7 +7,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { enrichResponsiveImages, type ImageVariantInfo } from "./responsive-images.js";
+import {
+  enrichResponsiveImages,
+  type ImageVariantInfo,
+  pickAiImageVariant,
+} from "./responsive-images.js";
 
 const ASSET = "12345678-1234-4123-8123-123456789abc";
 const VARIANTS: ImageVariantInfo[] = [
@@ -68,5 +72,33 @@ describe("enrichResponsiveImages (issue #162)", () => {
         urlFor: (id, v) => `/${id}/${v}`,
       }),
     ).toBe(external);
+  });
+});
+
+/**
+ * Run #10 D4 — AI-facing surfaces must advertise a variant that EXISTS.
+ * The pipeline never emits webp-800 for sub-800px sources or animated
+ * GIFs; advertising it anyway blocked the whole staging build.
+ */
+describe("pickAiImageVariant", () => {
+  it("prefers webp-800 when present", () => {
+    expect(pickAiImageVariant(["orig", "webp-400", "webp-800", "webp-1200"])).toBe("webp-800");
+  });
+
+  it("falls back to the largest webp below 800 (small source, no upscaling)", () => {
+    expect(pickAiImageVariant(["orig", "webp-400"])).toBe("webp-400");
+  });
+
+  it("falls back to the smallest webp above 800 when nothing smaller exists", () => {
+    expect(pickAiImageVariant(["orig", "webp-1200", "webp-1600"])).toBe("webp-1200");
+  });
+
+  it("returns orig when no webp exists (animated GIF, SVG, PDF, pipeline gap)", () => {
+    expect(pickAiImageVariant(["orig"])).toBe("orig");
+    expect(pickAiImageVariant([])).toBe("orig");
+  });
+
+  it("ignores crop-family variants when picking", () => {
+    expect(pickAiImageVariant(["orig", "square-800", "webp-400"])).toBe("webp-400");
   });
 });

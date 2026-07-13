@@ -92,7 +92,10 @@ export const MEDIA_VARIANT_WIDTHS: Record<Exclude<MediaVariantTag, "orig">, numb
  */
 export const MEDIA_URL_PREFIX = "/_caelo/media";
 
-export function buildMediaUrl(assetId: string, variant: MediaVariantTag): string {
+// Widened to `| string` post-run#10-D4: pickAiImageVariant returns the
+// tag of whichever variant actually exists (including crop fan-outs),
+// mirroring buildStorageKey's accept set.
+export function buildMediaUrl(assetId: string, variant: MediaVariantTag | string): string {
   return `${MEDIA_URL_PREFIX}/${assetId}/${variant}`;
 }
 

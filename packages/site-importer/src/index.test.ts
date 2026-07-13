@@ -19,15 +19,18 @@ describe("extractor", () => {
         <footer>FOO</footer>
       </body></html>
     `;
-    const mods = extractModulesFromHtml(html);
+    const { modules: mods, commentsStripped } = extractModulesFromHtml(html);
     expect(mods.length).toBe(4);
     expect(mods.find((m) => m.blockName === "header")).toBeDefined();
     expect(mods.find((m) => m.blockName === "footer")).toBeDefined();
     expect(mods.filter((m) => m.blockName === "content").length).toBe(2);
+    expect(commentsStripped).toBe(0);
   });
 
   it("falls back to a single content block when no semantic tags", () => {
-    const mods = extractModulesFromHtml("<html><body><div>just a div</div></body></html>");
+    const { modules: mods } = extractModulesFromHtml(
+      "<html><body><div>just a div</div></body></html>",
+    );
     expect(mods.length).toBe(1);
     expect(mods[0]?.blockName).toBe("content");
   });

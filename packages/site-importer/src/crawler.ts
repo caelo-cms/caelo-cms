@@ -83,7 +83,12 @@ export interface CrawledPage {
   readonly url: string;
   readonly proposedSlug: string;
   readonly title: string;
-  readonly modules: ReturnType<typeof extractModulesFromHtml>;
+  readonly modules: ReturnType<typeof extractModulesFromHtml>["modules"];
+  /** run #10 D3 — loud counter: comment-thread subtrees the extractor
+   *  removed (WP `#comments`, `.comment-list`, `#respond`, …). The
+   *  orchestrator persists it as a visible `comments-stripped:<n>`
+   *  import-page note; it must never vanish silently. */
+  readonly commentsStripped: number;
   readonly themeTokens: Record<string, string>;
   /** issue #194 — deterministic structural signature ("home" for the
    *  source URL); equal signatures form one page-type cluster. */
@@ -220,11 +225,13 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       errors.push({ url: next.url, reason: `skipped non-html (${res.contentType})` });
       return;
     }
+    const extraction = extractModulesFromHtml(res.html);
     const page: CrawledPage = {
       url: next.url,
       proposedSlug: urlToSlug(next.url, opts.sourceUrl),
       title: extractTitle(res.html),
-      modules: extractModulesFromHtml(res.html),
+      modules: extraction.modules,
+      commentsStripped: extraction.commentsStripped,
       themeTokens: extractThemeTokens(res.html),
       signature: computePageSignature({ url: next.url, sourceUrl: opts.sourceUrl, html: res.html }),
       pageCss: extractPageCss(res.html),

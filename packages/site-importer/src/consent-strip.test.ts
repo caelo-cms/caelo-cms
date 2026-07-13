@@ -43,7 +43,7 @@ describe("stripConsentNoise", () => {
 
   it("is applied by extractModulesFromHtml", () => {
     const html = `<html><body><header>H</header><main><p>Content</p></main>${CONSENT_DIV}<footer>F</footer></body></html>`;
-    const modules = extractModulesFromHtml(html);
+    const { modules } = extractModulesFromHtml(html);
     const all = modules.map((m) => m.html).join("");
     expect(all).not.toContain("Manage Consent");
     expect(all).toContain("Content");
