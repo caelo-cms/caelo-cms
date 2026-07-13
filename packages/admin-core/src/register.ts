@@ -196,11 +196,13 @@ import {
   getImportPageScreenshotKeysOp,
   getImportRunOp,
   getImportRunReportOp,
+  getRunCostOp,
   listImportPageClustersOp,
   listImportRunsOp,
   listPendingImportProposalsOp,
   proposeImportRunOp,
   rejectImportProposalOp,
+  setCostCeilingOp,
   setRunDesignTokensOp,
   updateImportRunStatusOp,
   updatePageDiffOp,
@@ -766,6 +768,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #197 — rebuild notes + run report.
   registry.register(addImportPageNotesOp);
   registry.register(getImportRunReportOp);
+  // issue #280 — migration cost gate: operator-confirmed budget + live spend.
+  registry.register(setCostCeilingOp);
+  registry.register(getRunCostOp);
   registry.register(executeImportProposalOp);
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);

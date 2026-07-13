@@ -37,6 +37,7 @@ import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
+import { computeRunCost, majorUnitsToMicrocents, roundsToZeroMicrocents } from "./imports-cost.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
@@ -1388,6 +1389,202 @@ export const getImportRunReportOp = defineOperation({
         ...v,
       })),
     });
+  },
+});
+
+/**
+ * issue #280 — record the operator-confirmed money ceiling for a run. The
+ * AI proposes an estimate at plan time, the operator confirms an amount
+ * ("up to €10"), and this op stores it. Routine (human+ai+system, no
+ * propose/execute gate): a wrong ceiling is fixed by calling this op again
+ * with the right number — it is not hard-to-revert (CLAUDE.md §11.A).
+ *
+ * `ceiling` is the major-unit amount the operator speaks in (10 for €10);
+ * it is stored as microcents so spend (also microcents) compares directly.
+ */
+export const setCostCeilingOp = defineOperation({
+  name: "imports.set_cost_ceiling",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      /** Major-unit budget, e.g. 10 for €10. Positive; whole-run ceiling.
+       *  Rejected when it rounds to 0µ¢: a sub-microcent "budget" would
+       *  store as 0 and immediately read as over budget. */
+      ceiling: z
+        .number()
+        .positive()
+        .max(1_000_000)
+        .refine((c) => !roundsToZeroMicrocents(c), {
+          message:
+            "budget too small — this amount rounds to 0 at microcent precision; enter a larger ceiling (a fraction of a cent or more)",
+        }),
+      /** ISO-4217-ish label the operator confirmed the budget in. */
+      currency: z
+        .string()
+        .trim()
+        .min(2)
+        .max(8)
+        .regex(/^[A-Za-z]+$/, "currency is a letter code like EUR/USD"),
+    })
+    .strict(),
+  output: z.object({
+    runId: z.string(),
+    ceilingMicrocents: z.number().int().nonnegative(),
+    currency: z.string(),
+  }),
+  handler: async (ctx, input, tx) => {
+    const currency = input.currency.toUpperCase();
+    const ceilingMicrocents = majorUnitsToMicrocents(input.ceiling);
+    const rows = (await tx.execute(sql`
+      UPDATE import_runs
+      SET cost_ceiling_microcents = ${ceilingMicrocents}::bigint,
+          cost_ceiling_currency   = ${currency}
+      WHERE id = ${input.runId}::uuid
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    if (rows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.set_cost_ceiling",
+        message: "import run not found — pass a valid runId (list runs with imports.list)",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.set_cost_ceiling",
+      input,
+      succeeded: true,
+      entityId: input.runId,
+      resultSummary: `ceiling=${ceilingMicrocents}µ¢ (${input.ceiling} ${currency})`,
+    });
+    return ok({ runId: input.runId, ceilingMicrocents, currency });
+  },
+});
+
+/**
+ * issue #280 — live cost roll-up for a migration run: sums ai_calls spend
+ * across the run's ORCHESTRATOR chat session AND every SUBAGENT session
+ * spawned under it (subagent_runs.parent_chat_session_id), returns the
+ * operator's ceiling + remaining budget + a progress-weighted
+ * extrapolation of the total-to-finish cost.
+ *
+ * The sum mirrors `ai_calls.aggregate_for_session` but rolls the whole run
+ * in ONE pass — the orchestrator session + its subagent sessions are
+ * gathered in-SQL (a per-session round-trip would be N+1 and defeats the
+ * point of a live gate). Spend is microcents (1e-8 USD); see
+ * ops/imports-cost.ts for the money unit + the currency-conversion gap.
+ *
+ * Read-only + advisory: this NEVER stops the run. The flow (Wave 3 skill)
+ * decides whether `overBudget` means pause-and-ask.
+ */
+export const getRunCostOp = defineOperation({
+  name: "imports.get_run_cost",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ runId: z.string().uuid() }).strict(),
+  output: z.object({
+    runId: z.string(),
+    /** Orchestrator chat session; null for Owner-direct runs (no chat). */
+    chatSessionId: z.string().nullable(),
+    spentMicrocents: z.number().int().nonnegative(),
+    callCount: z.number().int().nonnegative(),
+    subagentSessionCount: z.number().int().nonnegative(),
+    ceilingMicrocents: z.number().int().nonnegative().nullable(),
+    ceilingCurrency: z.string().nullable(),
+    remainingMicrocents: z.number().int().nullable(),
+    overBudget: z.boolean(),
+    extrapolation: z.object({
+      spentSoFar: z.number().int().nonnegative(),
+      workDone: z.number().int().nonnegative(),
+      workTotal: z.number().int().nonnegative(),
+      extrapolatedTotal: z.number().int().nonnegative().nullable(),
+    }),
+    currencyConversionApplied: z.boolean(),
+    currencyNote: z.string().nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const runRows = (await tx.execute(sql`
+      SELECT chat_session_id::text AS chat_session_id,
+             cost_ceiling_microcents,
+             cost_ceiling_currency
+      FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
+    `)) as unknown as Array<{
+      chat_session_id: string | null;
+      cost_ceiling_microcents: number | string | null;
+      cost_ceiling_currency: string | null;
+    }>;
+    const run = runRows[0];
+    if (!run) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.get_run_cost",
+        message: "import run not found — pass a valid runId (list runs with imports.list)",
+      });
+    }
+
+    const chatSessionId = run.chat_session_id;
+    // Spend across the orchestrator session + every subagent session under
+    // it, in one pass. `sessions` is empty when chatSessionId is null (an
+    // Owner-direct run with no chat) → spend rolls up to a genuine 0, not a
+    // fallback. This is the same SUM(cost_estimate_microcents) as
+    // ai_calls.aggregate_for_session, unioned across the run's session set.
+    const spendRows = (await tx.execute(sql`
+      WITH sessions AS (
+        SELECT ${chatSessionId}::uuid AS sid
+        WHERE ${chatSessionId}::uuid IS NOT NULL
+        UNION
+        SELECT subagent_chat_session_id
+        FROM subagent_runs
+        WHERE parent_chat_session_id = ${chatSessionId}::uuid
+      )
+      SELECT COALESCE(SUM(a.cost_estimate_microcents), 0)::bigint AS cost_microcents,
+             COUNT(a.id)::int AS call_count
+      FROM ai_calls a
+      WHERE a.chat_session_id IN (SELECT sid FROM sessions)
+    `)) as unknown as Array<{ cost_microcents: number | string; call_count: number }>;
+    const spend = spendRows[0] ?? { cost_microcents: 0, call_count: 0 };
+    const spentMicrocents =
+      typeof spend.cost_microcents === "string"
+        ? Number.parseInt(spend.cost_microcents, 10)
+        : spend.cost_microcents;
+
+    const subagentRows = (await tx.execute(sql`
+      SELECT COUNT(*)::int AS n
+      FROM subagent_runs
+      WHERE parent_chat_session_id = ${chatSessionId}::uuid
+    `)) as unknown as Array<{ n: number }>;
+    const subagentSessionCount = subagentRows[0]?.n ?? 0;
+
+    // Work = pages rebuilt (accepted) vs total planned for the run.
+    const pageRows = (await tx.execute(sql`
+      SELECT COUNT(*)::int AS total,
+             COUNT(accepted_page_id)::int AS done
+      FROM import_pages WHERE run_id = ${input.runId}::uuid
+    `)) as unknown as Array<{ total: number; done: number }>;
+    const pagesTotal = pageRows[0]?.total ?? 0;
+    const pagesDone = pageRows[0]?.done ?? 0;
+
+    const ceilingMicrocents =
+      run.cost_ceiling_microcents === null
+        ? null
+        : typeof run.cost_ceiling_microcents === "string"
+          ? Number.parseInt(run.cost_ceiling_microcents, 10)
+          : run.cost_ceiling_microcents;
+
+    const cost = computeRunCost({
+      spentMicrocents,
+      callCount: spend.call_count,
+      subagentSessionCount,
+      ceilingMicrocents,
+      ceilingCurrency: run.cost_ceiling_currency,
+      pagesDone,
+      pagesTotal,
+    });
+
+    return ok({ runId: input.runId, chatSessionId, ...cost });
   },
 });
 
