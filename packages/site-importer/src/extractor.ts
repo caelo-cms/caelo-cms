@@ -26,6 +26,18 @@ export interface ExtractedPage {
   readonly themeTokens: Readonly<Record<string, string>>;
 }
 
+/**
+ * Result of {@link extractModulesFromHtml}. Carries the extracted
+ * modules PLUS loud counters for everything the extractor removed —
+ * run #10 D3: silent stripping is not allowed (CLAUDE.md §2), the
+ * caller persists `commentsStripped` as a visible per-page note.
+ */
+export interface ModuleExtraction {
+  readonly modules: ReadonlyArray<ExtractedModule>;
+  /** Number of comment-thread subtrees removed by {@link stripCommentThreads}. */
+  readonly commentsStripped: number;
+}
+
 export function extractTitle(html: string): string {
   // Linear on uncontrolled input (js/polynomial-redos): the opening uses
   // `[^<>]*` (tag attributes can't contain `<`), so a stream of `<title<title…`
@@ -48,10 +60,13 @@ export function extractTitle(html: string): string {
  *      semantic markers exist → one big "content" module.
  *
  * Returns positions in render order so `page_modules` rows insert
- * cleanly when the Owner accepts.
+ * cleanly when the Owner accepts. The result also carries the loud
+ * `commentsStripped` counter (run #10 D3) so callers surface what was
+ * removed instead of dropping it silently.
  */
-export function extractModulesFromHtml(html: string): ExtractedModule[] {
-  const body = stripConsentNoise(sliceBody(html));
+export function extractModulesFromHtml(html: string): ModuleExtraction {
+  const withoutComments = stripCommentThreads(sliceBody(html));
+  const body = stripConsentNoise(withoutComments.html);
   const modules: ExtractedModule[] = [];
 
   const header = sliceTagBlock(body, "header");
@@ -103,7 +118,7 @@ export function extractModulesFromHtml(html: string): ExtractedModule[] {
     }
   }
 
-  return modules;
+  return { modules, commentsStripped: withoutComments.removed };
 }
 
 /**
@@ -158,6 +173,70 @@ const CONSENT_NOISE_PATTERN =
   /(cmplz|cookiebot|onetrust|borlabs|usercentrics|didomi|klaro|iubenda|cookie-?(banner|notice|consent|law|bar)|consent-?(banner|modal|manager|popup)|gdpr-?(banner|popup))/i;
 
 export function stripConsentNoise(html: string): string {
+  return stripMatchingSubtrees(html, (attrs) => {
+    const fingerprint = `${attrs.id ?? ""} ${attrs.class ?? ""} ${attrs["data-nosnippet"] ?? ""}`;
+    return CONSENT_NOISE_PATTERN.test(fingerprint);
+  }).html;
+}
+
+/**
+ * Strip comment-thread subtrees from crawled body HTML.
+ *
+ * Live-hit (searchviu migration run #10, D3): imported blog bodies
+ * carried the source's full WordPress comment threads — 90+ comments
+ * per post — which bloated the composed pages and blew the rebuild
+ * subagents' context windows. Comment threads are visitor-generated
+ * discussion chrome, never operator content; Caelo's comment story is
+ * a plugin, not imported markup.
+ *
+ * Matching is attribute-scoped like {@link stripConsentNoise}: ids and
+ * class TOKENS are compared against the known WordPress / page-builder
+ * comment fingerprints (`#comments`, `ol.commentlist`, `.comment-list`,
+ * `#respond`, `.comment-respond`, Elementor/Divi/Avada widgets), so
+ * body prose that merely mentions comments is untouched.
+ *
+ * @returns the stripped HTML plus the number of removed subtrees —
+ *   callers MUST surface the count (e.g. a `comments-stripped:<n>`
+ *   note); silent removal violates CLAUDE.md §2.
+ */
+export function stripCommentThreads(html: string): { html: string; removed: number } {
+  return stripMatchingSubtrees(html, (attrs) => {
+    const id = (attrs.id ?? "").toLowerCase();
+    if (COMMENT_THREAD_ID_PATTERN.test(id)) return true;
+    for (const token of (attrs.class ?? "").toLowerCase().split(/\s+/)) {
+      if (token !== "" && COMMENT_THREAD_CLASS_PATTERN.test(token)) return true;
+    }
+    return false;
+  });
+}
+
+// Ids are matched EXACTLY (WP core: #comments, #respond, #commentform;
+// Disqus: #disqus_thread) — substring matching on ids like
+// `intercom-comments-frame` would overreach.
+const COMMENT_THREAD_ID_PATTERN = /^(comments|respond|commentform|disqus_thread|reply-title)$/;
+// Class TOKENS (whole class-list entries, not substrings): WP core +
+// theme conventions (`comment-list`, `commentlist`, `comments-area`,
+// `comment-respond`, `comments-title`, `.comments-link` post-meta
+// links), block editor (`wp-block-comments*`, `wp-block-post-comments*`),
+// and the big page builders (Elementor `elementor-widget-post-comments`,
+// Divi `et_pb_comments*`, Avada `fusion-comments*`). The bare `comments`
+// token catches `<section class="comments">` wrappers. Deliberately NOT
+// matched: the bare `comment` token — prose/testimonial markup uses it
+// too freely, and WP's `li.comment` items always sit inside a matched
+// list ancestor anyway.
+const COMMENT_THREAD_CLASS_PATTERN =
+  /^(comments|commentlist|comment-list|comments-area|comments-title|comments-link|comment-respond|comment-form|comment-reply-title|comments-wrap(per)?|post-comments|wp-block-(post-)?comments(-[a-z-]+)?|elementor-widget-post-comments|et_pb_comments(_[a-z0-9_]+)?|fusion-comments(-[a-z-]+)?)$/;
+
+/**
+ * Shared subtree-removal walker for the extraction strippers. Walks
+ * `html` with htmlparser2 and removes every element (with its whole
+ * subtree) whose attributes satisfy `matches`. Byte-range based so the
+ * surviving markup is untouched (no re-serialisation drift).
+ */
+function stripMatchingSubtrees(
+  html: string,
+  matches: (attrs: Record<string, string>) => boolean,
+): { html: string; removed: number } {
   const ranges: Array<[number, number]> = [];
   let depth = 0;
   let skipDepth = -1;
@@ -165,12 +244,9 @@ export function stripConsentNoise(html: string): string {
   const parser = new Parser({
     onopentag(_name, attrs) {
       depth += 1;
-      if (skipDepth === -1) {
-        const fingerprint = `${attrs.id ?? ""} ${attrs.class ?? ""} ${attrs["data-nosnippet"] ?? ""}`;
-        if (CONSENT_NOISE_PATTERN.test(fingerprint)) {
-          skipDepth = depth;
-          start = parser.startIndex;
-        }
+      if (skipDepth === -1 && matches(attrs)) {
+        skipDepth = depth;
+        start = parser.startIndex;
       }
     },
     onclosetag() {
@@ -184,12 +260,12 @@ export function stripConsentNoise(html: string): string {
   });
   parser.write(html);
   parser.end();
-  if (ranges.length === 0) return html;
+  if (ranges.length === 0) return { html, removed: 0 };
   let out = html;
   for (const [from, to] of ranges.reverse()) {
     out = out.slice(0, from) + out.slice(to);
   }
-  return out;
+  return { html: out, removed: ranges.length };
 }
 
 function sliceBody(html: string): string {

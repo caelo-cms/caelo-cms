@@ -49,6 +49,8 @@ export {
   extractPageCss,
   extractThemeTokens,
   extractTitle,
+  type ModuleExtraction,
+  stripCommentThreads,
 } from "./extractor.js";
 export {
   type ClusterSummary,

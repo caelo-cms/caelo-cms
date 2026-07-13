@@ -646,10 +646,12 @@ export const promoteDeployOp = defineOperation({
     const fromRunId = fromRow?.id;
     const buildId = fromRow?.build_id;
     if (!fromRunId || !buildId) {
+      // run #10 D6 — AI/operator-actionable failure surface (CLAUDE.md
+      // §11): name the next step instead of just the diagnosis.
       return err({
         kind: "HandlerError",
         operation: "deploy.promote",
-        message: `no succeeded build to promote from ${from.name}`,
+        message: `no succeeded build to promote from '${from.name}' — run Stage first (deploy.trigger targetName=${from.name}); Publish live only copies an already-staged build`,
       });
     }
 

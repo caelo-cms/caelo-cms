@@ -121,8 +121,16 @@ export async function runMediaPass(args: {
     }
   }
   if (missing.length > 0) {
+    // run #10 D4 — AI-actionable failure surface (CLAUDE.md §11): name
+    // the recovery op, and the by-design case where recovery means
+    // re-pointing the HTML instead (source narrower than the
+    // breakpoint / animated GIF — the pipeline never upscales).
     throw new Error(
-      `static-generator: media references unresolved (asset/variant pairs missing): ${missing.join(", ")}`,
+      `static-generator: media references unresolved (asset/variant pairs missing): ${missing.join(", ")}. ` +
+        "Next step: run media.regenerate_variants (AI tool: regenerate_media_variants) with these asset ids " +
+        "to re-run the image pipeline. If a variant still cannot be produced (source image narrower than " +
+        "the breakpoint, animated GIF, or non-raster kind), edit the referencing module HTML to use the " +
+        "result's bestUrl (e.g. /orig) — find the modules via media.list_usages.",
     );
   }
 

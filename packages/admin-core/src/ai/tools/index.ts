@@ -101,6 +101,7 @@ import {
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
+import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
 import { renamePageTool } from "./rename-page.js";
@@ -231,6 +232,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // P7 — media library.
   registry.register(findMediaTool);
   registry.register(setMediaAltTool);
+  // run #10 D4 — recovery for "media references unresolved" deploy failures.
+  registry.register(regenerateMediaVariantsTool);
   // P16 — AI image generation via the active provider's image endpoint.
   registry.register(generateImageTool);
   // P8 — SEO sidecar tools.

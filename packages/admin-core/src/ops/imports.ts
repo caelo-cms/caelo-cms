@@ -674,6 +674,9 @@ export const writeExtractedPagesOp = defineOperation({
             signature: z.string().max(200).optional(),
             /** issue #195 — the page's <style> contents. */
             pageCss: z.string().max(600_000).optional(),
+            /** run #10 D3 — comment-thread subtrees the extractor removed.
+             *  Persisted as a loud `comments_stripped` note; never silent. */
+            commentsStripped: z.number().int().min(0).optional(),
           }),
         )
         .max(500),
@@ -683,16 +686,30 @@ export const writeExtractedPagesOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     let inserted = 0;
     for (const p of input.pages) {
+      // run #10 D3 — the extractor's comment-thread stripper reports a
+      // count; store it as a system note in the same shape the AI's
+      // add_page_notes uses so get_run_report rolls it up per category.
+      const notes =
+        p.commentsStripped !== undefined && p.commentsStripped > 0
+          ? [
+              {
+                category: "comments_stripped" as const,
+                note: `comments-stripped:${p.commentsStripped} — comment-thread markup (WP #comments/.comment-list/#respond or builder equivalent) removed at extraction`,
+                applied: true,
+              },
+            ]
+          : null;
       const r = (await tx.execute(sql`
         INSERT INTO import_pages (
           run_id, source_url, proposed_slug, proposed_title,
           proposed_modules, proposed_theme_tokens,
-          structural_signature, cluster_key, page_css
+          structural_signature, cluster_key, page_css, notes
         ) VALUES (
           ${input.runId}::uuid, ${p.sourceUrl}, ${p.proposedSlug}, ${p.proposedTitle},
           ${JSON.stringify(p.proposedModules)}::jsonb,
           ${JSON.stringify(p.proposedThemeTokens)}::jsonb,
-          ${p.signature ?? null}, ${p.signature ?? null}, ${p.pageCss ?? null}
+          ${p.signature ?? null}, ${p.signature ?? null}, ${p.pageCss ?? null},
+          ${notes === null ? null : JSON.stringify(notes)}::jsonb
         )
         ON CONFLICT (run_id, source_url) DO NOTHING
         RETURNING id
@@ -1002,6 +1019,10 @@ export const assignImportPageClusterOp = defineOperation({
 // no-fallbacks). The AI-facing add_import_page_notes tool deliberately
 // keeps the original five: the model reports content findings, it never
 // asserts capture state.
+// run #10 D3 — `comments_stripped` is SYSTEM-written at extraction time
+// (imports.write_extracted_pages) when the crawler removed WordPress
+// comment-thread markup; like the #247 capture notes it never comes
+// from the AI tool.
 const noteCategory = z.enum([
   "typo",
   "dead_link",
@@ -1010,6 +1031,7 @@ const noteCategory = z.enum([
   "improvement",
   "screenshot_missing",
   "design_tokens_missing",
+  "comments_stripped",
 ]);
 
 /**
