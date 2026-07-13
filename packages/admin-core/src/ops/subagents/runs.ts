@@ -11,6 +11,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 const runRow = z.object({
   id: z.string(),
@@ -141,7 +142,7 @@ export const finishSubagentRunOp = defineOperation({
     await tx.execute(sql`
       UPDATE subagent_runs
       SET status = ${input.status},
-          result_json = (${input.resultJson === null ? null : JSON.stringify(input.resultJson)}::text)::jsonb,
+          result_json = ${jsonbParam(input.resultJson)},
           cost_microcents = ${input.costMicrocents}::bigint,
           duration_ms = ${input.durationMs},
           error_message = ${input.errorMessage},

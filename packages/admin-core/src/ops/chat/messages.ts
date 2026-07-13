@@ -12,6 +12,7 @@ import { CHAT_MAX_ATTACHMENTS, chatAttachmentSchema, err, ok } from "@caelo-cms/
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { lookupPricing } from "../../ai/pricing-cache.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 const messageRow = z.object({ messageId: z.string() });
 
@@ -81,14 +82,14 @@ export const appendChatMessageOp = defineOperation({
           ${input.chatSessionId}::uuid,
           ${input.role},
           ${input.content},
-          ${input.toolCalls ? JSON.stringify(input.toolCalls) : null}::jsonb,
+          ${jsonbParam(input.toolCalls ? input.toolCalls : null)},
           ${input.toolCallId ?? null},
           ${input.tokensIn ?? null}::int,
           ${input.tokensOut ?? null}::int,
           ${input.cachedTokens ?? null}::int,
           ${input.status ?? "complete"},
-          ${input.thinkingBlocks && input.thinkingBlocks.length > 0 ? JSON.stringify(input.thinkingBlocks) : null}::jsonb,
-          ${input.attachments && input.attachments.length > 0 ? JSON.stringify(input.attachments) : null}::jsonb
+          ${jsonbParam(input.thinkingBlocks && input.thinkingBlocks.length > 0 ? input.thinkingBlocks : null)},
+          ${jsonbParam(input.attachments && input.attachments.length > 0 ? input.attachments : null)}
         WHERE EXISTS (
           SELECT 1 FROM chat_sessions WHERE id = ${input.chatSessionId}::uuid
         )

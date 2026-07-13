@@ -12,6 +12,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 /**
  * P13 ideas-pass — `htmlPatches` lets a variant carry per-string
@@ -78,7 +79,7 @@ export const createExperimentOp = defineOperation({
       INSERT INTO experiments (slug, page_id, variants, status, created_by)
       VALUES (
         ${input.slug}, ${input.pageId}::uuid,
-        ${JSON.stringify(input.variants)}::jsonb,
+        ${jsonbParam(input.variants)},
         'draft', ${ctx.actorId}::uuid
       )
       RETURNING id::text AS id

@@ -52,15 +52,7 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
     "path. " +
     TOKEN_SHAPE_HINTS,
   schema: setThemeTokensToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      themeSlug: { type: "string", minLength: 1, maxLength: 120 },
-      set: { type: "object", additionalProperties: true },
-      remove: { type: "array", items: { type: "string" } },
-    },
-  },
+  // issue #251 (WS5) — inputSchema derived from `schema` at registration.
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.update_tokens", input);
     if (!r.ok) {

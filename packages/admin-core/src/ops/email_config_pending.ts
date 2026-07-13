@@ -24,6 +24,7 @@ import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared"
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -125,8 +126,8 @@ export const proposeEmailConfigSetOp = defineOperation({
           (proposed_by, payload, preview, status, chat_session_id, payload_hash)
         VALUES (
           ${ctx.actorId}::uuid,
-          ${JSON.stringify(input)}::jsonb,
-          ${JSON.stringify(preview)}::jsonb,
+          ${jsonbParam(input)},
+          ${jsonbParam(preview)},
           'pending',
           ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
           ${payloadHash}

@@ -21,6 +21,7 @@ import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { jsonbParam } from "../../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
 
 const jobScope = z.discriminatedUnion("kind", [
@@ -231,7 +232,7 @@ export const createTranslationJobOp = defineOperation({
       INSERT INTO translation_jobs (initiated_by, scope, status, total_units, cap_microcents)
       VALUES (
         ${ctx.actorId}::uuid,
-        ${JSON.stringify(input.scope)}::jsonb,
+        ${jsonbParam(input.scope)},
         'pending',
         ${candidates.length},
         ${input.capMicrocents ?? null}

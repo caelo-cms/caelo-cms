@@ -36,6 +36,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 // BCP-47-ish: lowercase letter pair, optional region. Loose; the
 // browser still accepts it as a valid lang tag.
@@ -277,7 +278,7 @@ export const proposeCreateLocaleOp = defineOperation({
     const preview = await computePreview(tx, "create", input);
     const rows = (await tx.execute(sql`
       INSERT INTO locale_pending_actions (action_kind, payload, preview, proposed_by)
-      VALUES ('create', ${JSON.stringify(input)}::jsonb, ${JSON.stringify(preview)}::jsonb, ${ctx.actorId}::uuid)
+      VALUES ('create', ${jsonbParam(input)}, ${jsonbParam(preview)}, ${ctx.actorId}::uuid)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const proposalId = rows[0]?.id;
@@ -331,7 +332,7 @@ export const proposeDeleteLocaleOp = defineOperation({
     const preview = await computePreview(tx, "delete", input);
     const insertRows = (await tx.execute(sql`
       INSERT INTO locale_pending_actions (action_kind, payload, preview, proposed_by)
-      VALUES ('delete', ${JSON.stringify(input)}::jsonb, ${JSON.stringify(preview)}::jsonb, ${ctx.actorId}::uuid)
+      VALUES ('delete', ${jsonbParam(input)}, ${jsonbParam(preview)}, ${ctx.actorId}::uuid)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const proposalId = insertRows[0]?.id;
@@ -385,7 +386,7 @@ export const proposeSetDefaultLocaleOp = defineOperation({
     const preview = await computePreview(tx, "set_default", input);
     const insertRows = (await tx.execute(sql`
       INSERT INTO locale_pending_actions (action_kind, payload, preview, proposed_by)
-      VALUES ('set_default', ${JSON.stringify(input)}::jsonb, ${JSON.stringify(preview)}::jsonb, ${ctx.actorId}::uuid)
+      VALUES ('set_default', ${jsonbParam(input)}, ${jsonbParam(preview)}, ${ctx.actorId}::uuid)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const proposalId = insertRows[0]?.id;
@@ -448,7 +449,7 @@ export const proposeUpdateStrategyOp = defineOperation({
     const preview = await computePreview(tx, "update_strategy", input);
     const insertRows = (await tx.execute(sql`
       INSERT INTO locale_pending_actions (action_kind, payload, preview, proposed_by)
-      VALUES ('update_strategy', ${JSON.stringify(input)}::jsonb, ${JSON.stringify(preview)}::jsonb, ${ctx.actorId}::uuid)
+      VALUES ('update_strategy', ${jsonbParam(input)}, ${jsonbParam(preview)}, ${ctx.actorId}::uuid)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const proposalId = insertRows[0]?.id;

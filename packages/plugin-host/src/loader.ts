@@ -378,7 +378,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
           manifest_json, source_path, manifest_signature, submitted_by
         ) VALUES (
           ${def.slug}, ${def.version}, ${def.tier}, 'active',
-          ${JSON.stringify(buildManifestJson(def))}::jsonb,
+          (${JSON.stringify(buildManifestJson(def))}::text)::jsonb,
           ${opts.sourcePath},
           ${opts.manifestSignatureHex},
           ${opts.systemActorId}::uuid
@@ -487,7 +487,7 @@ async function markPluginFailed(opts: {
         ) VALUES (
           ${opts.slug}, '0.0.0', 1, 'failed',
           '{}'::jsonb, 'unknown',
-          ${JSON.stringify([{ kind: "load-failed", hint: opts.reason }])}::jsonb,
+          (${JSON.stringify([{ kind: "load-failed", hint: opts.reason }])}::text)::jsonb,
           ${opts.systemActorId}::uuid
         )
         ON CONFLICT (slug) DO UPDATE SET

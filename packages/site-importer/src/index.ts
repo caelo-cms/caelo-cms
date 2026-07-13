@@ -74,12 +74,31 @@ export {
   stripCommentThreads,
 } from "./extractor.js";
 export {
+  type AltTextEntry,
+  extractAltTexts,
+  extractOutboundLinks,
+  extractPageMeta,
+  type HreflangAlternate,
+  type LinkLocation,
+  type OutboundLink,
+  type PageMeta,
+} from "./page-facets.js";
+export {
   type ClusterSummary,
   computePageSignature,
   type PageSignatureInput,
   pathShape,
   summariseClusters,
 } from "./page-signature.js";
+export {
+  type ClassifierLink,
+  type ClassifyPageTypesInput,
+  classifyPageTypes,
+  type FilteredUrl,
+  type PageType,
+  type PageTypeMap,
+  type PageTypeSource,
+} from "./page-type-map.js";
 export { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 export {
   assertPublicHttpUrl,
@@ -95,14 +114,23 @@ export {
 } from "./safe-fetch.js";
 export {
   computePixelDiff,
+  computeStructuralDiff,
   createPlaywrightScreenshotter,
   type Screenshot,
   type Screenshotter,
 } from "./screenshot.js";
 export {
   computeDiffStatus,
+  computeFidelityStatus,
   type DiffResult,
   type DiffStatus,
+  FIDELITY_PASS_MAX,
+  FIDELITY_WARN_MAX,
+  type PageBand,
+  STRUCTURAL_DIFF_COLS,
+  STRUCTURAL_DIFF_ROWS,
+  type StructuralDiff,
+  structuralDiffFraction,
 } from "./screenshot-diff.js";
 export {
   discoverSitemapUrls,

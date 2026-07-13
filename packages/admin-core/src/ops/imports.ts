@@ -38,6 +38,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
 import { updateThemeTokensOp } from "./themes.js";
@@ -371,7 +372,7 @@ export const proposeImportRunOp = defineOperation({
     const rows = (await tx.execute(sql`
       INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate, chat_session_id)
       VALUES (${input.sourceUrl}, ${input.depth}, ${input.maxPages}, 'proposed', ${ctx.actorId}::uuid,
-              ${input.estimate ? JSON.stringify(input.estimate) : null}::jsonb,
+              ${jsonbParam(input.estimate ? input.estimate : null)},
               ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -652,6 +653,65 @@ export const getImportPageScreenshotKeysOp = defineOperation({
   },
 });
 
+/**
+ * issue #250 (WS4) — everything the fidelity verdict tool needs to grade one
+ * rebuilt page, resolved from EITHER id the AI is holding: the staging
+ * `import_pages.id` OR the composed `pages.id` it just built
+ * (accepted_page_id). Mirrors `imports.add_page_notes`' dual-id ergonomics so
+ * the AI never has to look one id up from the other mid-flow.
+ *
+ * Returns the source screenshot key (null = UNVERIFIED — no ground truth to
+ * diff against) and the accepted page id (null = not composed yet) so the
+ * tool can fail loudly + specifically instead of guessing.
+ */
+export const getImportPageFidelityInputsOp = defineOperation({
+  name: "imports.get_page_fidelity_inputs",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ pageRef: z.string().uuid() }).strict(),
+  output: z.object({
+    importPageId: z.string(),
+    sourceUrl: z.string().nullable(),
+    screenshotObjectKey: z.string().nullable(),
+    acceptedPageId: z.string().nullable(),
+    diffStatus: z.enum(["pass", "warn", "fail"]).nullable(),
+    diffPct: z.number().nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, source_url, screenshot_object_key,
+             accepted_page_id::text AS accepted_page_id, diff_status, diff_pct
+      FROM import_pages
+      WHERE id = ${input.pageRef}::uuid OR accepted_page_id = ${input.pageRef}::uuid
+      LIMIT 1
+    `)) as unknown as Array<{
+      id: string;
+      source_url: string | null;
+      screenshot_object_key: string | null;
+      accepted_page_id: string | null;
+      diff_status: "pass" | "warn" | "fail" | null;
+      diff_pct: number | null;
+    }>;
+    const r = rows[0];
+    if (!r) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.get_page_fidelity_inputs",
+        message:
+          "no import page matches this id — pass EITHER the staging import_pages id OR the composed page id (accepted_page_id); list the run with imports.get for valid ids",
+      });
+    }
+    return ok({
+      importPageId: r.id,
+      sourceUrl: r.source_url,
+      screenshotObjectKey: r.screenshot_object_key,
+      acceptedPageId: r.accepted_page_id,
+      diffStatus: r.diff_status,
+      diffPct: r.diff_pct,
+    });
+  },
+});
+
 export const writeExtractedPagesOp = defineOperation({
   name: "imports.write_extracted_pages",
   actorScope: ["system"],
@@ -710,10 +770,10 @@ export const writeExtractedPagesOp = defineOperation({
           structural_signature, cluster_key, page_css, notes
         ) VALUES (
           ${input.runId}::uuid, ${p.sourceUrl}, ${p.proposedSlug}, ${p.proposedTitle},
-          ${JSON.stringify(p.proposedModules)}::jsonb,
-          ${JSON.stringify(p.proposedThemeTokens)}::jsonb,
+          ${jsonbParam(p.proposedModules)},
+          ${jsonbParam(p.proposedThemeTokens)},
           ${p.signature ?? null}, ${p.signature ?? null}, ${p.pageCss ?? null},
-          ${notes === null ? null : JSON.stringify(notes)}::jsonb
+          ${jsonbParam(notes)}
         )
         ON CONFLICT (run_id, source_url) DO NOTHING
         RETURNING id
@@ -1465,6 +1525,25 @@ export const getImportRunReportOp = defineOperation({
      *  a screenshot_missing note; downstream verification (WS4) treats
      *  them as UNVERIFIED. */
     pagesMissingScreenshot: z.number(),
+    /** issue #250 (WS4) — source-vs-rebuilt fidelity rollup. `unverified`
+     *  counts composed pages that have a source screenshot but no computed
+     *  diff yet (verify_import_page_fidelity never ran) PLUS pages missing a
+     *  source screenshot — both mean "nothing measured this rebuild".
+     *  `overThreshold` lists the warn/fail pages the report must surface so
+     *  the AI never says "fertig" over red pages. */
+    fidelity: z.object({
+      pass: z.number(),
+      warn: z.number(),
+      fail: z.number(),
+      unverified: z.number(),
+      overThreshold: z.array(
+        z.object({
+          sourceUrl: z.string(),
+          diffStatus: z.enum(["warn", "fail"]),
+          diffPct: z.number(),
+        }),
+      ),
+    }),
     /** issue #247 — the site-level computed-style token aggregate;
      *  null when the run never got a Playwright render pass. */
     siteDesignTokens: z.unknown().nullable(),
@@ -1508,6 +1587,7 @@ export const getImportRunReportOp = defineOperation({
     }
     const pages = (await tx.execute(sql`
       SELECT source_url, proposed_slug, accepted_page_id, screenshot_object_key,
+             diff_status, diff_pct,
              COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
              cluster_label, notes
       FROM import_pages WHERE run_id = ${input.runId}::uuid
@@ -1517,10 +1597,38 @@ export const getImportRunReportOp = defineOperation({
       proposed_slug: string;
       accepted_page_id: string | null;
       screenshot_object_key: string | null;
+      diff_status: "pass" | "warn" | "fail" | null;
+      diff_pct: number | null;
       cluster_key: string;
       cluster_label: string | null;
       notes: unknown;
     }>;
+
+    // issue #250 (WS4) — fidelity rollup. A composed page with a source
+    // screenshot but no diff_status is UNVERIFIED (the gate never graded it);
+    // pages missing a source screenshot are unverified by definition. warn +
+    // fail are the pages the closing report must name out loud.
+    const fidelity = {
+      pass: 0,
+      warn: 0,
+      fail: 0,
+      unverified: 0,
+      overThreshold: [] as { sourceUrl: string; diffStatus: "warn" | "fail"; diffPct: number }[],
+    };
+    for (const p of pages) {
+      if (p.diff_status === "pass") fidelity.pass += 1;
+      else if (p.diff_status === "warn" || p.diff_status === "fail") {
+        fidelity[p.diff_status] += 1;
+        fidelity.overThreshold.push({
+          sourceUrl: p.source_url,
+          diffStatus: p.diff_status,
+          diffPct: p.diff_pct ?? 1,
+        });
+      } else if (p.accepted_page_id !== null || p.screenshot_object_key === null) {
+        // Composed-but-ungraded, or never screenshotted: nothing measured it.
+        fidelity.unverified += 1;
+      }
+    }
 
     // Clusters.
     const clusterMap = new Map<string, { label: string | null; count: number }>();
@@ -1598,6 +1706,7 @@ export const getImportRunReportOp = defineOperation({
       redirectsCreated,
       crawlErrors,
       pagesMissingScreenshot: pages.filter((p) => p.screenshot_object_key === null).length,
+      fidelity,
       siteDesignTokens: parseJsonbColumn(run.site_design_tokens),
       boilerplate: parseJsonbColumn(run.boilerplate_summary),
       notes: [...byCategory.entries()].map(([category, v]) => ({

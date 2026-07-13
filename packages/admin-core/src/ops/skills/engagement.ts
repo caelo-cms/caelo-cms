@@ -19,6 +19,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 const pinDefaultRow = z.object({
   skillId: z.string(),
@@ -122,7 +123,7 @@ export const setEngagedSkillsOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const updated = (await tx.execute(sql`
       UPDATE chat_sessions
-      SET engaged_skills = ${JSON.stringify(input.overrides)}::jsonb
+      SET engaged_skills = ${jsonbParam(input.overrides)}
       WHERE id = ${input.chatSessionId}::uuid AND archived_at IS NULL
       RETURNING id
     `)) as unknown as { id: string }[];

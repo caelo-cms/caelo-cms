@@ -12,6 +12,7 @@ import { type DesignManifest, designManifestSchema, err, ok } from "@caelo-cms/s
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 export const getDesignManifestOp = defineOperation({
   name: "design_manifest.get",
@@ -50,7 +51,7 @@ export const setDesignManifestOp = defineOperation({
     }
     await tx.execute(sql`
       INSERT INTO design_manifests (id, payload, updated_at, updated_by)
-      VALUES (1, ${JSON.stringify(input.manifest)}::jsonb, now(), ${ctx.actorId}::uuid)
+      VALUES (1, ${jsonbParam(input.manifest)}, now(), ${ctx.actorId}::uuid)
       ON CONFLICT (id) DO UPDATE
       SET payload = EXCLUDED.payload, updated_at = now(), updated_by = EXCLUDED.updated_by
     `);

@@ -194,6 +194,7 @@ import {
   createImportRunOp,
   detectImportBoilerplateOp,
   executeImportProposalOp,
+  getImportPageFidelityInputsOp,
   getImportPageScreenshotKeysOp,
   getImportRunOp,
   getImportRunReportOp,
@@ -762,6 +763,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(assignImportPageClusterOp);
   // issue #198 — per-page screenshot keys (serve route + AI tool).
   registry.register(getImportPageScreenshotKeysOp);
+  // issue #250 (WS4) — fidelity verdict inputs (source vs rebuilt).
+  registry.register(getImportPageFidelityInputsOp);
   // issue #197 — rebuild notes + run report.
   registry.register(addImportPageNotesOp);
   registry.register(getImportRunReportOp);

@@ -22,6 +22,7 @@ import { ZodError, z } from "zod";
 import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
 import { emitSnapshot } from "../snapshots/index.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 const setRow = z.object({
   id: z.string(),
@@ -380,7 +381,7 @@ export const setStructuredSetOp = defineOperation({
             ${id}::uuid,
             ${op.kind},
             ${op.itemId},
-            ${JSON.stringify(op.payload)}::jsonb
+            ${jsonbParam(op.payload)}
           )
         `);
       }

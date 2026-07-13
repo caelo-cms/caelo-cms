@@ -12,6 +12,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { jsonbParam } from "../sql-helpers.js";
 
 const keyShape = z
   .string()
@@ -65,7 +66,7 @@ export const setUserPreferenceOp = defineOperation({
       VALUES (
         ${ctx.actorId}::uuid,
         ${input.key},
-        ${JSON.stringify(input.value)}::jsonb,
+        ${jsonbParam(input.value)},
         now()
       )
       ON CONFLICT (user_id, key) DO UPDATE

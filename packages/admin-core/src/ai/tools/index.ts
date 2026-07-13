@@ -60,6 +60,7 @@ import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
+import { mapExternalPageTypesTool } from "./map-external-page-types.js";
 import { migrateMediaTool } from "./migrate-media.js";
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
@@ -134,6 +135,7 @@ import { submitResultTool } from "./submit-result.js";
 // them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
+import { verifyImportFidelityTool } from "./verify-import-fidelity.js";
 
 /**
  * Registers every shipped tool against a fresh ToolRegistry. Tests can
@@ -172,9 +174,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(checkGenesisParityTool);
   // issue #165 — per-site design language writer.
   registry.register(setDesignManifestTool);
-  // issue #189 — single-page external-site sensing (migration glance).
+  // issue #189 / #278 — single-page external-site sensing (facet-selectable
+  // glance) + homepage-driven page-type mapping for the migration flow.
   registry.register(inspectExternalPageTool);
   registry.register(screenshotExternalPageTool);
+  registry.register(mapExternalPageTypesTool);
   // issue #194 — page-type clusters for the migration flow.
   registry.register(listImportPageClustersTool);
   registry.register(assignImportPageClusterTool);
@@ -187,6 +191,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // (no information loss) + repeated-subtree boilerplate detection.
   registry.register(checkPageContentInventoryTool);
   registry.register(detectImportBoilerplateTool);
+  // issue #250 (WS4) — source-vs-rebuilt fidelity verdict (self-analysis gate).
+  registry.register(verifyImportFidelityTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);
