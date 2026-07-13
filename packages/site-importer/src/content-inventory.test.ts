@@ -174,3 +174,43 @@ describe("checkContentCoverage (convenience wrapper)", () => {
     expect(report.missing[0]?.kind).toBe("paragraph");
   });
 });
+
+describe("robustness against malformed and adversarial input", () => {
+  it("stays linear on a '<'-flood (no polynomial ReDoS in the tag stripper)", () => {
+    // 100k '<' with no '>' is the CodeQL js/polynomial-redos trigger for
+    // `<[^>]*>`; the tempered `[^<>]*` fix keeps this well under a second.
+    const flood = "<".repeat(100_000);
+    const start = performance.now();
+    const report = checkContentCoverage("<p>hello world content</p>", flood);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(1000);
+    // The source paragraph is genuinely absent from a tag-only rebuild.
+    expect(report.counts.missing).toBe(1);
+  });
+
+  it("does not corrupt attribution on mismatched / stray / unclosed tags", () => {
+    // Crawled HTML is routinely malformed: a </p> closing across an open
+    // <b>, a stray </b>, an unclosed <li>, and orphan </div></section>.
+    const malformed = `<section><h2>Heading here</h2><p>Alpha <b>bold text</p> stray</b>
+      <ul><li>List item one <li>List item two</ul></div></section>`;
+    const inv = extractContentInventory(malformed);
+    // The paragraph is attributed once, the heading became context, and
+    // both list items are captured — nothing throws or duplicates wildly.
+    const para = inv.items.find((i) => i.kind === "paragraph");
+    expect(para?.text).toContain("Alpha bold text");
+    expect(para?.sourceContext).toBe("Heading here");
+    const listItems = inv.items.filter((i) => i.kind === "list_item").map((i) => i.text);
+    expect(listItems).toContain("List item one");
+    expect(listItems).toContain("List item two");
+    // A stray close with no matching open must not manufacture items.
+    expect(extractContentInventory("</div></p></span>stray text").items).toHaveLength(0);
+  });
+
+  it("is stable on deeply nested markup (no stack blow-up)", () => {
+    const deep = `${"<div>".repeat(4000)}<p>Deep buried paragraph text</p>${"</div>".repeat(4000)}`;
+    const start = performance.now();
+    const inv = extractContentInventory(deep);
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(inv.items.some((i) => i.kind === "paragraph")).toBe(true);
+  });
+});

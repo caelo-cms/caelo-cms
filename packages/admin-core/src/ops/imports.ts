@@ -1466,6 +1466,9 @@ export const detectImportBoilerplateOp = defineOperation({
       generatedAt: new Date().toISOString(),
       pagesAnalyzed: report.pagesAnalyzed,
       candidates: report.candidates.slice(0, 20).map((c) => ({
+        // `signature` correlates a stored summary row back to the full
+        // candidate from imports.detect_boilerplate (0137 column comment).
+        signature: c.signature,
         kind: c.kind,
         tag: c.tag,
         pageCount: c.pageCount,

@@ -162,10 +162,30 @@ interface Collector {
 export function extractContentInventory(html: string): ContentInventory {
   const items: ContentItem[] = [];
   const stack: Array<{ name: string; collector: Collector | null }> = [];
+  // Only the currently-open collectors, so ontext appends in O(open
+  // collectors) rather than walking the whole tag stack per text node
+  // (which would be O(n^2) on deep markup). Frames without a collector
+  // never enter this list.
+  const activeCollectors: Collector[] = [];
   let currentContext = "";
 
   const emit = (item: ContentItem): void => {
     items.push(item);
+  };
+
+  /** Emit the item a closing collector represents (if it has content). */
+  const finalizeCollector = (c: Collector): void => {
+    const text = collapseText(c.parts.join(" "));
+    if (c.kind === "heading" && text) currentContext = text;
+    // A link/cta with no text but a real href is still meaningful.
+    const hasContent = text.length > 0 || (c.href !== undefined && normHref(c.href).length > 0);
+    if (!hasContent) return;
+    emit({
+      kind: c.kind,
+      text: text || undefined,
+      href: c.href !== undefined ? normHref(c.href) : undefined,
+      sourceContext: currentContext || undefined,
+    });
   };
 
   const parser = new Parser(
@@ -207,27 +227,34 @@ export function extractContentInventory(html: string): ContentInventory {
         }
 
         stack.push({ name: tag, collector });
+        if (collector) activeCollectors.push(collector);
       },
       ontext(t) {
-        for (const frame of stack) {
-          if (frame.collector) frame.collector.parts.push(t);
-        }
+        for (const c of activeCollectors) c.parts.push(t);
       },
-      onclosetag() {
-        const frame = stack.pop();
-        if (!frame?.collector) return;
-        const c = frame.collector;
-        const text = collapseText(c.parts.join(" "));
-        if (c.kind === "heading" && text) currentContext = text;
-        // A link/cta with no text but a real href is still meaningful.
-        const hasContent = text.length > 0 || (c.href !== undefined && normHref(c.href).length > 0);
-        if (!hasContent) return;
-        emit({
-          kind: c.kind,
-          text: text || undefined,
-          href: c.href !== undefined ? normHref(c.href) : undefined,
-          sourceContext: currentContext || undefined,
-        });
+      onclosetag(name) {
+        // Crawled HTML is routinely malformed (stray or unclosed tags),
+        // so never pop blindly: find the matching open frame and unwind
+        // down to it, closing the implicitly-closed frames in between.
+        // A stray close with no matching open is ignored. This keeps the
+        // stack and per-collector attribution in sync on any input.
+        if (stack.length === 0) return;
+        const tag = name.toLowerCase();
+        let idx = -1;
+        for (let i = stack.length - 1; i >= 0; i--) {
+          if (stack[i]?.name === tag) {
+            idx = i;
+            break;
+          }
+        }
+        if (idx === -1) return;
+        while (stack.length > idx) {
+          const frame = stack.pop();
+          if (frame?.collector) {
+            activeCollectors.pop();
+            finalizeCollector(frame.collector);
+          }
+        }
       },
     },
     { decodeEntities: false, lowerCaseTags: true, lowerCaseAttributeNames: true },
@@ -285,7 +312,10 @@ function buildRebuiltIndex(rebuiltHtml: string): RebuiltIndex {
   }
   // Full visible text (tags stripped, entities decoded) so a source
   // paragraph that the rebuild reflowed still matches by substring.
-  const combinedText = normText(rebuiltHtml.replace(/<[^>]*>/g, " "));
+  // Tempered dot `[^<>]*` (not `[^>]*`): excluding `<` from the class
+  // means a `<`-flood with no `>` cannot drive O(n^2) backtracking
+  // (CodeQL js/polynomial-redos), same fix as page-facets.ts on main.
+  const combinedText = normText(rebuiltHtml.replace(/<[^<>]*>/g, " "));
   return { texts, hrefs, imageBasenames, combinedText };
 }
 

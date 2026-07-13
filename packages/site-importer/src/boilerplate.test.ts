@@ -162,4 +162,37 @@ describe("detectBoilerplate", () => {
     const b = JSON.stringify(detectBoilerplate(pages));
     expect(a).toBe(b);
   });
+
+  it("stays fast on deeply nested markup (linear walker, capped active frames)", () => {
+    // A hostile 4000-deep <div> nest per page: with a whole-stack walk
+    // this is O(n^2); the capped active-frame walk keeps it well under 1s.
+    const deep = (id: string): BoilerplatePageInput => ({
+      pageId: id,
+      url: `https://site.test/${id}`,
+      clusterKey: "/x/*",
+      html: `${"<div>".repeat(4000)}<p>Buried body copy for ${id} with plenty of words.</p>${"</div>".repeat(4000)}`,
+    });
+    const start = performance.now();
+    const report = detectBoilerplate([deep("a"), deep("b"), deep("c"), deep("d")], { minPages: 3 });
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(report.pagesAnalyzed).toBe(4);
+  });
+
+  it("handles malformed HTML without corrupting signatures or throwing", () => {
+    // Mismatched/unclosed/stray tags on every page. Detection must still
+    // run deterministically and treat the identical broken CTA as shared.
+    const brokenCta = `<section class="cta"><h3>Try it now for free today</h3><p>Sign up<div> nested</section>`;
+    const mk = (id: string): BoilerplatePageInput => ({
+      pageId: id,
+      url: `https://site.test/${id}`,
+      clusterKey: "/x/*",
+      html: `<article><h1>Post ${id}</h1><p>Unique body ${id} with several words</b></p>${brokenCta}</div></article>`,
+    });
+    const pages = [mk("1"), mk("2"), mk("3")];
+    const a = JSON.stringify(detectBoilerplate(pages, { minPages: 3 }));
+    const b = JSON.stringify(detectBoilerplate(pages, { minPages: 3 }));
+    expect(a).toBe(b); // deterministic despite malformed input
+    const report = detectBoilerplate(pages, { minPages: 3 });
+    expect(report.candidates.some((c) => c.sampleText.includes("try it now for free"))).toBe(true);
+  });
 });

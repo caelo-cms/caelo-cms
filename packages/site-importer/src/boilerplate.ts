@@ -92,7 +92,11 @@ const BLOCK_TAGS = new Set([
   "table",
 ]);
 
-// Bounds keep the nested-frame walker linear + memory-safe on hostile input.
+// The walker touches only the currently-OPEN block frames on each parse
+// event (never the whole tag stack), and that set is hard-capped at
+// MAX_ACTIVE_FRAMES — so every event is O(MAX_ACTIVE_FRAMES) and the walk
+// is O(n) overall, even on deep or hostile nesting. STRUCT_CAP bounds
+// per-frame memory the same way.
 const MAX_ACTIVE_FRAMES = 8; // deepest block nesting we record concurrently
 const STRUCT_CAP = 400; // per-frame structural-token cap; over → skip (page-sized)
 const MIN_ELEMENTS = 2; // a lone <div> is not a "block"
@@ -143,26 +147,50 @@ interface SubtreeRecord {
 /** Walk one page, emitting a record per qualifying block subtree. */
 function collectSubtrees(page: BoilerplatePageInput, minTextLength: number): SubtreeRecord[] {
   const stack: Array<{ name: string; frame: Frame | null }> = [];
+  // The open block frames only (never non-block entries), capped at
+  // MAX_ACTIVE_FRAMES — every per-event loop runs over THIS list, so the
+  // walker stays O(n) instead of O(n * stack-depth).
+  const activeFrames: Frame[] = [];
   const records: SubtreeRecord[] = [];
   const url = page.url ?? "";
   const clusterKey = page.clusterKey ?? "";
 
   const appendToActive = (token: string): void => {
-    for (const f of stack) {
-      if (!f.frame || f.frame.overflow) continue;
-      if (f.frame.structure.length >= STRUCT_CAP) {
-        f.frame.overflow = true;
+    for (const f of activeFrames) {
+      if (f.overflow) continue;
+      if (f.structure.length >= STRUCT_CAP) {
+        f.overflow = true;
         continue;
       }
-      f.frame.structure.push(token);
+      f.structure.push(token);
     }
+  };
+
+  const finalizeFrame = (f: Frame, end: number): void => {
+    if (f.overflow) return;
+    if (f.elementCount < MIN_ELEMENTS || f.elementCount > MAX_ELEMENTS) return;
+    const text = normalizeText(f.textParts.join(" "));
+    if (!f.hasLinkOrImg && text.length < minTextLength) return;
+    const structuralSig = `${f.tag}:${hash(f.structure.join(">"))}`;
+    records.push({
+      pageId: page.pageId,
+      url,
+      clusterKey,
+      tag: f.tag,
+      structuralSig,
+      text,
+      contentSig: `${structuralSig}#${hash(text)}`,
+      elementCount: f.elementCount,
+      start: f.start,
+      end,
+    });
   };
 
   const parser = new Parser(
     {
       onopentag(name) {
         const tag = name.toLowerCase();
-        const startFrame = BLOCK_TAGS.has(tag) && countFrames(stack) < MAX_ACTIVE_FRAMES;
+        const startFrame = BLOCK_TAGS.has(tag) && activeFrames.length < MAX_ACTIVE_FRAMES;
         const frame: Frame | null = startFrame
           ? {
               tag,
@@ -175,42 +203,46 @@ function collectSubtrees(page: BoilerplatePageInput, minTextLength: number): Sub
             }
           : null;
         stack.push({ name: tag, frame });
+        if (frame) activeFrames.push(frame);
         // Count this element (its own root tag included) for every active frame.
         appendToActive(tag);
-        for (const f of stack) {
-          if (!f.frame) continue;
-          f.frame.elementCount += 1;
-          if (tag === "a" || tag === "img") f.frame.hasLinkOrImg = true;
+        const isLinkOrImg = tag === "a" || tag === "img";
+        for (const f of activeFrames) {
+          f.elementCount += 1;
+          if (isLinkOrImg) f.hasLinkOrImg = true;
         }
       },
       ontext(t) {
         if (t.trim().length === 0) return;
         appendToActive("#");
-        for (const f of stack) {
-          if (f.frame && !f.frame.overflow) f.frame.textParts.push(t);
+        for (const f of activeFrames) {
+          if (!f.overflow) f.textParts.push(t);
         }
       },
-      onclosetag() {
-        const entry = stack.pop();
-        if (!entry?.frame) return;
-        const f = entry.frame;
-        if (f.overflow) return;
-        if (f.elementCount < MIN_ELEMENTS || f.elementCount > MAX_ELEMENTS) return;
-        const text = normalizeText(f.textParts.join(" "));
-        if (!f.hasLinkOrImg && text.length < minTextLength) return;
-        const structuralSig = `${f.tag}:${hash(f.structure.join(">"))}`;
-        records.push({
-          pageId: page.pageId,
-          url,
-          clusterKey,
-          tag: f.tag,
-          structuralSig,
-          text,
-          contentSig: `${structuralSig}#${hash(text)}`,
-          elementCount: f.elementCount,
-          start: f.start,
-          end: parser.endIndex + 1,
-        });
+      onclosetag(name) {
+        // Crawled HTML is routinely malformed (stray or unclosed tags),
+        // so never pop blindly: find the matching open frame and unwind
+        // to it, finalizing the implicitly-closed frames in between. A
+        // stray close with no matching open is ignored. This keeps the
+        // stack, activeFrames, and byte ranges in sync on any input.
+        if (stack.length === 0) return;
+        const tag = name.toLowerCase();
+        let idx = -1;
+        for (let i = stack.length - 1; i >= 0; i--) {
+          if (stack[i]?.name === tag) {
+            idx = i;
+            break;
+          }
+        }
+        if (idx === -1) return;
+        const end = parser.endIndex + 1;
+        while (stack.length > idx) {
+          const entry = stack.pop();
+          if (entry?.frame) {
+            activeFrames.pop();
+            finalizeFrame(entry.frame, end);
+          }
+        }
       },
     },
     { lowerCaseTags: true },
@@ -218,12 +250,6 @@ function collectSubtrees(page: BoilerplatePageInput, minTextLength: number): Sub
   parser.write(page.html);
   parser.end();
   return records;
-}
-
-function countFrames(stack: Array<{ frame: Frame | null }>): number {
-  let n = 0;
-  for (const e of stack) if (e.frame) n += 1;
-  return n;
 }
 
 interface GroupAccumulator {
