@@ -47,6 +47,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { loadStaticPublisher } from "../deploy/static-publisher.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 /**
  * Resolve the root directory that relative `deploy_targets.out_dir`
@@ -365,7 +366,7 @@ export const updateDeployProgressOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     await tx.execute(sql`
       UPDATE deploy_runs
-      SET progress = ${JSON.stringify({ pagesDone: input.pagesDone, pagesTotal: input.pagesTotal })}::jsonb
+      SET progress = ${jsonbParam({ pagesDone: input.pagesDone, pagesTotal: input.pagesTotal })}
       WHERE id = ${input.runId}::uuid
     `);
     return ok({});
@@ -570,7 +571,7 @@ export const triggerDeployOp = defineOperation({
           page_count = ${subprocess.result.pageCount},
           file_count = ${subprocess.result.fileCount},
           build_id = ${runId},
-          publish_summary = ${JSON.stringify(publishSummary)}::jsonb
+          publish_summary = ${jsonbParam(publishSummary)}
       WHERE id = ${runId}::uuid
     `);
 
@@ -691,7 +692,7 @@ export const promoteDeployOp = defineOperation({
             page_count = (SELECT page_count FROM deploy_runs WHERE id = ${fromRunId}::uuid),
             file_count = (SELECT file_count FROM deploy_runs WHERE id = ${fromRunId}::uuid),
             build_id = ${summary.destinationBuildId},
-            publish_summary = ${JSON.stringify(summary)}::jsonb
+            publish_summary = ${jsonbParam(summary)}
         WHERE id = ${toRunId}::uuid
       `);
       return ok({ fromRunId, toRunId, buildId: summary.destinationBuildId });

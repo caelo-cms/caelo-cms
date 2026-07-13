@@ -16,6 +16,7 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { jsonbParam } from "../sql-helpers.js";
 import type {
   ContentInstanceState,
   ModuleState,
@@ -146,25 +147,25 @@ export async function emitSnapshot(
       case "module":
         await tx.execute(sql`
           INSERT INTO module_snapshots (site_snapshot_id, module_id, state)
-          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${stateJson}::jsonb)
+          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${jsonbParam(stateJson)})
         `);
         break;
       case "template":
         await tx.execute(sql`
           INSERT INTO template_snapshots (site_snapshot_id, template_id, state)
-          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${stateJson}::jsonb)
+          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${jsonbParam(stateJson)})
         `);
         break;
       case "page":
         await tx.execute(sql`
           INSERT INTO page_snapshots (site_snapshot_id, page_id, state)
-          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${stateJson}::jsonb)
+          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${jsonbParam(stateJson)})
         `);
         break;
       case "pageLayout":
         await tx.execute(sql`
           INSERT INTO page_layout_snapshots (site_snapshot_id, page_id, state)
-          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${stateJson}::jsonb)
+          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${jsonbParam(stateJson)})
         `);
         break;
       case "pageModuleContent":
@@ -177,7 +178,7 @@ export async function emitSnapshot(
             ${entity.state.pageId}::uuid,
             ${entity.state.blockName},
             ${entity.state.position},
-            ${stateJson}::jsonb
+            ${jsonbParam(stateJson)}
           )
         `);
         break;
@@ -188,7 +189,7 @@ export async function emitSnapshot(
           VALUES (
             ${siteSnapshotId}::uuid,
             ${entity.entityId}::uuid,
-            ${stateJson}::jsonb
+            ${jsonbParam(stateJson)}
           )
         `);
         break;
@@ -199,7 +200,7 @@ export async function emitSnapshot(
           VALUES (
             ${siteSnapshotId}::uuid,
             ${entity.entityId}::uuid,
-            ${stateJson}::jsonb
+            ${jsonbParam(stateJson)}
           )
         `);
         break;
@@ -210,7 +211,7 @@ export async function emitSnapshot(
           VALUES (
             ${siteSnapshotId}::uuid,
             ${entity.entityId}::uuid,
-            ${stateJson}::jsonb
+            ${jsonbParam(stateJson)}
           )
         `);
         break;

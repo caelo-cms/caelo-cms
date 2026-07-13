@@ -34,6 +34,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
 import { updateThemeTokensOp } from "./themes.js";
@@ -367,7 +368,7 @@ export const proposeImportRunOp = defineOperation({
     const rows = (await tx.execute(sql`
       INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate, chat_session_id)
       VALUES (${input.sourceUrl}, ${input.depth}, ${input.maxPages}, 'proposed', ${ctx.actorId}::uuid,
-              ${input.estimate ? JSON.stringify(input.estimate) : null}::jsonb,
+              ${jsonbParam(input.estimate ? input.estimate : null)},
               ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -706,10 +707,10 @@ export const writeExtractedPagesOp = defineOperation({
           structural_signature, cluster_key, page_css, notes
         ) VALUES (
           ${input.runId}::uuid, ${p.sourceUrl}, ${p.proposedSlug}, ${p.proposedTitle},
-          ${JSON.stringify(p.proposedModules)}::jsonb,
-          ${JSON.stringify(p.proposedThemeTokens)}::jsonb,
+          ${jsonbParam(p.proposedModules)},
+          ${jsonbParam(p.proposedThemeTokens)},
           ${p.signature ?? null}, ${p.signature ?? null}, ${p.pageCss ?? null},
-          ${notes === null ? null : JSON.stringify(notes)}::jsonb
+          ${jsonbParam(notes)}
         )
         ON CONFLICT (run_id, source_url) DO NOTHING
         RETURNING id

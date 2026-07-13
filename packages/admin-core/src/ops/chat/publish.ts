@@ -37,6 +37,7 @@ import {
   type SnapshotEntity,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 interface SessionRow {
   chat_branch_id: string;
@@ -480,7 +481,7 @@ export async function mergeBranchSnapshotsToMain(
       const valuesJson = JSON.stringify(e.state.contentValues);
       await tx.execute(sql`
         UPDATE page_module_content
-        SET content_values = ${valuesJson}::jsonb,
+        SET content_values = ${jsonbParam(valuesJson)},
             version = version + 1,
             updated_at = now()
         WHERE id = ${e.entityId}::uuid
@@ -656,7 +657,7 @@ export async function mergeBranchSnapshotsToMain(
           ${e.state.moduleId}::uuid,
           ${e.state.slug},
           ${e.state.displayName},
-          ${valuesJson}::jsonb,
+          ${jsonbParam(valuesJson)},
           ${e.state.version},
           ${e.state.deletedAt ? sql`now()` : sql`NULL`},
           NULL

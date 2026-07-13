@@ -12,6 +12,7 @@ import { err, ok, skillAutoEngagementHints } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 const skillRow = z.object({
   id: z.string(),
@@ -156,8 +157,8 @@ export const setSkillOp = defineOperation({
                           status, decided_by, decided_at)
       VALUES (
         ${input.slug}, ${input.displayName}, ${input.description}, ${input.body},
-        ${JSON.stringify(input.allowlistedTools)}::jsonb,
-        ${JSON.stringify(input.hints)}::jsonb,
+        ${jsonbParam(input.allowlistedTools)},
+        ${jsonbParam(input.hints)},
         ${input.status},
         ${ctx.actorId}::uuid, now()
       )
