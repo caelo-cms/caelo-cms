@@ -49,10 +49,18 @@ jobs:
           git fetch origin main --quiet
           git checkout -B integration origin/main
 
-          # Open, non-draft PRs targeting main, oldest first for stable order.
+          # Open, non-draft PRs targeting main whose head is a fix/** or
+          # feat/** branch — our in-flight work. Dependabot and other
+          # branches are deliberately excluded: the integration branch is
+          # for running our combined feature work, not dependency bumps,
+          # and the GITHUB_TOKEN is forbidden from pushing changes under
+          # .github/workflows/ (many dependabot PRs touch them), which
+          # would reject the whole force-push. Oldest first for stability.
           mapfile -t PRS < <(gh pr list --state open --base main \
             --json number,headRefName,isDraft,title \
-            --jq 'sort_by(.number) | .[] | select(.isDraft == false)
+            --jq 'sort_by(.number) | .[]
+                  | select(.isDraft == false)
+                  | select(.headRefName | test("^(fix|feat)/"))
                   | "\(.number)\t\(.headRefName)\t\(.title)"')
 
           merged=()
@@ -68,6 +76,15 @@ jobs:
               skipped+=("#$num $title — merge conflict against the combined set")
             fi
           done
+
+          # The GITHUB_TOKEN cannot push changes under .github/workflows/.
+          # If any folded-in PR modified a workflow file, restore that
+          # directory to main's version before pushing — the integration
+          # branch runs main's CI anyway, so this loses nothing.
+          if ! git diff --quiet origin/main -- .github/workflows/; then
+            git checkout origin/main -- .github/workflows/
+            git commit -q -m "chore(integration): pin .github/workflows to main"
+          fi
 
           git push --force origin integration
 
