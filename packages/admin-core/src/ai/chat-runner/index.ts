@@ -31,7 +31,7 @@ import {
   DEFAULT_INPUT_COST_PER_M,
   DEFAULT_OUTPUT_COST_PER_M,
   finalUsdCost,
-  MAX_OUTPUT_TOKENS_DEFAULT,
+  resolveMaxOutputTokensDefault,
 } from "./limits.js";
 import { runToolLoop } from "./loop.js";
 import {
@@ -208,7 +208,9 @@ export async function* runChatTurn(
     // issue #261 — compaction trigger; env-tunable, ~600k by default.
     compactionThresholdTokens: resolveCompactionThresholdTokens(),
     maxLoops,
-    maxOutputTokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS_DEFAULT,
+    // Run #8 R1 — model-aware default: adaptive-thinking models share the
+    // output budget with thinking and need >=32k headroom (see limits.ts).
+    maxOutputTokens: options.maxOutputTokens ?? resolveMaxOutputTokensDefault(provider.model),
     temperature: options.temperature,
     thinkingBudget,
     usage,

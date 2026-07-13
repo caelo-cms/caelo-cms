@@ -29,6 +29,20 @@ const expectedReturnShape = z.enum(["verdict", "tree", "freeform", "rebuild"]);
 export type ExpectedReturnShape = z.infer<typeof expectedReturnShape>;
 
 /**
+ * Run #8 R2a — the SINGLE source of truth for the return-shape enum.
+ *
+ * The spawn tools' hand-written provider `inputSchema` (JSON Schema) must
+ * carry the same enum values as this Zod schema; in run #8 the live
+ * validator rejected `"rebuild"` because the runtime resolved a stale
+ * pre-#266 build of this module while the provider schema advertised the
+ * new value (issue #251 drift class, resolution flavour). Tool files
+ * derive their JSON-Schema enums from this array instead of re-typing the
+ * literals, and a unit test asserts the tool schema accepts every shape
+ * this parser knows.
+ */
+export const EXPECTED_RETURN_SHAPES: readonly ExpectedReturnShape[] = expectedReturnShape.options;
+
+/**
  * One subagent spec. The parent supplies role + task + optional
  * narrowing. The handler creates the ephemeral chat session, appends
  * the task as the seed user message, calls runChatTurn directly with

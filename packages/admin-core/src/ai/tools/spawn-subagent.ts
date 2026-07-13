@@ -36,6 +36,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import {
+  EXPECTED_RETURN_SHAPES,
   parseSubagentResult,
   type SpawnSubagentsToolInput,
   type SpawnSubagentToolInput,
@@ -90,6 +91,28 @@ function createSemaphore(max: number): (fn: () => Promise<unknown>) => Promise<u
       release();
     }
   };
+}
+
+/**
+ * Run #8 R2c — the return instruction restated for the empty-result retry
+ * turn. Mirrors the RETURN-SHAPE CONTRACT wording in the tool description
+ * so the retry nudge tells the child exactly what to emit.
+ */
+function returnInstructionFor(shape: SpawnSubagentToolInput["expectedReturnShape"]): string {
+  switch (shape) {
+    case "verdict":
+      return "Return ONLY JSON: {pass: boolean, issues: (string|object)[], suggestions?: string[]}.";
+    case "tree":
+      return "Return ONLY JSON: {tree: any[], rationale?: string}.";
+    case "rebuild":
+      return (
+        "Return ONLY JSON: {pages: [{pageId?: uuid, slug?: string, " +
+        'status: "rebuilt"|"skipped"|"failed", notes?: string}], ' +
+        "contentNotes?: string[], skipped?: [{item: string, reason: string}], summary?: string}."
+      );
+    case "freeform":
+      return "Reply with your result as plain text.";
+  }
 }
 
 interface SubagentInvocationResult {
@@ -200,60 +223,99 @@ async function runOneSubagent(
   };
   const childHumanCtx = toolCtx.humanCtx;
 
-  // Per-spec timeout via AbortController.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
-  let timedOut = false;
-
-  try {
-    const stream = toolCtx.spawnChildChatTurn({
-      chatInput: {
-        chatSessionId: subagentChatSessionId,
-        content: spec.task,
-        chips: [],
-        attachments: [],
-        ...(spec.activePageId ? { activePageId: spec.activePageId } : {}),
-      },
-      aiCtx: childAiCtx,
-      humanCtx: childHumanCtx,
-      excludedToolNames: EXCLUDED_FOR_CHILD,
-      // issue #264 — per-spawn narrowing (hard filter, validated above).
-      ...(spec.allowedToolNames && spec.allowedToolNames.length > 0
-        ? { allowedToolNames: new Set(spec.allowedToolNames) }
-        : {}),
-      // issue #264 — the child works ON THE PARENT'S BRANCH so its
-      // reads see the orchestrator's branched entities and its writes
-      // land where the operator previews, publishes, and undoes.
-      ...(toolCtx.chatBranchId ? { chatBranchIdOverride: toolCtx.chatBranchId } : {}),
-      // P10.5 #3 — pre-emptive cap inside the child's chat-runner.
-      costCapMicrocents: spec.maxCostMicrocents,
-      abortSignal: controller.signal,
-    });
-    // P10.5 #1 — drain the AsyncIterable + forward each child event
-    // through the parent's pushClientEvent sink wrapped as a
-    // `subagent-event`. The user's chat UI sees the child's progress
-    // (text deltas, tool calls, tool results) live instead of a
-    // frozen wait. We never re-emit nested subagent-event payloads
-    // (depth-1 cap on observability for now).
-    for await (const ev of stream as AsyncIterable<{ kind: string }>) {
-      if (controller.signal.aborted) {
-        timedOut = true;
-        break;
+  // Drives ONE chat-runner turn in the child session (per-spec timeout
+  // via AbortController) and forwards the child's events to the parent's
+  // sink. A closure so the R2c empty-result retry below can send a
+  // follow-up turn into the SAME session — context preserved, prompt
+  // cache warm — instead of re-spawning from scratch.
+  const runChildTurn = async (
+    content: string,
+  ): Promise<{ timedOut: boolean } | { error: string }> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
+    try {
+      // `spawnChildChatTurn` presence was checked at the top of this function.
+      const stream = toolCtx.spawnChildChatTurn?.({
+        chatInput: {
+          chatSessionId: subagentChatSessionId,
+          content,
+          chips: [],
+          attachments: [],
+          ...(spec.activePageId ? { activePageId: spec.activePageId } : {}),
+        },
+        aiCtx: childAiCtx,
+        humanCtx: childHumanCtx,
+        excludedToolNames: EXCLUDED_FOR_CHILD,
+        // issue #264 — per-spawn narrowing (hard filter, validated above).
+        ...(spec.allowedToolNames && spec.allowedToolNames.length > 0
+          ? { allowedToolNames: new Set(spec.allowedToolNames) }
+          : {}),
+        // issue #264 — the child works ON THE PARENT'S BRANCH so its
+        // reads see the orchestrator's branched entities and its writes
+        // land where the operator previews, publishes, and undoes.
+        ...(toolCtx.chatBranchId ? { chatBranchIdOverride: toolCtx.chatBranchId } : {}),
+        // P10.5 #3 — pre-emptive cap inside the child's chat-runner.
+        costCapMicrocents: spec.maxCostMicrocents,
+        abortSignal: controller.signal,
+      });
+      if (!stream) return { error: "spawnChildChatTurn unavailable" };
+      // P10.5 #1 — drain the AsyncIterable + forward each child event
+      // through the parent's pushClientEvent sink wrapped as a
+      // `subagent-event`. The user's chat UI sees the child's progress
+      // (text deltas, tool calls, tool results) live instead of a
+      // frozen wait. We never re-emit nested subagent-event payloads
+      // (depth-1 cap on observability for now).
+      for await (const ev of stream as AsyncIterable<{ kind: string }>) {
+        if (controller.signal.aborted) {
+          return { timedOut: true };
+        }
+        const inner = ev as { kind: string };
+        if (inner.kind !== "subagent-event" && toolCtx.pushClientEvent) {
+          toolCtx.pushClientEvent({
+            kind: "subagent-event",
+            batchId,
+            role: spec.role,
+            subagentChatSessionId,
+            inner,
+          });
+        }
       }
-      const inner = ev as { kind: string };
-      if (inner.kind !== "subagent-event" && toolCtx.pushClientEvent) {
-        toolCtx.pushClientEvent({
-          kind: "subagent-event",
-          batchId,
-          role: spec.role,
-          subagentChatSessionId,
-          inner,
-        });
+      return { timedOut: false };
+    } catch (e) {
+      return { error: (e as Error).message };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  /** Latest assistant message in the child session (empty string when none). */
+  const readFinalAssistantText = async (): Promise<string> => {
+    const sessGet = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      // childHumanCtx captured after the top-of-function guard — TS can't
+      // carry that narrowing into this closure via toolCtx.humanCtx.
+      childHumanCtx,
+      "chat.get_session",
+      {
+        chatSessionId: subagentChatSessionId,
+      },
+    );
+    if (!sessGet.ok) return "";
+    const messages = (
+      sessGet.value as {
+        messages: { role: string; content: string }[];
+      }
+    ).messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === "assistant" && messages[i]?.content) {
+        return messages[i]?.content ?? "";
       }
     }
-  } catch (e) {
-    clearTimeout(timer);
-    const message = (e as Error).message;
+    return "";
+  };
+
+  const failErrored = async (message: string): Promise<SubagentInvocationResult> => {
     if (subagentRunId) {
       await execute(toolCtx.registry, toolCtx.adapter, ctx, "subagent_runs.finish", {
         id: subagentRunId,
@@ -273,32 +335,42 @@ async function runOneSubagent(
       subagentChatSessionId,
       errorMessage: message,
     };
-  } finally {
-    clearTimeout(timer);
-  }
+  };
 
-  // 4. Read the subagent's final assistant message.
-  const sessGet = await execute(
-    toolCtx.registry,
-    toolCtx.adapter,
-    toolCtx.humanCtx,
-    "chat.get_session",
-    {
-      chatSessionId: subagentChatSessionId,
-    },
-  );
-  let finalText = "";
-  if (sessGet.ok) {
-    const messages = (
-      sessGet.value as {
-        messages: { role: string; content: string }[];
-      }
-    ).messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]?.role === "assistant" && messages[i]?.content) {
-        finalText = messages[i]?.content ?? "";
-        break;
-      }
+  const firstTurn = await runChildTurn(spec.task);
+  if ("error" in firstTurn) {
+    return await failErrored(firstTurn.error);
+  }
+  let timedOut = firstTurn.timedOut;
+  let finalText = await readFinalAssistantText();
+
+  // Run #8 R2c — one AUTOMATIC retry when the child completed but its
+  // final assistant message is empty (run #8: "errored — subagent
+  // returned empty text · 4137ms" with no recovery). The retry is a
+  // follow-up turn in the same session, so the child keeps its context
+  // and just has to emit the result it already produced the work for.
+  if (!timedOut && finalText.trim().length === 0) {
+    console.error("[spawn_subagent] empty-final-text; retrying once", {
+      role: spec.role,
+      subagentChatSessionId,
+      expectedReturnShape: spec.expectedReturnShape,
+    });
+    const retryTurn = await runChildTurn(
+      `Your previous reply was empty — you MUST reply with your result now. ${returnInstructionFor(spec.expectedReturnShape)}`,
+    );
+    if ("error" in retryTurn) {
+      return await failErrored(retryTurn.error);
+    }
+    timedOut = retryTurn.timedOut;
+    finalText = await readFinalAssistantText();
+    if (!timedOut && finalText.trim().length === 0) {
+      // Structured, orchestrator-actionable error (CLAUDE.md §11:
+      // failure surfaces carry the next step).
+      return await failErrored(
+        "subagent returned empty text (after one automatic retry). " +
+          "Recovery: re-spawn with a SMALLER, more explicit task (fewer pages per batch), " +
+          'or with expectedReturnShape: "freeform" and the return instruction restated verbatim at the end of the task.',
+      );
     }
   }
 
@@ -452,7 +524,9 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
       allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
       expectedReturnShape: {
         type: "string",
-        enum: ["verdict", "tree", "freeform", "rebuild"],
+        // Run #8 R2a — derived from the shared Zod enum so the provider
+        // schema can never drift from what the validator accepts.
+        enum: [...EXPECTED_RETURN_SHAPES],
         description:
           "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or raw text. PICK FREEFORM unless you're explicitly instructing the subagent to emit verdict/tree/rebuild JSON.",
       },
@@ -511,7 +585,8 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
             allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
             expectedReturnShape: {
               type: "string",
-              enum: ["verdict", "tree", "freeform", "rebuild"],
+              // Run #8 R2a — derived from the shared Zod enum (see above).
+              enum: [...EXPECTED_RETURN_SHAPES],
               description:
                 "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or raw. PICK FREEFORM when not explicitly instructing the subagent to emit verdict/tree/rebuild JSON.",
             },

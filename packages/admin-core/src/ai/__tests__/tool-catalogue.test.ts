@@ -85,7 +85,7 @@ describe("buildToolCatalogue", () => {
     }
   });
 
-  it("narrows to the allowlist when it matches at least one live tool", () => {
+  it("narrows WRITE tools to the allowlist; read tools always pass (run #8 R2b/R5)", () => {
     const tools = registry("edit_module", "add_module_to_page", "list_pages");
     const result = buildToolCatalogue({
       tools,
@@ -95,7 +95,76 @@ describe("buildToolCatalogue", () => {
       excluded: undefined,
       chatSessionId,
     });
-    expect(result.map((t) => t.name)).toEqual(["edit_module"]);
+    // add_module_to_page (write, not allowlisted) drops; list_pages
+    // (read-only) survives the narrowing.
+    expect(result.map((t) => t.name).sort()).toEqual(["edit_module", "list_pages"]);
+  });
+
+  it("run #8 R2b: a rebuild subagent keeps its lookup/inspect tools when a skill allowlist engages", () => {
+    // The live compose-page allowlist (migration 0088) — write-focused,
+    // with NO lookup tools. In run #8 the rebuild subagent's seed
+    // message engaged this skill and the subagent lost
+    // inspect_page_render + module lookup, then edited a wrong module.
+    const composePageAllowlist = new Set([
+      "compose_page_from_spec",
+      "create_page",
+      "add_module_to_page",
+      "edit_module",
+      "set_page_module_content",
+      "set_page_seo",
+    ]);
+    const tools = registry(
+      // Rebuild-critical reads the brief tells the subagent to use.
+      "inspect_page_render",
+      "list_modules",
+      "list_content_instances",
+      "get_content_instance",
+      "get_import_page_screenshot",
+      "get_import_run_report",
+      // Rebuild-critical writes (in the allowlist).
+      "edit_module",
+      "set_page_module_content",
+      // A write outside the allowlist — must drop.
+      "delete_page",
+      // Spawn tools — excluded for the child (depth cap).
+      "spawn_subagent",
+      "spawn_subagents",
+    );
+    const result = buildToolCatalogue({
+      tools,
+      toolDescribeState: state,
+      allowedToolNames: composePageAllowlist,
+      engagedSkills: [],
+      excluded: new Set(["spawn_subagent", "spawn_subagents"]),
+      chatSessionId,
+    });
+    expect(result.map((t) => t.name).sort()).toEqual([
+      "edit_module",
+      "get_content_instance",
+      "get_import_page_screenshot",
+      "get_import_run_report",
+      "inspect_page_render",
+      "list_content_instances",
+      "list_modules",
+      "set_page_module_content",
+    ]);
+  });
+
+  it("run #8 R2b: spawnAllowed remains a HARD filter for read tools too", () => {
+    // A parent that explicitly narrows a review subagent to two read
+    // tools gets exactly those — the read-immunity applies to SKILL
+    // allowlists only, never to explicit per-spawn narrowing.
+    const tools = registry("list_pages", "list_modules", "inspect_page_render", "edit_module");
+    const result = buildToolCatalogue({
+      tools,
+      toolDescribeState: state,
+      allowedToolNames: null,
+      engagedSkills: [],
+      excluded: undefined,
+      spawnAllowed: new Set(["list_pages", "inspect_page_render"]),
+      chatSessionId,
+    });
+    expect(result.map((t) => t.name).sort()).toEqual(["inspect_page_render", "list_pages"]);
   });
 
   it("drops excluded tool names (the spawn-subagent depth cap)", () => {
@@ -154,6 +223,41 @@ describe("buildToolCatalogue", () => {
       chatSessionId,
     });
     expect(result).toEqual([]);
+  });
+
+  it("run #8 R5: logs loudly when a tool disappears between turns of the same session", () => {
+    const tools = registry("edit_module", "list_modules", "add_module_to_page");
+    const shrinkSessionId = "11111111-1111-4111-8111-333333333333";
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // Turn 1: full catalogue.
+      buildToolCatalogue({
+        tools,
+        toolDescribeState: state,
+        allowedToolNames: null,
+        engagedSkills: [],
+        excluded: undefined,
+        chatSessionId: shrinkSessionId,
+      });
+      // Turn 2: a skill allowlist engages and add_module_to_page drops.
+      buildToolCatalogue({
+        tools,
+        toolDescribeState: state,
+        allowedToolNames: new Set(["edit_module"]),
+        engagedSkills: [],
+        excluded: undefined,
+        chatSessionId: shrinkSessionId,
+      });
+      const shrankCall = errSpy.mock.calls.find((c) =>
+        String(c[0]).includes("tool-catalogue-shrank"),
+      );
+      expect(shrankCall).toBeDefined();
+      expect((shrankCall?.[1] as { disappeared: string[] }).disappeared).toEqual([
+        "add_module_to_page",
+      ]);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it("issue #264: spawnAllowed composes with exclusion and the skill allowlist", () => {
