@@ -134,6 +134,7 @@ import { submitResultTool } from "./submit-result.js";
 // them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
+import { verifyImportFidelityTool } from "./verify-import-fidelity.js";
 
 /**
  * Registers every shipped tool against a fresh ToolRegistry. Tests can
@@ -185,6 +186,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);
+  // issue #250 (WS4) — source-vs-rebuilt fidelity verdict (self-analysis gate).
+  registry.register(verifyImportFidelityTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);

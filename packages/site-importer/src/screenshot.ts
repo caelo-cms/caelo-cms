@@ -25,6 +25,12 @@ import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import { COLLECT_STYLE_SAMPLES_SCRIPT, type ElementStyleSample } from "./design-tokens.js";
 import { assertPublicHttpUrl, isPublicIpAddress } from "./safe-fetch.js";
+import {
+  STRUCTURAL_DIFF_COLS,
+  STRUCTURAL_DIFF_ROWS,
+  type StructuralDiff,
+  structuralDiffFraction,
+} from "./screenshot-diff.js";
 
 /** Minimal Playwright route surface — typed locally so the package
  * doesn't need @types/playwright (Playwright stays a dynamic import). */
@@ -250,4 +256,56 @@ async function decodePngToRgba(png: Uint8Array): Promise<Uint8Array> {
   } catch {
     return png;
   }
+}
+
+/**
+ * issue #250 (WS4) — coarse structural diff between two PNG byte buffers.
+ * Downscales both to a fixed `cols*rows` RGB grid (flattening any alpha over
+ * white so a transparent rebuild vs an opaque source doesn't read as a full
+ * diff), then delegates to the pure `structuralDiffFraction`. Aspect-ratio
+ * differences are intentionally normalized away by the resize: two "full
+ * homepage" screenshots of different heights still compare band-for-band,
+ * which is exactly the structure the fidelity gate measures.
+ *
+ * Unlike `computePixelDiff`, sharp is REQUIRED here (not optional): a decode
+ * failure throws so the caller reports the page UNVERIFIED rather than
+ * fake-passing on undecoded bytes (CLAUDE.md §2). sharp already ships in the
+ * admin app's dependency tree (media optimization), which is the only
+ * runtime that computes import fidelity.
+ */
+export async function computeStructuralDiff(
+  sourcePng: Uint8Array,
+  rebuiltPng: Uint8Array,
+  opts?: { cols?: number; rows?: number },
+): Promise<StructuralDiff> {
+  const cols = opts?.cols ?? STRUCTURAL_DIFF_COLS;
+  const rows = opts?.rows ?? STRUCTURAL_DIFF_ROWS;
+  const [gridA, gridB] = await Promise.all([
+    downscaleToRgbGrid(sourcePng, cols, rows),
+    downscaleToRgbGrid(rebuiltPng, cols, rows),
+  ]);
+  return structuralDiffFraction(gridA, gridB, cols, rows);
+}
+
+/**
+ * Resize a PNG to an exact `cols*rows` grid of flattened RGB bytes. `fit:
+ * "fill"` forces the target dimensions (aspect ratio normalized away by
+ * design); `flatten` composites over white before `removeAlpha` so the
+ * output is deterministic 3-byte RGB the pure differ expects.
+ */
+async function downscaleToRgbGrid(
+  png: Uint8Array,
+  cols: number,
+  rows: number,
+): Promise<Uint8Array> {
+  // biome-ignore lint/suspicious/noExplicitAny: opt-in dynamic import
+  const sharpMod: any = await import("sharp" as string);
+  const sharp = sharpMod.default ?? sharpMod;
+  const buf = await sharp(png)
+    .resize(cols, rows, { fit: "fill" })
+    .flatten({ background: "#ffffff" })
+    .removeAlpha()
+    .raw()
+    .toBuffer();
+  return new Uint8Array(buf);
 }
