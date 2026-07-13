@@ -54,6 +54,31 @@ export const migrateMediaTool: ToolDefinitionWithHandler<
       `media migration: ${v.migrated} asset(s) downloaded (${mb} MB), ${v.dedupedExisting} reused existing library asset(s) (same content hash), ${v.alreadyLocal} reference(s) already pointed at Caelo media. Rewrote ${v.modulesRewritten} module(s) and ${v.templatesRewritten} template(s).`,
     ];
     if (v.skipped.length > 0) {
+      // issue #28 — record every skipped asset in the run's error/warning
+      // LEDGER so the closing report surfaces them even if this turn's text
+      // scrolls away. Best-effort + non-fatal: a ledger-write failure must
+      // never sink a media migration that actually moved assets — log loud,
+      // don't throw. One bulk call (CLAUDE.md §11), not one per asset.
+      const ledgerRes = await execute(
+        toolCtx.registry,
+        toolCtx.adapter,
+        ctx,
+        "imports.log_events",
+        {
+          events: v.skipped.map((s) => ({
+            runId: input.runId,
+            severity: "warning" as const,
+            phase: "media" as const,
+            message: `media asset not migrated: ${s.url} (${s.reason})`,
+            detail: { url: s.url, reason: s.reason },
+          })),
+        },
+      );
+      if (!ledgerRes.ok) {
+        console.error(
+          `migrate_media: failed to append ${v.skipped.length} skipped-asset event(s) to the run ledger: ${describeError(ledgerRes.error)}`,
+        );
+      }
       lines.push(
         `${v.skipped.length} asset(s) could NOT be migrated — surface this list to the operator (these URLs still point at the source site and will break when it goes away):`,
         ...v.skipped.map((s) => `- ${s.url} — ${s.reason}`),
