@@ -42,7 +42,9 @@ const systemCtx: ExecutionContext = {
   requestId: "media-regenerate-integration-test",
 };
 
-const TEST_PREFIX = "regen000";
+// Must be valid sha256 hex ([0-9a-f]) so media.upload's sha256 regex
+// accepts the seeded assets; still distinctive for the scoped wipe.
+const TEST_PREFIX = "d4b0f9a0";
 const SHA_WIDE = `${TEST_PREFIX}${"a".repeat(56)}`;
 const SHA_TINY = `${TEST_PREFIX}${"b".repeat(56)}`;
 
