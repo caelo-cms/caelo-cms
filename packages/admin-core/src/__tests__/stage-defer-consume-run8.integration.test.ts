@@ -219,3 +219,116 @@ describe("run #8 R6 — deferred stage consumption", () => {
     expect(await pendingCount(chatSessionId)).toBe(1);
   });
 });
+
+/**
+ * Run #9 livedit regression (issue #262) — a re-Stage must replay ONLY
+ * snapshots created since the last successful Stage.
+ *
+ * Pre-fix, chat.merge_to_main replayed the branch's LIFETIME snapshots
+ * on every call: after "build homepage → Stage → re-edit the hero →
+ * Stage", the second merge re-wrote every entity the chat had EVER
+ * touched (bumping updated_at + version on all of them), so the
+ * livedit suite's placement-isolation guard read "all placements
+ * changed by the hero re-edit". The since-filter aligns the merge with
+ * chat.list_pending_changes (v0.10.8): what the pending pill shows is
+ * exactly what the next Stage ships.
+ */
+describe("run #9 — re-stage merges only since last_staged_at", () => {
+  it("second stage replays the re-edited entity only, leaving the other untouched", async () => {
+    const modA = await execute(registry, adapter, sysCtx, "modules.create", {
+      slug: `${PFX}since-a`,
+      displayName: "Since A",
+      html: "<p>a0</p>",
+    });
+    const modB = await execute(registry, adapter, sysCtx, "modules.create", {
+      slug: `${PFX}since-b`,
+      displayName: "Since B",
+      html: "<p>b0</p>",
+    });
+    if (!modA.ok || !modB.ok) throw new Error("seed modules");
+    const moduleA = (modA.value as { moduleId: string }).moduleId;
+    const moduleB = (modB.value as { moduleId: string }).moduleId;
+
+    const session = await execute(registry, adapter, sysCtx, "chat.create_session", {
+      title: `${PFX}since-chat`,
+    });
+    if (!session.ok) throw new Error("seed session");
+    const { chatSessionId, chatBranchId } = session.value as {
+      chatSessionId: string;
+      chatBranchId: string;
+    };
+    const branchCtx: ExecutionContext = { ...sysCtx, chatBranchId };
+
+    // Initial "homepage build": both entities edited on the branch.
+    const e1 = await execute(registry, adapter, branchCtx, "modules.update", {
+      moduleId: moduleA,
+      html: "<p>a1</p>",
+    });
+    const e2 = await execute(registry, adapter, branchCtx, "modules.update", {
+      moduleId: moduleB,
+      html: "<p>b1</p>",
+    });
+    expect(e1.ok).toBe(true);
+    expect(e2.ok).toBe(true);
+
+    // Stage #1: merge everything + finalize (build succeeded).
+    const merge1 = await execute(registry, adapter, sysCtx, "chat.merge_to_main", {
+      chatSessionId,
+      deferConsume: true,
+    });
+    expect(merge1.ok).toBe(true);
+    if (!merge1.ok) return;
+    const merged1 = merge1.value as { entityCount: number; mergedAt: string };
+    expect(merged1.entityCount).toBe(2);
+    const finalize1 = await execute(registry, adapter, sysCtx, "chat.finalize_stage", {
+      chatSessionId,
+      stagedAt: merged1.mergedAt,
+    });
+    expect(finalize1.ok).toBe(true);
+
+    // Snapshot B's live row state after Stage #1.
+    const readModule = async (id: string): Promise<{ html: string; updated_at: string }> => {
+      const sqlRead = new SQL(ADMIN_URL as string);
+      try {
+        let row: { html: string; updated_at: string } | undefined;
+        await sqlRead.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          const rows = (await tx`
+            SELECT html, updated_at::text AS updated_at
+            FROM modules WHERE id = ${id}::uuid
+          `) as unknown as { html: string; updated_at: string }[];
+          row = rows[0];
+        });
+        if (!row) throw new Error(`module ${id} not found`);
+        return row;
+      } finally {
+        await sqlRead.end();
+      }
+    };
+    const bAfterStage1 = await readModule(moduleB);
+    expect(bAfterStage1.html).toBe("<p>b1</p>");
+
+    // The "hero re-edit": only A changes after Stage #1.
+    const e3 = await execute(registry, adapter, branchCtx, "modules.update", {
+      moduleId: moduleA,
+      html: "<p>a2</p>",
+    });
+    expect(e3.ok).toBe(true);
+
+    // Stage #2 must merge ONLY A — pre-fix this replayed both entities
+    // (entityCount 2) and bumped B's updated_at/version for no edit.
+    const merge2 = await execute(registry, adapter, sysCtx, "chat.merge_to_main", {
+      chatSessionId,
+      deferConsume: true,
+    });
+    expect(merge2.ok).toBe(true);
+    if (!merge2.ok) return;
+    expect((merge2.value as { entityCount: number }).entityCount).toBe(1);
+
+    const aAfterStage2 = await readModule(moduleA);
+    const bAfterStage2 = await readModule(moduleB);
+    expect(aAfterStage2.html).toBe("<p>a2</p>");
+    expect(bAfterStage2.html).toBe("<p>b1</p>");
+    expect(bAfterStage2.updated_at).toBe(bAfterStage1.updated_at);
+  });
+});

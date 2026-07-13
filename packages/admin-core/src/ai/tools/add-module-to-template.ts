@@ -37,6 +37,7 @@ import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
+import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageRow {
@@ -119,7 +120,7 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
       ...MODULE_META_JSON_SCHEMA_PROPS,
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
-      js: { type: "string", maxLength: 50_000 },
+      js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
       // issue #106 — shared field schema (full kind enum incl. list +
       // nested-module kinds), so a template-wide nav/list module is
       // representable. See `_module-fields-schema.ts`.

@@ -42,6 +42,7 @@ interface SessionRow {
   chat_branch_id: string;
   published_at: string | Date | null;
   title: string;
+  last_staged_at: string | Date | null;
 }
 
 interface MergeOptions {
@@ -74,6 +75,18 @@ interface MergeOptions {
    * Stage from re-promoting follow-up edits to the same entity.
    */
   readonly recordPublishMarks: boolean;
+  /**
+   * Migration run #9 / livedit regression (issue #262) —
+   * chat.merge_to_main: replay only snapshots created AFTER the
+   * session's `last_staged_at`, matching the v0.10.8 pending-changes
+   * filter. Without this, every re-Stage in a long-lived page-bound
+   * chat replayed the branch's LIFETIME snapshots, bumping
+   * `updated_at` (and version) on every entity the chat ever touched
+   * — a hero re-edit read as "all placements changed". chat.publish:
+   * false — the publish boundary ships the whole branch (its
+   * already-shipped dedup is the publish-marks mechanism).
+   */
+  readonly sinceLastStagedAt: boolean;
 }
 
 interface MergeResult {
@@ -109,7 +122,7 @@ export async function mergeBranchSnapshotsToMain(
     }
 > {
   const sessionRows = (await tx.execute(sql`
-    SELECT chat_branch_id::text AS chat_branch_id, published_at, title
+    SELECT chat_branch_id::text AS chat_branch_id, published_at, title, last_staged_at
     FROM chat_sessions
     WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
     LIMIT 1
@@ -143,6 +156,23 @@ export async function mergeBranchSnapshotsToMain(
   const wantContentInstances = filterByKind("contentInstance");
   const wantThemes = filterByKind("theme");
   const includeAll = input.entities === undefined;
+
+  // Issue #262 (livedit placement-isolation regression) — when the
+  // caller opts in, only snapshots created AFTER the last successful
+  // Stage participate in the replay. Strict '>' matters: every write in
+  // the previous merge tx (including its own emitted snapshot) carries
+  // created_at == that tx's now(), which is exactly the value
+  // chat.finalize_stage stamped into last_staged_at — so '>' excludes
+  // the prior merge's own rows, same contract as
+  // chat.list_pending_changes (v0.10.8).
+  const sinceFilter =
+    options.sinceLastStagedAt && session.last_staged_at !== null
+      ? sql` AND ss.created_at > ${
+          session.last_staged_at instanceof Date
+            ? session.last_staged_at.toISOString()
+            : session.last_staged_at
+        }::timestamptz`
+      : sql``;
 
   const inFilter = (ids: readonly string[] | null) =>
     ids === null
@@ -208,7 +238,7 @@ export async function mergeBranchSnapshotsToMain(
       SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS entity_id, ms.state, ms.module_id::text AS entity_id_text
       FROM module_snapshots ms
       JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
       ORDER BY ms.module_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("module")} ${stageFilter("module")} ${inFilter(includeAll ? null : (wantModules ?? []))}
@@ -221,7 +251,7 @@ export async function mergeBranchSnapshotsToMain(
       SELECT DISTINCT ON (ts.template_id) ts.template_id::text AS entity_id, ts.state, ts.template_id::text AS entity_id_text
       FROM template_snapshots ts
       JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
       ORDER BY ts.template_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("template")} ${stageFilter("template")} ${inFilter(includeAll ? null : (wantTemplates ?? []))}
@@ -234,7 +264,7 @@ export async function mergeBranchSnapshotsToMain(
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS entity_id, ps.state, ps.page_id::text AS entity_id_text
       FROM page_snapshots ps
       JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
       ORDER BY ps.page_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("page")} ${stageFilter("page")} ${inFilter(includeAll ? null : (wantPages ?? []))}
@@ -247,7 +277,7 @@ export async function mergeBranchSnapshotsToMain(
       SELECT DISTINCT ON (pls.page_id) pls.page_id::text AS entity_id, pls.state, pls.page_id::text AS entity_id_text
       FROM page_layout_snapshots pls
       JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
       ORDER BY pls.page_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("pageLayout")} ${stageFilter("pageLayout")} ${inFilter(includeAll ? null : (wantLayouts ?? []))}
@@ -264,7 +294,7 @@ export async function mergeBranchSnapshotsToMain(
              pmcs.page_module_content_id::text AS entity_id_text
       FROM page_module_content_snapshots pmcs
       JOIN site_snapshots ss ON ss.id = pmcs.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
       ORDER BY pmcs.page_module_content_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("pageModuleContent")} ${stageFilter("pageModuleContent")} ${inFilter(includeAll ? null : (wantContent ?? []))}
@@ -281,7 +311,7 @@ export async function mergeBranchSnapshotsToMain(
              sss.structured_set_id::text AS entity_id_text
       FROM structured_set_snapshots sss
       JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
       ORDER BY sss.structured_set_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("structuredSet")} ${stageFilter("structuredSet")} ${inFilter(includeAll ? null : (wantStructuredSets ?? []))}
@@ -299,7 +329,7 @@ export async function mergeBranchSnapshotsToMain(
              cis.content_instance_id::text AS entity_id_text
       FROM content_instance_snapshots cis
       JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
       ORDER BY cis.content_instance_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("contentInstance")} ${stageFilter("contentInstance")} ${inFilter(includeAll ? null : (wantContentInstances ?? []))}
@@ -320,7 +350,7 @@ export async function mergeBranchSnapshotsToMain(
              ts.theme_id::text AS entity_id_text
       FROM theme_snapshots ts
       JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid
+      WHERE ss.chat_branch_id = ${session.chat_branch_id}::uuid${sinceFilter}
       ORDER BY ts.theme_id, ss.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("theme")} ${stageFilter("theme")} ${inFilter(includeAll ? null : (wantThemes ?? []))}
@@ -723,6 +753,7 @@ export const publishChatSessionOp = defineOperation({
       skipAlreadyPublished: true,
       honourStageFilter: true,
       recordPublishMarks: true,
+      sinceLastStagedAt: false,
     });
     if (!merged.ok) return err(merged.error);
 
@@ -820,6 +851,7 @@ export const mergeChatToMainOp = defineOperation({
       skipAlreadyPublished: false,
       honourStageFilter: false,
       recordPublishMarks: false,
+      sinceLastStagedAt: true,
     });
     if (!merged.ok) return err(merged.error);
 

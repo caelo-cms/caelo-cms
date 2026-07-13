@@ -650,11 +650,15 @@ export const actions: Actions = {
    * v0.7.0 — /edit's split-button Stage path. One click does the full
    * "show me 1:1 what production would see" loop:
    *
-   *   1. chat.merge_to_main (deferConsume) — promote every branch-
-   *      snapshot to main live tables, WITHOUT closing the chat (no
-   *      published_at stamp, no lock release) and WITHOUT consuming the
-   *      branch (no last_staged_at stamp yet). Safe to call repeatedly;
-   *      each call re-promotes whatever's currently latest.
+   *   1. chat.merge_to_main (deferConsume) — promote branch snapshots
+   *      created since the last successful Stage to main live tables,
+   *      WITHOUT closing the chat (no published_at stamp, no lock
+   *      release) and WITHOUT consuming the branch (no last_staged_at
+   *      stamp yet). Safe to call repeatedly; a retry after a failed
+   *      build re-promotes the same set (nothing was consumed), and a
+   *      re-Stage after new edits promotes only those edits (issue
+   *      #262 — lifetime replay bumped updated_at on every entity the
+   *      chat ever touched).
    *   2. deploy.trigger(staging) — full-site rebuild against the now-
    *      merged main state. Filtering staging deploys to changedPageIds
    *      would defeat the "1:1 preview" promise: chrome (header/footer)

@@ -24,8 +24,16 @@ import { requirePermission } from "$lib/server/guards.js";
 import type { RequestHandler } from "./$types";
 
 interface UploadBody {
-  /** base64-encoded PNG payload (no `data:` prefix). */
+  /** base64-encoded image payload (no `data:` prefix). */
   base64: string;
+  /**
+   * Run #9 CI fix (issue #262) — ChatPanel captures as JPEG by default
+   * now (a full-viewport PNG runs ~1 MB base64 and trips
+   * svelte-adapter-bun's 512K default BODY_SIZE_LIMIT with a 413).
+   * Optional for back-compat with tabs still running the PNG-only
+   * client; absent means PNG.
+   */
+  mediaType?: "image/png" | "image/jpeg";
   /** When the operator's browser couldn't capture (html2canvas
    *  threw, iframe didn't load, etc.). Resolves the orchestrator's
    *  Promise to a rejection so the AI's tool result is a clean
@@ -68,7 +76,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   }
 
   if (typeof body.base64 !== "string" || body.base64.length === 0) {
-    throw error(400, "missing base64 PNG payload");
+    throw error(400, "missing base64 image payload");
+  }
+  const mediaType = body.mediaType ?? "image/png";
+  if (mediaType !== "image/png" && mediaType !== "image/jpeg") {
+    throw error(400, `unsupported mediaType: ${String(mediaType)}`);
   }
   // Reject obviously oversized payloads. Browser captures of an
   // edit-overlay iframe at 1280x800 typically land ≤ 500 KB; cap at
@@ -79,7 +91,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
   const matched = deliverScreenshot(requestId, {
     base64: body.base64,
-    mediaType: "image/png",
+    mediaType,
   });
   if (!matched) {
     throw error(404, "no pending screenshot for this requestId");

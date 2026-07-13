@@ -24,6 +24,7 @@ import { composePageFromSpecToolInput, slugifyModuleSection } from "@caelo-cms/s
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
+import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
@@ -104,7 +105,7 @@ export const composePageFromSpecTool: ToolDefinitionWithHandler<
             displayName: { type: "string", minLength: 1, maxLength: 128 },
             html: { type: "string", minLength: 1, maxLength: 50_000 },
             css: { type: "string", maxLength: 50_000 },
-            js: { type: "string", maxLength: 50_000 },
+            js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
           },
         },
       },
