@@ -556,6 +556,118 @@ export const updateImportRunStatusOp = defineOperation({
 });
 
 /**
+ * issue #28 — the run-scoped error/warning LEDGER. One `import_run_events`
+ * row shape, validated at the write boundary. Emitters (media migration,
+ * fidelity gate, crawl) append events as they hit problems; the run report
+ * reads them back so every error/warning is reviewable, not just the single
+ * last-fatal `import_runs.error_message`.
+ *
+ * `detail` is arbitrary structured context (a skipped asset's url+reason, a
+ * diff pct, …) stored through `jsonbParam` — never double-encoded. `pageId`
+ * optionally links the event to the import page it concerns.
+ */
+export const importRunEventInput = z
+  .object({
+    runId: z.string().uuid(),
+    severity: z.enum(["warning", "error", "info"]),
+    /** Migration stage that emitted the event (crawl | media | fidelity |
+     *  inventory | compose | …). Free text so a new stage needs no schema
+     *  change; capped to keep the ledger legible. */
+    phase: z.string().min(1).max(60).optional(),
+    message: z.string().min(1).max(2000),
+    /** Structured payload for the report surface. */
+    detail: z.unknown().optional(),
+    /** Optional import_pages id (or composed page id) the event concerns. */
+    pageId: z.string().uuid().optional(),
+  })
+  .strict();
+export type ImportRunEventInput = z.infer<typeof importRunEventInput>;
+
+/**
+ * issue #28 — append ONE event to a run's ledger. Routine
+ * (human+ai+system, no gate): a ledger write is additive and trivially
+ * revertable. Prefer `imports.log_events` when appending >1 event
+ * (a media run skips many assets at once) — one tool call, one tx.
+ */
+export const logImportRunEventOp = defineOperation({
+  name: "imports.log_event",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: importRunEventInput,
+  output: z.object({ eventId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      INSERT INTO import_run_events (run_id, severity, phase, message, detail, page_id)
+      VALUES (
+        ${input.runId}::uuid,
+        ${input.severity},
+        ${input.phase ?? null},
+        ${input.message},
+        ${jsonbParam(input.detail ?? null)},
+        ${input.pageId ?? null}
+      )
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const eventId = rows[0]?.id;
+    if (!eventId) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.log_event",
+        message: "no row returned",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.log_event",
+      input,
+      succeeded: true,
+      entityId: input.runId,
+      resultSummary: `${input.severity}${input.phase ? `/${input.phase}` : ""}: ${input.message.slice(0, 120)}`,
+    });
+    return ok({ eventId });
+  },
+});
+
+/**
+ * issue #28 — append MANY events to run ledgers in one transaction (CLAUDE.md
+ * §11 bulk-first). Partial failure is impossible: all rows insert or none do.
+ * Events may span more than one run (the array carries `runId` per row), so
+ * one migration step's mixed findings post in a single call.
+ */
+export const logImportRunEventsOp = defineOperation({
+  name: "imports.log_events",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ events: z.array(importRunEventInput).min(1).max(500) }).strict(),
+  output: z.object({ inserted: z.number() }),
+  handler: async (ctx, input, tx) => {
+    for (const e of input.events) {
+      await tx.execute(sql`
+        INSERT INTO import_run_events (run_id, severity, phase, message, detail, page_id)
+        VALUES (
+          ${e.runId}::uuid,
+          ${e.severity},
+          ${e.phase ?? null},
+          ${e.message},
+          ${jsonbParam(e.detail ?? null)},
+          ${e.pageId ?? null}
+        )
+      `);
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.log_events",
+      input,
+      succeeded: true,
+      resultSummary: `appended ${input.events.length} event(s)`,
+    });
+    return ok({ inserted: input.events.length });
+  },
+});
+
+/**
  * P14 polish — Owner acknowledges a `fail`-classified screenshot diff
  * so the page becomes accept-able. AI cannot ack — actorScope is
  * human + system only, matching the §11.A "hard-to-revert" pattern
@@ -722,6 +834,9 @@ export const getImportPageFidelityInputsOp = defineOperation({
   input: z.object({ pageRef: z.string().uuid() }).strict(),
   output: z.object({
     importPageId: z.string(),
+    /** issue #28 — the owning run, so the fidelity gate can append a
+     *  warn/fail event to the run's error/warning ledger. */
+    runId: z.string(),
     sourceUrl: z.string().nullable(),
     screenshotObjectKey: z.string().nullable(),
     acceptedPageId: z.string().nullable(),
@@ -730,13 +845,14 @@ export const getImportPageFidelityInputsOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, source_url, screenshot_object_key,
+      SELECT id::text AS id, run_id::text AS run_id, source_url, screenshot_object_key,
              accepted_page_id::text AS accepted_page_id, diff_status, diff_pct
       FROM import_pages
       WHERE id = ${input.pageRef}::uuid OR accepted_page_id = ${input.pageRef}::uuid
       LIMIT 1
     `)) as unknown as Array<{
       id: string;
+      run_id: string;
       source_url: string | null;
       screenshot_object_key: string | null;
       accepted_page_id: string | null;
@@ -754,6 +870,7 @@ export const getImportPageFidelityInputsOp = defineOperation({
     }
     return ok({
       importPageId: r.id,
+      runId: r.run_id,
       sourceUrl: r.source_url,
       screenshotObjectKey: r.screenshot_object_key,
       acceptedPageId: r.accepted_page_id,
@@ -1616,6 +1733,28 @@ export const getImportRunReportOp = defineOperation({
         ),
       }),
     ),
+    /** issue #28 — the run-scoped error/warning LEDGER. Every problem hit
+     *  during the migration (skipped media asset, page that failed the
+     *  fidelity gate, crawl fetch error) so the closing report surfaces
+     *  them all, not just the single last-fatal `import_runs.error_message`.
+     *  Ordered error → warning → info, then newest-first within a severity.
+     *  Capped at 500 rows to bound the payload. */
+    eventCounts: z.object({
+      error: z.number(),
+      warning: z.number(),
+      info: z.number(),
+    }),
+    events: z.array(
+      z.object({
+        id: z.string(),
+        severity: z.enum(["warning", "error", "info"]),
+        phase: z.string().nullable(),
+        message: z.string(),
+        detail: z.unknown().nullable(),
+        pageId: z.string().nullable(),
+        createdAt: z.string().nullable(),
+      }),
+    ),
   }),
   handler: async (_ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
@@ -1746,6 +1885,40 @@ export const getImportRunReportOp = defineOperation({
       }
     }
 
+    // issue #28 — the run-scoped error/warning LEDGER. Ordered error →
+    // warning → info (the severity the report leads with), newest-first
+    // within a severity. Capped so a pathological run can't blow the payload.
+    const eventRows = (await tx.execute(sql`
+      SELECT id::text AS id, severity, phase, message, detail,
+             page_id::text AS page_id, created_at
+      FROM import_run_events
+      WHERE run_id = ${input.runId}::uuid
+      ORDER BY CASE severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+               created_at DESC
+      LIMIT 500
+    `)) as unknown as Array<{
+      id: string;
+      severity: "warning" | "error" | "info";
+      phase: string | null;
+      message: string;
+      detail: unknown;
+      page_id: string | null;
+      created_at: string | Date | null;
+    }>;
+    const eventCounts = { error: 0, warning: 0, info: 0 };
+    const events = eventRows.map((e) => {
+      eventCounts[e.severity] += 1;
+      return {
+        id: e.id,
+        severity: e.severity,
+        phase: e.phase,
+        message: e.message,
+        detail: parseJsonbColumn(e.detail),
+        pageId: e.page_id,
+        createdAt: toIso(e.created_at),
+      };
+    });
+
     return ok({
       sourceUrl: run.source_url,
       status: run.status,
@@ -1767,6 +1940,8 @@ export const getImportRunReportOp = defineOperation({
         category: category as z.infer<typeof noteCategory>,
         ...v,
       })),
+      eventCounts,
+      events,
     });
   },
 });
