@@ -105,6 +105,7 @@ import {
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
+import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
@@ -193,6 +194,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // check cumulative spend against it (pause-and-ask, not auto-stop).
   registry.register(setMigrationBudgetTool);
   registry.register(checkRunBudgetTool);
+  // issue #248 (WS2) — rebuild-quality checks: content-inventory
+  // (no information loss) + repeated-subtree boilerplate detection.
+  registry.register(checkPageContentInventoryTool);
+  registry.register(detectImportBoilerplateTool);
   // issue #250 (WS4) — source-vs-rebuilt fidelity verdict (self-analysis gate).
   registry.register(verifyImportFidelityTool);
   // issue #264 — per-page work-history log: read before touching a page,

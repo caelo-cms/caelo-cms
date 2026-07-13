@@ -18,6 +18,27 @@
  */
 
 export {
+  type BoilerplateCandidate,
+  type BoilerplatePageInput,
+  type BoilerplatePlacement,
+  type BoilerplateReport,
+  type DetectBoilerplateOptions,
+  detectBoilerplate,
+} from "./boilerplate.js";
+export {
+  type ContentInventory,
+  type ContentItem,
+  type ContentItemKind,
+  type CoverageOptions,
+  type CoverageReport,
+  checkContentCoverage,
+  checkInventoryCoverage,
+  extractContentInventory,
+  imageBasename,
+  type MissingContentItem,
+  normHref,
+} from "./content-inventory.js";
+export {
   type CrawlCheckpoint,
   type CrawledPage,
   type CrawlOptions,

@@ -112,6 +112,16 @@ interface Report {
     overThreshold: { sourceUrl: string; diffStatus: "warn" | "fail"; diffPct: number }[];
   };
   siteDesignTokens: unknown;
+  boilerplate: {
+    pagesAnalyzed?: number;
+    candidates?: {
+      tag: string;
+      pageCount: number;
+      suggestedPlacement: string;
+      placementReason: string;
+      sampleText: string;
+    }[];
+  } | null;
   notes: {
     category: string;
     applied: number;
@@ -209,6 +219,17 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       v.siteDesignTokens
         ? `Sampled design tokens (computed-style ground truth) are stored on this run: ${JSON.stringify(v.siteDesignTokens).slice(0, 1500)} — compose_from_import already applied them to the theme; cite THESE values (not guesses) when discussing the site's colors/fonts.`
         : "No sampled design tokens on this run (fetch-only crawl) — theme values came from the inline-CSS extractor.",
+      // issue #248 (WS2) — surface detected boilerplate: blocks that
+      // should be ONE shared module, not copied per page.
+      v.boilerplate?.candidates && v.boilerplate.candidates.length > 0
+        ? `Boilerplate detected (blocks repeating across pages — each should be ONE shared module, not per-page copies): ${v.boilerplate.candidates
+            .slice(0, 8)
+            .map(
+              (c) =>
+                `<${c.tag}> ×${c.pageCount} → ${c.suggestedPlacement} ("${c.sampleText.slice(0, 48)}")`,
+            )
+            .join("; ")}`
+        : "",
       ...v.notes.map(
         (n) =>
           `Notes/${n.category}: ${n.applied} fixed, ${n.suggested} suggested. Samples: ${n.samples
