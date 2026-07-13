@@ -462,6 +462,14 @@ export const chatSendMessageInput = z
     /** issue #190 — operator-attached images (see chatAttachmentSchema). */
     attachments: z.array(chatAttachmentSchema).max(CHAT_MAX_ATTACHMENTS).default([]),
     /**
+     * issue #29 — provenance of this turn. 'system' marks an auto-injected
+     * message the operator did NOT type (crawl-completion nudge, post-
+     * approval continuation): the model still receives it as a user turn,
+     * but the UI renders it as a muted status note instead of "You:".
+     * Omitted / undefined = operator-authored.
+     */
+    origin: z.enum(["operator", "system"]).optional(),
+    /**
      * P6.7.3 — the active /edit page id, threaded so the chat-runner can
      * compose a Current-page volatile chunk in the system prompt and so
      * tools that operate on a page (add_module_to_page) know the target

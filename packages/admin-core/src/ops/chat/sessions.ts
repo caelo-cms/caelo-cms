@@ -240,6 +240,10 @@ const sessionMessagesRow = z.object({
   id: z.string(),
   role: z.enum(["user", "assistant", "tool"]),
   content: z.string(),
+  /** issue #29 — 'system' = auto-injected status line (crawl nudge, post-
+   *  approval continuation); null = operator-authored. Drives the muted
+   *  status-note rendering on reload. */
+  origin: z.enum(["operator", "system"]).nullable(),
   toolCalls: z.unknown().nullable(),
   toolCallId: z.string().nullable(),
   tokensIn: z.number().int().nullable(),
@@ -301,7 +305,7 @@ export const getChatSessionOp = defineOperation({
       });
     }
     const msgs = (await tx.execute(sql`
-      SELECT id::text AS id, role, content, tool_calls, tool_call_id,
+      SELECT id::text AS id, role, content, origin, tool_calls, tool_call_id,
              tokens_in, tokens_out, created_at, thinking_blocks, attachments
       FROM chat_messages
       WHERE chat_session_id = ${input.chatSessionId}::uuid
@@ -310,6 +314,7 @@ export const getChatSessionOp = defineOperation({
       id: string;
       role: "user" | "assistant" | "tool";
       content: string;
+      origin: "operator" | "system" | null;
       tool_calls: unknown;
       tool_call_id: string | null;
       tokens_in: number | null;
@@ -354,6 +359,7 @@ export const getChatSessionOp = defineOperation({
           id: m.id,
           role: m.role,
           content: m.content,
+          origin: m.origin,
           toolCalls: parsedTools ?? null,
           toolCallId: m.tool_call_id,
           tokensIn: m.tokens_in,

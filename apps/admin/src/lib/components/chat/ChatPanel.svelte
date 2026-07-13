@@ -475,7 +475,12 @@
   async function sendAutoMessage(text: string): Promise<void> {
     if (streaming) return;
     composer = text;
-    await sendMessage();
+    // issue #29 — every auto-message is system-driven (crawl-completion
+    // nudge, post-approval continuation, queued choice answer). The model
+    // still sees them as user turns, but they persist + render as muted
+    // status notes so the operator isn't misled into thinking they typed
+    // them ("das kommt nicht vom nutzer").
+    await sendMessage("system");
   }
   // Live counter of pending changes during streaming — incremented per
   // AI tool result + reset between turns. Drives the "N edits during
@@ -1074,7 +1079,7 @@
     };
   });
 
-  async function sendMessage(): Promise<void> {
+  async function sendMessage(origin?: "system"): Promise<void> {
     if ((composer.trim().length === 0 && pendingAttachments.length === 0) || streaming) return;
     // Attachment-only sends get a minimal text body (the op requires
     // non-empty content; the images carry the actual intent).
@@ -1101,6 +1106,10 @@
         id: `local-${Date.now()}`,
         role: "user",
         content: text,
+        // issue #29 — auto-injected nudges render as muted status notes,
+        // not "You:". Optimistically mark them so the operator never sees
+        // the message flash as their own before the reload confirms it.
+        ...(origin ? { origin } : {}),
         ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
       },
     ];
@@ -1110,6 +1119,9 @@
       body: JSON.stringify({
         content: text,
         chips: sentChips,
+        // issue #29 — provenance so the persisted row + reload keep the
+        // system-origin status treatment durable across refresh.
+        ...(origin ? { origin } : {}),
         ...(sentAttachments.length > 0
           ? { attachments: sentAttachments.map((a) => ({ assetId: a.assetId, mime: a.mime, alt: a.alt })) }
           : {}),
@@ -1560,6 +1572,19 @@
                       />
                     {/if}
                   {/if}
+                </li>
+              {:else if m.origin === "system"}
+                <!-- issue #29 — auto-injected status line (crawl-completion
+                     nudge, post-approval continuation). The model saw it as
+                     a user turn, but it did NOT come from the operator, so
+                     render it as a muted, centered status note rather than a
+                     "You:" bubble. -->
+                <li
+                  class="rounded-md bg-muted px-3 py-2 text-center text-xs italic text-muted-foreground"
+                  data-testid="chat-status-note"
+                >
+                  <strong class="not-italic">Status:</strong>
+                  {m.content}
                 </li>
               {:else}
                 <li
