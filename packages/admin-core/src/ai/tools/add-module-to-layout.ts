@@ -53,6 +53,12 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     '`{name:"copyright",kind:"text",label:"Copyright",default:"© 2026 …"}`, a footer nav as a `link-list` with a ' +
     "`default` array of {label,href}). Do NOT use create_content_instance / set_placement_content here — those bind " +
     "PAGE placements only and will NOT fill layout chrome. Author static text inline or as field defaults. " +
+    "NESTING (a header with a nav, a footer with menu columns): there is NO `children`/`subModules` argument — " +
+    "repeating items are a `fields` entry, never a top-level key (CLAUDE.md §1A). A nav menu is ONE `link-list` " +
+    'field, e.g. `{name:"nav_links",kind:"link-list",label:"Navigation",default:[{label:"Home",href:"/"},' +
+    '{label:"About",href:"/about"}]}`, rendered with `{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}`. ' +
+    "A list of plain strings is a `text-list`; richer repeating sub-modules are a `module-list` (but `module`/" +
+    "`module-list` need a content_instance, so on chrome use `link-list`/`text-list` with a `default`). " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). ' +
     'Prefer a bare integer (`0`, not `"0"`) — quoted/over-quoted forms are normalized at the boundary, not rejected.',
   // v0.6.0 W1 — state-aware: enumerate the layouts that exist + each
@@ -65,6 +71,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
       "Create a new module and attach it to a LAYOUT block. The chrome reaches every page on every template bound to the layout.",
       'Use for site-wide chrome ("a footer on every page", "a global header banner"). For one page use add_module_to_page; for one template use add_module_to_template.',
       "CONTENT: layout chrome has no content_instance binding — every `{{field}}` must carry its value in the field `default` (a footer nav is a `link-list` default; copyright is a `text` default). Do NOT use create_content_instance/set_placement_content here.",
+      'NESTING: a header/footer that contains a nav has NO `children`/`subModules` key — the nav is ONE `link-list` field, e.g. `{name:"nav_links",kind:"link-list",label:"Navigation",default:[{label:"Home",href:"/"}]}`, rendered with `{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}`.',
     ];
     if (state.layouts.length === 0) {
       lines.push(

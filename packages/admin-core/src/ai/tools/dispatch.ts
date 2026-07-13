@@ -342,6 +342,81 @@ function describeAllowedForms(propSchema: unknown): string | null {
   return parts.length > 0 ? parts.join(", or ") : null;
 }
 
+/**
+ * Keys that signal "I want to nest / repeat sub-content" — the classic wrong
+ * reach on a module-authoring tool. When the model wants a header that contains
+ * a nav, or a footer with repeating columns, it tends to invent one of these
+ * keys instead of using the module's `fields` array (CLAUDE.md §1A: repeating
+ * content is a list field, never a bespoke `children` argument). The dispatcher
+ * rejects the unknown key; without naming the real mechanism the model just
+ * re-sends the same key and burns the loop. Matched case-insensitively.
+ */
+const NESTING_INTENT_KEYS = new Set([
+  "children",
+  "child",
+  "submodules",
+  "sub_modules",
+  "childmodules",
+  "child_modules",
+  "modules",
+  "module",
+  "modulelist",
+  "module_list",
+  "items",
+  "nav",
+  "navitems",
+  "nav_items",
+  "navigation",
+  "navlinks",
+  "nav_links",
+  "links",
+  "linklist",
+  "link_list",
+  "menu",
+  "menuitems",
+  "menu_items",
+  "list",
+  "rows",
+  "cards",
+  "columns",
+]);
+
+/**
+ * When the model passed a nesting-intent key (e.g. `children`) to a
+ * module-authoring tool (one whose schema exposes a `fields` array), return the
+ * concrete mechanism it should use instead — so it switches to a `fields` entry
+ * on the FIRST retry rather than re-sending the rejected key. Returns null when
+ * no unrecognized key signals nesting intent, or the tool has no `fields`
+ * property (the hint would be irrelevant / misleading).
+ */
+function nestingIntentHint(
+  issues: readonly z.ZodIssue[],
+  inputSchema: ToolInputSchema,
+): string | null {
+  const props = (inputSchema.properties ?? {}) as Record<string, unknown>;
+  if (!("fields" in props)) return null;
+  const flagged: string[] = [];
+  for (const issue of issues) {
+    if (issue.code !== "unrecognized_keys") continue;
+    for (const key of issue.keys) {
+      if (NESTING_INTENT_KEYS.has(key.toLowerCase())) flagged.push(key);
+    }
+  }
+  if (flagged.length === 0) return null;
+  const keyList = flagged.map((k) => `\`${k}\``).join(", ");
+  return (
+    `You passed ${keyList} to nest repeating or sub-content — this tool has no such argument. ` +
+    `Nesting is expressed as an entry in the \`fields\` array, NOT a top-level key:\n` +
+    `- a nav / menu / list of links → one \`link-list\` field, e.g. ` +
+    `\`{name:"nav_links",kind:"link-list",label:"Navigation",default:[{label:"Home",href:"/"},{label:"About",href:"/about"}]}\`, ` +
+    `rendered in the HTML with \`{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}\`;\n` +
+    `- a list of plain strings (tags, bullets) → one \`text-list\` field with a \`default\` array, rendered with \`{{#name}}…{{.}}…{{/name}}\`;\n` +
+    `- repeating rich sub-modules (cards with image + title + body) → one \`module-list\` field ` +
+    `(note: \`module\`/\`module-list\` need a content_instance to fill them, so they do NOT render on layout/template chrome — use \`link-list\`/\`text-list\` with a \`default\` there).\n` +
+    `Re-call with the nesting moved into a \`fields\` entry; drop ${keyList}.`
+  );
+}
+
 function formatToolArgError(
   name: string,
   issues: readonly z.ZodIssue[],
@@ -381,10 +456,16 @@ function formatToolArgError(
     `required: ${required.length ? required.map((k) => `\`${k}\``).join(", ") : "(none)"}; ` +
     `optional: ${optional.length ? optional.map((k) => `\`${k}\``).join(", ") : "(none)"}.`;
 
+  // When an unrecognized key signals nesting intent (e.g. `children`), name the
+  // real mechanism (a `fields` list entry) so the model switches approach on
+  // the first retry instead of re-sending the rejected key until the loop cap.
+  const nesting = nestingIntentHint(issues, inputSchema);
+
   return (
     `invalid arguments for ${name}:\n` +
     lines.map((l) => `- ${l}`).join("\n") +
     `\n${shape}\n` +
+    (nesting ? `${nesting}\n` : "") +
     `Re-call \`${name}\` with only the listed properties (drop any unrecognized keys) and retry — do not ask the operator.`
   );
 }
