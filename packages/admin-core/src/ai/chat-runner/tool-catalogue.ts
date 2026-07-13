@@ -67,6 +67,29 @@ export function isOrchestrationToolName(name: string): boolean {
 }
 
 /**
+ * Run #10 D2 — the subagent structured-result tool. Registered in the
+ * default registry so child sessions can dispatch it, but visible ONLY
+ * when the turn carries a `subagentResultCapture` (i.e. it IS a child
+ * session). See `resolveExcludedToolNames`.
+ */
+const SUBAGENT_RESULT_TOOL_NAME = "submit_result";
+
+/**
+ * Run #10 D2 — computes the effective excluded-tool set for a turn.
+ * Normal chats get `submit_result` added to the exclusions (there is no
+ * parent listening for a structured result); subagent child turns
+ * (hasResultCapture=true) keep the caller's exclusions as-is so the
+ * tool stays visible. Pure so the gating is unit-testable.
+ */
+export function resolveExcludedToolNames(
+  excluded: ReadonlySet<string> | undefined,
+  hasResultCapture: boolean,
+): ReadonlySet<string> | undefined {
+  if (hasResultCapture) return excluded;
+  return new Set([...(excluded ?? []), SUBAGENT_RESULT_TOOL_NAME]);
+}
+
+/**
  * Run #8 R5 — per-session catalogue determinism watchdog. The catalogue
  * is rebuilt every turn; when a tool that was present on the previous
  * turn disappears, that is either an intended narrowing (skill engaged,

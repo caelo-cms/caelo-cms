@@ -13,7 +13,11 @@
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
+import type {
+  ChatSendMessageInput,
+  ExecutionContext,
+  ExpectedReturnShape,
+} from "@caelo-cms/shared";
 import type { z } from "zod";
 
 import type { AIProvider } from "../provider.js";
@@ -27,6 +31,22 @@ import { normalizeToolArgs } from "./normalize-args.js";
  * puts this factory on the ToolContext so the handler can spawn a
  * child turn without a circular import.
  */
+/**
+ * Run #10 D2 — the structured result channel between a subagent child
+ * session and its spawn handler. When set on the child's
+ * ChatRunnerOptions/ToolContext, the `submit_result` tool becomes
+ * available in the child's catalogue; its handler validates the payload
+ * against `expectedShape` (shared Zod schemas) and calls `submit` with
+ * the VALIDATED value. The spawn handler reads the captured value
+ * instead of parsing the child's trailing free text — the run #10
+ * "returned empty text" / "response is not valid JSON" classes cannot
+ * occur on this path.
+ */
+export interface SubagentResultCapture {
+  readonly expectedShape: ExpectedReturnShape;
+  readonly submit: (value: unknown) => void;
+}
+
 export type SpawnChildChatTurn = (input: {
   readonly chatInput: ChatSendMessageInput;
   readonly aiCtx: ExecutionContext;
@@ -43,6 +63,8 @@ export type SpawnChildChatTurn = (input: {
   readonly chatBranchIdOverride?: string;
   /** P10.5 #3 — per-spawn cost cap propagated to runChatTurn. */
   readonly costCapMicrocents?: number;
+  /** Run #10 D2 — structured result channel for the child's `submit_result` tool. */
+  readonly subagentResultCapture?: SubagentResultCapture;
   readonly abortSignal?: AbortSignal;
 }) => AsyncIterable<unknown>;
 
@@ -65,6 +87,15 @@ export interface ToolContext {
   readonly humanCtx?: ExecutionContext;
   /** Hands off to runChatTurn; closure created by the parent's runner. */
   readonly spawnChildChatTurn?: SpawnChildChatTurn;
+  /**
+   * Run #10 D2 — set only inside a SUBAGENT child session (threaded
+   * from the spawn handler through ChatRunnerOptions). The
+   * `submit_result` tool validates its payload against
+   * `expectedShape` and hands the validated value to `submit`.
+   * Undefined in normal chats — submit_result then refuses with a
+   * pointer back to a plain reply.
+   */
+  readonly subagentResultCapture?: SubagentResultCapture;
   /**
    * P10.5 #1 — async-event sink installed by the parent's chat-runner
    * around each tool dispatch. The spawn_subagent handler pushes the

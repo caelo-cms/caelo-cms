@@ -122,6 +122,12 @@ export async function* dispatchToolCall(
           registry,
           chatSessionId: deps.chatSessionId,
           chatBranchId: deps.chatBranchId,
+          // Run #10 D2 — present only on subagent child turns; makes
+          // the submit_result tool deliver its validated payload to
+          // the waiting spawn handler.
+          ...(options.subagentResultCapture
+            ? { subagentResultCapture: options.subagentResultCapture }
+            : {}),
           // P10.5 — expose provider + tools + humanCtx + a child-turn
           // factory so the spawn_subagent handler can invoke runChatTurn
           // recursively for the child without a circular import. The
@@ -140,6 +146,7 @@ export async function* dispatchToolCall(
             allowedToolNames,
             chatBranchIdOverride,
             costCapMicrocents,
+            subagentResultCapture,
             abortSignal: childAbort,
           }) =>
             deps.runChatTurn(
@@ -157,6 +164,11 @@ export async function* dispatchToolCall(
                 allowedToolNames,
                 chatBranchIdOverride,
                 costCapMicrocents,
+                // Run #10 D2 — the child turn carries the parent's
+                // result capture so its catalogue includes
+                // submit_result and the payload lands in the spawn
+                // handler's closure.
+                subagentResultCapture,
                 abortSignal: childAbort,
               },
               chatInput,

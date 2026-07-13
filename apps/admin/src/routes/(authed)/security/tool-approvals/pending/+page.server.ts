@@ -145,29 +145,37 @@ export const actions: Actions = {
     });
 
     // v0.6.0 alpha.4 Fix T — propagate the REAL dispatch result back
-    // into the chat session as a tool-role message so the AI sees the
-    // actual outcome on its next turn (was: only saw a generic
-    // "proposal applied" client-side notification). For
-    // delete_pages_many specifically: the AI now sees how many pages
-    // actually deleted, what was already-deleted, what was not-found
-    // — enough to give the user a meaningful follow-up.
+    // into the chat session so the AI sees the actual outcome on its
+    // next turn (was: only saw a generic "proposal applied"
+    // client-side notification). For delete_pages_many specifically:
+    // the AI now sees how many pages actually deleted, what was
+    // already-deleted, what was not-found — enough to give the user a
+    // meaningful follow-up.
+    //
+    // Run #10 D1 — this MUST be a user-role message, never role "tool".
+    // The original tool_use already received its tool_result at
+    // propose time ("Queued proposal …" from the dispatcher), so a
+    // second tool_result cannot pair with it, and a synthetic id like
+    // `approval-<proposalId>` has no tool_use at all. Either shape
+    // makes Anthropic reject EVERY subsequent provider call with
+    // "unexpected `tool_use_id` found in `tool_result` blocks" — the
+    // session wedges permanently (run #10's killer). A plain user
+    // message carries the same information and is what the flow
+    // semantically is: the human Owner reporting their action.
     //
     // Best-effort: skip when chatSessionId is missing (out-of-chat
     // approval, currently theoretical) and on append failure (the
-    // dispatch already succeeded; the chat-side message is the
-    // bonus). Tool-call id `approval-<proposalId>` matches the
-    // client-side onProposalApproved synthetic id so de-dup logic
-    // upstream stays consistent.
+    // dispatch already succeeded; the chat-side message is the bonus).
     if (chatSessionId) {
       try {
         await execute(registry, adapter, locals.ctx, "chat.append_message", {
           chatSessionId,
-          role: "tool",
-          content: `[approved + dispatched by Owner] ${toolName}: ${dispatchResult.content}`.slice(
-            0,
-            8000,
-          ),
-          toolCallId: `approval-${proposalId}`,
+          role: "user",
+          content:
+            `[Owner approved proposal ${proposalId} and the tool was dispatched] ${toolName}: ${dispatchResult.content}`.slice(
+              0,
+              8000,
+            ),
         });
       } catch (err) {
         console.error("[tool-approvals.approve] chat.append_message failed", {
