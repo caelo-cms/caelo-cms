@@ -42,7 +42,7 @@ import {
   recordAiCall,
 } from "./persistence.js";
 import type { UsageAccumulator } from "./streaming.js";
-import { buildToolCatalogue } from "./tool-catalogue.js";
+import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
 export { isLegitimateTextOnlyTurn } from "./passive-turn.js";
@@ -72,16 +72,30 @@ export async function* runChatTurn(
     maxOutputTokens: options.maxOutputTokens,
   });
 
+  // Run #10 D5 — per-phase timing so a pre-provider stall (run #10: 12
+  // silent minutes on a fresh chat's first turn) is attributable from
+  // logs alone: every phase between "enter" and the first provider
+  // call gets its own duration in the `turn-phases` breadcrumb below,
+  // and streaming.ts logs provider-call time-to-first-event.
+  const phaseMs: Record<string, number> = {};
+  let phaseStartedAt = Date.now();
+  const markPhase = (name: string): void => {
+    phaseMs[name] = Date.now() - phaseStartedAt;
+    phaseStartedAt = Date.now();
+  };
+
   // 1. Persist the user message.
   if (!(await persistUserMessage(registry, adapter, humanCtx, input))) {
     yield { kind: "error", message: "failed to persist user message" };
     yield { kind: "done" };
     return;
   }
+  markPhase("persistUserMessageMs");
 
   // 2. Load memory + history.
   const memory = await loadMemory(registry, adapter, humanCtx);
   const session = await loadSession(registry, adapter, humanCtx, input.chatSessionId);
+  markPhase("loadMemoryAndSessionMs");
   if (!session) {
     yield { kind: "error", message: "failed to load session" };
     yield { kind: "done" };
@@ -124,6 +138,7 @@ export async function* runChatTurn(
     session.messages,
     createMediaAttachmentLoader(registry, adapter, humanCtx),
   );
+  markPhase("buildProviderHistoryMs");
 
   // Build all pre-catalogue system-prompt context blocks + skill engagement.
   const ctx = await buildSystemContextBlocks({
@@ -134,6 +149,7 @@ export async function* runChatTurn(
     aiActorId: aiCtx.actorId,
     input,
   });
+  markPhase("contextBlocksMs");
 
   // v0.6.0 W1 — assemble ToolDescribeState from the layouts/templates/
   // site_defaults values fetched for the system-prompt blocks.
@@ -147,13 +163,19 @@ export async function* runChatTurn(
   });
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion
-  // ∪ issue #264 per-spawn allowlist.
+  // ∪ issue #264 per-spawn allowlist. Run #10 D2 — `submit_result`
+  // joins the exclusions unless this turn IS a subagent child (i.e.
+  // subagentResultCapture is present).
+  const effectiveExcluded = resolveExcludedToolNames(
+    options.excludedToolNames,
+    options.subagentResultCapture !== undefined,
+  );
   const filteredTools = buildToolCatalogue({
     tools,
     toolDescribeState,
     allowedToolNames: ctx.allowedToolNames,
     engagedSkills: ctx.engagedSkills,
-    excluded: options.excludedToolNames,
+    excluded: effectiveExcluded,
     spawnAllowed: options.allowedToolNames,
     chatSessionId: input.chatSessionId,
   });
@@ -188,6 +210,17 @@ export async function* runChatTurn(
   };
 
   const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };
+
+  markPhase("catalogueAndPromptMs");
+  // Run #10 D5 — the pre-provider timing breadcrumb. If a first token
+  // ever goes silent again, this log (plus streaming.ts's
+  // provider-first-event / provider-first-event-timeout) pins WHICH
+  // phase ate the time.
+  console.error("[chat-runner] turn-phases", {
+    chatSessionId: input.chatSessionId,
+    ...phaseMs,
+    totalPreProviderMs: Date.now() - startedAt,
+  });
 
   // 3. Run the tool loop.
   const { stopReason, succeeded, lastAssistantMessageId } = yield* runToolLoop({

@@ -309,6 +309,228 @@ describe("subagent ops", () => {
     }
   });
 
+  it("run #10 D2: spawn_subagent collects the child's result via submit_result", async () => {
+    const parent = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      title: "p10_5_test d2 orchestrator",
+    });
+    if (!parent.ok) throw new Error("parent session create failed");
+    const parentId = (parent.value as { chatSessionId: string }).chatSessionId;
+
+    // Provider serves parent + child turns from one queue:
+    //   1. parent — spawn_subagent tool call
+    //   2. child turn 1 — submit_result tool call (the structured channel)
+    //   3. child turn 2 — closing text after the submit ack
+    //   4. parent turn 2 — closing text after the spawn result
+    class QueueProvider extends FixtureProvider {
+      #idx = 0;
+      readonly #queue: ProviderEvent[][] = [
+        [
+          {
+            kind: "tool-call",
+            id: "tu_d2_spawn",
+            name: "spawn_subagent",
+            arguments: {
+              role: "p10_5_test_d2_rebuilder",
+              task: "Rebuild the pricing cluster. Report per-page status.",
+              expectedReturnShape: "rebuild",
+            },
+          },
+          { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+          { kind: "done", stopReason: "tool_use" },
+        ],
+        [
+          {
+            kind: "tool-call",
+            id: "tu_d2_submit",
+            name: "submit_result",
+            arguments: {
+              result: {
+                pages: [{ slug: "pricing", status: "rebuilt", notes: "hero + table carried over" }],
+                summary: "1 page rebuilt",
+              },
+            },
+          },
+          { kind: "usage", inputTokens: 8, outputTokens: 4, cachedTokens: 0 },
+          { kind: "done", stopReason: "tool_use" },
+        ],
+        [
+          { kind: "text-delta", text: "Submitted." },
+          { kind: "usage", inputTokens: 6, outputTokens: 3, cachedTokens: 0 },
+          { kind: "done", stopReason: "end_turn" },
+        ],
+        [
+          { kind: "text-delta", text: "Fan-out complete." },
+          { kind: "usage", inputTokens: 6, outputTokens: 3, cachedTokens: 0 },
+          { kind: "done", stopReason: "end_turn" },
+        ],
+      ];
+      constructor() {
+        super([], "claude-test-d2");
+      }
+      override async *generate(): AsyncIterable<ProviderEvent> {
+        const events = this.#queue[this.#idx] ?? [
+          { kind: "done" as const, stopReason: "end_turn" as const },
+        ];
+        this.#idx += 1;
+        for (const e of events) yield e;
+      }
+    }
+
+    const aiCtx: ExecutionContext = {
+      actorId: "00000000-0000-0000-0000-000000000a1a",
+      actorKind: "ai",
+      requestId: "d2-spawn-submit-test",
+    };
+    for await (const _ev of runChatTurn(
+      {
+        adapter,
+        registry,
+        provider: new QueueProvider(),
+        tools: createDefaultToolRegistry(),
+        aiCtx,
+        humanCtx: systemCtx,
+      },
+      { chatSessionId: parentId, content: "Rebuild the pricing cluster", chips: [] },
+    )) {
+      // drain
+    }
+
+    // The parent's tool result carries the VALIDATED submitted payload,
+    // marked completed — not a free-text parse.
+    const sess = await execute(registry, adapter, systemCtx, "chat.get_session", {
+      chatSessionId: parentId,
+    });
+    if (!sess.ok) throw new Error("parent session read failed");
+    const messages = (sess.value as { messages: { role: string; content: string }[] }).messages;
+    const spawnResult = messages.find(
+      (m) => m.role === "tool" && m.content.includes("p10_5_test_d2_rebuilder"),
+    );
+    expect(spawnResult?.content).toContain("(completed");
+    expect(spawnResult?.content).toContain('"status": "rebuilt"');
+    expect(spawnResult?.content).toContain("1 page rebuilt");
+
+    // The subagent_runs row landed as completed with the submitted JSON.
+    const sql = new SQL(ADMIN_URL);
+    try {
+      const rows = (await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return await tx`
+          SELECT status, error_message, result_json
+          FROM subagent_runs WHERE role = 'p10_5_test_d2_rebuilder' LIMIT 1
+        `;
+      })) as unknown as {
+        status: string;
+        error_message: string | null;
+        result_json: { summary?: string } | null;
+      }[];
+      expect(rows[0]?.status).toBe("completed");
+      expect(rows[0]?.error_message).toBeNull();
+      expect(rows[0]?.result_json?.summary).toBe("1 page rebuilt");
+    } finally {
+      await sql.end();
+    }
+  });
+
+  it("run #10 D2: a child provider error surfaces as a structured child-error, never parseable output", async () => {
+    const parent = await execute(registry, adapter, systemCtx, "chat.create_session", {
+      title: "p10_5_test d2 child-error orchestrator",
+    });
+    if (!parent.ok) throw new Error("parent session create failed");
+    const parentId = (parent.value as { chatSessionId: string }).chatSessionId;
+
+    const CHILD_ERROR = "provider stream failed: upstream 529 overloaded";
+    class QueueProvider extends FixtureProvider {
+      #idx = 0;
+      readonly #queue: ProviderEvent[][] = [
+        [
+          {
+            kind: "tool-call",
+            id: "tu_d2_spawn_err",
+            name: "spawn_subagent",
+            arguments: {
+              role: "p10_5_test_d2_failing",
+              task: "Audit the pricing cluster.",
+              expectedReturnShape: "verdict",
+            },
+          },
+          { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+          { kind: "done", stopReason: "tool_use" },
+        ],
+        // Child turn: the provider dies without emitting content — the
+        // run #10 class where the child's own error string leaked into
+        // the parent as "output" and failed JSON parsing.
+        [
+          { kind: "error", message: CHILD_ERROR },
+          { kind: "done", stopReason: "error" },
+        ],
+        [
+          { kind: "text-delta", text: "Understood, the audit subagent failed." },
+          { kind: "usage", inputTokens: 6, outputTokens: 3, cachedTokens: 0 },
+          { kind: "done", stopReason: "end_turn" },
+        ],
+      ];
+      constructor() {
+        super([], "claude-test-d2-err");
+      }
+      override async *generate(): AsyncIterable<ProviderEvent> {
+        const events = this.#queue[this.#idx] ?? [
+          { kind: "done" as const, stopReason: "end_turn" as const },
+        ];
+        this.#idx += 1;
+        for (const e of events) yield e;
+      }
+    }
+
+    const aiCtx: ExecutionContext = {
+      actorId: "00000000-0000-0000-0000-000000000a1a",
+      actorKind: "ai",
+      requestId: "d2-child-error-test",
+    };
+    for await (const _ev of runChatTurn(
+      {
+        adapter,
+        registry,
+        provider: new QueueProvider(),
+        tools: createDefaultToolRegistry(),
+        aiCtx,
+        humanCtx: systemCtx,
+      },
+      { chatSessionId: parentId, content: "Audit the pricing cluster", chips: [] },
+    )) {
+      // drain
+    }
+
+    const sess = await execute(registry, adapter, systemCtx, "chat.get_session", {
+      chatSessionId: parentId,
+    });
+    if (!sess.ok) throw new Error("parent session read failed");
+    const messages = (sess.value as { messages: { role: string; content: string }[] }).messages;
+    const spawnResult = messages.find(
+      (m) => m.role === "tool" && m.content.includes("p10_5_test_d2_failing"),
+    );
+    // Structured failure: kind tag + the child's own error message —
+    // and no attempt to parse the error as the child's JSON output.
+    expect(spawnResult?.content).toContain("[child-error]");
+    expect(spawnResult?.content).toContain(CHILD_ERROR);
+    expect(spawnResult?.content).not.toContain("not valid JSON");
+
+    const sql = new SQL(ADMIN_URL);
+    try {
+      const rows = (await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return await tx`
+          SELECT status, error_message
+          FROM subagent_runs WHERE role = 'p10_5_test_d2_failing' LIMIT 1
+        `;
+      })) as unknown as { status: string; error_message: string | null }[];
+      expect(rows[0]?.status).toBe("errored");
+      expect(rows[0]?.error_message).toStartWith("child-error:");
+      expect(rows[0]?.error_message).toContain(CHILD_ERROR);
+    } finally {
+      await sql.end();
+    }
+  });
+
   it("ai_calls accepts parentChatSessionId + parentAiCallId", async () => {
     const parent = await execute(registry, adapter, systemCtx, "chat.create_session", {
       title: "p10_5_test parent for attribution",

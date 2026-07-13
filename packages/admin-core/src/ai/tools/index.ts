@@ -127,6 +127,7 @@ import { setThemeMetaTool } from "./set-theme-meta.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
 import { submitPluginTool } from "./submit-plugin.js";
+import { submitResultTool } from "./submit-result.js";
 // P11.5 — translate_page + start_translation_job moved to the translation
 // Tier-1 plugin (`packages/plugins/translation/`). The chat-runner discovers
 // them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
@@ -280,6 +281,12 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // excludedToolNames stripping these two so depth is capped at 1.
   registry.register(spawnSubagentTool);
   registry.register(spawnSubagentsTool);
+  // Run #10 D2 — subagent structured final-answer channel. Visible
+  // ONLY inside child sessions: the chat-runner excludes it whenever
+  // ChatRunnerOptions.subagentResultCapture is absent (see
+  // chat-runner/index.ts), mirroring how the spawn tools are excluded
+  // FROM child sessions.
+  registry.register(submitResultTool);
   // P11 — AI submits a Tier 2 plugin for Owner approval. Activation
   // is human-only (CLAUDE.md §2). Tier 1 plugins ship via human PR.
   registry.register(submitPluginTool);
