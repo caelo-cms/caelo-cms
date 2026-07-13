@@ -18,6 +18,7 @@
  *   spacingLg, spacing-lg, lg + CSS length               → spacing.lg
  *   radiusMd, borderRadius, rounded-md                   → radius.md
  *   shadowSm, shadow-sm, boxShadow                       → shadow.sm
+ *   gradient, heroGradient, gradientHero, gradient.hero  → gradient.hero
  *   color.primary.$value (canonical DTCG path)           → passthrough
  *   --color-primary (CSS-var)                            → color.primary
  *   "{color.brand.primary}" (DTCG alias)                 → passthrough at value layer
@@ -45,7 +46,7 @@ export interface NormalizeResult {
    */
   readonly types: Record<
     CanonicalPath,
-    "color" | "dimension" | "typography" | "shadow" | "duration" | "cubicBezier"
+    "color" | "dimension" | "typography" | "shadow" | "duration" | "cubicBezier" | "gradient"
   >;
   /** Echo-back list for the AI tool's result content. */
   readonly canonicalPaths: readonly CanonicalPath[];
@@ -57,6 +58,12 @@ const CSS_LENGTH_REGEX = /^-?\d+(\.\d+)?(rem|em|px|%|vh|vw|vmin|vmax|pt|pc|ch|ex
 const DURATION_REGEX = /^\d+(\.\d+)?(ms|s)$/;
 const ALIAS_REGEX = /^\{[a-zA-Z0-9_.-]+\}$/;
 const SHADOW_VALUE_REGEX = /^(-?\d+(\.\d+)?(rem|em|px|%)? *){2,5}(.+)?$/;
+// A CSS `*-gradient(...)` value. Mirrors (loosely) the stricter Zod
+// `gradientValueString` in themes.ts — the normalizer only needs to
+// RECOGNISE gradient strings to route them to the gradient category and
+// infer `$type: "gradient"`; the document validator enforces the exact
+// safe shape (no url(), no `;<>{}` breakout) downstream.
+const GRADIENT_VALUE_REGEX = /^(?:repeating-)?(?:linear|radial|conic)-gradient\(.+\)$/i;
 
 /**
  * The canonical "well-known" tokens the AI is most likely to mean when
@@ -108,14 +115,25 @@ const KNOWN_CANONICAL_PATHS: readonly CanonicalPath[] = [
   "shadow.md",
   "shadow.lg",
   "shadow.xl",
+  // gradient (issue #153 — CSS gradient strings emitted as
+  // `--gradient-<name>`; `hero` + `subtle` are the seeded slots)
+  "gradient.hero",
+  "gradient.subtle",
 ];
 
 interface CategoryDef {
-  readonly category: "color" | "typography" | "spacing" | "radius" | "shadow" | "duration";
+  readonly category:
+    | "color"
+    | "typography"
+    | "spacing"
+    | "radius"
+    | "shadow"
+    | "duration"
+    | "gradient";
   /** Name-shape heuristics that hint at this category. */
   readonly nameHints: readonly RegExp[];
   /** Type that gets stored at the leaf's `$type` field. */
-  readonly inferredType: "color" | "dimension" | "typography" | "shadow" | "duration";
+  readonly inferredType: "color" | "dimension" | "typography" | "shadow" | "duration" | "gradient";
   /** Builds the canonical DTCG path from the basename. */
   readonly buildPath: (basename: string) => CanonicalPath;
 }
@@ -168,6 +186,18 @@ const CATEGORIES: readonly CategoryDef[] = [
     nameHints: [/shadow/i, /elevation/i, /^box-?shadow$/i],
     inferredType: "shadow",
     buildPath: (basename) => `shadow.${basename}`,
+  },
+  {
+    // issue #153 — gradient tokens. Loose names (`gradient`,
+    // `heroGradient`, `gradientHero`) + the direct DTCG path
+    // (`gradient.hero`) all land in `gradient.<name>` with
+    // `$type: "gradient"`. Without this category the normalizer threw
+    // `UnknownTokenName` on every loose gradient name (the #1 red-error
+    // class in migration chat).
+    category: "gradient",
+    nameHints: [/gradient/i],
+    inferredType: "gradient",
+    buildPath: (basename) => `gradient.${basename}`,
   },
   {
     category: "duration",
@@ -225,6 +255,21 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
     let storedValue: unknown = rawValue;
     if (resolved.compositeWrap && typeof rawValue === "string" && !ALIAS_REGEX.test(rawValue)) {
       storedValue = { [resolved.compositeWrap]: rawValue };
+    } else if (
+      resolved.inferredType === "gradient" &&
+      typeof rawValue === "object" &&
+      rawValue !== null &&
+      !Array.isArray(rawValue)
+    ) {
+      // issue #153 — the AI sometimes sends a structured gradient
+      // (`{type, angle, stops}`) instead of the CSS string the DTCG
+      // gradient token stores. Fold it into the canonical
+      // `linear-gradient(...)` form so the document validates and the
+      // renderer emits a real `--gradient-<name>`. Unrecognised shapes
+      // pass through untouched so the document validator produces the
+      // actionable "gradient must be a CSS *-gradient(...) value" error
+      // rather than us silently inventing a gradient (CLAUDE.md §2).
+      storedValue = gradientObjectToCss(rawValue as Record<string, unknown>) ?? rawValue;
     }
     set[resolved.path] = storedValue;
     types[resolved.path] = resolved.inferredType;
@@ -405,6 +450,20 @@ function validateValueShape(category: string, value: unknown, canonicalPath: str
     return;
   }
 
+  if (category === "gradient") {
+    if (GRADIENT_VALUE_REGEX.test(value)) return;
+    const sniffed = sniffCategoryFromValue(value);
+    if (sniffed && sniffed !== "gradient") {
+      // e.g. a flat color string sent to `gradient.hero` — name the
+      // mismatch instead of letting Zod reject with a vaguer message.
+      throw new TokenCategoryMismatch(canonicalPath, "gradient", sniffed);
+    }
+    // Not a recognised gradient and not clearly another category — defer
+    // to the document validator's precise "gradient must be a CSS
+    // *-gradient(...) value" message rather than guessing here.
+    return;
+  }
+
   // shadow / typography composites + unknown categories: caller's
   // responsibility to pass a structurally-correct value; Zod catches
   // the rest at validateThemeTokens time.
@@ -428,6 +487,14 @@ function inferTypeFromPath(path: string, value: unknown): NormalizeResult["types
       return "dimension";
     case "shadow":
       return "shadow";
+    case "gradient":
+      // issue #153 — MUST return "gradient" (not the sniffed value
+      // category). The gradient token's `$type` is `z.literal("gradient")`;
+      // before this case, `gradient.hero` fell through to `default`, the
+      // gradient string sniffed as no known category → "dimension", and
+      // the stamped `$type: "dimension"` bounced off the document
+      // validator ("gradient token invalid: expected \"gradient\"").
+      return "gradient";
     case "duration":
       return "duration";
     case "ease":
@@ -442,6 +509,9 @@ function inferTypeFromPath(path: string, value: unknown): NormalizeResult["types
 function sniffCategoryFromValue(value: unknown): NormalizeResult["types"][string] | undefined {
   if (typeof value !== "string") return undefined;
   if (ALIAS_REGEX.test(value)) return undefined; // alias has no value shape
+  // Gradient before color: a `linear-gradient(...)` string could loosely
+  // read as a `color(...)`-shaped function otherwise.
+  if (GRADIENT_VALUE_REGEX.test(value)) return "gradient";
   if (COLOR_VALUE_REGEX.test(value)) return "color";
   if (DURATION_REGEX.test(value)) return "duration";
   if (SHADOW_VALUE_REGEX.test(value) && /\s/.test(value)) return "shadow";
@@ -470,6 +540,7 @@ function extractBasename(rawName: string, category: string): string | null {
     radius: ["radius", "rounded", "border", "borderradius", "border-radius", "corner"],
     shadow: ["shadow", "box", "boxshadow", "box-shadow", "elevation"],
     duration: ["duration", "timing"],
+    gradient: ["gradient"],
   };
   const aliases = new Set(aliasesFor[category] ?? [category]);
   const meaningful = parts.filter((p) => p.length > 0 && !aliases.has(p));
@@ -491,9 +562,77 @@ function defaultTier(category: string): string {
       return DEFAULT_TIER;
     case "duration":
       return "fast";
+    case "gradient":
+      // The seeded default theme ships `gradient.hero` + `gradient.subtle`;
+      // a bare `gradient` almost always means the primary/hero surface.
+      return "hero";
     default:
       return "default";
   }
+}
+
+/**
+ * issue #153 — best-effort structured-gradient → CSS-string converter.
+ *
+ * The DTCG gradient token stores a CSS `*-gradient(...)` string (see
+ * `themeGradientToken` in themes.ts). When the AI sends a structured
+ * shape instead, fold the RECOGNISED subset into that string:
+ *
+ *   `{ type?: "linear"|"radial"|"conic", angle?: string|number,
+ *      direction?: string, stops: Array<string | {color, position?}> }`
+ *
+ *   → `linear-gradient(135deg, #4f46e5, #7c3aed 100%)`
+ *
+ * Returns `undefined` (caller keeps the raw value so the document
+ * validator emits its precise error) when the shape carries no usable
+ * stops — we never fabricate a gradient from nothing (CLAUDE.md §2).
+ */
+function gradientObjectToCss(obj: Record<string, unknown>): string | undefined {
+  const rawStops = obj.stops;
+  if (!Array.isArray(rawStops) || rawStops.length < 2) return undefined;
+
+  const stops: string[] = [];
+  for (const s of rawStops) {
+    if (typeof s === "string" && s.trim().length > 0) {
+      stops.push(s.trim());
+      continue;
+    }
+    if (s !== null && typeof s === "object" && !Array.isArray(s)) {
+      const stop = s as Record<string, unknown>;
+      const color = typeof stop.color === "string" ? stop.color.trim() : undefined;
+      if (!color) return undefined;
+      const pos =
+        typeof stop.position === "string"
+          ? stop.position.trim()
+          : typeof stop.position === "number"
+            ? `${stop.position}%`
+            : undefined;
+      stops.push(pos ? `${color} ${pos}` : color);
+      continue;
+    }
+    return undefined; // unrecognised stop entry — don't guess
+  }
+
+  const type =
+    obj.type === "radial" || obj.type === "conic" || obj.type === "linear"
+      ? obj.type
+      : "linear";
+
+  // Leading orientation argument. Linear/conic accept an angle; radial
+  // accepts a shape/extent hint via `direction`. Only linear gets a
+  // default angle so a bare `{stops}` still reads as a diagonal sweep.
+  let head = "";
+  if (typeof obj.direction === "string" && obj.direction.trim().length > 0) {
+    head = obj.direction.trim();
+  } else if (obj.angle !== undefined && obj.angle !== null) {
+    const a = obj.angle;
+    head = typeof a === "number" ? `${a}deg` : String(a).trim();
+  } else if (type === "linear") {
+    head = "135deg";
+  }
+
+  const args = head ? `${head}, ${stops.join(", ")}` : stops.join(", ");
+  return `${type}-gradient(${args})`;
 }
 
 /**
