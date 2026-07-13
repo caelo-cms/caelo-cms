@@ -865,13 +865,35 @@ export const getImportPageFidelityInputsOp = defineOperation({
       diff_status: "pass" | "warn" | "fail" | null;
       diff_pct: number | null;
     }>;
-    const r = rows[0];
+    let r = rows[0];
+
+    // Direct-build fallback (issue #278). The homepage-first flow creates
+    // pages via `pages.create`, so no import_page carries their id as
+    // `accepted_page_id` and the linkage lookup above misses. Resolve the
+    // source import_page by matching the BUILT page's slug against the
+    // crawled `proposed_slug` (the crawl DID store the source screenshot +
+    // proposed_modules). The built page id is what the fidelity gate must
+    // render, so it becomes the effective `accepted_page_id`.
+    if (!r) {
+      const bySlug = (await tx.execute(sql`
+        SELECT ip.id::text AS id, ip.run_id::text AS run_id, ip.source_url,
+               ip.screenshot_object_key, p.id::text AS accepted_page_id,
+               ip.diff_status, ip.diff_pct
+        FROM pages p
+        JOIN import_pages ip ON ip.proposed_slug = p.slug
+        WHERE p.id = ${input.pageRef}::uuid AND p.deleted_at IS NULL
+        ORDER BY (ip.screenshot_object_key IS NOT NULL) DESC, ip.created_at DESC
+        LIMIT 1
+      `)) as unknown as typeof rows;
+      r = bySlug[0];
+    }
+
     if (!r) {
       return err({
         kind: "HandlerError",
         operation: "imports.get_page_fidelity_inputs",
         message:
-          "no import page matches this id — pass EITHER the staging import_pages id OR the composed page id (accepted_page_id); list the run with imports.get for valid ids",
+          "no import page matches this id — pass EITHER the staging import_pages id, the composed page id (accepted_page_id), OR (for a directly-built #278 page) a built page whose slug matches a crawled source page. List the run with imports.get for the source pages and their slugs.",
       });
     }
     return ok({
@@ -1455,13 +1477,31 @@ export const checkImportPageInventoryOp = defineOperation({
       accepted_page_id: string | null;
       proposed_modules: unknown;
     }>;
-    const row = rows[0];
+    let row = rows[0];
+
+    // Direct-build fallback (issue #278). A #278-built page has no
+    // `import_pages.accepted_page_id` linkage; resolve the source
+    // import_page by matching the built page's slug against the crawled
+    // `proposed_slug`, and treat the built page id as the composed page so
+    // the rebuilt-modules diff below runs against it.
+    if (!row) {
+      const bySlug = (await tx.execute(sql`
+        SELECT ip.id::text AS id, p.id::text AS accepted_page_id, ip.proposed_modules
+        FROM pages p
+        JOIN import_pages ip ON ip.proposed_slug = p.slug
+        WHERE p.id = ${input.importPageId}::uuid AND p.deleted_at IS NULL
+        ORDER BY ip.created_at DESC
+        LIMIT 1
+      `)) as unknown as typeof rows;
+      row = bySlug[0];
+    }
+
     if (!row) {
       return err({
         kind: "HandlerError",
         operation: "imports.check_page_inventory",
         message:
-          "import page not found — importPageId accepts the staging import_pages.id OR the composed CMS page id; list the run with imports.get to see both",
+          "import page not found — importPageId accepts the staging import_pages.id, the composed CMS page id, OR (for a directly-built #278 page) a built page whose slug matches a crawled source page; list the run with imports.get to see the source pages and slugs",
       });
     }
     if (!row.accepted_page_id) {
