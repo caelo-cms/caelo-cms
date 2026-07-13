@@ -1,0 +1,89 @@
+name: Integration branch
+
+# Keeps a throwaway `integration` branch equal to `main` + every open,
+# non-draft PR head merged on top, so there is always ONE runnable branch
+# carrying the latest combined state without hand-merging. The branch is
+# force-pushed on every rebuild and is NEVER merged back into main — each
+# PR still reaches main only through its own review + required checks.
+#
+# Loud-failure contract (CLAUDE.md §2): a PR head that does not merge
+# cleanly is reported in the job summary and as a warning annotation,
+# never silently dropped, so a conflicting PR can't hide.
+
+on:
+  push:
+    branches:
+      - main
+      - "fix/**"
+      - "feat/**"
+  # Rebuild when a PR opens, updates, (un)drafts, or closes — the set of
+  # branches folded in changes on all of these.
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
+
+# One rebuild at a time; a newer push supersedes an in-flight one.
+concurrency:
+  group: integration-branch
+  cancel-in-progress: true
+
+permissions:
+  contents: write # force-push the integration branch
+  pull-requests: read # enumerate open PRs
+
+jobs:
+  rebuild-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # full history so arbitrary PR heads can merge
+
+      - name: Rebuild integration = main + open non-draft PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "caelo-integration-bot"
+          git config user.email "integration-bot@users.noreply.github.com"
+
+          git fetch origin main --quiet
+          git checkout -B integration origin/main
+
+          # Open, non-draft PRs targeting main, oldest first for stable order.
+          mapfile -t PRS < <(gh pr list --state open --base main \
+            --json number,headRefName,isDraft,title \
+            --jq 'sort_by(.number) | .[] | select(.isDraft == false)
+                  | "\(.number)\t\(.headRefName)\t\(.title)"')
+
+          merged=()
+          skipped=()
+          for row in "${PRS[@]:-}"; do
+            [ -z "$row" ] && continue
+            num=$(cut -f1 <<<"$row"); ref=$(cut -f2 <<<"$row"); title=$(cut -f3 <<<"$row")
+            git fetch origin "$ref" --quiet || { skipped+=("#$num $title — head branch fetch failed"); continue; }
+            if git merge --no-edit "origin/$ref" >/dev/null 2>&1; then
+              merged+=("#$num $title")
+            else
+              git merge --abort || true
+              skipped+=("#$num $title — merge conflict against the combined set")
+            fi
+          done
+
+          git push --force origin integration
+
+          {
+            echo "## Integration branch rebuilt"
+            echo ""
+            echo "\`integration\` = \`main\` + ${#merged[@]} PR(s):"
+            for m in "${merged[@]:-}"; do [ -n "$m" ] && echo "- ✅ $m"; done
+            if [ "${#skipped[@]}" -gt 0 ]; then
+              echo ""
+              echo "### ⚠️ Not included (${#skipped[@]}) — resolve before relying on \`integration\`:"
+              for s in "${skipped[@]}"; do [ -n "$s" ] && echo "- ❌ $s"; done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Loud annotation for each excluded PR — visible on the run header.
+          for s in "${skipped[@]:-}"; do
+            [ -n "$s" ] && echo "::warning title=Excluded from integration branch::$s"
+          done
