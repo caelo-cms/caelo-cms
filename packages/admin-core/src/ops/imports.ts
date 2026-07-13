@@ -1312,6 +1312,9 @@ export const composeFromImportRunOp = defineOperation({
     .strict(),
   output: z.object({
     themeTokensApplied: z.number().int(),
+    /** Run #8 — crawled vars the theme layer refused, loud + verbatim
+     *  (`theme-token-skipped-nonfont-typography:<token>=<value>`). */
+    tokenNotes: z.array(z.string()),
     /** issue #247 — where the applied theme values came from:
      *  'sampled' = computed-style ground truth (extractor as extras),
      *  'extractor' = inline-CSS fallback only, 'none' = no tokens. */
@@ -1499,11 +1502,20 @@ export const composeFromImportRunOp = defineOperation({
     // be reverted like any other theme edit. Pre-v0.11 wrote a flat
     // structured_sets row at `theme/site`; the new primitive carries
     // DTCG-shaped jsonb.
+    // Run #8 — loud skip notes for crawled vars the theme layer must
+    // refuse (numeric "font families" et al). Surfaced in the compose
+    // output so the AI relays them instead of the deploy failing later.
+    const tokenNotes: string[] = [];
     if (aggregatedTokens.length > 0) {
       const set: Record<string, unknown> = {};
       for (const t of aggregatedTokens) {
         const prepared = prepareLegacyAggregatedToken(t);
-        if (prepared) set[prepared.canonicalPath] = prepared.value;
+        if (prepared === null) continue;
+        if ("skipNote" in prepared) {
+          tokenNotes.push(prepared.skipNote);
+          continue;
+        }
+        set[prepared.canonicalPath] = prepared.value;
       }
       if (Object.keys(set).length > 0) {
         const r = await updateThemeTokensOp.handler(ctx, { set }, tx);
@@ -1883,7 +1895,8 @@ export const composeFromImportRunOp = defineOperation({
     });
 
     return ok({
-      themeTokensApplied: aggregatedTokens.length,
+      themeTokensApplied: aggregatedTokens.length - tokenNotes.length,
+      tokenNotes,
       designTokenSource,
       layoutId,
       templateId,
@@ -1929,11 +1942,28 @@ function isDimensionValue(v: string): boolean {
   return t === "0" || /^-?\d+(\.\d+)?(px|rem|em|%|vh|vw|ch|pt)$/.test(t);
 }
 
+/**
+ * True when a crawled value could plausibly be a font-family stack.
+ * Rejects values whose PRIMARY entry (first comma segment, unquoted) is
+ * numeric-only with an optional CSS unit — `13px`, `1.5`, `700`, `42px`.
+ * Those are font SIZES / WEIGHTS / line-heights, and a "family" like
+ * `13px` later fails the deploy hard with `theme-font-unresolvable:13px`
+ * (run #8 live-hit: WordPress `--wp--preset--font-size--*` vars).
+ */
+export function isPlausibleFontFamilyValue(value: string): boolean {
+  const primary = (value.split(",")[0] ?? "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .trim();
+  if (primary === "") return false;
+  return !/^-?\d+(\.\d+)?[a-z%]*$/i.test(primary);
+}
+
 export function prepareLegacyAggregatedToken(t: {
   token: string;
   value: string;
   scope?: string;
-}): { canonicalPath: string; value: unknown } | null {
+}): { canonicalPath: string; value: unknown } | { skipNote: string } | null {
   // Determine category + basename. Order: explicit scope → name
   // keywords → value shape. The old tail defaulted every leftover to
   // `spacing`, which fed crawled junk vars into the wrong category —
@@ -1958,6 +1988,17 @@ export function prepareLegacyAggregatedToken(t: {
   // into the DTCG composite shape. v0.11.0 leaves the existing
   // shadow tokens untouched.
   if (category === "shadow") return null;
+
+  // Run #8 live-hit: WordPress `--wp--preset--font-size--*` vars carry
+  // "font" in the NAME but a bare dimension as the VALUE ("13px"). The
+  // typography envelope below would register that as a font FAMILY, and
+  // the generator's font resolver then fails the whole deploy with
+  // `theme-font-unresolvable:13px`. Numeric-only values can never be a
+  // family — skip LOUDLY (the caller relays the note) instead of
+  // registering a token the deploy is guaranteed to choke on.
+  if (category === "typography" && !isPlausibleFontFamilyValue(t.value)) {
+    return { skipNote: `theme-token-skipped-nonfont-typography:${t.token}=${t.value}` };
+  }
 
   // Strip the leading `<category>-` (or scope-prefixed) name so
   // `color-primary` becomes `primary`.

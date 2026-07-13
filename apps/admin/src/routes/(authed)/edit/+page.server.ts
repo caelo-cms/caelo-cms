@@ -650,10 +650,11 @@ export const actions: Actions = {
    * v0.7.0 — /edit's split-button Stage path. One click does the full
    * "show me 1:1 what production would see" loop:
    *
-   *   1. chat.merge_to_main — promote every branch-snapshot to main
-   *      live tables, WITHOUT closing the chat (no published_at stamp,
-   *      no lock release). Safe to call repeatedly as the operator
-   *      iterates; each call re-promotes whatever's currently latest.
+   *   1. chat.merge_to_main (deferConsume) — promote every branch-
+   *      snapshot to main live tables, WITHOUT closing the chat (no
+   *      published_at stamp, no lock release) and WITHOUT consuming the
+   *      branch (no last_staged_at stamp yet). Safe to call repeatedly;
+   *      each call re-promotes whatever's currently latest.
    *   2. deploy.trigger(staging) — full-site rebuild against the now-
    *      merged main state. Filtering staging deploys to changedPageIds
    *      would defeat the "1:1 preview" promise: chrome (header/footer)
@@ -663,6 +664,18 @@ export const actions: Actions = {
    *      with the fewest gotchas. Selective filtering is the production
    *      Publish path (?/publishToProduction) where minutes matter more
    *      than precision.
+   *   3. chat.finalize_stage — ONLY when the build succeeded: stamp
+   *      last_staged_at (to the merge timestamp) + release locks, which
+   *      is what resets the pending counter and swaps Stage for the
+   *      publish-only toolbar.
+   *
+   * Run #8 R6 (issue #262): pre-fix, step 1 consumed the branch
+   * up-front, so a FAILED staging build left the chat with no pending
+   * changes, no Stage button, and no retry path — the branch was spent
+   * on a build that never shipped. The generator is a subprocess on its
+   * own DB connection (it can only see committed state), so the merge
+   * itself cannot share a tx with the build; the consumption markers
+   * are the part that must wait for build success, and now they do.
    *
    * Returns `{ staged: { previewUrl, ... } }` so the same toast/iframe-
    * reload pattern as ?/stage works unchanged.
@@ -678,6 +691,7 @@ export const actions: Actions = {
 
     const merged = await execute(registry, adapter, locals.ctx, "chat.merge_to_main", {
       chatSessionId,
+      deferConsume: true,
     });
     if (!merged.ok) {
       // issue #262 — stderr breadcrumb (same rationale as setPageStatus
@@ -698,12 +712,33 @@ export const actions: Actions = {
       // (`require is not defined`), the tx rolled back (so not even a
       // failed deploy_runs row existed), and nothing was logged. Keep
       // this breadcrumb so a Stage failure is ALWAYS visible in stderr
-      // even when the UI feedback is missed.
+      // even when the UI feedback is missed. chat.finalize_stage is
+      // deliberately NOT called on this path — the branch stays
+      // pending + Stage stays retryable (run #8 R6).
       console.error("[stageAndDeployStaging] deploy.trigger failed", {
         chatSessionId,
         error: stagingDeploy.error,
       });
       return fail(500, { error: `Staging build failed: ${describeError(stagingDeploy.error)}` });
+    }
+
+    const mergedSummaryValue = merged.value as { entityCount: number; mergedAt: string };
+    const finalized = await execute(registry, adapter, locals.ctx, "chat.finalize_stage", {
+      chatSessionId,
+      stagedAt: mergedSummaryValue.mergedAt,
+    });
+    if (!finalized.ok) {
+      // The build shipped but the consumption markers didn't land; the
+      // pending counter will still show the changes. Retrying Stage is
+      // safe (merge is idempotent), so surface that instead of claiming
+      // success with a UI that contradicts it.
+      console.error("[stageAndDeployStaging] chat.finalize_stage failed", {
+        chatSessionId,
+        error: finalized.error,
+      });
+      return fail(500, {
+        error: `Staging deployed but the stage could not be finalized — click Stage again: ${describeError(finalized.error)}`,
+      });
     }
 
     const summary = stagingDeploy.value as {
@@ -735,7 +770,6 @@ export const actions: Actions = {
       previewUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
     }
 
-    const mergedSummary = merged.value as { entityCount: number };
     return {
       staged: {
         pageId,
@@ -743,7 +777,7 @@ export const actions: Actions = {
         fileCount: summary.fileCount,
         buildId: summary.buildId,
         previewUrl,
-        mergedEntityCount: mergedSummary.entityCount,
+        mergedEntityCount: mergedSummaryValue.entityCount,
       },
     };
   },

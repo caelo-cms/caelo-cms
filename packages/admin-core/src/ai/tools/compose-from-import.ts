@@ -71,6 +71,7 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
       redirectsCreated: number;
       chromeBound: string[];
       chromeNotes: string[];
+      tokenNotes: string[];
     };
     const clusterList = Object.entries(v.templatesByCluster)
       .map(([k, id]) => `${k}→${id.slice(0, 8)}`)
@@ -91,6 +92,11 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
           : "",
         v.chromeNotes.length > 0
           ? `Chrome notes (surface these to the operator, do not work around them silently): ${v.chromeNotes.join(", ")}.`
+          : "",
+        // Run #8 — crawled vars the theme layer refused (e.g. WP preset
+        // font SIZES that are not font families). Loud, never silent.
+        v.tokenNotes.length > 0
+          ? `Theme-token skips (crawled values the theme layer refused — relay to the operator, do not re-add them): ${v.tokenNotes.join(", ")}.`
           : "",
         v.designInventory
           ? `Original design fact base (issue #195 — use it for your theme decisions, then verify with the stored screenshots):\n${v.designInventory}`
