@@ -34,7 +34,7 @@ export const appendPageLogOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: pageLogAppendInputSchema,
-  output: z.object({ entryId: z.string() }),
+  output: z.object({ entryId: z.string().uuid() }),
   handler: async (ctx, input, tx) => {
     // Fail loud (CLAUDE.md §2 no-fallbacks): logging against a non-existent
     // page is a caller bug (stale/guessed id), not something to swallow.
@@ -68,6 +68,18 @@ export const appendPageLogOp = defineOperation({
       RETURNING id::text AS id
     `)) as unknown as Array<{ id: string }>;
 
+    const entryId = rows[0]?.id;
+    // Fail loud (CLAUDE.md §2 no-fallbacks): a RETURNING with no row means the
+    // insert did not write. Erroring BEFORE the audit avoids recording a
+    // success for a phantom row and handing the caller an unusable id.
+    if (!entryId) {
+      return err({
+        kind: "HandlerError",
+        operation: "page_log.append",
+        message: `page_log insert returned no id for page ${input.pageId} — the entry was not written; retry.`,
+      });
+    }
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -77,7 +89,7 @@ export const appendPageLogOp = defineOperation({
       resultSummary: `page ${input.pageId}: ${input.entryKind}`,
     });
 
-    return ok({ entryId: rows[0]?.id ?? "" });
+    return ok({ entryId });
   },
 });
 
@@ -119,24 +131,52 @@ export const listPageLogOp = defineOperation({
       created_at: string | Date;
     }>;
 
-    const entries: PageLogEntry[] = rows.map((r) => ({
-      id: r.id,
-      pageId: r.page_id,
-      chatSessionId: r.chat_session_id,
-      actorKind: r.actor_kind as PageLogEntry["actorKind"],
-      entryKind: r.entry_kind as PageLogEntry["entryKind"],
-      summary: r.summary,
-      // jsonb columns read back parsed already under bun-postgres; a string
-      // only appears on the (unused) double-encoded legacy path.
-      detail:
-        r.detail === null || r.detail === undefined
-          ? null
-          : ((typeof r.detail === "string" ? JSON.parse(r.detail) : r.detail) as Record<
-              string,
-              unknown
-            >),
-      createdAt: toIsoRequired(r.created_at, "created_at"),
-    }));
+    // The Query API does not validate op OUTPUTS, so a drifted enum, a
+    // corrupt jsonb detail, or a non-ISO timestamp would otherwise leak to
+    // the AI as a malformed context block (or throw a generic error). Parse
+    // each row against the shared schema and fail loud, pointing at the row.
+    const entries: PageLogEntry[] = [];
+    for (const r of rows) {
+      let detail: Record<string, unknown> | null;
+      if (r.detail === null || r.detail === undefined) {
+        detail = null;
+      } else if (typeof r.detail === "string") {
+        // bun-postgres returns jsonb already parsed; a string only appears on
+        // the double-encoded legacy path. Parse explicitly so a corrupt value
+        // becomes a clear error, not an unhandled throw.
+        try {
+          detail = JSON.parse(r.detail) as Record<string, unknown>;
+        } catch {
+          return err({
+            kind: "HandlerError",
+            operation: "page_log.list",
+            message: `page_edit_log row ${r.id} has a jsonb detail that is not valid JSON — the stored value is corrupt.`,
+          });
+        }
+      } else {
+        detail = r.detail as Record<string, unknown>;
+      }
+
+      const parsed = pageLogEntrySchema.safeParse({
+        id: r.id,
+        pageId: r.page_id,
+        chatSessionId: r.chat_session_id,
+        actorKind: r.actor_kind,
+        entryKind: r.entry_kind,
+        summary: r.summary,
+        detail,
+        createdAt: toIsoRequired(r.created_at, "created_at"),
+      });
+      if (!parsed.success) {
+        const fields = parsed.error.issues.map((i) => i.path.join(".")).join(", ");
+        return err({
+          kind: "HandlerError",
+          operation: "page_log.list",
+          message: `page_edit_log row ${r.id} does not match the expected shape (${fields}) — likely schema drift.`,
+        });
+      }
+      entries.push(parsed.data);
+    }
 
     return ok({ entries });
   },

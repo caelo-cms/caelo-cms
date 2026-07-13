@@ -69,7 +69,11 @@ export const pageLogEntrySchema = z
     entryKind: pageLogEntryKindSchema,
     summary: z.string(),
     detail: pageLogDetailSchema.nullable(),
-    createdAt: z.string(),
+    // ISO datetime, not just any string: the value is `created_at` sliced to a
+    // date and rendered into the AI context block — a real contract catches
+    // drift (a raw pg timestamp, a number) at the op boundary instead of
+    // producing a garbled `## Page log` line.
+    createdAt: z.string().datetime(),
   })
   .strict();
 export type PageLogEntry = z.infer<typeof pageLogEntrySchema>;
@@ -113,7 +117,7 @@ export function formatPageLogBlock(entries: readonly PageLogEntry[]): string | n
     lines.push(`- [${e.entryKind}] ${summary} (${who}, ${when})`);
   }
   if (entries.length > MAX_ENTRIES) {
-    lines.push(`- ...and ${entries.length - MAX_ENTRIES} older entr(y/ies).`);
+    lines.push(`- ...and ${entries.length - MAX_ENTRIES} older entries.`);
   }
   return lines.join("\n");
 }

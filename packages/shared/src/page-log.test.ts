@@ -113,7 +113,7 @@ describe("formatPageLogBlock", () => {
     );
     const block = formatPageLogBlock(many) as string;
     // 8 shown + a truncation notice line.
-    expect(block).toContain("older entr");
+    expect(block).toContain("older entries");
     expect((block.match(/^- \[/gm) ?? []).length).toBe(8);
     expect(Buffer.byteLength(block, "utf8")).toBeLessThan(2048);
   });
