@@ -55,51 +55,39 @@ import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const EXCLUDED_FOR_CHILD = new Set(["spawn_subagent", "spawn_subagents"]);
+
+/**
+ * issue #268 — total spend ceiling across a whole `spawn_subagents`
+ * batch. Once the running sum of the settled children's `ai_calls`
+ * exceeds this, the orchestrator stops STARTING the remaining specs
+ * (they resolve as `batch-aborted`) so a runaway migration can't blow
+ * the budget by the width of the pool. Distinct from each spec's own
+ * per-spawn `maxCostMicrocents` (which caps ONE child). $2.00 default.
+ */
 const SUBAGENT_BATCH_CAP_MICROCENTS = Number(
   process.env.SUBAGENT_BATCH_CAP_MICROCENTS ?? "200000000", // $2.00 default
 );
-const SUBAGENT_MAX_PARALLEL = Number(process.env.SUBAGENT_MAX_PARALLEL ?? "8");
-/**
- * P10.5 #2 — bounded concurrency. With 8 parallel subagents each
- * making 5 provider calls, naive `Promise.all` floods Anthropic's tier
- * limits and gets 429-thrashed. The semaphore caps simultaneous
- * SUBAGENT INVOCATIONS (each subagent's own provider calls run
- * sequentially inside its chat-runner loop). Defaults to 4; configurable.
- */
-const SUBAGENT_PARALLEL_API_LIMIT = Number(process.env.SUBAGENT_PARALLEL_API_LIMIT ?? "4");
 
 /**
- * Tiny p-limit-style semaphore. Avoids a dependency for ~20 LOC.
+ * issue #268 — max subagents run CONCURRENTLY within one
+ * `spawn_subagents` call. A 30-page migration submits its pages as
+ * disjoint specs in one call; the orchestrator keeps at most this many
+ * child turns in flight at once and drains the rest as slots free up.
+ * The cap exists because each child fans out its own provider calls —
+ * an unbounded `Promise.all` over 30 children floods the provider's
+ * tier limits and gets 429-thrashed. Default 6 (issue #268 target band
+ * 5-8); env-tunable.
  */
-function createSemaphore(max: number): (fn: () => Promise<unknown>) => Promise<unknown> {
-  let active = 0;
-  const queue: Array<() => void> = [];
-  const acquire = (): Promise<void> =>
-    new Promise<void>((resolve) => {
-      const tryAcquire = (): void => {
-        if (active < max) {
-          active += 1;
-          resolve();
-        } else {
-          queue.push(tryAcquire);
-        }
-      };
-      tryAcquire();
-    });
-  const release = (): void => {
-    active -= 1;
-    const next = queue.shift();
-    next?.();
-  };
-  return async (fn) => {
-    await acquire();
-    try {
-      return await fn();
-    } finally {
-      release();
-    }
-  };
-}
+const SUBAGENT_MAX_PARALLEL = Number(process.env.SUBAGENT_MAX_PARALLEL ?? "6");
+
+/**
+ * issue #268 — max specs accepted in ONE `spawn_subagents` call. Larger
+ * than the concurrency cap on purpose: the caller hands the whole
+ * disjoint page set in one call and the pool (bounded by
+ * `SUBAGENT_MAX_PARALLEL`) drains it, so a 30-page migration is one tool
+ * call, not five. Env-tunable.
+ */
+const SUBAGENT_MAX_BATCH = Number(process.env.SUBAGENT_MAX_BATCH ?? "32");
 
 /**
  * Run #10 D2 — the per-shape payload sketch for the submit_result
@@ -132,7 +120,14 @@ function submitInstructionFor(shape: SpawnSubagentToolInput["expectedReturnShape
  * are result-channel failures after the automatic nudge retry;
  * `spawn-error` is plumbing (session create, stream threw).
  */
-type SubagentErrorKind = "spawn-error" | "child-error" | "empty-result" | "shape-mismatch";
+type SubagentErrorKind =
+  | "spawn-error"
+  | "child-error"
+  | "empty-result"
+  | "shape-mismatch"
+  // issue #268 — this spec was never started: the batch had already
+  // spent past `batchMaxCostMicrocents` when its pool slot came up.
+  | "batch-aborted";
 
 interface SubagentInvocationResult {
   role: string;
@@ -540,6 +535,147 @@ async function runOneSubagent(
   };
 }
 
+/** issue #268 — one n-of-m tick the batch orchestrator hands its caller. */
+export interface SubagentBatchProgress {
+  /** Specs settled so far (run OR budget-aborted). */
+  finished: number;
+  /** Total specs in the batch. */
+  total: number;
+  /** Specs that actually invoked a child turn (excludes budget-aborted). */
+  ran: number;
+  /** Running sum of settled children's rolled-up cost. */
+  totalCostMicrocents: number;
+  /** Role of the spec that just settled. */
+  lastRole: string;
+  /** True once the running cost tripped the batch cap and later specs are skipped. */
+  batchAborted: boolean;
+}
+
+/** issue #268 — the batch orchestrator's return: ordered results + roll-up. */
+export interface SubagentBatchOutcome {
+  /** One result per input spec, in input order. */
+  results: SubagentInvocationResult[];
+  /** Sum of every settled child's rolled-up `ai_calls` cost. */
+  totalCostMicrocents: number;
+  /** True when at least one spec was skipped because the batch cap was hit. */
+  batchAborted: boolean;
+  /** Count of specs that actually ran (invoked a child turn). */
+  ran: number;
+}
+
+/**
+ * The synthetic result for a spec that never started because the batch
+ * had already spent past its cap. Zero cost, zero duration — it did no
+ * work. AI-actionable message (CLAUDE.md §11): tells the parent exactly
+ * how to recover (smaller batch, or raise the cap).
+ */
+function batchAbortedResult(
+  spec: SpawnSubagentToolInput,
+  spentMicrocents: number,
+  capMicrocents: number,
+): SubagentInvocationResult {
+  return {
+    role: spec.role,
+    status: "errored",
+    resultJson: null,
+    costMicrocents: 0,
+    durationMs: 0,
+    subagentChatSessionId: "",
+    errorKind: "batch-aborted",
+    errorMessage:
+      `not started: the batch had already spent $${(spentMicrocents / 1e8).toFixed(4)} ` +
+      `(cap $${(capMicrocents / 1e8).toFixed(4)}) when this subagent's turn came up. ` +
+      "Recovery: re-run this page in a fresh, SMALLER spawn_subagents batch, or raise " +
+      "SUBAGENT_BATCH_CAP_MICROCENTS if the higher spend is expected.",
+  };
+}
+
+/**
+ * issue #268 — the concurrency + budget core of `spawn_subagents`,
+ * factored out of the tool handler so it is unit-testable with a mock
+ * `runSpawn` (no chat-runner, no DB, no provider). Runs `specs` through
+ * a bounded worker pool:
+ *
+ *   - **Concurrency:** at most `maxParallel` child turns are in flight at
+ *     once. `Promise.all` over N children would flood the provider; the
+ *     pool caps it and drains the queue as slots free up.
+ *   - **Budget abort (in-flight, not post-hoc):** each worker checks the
+ *     running cost BEFORE it starts the next spec. Once the batch total
+ *     exceeds `batchMaxCostMicrocents`, remaining specs resolve as
+ *     `batch-aborted` WITHOUT running — so the batch can overshoot the
+ *     cap by at most the cost of the children already in flight when the
+ *     line was crossed, never by the full width of the untouched queue.
+ *   - **Progress:** `onProgress` fires once per settled spec with the
+ *     n-of-m counts + running cost, so the caller can stream live ticks.
+ *
+ * Results are returned in input order regardless of completion order.
+ *
+ * @param specs        the batch (already length-validated by the caller).
+ * @param runSpawn     runs ONE subagent; the real one is `runOneSubagent`,
+ *                     tests pass a mock that records max-in-flight / cost.
+ * @param opts.maxParallel            max simultaneous in-flight spawns.
+ * @param opts.batchMaxCostMicrocents batch-wide spend ceiling.
+ * @param opts.onProgress            per-settlement n-of-m callback.
+ */
+export async function runSubagentBatch(
+  specs: readonly SpawnSubagentToolInput[],
+  runSpawn: (spec: SpawnSubagentToolInput, index: number) => Promise<SubagentInvocationResult>,
+  opts: {
+    maxParallel: number;
+    batchMaxCostMicrocents: number;
+    onProgress?: (progress: SubagentBatchProgress) => void;
+  },
+): Promise<SubagentBatchOutcome> {
+  const total = specs.length;
+  const results = new Array<SubagentInvocationResult>(total);
+  let runningCostMicrocents = 0;
+  let finished = 0;
+  let ran = 0;
+  let batchAborted = false;
+  // Claimed synchronously (no await between read and increment) so two
+  // workers never grab the same index — JS's single-threaded loop makes
+  // this the whole mutual-exclusion story; no lock needed.
+  let cursor = 0;
+
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= total) return;
+      const spec = specs[index] as SpawnSubagentToolInput;
+
+      if (runningCostMicrocents > opts.batchMaxCostMicrocents) {
+        batchAborted = true;
+        results[index] = batchAbortedResult(
+          spec,
+          runningCostMicrocents,
+          opts.batchMaxCostMicrocents,
+        );
+      } else {
+        const result = await runSpawn(spec, index);
+        runningCostMicrocents += result.costMicrocents;
+        ran += 1;
+        results[index] = result;
+      }
+
+      finished += 1;
+      opts.onProgress?.({
+        finished,
+        total,
+        ran,
+        totalCostMicrocents: runningCostMicrocents,
+        lastRole: spec.role,
+        batchAborted,
+      });
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(opts.maxParallel, total));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return { results, totalCostMicrocents: runningCostMicrocents, batchAborted, ran };
+}
+
 function summarize(results: SubagentInvocationResult[]): string {
   const lines: string[] = [];
   for (const r of results) {
@@ -643,10 +779,17 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
 export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInput> = {
   name: "spawn_subagents",
   description:
-    "Spawn MULTIPLE subagents in parallel. Each subagent gets its own context window + auto-engaged skill (matcher fires inside each subagent based on its task wording). All subagents run concurrently; this tool BLOCKS until all finish. " +
-    "Use this when a task benefits from multiple angles in parallel — e.g. drafting an article and validating it via QA + legal + brand-voice review (3 parallel verdicts), or auditing a structure via a current-state auditor + a fresh-proposal generator (2 parallel angles). " +
-    "Returns ONE bundled tool result with each subagent's parsed verdict + cost + duration, keeping the prompt-cache prefix clean. Each subagent starts FRESH (self-contained task required) and gets the full catalogue minus the spawn tools unless narrowed via allowedToolNames. " +
-    "Cap: 8 parallel subagents per call. Each subagent has its own per-spawn cost cap (default $0.50) + timeout (default 60s); the batch overall is capped at $2.00 unless overridden via env. " +
+    "Spawn MULTIPLE subagents that run CONCURRENTLY. Each gets its own context window + auto-engaged skill (matcher fires inside each subagent based on its task wording). This tool BLOCKS until all finish and returns ONE bundled result. " +
+    "Use this when work splits into independent parcels that can run at the same time — e.g. drafting an article and validating it via QA + legal + brand-voice review (3 parallel verdicts), or the big one: a site migration where each of N pages gets its OWN per-page AI pass, all in flight together instead of one-at-a-time. " +
+    "Returns ONE bundled tool result with each subagent's parsed result + cost + duration + a batch cost roll-up, keeping the prompt-cache prefix clean. Each subagent starts FRESH (self-contained task required) and gets the full catalogue minus the spawn tools unless narrowed via allowedToolNames. " +
+    // issue #268 — disjoint-work contract. All siblings write to the
+    // SAME shared preview branch and the entity-lock system keys on the
+    // branch's session, so siblings do NOT lock each other out (they all
+    // resolve to the parent session and are all permitted). Per-sibling
+    // sub-leasing is the #264 lease work, not this PR — so for now
+    // disjointness is the caller's contract, with no lock backstop.
+    "DISJOINT-WORK CONTRACT (MANDATORY for WRITE batches): the subagents run at the same time on the SAME preview branch. They do NOT lock each other out — the entity lock is per-branch, and all siblings share this chat's branch — so two subagents writing the SAME module is a silent lost update (last writer wins), not a clean error. Therefore each spec MUST target a DISJOINT set of entities: give each subagent its own page (or its own non-overlapping page batch), and put any shared chrome (header/footer/nav) in exactly ONE dedicated spec. Never let two siblings touch the same module/page. " +
+    `Concurrency: up to ${SUBAGENT_MAX_BATCH} specs per call; at most ${SUBAGENT_MAX_PARALLEL} run at once (the rest queue and drain as slots free). Each subagent has its own per-spawn cost cap (default $0.50) + timeout (default 60s). The BATCH as a whole is capped at $2.00 (env-tunable): once the running spend crosses it, not-yet-started subagents are skipped (reported as \`batch-aborted\`) so a runaway fan-out can't blow the budget. Live n-of-m progress ("3 of 8 done") streams to the operator while the batch runs. ` +
     // v0.2.68 / run #10 D2 — same return-shape guidance as
     // spawn_subagent: results arrive via each child's submit_result
     // tool call (instruction auto-appended to each task).
@@ -665,7 +808,9 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
       subagents: {
         type: "array",
         minItems: 1,
-        maxItems: SUBAGENT_MAX_PARALLEL,
+        // issue #268 — accept the whole disjoint set in one call; the
+        // orchestrator caps how many run AT ONCE (SUBAGENT_MAX_PARALLEL).
+        maxItems: SUBAGENT_MAX_BATCH,
         items: {
           type: "object",
           additionalProperties: false,
@@ -696,30 +841,53 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    if (input.subagents.length > SUBAGENT_MAX_PARALLEL) {
+    if (input.subagents.length > SUBAGENT_MAX_BATCH) {
       return {
         ok: false,
-        content: `spawn_subagents max parallel = ${SUBAGENT_MAX_PARALLEL}; got ${input.subagents.length}`,
+        content: `spawn_subagents accepts at most ${SUBAGENT_MAX_BATCH} subagents per call; got ${input.subagents.length}. Split the work into multiple calls.`,
       };
     }
     const batchId = crypto.randomUUID();
-    // P10.5 #2 — bounded concurrency. SUBAGENT_PARALLEL_API_LIMIT caps
-    // simultaneous in-flight subagents. Specs queue past it; queue
-    // drains as earlier ones complete.
-    const limit = createSemaphore(SUBAGENT_PARALLEL_API_LIMIT);
-    const results = (await Promise.all(
-      input.subagents.map((spec) => limit(() => runOneSubagent(spec, ctx, toolCtx, batchId, null))),
-    )) as SubagentInvocationResult[];
-    const totalCost = results.reduce((sum, r) => sum + r.costMicrocents, 0);
-    if (totalCost > SUBAGENT_BATCH_CAP_MICROCENTS) {
-      return {
-        ok: false,
-        content:
-          `spawn_subagents batch cost cap exceeded: spent ${totalCost} / cap ${SUBAGENT_BATCH_CAP_MICROCENTS}\n\n` +
-          summarize(results),
-      };
-    }
-    const allCompleted = results.every((r) => r.status === "completed");
-    return { ok: allCompleted, content: summarize(results) };
+
+    // issue #268 — the concurrency + in-flight-budget core lives in
+    // runSubagentBatch (unit-tested with a mock spawn). Here we wire the
+    // real spawn, cap concurrency at SUBAGENT_MAX_PARALLEL, cap total
+    // spend at SUBAGENT_BATCH_CAP_MICROCENTS, and stream n-of-m progress
+    // to the operator as each sibling settles.
+    const outcome = await runSubagentBatch(
+      input.subagents,
+      (spec) => runOneSubagent(spec, ctx, toolCtx, batchId, null),
+      {
+        maxParallel: SUBAGENT_MAX_PARALLEL,
+        batchMaxCostMicrocents: SUBAGENT_BATCH_CAP_MICROCENTS,
+        onProgress: (p) => {
+          toolCtx.pushClientEvent?.({
+            kind: "subagent-batch-progress",
+            batchId,
+            finished: p.finished,
+            total: p.total,
+            ran: p.ran,
+            totalCostMicrocents: p.totalCostMicrocents,
+            lastRole: p.lastRole,
+            batchAborted: p.batchAborted,
+          });
+        },
+      },
+    );
+
+    // issue #268 — cost roll-up across the parallel batch is ALWAYS
+    // reported (not only on cap-exceed), so the parent sees the batch's
+    // total spend + n-of-m completion in its tool result.
+    const rollUp =
+      `\n\n---\nBatch: ${outcome.ran} of ${input.subagents.length} subagents ran · ` +
+      `total cost $${(outcome.totalCostMicrocents / 1e8).toFixed(4)} / cap $${(SUBAGENT_BATCH_CAP_MICROCENTS / 1e8).toFixed(4)}` +
+      (outcome.batchAborted
+        ? `\nBATCH COST CAP HIT — later subagents were skipped (see batch-aborted rows above). ` +
+          "Re-run the skipped pages in a fresh batch, or raise SUBAGENT_BATCH_CAP_MICROCENTS."
+        : "");
+
+    const allCompleted =
+      !outcome.batchAborted && outcome.results.every((r) => r.status === "completed");
+    return { ok: allCompleted, content: summarize(outcome.results) + rollUp };
   },
 };
