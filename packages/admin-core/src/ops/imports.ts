@@ -1038,6 +1038,14 @@ const noteCategory = z.enum([
  * issue #197 — record findings made while rebuilding a page. Bulk per
  * page (§11: one call, one tx); notes APPEND to what's already there
  * so multiple passes (content rebuild, then a11y sweep) accumulate.
+ *
+ * issue #263 — `importPageId` accepts EITHER the `import_pages.id`
+ * (staging row) OR the `import_pages.accepted_page_id` (the composed
+ * CMS `pages.id` that accept_page / compose_from_run minted). Both are
+ * uuids and the AI naturally reaches for the CMS page id it just built,
+ * so the handler resolves both against one row inside the tx rather
+ * than forcing the model to round-trip through imports.get (CLAUDE.md
+ * §1A — enrich the surface so the AI doesn't have to ask).
  */
 export const addImportPageNotesOp = defineOperation({
   name: "imports.add_page_notes",
@@ -1045,6 +1053,9 @@ export const addImportPageNotesOp = defineOperation({
   database: "cms_admin",
   input: z
     .object({
+      /** Either the staging `import_pages.id` OR the composed CMS
+       *  `pages.id` (== `import_pages.accepted_page_id`); the handler
+       *  resolves either form to the owning import_pages row (#263). */
       importPageId: z.string().uuid(),
       notes: z
         .array(
@@ -1063,23 +1074,38 @@ export const addImportPageNotesOp = defineOperation({
     .strict(),
   output: z.object({ totalNotes: z.number().int() }),
   handler: async (ctx, input, tx) => {
+    // #263 — resolve the given id against BOTH the staging id and the
+    // accepted CMS page id, preferring a direct import_pages.id match
+    // (the `ORDER BY … DESC` pins it first when a value could somehow
+    // match both id spaces). One statement keeps the resolve + write in
+    // the same tx.
     const rows = (await tx.execute(sql`
-      UPDATE import_pages
+      WITH target AS (
+        SELECT id
+        FROM import_pages
+        WHERE id = ${input.importPageId}::uuid
+           OR accepted_page_id = ${input.importPageId}::uuid
+        ORDER BY (id = ${input.importPageId}::uuid) DESC
+        LIMIT 1
+      )
+      UPDATE import_pages ip
       -- (::text)::jsonb, not ::jsonb: bun-postgres infers a jsonb
       -- parameter type from the direct cast and double-encodes the
       -- string, turning the array into ONE jsonb string element.
       -- Forcing the text path keeps it an array. (INSERT targets
       -- coerce via the column type and don't hit this.)
-      SET notes = COALESCE(notes, '[]'::jsonb) || (${JSON.stringify(input.notes)}::text)::jsonb
-      WHERE id = ${input.importPageId}::uuid
-      RETURNING jsonb_array_length(notes) AS total
+      SET notes = COALESCE(ip.notes, '[]'::jsonb) || (${JSON.stringify(input.notes)}::text)::jsonb
+      FROM target
+      WHERE ip.id = target.id
+      RETURNING jsonb_array_length(ip.notes) AS total
     `)) as unknown as Array<{ total: number }>;
     const r = rows[0];
     if (!r) {
       return err({
         kind: "HandlerError",
         operation: "imports.add_page_notes",
-        message: "import page not found — list the run with imports.get for valid page ids",
+        message:
+          "import page not found — importPageId accepts either the staging import_pages.id OR the composed CMS page id (import_pages.accepted_page_id); list the run with imports.get to see both ids per page",
       });
     }
     await recordAudit(tx, {

@@ -35,14 +35,19 @@ type NotesInput = z.infer<typeof notesInput>;
 export const addImportPageNotesTool: ToolDefinitionWithHandler<NotesInput> = {
   name: "add_import_page_notes",
   description:
-    "Record findings you made while rebuilding an imported page: typos (fix obvious ones in the rebuilt content and set applied: true), dead links, missing image alt texts, thin content, improvement ideas (applied: false — the operator decides). BATCH all of a page's notes in ONE call. These feed the migration report the operator receives at the end — record honestly, including what you could not fix.",
+    "Record findings you made while rebuilding an imported page: typos (fix obvious ones in the rebuilt content and set applied: true), dead links, missing image alt texts, thin content, improvement ideas (applied: false — the operator decides). BATCH all of a page's notes in ONE call. `importPageId` accepts EITHER id: the staging import_pages id OR the composed CMS page id you just built (from accept_page / compose_from_run) — both work, no need to look one up from the other. These feed the migration report the operator receives at the end — record honestly, including what you could not fix.",
   schema: notesInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["importPageId", "notes"],
     properties: {
-      importPageId: { type: "string", format: "uuid" },
+      importPageId: {
+        type: "string",
+        format: "uuid",
+        description:
+          "The page to attach notes to — pass EITHER the staging import_pages id OR the composed CMS page id (accepted_page_id). Both resolve to the same import page.",
+      },
       notes: {
         type: "array",
         minItems: 1,
