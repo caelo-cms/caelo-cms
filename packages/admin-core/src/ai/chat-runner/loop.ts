@@ -393,7 +393,7 @@ export async function* runToolLoop(
 
     if (aborted()) break;
     lastLoopStop = loopStop;
-    if (loopStop !== "tool_use" || accumulatedToolCalls.length === 0) {
+    if (accumulatedToolCalls.length === 0) {
       // issue #106 — passive-turn recovery. The model sometimes describes
       // the change it's about to make and ends the turn WITHOUT emitting the
       // tool call. Nudge once and re-run; the nudge rides in-memory only.
@@ -426,6 +426,22 @@ export async function* runToolLoop(
     // Run #8 live-edit CI — image follow-ups collect here and append
     // AFTER the loop, so every tool result of the turn precedes the
     // first user (image) message (see dispatchToolCall's parameter doc).
+    //
+    // Pairing invariant — dispatch EVERY accumulated tool call, whatever
+    // the stop_reason. The tool_use blocks that reached `accumulatedToolCalls`
+    // are complete (the stream parser only emits a tool-call on
+    // content_block_stop), so a non-`tool_use` stop (`max_tokens` when
+    // adaptive thinking burned the output budget right after emitting the
+    // tool_use, or a stray `end_turn`) does NOT mean the call was partial —
+    // it means the model stopped generating AFTER committing to the call.
+    // Pre-fix this branch was gated on `loopStop === "tool_use"`, so a
+    // `max_tokens` stop skipped dispatch entirely: the assistant tool_use
+    // was persisted but no tool_result was, leaving a dangling pair that
+    // Anthropic 400s on every subsequent turn ("tool results are missing for
+    // tool calls …") — a permanent, reload-proof brick (the offer_choices
+    // free-text-answer wedge). Dispatching here keeps the persisted
+    // transcript pairing-complete so a free-text OR click answer next turn
+    // replays a valid history.
     const deferredImageMessages: ChatMessageInput[] = [];
     for (const call of accumulatedToolCalls) {
       if (aborted()) break;
@@ -448,6 +464,15 @@ export async function* runToolLoop(
       );
     }
     messages.push(...deferredImageMessages);
+
+    // Only loop again when the model actually signalled it wants to keep
+    // going with a `tool_use` stop. Any other stop_reason ends the turn now
+    // that the pairing is complete — the tool results ARE persisted, and the
+    // cap-exhaustion notice below fires only on a trailing `tool_use` stop.
+    if (loopStop !== "tool_use") {
+      stopReason = loopStop;
+      break;
+    }
   }
 
   // v0.3.20 — cap-exhaustion notice. If the for-loop ran to completion AND
