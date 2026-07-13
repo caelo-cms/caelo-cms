@@ -27,6 +27,7 @@ import { execute } from "@caelo-cms/query-api";
 import type { ChatAttachment, ExecutionContext } from "@caelo-cms/shared";
 import { getMediaStorage } from "../../media/storage.js";
 import type { ChatMessageInput, ContentPart, ImagePart } from "../provider.js";
+import { repairToolCallPairing } from "./history-repair.js";
 import type { AccumulatedToolCall } from "./types.js";
 
 /** Provider payload guard — a base64-inflated 20MB PNG breaks calls. */
@@ -145,5 +146,21 @@ export async function buildProviderHistory(
       ...(parts.length > 0 ? { additionalContent: parts } : {}),
     });
   }
-  return out;
+  // Run #10 D1 — tool_use/tool_result pairing repair. Heals sessions
+  // already poisoned by orphan tool_results (the `approval-<uuid>` ack
+  // class) or unanswered tool_uses, which otherwise 400 every future
+  // turn permanently. See history-repair.ts for the fault taxonomy.
+  const repaired = repairToolCallPairing(out);
+  if (
+    repaired.droppedToolResultIds.length > 0 ||
+    repaired.strippedToolCallIds.length > 0 ||
+    repaired.droppedEmptyAssistantMessages > 0
+  ) {
+    console.error("[chat-runner] history-repaired", {
+      droppedToolResultIds: repaired.droppedToolResultIds,
+      strippedToolCallIds: repaired.strippedToolCallIds,
+      droppedEmptyAssistantMessages: repaired.droppedEmptyAssistantMessages,
+    });
+  }
+  return repaired.messages;
 }

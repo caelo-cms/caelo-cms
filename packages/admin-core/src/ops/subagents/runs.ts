@@ -141,7 +141,7 @@ export const finishSubagentRunOp = defineOperation({
     await tx.execute(sql`
       UPDATE subagent_runs
       SET status = ${input.status},
-          result_json = ${input.resultJson === null ? null : JSON.stringify(input.resultJson)}::jsonb,
+          result_json = (${input.resultJson === null ? null : JSON.stringify(input.resultJson)}::text)::jsonb,
           cost_microcents = ${input.costMicrocents}::bigint,
           duration_ms = ${input.durationMs},
           error_message = ${input.errorMessage},

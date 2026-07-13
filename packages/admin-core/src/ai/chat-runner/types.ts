@@ -11,6 +11,7 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
 import type { AIProvider } from "../provider.js";
+import type { SubagentResultCapture } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
 
 export type ClientEvent =
@@ -113,6 +114,16 @@ export interface ChatRunnerOptions {
    * provider call instead of post-hoc.
    */
   readonly costCapMicrocents?: number;
+  /**
+   * Run #10 D2 — set ONLY when this turn runs a subagent child session
+   * (the spawn handler threads it through `spawnChildChatTurn`). Its
+   * presence does two things: (a) the `submit_result` tool joins the
+   * child's catalogue (it is excluded everywhere else), and (b) the
+   * tool's handler validates payloads against `expectedShape` and
+   * delivers the validated value via `submit`, replacing free-text
+   * result parsing as the canonical child→parent channel.
+   */
+  readonly subagentResultCapture?: SubagentResultCapture;
   /**
    * v0.2.53 — Per-turn output ceiling. SSE handler reads this from
    * `getActiveProvider().maxOutputTokens` (set on `ai_providers.config`

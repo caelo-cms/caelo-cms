@@ -220,6 +220,85 @@ export type ParseSuccess =
 export type ParseResult = ParseSuccess | { ok: false; error: string };
 
 /**
+ * Run #10 D2 — validate an ALREADY-PARSED value against the requested
+ * return shape. This is the structured half of the result channel: the
+ * `submit_result` tool hands the payload straight from the tool-call
+ * arguments (already JSON — no fence-stripping, no brace-balancing),
+ * so the "response is not valid JSON" failure class cannot occur.
+ * `parseSubagentResult` (final-text fallback) delegates here after its
+ * JSON extraction.
+ *
+ * For `freeform`, accepts `{text: "..."}` OR a bare string (wrapped as
+ * `{text}`) so the model can pass its prose directly.
+ */
+export function validateSubagentResultValue(
+  value: unknown,
+  shape: ExpectedReturnShape,
+): ParseResult {
+  // v0.2.67 — when the schema rejects, include the actual top-level
+  // keys the subagent returned so the parent AI can tell whether the
+  // subagent ignored the schema entirely (returned freeform text under
+  // a different shape) vs. got close but mistyped a single field.
+  const observedKeys =
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? Object.keys(value as Record<string, unknown>)
+      : [];
+  const observedSummary =
+    observedKeys.length > 0
+      ? ` got keys: [${observedKeys.slice(0, 8).join(", ")}]`
+      : ` got: ${typeof value} (${Array.isArray(value) ? "array" : "scalar"})`;
+  const issueSummary = (issues: readonly z.ZodIssue[]): string =>
+    issues
+      .slice(0, 3)
+      .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+      .join("; ");
+
+  if (shape === "freeform") {
+    if (typeof value === "string") {
+      if (value.trim().length === 0) return { ok: false, error: "subagent returned empty text" };
+      return { ok: true, shape: "freeform", value: { text: value.trim() } };
+    }
+    const validated = freeformReturnShape.safeParse(value);
+    if (!validated.success) {
+      return {
+        ok: false,
+        error: `freeform shape mismatch (expected {text: string} or a plain string):${observedSummary}; ${issueSummary(validated.error.issues)}`,
+      };
+    }
+    return { ok: true, shape: "freeform", value: validated.data };
+  }
+  if (shape === "verdict") {
+    const validated = verdictReturnShape.safeParse(value);
+    if (!validated.success) {
+      return {
+        ok: false,
+        error: `verdict shape mismatch (expected {pass: boolean, issues: array, suggestions?: array}):${observedSummary}; ${issueSummary(validated.error.issues)}`,
+      };
+    }
+    return { ok: true, shape: "verdict", value: validated.data };
+  }
+  if (shape === "rebuild") {
+    const validated = rebuildReturnShape.safeParse(value);
+    if (!validated.success) {
+      return {
+        ok: false,
+        error: `rebuild shape mismatch (expected {pages: [{pageId?, slug?, status: "rebuilt"|"skipped"|"failed", notes?}], contentNotes?: string[], skipped?: [{item, reason}], summary?: string}):${observedSummary}; ${issueSummary(validated.error.issues)}`,
+      };
+    }
+    return { ok: true, shape: "rebuild", value: validated.data };
+  }
+  // tree
+  const validated = treeReturnShape.safeParse(value);
+  if (!validated.success) {
+    return {
+      ok: false,
+      error: `tree shape mismatch (expected {tree: array, rationale?: string}):${observedSummary}; ${issueSummary(validated.error.issues)}`,
+    };
+  }
+  return { ok: true, shape: "tree", value: validated.data };
+}
+
+/**
  * Pull JSON out of the subagent's final assistant text and validate
  * against the requested shape. On schema mismatch, returns
  * `{ok: false, error}` so the caller can decide whether to retry.
@@ -227,6 +306,10 @@ export type ParseResult = ParseSuccess | { ok: false; error: string };
  * For `freeform`, accepts EITHER `{text: "..."}` JSON or raw text;
  * raw text is wrapped as `{text: rawText}` so the caller always gets
  * the same shape.
+ *
+ * Run #10 D2 — this is now the FALLBACK channel; the canonical path is
+ * the child calling `submit_result`, whose payload is validated by
+ * `validateSubagentResultValue` without any text extraction.
  */
 export function parseSubagentResult(text: string, shape: ExpectedReturnShape): ParseResult {
   if (shape === "freeform") {
@@ -253,54 +336,5 @@ export function parseSubagentResult(text: string, shape: ExpectedReturnShape): P
       error: `subagent response is not valid JSON: ${(e as Error).message}; first 200 chars: ${stripped.slice(0, 200)}`,
     };
   }
-  // v0.2.67 — when the schema rejects, include the actual top-level
-  // keys the subagent returned so the parent AI can tell whether the
-  // subagent ignored the schema entirely (returned freeform text under
-  // a different shape) vs. got close but mistyped a single field.
-  const observedKeys =
-    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? Object.keys(parsed as Record<string, unknown>)
-      : [];
-  const observedSummary =
-    observedKeys.length > 0
-      ? ` got keys: [${observedKeys.slice(0, 8).join(", ")}]`
-      : ` got: ${typeof parsed} (${Array.isArray(parsed) ? "array" : "scalar"})`;
-  if (shape === "verdict") {
-    const validated = verdictReturnShape.safeParse(parsed);
-    if (!validated.success) {
-      return {
-        ok: false,
-        error: `verdict shape mismatch (expected {pass: boolean, issues: array, suggestions?: array}):${observedSummary}; ${validated.error.issues
-          .slice(0, 3)
-          .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-          .join("; ")}`,
-      };
-    }
-    return { ok: true, shape: "verdict", value: validated.data };
-  }
-  if (shape === "rebuild") {
-    const validated = rebuildReturnShape.safeParse(parsed);
-    if (!validated.success) {
-      return {
-        ok: false,
-        error: `rebuild shape mismatch (expected {pages: [{pageId?, slug?, status: "rebuilt"|"skipped"|"failed", notes?}], contentNotes?: string[], skipped?: [{item, reason}], summary?: string}):${observedSummary}; ${validated.error.issues
-          .slice(0, 3)
-          .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-          .join("; ")}`,
-      };
-    }
-    return { ok: true, shape: "rebuild", value: validated.data };
-  }
-  // tree
-  const validated = treeReturnShape.safeParse(parsed);
-  if (!validated.success) {
-    return {
-      ok: false,
-      error: `tree shape mismatch (expected {tree: array, rationale?: string}):${observedSummary}; ${validated.error.issues
-        .slice(0, 3)
-        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-        .join("; ")}`,
-    };
-  }
-  return { ok: true, shape: "tree", value: validated.data };
+  return validateSubagentResultValue(parsed, shape);
 }

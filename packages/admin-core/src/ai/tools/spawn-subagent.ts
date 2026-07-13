@@ -24,10 +24,18 @@
  *   parent-authored task message — parent history is never inherited.
  *   Task briefs must therefore be self-contained (ids, ground-truth
  *   fetch instructions, return-shape contract).
- *   3. Reads the subagent's final assistant message via chat.get_session.
- *   4. Parses against the spec's expectedReturnShape.
+ *   3. Run #10 D2 — collects the child's result from its `submit_result`
+ *      tool call (structured channel, validated in the child's own loop
+ *      against the shared Zod shapes). The child's final assistant text
+ *      is only a legacy fallback; a child that neither submits nor
+ *      leaves parseable text gets ONE nudge turn, then a structured
+ *      failure.
+ *   4. Run #10 D2 — child provider/runtime errors (context limit, cost
+ *      cap, stream death) surface as a STRUCTURED `child-error` spawn
+ *      failure; they are never fed to the result parser (run #10 saw a
+ *      child's own context-limit error string parsed as its "output").
  *   5. Persists a subagent_runs metadata row.
- *   6. Returns the parsed result as the parent's tool_result.
+ *   6. Returns the validated result as the parent's tool_result.
  *
  * No special "subagent runtime." Same chat-runner code path. The skill
  * matcher inside the subagent engages whichever skill the task message
@@ -94,26 +102,37 @@ function createSemaphore(max: number): (fn: () => Promise<unknown>) => Promise<u
 }
 
 /**
- * Run #8 R2c — the return instruction restated for the empty-result retry
- * turn. Mirrors the RETURN-SHAPE CONTRACT wording in the tool description
- * so the retry nudge tells the child exactly what to emit.
+ * Run #10 D2 — the per-shape payload sketch for the submit_result
+ * instruction. Appended to every task brief (and restated on the nudge
+ * turn) so the child knows its result is collected ONLY via the
+ * `submit_result` tool, never from trailing free text.
  */
-function returnInstructionFor(shape: SpawnSubagentToolInput["expectedReturnShape"]): string {
-  switch (shape) {
-    case "verdict":
-      return "Return ONLY JSON: {pass: boolean, issues: (string|object)[], suggestions?: string[]}.";
-    case "tree":
-      return "Return ONLY JSON: {tree: any[], rationale?: string}.";
-    case "rebuild":
-      return (
-        "Return ONLY JSON: {pages: [{pageId?: uuid, slug?: string, " +
-        'status: "rebuilt"|"skipped"|"failed", notes?: string}], ' +
-        "contentNotes?: string[], skipped?: [{item: string, reason: string}], summary?: string}."
-      );
-    case "freeform":
-      return "Reply with your result as plain text.";
-  }
+function submitInstructionFor(shape: SpawnSubagentToolInput["expectedReturnShape"]): string {
+  const payload = {
+    verdict: '{"pass": boolean, "issues": (string|object)[], "suggestions"?: string[]}',
+    tree: '{"tree": any[], "rationale"?: string}',
+    rebuild:
+      '{"pages": [{"pageId"?: uuid, "slug"?: string, "status": "rebuilt"|"skipped"|"failed", "notes"?: string}], ' +
+      '"contentNotes"?: string[], "skipped"?: [{"item": string, "reason": string}], "summary"?: string}',
+    freeform: '{"text": string} (or a plain string)',
+  }[shape];
+  return (
+    "MANDATORY FINAL STEP: when your work is done, deliver your result by calling the `submit_result` tool " +
+    `EXACTLY ONCE with {"result": ${payload}}. ` +
+    "Your result is read ONLY from that tool call — plain text at the end of your turn is NOT collected. " +
+    "If submit_result rejects your payload, fix the named fields and call it again, then end your turn."
+  );
 }
+
+/**
+ * Run #10 D2 — structured failure classes for a spawn (CLAUDE.md §11:
+ * failure surfaces are AI-actionable). `child-error` is the child's own
+ * provider/runtime failure (context limit, cost cap, dead stream) —
+ * NEVER parseable-looking output; `empty-result` / `shape-mismatch`
+ * are result-channel failures after the automatic nudge retry;
+ * `spawn-error` is plumbing (session create, stream threw).
+ */
+type SubagentErrorKind = "spawn-error" | "child-error" | "empty-result" | "shape-mismatch";
 
 interface SubagentInvocationResult {
   role: string;
@@ -123,6 +142,8 @@ interface SubagentInvocationResult {
   durationMs: number;
   subagentChatSessionId: string;
   errorMessage?: string;
+  /** Run #10 D2 — which structured failure class an errored spawn belongs to. */
+  errorKind?: SubagentErrorKind;
 }
 
 async function runOneSubagent(
@@ -223,16 +244,34 @@ async function runOneSubagent(
   };
   const childHumanCtx = toolCtx.humanCtx;
 
+  // Run #10 D2 — the structured result channel. The child's
+  // submit_result tool validates its payload against the shared Zod
+  // shape IN the child's own loop (a mismatch bounces back as a failed
+  // tool result the child fixes without a parent round-trip); only
+  // validated values land here.
+  let submittedResult: unknown;
+  let resultSubmitted = false;
+  const subagentResultCapture = {
+    expectedShape: spec.expectedReturnShape,
+    submit: (value: unknown): void => {
+      submittedResult = value;
+      resultSubmitted = true;
+    },
+  };
+
   // Drives ONE chat-runner turn in the child session (per-spec timeout
   // via AbortController) and forwards the child's events to the parent's
-  // sink. A closure so the R2c empty-result retry below can send a
+  // sink. A closure so the submit-nudge retry below can send a
   // follow-up turn into the SAME session — context preserved, prompt
-  // cache warm — instead of re-spawning from scratch.
+  // cache warm — instead of re-spawning from scratch. Child `error`
+  // events are collected so a provider/runtime failure inside the child
+  // surfaces as a structured child-error, never as parseable output.
   const runChildTurn = async (
     content: string,
-  ): Promise<{ timedOut: boolean } | { error: string }> => {
+  ): Promise<{ timedOut: boolean; childErrors: string[] } | { error: string }> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
+    const childErrors: string[] = [];
     try {
       // `spawnChildChatTurn` presence was checked at the top of this function.
       const stream = toolCtx.spawnChildChatTurn?.({
@@ -246,9 +285,11 @@ async function runOneSubagent(
         aiCtx: childAiCtx,
         humanCtx: childHumanCtx,
         excludedToolNames: EXCLUDED_FOR_CHILD,
-        // issue #264 — per-spawn narrowing (hard filter, validated above).
+        // issue #264 — per-spawn narrowing (hard filter, validated
+        // above). Run #10 D2 — submit_result is unioned in so a
+        // narrowed child can still deliver its structured result.
         ...(spec.allowedToolNames && spec.allowedToolNames.length > 0
-          ? { allowedToolNames: new Set(spec.allowedToolNames) }
+          ? { allowedToolNames: new Set([...spec.allowedToolNames, "submit_result"]) }
           : {}),
         // issue #264 — the child works ON THE PARENT'S BRANCH so its
         // reads see the orchestrator's branched entities and its writes
@@ -256,6 +297,8 @@ async function runOneSubagent(
         ...(toolCtx.chatBranchId ? { chatBranchIdOverride: toolCtx.chatBranchId } : {}),
         // P10.5 #3 — pre-emptive cap inside the child's chat-runner.
         costCapMicrocents: spec.maxCostMicrocents,
+        // Run #10 D2 — enables submit_result in the child's catalogue.
+        subagentResultCapture,
         abortSignal: controller.signal,
       });
       if (!stream) return { error: "spawnChildChatTurn unavailable" };
@@ -267,9 +310,16 @@ async function runOneSubagent(
       // (depth-1 cap on observability for now).
       for await (const ev of stream as AsyncIterable<{ kind: string }>) {
         if (controller.signal.aborted) {
-          return { timedOut: true };
+          return { timedOut: true, childErrors };
         }
-        const inner = ev as { kind: string };
+        const inner = ev as { kind: string; message?: unknown };
+        // Run #10 D2 — an `error` event is the child's own failure
+        // (provider 4xx, context limit after compaction, cost cap,
+        // dead stream). Recorded so the spawn resolves as a structured
+        // child-error instead of parsing whatever text is left behind.
+        if (inner.kind === "error" && typeof inner.message === "string") {
+          childErrors.push(inner.message);
+        }
         if (inner.kind !== "subagent-event" && toolCtx.pushClientEvent) {
           toolCtx.pushClientEvent({
             kind: "subagent-event",
@@ -280,7 +330,7 @@ async function runOneSubagent(
           });
         }
       }
-      return { timedOut: false };
+      return { timedOut: false, childErrors };
     } catch (e) {
       return { error: (e as Error).message };
     } finally {
@@ -315,7 +365,10 @@ async function runOneSubagent(
     return "";
   };
 
-  const failErrored = async (message: string): Promise<SubagentInvocationResult> => {
+  const failErrored = async (
+    message: string,
+    errorKind: SubagentErrorKind,
+  ): Promise<SubagentInvocationResult> => {
     if (subagentRunId) {
       await execute(toolCtx.registry, toolCtx.adapter, ctx, "subagent_runs.finish", {
         id: subagentRunId,
@@ -323,7 +376,7 @@ async function runOneSubagent(
         resultJson: null,
         costMicrocents: 0,
         durationMs: Date.now() - startedAt,
-        errorMessage: message,
+        errorMessage: `${errorKind}: ${message}`,
       });
     }
     return {
@@ -334,44 +387,62 @@ async function runOneSubagent(
       durationMs: Date.now() - startedAt,
       subagentChatSessionId,
       errorMessage: message,
+      errorKind,
     };
   };
 
-  const firstTurn = await runChildTurn(spec.task);
+  // Run #10 D2 — the submit instruction is appended to EVERY task brief
+  // (not left to the parent's discretion): run #10 lost all 5 rebuild
+  // spawns to the free-text result channel.
+  const firstTurn = await runChildTurn(
+    `${spec.task}\n\n${submitInstructionFor(spec.expectedReturnShape)}`,
+  );
   if ("error" in firstTurn) {
-    return await failErrored(firstTurn.error);
+    return await failErrored(firstTurn.error, "spawn-error");
   }
   let timedOut = firstTurn.timedOut;
-  let finalText = await readFinalAssistantText();
+  let childErrors = firstTurn.childErrors;
 
-  // Run #8 R2c — one AUTOMATIC retry when the child completed but its
-  // final assistant message is empty (run #8: "errored — subagent
-  // returned empty text · 4137ms" with no recovery). The retry is a
-  // follow-up turn in the same session, so the child keeps its context
-  // and just has to emit the result it already produced the work for.
-  if (!timedOut && finalText.trim().length === 0) {
-    console.error("[spawn_subagent] empty-final-text; retrying once", {
-      role: spec.role,
-      subagentChatSessionId,
-      expectedReturnShape: spec.expectedReturnShape,
-    });
-    const retryTurn = await runChildTurn(
-      `Your previous reply was empty — you MUST reply with your result now. ${returnInstructionFor(spec.expectedReturnShape)}`,
-    );
-    if ("error" in retryTurn) {
-      return await failErrored(retryTurn.error);
-    }
-    timedOut = retryTurn.timedOut;
-    finalText = await readFinalAssistantText();
-    if (!timedOut && finalText.trim().length === 0) {
-      // Structured, orchestrator-actionable error (CLAUDE.md §11:
-      // failure surfaces carry the next step).
-      return await failErrored(
-        "subagent returned empty text (after one automatic retry). " +
-          "Recovery: re-spawn with a SMALLER, more explicit task (fewer pages per batch), " +
-          'or with expectedReturnShape: "freeform" and the return instruction restated verbatim at the end of the task.',
+  // Run #10 D2 (supersedes run #8 R2c) — one AUTOMATIC nudge turn when
+  // the child finished cleanly but delivered no result: no
+  // submit_result call AND no final text that parses under the
+  // expected shape. The retry is a follow-up turn in the same session,
+  // so the child keeps its context and just has to submit the result
+  // it already produced the work for. Erroring/timed-out children are
+  // NOT nudged — their failure is surfaced structurally below.
+  if (!timedOut && !resultSubmitted && childErrors.length === 0) {
+    const firstText = await readFinalAssistantText();
+    const firstParse =
+      firstText.trim().length > 0 ? parseSubagentResult(firstText, spec.expectedReturnShape) : null;
+    if (!firstParse?.ok) {
+      console.error("[spawn_subagent] no submit_result; nudging once", {
+        role: spec.role,
+        subagentChatSessionId,
+        expectedReturnShape: spec.expectedReturnShape,
+        finalTextChars: firstText.length,
+      });
+      const retryTurn = await runChildTurn(
+        `You have not delivered your result yet — call submit_result NOW. ${submitInstructionFor(spec.expectedReturnShape)}`,
       );
+      if ("error" in retryTurn) {
+        return await failErrored(retryTurn.error, "spawn-error");
+      }
+      timedOut = retryTurn.timedOut;
+      childErrors = retryTurn.childErrors;
     }
+  }
+
+  // Run #10 D2 — a child that failed (provider error, context limit,
+  // cost cap, dead stream) without submitting is a CHILD-ERROR: the
+  // parent gets the child's own error message in a structured failure,
+  // never as something that looks like output to parse.
+  if (!resultSubmitted && childErrors.length > 0) {
+    return await failErrored(
+      `the subagent's session failed before delivering a result — ${childErrors[childErrors.length - 1]}. ` +
+        "This is the child's provider/runtime failure, not its output. Recovery: re-spawn with a " +
+        "SMALLER task (fewer pages per batch) and/or a higher timeoutMs / maxCostMicrocents.",
+      "child-error",
+    );
   }
 
   if (timedOut) {
@@ -396,18 +467,36 @@ async function runOneSubagent(
     };
   }
 
-  // 5. Parse against the spec's expectedReturnShape. On failure, return
-  //    the raw text under freeform shape for parent visibility.
-  const parsed = parseSubagentResult(finalText, spec.expectedReturnShape);
+  // 5. Resolve the result: the submit_result channel wins (already
+  //    validated in the child's loop); final-text parsing remains as
+  //    the legacy fallback for a child that answered in text despite
+  //    the instruction.
   let resultJson: unknown;
   let status: "completed" | "errored" = "completed";
   let errorMessage: string | undefined;
-  if (parsed.ok) {
-    resultJson = parsed.value;
+  let errorKind: SubagentErrorKind | undefined;
+  if (resultSubmitted) {
+    resultJson = submittedResult;
   } else {
-    status = "errored";
-    errorMessage = parsed.error;
-    resultJson = { raw: finalText.slice(0, 4000) };
+    const finalText = await readFinalAssistantText();
+    if (finalText.trim().length === 0) {
+      status = "errored";
+      errorKind = "empty-result";
+      errorMessage =
+        "subagent neither called submit_result nor returned final text (after one automatic nudge). " +
+        "Recovery: re-spawn with a SMALLER, more explicit task (fewer pages per batch).";
+      resultJson = null;
+    } else {
+      const parsed = parseSubagentResult(finalText, spec.expectedReturnShape);
+      if (parsed.ok) {
+        resultJson = parsed.value;
+      } else {
+        status = "errored";
+        errorKind = "shape-mismatch";
+        errorMessage = parsed.error;
+        resultJson = { raw: finalText.slice(0, 4000) };
+      }
+    }
   }
 
   // 6. Roll up the subagent's accumulated cost from ai_calls.
@@ -424,6 +513,7 @@ async function runOneSubagent(
 
   if (costMicrocents > spec.maxCostMicrocents) {
     status = "errored";
+    errorKind = "child-error";
     errorMessage = `subagent exceeded cost cap: spent ${costMicrocents} / cap ${spec.maxCostMicrocents}`;
   }
 
@@ -434,7 +524,7 @@ async function runOneSubagent(
       resultJson: resultJson as Record<string, unknown>,
       costMicrocents,
       durationMs: Date.now() - startedAt,
-      errorMessage: errorMessage ?? null,
+      errorMessage: errorMessage ? `${errorKind ? `${errorKind}: ` : ""}${errorMessage}` : null,
     });
   }
 
@@ -446,6 +536,7 @@ async function runOneSubagent(
     durationMs: Date.now() - startedAt,
     subagentChatSessionId,
     ...(errorMessage ? { errorMessage } : {}),
+    ...(errorKind ? { errorKind } : {}),
   };
 }
 
@@ -466,14 +557,18 @@ function summarize(results: SubagentInvocationResult[]): string {
       // it. The shape-mismatch case sets resultJson = {raw: <first
       // 4k of text>} per the parse-failure path; rendering it lets
       // the parent see what the subagent actually said.
-      const header = `## ${r.role} (${r.status}${r.errorMessage ? ` — ${r.errorMessage}` : ""} · ${r.durationMs}ms · $${cost})`;
+      // Run #10 D2 — the errorKind tag makes the failure class
+      // machine-distinguishable for the parent: `child-error` means
+      // the CHILD's session failed (its message is a provider/runtime
+      // error, not output), vs. the result-channel classes.
+      const header = `## ${r.role} (${r.status}${r.errorKind ? ` [${r.errorKind}]` : ""}${r.errorMessage ? ` — ${r.errorMessage}` : ""} · ${r.durationMs}ms · $${cost})`;
       const rawText =
         r.resultJson && typeof r.resultJson === "object" && "raw" in r.resultJson
           ? String((r.resultJson as { raw: unknown }).raw ?? "")
           : "";
       const hint =
-        r.status === "errored" && r.errorMessage?.includes("shape mismatch")
-          ? 'Recovery: re-spawn this subagent with `expectedReturnShape: "freeform"` to read the raw output, OR adjust the subagent\'s `task` prompt to make the schema fit (e.g. include `Return JSON: {pass: boolean, issues: string[]}` verbatim in the task), OR surface the raw output below directly to the user.'
+        r.status === "errored" && r.errorKind === "shape-mismatch"
+          ? 'Recovery: re-spawn this subagent with `expectedReturnShape: "freeform"` to read the raw output, OR adjust the subagent\'s `task` prompt to make the schema fit, OR surface the raw output below directly to the user.'
           : null;
       const sections: string[] = [header];
       if (rawText) {
@@ -497,16 +592,16 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
     "The subagent starts with a FRESH context — it knows NOTHING about this chat. Its `task` must be fully self-contained (ids, facts, fetch instructions, return-shape contract). It works on THIS chat's preview branch, so its edits show up in this chat's preview/publish/undo. " +
     "TOOL ACCESS: by default the subagent gets the full tool catalogue minus the spawn tools (it CAN write). Pass `allowedToolNames` (AI tool names, e.g. list_pages, edit_module) to narrow it, e.g. to read-only tools for review tasks. " +
     "DO NOT use for one-line edits or quick lookups — use a regular tool. Subagents earn their cost when work is multi-step + needs an isolated reasoning context. " +
-    // v0.2.68 — explicit return-shape schemas. Pre-v0.2.68 the AI saw
-    // only the enum names and had to guess the JSON shape; mismatches
-    // landed as cryptic "shape mismatch" errors. Each shape now has
-    // its required JSON form right in the description.
-    "RETURN-SHAPE CONTRACT — when you set `expectedReturnShape`, you MUST include the matching JSON instruction VERBATIM in the `task` field so the subagent returns the right structure: " +
-    '"verdict" → subagent must return JSON: {pass: boolean, issues: (string|object)[], suggestions?: string[]}. Use for QA / audit / review tasks ("does X meet Y criteria?"). ' +
-    '"tree" → subagent must return JSON: {tree: any[], rationale?: string}. Use for hierarchical-structure tasks (sitemap, nav tree, IA outline). ' +
-    '"rebuild" → subagent must return JSON: {pages: [{pageId?: uuid, slug?: string, status: "rebuilt"|"skipped"|"failed", notes?: string}], contentNotes?: string[], skipped?: [{item: string, reason: string}], summary?: string}. Use for migration page-rebuild tasks — the compact per-page summary is all that enters your context. ' +
-    '"freeform" → subagent returns either {text: "..."} JSON or raw text (auto-wrapped). Use when the response is prose / narrative without a fixed structure. ' +
-    "When in doubt, pick `freeform` — the parse can't fail. Pick `verdict`, `tree`, or `rebuild` only when you've explicitly told the subagent to return that shape in the task prompt.",
+    // v0.2.68 — explicit return-shape schemas. Run #10 D2 — the child
+    // now delivers its result via a `submit_result` tool call (the
+    // submit instruction is appended to the task automatically); the
+    // shapes below describe the payload it must submit.
+    "RETURN-SHAPE CONTRACT — the subagent delivers its result by calling its `submit_result` tool with a payload matching `expectedReturnShape` (the submit instruction is appended to your task automatically; your task should still explain the fields' semantics): " +
+    '"verdict" → {pass: boolean, issues: (string|object)[], suggestions?: string[]}. Use for QA / audit / review tasks ("does X meet Y criteria?"). ' +
+    '"tree" → {tree: any[], rationale?: string}. Use for hierarchical-structure tasks (sitemap, nav tree, IA outline). ' +
+    '"rebuild" → {pages: [{pageId?: uuid, slug?: string, status: "rebuilt"|"skipped"|"failed", notes?: string}], contentNotes?: string[], skipped?: [{item: string, reason: string}], summary?: string}. Use for migration page-rebuild tasks — the compact per-page summary is all that enters your context. ' +
+    '"freeform" → {text: "..."} or plain text (auto-wrapped). Use when the response is prose / narrative without a fixed structure. ' +
+    "When in doubt, pick `freeform` — validation can't fail. Pick `verdict`, `tree`, or `rebuild` when you want a machine-checkable structure back.",
   schema: spawnSubagentToolInput,
   inputSchema: {
     type: "object",
@@ -519,7 +614,7 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
         minLength: 1,
         maxLength: 8000,
         description:
-          'When using expectedReturnShape="verdict" or "tree", include the JSON-shape instruction verbatim in the task (e.g. "Return JSON: {pass: boolean, issues: string[]}") — the subagent has no other way to know what to emit.',
+          "Self-contained brief (ids, facts, fetch instructions). The submit_result instruction for the chosen expectedReturnShape is appended automatically — describe the CONTENT you want in each result field.",
       },
       allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
       expectedReturnShape: {
@@ -528,7 +623,7 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
         // schema can never drift from what the validator accepts.
         enum: [...EXPECTED_RETURN_SHAPES],
         description:
-          "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or raw text. PICK FREEFORM unless you're explicitly instructing the subagent to emit verdict/tree/rebuild JSON.",
+          "Payload shape the subagent submits via submit_result: verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or plain text. PICK FREEFORM for prose results.",
       },
       maxCostMicrocents: { type: "integer", minimum: 0 },
       timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
@@ -552,8 +647,10 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
     "Use this when a task benefits from multiple angles in parallel — e.g. drafting an article and validating it via QA + legal + brand-voice review (3 parallel verdicts), or auditing a structure via a current-state auditor + a fresh-proposal generator (2 parallel angles). " +
     "Returns ONE bundled tool result with each subagent's parsed verdict + cost + duration, keeping the prompt-cache prefix clean. Each subagent starts FRESH (self-contained task required) and gets the full catalogue minus the spawn tools unless narrowed via allowedToolNames. " +
     "Cap: 8 parallel subagents per call. Each subagent has its own per-spawn cost cap (default $0.50) + timeout (default 60s); the batch overall is capped at $2.00 unless overridden via env. " +
-    // v0.2.68 — same return-shape guidance as spawn_subagent.
-    "RETURN-SHAPE CONTRACT (per subagent) — when you set `expectedReturnShape`, you MUST include the matching JSON instruction VERBATIM in that subagent's `task`: " +
+    // v0.2.68 / run #10 D2 — same return-shape guidance as
+    // spawn_subagent: results arrive via each child's submit_result
+    // tool call (instruction auto-appended to each task).
+    "RETURN-SHAPE CONTRACT (per subagent) — each subagent delivers its result via its `submit_result` tool, matching its `expectedReturnShape` (the submit instruction is appended to each task automatically): " +
     '"verdict" → {pass: boolean, issues: (string|object)[], suggestions?: string[]}; ' +
     '"tree" → {tree: any[], rationale?: string}; ' +
     '"rebuild" → {pages: [{pageId?, slug?, status: "rebuilt"|"skipped"|"failed", notes?}], contentNotes?: string[], skipped?: [{item, reason}], summary?: string}; ' +
@@ -580,7 +677,7 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
               minLength: 1,
               maxLength: 8000,
               description:
-                'When using expectedReturnShape="verdict" or "tree", include the JSON-shape instruction verbatim in the task (e.g. "Return JSON: {pass: boolean, issues: string[]}").',
+                "Self-contained brief (ids, facts, fetch instructions). The submit_result instruction for the chosen expectedReturnShape is appended automatically.",
             },
             allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
             expectedReturnShape: {
@@ -588,7 +685,7 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
               // Run #8 R2a — derived from the shared Zod enum (see above).
               enum: [...EXPECTED_RETURN_SHAPES],
               description:
-                "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or raw. PICK FREEFORM when not explicitly instructing the subagent to emit verdict/tree/rebuild JSON.",
+                "Payload shape the subagent submits via submit_result: verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or plain text. PICK FREEFORM for prose results.",
             },
             maxCostMicrocents: { type: "integer", minimum: 0 },
             timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
