@@ -74,14 +74,23 @@ export {
 } from "./safe-fetch.js";
 export {
   computePixelDiff,
+  computeStructuralDiff,
   createPlaywrightScreenshotter,
   type Screenshot,
   type Screenshotter,
 } from "./screenshot.js";
 export {
   computeDiffStatus,
+  computeFidelityStatus,
   type DiffResult,
   type DiffStatus,
+  FIDELITY_PASS_MAX,
+  FIDELITY_WARN_MAX,
+  type PageBand,
+  STRUCTURAL_DIFF_COLS,
+  STRUCTURAL_DIFF_ROWS,
+  type StructuralDiff,
+  structuralDiffFraction,
 } from "./screenshot-diff.js";
 export {
   discoverSitemapUrls,
