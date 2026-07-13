@@ -48,14 +48,14 @@ async function wipe(): Promise<void> {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM chat_sessions WHERE title LIKE 'run8-reads-%'`;
-      await tx`DELETE FROM pages WHERE slug = ${PAGE_SLUG}`;
+      await tx`DELETE FROM pages WHERE slug LIKE ${`${PAGE_SLUG}%`}`;
       // Both the explicit CI_SLUG row and any instance pages.set_modules
       // minted for the test modules (FK blocks the module delete otherwise).
       await tx`DELETE FROM content_instances
         WHERE slug = ${CI_SLUG}
            OR module_id IN (SELECT id FROM modules WHERE slug LIKE ${`${MODULE_SLUG}%`})`;
       await tx`DELETE FROM modules WHERE slug LIKE ${`${MODULE_SLUG}%`}`;
-      await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
+      await tx`DELETE FROM templates WHERE slug LIKE ${`${TPL_SLUG}%`}`;
     });
   } finally {
     await sql.end();
@@ -83,7 +83,7 @@ describe("run #8 R3 — branch-aware read ops", () => {
       slug: MODULE_SLUG,
       displayName: "M",
       html: "<div>{{title}}</div>",
-      fields: [{ name: "title", kind: "text" }],
+      fields: [{ name: "title", kind: "text", label: "Title" }],
     });
     if (!mod.ok) throw new Error(`mod: ${JSON.stringify(mod.error)}`);
     const moduleId = (mod.value as { moduleId: string }).moduleId;
@@ -171,7 +171,7 @@ describe("run #8 R3 — branch-aware read ops", () => {
       slug: `${MODULE_SLUG}-2`,
       displayName: "M2",
       html: "<div>published html</div>",
-      fields: [{ name: "headline", kind: "text" }],
+      fields: [{ name: "headline", kind: "text", label: "Headline" }],
     });
     if (!mod.ok) throw new Error(`mod2: ${JSON.stringify(mod.error)}`);
     const moduleId = (mod.value as { moduleId: string }).moduleId;
@@ -231,5 +231,65 @@ describe("run #8 R3 — branch-aware read ops", () => {
       .find((b) => b.blockName === "content")
       ?.modules.find((m) => m.moduleId === moduleId);
     expect(liveMod?.html).toBe("<div>published html</div>");
+  });
+
+  it("pages.render_preview renders a branched-CREATED page when the branch arrives as INPUT (the /edit iframe shape)", async () => {
+    // Run #8 live-edit CI regression: /edit/preview/<pageId>?branch=…
+    // calls render_preview with the OPERATOR's ctx (no chatBranchId)
+    // and the branch as input. Pre-fix, row visibility keyed off ctx
+    // only, so a page CREATED on the branch was invisible and the
+    // iframe (and the AI's screenshot capture riding on it) 404'd.
+    const tpl = await execute(registry, adapter, HUMAN, "templates.create", {
+      slug: `${TPL_SLUG}-pv`,
+      displayName: "T-preview",
+      html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
+      css: "",
+    });
+    if (!tpl.ok) throw new Error(`tpl-pv: ${JSON.stringify(tpl.error)}`);
+    const templateId = (tpl.value as { templateId: string }).templateId;
+    const blocks = await execute(registry, adapter, HUMAN, "template_blocks.set", {
+      templateId,
+      blocks: [{ name: "content", displayName: "Content", position: 0 }],
+    });
+    if (!blocks.ok) throw new Error(`blocks-pv: ${JSON.stringify(blocks.error)}`);
+
+    const session = await execute(registry, adapter, HUMAN, "chat.create_session", {
+      title: `${SESSION_TITLE}-preview`,
+    });
+    if (!session.ok) throw new Error("session");
+    const { chatBranchId } = session.value as { chatBranchId: string };
+
+    const aiCtx: ExecutionContext = {
+      actorId: "00000000-0000-0000-0000-000000000a1a",
+      actorKind: "ai",
+      requestId: "run8-reads-pv-ai",
+      chatBranchId,
+    };
+
+    // Branched CREATE — the pages row itself is tagged with the branch.
+    const page = await execute(registry, adapter, aiCtx, "pages.create", {
+      slug: `${PAGE_SLUG}-pv`,
+      locale: "en",
+      title: "Branched page",
+      templateId,
+      status: "draft",
+    });
+    if (!page.ok) throw new Error(`page-pv: ${JSON.stringify(page.error)}`);
+    const pageId = (page.value as { pageId: string }).pageId;
+
+    // The iframe shape: human ctx, branch as INPUT — must render.
+    const withBranch = await execute(registry, adapter, HUMAN, "pages.render_preview", {
+      pageId,
+      chatBranchId,
+    });
+    if (!withBranch.ok) throw new Error(`preview-pv: ${JSON.stringify(withBranch.error)}`);
+    expect((withBranch.value as { pageSlug: string }).pageSlug).toBe(`${PAGE_SLUG}-pv`);
+
+    // Branch isolation stays: without ANY branch (ctx or input) the
+    // branched-created page remains invisible.
+    const withoutBranch = await execute(registry, adapter, HUMAN, "pages.render_preview", {
+      pageId,
+    });
+    expect(withoutBranch.ok).toBe(false);
   });
 });
