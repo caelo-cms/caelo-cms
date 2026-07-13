@@ -20,6 +20,7 @@ import { err, ok, skillAutoEngagementHints } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 const proposalRow = z.object({
   id: z.string(),
@@ -132,8 +133,8 @@ export const proposeSkillOp = defineOperation({
       VALUES (
         ${ctx.actorId}::uuid, ${input.chatSessionId ?? null}, ${input.slug},
         ${input.displayName}, ${input.description}, ${input.body}, ${input.rationale},
-        ${JSON.stringify(input.allowlistedTools)}::jsonb,
-        ${JSON.stringify(input.hints)}::jsonb
+        ${jsonbParam(input.allowlistedTools)},
+        ${jsonbParam(input.hints)}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -260,7 +261,7 @@ export const reviewSkillProposalOp = defineOperation({
                             status, proposed_by)
         VALUES (
           ${proposal.slug}, ${proposal.display_name}, ${proposal.description},
-          ${proposal.body}, ${allowlist}::jsonb, ${hints}::jsonb,
+          ${proposal.body}, ${jsonbParam(allowlist)}, ${jsonbParam(hints)},
           'awaiting_activation', ${ctx.actorId}::uuid
         )
         ON CONFLICT (slug) DO UPDATE SET

@@ -22,6 +22,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { releaseChatLocks } from "../../locks.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 const pinnedElement = z
   .object({
@@ -496,7 +497,7 @@ export const setPinnedElementsOp = defineOperation({
   handler: async (ctx, input, tx) => {
     await tx.execute(sql`
       UPDATE chat_sessions
-      SET pinned_elements = ${JSON.stringify(input.pinnedElements)}::jsonb
+      SET pinned_elements = ${jsonbParam(input.pinnedElements)}
       WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
     `);
     return ok({});

@@ -19,6 +19,7 @@ import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared"
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -408,8 +409,8 @@ async function queueProposal(
         ${kind},
         ${ctx.actorId}::uuid,
         ${userId === null ? null : sql`${userId}::uuid`},
-        ${JSON.stringify(payload)}::jsonb,
-        ${JSON.stringify(preview)}::jsonb,
+        ${jsonbParam(payload)},
+        ${jsonbParam(preview)},
         'pending',
         ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
         ${payloadHash}

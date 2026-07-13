@@ -25,6 +25,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 const siteDefaultsRow = z.object({
   defaultLayoutId: z.string(),
@@ -247,9 +248,7 @@ export const setSiteIdentityOp = defineOperation({
       setClauses.push(sql`site_purpose = ${input.sitePurpose}`);
     }
     if (input.designBrief !== undefined) {
-      setClauses.push(
-        sql`design_brief = ${input.designBrief === null ? null : JSON.stringify(input.designBrief)}::jsonb`,
-      );
+      setClauses.push(sql`design_brief = ${jsonbParam(input.designBrief)}`);
     }
     setClauses.push(sql`updated_at = now()`);
     setClauses.push(sql`updated_by = ${ctx.actorId}::uuid`);

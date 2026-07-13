@@ -29,6 +29,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { jsonbParam } from "../../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -258,9 +259,9 @@ export const submitPluginOp = defineOperation({
         submitted_by
       ) VALUES (
         ${input.slug}, ${input.version}, 2, ${status},
-        ${JSON.stringify(input.manifest)}::jsonb,
+        ${jsonbParam(input.manifest)},
         ${input.source},
-        ${validationErrorsJson}::jsonb,
+        ${jsonbParam(validationErrorsJson)},
         ${ctx.actorId}::uuid
       )
       ON CONFLICT (slug) DO UPDATE SET
@@ -821,7 +822,7 @@ export const revalidatePluginOp = defineOperation({
     await tx.execute(sql`
       UPDATE plugins
       SET status = ${status},
-          validation_errors = ${JSON.stringify(validation.failures)}::jsonb,
+          validation_errors = ${jsonbParam(validation.failures)},
           updated_at = now()
       WHERE id = ${r.id}::uuid
     `);

@@ -23,6 +23,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { jsonbParam } from "../sql-helpers.js";
 import { withAudit } from "./_audit.js";
 import { mapRowToOutput, opError, toIso, toIsoRequired } from "./_helpers.js";
 import {
@@ -153,8 +154,8 @@ export const proposeDeployPromoteOp = defineOperation({
         VALUES (
           'promote',
           ${ctx.actorId}::uuid,
-          ${JSON.stringify(input)}::jsonb,
-          ${JSON.stringify(preview)}::jsonb,
+          ${jsonbParam(input)},
+          ${jsonbParam(preview)},
           'pending',
           ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
           ${payloadHash}
@@ -246,8 +247,8 @@ export const proposeDeployRollbackOp = defineOperation({
         VALUES (
           'rollback',
           ${ctx.actorId}::uuid,
-          ${JSON.stringify(input)}::jsonb,
-          ${JSON.stringify(preview)}::jsonb,
+          ${jsonbParam(input)},
+          ${jsonbParam(preview)},
           'pending',
           ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`},
           ${payloadHash}

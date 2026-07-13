@@ -60,3 +60,36 @@ export function buildWhere(predicates: readonly SQL[]): SQL {
   // typed as readonly without a cast.
   return sql`WHERE ${sql.join([...predicates], sql` AND `)}`;
 }
+
+/**
+ * Builds a jsonb value fragment that stores `value` as a structured jsonb
+ * object/array — NOT as a double-encoded JSON-string scalar.
+ *
+ * Why this exists (issue #68): bun's SQL adapter binds a JS string param under
+ * a `::jsonb` cast as a jsonb *string scalar*, so the naive idiom
+ * `sql`${JSON.stringify(obj)}::jsonb`` stores `"{\"a\":1}"` (jsonb_typeof =
+ * `string`), not `{"a":1}`. Reads that skip the `typeof === 'string'`
+ * compensation get a string back, and Postgres jsonb operators (`@>`, `#>`)
+ * match nothing. Routing the text through `::text` first — `(${s}::text)::jsonb`
+ * — makes Postgres parse the JSON, yielding the correct object/array. Every
+ * jsonb write in the ops layer MUST go through this helper; the lint test in
+ * `src/__tests__/jsonb-encoding.static.test.ts` fails the build if a raw
+ * `}::jsonb` write reappears.
+ *
+ * `null`/`undefined` bind SQL `NULL` (a genuine absent value), matching the
+ * prior `x === null ? null : JSON.stringify(x)` call sites. A string argument
+ * is treated as already-serialized JSON payload (e.g. a value read back from a
+ * jsonb column), not as a JSON string scalar — these columns never store bare
+ * string scalars by design.
+ *
+ * Example:
+ *   sql`UPDATE modules SET fields = ${jsonbParam(fields)} WHERE id = ${id}`
+ *   → SET fields = ($1::text)::jsonb  (fields stored as a jsonb array)
+ */
+export function jsonbParam(value: unknown): SQL {
+  if (value === null || value === undefined) {
+    return sql`NULL`;
+  }
+  const serialized = typeof value === "string" ? value : JSON.stringify(value);
+  return sql`(${serialized}::text)::jsonb`;
+}

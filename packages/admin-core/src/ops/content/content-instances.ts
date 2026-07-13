@@ -45,6 +45,7 @@ import {
   loadContentInstanceStateWithBranchOverlay,
   loadPageLayoutState,
 } from "../../snapshots/index.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 // ─── Row shape returned by reads ─────────────────────────────────────
 
@@ -623,7 +624,7 @@ export const createContentInstanceOp = defineOperation({
         ${input.slug ?? null},
         ${input.displayName ?? null},
         ${input.purpose ?? null},
-        ${valuesJson}::jsonb,
+        ${jsonbParam(valuesJson)},
         ${ctx.actorId}::uuid,
         ${ctx.chatBranchId ?? null}::uuid
       )
@@ -787,7 +788,7 @@ export const setContentInstanceValuesOp = defineOperation({
       const purposeSet = input.purpose !== undefined ? sql`, purpose = ${input.purpose}` : sql``;
       await tx.execute(sql`
         UPDATE content_instances
-        SET "values" = ${valuesJson}::jsonb,
+        SET "values" = ${jsonbParam(valuesJson)},
             version = ${nextVersion},
             updated_at = now(),
             updated_by = ${ctx.actorId}::uuid
@@ -1184,7 +1185,7 @@ export const forkPlacementContentOp = defineOperation({
         (module_id, "values", updated_by, chat_branch_id)
       VALUES (
         ${placement.module_id}::uuid,
-        ${valuesJson}::jsonb,
+        ${jsonbParam(valuesJson)},
         ${ctx.actorId}::uuid,
         ${ctx.chatBranchId ?? null}::uuid
       )

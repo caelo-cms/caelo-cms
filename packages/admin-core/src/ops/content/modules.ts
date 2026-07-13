@@ -27,7 +27,7 @@ import {
   loadModuleState,
   loadModuleStateWithBranchOverlay,
 } from "../../snapshots/index.js";
-import { buildPatchSet } from "../../sql-helpers.js";
+import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
 
 /**
@@ -372,7 +372,7 @@ export const createModuleOp = defineOperation({
         ${persistedHtml},
         ${input.css},
         ${input.js},
-        ${JSON.stringify(persistedFields)}::jsonb,
+        ${jsonbParam(persistedFields)},
         ${ctx.chatBranchId ?? null}::uuid
       )
       RETURNING id::text AS id
@@ -533,10 +533,7 @@ export const updateModuleOp = defineOperation({
         html: persistedHtml,
         css: input.css,
         js: input.js,
-        fields:
-          persistedFields !== undefined
-            ? sql`${JSON.stringify(persistedFields)}::jsonb`
-            : undefined,
+        fields: persistedFields !== undefined ? sql`${jsonbParam(persistedFields)}` : undefined,
       });
       await tx.execute(sql`
         UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid

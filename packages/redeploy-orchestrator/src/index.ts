@@ -420,7 +420,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
             await tx.execute(sql`
               UPDATE import_runs
-              SET crawl_state = ${JSON.stringify(cp)}::jsonb, heartbeat_at = now()
+              SET crawl_state = (${JSON.stringify(cp)}::text)::jsonb, heartbeat_at = now()
               WHERE id = ${claimedRunId}::uuid
             `);
           });
@@ -454,7 +454,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
         await tx.execute(sql`
           UPDATE import_runs
-          SET crawl_state = ${JSON.stringify({ errors: result.errors })}::jsonb,
+          SET crawl_state = (${JSON.stringify({ errors: result.errors })}::text)::jsonb,
               heartbeat_at = NULL
           WHERE id = ${claimedRunId}::uuid
         `);
