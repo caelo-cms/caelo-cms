@@ -15,7 +15,7 @@
 -- after, spawn_subagents on disjoint page sets, migrate_media, fidelity each)
 -- → NOT everything → FINISH (set_pages_status_many + stage). No blind upfront
 -- crawl, no "build all at once?" question. Cost gate (check_run_budget /
--- set_cost_ceiling) and log_page_edit are cross-cutting.
+-- set_migration_budget) and log_page_edit are cross-cutting.
 --
 -- FULL-BODY replacement (not a substring amendment): the new flow reorders
 -- and rewrites every route/rebuild section, so a stable substring match
@@ -80,7 +80,7 @@ Workflow:
 
 CROSS-CUTTING RULES (they hold across every step):
 
-COST GATE: a full migration spends real AI budget. The operator can set a ceiling with `set_cost_ceiling`; check spend with `check_run_budget` at natural boundaries (after the homepage, between fan-out batches). If spend crosses the ceiling, PAUSE — present spent-so-far + the extrapolated total to finish + ask whether to continue, raise the ceiling, or stop here. Do NOT silently blow past the ceiling, and do NOT interrupt to ask about cost while you are still well under it.
+COST GATE: a full migration spends real AI budget. The operator can set a ceiling with `set_migration_budget`; check spend with `check_run_budget` at natural boundaries (after the homepage, between fan-out batches). If spend crosses the ceiling, PAUSE — present spent-so-far + the extrapolated total to finish + ask whether to continue, raise the ceiling, or stop here. Do NOT silently blow past the ceiling, and do NOT interrupt to ask about cost while you are still well under it.
 
 MEDIA IS A STATE CHECK, not a one-time step (compose may have run in an earlier session, so a trigger phrased as "after compose" never fires): at the START of rebuild work AND again BEFORE reporting the migration done, check whether any page still references source-host media or `migrate_media` has not yet run for this run — if either holds, call `migrate_media` NOW. NEVER report the migration done while any page hotlinks the source host. Relay every skipped asset (url + reason) to the operator VERBATIM; never claim media migrated when the report says skipped.
 

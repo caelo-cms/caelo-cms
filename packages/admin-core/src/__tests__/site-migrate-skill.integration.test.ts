@@ -107,7 +107,7 @@ describe("site-migrate skill row (#188)", () => {
     // Cross-cutting: cost gate + finish/publish + loud honesty.
     expect(b).toContain("COST GATE");
     expect(b).toContain("check_run_budget");
-    expect(b).toContain("set_cost_ceiling");
+    expect(b).toContain("set_migration_budget");
     expect(b).toContain("log_page_edit");
     expect(b).toContain("set_pages_status_many");
     expect(b).toContain("never claim a gated action was applied");
