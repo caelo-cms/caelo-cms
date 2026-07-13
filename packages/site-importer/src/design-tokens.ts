@@ -33,6 +33,13 @@ export const SAMPLE_ROLES = [
   "nav",
   "footer",
   "button",
+  // issue #32 — spacing-bearing roles. These carry the rhythm signal
+  // (section vertical padding, container gutter, card padding) that
+  // `deriveDesignTokens` folds into the `spacing` scale. They also add
+  // colour/font evidence to the palette like any other sampled element.
+  "section",
+  "container",
+  "card",
 ] as const;
 
 export type SampleRole = (typeof SAMPLE_ROLES)[number];
@@ -69,6 +76,16 @@ export interface PageDesignTokens {
   readonly radii: readonly TokenFrequency[];
   /** Non-`none` box shadows, most frequent first. */
   readonly shadows: readonly TokenFrequency[];
+  /**
+   * issue #32 — measured spacing scale (`space-*` in the flattened
+   * tokens). Keys are a small, stable set — `section` (vertical section
+   * rhythm), `container` (horizontal gutter), `card` (card inner
+   * padding), `button` (button inner padding). Each value is the most
+   * frequent non-zero computed length for that metric on the page. A
+   * metric with no non-zero sample is ABSENT — never defaulted
+   * (CLAUDE.md §2 no-fallbacks).
+   */
+  readonly spacing: Readonly<Record<string, string>>;
   /** First (most prominent) sample per role → its key properties. */
   readonly roles: Readonly<Record<string, Readonly<Record<string, string>>>>;
 }
@@ -100,6 +117,13 @@ export const COLLECT_STYLE_SAMPLES_SCRIPT = `(() => {
     ["line-height", "lineHeight"],
     ["border-radius", "borderRadius"],
     ["box-shadow", "boxShadow"],
+    // issue #32 — spacing longhands. getComputedStyle always resolves
+    // these to px, so downstream derivation sees a single CSS length.
+    ["padding-top", "paddingTop"],
+    ["padding-bottom", "paddingBottom"],
+    ["padding-left", "paddingLeft"],
+    ["padding-right", "paddingRight"],
+    ["gap", "gap"],
   ];
   const read = (el) => {
     const cs = getComputedStyle(el);
@@ -122,6 +146,25 @@ export const COLLECT_STYLE_SAMPLES_SCRIPT = `(() => {
   take("a", "a[href]", 20);
   take("nav", "nav", 2);
   take("footer", "footer", 1);
+  // issue #32 — spacing-bearing roles.
+  // Sections carry the vertical rhythm; rank by rendered area so the
+  // real content sections win over tiny nav sub-sections, then take a
+  // handful (frequency across them + across pages resolves the scale).
+  const sectionEls = Array.from(document.querySelectorAll(
+    'main > section, main > div, body > section, section, [class*="section" i]'
+  ));
+  const rankedSections = sectionEls
+    .map((el) => { const r = el.getBoundingClientRect(); return { el, area: r.width * r.height }; })
+    .filter((c) => c.area > 0)
+    .sort((x, y) => y.area - x.area)
+    .slice(0, 6);
+  for (const c of rankedSections) {
+    try { out.push({ role: "section", styles: read(c.el) }); } catch { /* detached node */ }
+  }
+  // Containers carry the horizontal gutter (page side padding).
+  take("container", 'main, [class*="container" i], [class*="wrapper" i]', 4);
+  // Cards carry a representative inner padding.
+  take("card", '[class*="card" i], article, [class*="tile" i]', 8);
   // Most prominent button-like element: real buttons, ARIA buttons,
   // submit inputs, and anchors whose class smells like a CTA. Rank by
   // rendered area; document order breaks ties (querySelectorAll is
@@ -199,6 +242,47 @@ function bump(map: Map<string, number>, value: string | null | undefined): void 
   map.set(value, (map.get(value) ?? 0) + 1);
 }
 
+/**
+ * issue #32 — for a spacing metric, which computed properties (in
+ * priority order) carry it. First non-zero px length wins; a metric
+ * whose props are all zero/absent contributes NO spacing token (loud
+ * skip, never a default — CLAUDE.md §2).
+ */
+const SPACING_METRICS = {
+  // Vertical section rhythm: section padding, or its flex/grid gap.
+  section: ["paddingTop", "paddingBottom", "gap"],
+  // Page gutter: horizontal container padding.
+  container: ["paddingLeft", "paddingRight"],
+  // Card inner padding.
+  card: ["paddingTop", "paddingLeft"],
+  // Button inner padding.
+  button: ["paddingTop", "paddingLeft"],
+} as const satisfies Record<string, readonly string[]>;
+
+/** A single positive CSS px length as getComputedStyle resolves it. */
+const PX_LENGTH_RE = /^\d+(\.\d+)?px$/;
+
+/**
+ * First non-zero positive px length among `props` (priority order), or
+ * null when none qualifies. Zero and non-length values are skipped so a
+ * metric only contributes when the source actually painted spacing.
+ */
+function pickLength(styles: Readonly<Record<string, string>>, props: readonly string[]): string | null {
+  for (const p of props) {
+    const raw = (styles[p] ?? "").trim();
+    if (raw && raw !== "0px" && PX_LENGTH_RE.test(raw)) return raw;
+  }
+  return null;
+}
+
+/** Which sample role feeds each spacing metric. */
+const SPACING_SOURCE_ROLE: Record<keyof typeof SPACING_METRICS, SampleRole> = {
+  section: "section",
+  container: "container",
+  card: "card",
+  button: "button",
+};
+
 /** Properties worth keeping in the per-role summary, per role kind. */
 const ROLE_PROPS = [
   "color",
@@ -226,8 +310,19 @@ export function deriveDesignTokens(samples: readonly ElementStyleSample[]): Page
   const radii = new Map<string, number>();
   const shadows = new Map<string, number>();
   const roles: Record<string, Record<string, string>> = {};
+  // issue #32 — per-metric frequency of the measured spacing length.
+  const spacingFreq: Record<keyof typeof SPACING_METRICS, Map<string, number>> = {
+    section: new Map(),
+    container: new Map(),
+    card: new Map(),
+    button: new Map(),
+  };
 
   for (const s of samples) {
+    for (const metric of Object.keys(SPACING_METRICS) as (keyof typeof SPACING_METRICS)[]) {
+      if (s.role !== SPACING_SOURCE_ROLE[metric]) continue;
+      bump(spacingFreq[metric], pickLength(s.styles, SPACING_METRICS[metric]));
+    }
     const text = normalizeColor(s.styles.color ?? "");
     const bg = normalizeColor(s.styles.backgroundColor ?? "");
     bump(palette, text);
@@ -267,8 +362,26 @@ export function deriveDesignTokens(samples: readonly ElementStyleSample[]): Page
     fontWeights: sortFrequencies(fontWeights).slice(0, CAPS.fontWeights),
     radii: sortFrequencies(radii).slice(0, CAPS.radii),
     shadows: sortFrequencies(shadows).slice(0, CAPS.shadows),
+    spacing: buildSpacingScale(spacingFreq),
     roles,
   };
+}
+
+/**
+ * issue #32 — collapse per-metric frequency maps into the compact
+ * spacing scale: each metric keeps its most frequent length (count
+ * desc, then value asc for determinism). Metrics with no non-zero
+ * sample are omitted — no default is invented.
+ */
+function buildSpacingScale(
+  freq: Record<keyof typeof SPACING_METRICS, ReadonlyMap<string, number>>,
+): Record<string, string> {
+  const spacing: Record<string, string> = {};
+  for (const metric of Object.keys(SPACING_METRICS) as (keyof typeof SPACING_METRICS)[]) {
+    const top = sortFrequencies(freq[metric])[0];
+    if (top) spacing[metric] = top.value;
+  }
+  return spacing;
 }
 
 /**
@@ -311,6 +424,23 @@ export function aggregateSiteDesignTokens(pages: readonly PageDesignTokens[]): S
     roles[role] = resolved;
   }
 
+  // issue #32 — spacing scale resolves per metric by majority vote (one
+  // vote per page that measured that metric). An unmeasured metric stays
+  // absent site-wide.
+  const spacingVotes = new Map<string, Map<string, number>>();
+  for (const p of pages) {
+    for (const [metric, value] of Object.entries(p.spacing)) {
+      const valueMap = spacingVotes.get(metric) ?? new Map<string, number>();
+      spacingVotes.set(metric, valueMap);
+      valueMap.set(value, (valueMap.get(value) ?? 0) + 1);
+    }
+  }
+  const spacing: Record<string, string> = {};
+  for (const [metric, valueMap] of [...spacingVotes.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const winner = sortFrequencies(valueMap)[0];
+    if (winner) spacing[metric] = winner.value;
+  }
+
   return {
     palette: mergeFreq((p) => p.palette, CAPS.palette),
     backgrounds: mergeFreq((p) => p.backgrounds, CAPS.backgrounds),
@@ -319,9 +449,42 @@ export function aggregateSiteDesignTokens(pages: readonly PageDesignTokens[]): S
     fontWeights: mergeFreq((p) => p.fontWeights, CAPS.fontWeights),
     radii: mergeFreq((p) => p.radii, CAPS.radii),
     shadows: mergeFreq((p) => p.shadows, CAPS.shadows),
+    spacing,
     roles,
     pageCount: pages.length,
   };
+}
+
+/** A computed length/number the DTCG dimension schema accepts as-is
+ *  (`16px`, `1.5rem`, unitless `1.5`, bare `0`). Excludes `normal`,
+ *  `auto`, etc. so a non-length never reaches the theme validator. */
+const DIMENSION_VALUE_RE = /^-?\d+(\.\d+)?(px|rem|em|%|vh|vw|vmin|vmax|pt|pc|ch|ex)?$/;
+
+/**
+ * issue #32 — build a DTCG typography composite from a role's sampled
+ * props. fontFamily passes through; fontSize / lineHeight are kept only
+ * when they are real CSS lengths (computed `line-height` is often
+ * `normal`, which the theme's `dimension` schema rejects — skip it
+ * loudly rather than feed junk that aborts the whole compose);
+ * fontWeight is coerced to the number the composite schema wants
+ * (getComputedStyle yields `"700"`, but `fontWeightValue` accepts a
+ * number or a keyword, never a numeric string). Returns null when no
+ * sub-field qualified, so an unsampled role emits no token.
+ */
+function typographyComposite(
+  props: Readonly<Record<string, string>>,
+): Record<string, string | number> | null {
+  const composite: Record<string, string | number> = {};
+  const family = (props.fontFamily ?? "").trim();
+  if (family) composite.fontFamily = family;
+  const size = (props.fontSize ?? "").trim();
+  if (size && DIMENSION_VALUE_RE.test(size)) composite.fontSize = size;
+  const lineHeight = (props.lineHeight ?? "").trim();
+  if (lineHeight && DIMENSION_VALUE_RE.test(lineHeight)) composite.lineHeight = lineHeight;
+  const weight = (props.fontWeight ?? "").trim();
+  if (/^\d+$/.test(weight)) composite.fontWeight = Number(weight);
+  else if (weight === "normal" || weight === "bold") composite.fontWeight = weight;
+  return Object.keys(composite).length > 0 ? composite : null;
 }
 
 /**
@@ -331,6 +494,15 @@ export function aggregateSiteDesignTokens(pages: readonly PageDesignTokens[]): S
  * theme layer can actually store; sampled values overwrite same-named
  * extractor tokens at the compose merge because computed styles are
  * ground truth.
+ *
+ * Typography lands as DTCG composites (`typography.body` /
+ * `typography.heading`) carrying the measured type scale — family +
+ * size + weight + line-height — so the rebuild uses the source's actual
+ * scale instead of the AI eyeballing it. These are the roles the theme
+ * renderer + editors already expect (`--font-body`, `--text-heading`,
+ * `--font-weight-heading`, `--leading-*`); the body font moves from the
+ * old `typography.family` slot onto `typography.body` where the renderer
+ * reads it. `space-*` tuples carry the measured spacing rhythm.
  */
 export function flattenSiteDesignTokens(
   site: SiteDesignTokens,
@@ -346,8 +518,25 @@ export function flattenSiteDesignTokens(
   push("color-link", "color", role("a").color);
   push("color-primary", "color", role("button").backgroundColor);
   push("color-primary-contrast", "color", role("button").color);
-  push("font-family", "font", role("body").fontFamily);
-  push("font-heading", "font", role("h1").fontFamily);
+
+  // Type scale — one composite per role. Body family comes from `body`,
+  // its size/line-height from the representative paragraph.
+  const body = typographyComposite({
+    fontFamily: role("body").fontFamily ?? "",
+    fontSize: role("p").fontSize ?? "",
+    lineHeight: role("p").lineHeight ?? "",
+  });
+  if (body) out.push({ token: "typography-body", value: JSON.stringify(body), scope: "typography" });
+  const heading = typographyComposite(role("h1"));
+  if (heading)
+    out.push({ token: "typography-heading", value: JSON.stringify(heading), scope: "typography" });
+
   push("radius-base", "radius", role("button").borderRadius);
+
+  // Spacing scale — measured rhythm. Emitted after type so the ordering
+  // stays stable + easy to assert.
+  for (const metric of ["section", "container", "card", "button"]) {
+    push(`space-${metric}`, "space", site.spacing[metric]);
+  }
   return out;
 }
