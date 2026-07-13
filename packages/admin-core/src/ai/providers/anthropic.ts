@@ -113,18 +113,25 @@ function buildSystemAndMessages(
 }
 
 /**
+ * Claude 4.6+ models (Sonnet 5, Opus 4.6/4.7/4.8, Fable, Mythos) drop
+ * the pre-4.6 sampling/thinking knobs: they reject `budget_tokens` AND
+ * `temperature` with a 400 and take adaptive thinking instead. Older
+ * models still accept both. Centralised here so every param that these
+ * models deprecate is gated on ONE predicate.
+ */
+export function isAdaptiveModel(model: string): boolean {
+  return /sonnet-5|opus-4-7|opus-4-8|opus-4-6|sonnet-4-6|fable|mythos/.test(model);
+}
+
+/**
  * Maps Caelo's provider-neutral thinking request onto the shape the
- * target Anthropic model accepts. Claude 4.6+ models (Sonnet 5,
- * Opus 4.7/4.8, Fable) reject `budget_tokens` with a 400 and take
- * adaptive thinking instead; older models still need the explicit
- * budget form.
+ * target Anthropic model accepts (see {@link isAdaptiveModel}).
  */
 export function resolveThinkingOption(
   model: string,
   budgetTokens: number,
 ): { type: "adaptive" } | { type: "enabled"; budgetTokens: number } {
-  const adaptiveOnly = /sonnet-5|opus-4-7|opus-4-8|opus-4-6|sonnet-4-6|fable|mythos/.test(model);
-  return adaptiveOnly ? { type: "adaptive" } : { type: "enabled", budgetTokens };
+  return isAdaptiveModel(model) ? { type: "adaptive" } : { type: "enabled", budgetTokens };
 }
 
 export class AnthropicProvider implements AIProvider {
@@ -219,9 +226,19 @@ export class AnthropicProvider implements AIProvider {
           return { ...built, toolSearch: searchTool };
         }
       : undefined;
+    // Claude 4.6+ models reject `temperature` with a 400 ("temperature
+    // is deprecated for this model") — the request dies before the model
+    // runs. Strip it for the adaptive class so a caller-supplied
+    // temperature (e.g. the e2e harness's CAELO_CHAT_TEMPERATURE=0, or an
+    // operator sampling setting) can't 400 the whole turn. Older Anthropic
+    // models keep it.
+    const effectiveInput =
+      input.temperature !== undefined && isAdaptiveModel(this.model)
+        ? { ...input, temperature: undefined }
+        : input;
     yield* runSDKStream({
       model: this.#model,
-      input,
+      input: effectiveInput,
       systemAndMessages,
       extraOptions,
       ...(toolsTransform ? { toolsTransform } : {}),

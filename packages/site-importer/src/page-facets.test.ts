@@ -98,4 +98,71 @@ describe("extractPageMeta", () => {
     expect(meta.hreflangAlternates).toEqual([]);
     expect(meta.headings).toEqual([]);
   });
+
+  it("still extracts content when the meta tag is padded (order-independent)", () => {
+    // The restructured scan reads attributes off the whole <meta> span, so a
+    // description tag with attributes before name/content still resolves.
+    const html = '<meta charset="utf-8" content="Padded" name="description">';
+    expect(extractPageMeta(html, BASE).metaDescription).toBe("Padded");
+  });
+});
+
+// Guards the js/polynomial-redos fix (issue #278): every facet extractor
+// must complete in linear time on adversarial input built from the exact
+// repeated tokens CodeQL flagged. A 100k-char scan finishes in tens of ms
+// linearly, versus many seconds under the O(n²) backtracking these guard
+// against, so a 1s budget cleanly separates the two without runner flakiness.
+describe("page-facets ReDoS termination (#278)", () => {
+  const BUDGET_MS = 1000;
+  const N = 100_000;
+
+  function underBudget(fn: () => void): number {
+    const t0 = performance.now();
+    fn();
+    return performance.now() - t0;
+  }
+
+  it("anchorText strips tags linearly on a `<` flood (alert line 158)", () => {
+    // "…starting with '<' and with many repetitions of '<'"
+    const html = `<a href="/x">${"<".repeat(N)}</a>`;
+    expect(underBudget(() => extractOutboundLinks(html, BASE))).toBeLessThan(BUDGET_MS);
+  });
+
+  it("outbound-link scan is linear on a repeated open-tag stream", () => {
+    expect(underBudget(() => extractOutboundLinks("<a".repeat(N), BASE))).toBeLessThan(BUDGET_MS);
+  });
+
+  it("alt/aria scan is linear on repeated <img and generic open tags", () => {
+    expect(underBudget(() => extractAltTexts("<img".repeat(N), BASE))).toBeLessThan(BUDGET_MS);
+    expect(underBudget(() => extractAltTexts("<div".repeat(N), BASE))).toBeLessThan(BUDGET_MS);
+    // An unterminated alt attribute must not backtrack.
+    const evilAlt = `<img alt="${"a".repeat(N)}`;
+    expect(underBudget(() => extractAltTexts(evilAlt, BASE))).toBeLessThan(BUDGET_MS);
+  });
+
+  it("title scan is linear on a `<title` flood (alert line 248)", () => {
+    // "…starting with '<title' and with many repetitions of '<title'"
+    expect(underBudget(() => extractPageMeta("<title".repeat(N), BASE))).toBeLessThan(BUDGET_MS);
+  });
+
+  it('meta-description scan is linear on repeated name="description" (alert line 250)', () => {
+    // "…with many repetitions of 'name=\"description\"'"
+    const evilNoContent = `<meta ${'name="description" '.repeat(N)}`;
+    expect(underBudget(() => extractPageMeta(evilNoContent, BASE))).toBeLessThan(BUDGET_MS);
+    // Same flood but closed with a real content attr: stays fast AND correct.
+    const evilThenContent = `<meta ${'name="description" '.repeat(N)}content="ok">`;
+    let meta: ReturnType<typeof extractPageMeta> | undefined;
+    expect(
+      underBudget(() => {
+        meta = extractPageMeta(evilThenContent, BASE);
+      }),
+    ).toBeLessThan(BUDGET_MS);
+    expect(meta?.metaDescription).toBe("ok");
+  });
+
+  it("canonical / hreflang / lang / heading scans are linear on repeated tags", () => {
+    expect(underBudget(() => extractPageMeta("<link".repeat(N), BASE))).toBeLessThan(BUDGET_MS);
+    expect(underBudget(() => extractPageMeta("<html".repeat(N), BASE))).toBeLessThan(BUDGET_MS);
+    expect(underBudget(() => extractPageMeta("<h1".repeat(N), BASE))).toBeLessThan(BUDGET_MS);
+  });
 });
