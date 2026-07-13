@@ -24,7 +24,7 @@ import { type DesignBrief, designBriefSchema, err, ok } from "@caelo-cms/shared"
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
+import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { jsonbParam } from "../sql-helpers.js";
 
 const siteDefaultsRow = z.object({
@@ -121,15 +121,16 @@ export const setSiteDefaultsOp = defineOperation({
       kind: "siteDefaults",
       entityId: SITE_DEFAULTS_LOCK_ID,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
+    if (!lock.permitted) {
       return err(
-        await lockedError(
+        await entityWriteBlockedError(
           tx,
           "site_defaults.set",
           "siteDefaults",
           SITE_DEFAULTS_LOCK_ID,
-          lock.holder,
+          lock,
         ),
       );
     }

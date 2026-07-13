@@ -11,6 +11,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { releaseLeasesByHolder } from "../../entity-leases.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
 const runRow = z.object({
@@ -139,7 +140,7 @@ export const finishSubagentRunOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
+    const finished = (await tx.execute(sql`
       UPDATE subagent_runs
       SET status = ${input.status},
           result_json = ${jsonbParam(input.resultJson)},
@@ -148,7 +149,16 @@ export const finishSubagentRunOp = defineOperation({
           error_message = ${input.errorMessage},
           finished_at = now()
       WHERE id = ${input.id}::uuid
-    `);
+      RETURNING subagent_chat_session_id::text AS holder_key
+    `)) as unknown as { holder_key: string }[];
+    // issue #264 — auto-release every entity lease this subagent held the
+    // moment it finishes (completed / errored / timed_out / cancelled), so
+    // a sibling can take the entity immediately instead of waiting out the
+    // TTL. The subagent's own chat session id IS its lease holder_key.
+    const holderKey = finished[0]?.holder_key;
+    if (holderKey) {
+      await releaseLeasesByHolder(tx, holderKey);
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
