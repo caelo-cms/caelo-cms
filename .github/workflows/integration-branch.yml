@@ -92,15 +92,19 @@ jobs:
             echo "## Integration branch rebuilt"
             echo ""
             echo "\`integration\` = \`main\` + ${#merged[@]} PR(s):"
-            for m in "${merged[@]:-}"; do [ -n "$m" ] && echo "- ✅ $m"; done
+            for m in ${merged[@]+"${merged[@]}"}; do
+              echo "- ✅ $m"
+            done
             if [ "${#skipped[@]}" -gt 0 ]; then
               echo ""
               echo "### ⚠️ Not included (${#skipped[@]}) — resolve before relying on \`integration\`:"
-              for s in "${skipped[@]}"; do [ -n "$s" ] && echo "- ❌ $s"; done
+              for s in ${skipped[@]+"${skipped[@]}"}; do
+                echo "- ❌ $s"
+              done
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Loud annotation for each excluded PR — visible on the run header.
-          for s in "${skipped[@]:-}"; do
-            [ -n "$s" ] && echo "::warning title=Excluded from integration branch::$s"
+          for s in ${skipped[@]+"${skipped[@]}"}; do
+            echo "::warning title=Excluded from integration branch::$s"
           done
