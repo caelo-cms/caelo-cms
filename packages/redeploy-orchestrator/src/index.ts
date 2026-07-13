@@ -87,6 +87,19 @@ function safeJsonParse(s: string): unknown {
   }
 }
 
+/**
+ * issue #229 — decode the `import_runs.explicit_urls` jsonb into a
+ * string[] for LIST mode. Null / non-array / malformed decodes to null,
+ * which the caller reads as "depth mode" — the crawler then falls back
+ * to the classic BFS rather than crashing the tick.
+ */
+function parseExplicitUrls(raw: unknown): string[] | null {
+  const v = typeof raw === "string" ? safeJsonParse(raw) : raw;
+  if (!Array.isArray(v)) return null;
+  const urls = v.filter((u): u is string => typeof u === "string");
+  return urls.length > 0 ? urls : null;
+}
+
 const SYSTEM_CTX = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
   actorKind: "system" as const,
@@ -348,7 +361,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       //     fetch timeout ≈ 8 min).
       const rows = await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
         const claim = (await tx.execute(sql`
-            SELECT id::text AS id, source_url, depth, max_pages, crawl_state
+            SELECT id::text AS id, source_url, depth, max_pages, explicit_urls, crawl_state
             FROM import_runs
             WHERE status = 'crawling'
               AND (
@@ -363,6 +376,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           source_url: string;
           depth: number;
           max_pages: number;
+          explicit_urls: unknown;
           crawl_state: unknown;
         }>;
         if (claim.length > 0) {
@@ -378,6 +392,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       sourceUrl = r.source_url;
       depth = r.depth;
       maxPages = r.max_pages;
+      // issue #229 — LIST mode: the proposal pinned an exact URL set. The
+      // crawler fetches only these (+ the source origin), no BFS. jsonb
+      // may decode to an array or a JSON string depending on the client.
+      const explicitUrls = parseExplicitUrls(r.explicit_urls);
       const resumeFrom = parseCrawlCheckpoint(r.crawl_state);
       const claimedRunId = runId;
       const flushBatch = async (pages: CrawledPage[]): Promise<void> => {
@@ -407,6 +425,9 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         sourceUrl,
         depth,
         maxPages,
+        // issue #229 — present ⇒ LIST mode (crawler ignores depth/maxPages
+        // BFS and fetches exactly these + the source origin).
+        ...(explicitUrls && explicitUrls.length > 0 ? { urls: explicitUrls } : {}),
         throttleMs: 100,
         // issue #191 — explicit, visible exemption list for the SSRF
         // guard (e2e fixture servers, deliberate private crawls).

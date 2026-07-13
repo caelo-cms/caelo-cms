@@ -39,7 +39,9 @@ export type CrawlScopeEstimate =
   | {
       readonly failed?: false;
       readonly pages: number;
-      readonly basis: "sitemap" | "sample";
+      /** issue #229 — `list` = the exact page-list mode (`propose_site_import`
+       *  with `urls`): the count is not an estimate, it IS the list length. */
+      readonly basis: "sitemap" | "sample" | "list";
       readonly truncated: boolean;
       readonly crawlMinutes: number;
       readonly aiCostUsd: { readonly low: number; readonly high: number };
@@ -67,6 +69,18 @@ function bandFor(pages: number): ScopeSuccess {
       high: Math.round(pages * EST_COST_PER_PAGE_HIGH_USD * 100) / 100,
     },
   };
+}
+
+/**
+ * issue #229 — deterministic scope for LIST mode. No network work: the
+ * page count IS the chosen URL-list length, so the "blast radius"
+ * (§11.A) is exact rather than sampled. Reuses the same crawl-time and
+ * cost band as the depth path so the Owner reads one consistent preview.
+ *
+ * @param urlCount number of explicit URLs the AI chose to fetch.
+ */
+export function estimateListScope(urlCount: number): ScopeSuccess {
+  return { ...bandFor(urlCount), basis: "list", truncated: false };
 }
 
 /** Count same-host <a href> paths on one page (crude size signal). */
