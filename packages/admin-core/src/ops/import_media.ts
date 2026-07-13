@@ -40,7 +40,13 @@ import {
   type MediaStorageAdapter,
   ok,
 } from "@caelo-cms/shared";
-import { isExternalUrlBlockedError, safeExternalFetchBinary } from "@caelo-cms/site-importer";
+import {
+  isExternalUrlBlockedError,
+  type ProposedModuleBlock,
+  rebuiltHeaderHasLogoRef,
+  safeExternalFetchBinary,
+  sourceHeaderHasLogoImage,
+} from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -53,6 +59,7 @@ import {
 } from "../media/import-asset-urls.js";
 import { runMediaPipeline } from "../media/pipeline.js";
 import { getMediaStorage, getMediaStorageProvider } from "../media/storage.js";
+import { jsonbParam } from "../sql-helpers.js";
 import { mediaRecordUsageOp, mediaUploadOp } from "./media.js";
 
 const PER_FILE_MAX_BYTES = 15 * 1024 * 1024;
@@ -124,6 +131,16 @@ export const migrateImportMediaOp = defineOperation({
     templatesRewritten: z.number().int(),
     /** Every reference that could NOT be migrated, with the reason. */
     skipped: z.array(skippedEntry),
+    /**
+     * Logo-preservation guardrail: set when the source homepage header
+     * carried a real logo image but the rebuilt chrome header references
+     * none (no Caelo-media <img>, no {{theme_logo_url}}, no bound theme
+     * logo asset) — i.e. the logo was hand-authored as a text/CSS
+     * wordmark instead of imported. The message is also appended to the
+     * run's error/warning ledger so the closing report surfaces it.
+     * `null` when the logo was preserved, or the source had no logo image.
+     */
+    logoWarning: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
@@ -445,6 +462,20 @@ export const migrateImportMediaOp = defineOperation({
       await mediaRecordUsageOp.handler(ctx, { deltas: usageDeltas }, tx);
     }
 
+    // ------------------------------------------------------------------
+    // 5. Logo-preservation guardrail. Media has just been re-hosted, so
+    // this is the moment of truth: if the source homepage header carried
+    // a real logo image but the rebuilt chrome header references none of
+    // {Caelo-media <img>, {{theme_logo_url}}, bound theme logo asset},
+    // the operator's brand logo was hand-authored as a text/CSS wordmark
+    // instead of imported (the searchviu live-run defect). Prose in the
+    // skill forbids it; this is the structural backstop that makes the
+    // miss LOUD in the run's error/warning ledger (CLAUDE.md §2, §11).
+    // Conservative: fires only when a source logo image is positively
+    // detected, so a genuine styled-text wordmark is never flagged.
+    // ------------------------------------------------------------------
+    const logoWarning = await detectRedrawnLogo(tx, input.runId, run.source_url);
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -463,6 +494,82 @@ export const migrateImportMediaOp = defineOperation({
       modulesRewritten,
       templatesRewritten,
       skipped,
+      logoWarning,
     });
   },
 });
+
+/**
+ * The logo-preservation guardrail's DB half. Reads (a) the crawled
+ * homepage's extracted source blocks, (b) the rebuilt chrome header
+ * module (post-rewrite, so a just-migrated logo shows its `/_caelo/`
+ * src), and (c) the active theme's bound logo asset. Returns a warning
+ * string when the source had a logo image and the rebuild references
+ * none of the three logo signals — and appends that warning to the run's
+ * `import_run_events` ledger in the same transaction (best-effort:
+ * detection must never sink a media migration that actually moved
+ * assets). Returns `null` when the logo was preserved or the source had
+ * none.
+ *
+ * `tx` is the open Query-API transaction; `runId` the migration run;
+ * `sourceUrl` the run's origin (used to find the homepage import_page).
+ */
+async function detectRedrawnLogo(
+  tx: Parameters<typeof migrateImportMediaOp.handler>[2],
+  runId: string,
+  sourceUrl: string,
+): Promise<string | null> {
+  // Source signal: the homepage import_page's extracted blocks. Prefer
+  // the row whose source_url matches the run origin; fall back to the
+  // earliest-crawled page for the run (the homepage is crawled first).
+  const homepageRows = (await tx.execute(sql`
+    SELECT proposed_modules
+    FROM import_pages
+    WHERE run_id = ${runId}::uuid
+    ORDER BY (source_url = ${sourceUrl}) DESC, created_at ASC
+    LIMIT 1
+  `)) as unknown as Array<{ proposed_modules: unknown }>;
+  const blocks = (homepageRows[0]?.proposed_modules ?? []) as ProposedModuleBlock[];
+  if (!Array.isArray(blocks) || blocks.length === 0) return null;
+
+  const sourceLogo = sourceHeaderHasLogoImage(blocks);
+  if (!sourceLogo.hasLogo) return null;
+
+  // Rebuild signal 1+2: the layout-bound chrome header module, re-read
+  // AFTER the rewrite above so a migrated logo <img> already carries its
+  // /_caelo/ src.
+  const headerRows = (await tx.execute(sql`
+    SELECT html FROM modules
+    WHERE slug = ${`imported-${runId.slice(0, 8)}-header`} AND deleted_at IS NULL
+    LIMIT 1
+  `)) as unknown as Array<{ html: string }>;
+  const headerHtml = headerRows[0]?.html ?? "";
+  if (rebuiltHeaderHasLogoRef(headerHtml)) return null;
+
+  // Rebuild signal 3: a bound theme logo asset (set via themes.set_asset
+  // + a {{theme_logo_url}} the template engine resolves). If the operator
+  // bound the logo at the theme, the header need not carry it inline.
+  const themeRows = (await tx.execute(sql`
+    SELECT logo_media_id::text AS logo_media_id FROM themes WHERE is_active = true LIMIT 1
+  `)) as unknown as Array<{ logo_media_id: string | null }>;
+  if (themeRows[0]?.logo_media_id) return null;
+
+  // All three signals absent → the logo was redrawn. Record it LOUDLY.
+  const message =
+    `header logo was NOT imported: the source homepage header carried a real logo asset ` +
+    `(${sourceLogo.evidence ?? "image"}) but the rebuilt header references neither a Caelo-hosted ` +
+    `logo <img>, a {{theme_logo_url}} placeholder, nor a bound theme logo asset — it was likely ` +
+    `hand-authored as a text/CSS wordmark. Preserve the source logo as a real <img> (so migrate_media ` +
+    `re-hosts it) or bind it once with set_theme_asset({slot:'logo'}) + {{theme_logo_url}}, then re-run.`;
+  await tx.execute(sql`
+    INSERT INTO import_run_events (run_id, severity, phase, message, detail)
+    VALUES (
+      ${runId}::uuid,
+      'warning',
+      'media',
+      ${message},
+      ${jsonbParam({ check: "logo-preserved", sourceEvidence: sourceLogo.evidence ?? null })}
+    )
+  `);
+  return message;
+}

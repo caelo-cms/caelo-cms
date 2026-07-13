@@ -48,6 +48,7 @@ export const migrateMediaTool: ToolDefinitionWithHandler<
       modulesRewritten: number;
       templatesRewritten: number;
       skipped: Array<{ url: string; reason: string }>;
+      logoWarning: string | null;
     };
     const mb = (v.migratedBytes / (1024 * 1024)).toFixed(2);
     const lines = [
@@ -87,6 +88,15 @@ export const migrateMediaTool: ToolDefinitionWithHandler<
       lines.push(
         "Every discovered asset reference now points at Caelo media — no remaining source-host dependencies.",
       );
+    }
+    // Logo-preservation guardrail (op already recorded this in the run
+    // ledger). Surface it LOUDLY here too so the model fixes the redraw
+    // in THIS turn instead of only hearing about it at the closing
+    // report: the source header had a real logo image, the rebuild does
+    // not reference it — the operator's brand logo must be imported, not
+    // hand-authored as a text/CSS wordmark.
+    if (v.logoWarning) {
+      lines.push(`LOGO NOT PRESERVED — ${v.logoWarning}`);
     }
     return { ok: true, content: lines.join("\n") };
   },

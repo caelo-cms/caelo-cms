@@ -77,6 +77,12 @@ export {
   stripCommentThreads,
 } from "./extractor.js";
 export {
+  type ProposedModuleBlock,
+  rebuiltHeaderHasLogoRef,
+  type SourceLogoSignal,
+  sourceHeaderHasLogoImage,
+} from "./logo-signal.js";
+export {
   type AltTextEntry,
   extractAltTexts,
   extractOutboundLinks,
