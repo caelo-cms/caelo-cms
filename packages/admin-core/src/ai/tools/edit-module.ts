@@ -19,6 +19,7 @@ import { editModuleToolInput } from "@caelo-cms/shared";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
+import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -35,6 +36,7 @@ export const editModuleTool: ToolDefinitionWithHandler<
     "**Update description + kind when the module's purpose drifts.** The `## Modules` block exposes them to your future self; stale descriptions hurt your own decision-making. " +
     "**Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `## Modules` block. Treat it as a fallback, not the default path. " +
     "**Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158). " +
+    "**Module JS shares ONE page-level script** - no implicit `root`/`el` binding exists; wrap in an IIFE and query via document.querySelectorAll scoped to your module's root class (see the `js` input description). " +
     "Edits are CHAT-BRANCHED until publish. " +
     "Use this for structure, styling, fields list, or `description`/`kind` updates. " +
     "DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. " +
@@ -66,7 +68,7 @@ export const editModuleTool: ToolDefinitionWithHandler<
       },
       html: { type: "string" },
       css: { type: "string" },
-      js: { type: "string" },
+      js: { type: "string", description: MODULE_JS_CONTRACT },
       // issue #106 — shared field schema (single source of truth across all
       // module-authoring tools). See `_module-fields-schema.ts`.
       fields: MODULE_FIELDS_JSON_SCHEMA,

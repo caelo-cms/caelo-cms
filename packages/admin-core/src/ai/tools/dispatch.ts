@@ -89,7 +89,7 @@ export interface ToolContext {
     chatBranchId?: string;
     viewport?: "desktop" | "tablet" | "mobile";
     timeoutMs?: number;
-  }) => Promise<{ base64: string; mediaType: "image/png" }>;
+  }) => Promise<{ base64: string; mediaType: "image/png" | "image/jpeg" }>;
 }
 
 export interface ToolResult {

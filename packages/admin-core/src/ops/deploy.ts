@@ -46,6 +46,25 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { loadStaticPublisher } from "../deploy/static-publisher.js";
+import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+
+/**
+ * Resolve the root directory that relative `deploy_targets.out_dir`
+ * values are joined against.
+ *
+ * Migration run #9 R10 (issue #262): defaulting straight to
+ * `process.cwd()` silently couples build placement to wherever the
+ * admin process happens to run. In dev-compose the Caddy containers
+ * bind-mount the *checkout's* `apps/admin/output/<env>`, so an admin
+ * started from a worktree/tmp copy wrote every build into a directory
+ * nothing served — while reporting success. `CAELO_OUTPUT_ROOT` lets an
+ * operator pin the output root to the directory the serving layer
+ * actually mounts (for the dev compose stack: `<checkout>/apps/admin`).
+ * An explicit per-call `repoRoot` (tests) still wins.
+ */
+function resolveOutputRoot(explicit?: string): string {
+  return explicit ?? process.env.CAELO_OUTPUT_ROOT ?? process.cwd();
+}
 
 const targetRow = z.object({
   id: z.string(),
@@ -416,7 +435,7 @@ export const triggerDeployOp = defineOperation({
       });
     }
 
-    const repoRoot = input.repoRoot ?? process.cwd();
+    const repoRoot = resolveOutputRoot(input.repoRoot);
     const cliPath = resolveGeneratorCli();
 
     // The trigger op needs a registry+adapter pair to land progress
@@ -505,6 +524,44 @@ export const triggerDeployOp = defineOperation({
         operation: "deploy.trigger",
         message: `publish failed: ${message}`,
       });
+    }
+
+    // Migration run #9 R10 (issue #262) — a staging deploy only counts as
+    // succeeded when the staging serving layer actually serves THIS build.
+    // Run #9: the admin ran from a worktree copy, so builds landed outside
+    // the directory the dev-compose Caddy mounts; every deploy "succeeded"
+    // while :8081 kept serving a build from months earlier. Verify through
+    // the same URL the operator's Preview link uses. Self-hosted staging
+    // only: cloud publishers upload to provider storage and surface their
+    // own previewUrl, and non-staging envs are out of this check's scope
+    // (production ships via deploy.promote). Test harnesses without a
+    // serving layer opt out explicitly via CAELO_SKIP_STAGING_SERVE_CHECK.
+    const isSelfHosted = !provider || provider === "self-hosted";
+    if (
+      isSelfHosted &&
+      target.env === "staging" &&
+      process.env.CAELO_SKIP_STAGING_SERVE_CHECK !== "1"
+    ) {
+      const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
+      const check = await verifyStagedBuildServed({ stagingBaseUrl, runId });
+      if (!check.served) {
+        const outputRoot = resolve(repoRoot, effectiveTarget.outDir);
+        const message =
+          `staging build verification failed: ${check.reason}. ` +
+          `This build was written to ${outputRoot} — if the serving layer (e.g. the dev-compose caddy-staging container) mounts a different directory, ` +
+          "set CAELO_OUTPUT_ROOT to the directory the serving layer mounts (dev compose: <checkout>/apps/admin) and re-run the Stage.";
+        await tx.execute(sql`
+          UPDATE deploy_runs
+          SET status = 'failed', finished_at = now(),
+              error_message = ${message}
+          WHERE id = ${runId}::uuid
+        `);
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message,
+        });
+      }
     }
 
     await tx.execute(sql`
@@ -596,7 +653,7 @@ export const promoteDeployOp = defineOperation({
       });
     }
 
-    const root = input.repoRoot ?? process.cwd();
+    const root = resolveOutputRoot(input.repoRoot);
     const fromBuildDir = resolve(root, from.out_dir, "builds", buildId);
     const fromTarget = rowToTarget(from);
     const toTarget = rowToTarget(to);
@@ -699,7 +756,7 @@ export const rollbackDeployOp = defineOperation({
         message: "no matching succeeded build for that target",
       });
     }
-    const root = input.repoRoot ?? process.cwd();
+    const root = resolveOutputRoot(input.repoRoot);
     const outDir = resolve(root, target.out_dir);
     const buildDir = join(outDir, "builds", buildId);
     try {

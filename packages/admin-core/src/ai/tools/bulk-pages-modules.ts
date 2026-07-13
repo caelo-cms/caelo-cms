@@ -20,6 +20,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
+import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const uuid = z.string().uuid();
@@ -200,7 +201,7 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
             displayName: { type: "string", minLength: 1, maxLength: 256 },
             html: { type: "string" },
             css: { type: "string" },
-            js: { type: "string" },
+            js: { type: "string", description: MODULE_JS_CONTRACT },
           },
         },
       },

@@ -113,6 +113,14 @@ export default async function globalSetup(): Promise<void> {
     // admin (crawler, estimator, inspection tools). Test admin only —
     // production never sets this.
     CAELO_IMPORTER_ALLOWED_HOSTS: "127.0.0.1,localhost",
+    // Run #9 CI fix (issue #262) — svelte-adapter-bun defaults
+    // BODY_SIZE_LIMIT to 512K, and the chat screenshot postback can
+    // exceed it (selector captures of image-heavy elements even as
+    // JPEG). A 413 here kills the AI's screenshot tool round-trip and
+    // fails the no-console-errors guard. 8M leaves generous headroom
+    // while still bounding a malformed canvas dump (the route also
+    // caps base64 length at 10M chars).
+    BODY_SIZE_LIMIT: process.env.BODY_SIZE_LIMIT ?? "8M",
   };
 
   // Spawn the admin from the built output. The npm script

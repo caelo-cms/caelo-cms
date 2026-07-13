@@ -29,9 +29,20 @@
     } else if (f["published"] && typeof f["published"] === "object") {
       toast.success("Published to production.");
     } else if (f["staged"] && typeof f["staged"] === "object") {
-      const s = f["staged"] as { previewUrl?: string };
+      const s = f["staged"] as { previewUrl?: string; draftPageCount?: number };
+      // Run #9 R10 — say what is NOT in the staged build. Staging ships
+      // published pages only; a success toast that hides "your 92 draft
+      // pages are absent" reads as "everything shipped" and sends the
+      // operator to a preview that 404s their work.
+      const parts: string[] = [];
+      if (s.previewUrl) parts.push(`Preview: ${s.previewUrl}`);
+      if (typeof s.draftPageCount === "number" && s.draftPageCount > 0) {
+        parts.push(
+          `${s.draftPageCount} draft page(s) are NOT in this build — publish them to stage them.`,
+        );
+      }
       toast.success("Staged.", {
-        description: s.previewUrl ? `Preview: ${s.previewUrl}` : undefined,
+        description: parts.length > 0 ? parts.join(" — ") : undefined,
       });
     } else if (typeof f["ok"] === "boolean" && f["ok"] === true) {
       toast.success("Saved.");

@@ -26,8 +26,18 @@
  * holds in practice.
  */
 
+/**
+ * Capture formats the browser-side ChatPanel may upload. JPEG became
+ * the default in the run #9 CI fix (issue #262): a full-viewport PNG
+ * of a real page runs 0.8-1.1 MB base64, which exceeds
+ * svelte-adapter-bun's default BODY_SIZE_LIMIT (512K) and the upload
+ * dies with 413 before SvelteKit ever sees it. JPEG at quality 0.85
+ * is 5-10x smaller at no cost to the vision-model verdict.
+ */
+export type ScreenshotMediaType = "image/png" | "image/jpeg";
+
 interface PendingCapture {
-  resolve: (image: { base64: string; mediaType: "image/png" }) => void;
+  resolve: (image: { base64: string; mediaType: ScreenshotMediaType }) => void;
   reject: (reason: string) => void;
   /** When the entry expires + auto-rejects so the Map doesn't leak. */
   timeoutHandle: ReturnType<typeof setTimeout>;
@@ -45,7 +55,7 @@ const pending = new Map<string, PendingCapture>();
 export function awaitScreenshot(
   requestId: string,
   timeoutMs: number = 30_000,
-): Promise<{ base64: string; mediaType: "image/png" }> {
+): Promise<{ base64: string; mediaType: ScreenshotMediaType }> {
   return new Promise((resolve, reject) => {
     const timeoutHandle = setTimeout(() => {
       pending.delete(requestId);
@@ -65,7 +75,7 @@ export function awaitScreenshot(
  */
 export function deliverScreenshot(
   requestId: string,
-  image: { base64: string; mediaType: "image/png" },
+  image: { base64: string; mediaType: ScreenshotMediaType },
 ): boolean {
   const entry = pending.get(requestId);
   if (!entry) return false;

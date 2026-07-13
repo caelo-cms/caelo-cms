@@ -555,7 +555,7 @@
 
   /**
    * v0.3.1 — Capture the preview iframe via html2canvas and upload
-   * the PNG to the screenshot endpoint, which resolves the
+   * the image (JPEG since issue #262) to the screenshot endpoint, which resolves the
    * server-side `awaitScreenshot` Promise so the AI's
    * `screenshot_page` tool returns the image bytes.
    *
@@ -657,10 +657,17 @@
         foreignObjectRendering: false,
         logging: false,
       });
-      // toBlob → base64. We strip the data:image/png;base64, prefix
-      // because the upload endpoint expects raw base64.
+      // toBlob → base64 (raw, no data: prefix — the upload endpoint
+      // expects bare base64). JPEG at quality 0.85, NOT PNG: a
+      // full-viewport PNG of a real page runs 0.8-1.1 MB, which blows
+      // through svelte-adapter-bun's default BODY_SIZE_LIMIT (512K) —
+      // the server answers 413 before SvelteKit sees the request, the
+      // AI's screenshot tool times out, and the operator gets a red
+      // console error (run #9 CI, issue #262). JPEG is 5-10x smaller
+      // with no cost to the vision-model verdict; html2canvas paints
+      // on an opaque white background so the alpha loss is moot.
       const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, "image/png"),
+        canvas.toBlob(resolve, "image/jpeg", 0.85),
       );
       if (!blob) {
         await uploadFailure("canvas.toBlob returned null");
@@ -682,7 +689,7 @@
       const res = await fetch(`/content/chat/${session.id}/screenshot/${req.requestId}`, {
         method: "POST",
         headers: { "x-csrf-token": csrfToken, "content-type": "application/json" },
-        body: JSON.stringify({ base64 }),
+        body: JSON.stringify({ base64, mediaType: "image/jpeg" }),
       });
       if (!res.ok) {
         // Best-effort: log + continue. The server-side awaitScreenshot

@@ -650,11 +650,15 @@ export const actions: Actions = {
    * v0.7.0 — /edit's split-button Stage path. One click does the full
    * "show me 1:1 what production would see" loop:
    *
-   *   1. chat.merge_to_main (deferConsume) — promote every branch-
-   *      snapshot to main live tables, WITHOUT closing the chat (no
-   *      published_at stamp, no lock release) and WITHOUT consuming the
-   *      branch (no last_staged_at stamp yet). Safe to call repeatedly;
-   *      each call re-promotes whatever's currently latest.
+   *   1. chat.merge_to_main (deferConsume) — promote branch snapshots
+   *      created since the last successful Stage to main live tables,
+   *      WITHOUT closing the chat (no published_at stamp, no lock
+   *      release) and WITHOUT consuming the branch (no last_staged_at
+   *      stamp yet). Safe to call repeatedly; a retry after a failed
+   *      build re-promotes the same set (nothing was consumed), and a
+   *      re-Stage after new edits promotes only those edits (issue
+   *      #262 — lifetime replay bumped updated_at on every entity the
+   *      chat ever touched).
    *   2. deploy.trigger(staging) — full-site rebuild against the now-
    *      merged main state. Filtering staging deploys to changedPageIds
    *      would defeat the "1:1 preview" promise: chrome (header/footer)
@@ -770,6 +774,19 @@ export const actions: Actions = {
       previewUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
     }
 
+    // Migration run #9 R10 (issue #262) — the partial success-lie:
+    // staging builds only status='published' pages, so a build can
+    // "succeed" while the operator's draft work (e.g. an entire
+    // migration) is absent from it. Surface the draft count in the
+    // staged result so the toast says what is NOT in the preview
+    // instead of implying everything shipped.
+    let draftPageCount = 0;
+    const pagesForDraftCount = await execute(registry, adapter, locals.ctx, "pages.list", {});
+    if (pagesForDraftCount.ok) {
+      const allPages = (pagesForDraftCount.value as { pages: { status: string }[] }).pages;
+      draftPageCount = allPages.filter((p) => p.status === "draft").length;
+    }
+
     return {
       staged: {
         pageId,
@@ -778,6 +795,7 @@ export const actions: Actions = {
         buildId: summary.buildId,
         previewUrl,
         mergedEntityCount: mergedSummaryValue.entityCount,
+        draftPageCount,
       },
     };
   },

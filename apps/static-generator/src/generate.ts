@@ -244,6 +244,37 @@ export function pageOutputPath(
 }
 
 /**
+ * Migration run #9 R10 (issue #262) — a full-site staging/production
+ * build that selects ZERO pages is not a servable site; every URL on
+ * the target would 404. Run #9 hit exactly this: a migration creates
+ * pages as drafts, staging filters to `status='published'`, and the
+ * operator's first Stage "succeeded" with page_count=0 — success toast,
+ * empty site. Per CLAUDE.md §2 (no fallbacks pre-1.0) this must fail
+ * loudly with the next step, not ship an empty build.
+ *
+ * Scope: full builds on non-dev targets only. `dev` is an unfiltered
+ * debugging surface, and an *incremental* build (`changedPageIds`)
+ * matching zero published pages is a routine no-op — e.g. the
+ * auto-redeploy orchestrator reacting to a draft-page edit — not an
+ * unservable site.
+ *
+ * @returns the error message to throw, or null when the build may
+ *   proceed. Pure so the guard is unit-testable without a DB.
+ */
+export function zeroPageBuildError(args: {
+  pageCount: number;
+  env: DeployTarget["env"];
+  incremental: boolean;
+}): string | null {
+  if (args.pageCount > 0 || args.env === "dev" || args.incremental) return null;
+  return (
+    `static-generator: 0 published pages for env='${args.env}' — nothing to serve. ` +
+    "Pages with status='draft' are live-edit-only and never ship to staging or production. " +
+    "Publish the pages first (AI: `set_pages_status_many`; UI: the bulk publish action on /content/pages or the /edit status toggle), then re-run the deploy."
+  );
+}
+
+/**
  * Renders the robots.txt body. `index` mode allows everything; `noindex`
  * blocks all crawlers — required for staging per CMS_REQUIREMENTS §6.
  */
@@ -341,6 +372,13 @@ export async function generateSite(args: {
       ${incrementalFilter}
     ORDER BY p.slug ASC
   `)) as unknown as Array<PageRow & { content_hash: string | null }>;
+
+  const zeroPageError = zeroPageBuildError({
+    pageCount: pageRows.length,
+    env: target.env,
+    incremental: (args.changedPageIds?.length ?? 0) > 0,
+  });
+  if (zeroPageError !== null) throw new Error(zeroPageError);
 
   // P9 review pass — load the locale registry so the emitter can shape
   // file paths per (slug, locale) instead of slug alone. Otherwise two

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { buildRobotsTxt, pageOutputPath } from "./generate.js";
+import { buildRobotsTxt, pageOutputPath, zeroPageBuildError } from "./generate.js";
 
 describe("pageOutputPath", () => {
   it("emits index.html for empty/root slugs", () => {
@@ -103,5 +103,36 @@ describe("buildRobotsTxt", () => {
 
   it("allows crawlers when index (production default)", () => {
     expect(buildRobotsTxt("index")).toContain("Allow: /");
+  });
+});
+
+// Migration run #9 R10 (issue #262) — a full staging/production build
+// with zero published pages must fail loudly instead of shipping an
+// empty site behind a success toast.
+describe("zeroPageBuildError", () => {
+  it("fails a full staging build with 0 published pages, pointing at bulk publish", () => {
+    const msg = zeroPageBuildError({ pageCount: 0, env: "staging", incremental: false });
+    expect(msg).not.toBeNull();
+    expect(msg).toContain("0 published pages");
+    expect(msg).toContain("set_pages_status_many");
+  });
+
+  it("fails a full production build with 0 published pages", () => {
+    expect(zeroPageBuildError({ pageCount: 0, env: "production", incremental: false })).toContain(
+      "0 published pages",
+    );
+  });
+
+  it("allows 0 pages on the dev target (unfiltered debugging surface)", () => {
+    expect(zeroPageBuildError({ pageCount: 0, env: "dev", incremental: false })).toBeNull();
+  });
+
+  it("allows an incremental build matching 0 published pages (draft-edit auto-redeploy)", () => {
+    expect(zeroPageBuildError({ pageCount: 0, env: "staging", incremental: true })).toBeNull();
+  });
+
+  it("allows any build with at least one page", () => {
+    expect(zeroPageBuildError({ pageCount: 1, env: "staging", incremental: false })).toBeNull();
+    expect(zeroPageBuildError({ pageCount: 92, env: "production", incremental: false })).toBeNull();
   });
 });

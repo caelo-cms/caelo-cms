@@ -29,6 +29,7 @@ import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
+import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface LayoutDetail {
@@ -107,7 +108,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
       ...MODULE_META_JSON_SCHEMA_PROPS,
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
-      js: { type: "string", maxLength: 50_000 },
+      js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
       // issue #106 — shared field schema (full kind enum incl. list +
       // nested-module kinds). A footer nav is a `link-list` field per
       // CLAUDE.md §1A; the old restricted 7-primitive enum made that

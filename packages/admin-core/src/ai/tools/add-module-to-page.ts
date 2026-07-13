@@ -26,6 +26,7 @@ import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
+import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -65,7 +66,7 @@ const ADD_MODULE_TO_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
     ...MODULE_META_JSON_SCHEMA_PROPS,
     html: { type: "string", minLength: 1, maxLength: 50_000 },
     css: { type: "string", maxLength: 50_000 },
-    js: { type: "string", maxLength: 50_000 },
+    js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
     bindThemeLiterals: { type: "boolean" },
     // issue #106 — shared field schema (single source of truth across all
     // module-authoring tools). See `_module-fields-schema.ts`.
