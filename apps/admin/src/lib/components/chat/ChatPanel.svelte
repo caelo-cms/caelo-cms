@@ -393,7 +393,7 @@
         if (data.status === "ready_for_review") {
           stopImportPolling();
           crawlRun = null;
-          pendingImportNudge = `Crawl finished: run ${runId.slice(0, 8)} reached ready_for_review (${data.pagesExtracted} pages staged). Continue with the cluster review.`;
+          pendingImportNudge = `Crawl finished: run ${runId.slice(0, 8)} reached ready_for_review (${data.pagesExtracted} pages staged). The imported pages are ready — continue building from the homepage.`;
         } else if (data.status === "failed") {
           stopImportPolling();
           pendingImportNudge = `Crawl failed: run ${runId.slice(0, 8)} — ${data.errorMessage ?? "no error message"}. Tell me what happened and what you'll try instead.`;
@@ -1335,6 +1335,28 @@
                 arguments: args,
               });
             } else if (ev["kind"] === "tool-start") {
+              // #30 — commit any buffered assistant text into a real message
+              // BEFORE the tool card lands (the card is appended on tool-result).
+              // Otherwise streamingText is only committed at `done` (appended
+              // last), so a question/option card (offer_choices → ChoiceCard)
+              // renders ABOVE the AI's comment instead of below it. Mirrors the
+              // `done` handler's commit; server-side the text turn is already
+              // persisted before the tool runs, so reload order is unaffected.
+              if (streamingText.length > 0) {
+                messages = [
+                  ...messages,
+                  {
+                    id: `local-a-${Date.now()}`,
+                    role: "assistant",
+                    content: streamingText,
+                    ...(streamingThinkingText.length > 0
+                      ? { thinkingText: streamingThinkingText }
+                      : {}),
+                  },
+                ];
+                streamingText = "";
+                streamingThinkingText = "";
+              }
               const toolCallId = String(ev["toolCallId"] ?? "");
               const name = String(ev["name"] ?? "");
               const args = (ev["arguments"] as Record<string, unknown>) ?? {};
