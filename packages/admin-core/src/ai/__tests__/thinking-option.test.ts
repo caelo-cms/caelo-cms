@@ -7,7 +7,29 @@
  * kills every chat turn with an API 400.
  */
 import { describe, expect, it } from "bun:test";
-import { resolveThinkingOption } from "../providers/anthropic.js";
+import { isAdaptiveModel, resolveThinkingOption } from "../providers/anthropic.js";
+
+describe("isAdaptiveModel — the class that rejects pre-4.6 sampling/thinking knobs", () => {
+  it.each([
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-mythos-5",
+  ])("%s is adaptive (rejects temperature + budget_tokens)", (model) => {
+    expect(isAdaptiveModel(model)).toBe(true);
+  });
+
+  it.each([
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+  ])("%s is NOT adaptive (still accepts temperature + budget_tokens)", (model) => {
+    expect(isAdaptiveModel(model)).toBe(false);
+  });
+});
 
 describe("resolveThinkingOption", () => {
   it.each([
