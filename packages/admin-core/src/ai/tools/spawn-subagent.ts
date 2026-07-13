@@ -57,6 +57,42 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 const EXCLUDED_FOR_CHILD = new Set(["spawn_subagent", "spawn_subagents"]);
 
 /**
+ * issue #268 — parse an OPTIONAL numeric env override to a finite
+ * integer `>= min`. A raw `Number(process.env.X ?? "…")` turns a typo
+ * (`SUBAGENT_MAX_PARALLEL=six`) into `NaN`, which then silently poisons
+ * everything downstream: `maxItems: NaN` in the provider JSON schema,
+ * `Math.min(NaN, …)` in the pool sizing, and every `>`/`<` budget
+ * comparison (all false against NaN → the cap never fires). None of
+ * those fail loudly — they just misbehave.
+ *
+ * We do NOT hard-throw at module load. These are optional tuning knobs,
+ * and this constant initializes at import time on the admin's hot path;
+ * a single bad env var must not make importing this module throw and
+ * take down ALL AI functionality. Instead we fall back to the vetted
+ * default and `console.warn` LOUDLY, naming the offending var + value so
+ * the operator can fix it — loud, not silent (CLAUDE.md §2). `min`
+ * guards against `0`/negatives (a 0 concurrency cap would deadlock the
+ * pool; a 0 cost cap would abort every batch immediately).
+ *
+ * @param name the env var to read.
+ * @param defaultValue the vetted fallback used when unset or malformed.
+ * @param min the smallest accepted value (default 1).
+ */
+export function parsePositiveIntEnv(name: string, defaultValue: number, min = 1): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return defaultValue;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < min) {
+    console.warn(
+      `[spawn_subagent] ignoring ${name}=${JSON.stringify(raw)} — expected an integer >= ${min}; ` +
+        `falling back to ${defaultValue}. Fix the env var to tune this cap.`,
+    );
+    return defaultValue;
+  }
+  return parsed;
+}
+
+/**
  * issue #268 — total spend ceiling across a whole `spawn_subagents`
  * batch. Once the running sum of the settled children's `ai_calls`
  * exceeds this, the orchestrator stops STARTING the remaining specs
@@ -64,8 +100,9 @@ const EXCLUDED_FOR_CHILD = new Set(["spawn_subagent", "spawn_subagents"]);
  * the budget by the width of the pool. Distinct from each spec's own
  * per-spawn `maxCostMicrocents` (which caps ONE child). $2.00 default.
  */
-const SUBAGENT_BATCH_CAP_MICROCENTS = Number(
-  process.env.SUBAGENT_BATCH_CAP_MICROCENTS ?? "200000000", // $2.00 default
+const SUBAGENT_BATCH_CAP_MICROCENTS = parsePositiveIntEnv(
+  "SUBAGENT_BATCH_CAP_MICROCENTS",
+  200_000_000, // $2.00 default
 );
 
 /**
@@ -78,7 +115,7 @@ const SUBAGENT_BATCH_CAP_MICROCENTS = Number(
  * tier limits and gets 429-thrashed. Default 6 (issue #268 target band
  * 5-8); env-tunable.
  */
-const SUBAGENT_MAX_PARALLEL = Number(process.env.SUBAGENT_MAX_PARALLEL ?? "6");
+const SUBAGENT_MAX_PARALLEL = parsePositiveIntEnv("SUBAGENT_MAX_PARALLEL", 6);
 
 /**
  * issue #268 — max specs accepted in ONE `spawn_subagents` call. Larger
@@ -87,7 +124,7 @@ const SUBAGENT_MAX_PARALLEL = Number(process.env.SUBAGENT_MAX_PARALLEL ?? "6");
  * `SUBAGENT_MAX_PARALLEL`) drains it, so a 30-page migration is one tool
  * call, not five. Env-tunable.
  */
-const SUBAGENT_MAX_BATCH = Number(process.env.SUBAGENT_MAX_BATCH ?? "32");
+const SUBAGENT_MAX_BATCH = parsePositiveIntEnv("SUBAGENT_MAX_BATCH", 32);
 
 /**
  * Run #10 D2 — the per-shape payload sketch for the submit_result
@@ -559,6 +596,16 @@ export interface SubagentBatchOutcome {
   totalCostMicrocents: number;
   /** True when at least one spec was skipped because the batch cap was hit. */
   batchAborted: boolean;
+  /**
+   * True when the final total spend exceeded the cap — the hard budget
+   * signal. Distinct from `batchAborted`: the LAST in-flight child can
+   * tip the total over the cap with NO later specs left to skip, in
+   * which case nothing is aborted (`batchAborted` stays false) but the
+   * ceiling was still blown. Callers gating on budget MUST read this,
+   * not `batchAborted` (Copilot #291-1). `batchAborted ⟹ overBudget`,
+   * never the reverse.
+   */
+  overBudget: boolean;
   /** Count of specs that actually ran (invoked a child turn). */
   ran: number;
 }
@@ -673,7 +720,15 @@ export async function runSubagentBatch(
   const workerCount = Math.max(1, Math.min(opts.maxParallel, total));
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-  return { results, totalCostMicrocents: runningCostMicrocents, batchAborted, ran };
+  return {
+    results,
+    totalCostMicrocents: runningCostMicrocents,
+    batchAborted,
+    // Final-total budget check: catches the last-child-tips-over case
+    // that `batchAborted` (specs-were-skipped) misses (Copilot #291-1).
+    overBudget: runningCostMicrocents > opts.batchMaxCostMicrocents,
+    ran,
+  };
 }
 
 function summarize(results: SubagentInvocationResult[]): string {
@@ -877,17 +932,28 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
 
     // issue #268 — cost roll-up across the parallel batch is ALWAYS
     // reported (not only on cap-exceed), so the parent sees the batch's
-    // total spend + n-of-m completion in its tool result.
+    // total spend + n-of-m completion in its tool result. `overBudget`
+    // is the hard budget signal (final total > cap) — it fires even when
+    // no spec was SKIPPED (the last in-flight child tipping the total
+    // over the cap, Copilot #291-1), whereas `batchAborted` only reports
+    // the skip. We flag both conditions distinctly.
+    const overBudgetNote = outcome.overBudget
+      ? outcome.batchAborted
+        ? "\nBATCH COST CAP HIT — later subagents were skipped (see batch-aborted rows above). " +
+          "Re-run the skipped pages in a fresh batch, or raise SUBAGENT_BATCH_CAP_MICROCENTS."
+        : "\nBATCH COST CAP EXCEEDED — the in-flight subagents' spend pushed the batch over the cap " +
+          "(nothing was skipped — the ceiling was crossed by the last runners). Their edits DID land; " +
+          "treat this as over-budget and raise SUBAGENT_BATCH_CAP_MICROCENTS if the higher spend is expected."
+      : "";
     const rollUp =
       `\n\n---\nBatch: ${outcome.ran} of ${input.subagents.length} subagents ran · ` +
       `total cost $${(outcome.totalCostMicrocents / 1e8).toFixed(4)} / cap $${(SUBAGENT_BATCH_CAP_MICROCENTS / 1e8).toFixed(4)}` +
-      (outcome.batchAborted
-        ? `\nBATCH COST CAP HIT — later subagents were skipped (see batch-aborted rows above). ` +
-          "Re-run the skipped pages in a fresh batch, or raise SUBAGENT_BATCH_CAP_MICROCENTS."
-        : "");
+      overBudgetNote;
 
+    // `ok` is a hard budget guard: an over-budget batch is NEVER ok,
+    // even if every child that ran completed (Copilot #291-1).
     const allCompleted =
-      !outcome.batchAborted && outcome.results.every((r) => r.status === "completed");
+      !outcome.overBudget && outcome.results.every((r) => r.status === "completed");
     return { ok: allCompleted, content: summarize(outcome.results) + rollUp };
   },
 };

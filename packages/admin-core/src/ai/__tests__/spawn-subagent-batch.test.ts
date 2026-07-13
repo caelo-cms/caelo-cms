@@ -10,14 +10,18 @@
  *   2. Batch-cost abort: once the running spend crosses
  *      `batchMaxCostMicrocents`, remaining specs are skipped (never
  *      invoke the spawn fn) and reported as `batch-aborted`.
+ *   3. Over-budget signal: the final total exceeding the cap is flagged
+ *      even when the last child tips it over with nothing left to skip
+ *      (Copilot #291-1).
  *
- * Plus order preservation and n-of-m progress emission.
+ * Plus order preservation, n-of-m progress emission, and the
+ * `parsePositiveIntEnv` guard against NaN-poisoned caps (Copilot #291-2).
  */
 
 import { describe, expect, it } from "bun:test";
 import type { SpawnSubagentToolInput } from "@caelo-cms/shared";
 
-import { runSubagentBatch } from "../tools/spawn-subagent.js";
+import { parsePositiveIntEnv, runSubagentBatch } from "../tools/spawn-subagent.js";
 
 /** Minimal valid-enough spec; runSubagentBatch only reads `.role`. */
 function spec(role: string): SpawnSubagentToolInput {
@@ -148,9 +152,86 @@ describe("runSubagentBatch — batch-cost abort (issue #268)", () => {
       batchMaxCostMicrocents: 1000,
     });
     expect(outcome.batchAborted).toBe(false);
+    expect(outcome.overBudget).toBe(false);
     expect(outcome.ran).toBe(3);
     expect(outcome.totalCostMicrocents).toBe(30);
     expect(outcome.results.every((r) => r.status === "completed")).toBe(true);
+  });
+
+  it("flags overBudget when the LAST child tips the total over the cap with nothing to skip (Copilot #291-1)", async () => {
+    // 2 specs, sequential, each costs 60, cap 100. r0 → running 60 (not
+    // over yet, so r1 still starts), r1 → running 120. Both ran, no spec
+    // was ever skipped (batchAborted stays false) yet the ceiling was
+    // blown — the exact case a batchAborted-only guard misses.
+    const specs = Array.from({ length: 2 }, (_, i) => spec(`r${i}`));
+    const outcome = await runSubagentBatch(specs, async (s) => completed(s.role, 60), {
+      maxParallel: 1,
+      batchMaxCostMicrocents: 100,
+    });
+    expect(outcome.ran).toBe(2);
+    expect(outcome.totalCostMicrocents).toBe(120);
+    expect(outcome.batchAborted).toBe(false); // nothing skipped
+    expect(outcome.overBudget).toBe(true); // but the cap WAS exceeded
+    expect(outcome.results.every((r) => r.status === "completed")).toBe(true);
+  });
+
+  it("batchAborted always implies overBudget", async () => {
+    const specs = Array.from({ length: 4 }, (_, i) => spec(`r${i}`));
+    const outcome = await runSubagentBatch(specs, async (s) => completed(s.role, 60), {
+      maxParallel: 1,
+      batchMaxCostMicrocents: 100,
+    });
+    expect(outcome.batchAborted).toBe(true);
+    expect(outcome.overBudget).toBe(true);
+  });
+});
+
+describe("parsePositiveIntEnv — malformed env caps never produce NaN (Copilot #291-2)", () => {
+  const VAR = "SUBAGENT_TEST_CAP_UNSET_XYZ";
+
+  it("returns the default when unset or blank", () => {
+    delete process.env[VAR];
+    expect(parsePositiveIntEnv(VAR, 6)).toBe(6);
+    process.env[VAR] = "";
+    expect(parsePositiveIntEnv(VAR, 6)).toBe(6);
+    process.env[VAR] = "   ";
+    expect(parsePositiveIntEnv(VAR, 6)).toBe(6);
+    delete process.env[VAR];
+  });
+
+  it("clamps a non-numeric value to the default instead of yielding NaN", () => {
+    for (const bad of ["six", "6px", "NaN", "abc", "1e"]) {
+      process.env[VAR] = bad;
+      const got = parsePositiveIntEnv(VAR, 6);
+      expect(Number.isNaN(got)).toBe(false);
+      expect(got).toBe(6);
+    }
+    delete process.env[VAR];
+  });
+
+  it("rejects non-integers, zero, and negatives (below the min)", () => {
+    for (const bad of ["6.5", "0", "-3", "-1"]) {
+      process.env[VAR] = bad;
+      const got = parsePositiveIntEnv(VAR, 6);
+      expect(Number.isInteger(got)).toBe(true);
+      expect(got).toBe(6);
+    }
+    delete process.env[VAR];
+  });
+
+  it("accepts a well-formed positive integer (with surrounding whitespace)", () => {
+    process.env[VAR] = "8";
+    expect(parsePositiveIntEnv(VAR, 6)).toBe(8);
+    process.env[VAR] = "  10 ";
+    expect(parsePositiveIntEnv(VAR, 6)).toBe(10);
+    delete process.env[VAR];
+  });
+
+  it("honours a custom min", () => {
+    process.env[VAR] = "5";
+    // 5 < min 1_000_000 → falls back to the default.
+    expect(parsePositiveIntEnv(VAR, 200_000_000, 1_000_000)).toBe(200_000_000);
+    delete process.env[VAR];
   });
 });
 
