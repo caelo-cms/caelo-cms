@@ -16,19 +16,41 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { type CrawlScopeEstimate, estimateCrawlScope } from "@caelo-cms/site-importer";
+import {
+  type CrawlScopeEstimate,
+  estimateCrawlScope,
+  estimateListScope,
+} from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import { externalFetchAllowedHosts } from "./_external-fetch-budget.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
+/** issue #229 — cap on a LIST-mode pick. A pilot samples page TYPES
+ *  (one-per-type), so a couple hundred URLs is a generous ceiling; it
+ *  is not a re-crawl of the whole site. */
+const LIST_MODE_MAX_URLS = 200;
+
 const proposeSiteImportInput = z
   .object({
     sourceUrl: z.string().url(),
-    depth: z.number().int().min(1).max(5).default(2),
-    maxPages: z.number().int().min(1).max(2000).default(50),
+    depth: z.number().int().min(1).max(5).optional(),
+    maxPages: z.number().int().min(1).max(2000).optional(),
+    /** issue #229 — LIST mode: fetch EXACTLY these absolute URLs (no BFS,
+     *  no depth). Mutually exclusive with depth/maxPages. */
+    urls: z.array(z.string().url()).min(1).max(LIST_MODE_MAX_URLS).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.urls && v.urls.length > 0 && (v.depth !== undefined || v.maxPages !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "list mode (`urls`) is mutually exclusive with depth crawling (`depth`/`maxPages`) — pass exactly one mode",
+        path: ["urls"],
+      });
+    }
+  });
 
 export type ProposeSiteImportInput = z.infer<typeof proposeSiteImportInput>;
 
@@ -47,7 +69,9 @@ export function describeEstimate(est: CrawlScopeEstimate): string {
   const basis =
     e.basis === "sitemap"
       ? `sitemap lists ${e.pages}${e.truncated ? "+" : ""} URLs`
-      : `~${e.pages} pages extrapolated from homepage links (rough)`;
+      : e.basis === "list"
+        ? `${e.pages} chosen page${e.pages === 1 ? "" : "s"} (exact list)`
+        : `~${e.pages} pages extrapolated from homepage links (rough)`;
   return `Scope: ${basis}; crawl ≈ ${e.crawlMinutes} min; AI rebuild ≈ $${e.aiCostUsd.low}–$${e.aiCostUsd.high}.`;
 }
 
@@ -60,14 +84,23 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
     "crawler only runs after that click. DO NOT claim the crawl ran. After approval you receive " +
     "an automatic 'Approved' message; the crawl runs in the BACKGROUND — check `imports.get` for " +
     "status, and if it is still 'crawling', say so and continue when it is ready_for_review. " +
-    "Use this when the user " +
-    "asks to bring an existing site into Caelo. `depth` defaults to 2 (BFS hops); " +
-    "`maxPages` defaults to 50 (cap 2000). " +
-    "The tool computes a page-count + cost estimate and returns it: RESTATE the scope, " +
-    "duration, and cost band in your chat message BEFORE pointing at the Approve button — " +
-    "the operator decides with numbers, not vibes. For large sites (hundreds of pages), " +
-    "also offer a bounded pilot (homepage + one section via a small maxPages) as the " +
-    "cheaper first step.",
+    "Use this when the user asks to bring an existing site into Caelo. " +
+    "TWO MODES — pick one, never both:\n" +
+    "• LIST mode — pass `urls` (array of absolute URL strings): the crawl fetches EXACTLY those " +
+    "pages, nothing else. Use this when you ALREADY KNOW which pages to fetch — e.g. after " +
+    "inspecting the homepage you pick one URL per apparent page type (the pilot), or you fetch a " +
+    "scoped set of content pages for one type. This is the preferred pilot: it previews the " +
+    "rebuild across page TYPES instead of whatever the link graph happens to expose. Name the " +
+    "picked URLs in your recap so the Owner approves an informed list. Cap 200 URLs; do NOT set " +
+    "`depth`/`maxPages` in this mode.\n" +
+    "• DEPTH mode — pass `depth` (BFS hops, default 2, cap 5) and/or `maxPages` (default 50, cap " +
+    "2000): a blind same-origin BFS that DISCOVERS pages from `sourceUrl`. Use this only when you " +
+    "do NOT yet know the specific pages and want to discover the site from its root. Do NOT set " +
+    "`urls` in this mode.\n" +
+    "`sourceUrl` is ALWAYS required (origin + robots.txt scoping + run identity), in both modes. " +
+    "The tool returns a page-count + cost estimate: RESTATE the scope, duration, and cost band in " +
+    "your chat message BEFORE pointing at the Approve button — the operator decides with numbers, " +
+    "not vibes.",
   schema: proposeSiteImportInput,
   inputSchema: {
     type: "object",
@@ -77,13 +110,26 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
       sourceUrl: { type: "string", format: "uri" },
       depth: { type: "integer", minimum: 1, maximum: 5 },
       maxPages: { type: "integer", minimum: 1, maximum: 2000 },
+      urls: {
+        type: "array",
+        items: { type: "string", format: "uri" },
+        minItems: 1,
+        maxItems: LIST_MODE_MAX_URLS,
+        description:
+          "LIST mode: absolute URLs to fetch EXACTLY (no BFS). Mutually exclusive with depth/maxPages.",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const estimate = await estimator({
-      sourceUrl: input.sourceUrl,
-      allowedHosts: externalFetchAllowedHosts(),
-    });
+    const listMode = !!(input.urls && input.urls.length > 0);
+    // LIST mode's scope is exact — the page count IS the list length, so
+    // skip the network estimator entirely; DEPTH mode samples the site.
+    const estimate: CrawlScopeEstimate = listMode
+      ? estimateListScope(input.urls?.length ?? 0)
+      : await estimator({
+          sourceUrl: input.sourceUrl,
+          allowedHosts: externalFetchAllowedHosts(),
+        });
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.propose_run", {
       ...input,
       estimate,
@@ -92,10 +138,13 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
       return { ok: false, content: `propose_site_import failed: ${describeError(r.error)}` };
     }
     const v = r.value as { runId: string };
+    const scope = listMode
+      ? `list mode: ${input.urls?.length} specific page${input.urls?.length === 1 ? "" : "s"}`
+      : `depth=${input.depth ?? 2}, max=${input.maxPages ?? 50}`;
     return {
       ok: true,
       // v0.5.11 — canonical shape so ProposeCard renders inline approve.
-      content: `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (depth=${input.depth ?? 2}, max=${input.maxPages ?? 50}). ${describeEstimate(estimate)} Approve it on the proposal card in this chat (queue: /security/import/pending).`,
+      content: `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (${scope}). ${describeEstimate(estimate)} Approve it on the proposal card in this chat (queue: /security/import/pending).`,
     };
   },
 };

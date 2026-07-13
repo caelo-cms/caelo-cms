@@ -50,10 +50,30 @@
           <div class="rounded border p-3">
             <div class="mb-2 flex items-center gap-2">
               <span class="font-mono text-sm">{r.sourceUrl}</span>
-              <Badge variant="outline">depth {r.depth}</Badge>
-              <Badge variant="outline">max {r.maxPages}</Badge>
+              <!-- issue #229 — LIST mode fetches an exact set; depth/max
+                   are meaningless there, so show the page count instead. -->
+              {#if r.explicitUrls}
+                <Badge variant="outline">list · {r.explicitUrls.length} pages</Badge>
+              {:else}
+                <Badge variant="outline">depth {r.depth}</Badge>
+                <Badge variant="outline">max {r.maxPages}</Badge>
+              {/if}
               <span class="text-xs text-muted-foreground">{fmt(r.createdAt)}</span>
             </div>
+            <!-- issue #229 — surface the exact URLs the crawl will fetch
+                 so the approval is informed (acceptance criterion). -->
+            {#if r.explicitUrls}
+              <details class="mb-2 text-sm" data-testid="import-explicit-urls">
+                <summary class="cursor-pointer text-muted-foreground">
+                  {r.explicitUrls.length} chosen page{r.explicitUrls.length === 1 ? "" : "s"} to fetch
+                </summary>
+                <ul class="mt-1 list-disc pl-5 font-mono text-xs text-muted-foreground">
+                  {#each r.explicitUrls as u (u)}
+                    <li class="break-all">{u}</li>
+                  {/each}
+                </ul>
+              </details>
+            {/if}
             <!-- issue #193 — blast-radius summary (§11.A): the Owner
                  approves with numbers. Unknown scope is shown as
                  unknown, never omitted. -->
@@ -69,7 +89,11 @@
                 >
                   {#if r.estimate.pages > 500}⚠ Large site:{/if}
                   ~{r.estimate.pages}{r.estimate.truncated ? "+" : ""} pages
-                  ({r.estimate.basis === "sitemap" ? "from sitemap" : "rough sample"})
+                  ({r.estimate.basis === "sitemap"
+                    ? "from sitemap"
+                    : r.estimate.basis === "list"
+                      ? "exact list"
+                      : "rough sample"})
                   · crawl ≈ {r.estimate.crawlMinutes} min
                   · AI rebuild ≈ ${r.estimate.aiCostUsd.low}–${r.estimate.aiCostUsd.high}
                 </p>

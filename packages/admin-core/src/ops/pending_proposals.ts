@@ -146,7 +146,13 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         -- 'proposed' in its own lifecycle; aliased into the common
         -- shape so the chat strip + inbox count them).
         SELECT 'import', 'site_import', id::text, proposed_by::text, created_at,
-               ('crawl ' || source_url || ' (up to ' || max_pages || ' pages)'),
+               -- issue #229 — LIST mode names the exact page count; depth
+               -- mode says "up to N".
+               CASE
+                 WHEN explicit_urls IS NOT NULL
+                   THEN 'crawl ' || source_url || ' (' || jsonb_array_length(explicit_urls) || ' specific pages)'
+                 ELSE 'crawl ' || source_url || ' (up to ' || max_pages || ' pages)'
+               END,
                chat_session_id::text
           FROM import_runs WHERE status = 'proposed'
         UNION ALL
