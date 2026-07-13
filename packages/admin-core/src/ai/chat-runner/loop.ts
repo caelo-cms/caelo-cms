@@ -377,27 +377,42 @@ export async function* runToolLoop(
 
     // Dispatch each tool call sequentially and append a tool result.
     // P5.2 #3 — dedupe by (chat_session_id, tool_call_id).
+    // Run #8 live-edit CI — image follow-ups collect here and append
+    // AFTER the loop, so every tool result of the turn precedes the
+    // first user (image) message (see dispatchToolCall's parameter doc).
+    const deferredImageMessages: ChatMessageInput[] = [];
     for (const call of accumulatedToolCalls) {
       if (aborted()) break;
-      yield* dispatchToolCall(call, messages, {
-        registry,
-        adapter,
-        humanCtx,
-        aiCtxWithBranch: args.aiCtxWithBranch,
-        provider,
-        tools,
-        chatSessionId,
-        chatBranchId: args.chatBranchId,
-        options,
-        runChatTurn: args.runChatTurn,
-      });
+      yield* dispatchToolCall(
+        call,
+        messages,
+        {
+          registry,
+          adapter,
+          humanCtx,
+          aiCtxWithBranch: args.aiCtxWithBranch,
+          provider,
+          tools,
+          chatSessionId,
+          chatBranchId: args.chatBranchId,
+          options,
+          runChatTurn: args.runChatTurn,
+        },
+        deferredImageMessages,
+      );
     }
+    messages.push(...deferredImageMessages);
   }
 
   // v0.3.20 — cap-exhaustion notice. If the for-loop ran to completion AND
   // the last iteration ended with the AI still wanting to call more tools,
   // we hit `maxLoops`. Surface a clear user-visible message.
-  if (lastLoopStop === "tool_use" && !aborted()) {
+  // Run #8 live-edit CI — also require `succeeded`: a provider error that
+  // breaks the loop mid-run leaves lastLoopStop at the PREVIOUS
+  // iteration's "tool_use"; pre-fix, this block then mislabelled the
+  // failure as a cap hit ("reply continue to resume") on top of the
+  // real error event.
+  if (lastLoopStop === "tool_use" && !aborted() && succeeded) {
     stopReason = "max_loops";
     const notice =
       `Paused at the tool-loop limit (${args.maxLoops} iterations). The build was still in progress — ` +

@@ -50,6 +50,18 @@ export async function* dispatchToolCall(
   call: AccumulatedToolCall,
   messages: ChatMessageInput[],
   deps: DispatchDeps,
+  /**
+   * Run #8 live-edit CI — image follow-up messages are DEFERRED here
+   * instead of pushed into `messages` inline. With two image-returning
+   * tool calls in one assistant turn (e.g. parallel `screenshot_page`
+   * for desktop + mobile), the inline push produced
+   * [assistant(tool_use A,B), tool A, user(image A), tool B, …] and the
+   * provider SDK rejected the history with AI_MissingToolResultsError:
+   * a user message may not appear before every tool call of the turn
+   * has its result. The loop appends this array AFTER all of the
+   * turn's tool results.
+   */
+  deferredImageMessages: ChatMessageInput[],
 ): AsyncGenerator<ClientEvent, void> {
   const { registry, adapter, humanCtx, aiCtxWithBranch, provider, tools, options } = deps;
 
@@ -247,14 +259,16 @@ export async function* dispatchToolCall(
   });
   messages.push({ role: "tool", content: result.content, toolCallId: call.id });
   // v0.3.0 — when the tool returned an image (screenshot_page is
-  // the only producer today), append a multimodal user message
-  // so the AI sees the image alongside the text result on its
-  // next provider call. Image content is NOT persisted to
-  // chat_messages — it's runtime-only. After publish, the chat
-  // history shows only the text result; the image was consumed
-  // by the AI for that turn.
+  // the only producer today), build a multimodal user message so the
+  // AI sees the image alongside the text result on its next provider
+  // call. Image content is NOT persisted to chat_messages — it's
+  // runtime-only. After publish, the chat history shows only the text
+  // result; the image was consumed by the AI for that turn. Deferred
+  // (not pushed inline) so parallel image-returning calls keep every
+  // tool result ahead of the first user message — see the parameter
+  // doc above.
   if (result.image) {
-    messages.push({
+    deferredImageMessages.push({
       role: "user",
       content: `[Screenshot returned by ${call.name}; analyse it for the operator's request.]`,
       additionalContent: [

@@ -76,10 +76,14 @@ afterAll(async () => {
 
 describe("run #8 R3 — branch-aware read ops", () => {
   it("content_instances.get overlays branched set_values for the branch caller only", async () => {
+    // Explicit fields: modules.create runs the extractor heuristic only
+    // when the caller omits `fields`, and the extractor rejects a
+    // placeholder without a declared field.
     const mod = await execute(registry, adapter, HUMAN, "modules.create", {
       slug: MODULE_SLUG,
       displayName: "M",
       html: "<div>{{title}}</div>",
+      fields: [{ name: "title", kind: "text" }],
     });
     if (!mod.ok) throw new Error(`mod: ${JSON.stringify(mod.error)}`);
     const moduleId = (mod.value as { moduleId: string }).moduleId;
@@ -158,10 +162,16 @@ describe("run #8 R3 — branch-aware read ops", () => {
     if (!page.ok) throw new Error(`page: ${JSON.stringify(page.error)}`);
     const pageId = (page.value as { pageId: string }).pageId;
 
+    // Explicit fields keep the literal html intact: without them the
+    // extractor heuristic templatises "<div>published html</div>" into
+    // "<div>{{divtext}}</div>" and the literal-html assertions below
+    // compare against the wrong string. A declared-but-unreferenced
+    // field is a legitimate state modules.create trusts verbatim.
     const mod = await execute(registry, adapter, HUMAN, "modules.create", {
       slug: `${MODULE_SLUG}-2`,
       displayName: "M2",
       html: "<div>published html</div>",
+      fields: [{ name: "headline", kind: "text" }],
     });
     if (!mod.ok) throw new Error(`mod2: ${JSON.stringify(mod.error)}`);
     const moduleId = (mod.value as { moduleId: string }).moduleId;
