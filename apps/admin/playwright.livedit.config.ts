@@ -26,22 +26,21 @@
 import { defineConfig } from "@playwright/test";
 
 /**
- * Pinned Opus 4.7 model id for the livedit suite. PR #61 follow-up:
- * the suite ran against Sonnet 4.6 for cost reasons, but four of six
- * scenarios were tripping on AI-variance failures (the AI emitted a
- * structurally-correct page that didn't satisfy the structural floor —
- * missing `<h1>` in the homepage, missing `add_page` tool call in
- * nested-cta). With Opus 4.7 (the codebase's documented default per
- * `DEFAULT_MODEL.anthropic` in provider-resolver.ts), any remaining
- * scenario failure is a real bug — prompt regression, missing primer,
- * tool-schema drift, process bug — NOT model planning variance.
+ * Model id for the livedit suite — pinned to the codebase's documented
+ * default (`DEFAULT_MODEL.anthropic` in provider-resolver.ts), so the
+ * suite exercises exactly the model the product actually ships. The
+ * default moved to Sonnet 5 in #246 (with adaptive thinking); the suite
+ * follows so any scenario failure is a real bug — prompt regression,
+ * missing primer, tool-schema drift, process bug — NOT a variance gap
+ * between the test model and the shipped model.
  *
- * Switch back to Sonnet 4.6 once the suite has been stable for a few
- * weeks AND we've validated the cost delta against the green-rate
- * improvement. Bump here + rerun the 10× determinism check from
- * `docs/internal/e2e-livedit.md` if you do.
+ * History: earlier this was Sonnet 4.6 (cost), which tripped four of
+ * six scenarios on AI-variance (missing `<h1>`, missing `add_page`);
+ * then Opus 4.7 (the prior default). If the green rate regresses on
+ * Sonnet 5, rerun the 10× determinism check from
+ * `docs/internal/e2e-livedit.md` before assuming it's a product bug.
  */
-export const E2E_LIVEDIT_MODEL = "claude-opus-4-7";
+export const E2E_LIVEDIT_MODEL = "claude-sonnet-5";
 
 export default defineConfig({
   testDir: "./e2e-livedit",
