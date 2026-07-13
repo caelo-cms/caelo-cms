@@ -53,6 +53,10 @@ const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed
 // precedent as import_runs.estimate) so a schema evolution never bricks
 // list/get.
 const tokenFrequency = z.object({ value: z.string().max(500), count: z.number().int().min(1) });
+// issue #32 — measured spacing scale (space-section / -container /
+// -card / -button). Bounded like the role records so stored jsonb can
+// never balloon.
+const spacingScale = z.record(z.string().max(40), z.string().max(80));
 const pageDesignTokensSchema: z.ZodType<PageDesignTokens> = z.object({
   palette: z.array(tokenFrequency).max(16),
   backgrounds: z.array(tokenFrequency).max(16),
@@ -61,6 +65,7 @@ const pageDesignTokensSchema: z.ZodType<PageDesignTokens> = z.object({
   fontWeights: z.array(tokenFrequency).max(16),
   radii: z.array(tokenFrequency).max(16),
   shadows: z.array(tokenFrequency).max(16),
+  spacing: spacingScale,
   roles: z.record(z.string(), z.record(z.string(), z.string().max(500))),
 });
 const siteDesignTokensSchema: z.ZodType<SiteDesignTokens> = z.object({
@@ -71,6 +76,7 @@ const siteDesignTokensSchema: z.ZodType<SiteDesignTokens> = z.object({
   fontWeights: z.array(tokenFrequency).max(16),
   radii: z.array(tokenFrequency).max(16),
   shadows: z.array(tokenFrequency).max(16),
+  spacing: spacingScale,
   roles: z.record(z.string(), z.record(z.string(), z.string().max(500))),
   pageCount: z.number().int().min(0),
 });
@@ -2887,6 +2893,29 @@ export function prepareLegacyAggregatedToken(t: {
   // (a CSS shadow string) landed in `spacing.*` and the
   // TokenCategoryMismatch aborted the ENTIRE compose_from_run. No
   // guessing (CLAUDE.md 2): what we cannot place, we drop below.
+  // issue #32 — sampled typography composites arrive with scope
+  // "typography" and a JSON-serialised sub-field object
+  // ({fontFamily, fontSize, fontWeight, lineHeight}). Land them at the
+  // DTCG composite root so the renderer emits the full type scale
+  // (--font-<role> / --text-<role> / --font-weight-<role> /
+  // --leading-<role>). normalizeTokens/themeTypographyComposite validate
+  // the object shape; a malformed payload is our own serialisation bug,
+  // so we drop it (skip) rather than abort the whole compose.
+  if (t.scope === "typography") {
+    const basename = t.token.startsWith("typography-")
+      ? t.token.slice("typography-".length)
+      : t.token;
+    if (!basename) return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(t.value);
+    } catch {
+      return null;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return { canonicalPath: `typography.${basename}`, value: parsed };
+  }
+
   const name = t.token.toLowerCase();
   let category: string;
   if (t.scope === "color") category = "color";

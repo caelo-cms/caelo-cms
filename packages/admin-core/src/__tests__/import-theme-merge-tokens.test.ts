@@ -50,6 +50,36 @@ describe("prepareLegacyAggregatedToken", () => {
     });
   });
 
+  // issue #32 — sampled type-scale composites land at the DTCG
+  // typography root with the sub-field object intact (family + size +
+  // weight + line-height), so the renderer emits the full scale.
+  it("lands a sampled typography composite at the DTCG root", () => {
+    expect(
+      prepareLegacyAggregatedToken({
+        token: "typography-heading",
+        value: JSON.stringify({
+          fontFamily: "Sora, sans-serif",
+          fontSize: "40px",
+          fontWeight: 700,
+          lineHeight: "1.1",
+        }),
+        scope: "typography",
+      }),
+    ).toEqual({
+      canonicalPath: "typography.heading",
+      value: { fontFamily: "Sora, sans-serif", fontSize: "40px", fontWeight: 700, lineHeight: "1.1" },
+    });
+  });
+
+  it("drops a typography composite whose payload is not a JSON object", () => {
+    expect(
+      prepareLegacyAggregatedToken({ token: "typography-body", value: "not json", scope: "typography" }),
+    ).toBeNull();
+    expect(
+      prepareLegacyAggregatedToken({ token: "typography-body", value: "[1,2]", scope: "typography" }),
+    ).toBeNull();
+  });
+
   it("classifies radius by name keyword and validates the value", () => {
     expect(prepareLegacyAggregatedToken({ token: "--card-radius", value: "8px" })).toEqual({
       canonicalPath: "radius.--card-radius",
