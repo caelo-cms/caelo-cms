@@ -39,6 +39,12 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
+import {
+  buildZeroPagesAbortMessage,
+  classifyComposeRunStatus,
+  type ComposeSkip,
+  composePageSkipReason,
+} from "./compose-eligibility.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
 import { computeRunCost, majorUnitsToMicrocents, roundsToZeroMicrocents } from "./imports-cost.js";
@@ -2264,32 +2270,53 @@ export const composeFromImportRunOp = defineOperation({
       includeImportPageIds: z.array(z.string().uuid()).optional(),
     })
     .strict(),
-  output: z.object({
-    themeTokensApplied: z.number().int(),
-    /** Run #8 — crawled vars the theme layer refused, loud + verbatim
-     *  (`theme-token-skipped-nonfont-typography:<token>=<value>`). */
-    tokenNotes: z.array(z.string()),
-    /** issue #247 — where the applied theme values came from:
-     *  'sampled' = computed-style ground truth (extractor as extras),
-     *  'extractor' = inline-CSS fallback only, 'none' = no tokens. */
-    designTokenSource: z.enum(["sampled", "extractor", "none"]),
-    layoutId: z.string(),
-    /** The homepage cluster's template (first template when no home). */
-    templateId: z.string(),
-    /** issue #195 — one template per confirmed page-type cluster. */
-    templatesByCluster: z.record(z.string(), z.string()),
-    pageIds: z.array(z.string()),
-    homepageId: z.string().nullable(),
-    skippedAlreadyAccepted: z.number().int(),
-    /** issue #195 — formatted genesis-inventory over the homepage. */
-    designInventory: z.string().nullable(),
-    /** issue #196 — 301s written from old URLs to new Caelo paths. */
-    redirectsCreated: z.number().int(),
-    /** issue #253 — chrome blocks bound at the layout ("header"/"footer"). */
-    chromeBound: z.array(z.string()),
-    /** issue #253 — loud chrome notes (missing layout block, slot already bound). */
-    chromeNotes: z.array(z.string()),
-  }),
+  // Discriminated on `status` so "the crawl is still running" is a
+  // structured, non-error outcome the runner can poll on — not a red
+  // error card. `composed` carries the full synthesis result; `crawling`
+  // carries only the retry hint. A genuinely FAILED/absent run still
+  // returns `err(...)` (loud red), never `crawling`.
+  output: z.discriminatedUnion("status", [
+    z.object({
+      status: z.literal("crawling"),
+      /** Which not-ready state the run is in (crawling vs not-yet-started). */
+      runStatus: z.enum(["crawling", "proposed"]),
+      /** Suggested wait before the AI re-checks `imports.get`. */
+      retryAfterMs: z.number().int(),
+    }),
+    z.object({
+      status: z.literal("composed"),
+      themeTokensApplied: z.number().int(),
+      /** Run #8 — crawled vars the theme layer refused, loud + verbatim
+       *  (`theme-token-skipped-nonfont-typography:<token>=<value>`). */
+      tokenNotes: z.array(z.string()),
+      /** issue #247 — where the applied theme values came from:
+       *  'sampled' = computed-style ground truth (extractor as extras),
+       *  'extractor' = inline-CSS fallback only, 'none' = no tokens. */
+      designTokenSource: z.enum(["sampled", "extractor", "none"]),
+      layoutId: z.string(),
+      /** The homepage cluster's template (first template when no home). */
+      templateId: z.string(),
+      /** issue #195 — one template per confirmed page-type cluster. */
+      templatesByCluster: z.record(z.string(), z.string()),
+      pageIds: z.array(z.string()),
+      homepageId: z.string().nullable(),
+      skippedAlreadyAccepted: z.number().int(),
+      /** Pages that were eligible but held back by a per-page gate
+       *  (unacknowledged screenshot-diff fail). Surfaced loudly so the
+       *  operator sees WHICH pages need attention — never a silent drop. */
+      skippedPages: z.array(
+        z.object({ slug: z.string(), sourceUrl: z.string(), reason: z.string() }),
+      ),
+      /** issue #195 — formatted genesis-inventory over the homepage. */
+      designInventory: z.string().nullable(),
+      /** issue #196 — 301s written from old URLs to new Caelo paths. */
+      redirectsCreated: z.number().int(),
+      /** issue #253 — chrome blocks bound at the layout ("header"/"footer"). */
+      chromeBound: z.array(z.string()),
+      /** issue #253 — loud chrome notes (missing layout block, slot already bound). */
+      chromeNotes: z.array(z.string()),
+    }),
+  ]),
   handler: async (ctx, input, tx) => {
     // 1. Run must exist + be reviewable.
     const runRows = (await tx.execute(sql`
@@ -2309,11 +2336,24 @@ export const composeFromImportRunOp = defineOperation({
         message: "import run not found",
       });
     }
-    if (run.status !== "ready_for_review" && run.status !== "completed") {
+    // The background crawl flips the run to `ready_for_review` when done.
+    // Being called mid-crawl is EXPECTED timing (the AI/flow polls), not
+    // a failure: return a structured "not ready, keep polling" outcome as
+    // `ok` so it does not surface as a red error card. Only a genuinely
+    // FAILED (or unknown) run is a hard, loud error.
+    const classification = classifyComposeRunStatus(run.status, input.runId);
+    if (classification.kind === "not_ready") {
+      return ok({
+        status: "crawling" as const,
+        runStatus: classification.runStatus,
+        retryAfterMs: classification.retryAfterMs,
+      });
+    }
+    if (classification.kind === "error") {
       return err({
         kind: "HandlerError",
         operation: "imports.compose_from_run",
-        message: `run is ${run.status}; wait for ready_for_review before composing`,
+        message: classification.message,
       });
     }
 
@@ -2666,6 +2706,7 @@ export const composeFromImportRunOp = defineOperation({
     // so the homepage lands before the fan-out (homepage-first is the
     // migration contract).
     const createdPageIds: string[] = [];
+    const skippedPages: ComposeSkip[] = [];
     const templateIdsByCluster = new Map<string, string>();
     let homepageId: string | null = null;
     let redirectsCreated = 0;
@@ -2693,7 +2734,11 @@ export const composeFromImportRunOp = defineOperation({
 
       for (const r of members) {
         // Block on unacknowledged screenshot fail — same gate as accept_page.
-        if (r.diff_status === "fail" && !r.acknowledged_at) {
+        // Record WHY so a run that skips every page fails loudly below
+        // instead of silently returning templates-but-zero-pages.
+        const skip = composePageSkipReason(r);
+        if (skip) {
+          skippedPages.push(skip);
           continue;
         }
         const proposedModules = parseModules(r.proposed_modules);
@@ -2712,7 +2757,17 @@ export const composeFromImportRunOp = defineOperation({
           RETURNING id::text AS id
         `)) as unknown as { id: string }[];
         const pageId = pageInsert[0]?.id;
-        if (!pageId) continue;
+        if (!pageId) {
+          // An upsert with DO UPDATE ... RETURNING always yields a row;
+          // an empty result is a genuine write failure, not a normal
+          // skip. Abort loudly (rollback) rather than silently dropping
+          // the page — CLAUDE.md §2 (no silent degradation).
+          throw new OperationAbortError({
+            kind: "HandlerError",
+            operation: "imports.compose_from_run",
+            message: `page insert returned no row for '${r.proposed_slug}' (${r.source_url}) — nothing from this compose was applied.`,
+          });
+        }
         createdPageIds.push(pageId);
         if (clusterKey === "home" || r.proposed_slug === "home" || homepageId === null) {
           if (clusterKey === "home" || r.proposed_slug === "home" || homepageId === null) {
@@ -2747,7 +2802,16 @@ export const composeFromImportRunOp = defineOperation({
             RETURNING id::text AS id
           `)) as unknown as { id: string }[];
           const moduleId = modInsert[0]?.id;
-          if (!moduleId) continue;
+          if (!moduleId) {
+            // Swallowing this left a page missing its content module
+            // silently. A DO UPDATE ... RETURNING always yields a row —
+            // an empty result is a real failure. Abort loudly (rollback).
+            throw new OperationAbortError({
+              kind: "HandlerError",
+              operation: "imports.compose_from_run",
+              message: `module insert returned no row for '${r.proposed_slug}' block '${m.blockName}' pos ${m.position} — nothing from this compose was applied.`,
+            });
+          }
           // v0.12.0 — mint a fresh unsynced content_instance per placement
           // so page_modules.content_instance_id NOT NULL is satisfied.
           const ciInsert = (await tx.execute(sql`
@@ -2756,7 +2820,13 @@ export const composeFromImportRunOp = defineOperation({
             RETURNING id::text AS id
           `)) as unknown as { id: string }[];
           const newCiId = ciInsert[0]?.id;
-          if (!newCiId) continue;
+          if (!newCiId) {
+            throw new OperationAbortError({
+              kind: "HandlerError",
+              operation: "imports.compose_from_run",
+              message: `content_instance insert returned no row for '${r.proposed_slug}' block '${m.blockName}' pos ${m.position} — nothing from this compose was applied.`,
+            });
+          }
           await tx.execute(sql`
             INSERT INTO page_modules
               (page_id, block_name, position, module_id, content_instance_id, sync_mode)
@@ -2846,6 +2916,21 @@ export const composeFromImportRunOp = defineOperation({
       });
     }
 
+    // Templates were created but EVERY eligible page was skipped by a
+    // per-page gate. Pre-fix this returned `ok` with `pageIds: []`, so
+    // the AI saw "templates but no pages" and invented a "format reason"
+    // to fall back to the fragile direct-build path. Fail loudly instead
+    // (rollback), naming exactly which pages were skipped and why, so the
+    // operator/AI can acknowledge or exclude them and re-run — CLAUDE.md
+    // §2 (no silent degradation: never templates-but-silently-zero-pages).
+    if (createdPageIds.length === 0) {
+      throw new OperationAbortError({
+        kind: "HandlerError",
+        operation: "imports.compose_from_run",
+        message: buildZeroPagesAbortMessage(templateIdsByCluster.size, skippedPages),
+      });
+    }
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -2853,10 +2938,11 @@ export const composeFromImportRunOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.runId,
-      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} redirects=${redirectsCreated} skipped=${skippedAlreadyAccepted}`,
+      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} redirects=${redirectsCreated} skippedAccepted=${skippedAlreadyAccepted} skippedGated=${skippedPages.length}`,
     });
 
     return ok({
+      status: "composed" as const,
       themeTokensApplied: aggregatedTokens.length - tokenNotes.length,
       tokenNotes,
       designTokenSource,
@@ -2866,6 +2952,11 @@ export const composeFromImportRunOp = defineOperation({
       pageIds: createdPageIds,
       homepageId,
       skippedAlreadyAccepted,
+      skippedPages: skippedPages.map((s) => ({
+        slug: s.slug,
+        sourceUrl: s.sourceUrl,
+        reason: s.reason,
+      })),
       designInventory,
       redirectsCreated,
       chromeBound,
