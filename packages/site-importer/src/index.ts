@@ -53,12 +53,31 @@ export {
   stripCommentThreads,
 } from "./extractor.js";
 export {
+  type AltTextEntry,
+  extractAltTexts,
+  extractOutboundLinks,
+  extractPageMeta,
+  type HreflangAlternate,
+  type LinkLocation,
+  type OutboundLink,
+  type PageMeta,
+} from "./page-facets.js";
+export {
   type ClusterSummary,
   computePageSignature,
   type PageSignatureInput,
   pathShape,
   summariseClusters,
 } from "./page-signature.js";
+export {
+  type ClassifierLink,
+  type ClassifyPageTypesInput,
+  classifyPageTypes,
+  type FilteredUrl,
+  type PageType,
+  type PageTypeMap,
+  type PageTypeSource,
+} from "./page-type-map.js";
 export { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 export {
   assertPublicHttpUrl,
