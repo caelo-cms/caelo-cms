@@ -34,6 +34,12 @@
   // Slug uniqueness still requires a server round-trip; that error
   // surfaces via the `form?.error` Alert above.
   const createForm = bindZodForm(pageCreateSchema, { locale: "en", status: "draft" });
+
+  // Run #9 R10 (issue #262) — bulk publish. Drafts never ship to
+  // staging/production; a migration's 30-150 draft pages need one
+  // action, not one click per row.
+  const draftCount = $derived(data.pages.filter((p) => p.status === "draft").length);
+  let bulkPublishing = $state(false);
 </script>
 
 <div class="space-y-6">
@@ -70,7 +76,40 @@
 
   <Card>
     <CardHeader>
-      <CardTitle class="text-base">Existing pages</CardTitle>
+      <div class="flex items-center justify-between gap-4">
+        <CardTitle class="text-base">Existing pages</CardTitle>
+        {#if draftCount > 0}
+          <!-- Publishes page STATUS only — production still requires the
+               explicit Stage → Confirm publish flow. use:enhance keeps the
+               URL clean so a refresh doesn't re-submit. -->
+          <form
+            method="post"
+            action="?/publishAllDrafts"
+            use:enhance={() => {
+              bulkPublishing = true;
+              return async ({ update }) => {
+                try {
+                  await update({ reset: false });
+                } finally {
+                  bulkPublishing = false;
+                }
+              };
+            }}
+          >
+            <input type="hidden" name="_csrf" value={data.csrfToken} />
+            <Button
+              type="submit"
+              size="sm"
+              variant="outline"
+              disabled={bulkPublishing}
+              data-testid="publish-all-drafts-btn"
+              title="Set every draft page to published so the next Stage includes it. Nothing reaches production until you confirm."
+            >
+              {bulkPublishing ? "Publishing…" : `Publish ${draftCount} draft page(s)`}
+            </Button>
+          </form>
+        {/if}
+      </div>
     </CardHeader>
     <CardContent>
       {#if data.pages.length === 0}

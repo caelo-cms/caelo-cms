@@ -142,6 +142,60 @@ export const actions: Actions = {
       },
     };
   },
+  /**
+   * Migration run #9 R10 (issue #262) — bulk publish. A migration
+   * creates 30-150 pages as drafts, and staging builds ship only
+   * status='published' pages; pre-fix the only path from "migrated"
+   * to "previewable on staging" was one Stage/status click per page
+   * (run #9: 92 clicks). One action flips every draft to published
+   * via `pages.set_status_many` (≤200 per tx, chunked above that).
+   * Publishing here means page STATUS only — nothing reaches
+   * production until the human clicks Publish live / Confirm publish.
+   */
+  publishAllDrafts: async ({ request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+
+    const listResult = await execute(registry, adapter, locals.ctx, "pages.list", {});
+    if (!listResult.ok) {
+      return fail(500, { error: `Could not list pages: ${describeError(listResult.error)}` });
+    }
+    const draftIds = (listResult.value as { pages: { id: string; status: string }[] }).pages
+      .filter((p) => p.status === "draft")
+      .map((p) => p.id);
+    if (draftIds.length === 0) {
+      return { ok: "No draft pages to publish." };
+    }
+
+    // pages.set_status_many caps at 200 ids per call; chunk for sites
+    // beyond that. Each chunk is one all-or-nothing tx.
+    let published = 0;
+    for (let i = 0; i < draftIds.length; i += 200) {
+      const chunk = draftIds.slice(i, i + 200);
+      const r = await execute(registry, adapter, locals.ctx, "pages.set_status_many", {
+        pageIds: chunk,
+        status: "published",
+      });
+      if (!r.ok) {
+        console.error("[publishAllDrafts] pages.set_status_many failed", {
+          chunkStart: i,
+          chunkSize: chunk.length,
+          error: r.error,
+        });
+        return fail(500, {
+          error:
+            `Published ${published} page(s), then a batch failed: ${describeError(r.error)}. ` +
+            "Re-run to publish the rest.",
+        });
+      }
+      published += (r.value as { updatedCount: number }).updatedCount;
+    }
+    return {
+      ok: `Published ${published} draft page(s). Stage next to rebuild the staging preview.`,
+    };
+  },
   confirmPublish: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");
     const { adapter, registry } = getQueryContext();

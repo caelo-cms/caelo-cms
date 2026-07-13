@@ -770,6 +770,19 @@ export const actions: Actions = {
       previewUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
     }
 
+    // Migration run #9 R10 (issue #262) — the partial success-lie:
+    // staging builds only status='published' pages, so a build can
+    // "succeed" while the operator's draft work (e.g. an entire
+    // migration) is absent from it. Surface the draft count in the
+    // staged result so the toast says what is NOT in the preview
+    // instead of implying everything shipped.
+    let draftPageCount = 0;
+    const pagesForDraftCount = await execute(registry, adapter, locals.ctx, "pages.list", {});
+    if (pagesForDraftCount.ok) {
+      const allPages = (pagesForDraftCount.value as { pages: { status: string }[] }).pages;
+      draftPageCount = allPages.filter((p) => p.status === "draft").length;
+    }
+
     return {
       staged: {
         pageId,
@@ -778,6 +791,7 @@ export const actions: Actions = {
         buildId: summary.buildId,
         previewUrl,
         mergedEntityCount: mergedSummaryValue.entityCount,
+        draftPageCount,
       },
     };
   },

@@ -185,17 +185,48 @@ describe("P6 deploy.trigger", () => {
     expect(manifest.runId).toBe(out.buildId);
   });
 
-  it("staging robots.txt blocks crawlers", async () => {
-    const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
-      targetName: "staging",
-      repoRoot: testRoot,
+  it("staging deploy succeeds only when the serve layer serves THIS build (run #9 R10)", async () => {
+    // Migration run #9 R10 (issue #262): deploy.trigger reported success
+    // while the staging vhost served a months-old build (the generator
+    // wrote outside the mounted directory). The op now round-trips
+    // <CAELO_STAGING_BASE_URL>/routing-manifest.json and requires the
+    // served runId to be the run just built. Serve the real output dir
+    // here so the test exercises the check instead of skipping it.
+    const stagingCurrent = join(testRoot, "output", "staging", "current");
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        const file = Bun.file(join(stagingCurrent, path));
+        if (await file.exists()) return new Response(file);
+        return new Response("not found", { status: 404 });
+      },
     });
-    expect(result.ok).toBe(true);
-    const robots = await readFile(
-      join(testRoot, "output", "staging", "current", "robots.txt"),
-      "utf8",
-    );
-    expect(robots).toContain("Disallow: /");
+    process.env.CAELO_STAGING_BASE_URL = server.url.origin;
+    try {
+      const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const out = result.value as { runId: string; buildId: string; pageCount: number };
+
+      // deploy_runs success implies the build's manifest write: the
+      // served manifest must carry this run's id and a pageCount that
+      // reflects the published pages that were built.
+      const manifestRaw = await readFile(join(stagingCurrent, "routing-manifest.json"), "utf8");
+      const manifest = JSON.parse(manifestRaw) as { runId: string; pageCount: number };
+      expect(manifest.runId).toBe(out.buildId);
+      expect(manifest.pageCount).toBe(out.pageCount);
+      expect(manifest.pageCount).toBeGreaterThanOrEqual(1);
+
+      const robots = await readFile(join(stagingCurrent, "robots.txt"), "utf8");
+      expect(robots).toContain("Disallow: /");
+    } finally {
+      delete process.env.CAELO_STAGING_BASE_URL;
+      server.stop(true);
+    }
   });
 
   it("AI actor can trigger a deploy (trigger-only surface)", async () => {
@@ -250,5 +281,51 @@ describe("P6 deploy.trigger", () => {
     expect(list[0]?.status).toBe("succeeded");
     // See note above — other published pages may exist in the dev DB.
     expect(list[0]?.pageCount ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  it("staging deploy FAILS loudly when the serve layer serves a different build (run #9 R10)", async () => {
+    // The regression itself: a serving layer stuck on a stale build.
+    // Serve a manifest with a foreign runId; the op must mark the run
+    // failed and return an error the Stage dialog can render — never a
+    // success over a build the operator cannot see.
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/routing-manifest.json") {
+          return new Response(
+            JSON.stringify({ runId: "65d4201b-1dbf-43d7-90e8-18889c176127", pageCount: 1 }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    process.env.CAELO_STAGING_BASE_URL = server.url.origin;
+    try {
+      const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.kind).toBe("HandlerError");
+      const message = "message" in result.error ? String(result.error.message) : "";
+      expect(message).toContain("staging build verification failed");
+      expect(message).toContain("CAELO_OUTPUT_ROOT");
+
+      // The deploy_runs row must record the failure too — the Ops
+      // dashboard is the audit surface for "why is staging stale?".
+      const runs = await execute(registry, adapter, HUMAN, "deploy.list_runs", { limit: 1 });
+      expect(runs.ok).toBe(true);
+      if (!runs.ok) return;
+      const latest = (runs.value as { runs: { status: string; errorMessage: string | null }[] })
+        .runs[0];
+      expect(latest?.status).toBe("failed");
+      expect(latest?.errorMessage ?? "").toContain("staging build verification failed");
+    } finally {
+      delete process.env.CAELO_STAGING_BASE_URL;
+      server.stop(true);
+    }
   });
 });
