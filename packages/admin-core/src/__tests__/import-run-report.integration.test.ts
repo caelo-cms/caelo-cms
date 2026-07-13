@@ -22,6 +22,9 @@ let registry: OperationRegistry;
 let sqlc: SQL;
 let runId: string;
 let pageAId: string;
+// #263 — the CMS page id (import_pages.accepted_page_id) the AI would
+// naturally pass to add_page_notes after composing the page.
+let acceptedPageId: string;
 
 const AI: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-000000000a1a",
@@ -39,7 +42,7 @@ async function cleanup(): Promise<void> {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
     await tx`DELETE FROM import_pages WHERE source_url LIKE 'https://issue197.example%'`;
     await tx`DELETE FROM import_runs WHERE source_url LIKE 'https://issue197.example%'`;
-    await tx`DELETE FROM pages WHERE slug = 'issue197-anchor'`;
+    await tx`DELETE FROM pages WHERE slug LIKE 'issue197-anchor%'`;
   });
 }
 
@@ -100,6 +103,19 @@ beforeAll(async () => {
     const rows =
       await tx`SELECT id::text AS id FROM import_pages WHERE run_id = ${runId}::uuid AND source_url LIKE '%alte-seite%'`;
     pageAId = (rows as unknown as { id: string }[])[0]?.id ?? "";
+    // #263 — give page A its OWN accepted CMS page id (distinct from
+    // page B's shared anchor) so passing that id resolves to exactly
+    // one import_pages row.
+    const anchorA = await tx`
+      INSERT INTO pages (slug, locale, title, name, status, template_id, version)
+      SELECT 'issue197-anchor-a', 'en', 'Anchor A', 'Anchor A', 'draft', id, 1
+      FROM templates WHERE deleted_at IS NULL LIMIT 1
+      RETURNING id
+    `;
+    acceptedPageId = (anchorA as unknown as { id: string }[])[0]?.id ?? "";
+    await tx`UPDATE import_pages
+             SET accepted_page_id = ${acceptedPageId}::uuid
+             WHERE id = ${pageAId}::uuid`;
   });
 });
 
@@ -131,6 +147,33 @@ describe("migration report (#197)", () => {
       notes: [{ category: "vibes", note: "x", applied: false }],
     });
     expect(bad.ok).toBe(false);
+  });
+
+  it("accepts the composed CMS page id (accepted_page_id), not only the staging id (#263)", async () => {
+    // The AI naturally passes the CMS page id it just composed. Resolve
+    // it to the owning import_pages row and append onto the SAME notes
+    // array the staging-id calls above wrote (3 so far → 4).
+    const viaCmsId = await execute(registry, adapter, AI, "imports.add_page_notes", {
+      importPageId: acceptedPageId,
+      notes: [
+        { category: "improvement", note: "CTA oben verschieben — Vorschlag", applied: false },
+      ],
+    });
+    expect(viaCmsId.ok).toBe(true);
+    expect((viaCmsId.value as { totalNotes: number }).totalNotes).toBe(4);
+  });
+
+  it("returns an AI-actionable error naming BOTH id forms when neither matches (#263)", async () => {
+    const missing = await execute(registry, adapter, AI, "imports.add_page_notes", {
+      // Valid uuid FORMAT (passes the Zod validator) but no such row —
+      // so the handler's #263 not-found branch is what fires.
+      importPageId: "263263ff-0263-4263-8263-000000000263",
+      notes: [{ category: "typo", note: "x", applied: true }],
+    });
+    expect(missing.ok).toBe(false);
+    const message = missing.ok ? "" : String((missing.error as { message?: string }).message ?? "");
+    expect(message).toContain("import_pages.id");
+    expect(message).toContain("accepted_page_id");
   });
 
   it("report rolls up clusters, redirects, crawl errors, and the applied/suggested split", async () => {
