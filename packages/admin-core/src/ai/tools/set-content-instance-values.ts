@@ -26,22 +26,7 @@ export const setContentInstanceValuesTool: ToolDefinitionWithHandler<
     "**Nested fields (kind `module` / `module-list`):** the value is `{ moduleId, contentInstanceId }` (single) or an array of them (list). The referenced module's stable `type` MUST be in the field's `allowedModuleTypes` when that whitelist is set — see each module's `type` in `## Modules`. Reuse an existing module of an allowed type rather than minting a duplicate; if none fits, create one with `type` set to an allowed value. " +
     "Optional metadata edits in the same write: `slug` + `displayName` (pass `null` to clear), and v0.12.0 `purpose` (rewrite the rationale when the operator's intent for this shared row has shifted — keeps `## Content Library` accurate for your future self).",
   schema: setContentInstanceValuesToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["id", "values"],
-    properties: {
-      id: { type: "string", format: "uuid" },
-      values: { type: "object", additionalProperties: true },
-      expectedVersion: { type: "integer", minimum: 0 },
-      slug: {
-        type: ["string", "null"],
-        pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-      },
-      displayName: { type: ["string", "null"], minLength: 1, maxLength: 128 },
-      purpose: { type: ["string", "null"], maxLength: 1000 },
-    },
-  },
+  // issue #251 (WS5) — inputSchema derived from `schema` at registration.
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(
       toolCtx.registry,
