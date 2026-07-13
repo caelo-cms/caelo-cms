@@ -62,29 +62,7 @@ export const offerChoicesTool: ToolDefinitionWithHandler<OfferChoicesInput> = {
     "Do NOT use it for open questions (names, URLs, free text) or when an option list would " +
     "hide better answers the operator might type.",
   schema: offerChoicesInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["question", "options"],
-    properties: {
-      question: { type: "string", minLength: 1, maxLength: 500, pattern: "^[^\\n]+$" },
-      options: {
-        type: "array",
-        minItems: 2,
-        maxItems: 4,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["key", "label"],
-          properties: {
-            key: { type: "string", pattern: "^[A-Za-z0-9]{1,3}$" },
-            label: { type: "string", minLength: 1, maxLength: 120, pattern: "^[^\\n]+$" },
-            description: { type: "string", minLength: 1, maxLength: 300, pattern: "^[^\\n]+$" },
-          },
-        },
-      },
-    },
-  },
+  // issue #251 (WS5) — inputSchema derived from `schema` at registration.
   handler: (_ctx, input) => {
     const lines = input.options.map(
       (o) => `${o.key}) ${o.label}${o.description ? ` — ${o.description}` : ""}`,

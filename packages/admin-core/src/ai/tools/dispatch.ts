@@ -22,6 +22,7 @@ import type { z } from "zod";
 
 import type { AIProvider } from "../provider.js";
 import type { ToolDescribeState } from "./describe-state.js";
+import { generateInputSchema } from "./generate-input-schema.js";
 import { normalizeToolArgs } from "./normalize-args.js";
 
 /**
@@ -186,10 +187,15 @@ export interface ToolResult {
 }
 
 /**
- * JSON Schema (draft-07-ish) object handed to the AI provider for a tool's
- * arguments. Hand-authored next to each tool's Zod schema (we don't ship a
- * zod-to-json-schema dep). Aliased so the per-turn `describeSchema` hook and
- * the static `inputSchema` share one self-documenting contract.
+ * JSON Schema object handed to the AI provider for a tool's arguments.
+ *
+ * issue #251 (WS5) — this is now DERIVED from the tool's Zod `schema` at
+ * registration (see `generateInputSchema`), so the provider-facing schema
+ * and the dispatch-time validation schema are one source of truth and can
+ * no longer drift. A tool may still ship a hand-written `inputSchema` when
+ * the generated shape isn't what the provider needs; the per-turn
+ * `describeSchema` hook (issue #106) also returns this shape to narrow an
+ * argument to a state-scoped enum at generation time.
  */
 export type ToolInputSchema = Record<string, unknown>;
 
@@ -261,12 +267,28 @@ export interface ToolDefinitionWithHandler<I> {
     ctx: ExecutionContext,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   readonly schema: z.ZodType<I>;
-  /** JSON Schema for the provider — Zod doesn't ship this directly so we
-   * hand-author next to the schema. Easier to keep aligned than to install
-   * a Zod-to-JSON-Schema dependency for two tools. */
-  readonly inputSchema: ToolInputSchema;
+  /**
+   * JSON Schema for the provider. OPTIONAL as of issue #251 (WS5) — when
+   * omitted, `ToolRegistry.register` derives it from `schema` via
+   * `generateInputSchema` (Zod v4 `z.toJSONSchema`), which is the preferred
+   * path: one source of truth, no drift. Supply an explicit value only when
+   * the generated shape isn't what the provider needs (rare). Once
+   * registered, the stored tool always carries a resolved `inputSchema`
+   * (see `RegisteredTool`), so dispatch/catalogue read it unconditionally.
+   */
+  readonly inputSchema?: ToolInputSchema;
   readonly handler: (ctx: ExecutionContext, input: I, toolCtx: ToolContext) => Promise<ToolResult>;
 }
+
+/**
+ * A tool after registration: `inputSchema` is guaranteed present (resolved
+ * from the hand-written value or generated from `schema`). Everything
+ * downstream of `register` — dispatch, `catalogue`, `formatToolArgError` —
+ * reads it unconditionally, so it operates on this narrowed shape.
+ */
+type RegisteredTool = Omit<ToolDefinitionWithHandler<unknown>, "inputSchema"> & {
+  readonly inputSchema: ToolInputSchema;
+};
 
 /**
  * issue #106 (step-13 round-4) — build an AI-actionable argument-rejection
@@ -368,14 +390,32 @@ function formatToolArgError(
 }
 
 export class ToolRegistry {
-  readonly #tools = new Map<string, ToolDefinitionWithHandler<unknown>>();
+  readonly #tools = new Map<string, RegisteredTool>();
 
   register<I>(tool: ToolDefinitionWithHandler<I>): void {
-    this.#tools.set(tool.name, tool as ToolDefinitionWithHandler<unknown>);
+    // issue #251 (WS5) — resolve the provider-facing inputSchema once, at
+    // registration: use the hand-written value when present, otherwise
+    // derive it from the Zod `schema`. This makes the Zod schema the single
+    // source of truth for the common case while leaving an escape hatch.
+    const inputSchema = tool.inputSchema ?? generateInputSchema(tool.schema);
+    this.#tools.set(tool.name, {
+      ...(tool as ToolDefinitionWithHandler<unknown>),
+      inputSchema,
+    });
   }
 
-  get(name: string): ToolDefinitionWithHandler<unknown> | undefined {
+  get(name: string): RegisteredTool | undefined {
     return this.#tools.get(name);
+  }
+
+  /**
+   * All registered tools, with their resolved `inputSchema`. Read-only view
+   * for callers that need to iterate the catalogue's definitions (e.g. the
+   * schema-generation contract test) rather than the provider-shaped
+   * projection `catalogue` returns.
+   */
+  list(): readonly RegisteredTool[] {
+    return [...this.#tools.values()];
   }
 
   /**
