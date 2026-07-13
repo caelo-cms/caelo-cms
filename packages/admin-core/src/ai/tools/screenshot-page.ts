@@ -42,7 +42,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
     "Capture a screenshot of the rendered page (operator's browser does the capture via html2canvas; you see the result as an image attached to the next user turn). Use for VISUAL feedback — 'is the spacing right?', 'does the hero feel crowded?', 'what's the overall layout impression?'. " +
     "ALWAYS call this after composing a page or making structural/styling changes — desktop AND mobile viewports — and fix what the screenshot reveals BEFORE telling the operator you're done (max two review rounds; skip for content-only edits). " +
     "For CSS pathology (white halo around the header, wrong colors, broken layout) prefer `inspect_page_render` — it returns the HTML + every CSS layer separately and is faster + cheaper. " +
-    "Pass `selector` (CSS selector) to capture a SINGLE element instead of the whole page — right choice when checking one module (a footer, a hero) instead of the page. Pass `chatBranchId` to capture the chat-branch preview (with pending edits). REQUIRES an active operator browser session — fails with a 30s timeout if the operator closed the tab. Only call this once per visual check; the image is attached to ONE follow-up user turn, not persisted across the chat.",
+    "Pass `selector` (CSS selector) to capture a SINGLE element instead of the whole page — right choice when checking one module (a footer, a hero) instead of the page. By default the capture shows THIS chat's branch preview (your pending edits included); pass `chatBranchId` only to capture a different branch. REQUIRES an active operator browser session — fails with a 30s timeout if the operator closed the tab. Only call this once per visual check; the image is attached to ONE follow-up user turn, not persisted across the chat.",
   schema: screenshotInput,
   inputSchema: {
     type: "object",
@@ -54,7 +54,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
         type: "string",
         format: "uuid",
         description:
-          "Optional. When set, the captured iframe shows the chat-branch preview with staged edits. Usually the right choice when debugging the operator's in-progress work.",
+          "Optional override. Defaults to the current chat's branch, so you normally omit it. Set it only to capture another branch's staged edits.",
       },
       viewport: {
         type: "string",
@@ -80,6 +80,13 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
       };
     }
     const requestId = crypto.randomUUID();
+    // Run #8 R3 (follow-up from live-edit CI) — default to the CURRENT
+    // chat's branch, mirroring inspect_page_render. Without this, an
+    // omitted chatBranchId made ChatPanel mount the PUBLISHED preview:
+    // pre-staging pages 404'd in the iframe (a red console error the
+    // operator sees) and the model concluded "the page isn't served
+    // yet" instead of seeing its own work.
+    const chatBranchId = input.chatBranchId ?? toolCtx.chatBranchId;
     // Yield the SSE event for ChatPanel — it'll mount the preview
     // iframe at the right viewport, run html2canvas on its body,
     // and POST the PNG to the upload endpoint.
@@ -87,7 +94,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
       kind: "request-screenshot",
       requestId,
       pageId: input.pageId,
-      ...(input.chatBranchId ? { chatBranchId: input.chatBranchId } : {}),
+      ...(chatBranchId ? { chatBranchId } : {}),
       ...(input.selector ? { selector: input.selector } : {}),
       viewport: input.viewport ?? "desktop",
     });

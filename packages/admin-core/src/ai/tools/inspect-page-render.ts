@@ -50,7 +50,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
     "Render the page and return the FULL composed HTML + every CSS layer separately (layout / template / theme / each module's CSS). " +
     "USE THIS BEFORE proposing CSS or layout fixes — it's the only way to see the actual cascade the visitor's browser would apply. " +
     "When the operator reports a visual issue ('white padding', 'header is too tall', 'colors are wrong'), call this FIRST so you can find the precise rule causing it instead of guessing. " +
-    "Pass `chatBranchId` to inspect the chat-branch preview (with pending edits) vs the published version — usually you want the chat branch since you're debugging your own staged edits. " +
+    "By default this renders THIS chat's branch preview (your pending edits included) — the state you are actually working on. Pass `chatBranchId` only to inspect a DIFFERENT branch, or omit-and-run outside a chat to see the published version. " +
     "Returns ~50-200KB of structured JSON. Fine for one tool call per debugging task; don't loop on the same page within one turn.",
   schema: inspectInput,
   inputSchema: {
@@ -63,16 +63,22 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
         type: "string",
         format: "uuid",
         description:
-          "Optional. When set, the rendered preview reflects the chat-branch's staged edits. Usually the right choice when you're debugging an issue the operator can see in /edit.",
+          "Optional override. Defaults to the current chat's branch, so you normally omit it. Set it only to inspect another branch's staged edits.",
       },
     },
   },
   handler: async (ctx, input, toolCtx) => {
+    // Run #8 R3 — default to the CURRENT chat's branch. The AI edits on
+    // its chat branch (write ops carry ctx.chatBranchId), but pre-run-#8
+    // this tool only used the branch when the model remembered to pass
+    // `chatBranchId` explicitly — so mid-rebuild inspections showed the
+    // PUBLISHED page, and the AI "fixed" things it had already fixed.
+    const chatBranchId = input.chatBranchId ?? toolCtx.chatBranchId;
     // 1. Composed HTML — the final string the visitor's browser would
     //    parse. Same path the /edit preview iframe uses.
     const renderR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.render_preview", {
       pageId: input.pageId,
-      ...(input.chatBranchId ? { chatBranchId: input.chatBranchId } : {}),
+      ...(chatBranchId ? { chatBranchId } : {}),
     });
     if (!renderR.ok) {
       return {

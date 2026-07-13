@@ -299,6 +299,44 @@ export const getPageWithModulesOp = defineOperation({
         is_deleted: boolean;
       }[];
       const detailById = new Map(modDetailRows.map((r) => [r.module_id, r]));
+      // Run #8 R3 — caller-branch module CODE overlay. Branched
+      // `modules.update` writes a module_snapshots row only (live
+      // `modules` stays untouched until publish), so without this
+      // overlay a rebuild's read-back returned the PUBLISHED html/css
+      // and the AI re-edited modules it had already rewritten. One
+      // batched DISTINCT ON query — same overlay `pages.render_preview`
+      // applies for the /edit iframe, so tool reads match what the
+      // operator sees.
+      if (ctx.chatBranchId && allModuleIds.length > 0) {
+        const overlayRows = (await tx.execute(sql`
+          SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
+          FROM module_snapshots ms
+          JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+          WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid
+            AND ms.module_id = ANY(${sql.raw(
+              `ARRAY[${allModuleIds.map((id) => `'${id}'::uuid`).join(",")}]`,
+            )})
+          ORDER BY ms.module_id, ss.created_at DESC
+        `)) as unknown as { module_id: string; state: unknown }[];
+        for (const row of overlayRows) {
+          const detail = detailById.get(row.module_id);
+          if (!detail) continue;
+          const s = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as {
+            html?: string;
+            css?: string;
+            js?: string;
+            displayName?: string;
+            slug?: string;
+            deletedAt?: string | null;
+          };
+          if (s.deletedAt) continue; // soft-deleted in the overlay — keep live
+          detail.html = s.html ?? detail.html;
+          detail.css = s.css ?? detail.css;
+          detail.js = s.js ?? detail.js;
+          detail.display_name = s.displayName ?? detail.display_name;
+          detail.slug = s.slug ?? detail.slug;
+        }
+      }
       // v0.12.0 — placement metadata. Index by (block, position) so
       // the loop below can hand the per-placement sync_mode +
       // content_instance_id to the UI.
@@ -400,6 +438,16 @@ export const getPageWithModulesOp = defineOperation({
     for (const [blockName, modules] of grouped) {
       if (!blockDefRows.some((b) => b.name === blockName)) {
         orderedBlocks.push({ blockName, modules });
+      }
+    }
+    // Run #8 R3 — page meta overlay (slug/title), mirroring the v0.5.5
+    // fix in pages.render_preview: branched pages.update writes
+    // page_snapshots only, so the live row carries pre-rename values.
+    if (ctx.chatBranchId) {
+      const pageState = await loadPageStateWithBranchOverlay(tx, input.pageId, ctx.chatBranchId);
+      if (pageState) {
+        if (pageState.slug) pageRow.slug = pageState.slug;
+        if (pageState.title) pageRow.title = pageState.title;
       }
     }
     return ok({

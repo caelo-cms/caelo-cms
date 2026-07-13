@@ -14,12 +14,20 @@
  * building it. The chat-runner now treats a zero-match allowlist as absent
  * (full catalogue) and warns — while a VALID partial allowlist still
  * narrows surgically.
+ *
+ * Run #8 R2b/R5 amended the narrowing contract: a skill allowlist
+ * narrows WRITE tools only; read-only tools (list_/get_/inspect_/find_/
+ * screenshot_/check_ by naming convention) always stay in the catalogue,
+ * because stripping them blinded the AI mid-session (wrong-module edits)
+ * and inside rebuild subagents. The "valid partial allowlist" case below
+ * asserts the amended contract.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { isReadOnlyToolName } from "../ai/chat-runner/tool-catalogue.js";
 import { runChatTurn } from "../ai/chat-runner.js";
 import type { AIProvider, GenerateInput, ProviderEvent, ProviderName } from "../ai/provider.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
@@ -148,10 +156,25 @@ describe("skill allowlist zero-match guard (issue #106)", () => {
     expect(tools.some((t) => t.name === "add_module_to_layout")).toBe(true);
   });
 
-  it("a VALID partial allowlist still narrows the catalogue surgically", async () => {
+  it("a VALID partial allowlist still narrows WRITE tools surgically (reads always stay — run #8 R2b/R5)", async () => {
     await seedSkill(VALID_SLUG, ["edit_module"], "zzscopededit");
     const tools = await captureToolsForTurn("zzscopededit");
-    // The guard only fires on zero-match; a real allowlist still narrows.
-    expect(tools.map((t) => t.name)).toEqual(["edit_module"]);
+    const names = tools.map((t) => t.name);
+    // The allowlisted write tool is present…
+    expect(names).toContain("edit_module");
+    // …every OTHER write tool is narrowed away…
+    expect(names).not.toContain("add_module_to_layout");
+    expect(names).not.toContain("add_module_to_page");
+    expect(names).not.toContain("create_page");
+    expect(names).not.toContain("set_page_module_content");
+    // …and every remaining tool is read-only by the naming convention
+    // (run #8 R2b/R5: skill allowlists never strip the AI's read surface).
+    for (const name of names) {
+      if (name === "edit_module") continue;
+      expect(isReadOnlyToolName(name)).toBe(true);
+    }
+    // The read surface is genuinely still there, not vacuously empty.
+    expect(names).toContain("list_modules");
+    expect(names).toContain("inspect_page_render");
   });
 });

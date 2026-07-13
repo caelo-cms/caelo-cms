@@ -88,6 +88,12 @@ export async function* runToolLoop(
   let passiveNudged = false;
   // issue #261 — one-shot guard for the prompt-too-long compact+retry.
   let promptTooLongRetried = false;
+  // Run #8 R1 — one-shot guard for the empty-content-at-output-cap retry.
+  let emptyAtCapRetried = false;
+  // Run #8 R1 — the retry raises the per-call ceiling (adaptive thinking
+  // consumed the whole budget before any visible content; re-running at
+  // the same ceiling would likely fail identically).
+  let maxOutputTokensThisTurn = args.maxOutputTokens;
 
   for (let loop = 0; loop < args.maxLoops; loop++) {
     if (aborted()) break;
@@ -129,7 +135,7 @@ export async function* runToolLoop(
       messages,
       tools: args.filteredTools,
       abortSignal,
-      maxTokens: args.maxOutputTokens,
+      maxTokens: maxOutputTokensThisTurn,
       temperature: args.temperature,
       thinkingBudget: args.thinkingBudget,
       usage: args.usage,
@@ -207,6 +213,65 @@ export async function* runToolLoop(
     }
 
     const assistantContent = accumulatedText.join("");
+
+    // Run #8 R1 — empty content at EXACTLY the output-token cap. Adaptive
+    // thinking shares max_tokens with the visible output; on hard turns it
+    // can consume the entire budget, so the model stops at `max_tokens`
+    // having produced zero text and zero tool calls. Pre-run-#8 this
+    // persisted a silent empty assistant message and the session drifted
+    // on. Retry ONCE with a doubled ceiling (re-running at the same
+    // ceiling would likely fail identically); if the retry also comes
+    // back empty, persist a VISIBLE error notice — no silent empties
+    // (CLAUDE.md §2 no-fallbacks).
+    if (
+      loopStop === "max_tokens" &&
+      assistantContent.length === 0 &&
+      accumulatedToolCalls.length === 0 &&
+      !aborted()
+    ) {
+      if (!emptyAtCapRetried) {
+        emptyAtCapRetried = true;
+        maxOutputTokensThisTurn = Math.min(maxOutputTokensThisTurn * 2, 65536);
+        console.error("[chat-runner] empty-at-output-cap-retry", {
+          chatSessionId,
+          loop,
+          previousMaxOutputTokens: args.maxOutputTokens,
+          retryMaxOutputTokens: maxOutputTokensThisTurn,
+          rawFinishReason: stoppingDiagnostics?.rawFinishReason ?? null,
+        });
+        // The retry replaces the failed call — don't burn a loop slot on
+        // a turn that produced nothing.
+        loop--;
+        continue;
+      }
+      const notice =
+        "The AI's response was cut off at its output limit before any visible content was " +
+        "produced (internal reasoning consumed the whole budget). I retried once with a larger " +
+        "budget and it happened again — please send your message again, or split the request " +
+        "into smaller steps.";
+      console.error("[chat-runner] empty-at-output-cap-unrecovered", {
+        chatSessionId,
+        loop,
+        maxOutputTokens: maxOutputTokensThisTurn,
+        rawFinishReason: stoppingDiagnostics?.rawFinishReason ?? null,
+      });
+      yield { kind: "text-delta", text: notice };
+      const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+        chatSessionId,
+        role: "assistant",
+        content: notice,
+        status: "complete",
+      });
+      if (noticeSave.ok) {
+        lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+        yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
+      }
+      yield { kind: "error", message: notice };
+      stopReason = "error";
+      succeeded = false;
+      break;
+    }
+
     const saved = await persistAssistantTurn(registry, adapter, humanCtx, {
       chatSessionId,
       content: assistantContent,
@@ -312,27 +377,42 @@ export async function* runToolLoop(
 
     // Dispatch each tool call sequentially and append a tool result.
     // P5.2 #3 — dedupe by (chat_session_id, tool_call_id).
+    // Run #8 live-edit CI — image follow-ups collect here and append
+    // AFTER the loop, so every tool result of the turn precedes the
+    // first user (image) message (see dispatchToolCall's parameter doc).
+    const deferredImageMessages: ChatMessageInput[] = [];
     for (const call of accumulatedToolCalls) {
       if (aborted()) break;
-      yield* dispatchToolCall(call, messages, {
-        registry,
-        adapter,
-        humanCtx,
-        aiCtxWithBranch: args.aiCtxWithBranch,
-        provider,
-        tools,
-        chatSessionId,
-        chatBranchId: args.chatBranchId,
-        options,
-        runChatTurn: args.runChatTurn,
-      });
+      yield* dispatchToolCall(
+        call,
+        messages,
+        {
+          registry,
+          adapter,
+          humanCtx,
+          aiCtxWithBranch: args.aiCtxWithBranch,
+          provider,
+          tools,
+          chatSessionId,
+          chatBranchId: args.chatBranchId,
+          options,
+          runChatTurn: args.runChatTurn,
+        },
+        deferredImageMessages,
+      );
     }
+    messages.push(...deferredImageMessages);
   }
 
   // v0.3.20 — cap-exhaustion notice. If the for-loop ran to completion AND
   // the last iteration ended with the AI still wanting to call more tools,
   // we hit `maxLoops`. Surface a clear user-visible message.
-  if (lastLoopStop === "tool_use" && !aborted()) {
+  // Run #8 live-edit CI — also require `succeeded`: a provider error that
+  // breaks the loop mid-run leaves lastLoopStop at the PREVIOUS
+  // iteration's "tool_use"; pre-fix, this block then mislabelled the
+  // failure as a cap hit ("reply continue to resume") on top of the
+  // real error event.
+  if (lastLoopStop === "tool_use" && !aborted() && succeeded) {
     stopReason = "max_loops";
     const notice =
       `Paused at the tool-loop limit (${args.maxLoops} iterations). The build was still in progress — ` +

@@ -117,16 +117,26 @@ export const renderPagePreviewOp = defineOperation({
     pageLocale: z.string(),
   }),
   handler: async (ctx, input, tx) => {
+    // Run #8 live-edit CI — ONE effective branch for the whole render.
+    // Pre-fix, row VISIBILITY keyed off `ctx.chatBranchId` while the
+    // snapshot OVERLAYS keyed off `input.chatBranchId`. The /edit
+    // preview iframe (and the screenshot capture riding on it) calls
+    // this op with the operator's ctx — which carries NO branch — and
+    // the branch in the INPUT, so a branched-CREATED page's live row
+    // was invisible and the whole render 404'd even though the caller
+    // named the branch explicitly. Either source now widens visibility
+    // AND drives the overlays, so the two can never disagree again.
+    const chatBranchId = input.chatBranchId ?? ctx.chatBranchId;
     // v0.9.0 — branch-aware preview. The iframe shows the caller's
     // branched-create pages / templates / layouts (in addition to
     // main). Without this filter, a brand-new chat that just created
     // its first page+template+layout would fail to render because
     // the JOIN'd live rows are branched to the chat (invisible to
     // an unfiltered query when chat_branch_id is set on this row).
-    const branchScope = ctx.chatBranchId
-      ? sql`AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)
-            AND (t.chat_branch_id IS NULL OR t.chat_branch_id = ${ctx.chatBranchId}::uuid)
-            AND (l.chat_branch_id IS NULL OR l.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+    const branchScope = chatBranchId
+      ? sql`AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${chatBranchId}::uuid)
+            AND (t.chat_branch_id IS NULL OR t.chat_branch_id = ${chatBranchId}::uuid)
+            AND (l.chat_branch_id IS NULL OR l.chat_branch_id = ${chatBranchId}::uuid)`
       : sql`AND p.chat_branch_id IS NULL AND t.chat_branch_id IS NULL AND l.chat_branch_id IS NULL`;
     const pageRows = (await tx.execute(sql`
       SELECT p.id::text AS page_id, p.slug AS slug, p.locale AS locale, p.title AS title,
@@ -166,12 +176,12 @@ export const renderPagePreviewOp = defineOperation({
     // Overlay slug + title only — templateId overlay (which would
     // cascade through template_html / layout_html) is out of scope
     // until pages.change_template branching lands.
-    if (input.chatBranchId) {
+    if (chatBranchId) {
       const snap = (await tx.execute(sql`
         SELECT state FROM page_snapshots ps
         JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
         WHERE ps.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${input.chatBranchId}::uuid
+          AND ss.chat_branch_id = ${chatBranchId}::uuid
         ORDER BY ss.created_at DESC LIMIT 1
       `)) as unknown as { state: unknown }[];
       const raw = snap[0]?.state;
@@ -217,12 +227,12 @@ export const renderPagePreviewOp = defineOperation({
     // page_modules ordering with the snapshot's blocks/moduleIds.
     // Module rows (html/css/js) still join from `modules`; the module
     // overlay below applies branched module CODE on top.
-    if (input.chatBranchId) {
+    if (chatBranchId) {
       const layoutSnap = (await tx.execute(sql`
         SELECT state FROM page_layout_snapshots pls
         JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
         WHERE pls.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${input.chatBranchId}::uuid
+          AND ss.chat_branch_id = ${chatBranchId}::uuid
         ORDER BY ss.created_at DESC
         LIMIT 1
       `)) as unknown as { state: unknown }[];
@@ -238,8 +248,8 @@ export const renderPagePreviewOp = defineOperation({
             const byId = new Map<string, ModuleSourceRow>();
             // v0.9.0 — branch-aware module fetch so chat sees its
             // own branched-create modules in the iframe.
-            const moduleBranchScope = ctx.chatBranchId
-              ? sql`AND (m.chat_branch_id IS NULL OR m.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+            const moduleBranchScope = chatBranchId
+              ? sql`AND (m.chat_branch_id IS NULL OR m.chat_branch_id = ${chatBranchId}::uuid)`
               : sql`AND m.chat_branch_id IS NULL`;
             const fetched = (await tx.execute(sql`
               SELECT m.id::text AS module_id, m.slug AS slug, m.display_name AS display_name,
@@ -291,7 +301,7 @@ export const renderPagePreviewOp = defineOperation({
          AND m.entity_id = ms.module_id
          AND m.stage_state = 'staged'
         WHERE ms.module_id IN (${sql.join(moduleIds, sql`, `)})
-          ${input.chatBranchId ? sql`AND ss.chat_branch_id <> ${input.chatBranchId}::uuid` : sql``}
+          ${chatBranchId ? sql`AND ss.chat_branch_id <> ${chatBranchId}::uuid` : sql``}
         ORDER BY ms.module_id, ss.created_at DESC
       `)) as unknown as { module_id: string; state: unknown }[];
 
@@ -328,12 +338,12 @@ export const renderPagePreviewOp = defineOperation({
 
       // 2. Caller-branch overlay — supersedes staged for modules the
       // caller's chat has edited.
-      if (input.chatBranchId) {
+      if (chatBranchId) {
         const branchRows = (await tx.execute(sql`
           SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
           FROM module_snapshots ms
           JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ss.chat_branch_id = ${input.chatBranchId}::uuid
+          WHERE ss.chat_branch_id = ${chatBranchId}::uuid
             AND ms.module_id IN (${sql.join(moduleIds, sql`, `)})
           ORDER BY ms.module_id, ss.created_at DESC
         `)) as unknown as { module_id: string; state: unknown }[];
@@ -395,14 +405,14 @@ export const renderPagePreviewOp = defineOperation({
         contentInstanceId: r.content_instance_id,
       });
     }
-    if (input.chatBranchId) {
+    if (chatBranchId) {
       // Branched page_layout_snapshots authoritatively replace live
       // bindings for the active chat. Re-read the layout state below.
       const layoutSnapForBindings = (await tx.execute(sql`
         SELECT state FROM page_layout_snapshots pls
         JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
         WHERE pls.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${input.chatBranchId}::uuid
+          AND ss.chat_branch_id = ${chatBranchId}::uuid
         ORDER BY ss.created_at DESC
         LIMIT 1
       `)) as unknown as { state: unknown }[];
@@ -454,14 +464,14 @@ export const renderPagePreviewOp = defineOperation({
       }
       // Branch overlay — content_instance_snapshots tagged with this
       // chat's branch_id supersede live values for the same instance.
-      if (input.chatBranchId) {
+      if (chatBranchId) {
         const branchRows = (await tx.execute(sql`
           SELECT DISTINCT ON (cis.content_instance_id)
                  cis.content_instance_id::text AS id,
                  cis.state AS state
           FROM content_instance_snapshots cis
           JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
-          WHERE ss.chat_branch_id = ${input.chatBranchId}::uuid
+          WHERE ss.chat_branch_id = ${chatBranchId}::uuid
             AND cis.content_instance_id IN (${sql.join(
               allInstanceIds.map((id) => sql`${id}::uuid`),
               sql`, `,
@@ -599,7 +609,7 @@ export const renderPagePreviewOp = defineOperation({
     // `{{theme_logo_url}}` etc. inside nested-module HTML). The same
     // theme value flows into composePageWithLayout below for the
     // `<style data-source="theme">` injection — single fetch, two uses.
-    const composeTheme = await loadActiveThemeForCompose(tx, input.chatBranchId);
+    const composeTheme = await loadActiveThemeForCompose(tx, chatBranchId);
     const renderThemeAssets = composeTheme
       ? {
           logo: composeTheme.assets.logo?.url ?? null,
@@ -723,7 +733,7 @@ export const renderPagePreviewOp = defineOperation({
          AND m.entity_kind = 'structuredSet'
          AND m.entity_id = sss.structured_set_id
          AND m.stage_state = 'staged'
-        ${input.chatBranchId ? sql`WHERE ss.chat_branch_id <> ${input.chatBranchId}::uuid` : sql``}
+        ${chatBranchId ? sql`WHERE ss.chat_branch_id <> ${chatBranchId}::uuid` : sql``}
         ORDER BY sss.structured_set_id, ss.created_at DESC
       `)) as unknown as { set_id: string; state: unknown }[];
       for (const r of stagedSets) {
@@ -733,13 +743,13 @@ export const renderPagePreviewOp = defineOperation({
           overlayBySetId.set(r.set_id, { kind: s.kind, slug: s.slug, items: s.items });
         }
       }
-      if (input.chatBranchId) {
+      if (chatBranchId) {
         const branchSets = (await tx.execute(sql`
           SELECT DISTINCT ON (sss.structured_set_id)
             sss.structured_set_id::text AS set_id, sss.state
           FROM structured_set_snapshots sss
           JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-          WHERE ss.chat_branch_id = ${input.chatBranchId}::uuid
+          WHERE ss.chat_branch_id = ${chatBranchId}::uuid
           ORDER BY sss.structured_set_id, ss.created_at DESC
         `)) as unknown as { set_id: string; state: unknown }[];
         for (const r of branchSets) {

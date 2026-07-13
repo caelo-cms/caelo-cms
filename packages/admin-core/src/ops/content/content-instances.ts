@@ -482,6 +482,26 @@ export const getContentInstanceOp = defineOperation({
         message: "content_instance not found",
       });
     }
+    // Run #8 R3 — overlay the caller-branch snapshot state. Branched
+    // `set_values` writes ONLY a content_instance_snapshots row (the live
+    // row is untouched until publish), so without this overlay the AI's
+    // read-back showed pre-edit values and it blindly re-edited content it
+    // had already written. Same overlay helper the write path uses for
+    // chained edits, so read and write see identical state.
+    if (ctx.chatBranchId) {
+      const overlay = await loadContentInstanceStateWithBranchOverlay(
+        tx,
+        input.id,
+        ctx.chatBranchId,
+      );
+      if (overlay) {
+        r.values = overlay.values;
+        r.slug = overlay.slug;
+        r.display_name = overlay.displayName;
+        r.version = overlay.version;
+        r.deleted_at = overlay.deletedAt;
+      }
+    }
     const placements = (await tx.execute(sql`
       SELECT
         pm.page_id::text AS page_id,
