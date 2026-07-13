@@ -233,17 +233,40 @@ export const addModuleToPageToolInput = z
   });
 
 /**
- * P6.7.3 — `add_module_to_template` AI tool. Same shape as
- * `add_module_to_page` but fans the new module out to every page using
- * the target template, inserting at the same block + position. Used
- * for "site-wide" content (a global footer, a header banner, etc.).
+ * P6.7.3 — `add_module_to_template` AI tool. Fans a module out to every
+ * page using the target template, inserting at the same block + position.
+ * Used for "template-wide" content (a per-blog-post sidebar, a product
+ * disclaimer, etc.).
+ *
+ * issue #243 — two modes, mirroring `add_module_to_page`:
+ *
+ *   - **Mint mode** (`displayName` + `html`): creates a new module and
+ *     fans it out to every bound page.
+ *   - **Place mode** (`moduleId`): fans out an EXISTING module — the
+ *     reuse path CLAUDE.md §1A/§3.2 demands (reuse one shared/chrome/
+ *     pattern module across a page-type template). Before #243 the AI
+ *     could only mint here and fell back to `add_module_to_page` to place
+ *     a shared module, which silently only worked when the template had
+ *     exactly one page. Authoring fields must be absent in place mode; the
+ *     module renders live-referenced, so shared edits cascade.
+ *
+ * Exactly one mode per call, enforced by the superRefine below so a mixed
+ * call fails at the boundary with a named problem instead of silently
+ * preferring one interpretation.
  */
 export const addModuleToTemplateToolInput = z
   .object({
     templateId: z.string().uuid(),
     blockName: z.string().min(1).max(80),
     position: positionInputSchema,
-    displayName: z.string().min(1).max(128),
+    /**
+     * issue #243 — place-existing mode. Pass the id of a module from the
+     * `## Modules` catalog to fan it out across the template's pages
+     * without minting a duplicate. Mutually exclusive with every authoring
+     * field below.
+     */
+    moduleId: z.string().uuid().optional(),
+    displayName: z.string().min(1).max(128).optional(),
     /**
      * issue #106 (step-13 round-4) — same decision-support metadata as
      * addModuleToPageToolInput. Omitting these while the page tool accepted
@@ -254,13 +277,43 @@ export const addModuleToTemplateToolInput = z
     description: z.string().max(1000).optional(),
     kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
     type: slugSchema.optional(),
-    html: z.string().min(1).max(50_000),
+    // issue #243 — html is now optional (place mode omits it); the
+    // superRefine re-requires displayName + html together for mint mode.
+    html: z.string().min(1).max(50_000).optional(),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
     /** v0.5.21 — see addModuleToPageToolInput.fields for context. */
     fields: z.array(moduleFieldSchema).max(64).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, ctx) => {
+    // issue #243 — exactly one mode, identical gate to add_module_to_page
+    // (see addModuleToPageToolInput.superRefine). A mixed call is ambiguous
+    // (fan out the existing module, or mint a near-duplicate?) so it fails
+    // loud with the two valid shapes named.
+    const authoringKeys = (
+      ["displayName", "html", "css", "js", "fields", "description", "kind", "type"] as const
+    ).filter((k) => input[k] !== undefined);
+    if (input.moduleId !== undefined) {
+      if (authoringKeys.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `moduleId places an EXISTING module — drop ${authoringKeys.join(", ")}. ` +
+            "To change a shared module's structure use edit_module; to mint a new one omit moduleId.",
+        });
+      }
+      return;
+    }
+    if (input.displayName === undefined || input.html === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Pass either `moduleId` (place an existing module from ## Modules) " +
+          "or `displayName` + `html` (mint a new module).",
+      });
+    }
+  });
 
 /**
  * v0.2.16 — `add_plugin_to_page` AI tool. Inserts a plugin's
