@@ -56,6 +56,26 @@ export type ClientEvent =
       role: string;
       subagentChatSessionId: string;
       inner: Exclude<ClientEvent, { kind: "subagent-event" }>;
+    }
+  /**
+   * issue #268 — n-of-m progress for a `spawn_subagents` batch. Emitted
+   * by the batch orchestrator each time a sibling subagent settles, so
+   * the parent chat + the UI see "3 of 8 done · $0.41" live instead of a
+   * single frozen wait until the whole fan-out returns. `finished` counts
+   * every settled spec (run OR budget-aborted); `ran` counts spawns that
+   * actually invoked a child turn. `batchAborted` flips true once the
+   * running cost trips `batchMaxCostMicrocents` and later specs are
+   * skipped rather than started.
+   */
+  | {
+      kind: "subagent-batch-progress";
+      batchId: string;
+      finished: number;
+      total: number;
+      ran: number;
+      totalCostMicrocents: number;
+      lastRole: string;
+      batchAborted: boolean;
     };
 
 export interface ChatRunnerOptions {
