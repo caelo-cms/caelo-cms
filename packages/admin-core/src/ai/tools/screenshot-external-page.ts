@@ -15,9 +15,12 @@
  * a site it never saw.
  */
 
-import { createPlaywrightScreenshotter, type Screenshotter } from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
+import {
+  getExternalScreenshotter,
+  setExternalScreenshotterForTests,
+} from "./_external-screenshotter.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const input = z
@@ -29,18 +32,12 @@ const input = z
 type Input = z.infer<typeof input>;
 
 /**
- * Test seam: launching Chromium in unit tests is neither fast nor
- * deterministic. Mirrors `setGenesisParityDepsForTests`.
+ * Test seam alias — the screenshotter factory now lives in the shared
+ * `_external-screenshotter` module (issue #278) so the inspect facets
+ * and this tool swap the same fake. Kept under the original name so
+ * existing tests need no change.
  */
-let screenshotterFactory: (opts: {
-  allowedHosts: readonly string[];
-}) => Promise<Screenshotter | null> = (opts) => createPlaywrightScreenshotter(opts);
-
-export function setExternalScreenshotDepsForTests(
-  factory: typeof screenshotterFactory | null,
-): void {
-  screenshotterFactory = factory ?? ((opts) => createPlaywrightScreenshotter(opts));
-}
+export const setExternalScreenshotDepsForTests = setExternalScreenshotterForTests;
 
 const VIEWPORTS = {
   desktop: { width: 1280, height: 800 },
@@ -77,7 +74,7 @@ export const screenshotExternalPageTool: ToolDefinitionWithHandler<Input> = {
       };
     }
     const allowedHosts = externalFetchAllowedHosts();
-    const screenshotter = await screenshotterFactory({ allowedHosts });
+    const screenshotter = await getExternalScreenshotter({ allowedHosts });
     if (!screenshotter) {
       return {
         ok: false,

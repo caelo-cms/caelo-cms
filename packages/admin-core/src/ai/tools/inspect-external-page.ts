@@ -1,30 +1,97 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #189 — `inspect_external_page`: fetch ONE external page
- * (SSRF-guarded, #191) and return the design fact base + a content
- * outline. This is the "glance" that makes the first migration turn
- * intelligent — the AI sees what the operator's site IS before asking
- * keep-design vs redesign, without the Owner-gated crawl.
+ * issue #189 / #278 — `inspect_external_page`: fetch ONE external page
+ * (SSRF-guarded, #191) and return ONLY the FACETS the current migration
+ * step needs. The homepage-driven flow (issue #278) understands a site's
+ * structure cheaply (a discovery turn asks for `links` + `meta` only),
+ * then samples one page per type richly (a template-building turn asks
+ * for `markup` + `screenshot` + `tokens` + `altTexts`). A single
+ * heavyweight blob on every call is exactly what #278 removes.
  *
- * Same-host stylesheets (up to 3, size-capped) are inlined before the
- * genesis-inventory pass — external sites keep their CSS in files, and
- * a style-blind inventory would report an empty palette.
+ * Facets (all boolean switches; default when none given: meta + links):
+ *   - meta       — title, description, canonical, lang + hreflang, h1–h3.
+ *   - links      — outbound links (href, anchor text, rel, nav|footer|body).
+ *   - altTexts   — img alt / aria-label inventory.
+ *   - markup     — cleaned page HTML (extractor modules) for templating.
+ *   - screenshot — rendered viewport image (attached to the next turn).
+ *   - tokens     — design fact base: static CSS-derived inventory + the
+ *                  WS1 computed-style sampler (when Playwright is present).
  */
 
 import { formatGenesisInventory, inventoryGenesisDraft } from "@caelo-cms/shared";
-import { isExternalUrlBlockedError, safeExternalFetch } from "@caelo-cms/site-importer";
+import {
+  deriveDesignTokens,
+  extractAltTexts,
+  extractModulesFromHtml,
+  extractOutboundLinks,
+  extractPageMeta,
+  isExternalUrlBlockedError,
+  type OutboundLink,
+  type SafeFetchResponse,
+  safeExternalFetch,
+} from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { getExternalScreenshotter } from "./_external-screenshotter.js";
+import type { ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
-const input = z.object({ url: z.string().url() }).strict();
+const facets = z
+  .object({
+    links: z.boolean().optional(),
+    markup: z.boolean().optional(),
+    screenshot: z.boolean().optional(),
+    altTexts: z.boolean().optional(),
+    meta: z.boolean().optional(),
+    tokens: z.boolean().optional(),
+  })
+  .strict();
+
+const input = z.object({ url: z.string().url(), facets: facets.optional() }).strict();
 type Input = z.infer<typeof input>;
+
+interface ResolvedFacets {
+  links: boolean;
+  markup: boolean;
+  screenshot: boolean;
+  altTexts: boolean;
+  meta: boolean;
+  tokens: boolean;
+}
+
+/** Minimal core when the caller names no facets: meta + links (§278). */
+function resolveFacets(raw: Input["facets"]): ResolvedFacets {
+  const any =
+    raw !== undefined &&
+    (raw.links || raw.markup || raw.screenshot || raw.altTexts || raw.meta || raw.tokens);
+  if (!any)
+    return {
+      links: true,
+      meta: true,
+      markup: false,
+      screenshot: false,
+      altTexts: false,
+      tokens: false,
+    };
+  return {
+    links: raw?.links ?? false,
+    markup: raw?.markup ?? false,
+    screenshot: raw?.screenshot ?? false,
+    altTexts: raw?.altTexts ?? false,
+    meta: raw?.meta ?? false,
+    tokens: raw?.tokens ?? false,
+  };
+}
 
 const MAX_STYLESHEETS = 3;
 const STYLESHEET_BYTE_CAP = 512 * 1024;
+const MARKUP_MODULE_CAP = 20_000;
+const LINKS_PER_LOCATION = 60;
 
-/** Linear scan for `<link ... rel=stylesheet ... href=...>` URLs. */
+/** Linear scan for same-host `<link rel=stylesheet href>` URLs (capped),
+ *  so the static design inventory sees the real palette (external sites
+ *  keep CSS in files). Cross-origin CSS is skipped — the glance never
+ *  fans out across origins. */
 export function extractStylesheetHrefs(html: string, baseUrl: string): string[] {
   const out: string[] = [];
   const lower = html.toLowerCase();
@@ -41,9 +108,6 @@ export function extractStylesheetHrefs(html: string, baseUrl: string): string[] 
     if (!href) continue;
     try {
       const abs = new URL(href, baseUrl);
-      // Same-host only: cross-origin CSS (CDNs, font providers) is
-      // skipped rather than fetched — the guard would allow public
-      // hosts, but the glance shouldn't fan out across origins.
       if (abs.host === new URL(baseUrl).host) out.push(abs.toString());
     } catch {
       // unparseable href — skip
@@ -52,59 +116,66 @@ export function extractStylesheetHrefs(html: string, baseUrl: string): string[] 
   return out.slice(0, MAX_STYLESHEETS);
 }
 
-/** Linear heading + title extraction (bounded, no nested quantifiers). */
-export function extractContentOutline(html: string): {
-  title: string;
-  metaDescription: string;
-  headings: string[];
-  sameHostPaths: (baseUrl: string) => string[];
-} {
-  const title = /<title[^>]*>([^<]{0,300})/i.exec(html)?.[1]?.trim() ?? "";
-  const metaDescription =
-    /<meta\b[^>]*name\s*=\s*["']description["'][^>]*content\s*=\s*["']([^"']{0,500})["']/i.exec(
-      html,
-    )?.[1] ?? "";
-  const headings: string[] = [];
-  const headingRe = /<h([1-3])\b[^>]*>([^<]{0,200})/gi;
-  let m = headingRe.exec(html);
-  while (m !== null && headings.length < 30) {
-    const text = m[2]?.trim();
-    if (text) headings.push(`h${m[1]}: ${text}`);
-    m = headingRe.exec(html);
-  }
-  const sameHostPaths = (baseUrl: string): string[] => {
-    const host = new URL(baseUrl).host;
-    const paths = new Set<string>();
-    const linkRe = /<a\b[^>]*\bhref\s*=\s*["']([^"']+)["']/gi;
-    let lm = linkRe.exec(html);
-    while (lm !== null && paths.size < 500) {
-      const href = lm[1];
-      if (
-        href &&
-        !href.startsWith("#") &&
-        !href.startsWith("mailto:") &&
-        !href.startsWith("tel:")
-      ) {
-        try {
-          const u = new URL(href, baseUrl);
-          if (u.host === host) paths.add(u.pathname);
-        } catch {
-          // skip
-        }
-      }
-      lm = linkRe.exec(html);
+function formatLinks(links: readonly OutboundLink[]): string {
+  const groups: Array<[OutboundLink["location"], string]> = [
+    ["nav", "Nav"],
+    ["footer", "Footer"],
+    ["body", "Body"],
+  ];
+  const lines: string[] = [];
+  for (const [loc, label] of groups) {
+    const inLoc = links.filter((l) => l.location === loc).slice(0, LINKS_PER_LOCATION);
+    if (inLoc.length === 0) continue;
+    lines.push(`### ${label} links (${inLoc.length})`);
+    for (const l of inLoc) {
+      const rel = l.rel ? ` rel="${l.rel}"` : "";
+      lines.push(`- ${l.text ? `"${l.text}" → ` : ""}${l.href}${rel}`);
     }
-    return [...paths];
-  };
-  return { title, metaDescription, headings, sameHostPaths };
+  }
+  return lines.length > 0 ? lines.join("\n") : "(no outbound links found)";
+}
+
+/** Inline same-host stylesheets, then run the genesis inventory — the
+ *  static, browser-free half of the `tokens` facet. Per-sheet failures
+ *  are non-fatal + noted (a thin palette must be explainable). */
+async function staticDesignFactBase(
+  html: string,
+  finalUrl: string,
+  allowedHosts: readonly string[],
+): Promise<string> {
+  const sheetUrls = extractStylesheetHrefs(html, finalUrl);
+  const notes: string[] = [];
+  let css = "";
+  for (const sheetUrl of sheetUrls) {
+    try {
+      const sheet = await safeExternalFetch(sheetUrl, {
+        allowedHosts,
+        maxBytes: STYLESHEET_BYTE_CAP,
+      });
+      if (sheet.ok) css += `\n<style>${sheet.bodyText}</style>`;
+      else notes.push(`stylesheet ${sheetUrl} answered HTTP ${sheet.status}`);
+    } catch (e) {
+      notes.push(`stylesheet ${sheetUrl} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const inventory = formatGenesisInventory(inventoryGenesisDraft(html + css));
+  return notes.length > 0 ? `${inventory}\nStylesheet notes: ${notes.join("; ")}` : inventory;
 }
 
 export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
   name: "inspect_external_page",
   description:
-    "Fetch ONE page of an EXTERNAL website (the operator's existing site, a reference site) and return its design fact base (colors with usage counts, gradients, fonts, spacing, structural outline — same inventory Genesis uses) plus a content outline (title, meta description, headings, same-host link count, sitemap presence). " +
-    "Use this FIRST when an operator names an existing site — look before you ask keep-design vs redesign, and before proposing a crawl. " +
-    "Do NOT use for whole-site work: this is one page, no link-following — for the full site use `propose_site_import` (Owner-gated crawl). Do NOT use on Caelo's own pages — use `inspect_page_render`. " +
+    "Fetch ONE page of an EXTERNAL website (the operator's existing site, a reference site) and return ONLY the facets you ask for — keep discovery turns small, template-building turns rich. " +
+    "Pass `facets` (booleans; default when omitted = meta+links): " +
+    "`meta` (title, description, canonical, lang+hreflang, h1–h3 outline), " +
+    "`links` (outbound links with anchor text, rel, and nav|footer|body location — the raw material for the page-type map), " +
+    "`altTexts` (img alt / aria-label inventory), " +
+    "`markup` (cleaned page HTML modules for building a template from a sample), " +
+    "`screenshot` (rendered viewport image on your next turn), " +
+    "`tokens` (design fact base: CSS-derived color/font inventory + rendered computed-style tokens). " +
+    "Step 1 understand structure → `{links:true, meta:true}`. Step 3 build a template from a sample → `{markup:true, screenshot:true, tokens:true, altTexts:true}`. " +
+    "To turn a homepage's links into the site's page-type map, use `map_external_page_types` instead. " +
+    "Do NOT use for whole-site work (no link-following) — use `propose_site_import`. Do NOT use on Caelo's own pages — use `inspect_page_render`. " +
     "Only public http(s) URLs work; private/internal addresses are refused by the SSRF guard.",
   schema: input,
   inputSchema: {
@@ -113,6 +184,39 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     required: ["url"],
     properties: {
       url: { type: "string", description: "Absolute public URL, e.g. https://example.com/" },
+      facets: {
+        type: "object",
+        additionalProperties: false,
+        description:
+          "Which facets to pull. Omit for the minimal core (meta + links). Each is a boolean switch.",
+        properties: {
+          meta: {
+            type: "boolean",
+            description:
+              "Title, meta description, canonical, lang + hreflang alternates, h1–h3 outline.",
+          },
+          links: {
+            type: "boolean",
+            description:
+              "Outbound links: {href (absolute), text (anchor text), rel, location: nav|footer|body}.",
+          },
+          altTexts: { type: "boolean", description: "img alt / aria-label inventory." },
+          markup: {
+            type: "boolean",
+            description:
+              "Cleaned page HTML (extractor modules) for building a template from a sample.",
+          },
+          screenshot: {
+            type: "boolean",
+            description: "Rendered viewport image, attached to your next turn (needs Playwright).",
+          },
+          tokens: {
+            type: "boolean",
+            description:
+              "Design fact base: static CSS-derived inventory + computed-style design tokens (WS1 sampler, needs Playwright).",
+          },
+        },
+      },
     },
   },
   handler: async (_ctx, toolInput, toolCtx) => {
@@ -124,101 +228,167 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
           "External-fetch budget exhausted for this session (12 per 10 minutes). This tool is for a one-page glance — if you need many pages, propose the crawl via `propose_site_import` instead.",
       };
     }
+    const f = resolveFacets(toolInput.facets);
     const allowedHosts = externalFetchAllowedHosts();
-    let res: Awaited<ReturnType<typeof safeExternalFetch>>;
-    try {
-      res = await safeExternalFetch(toolInput.url, { allowedHosts, maxBytes: 2 * 1024 * 1024 });
-    } catch (e) {
-      if (isExternalUrlBlockedError(e)) {
-        return { ok: false, content: e.message };
-      }
-      return {
-        ok: false,
-        content: `inspect_external_page could not fetch ${toolInput.url}: ${e instanceof Error ? e.message : String(e)}. If the site is up, tell the operator what you tried and ask them to verify the address.`,
-      };
-    }
-    if (!res.ok) {
-      return {
-        ok: false,
-        content: `inspect_external_page: ${toolInput.url} answered HTTP ${res.status}. Verify the address with the operator.`,
-      };
-    }
-    if (!res.contentType.includes("text/html")) {
-      return {
-        ok: false,
-        content: `inspect_external_page: ${toolInput.url} is ${res.contentType || "an unknown content type"}, not an HTML page.`,
-      };
-    }
+    const needHtml = f.links || f.markup || f.altTexts || f.meta || f.tokens;
 
-    // Inline same-host stylesheets so the inventory sees the real
-    // palette. Failures are per-sheet non-fatal — noted in the output
-    // so a thin palette is explainable rather than mysterious.
-    const sheetUrls = extractStylesheetHrefs(res.bodyText, res.finalUrl);
-    const sheetNotes: string[] = [];
-    let inlinedCss = "";
-    for (const sheetUrl of sheetUrls) {
+    let res: SafeFetchResponse | null = null;
+    if (needHtml) {
       try {
-        const css = await safeExternalFetch(sheetUrl, {
-          allowedHosts,
-          maxBytes: STYLESHEET_BYTE_CAP,
-        });
-        if (css.ok) inlinedCss += `\n<style>${css.bodyText}</style>`;
-        else sheetNotes.push(`stylesheet ${sheetUrl} answered HTTP ${css.status}`);
+        res = await safeExternalFetch(toolInput.url, { allowedHosts, maxBytes: 2 * 1024 * 1024 });
       } catch (e) {
-        sheetNotes.push(
-          `stylesheet ${sheetUrl} failed: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        if (isExternalUrlBlockedError(e)) return { ok: false, content: e.message };
+        return {
+          ok: false,
+          content: `inspect_external_page could not fetch ${toolInput.url}: ${e instanceof Error ? e.message : String(e)}. If the site is up, tell the operator what you tried and ask them to verify the address.`,
+        };
+      }
+      if (!res.ok) {
+        return {
+          ok: false,
+          content: `inspect_external_page: ${toolInput.url} answered HTTP ${res.status}. Verify the address with the operator.`,
+        };
+      }
+      if (!res.contentType.includes("text/html")) {
+        return {
+          ok: false,
+          content: `inspect_external_page: ${toolInput.url} is ${res.contentType || "an unknown content type"}, not an HTML page.`,
+        };
       }
     }
 
-    const inventory = inventoryGenesisDraft(res.bodyText + inlinedCss);
-    const outline = extractContentOutline(res.bodyText);
-    const paths = outline.sameHostPaths(res.finalUrl);
+    const finalUrl = res?.finalUrl ?? toolInput.url;
+    const html = res?.bodyText ?? "";
+    const enabled = Object.entries(f)
+      .filter(([, on]) => on)
+      .map(([name]) => name);
+    const sections: string[] = [
+      `# External page inspection — ${finalUrl}`,
+      `Facets: ${enabled.join(", ")}`,
+      "",
+    ];
 
-    // Sitemap probe — a strong signal for the later crawl-scope
-    // estimate and a cheap way to say "this site has ~N pages".
-    let sitemapNote = "no sitemap.xml found";
-    try {
-      const origin = new URL(res.finalUrl).origin;
-      const sm = await safeExternalFetch(`${origin}/sitemap.xml`, {
-        allowedHosts,
-        maxBytes: 256 * 1024,
+    if (f.meta) {
+      const meta = extractPageMeta(html, finalUrl);
+      const hreflang =
+        meta.hreflangAlternates.length > 0
+          ? meta.hreflangAlternates.map((a) => `${a.hreflang} → ${a.href}`).join(", ")
+          : "(none)";
+      sections.push(
+        "## Meta",
+        `Title: ${meta.title || "(none)"}`,
+        meta.metaDescription
+          ? `Meta description: ${meta.metaDescription}`
+          : "Meta description: (none)",
+        `Lang: ${meta.lang || "(none)"}`,
+        `Canonical: ${meta.canonical || "(none)"}`,
+        `Hreflang alternates: ${hreflang}`,
+        "Headings outline:",
+        meta.headings.length > 0 ? meta.headings.join("\n") : "(no h1–h3 headings)",
+        "",
+      );
+    }
+
+    if (f.links) {
+      sections.push("## Outbound links", formatLinks(extractOutboundLinks(html, finalUrl)), "");
+    }
+
+    if (f.altTexts) {
+      const alts = extractAltTexts(html, finalUrl);
+      const lines = alts.map((a) =>
+        a.kind === "img-alt"
+          ? `- img alt="${a.text}"${a.src ? ` (${a.src})` : ""}`
+          : `- aria-label="${a.text}"`,
+      );
+      sections.push(
+        "## Alt-text inventory",
+        lines.length > 0 ? lines.join("\n") : "(no img alt / aria-label attributes found)",
+        "",
+      );
+    }
+
+    if (f.markup) {
+      const { modules, commentsStripped } = extractModulesFromHtml(html);
+      const blocks = modules.map((m) => {
+        const body =
+          m.html.length > MARKUP_MODULE_CAP
+            ? `${m.html.slice(0, MARKUP_MODULE_CAP)}\n<!-- …truncated (${m.html.length - MARKUP_MODULE_CAP} more chars) -->`
+            : m.html;
+        return `### ${m.displayName} [${m.blockName}]\n${body}`;
       });
-      if (sm.ok && (sm.bodyText.includes("<urlset") || sm.bodyText.includes("<sitemapindex"))) {
-        let locCount = 0;
-        let idx = sm.bodyText.indexOf("<loc>");
-        while (idx !== -1) {
-          locCount += 1;
-          idx = sm.bodyText.indexOf("<loc>", idx + 5);
-        }
-        sitemapNote = sm.bodyText.includes("<sitemapindex")
-          ? `sitemap INDEX with ${locCount} child sitemaps (site is likely large)`
-          : `sitemap.xml lists ${locCount} URLs${sm.bodyText.length >= 250 * 1024 ? " (truncated read — actual count may be higher)" : ""}`;
-      }
-    } catch {
-      // Sitemap probe is best-effort context, not a failure of the
-      // inspection itself.
+      sections.push(
+        "## Markup (extracted modules)",
+        blocks.length > 0 ? blocks.join("\n\n") : "(no extractable modules)",
+        commentsStripped > 0 ? `(stripped ${commentsStripped} comment-thread subtree(s))` : "",
+        "",
+      );
     }
 
-    const sections = [
-      `# External page inspection — ${res.finalUrl}`,
-      "",
-      `Title: ${outline.title || "(none)"}`,
-      outline.metaDescription ? `Meta description: ${outline.metaDescription}` : "",
-      "",
-      "## Content outline",
-      outline.headings.length > 0 ? outline.headings.join("\n") : "(no h1–h3 headings found)",
-      "",
-      `Same-host link paths (${paths.length}${paths.length >= 500 ? "+" : ""}): ${paths.slice(0, 25).join(", ")}${paths.length > 25 ? ", …" : ""}`,
-      `Sitemap: ${sitemapNote}`,
-      "",
-      "## Design fact base (genesis-inventory)",
-      formatGenesisInventory(inventory),
-      sheetNotes.length > 0 ? `\nStylesheet notes: ${sheetNotes.join("; ")}` : "",
-      "",
-      `(${budget.remaining} external fetches left in this session's 10-minute budget.)`,
-    ].filter((s) => s !== "");
+    if (f.tokens) {
+      sections.push(
+        "## Design fact base (static, CSS-derived)",
+        await staticDesignFactBase(html, finalUrl, allowedHosts),
+        "",
+      );
+    }
 
-    return { ok: true, content: sections.join("\n") };
+    // One render pass covers both the screenshot + the computed-style
+    // tokens so a rich template-building turn renders the page ONCE.
+    let image: ToolResult["image"];
+    if (f.screenshot || f.tokens) {
+      const screenshotter = await getExternalScreenshotter({ allowedHosts });
+      if (!screenshotter) {
+        const want = [f.screenshot ? "screenshot" : "", f.tokens ? "computed-style tokens" : ""]
+          .filter(Boolean)
+          .join(" + ");
+        sections.push(
+          `## Rendered facets UNAVAILABLE (${want})`,
+          "Playwright/Chromium is not installed in this runtime (`bun node_modules/playwright/cli.js install chromium` fixes it on self-hosted installs). Do NOT claim you saw the page. The non-rendered facets above are still valid.",
+          "",
+        );
+      } else {
+        try {
+          const shot = await screenshotter.capture(toolInput.url, {
+            width: 1280,
+            height: 800,
+            external: true,
+            fullPage: false,
+            sampleStyles: f.tokens,
+          });
+          if (f.tokens && shot.styleSamples) {
+            sections.push(
+              "## Computed-style design tokens (rendered)",
+              JSON.stringify(deriveDesignTokens(shot.styleSamples), null, 2),
+              "",
+            );
+          }
+          if (f.screenshot) {
+            image = { base64: Buffer.from(shot.bytes).toString("base64"), mediaType: "image/png" };
+            sections.push(
+              "## Screenshot",
+              "Rendered viewport (1280×800) attached to the next turn.",
+              "",
+            );
+          }
+        } catch (e) {
+          sections.push(
+            "## Rendered facets FAILED",
+            `screenshot/token render failed for ${toolInput.url}: ${e instanceof Error ? e.message : String(e)}`,
+            "",
+          );
+        } finally {
+          await screenshotter.dispose().catch(() => undefined);
+        }
+      }
+    }
+
+    sections.push(
+      `(${budget.remaining} external fetches left in this session's 10-minute budget.)`,
+    );
+    return {
+      ok: true,
+      content: sections.filter((s) => s !== "").join("\n"),
+      ...(image ? { image } : {}),
+    };
   },
 };

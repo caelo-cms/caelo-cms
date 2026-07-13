@@ -60,6 +60,7 @@ import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
+import { mapExternalPageTypesTool } from "./map-external-page-types.js";
 import { migrateMediaTool } from "./migrate-media.js";
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
@@ -171,9 +172,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(checkGenesisParityTool);
   // issue #165 — per-site design language writer.
   registry.register(setDesignManifestTool);
-  // issue #189 — single-page external-site sensing (migration glance).
+  // issue #189 / #278 — single-page external-site sensing (facet-selectable
+  // glance) + homepage-driven page-type mapping for the migration flow.
   registry.register(inspectExternalPageTool);
   registry.register(screenshotExternalPageTool);
+  registry.register(mapExternalPageTypesTool);
   // issue #194 — page-type clusters for the migration flow.
   registry.register(listImportPageClustersTool);
   registry.register(assignImportPageClusterTool);
