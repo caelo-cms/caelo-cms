@@ -32,7 +32,6 @@ import {
   createPlaywrightScreenshotter,
   type DiffStatus,
   type PageBand,
-  type Screenshotter,
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { getMediaStorage } from "../../media/storage.js";
@@ -87,20 +86,6 @@ export function buildFidelityVerdict(input: {
  *  check_genesis_parity's rendering path. */
 function toDataUrl(html: string): string {
   return `data:text/html;base64,${Buffer.from(html, "utf8").toString("base64")}`;
-}
-
-type ScreenshotterFactory = () => Promise<Screenshotter | null>;
-type StructuralDiffFn = typeof computeStructuralDiff;
-
-/** Test seam — production uses the Playwright factory + real differ. */
-let screenshotterFactory: ScreenshotterFactory = createPlaywrightScreenshotter;
-let structuralDiff: StructuralDiffFn = computeStructuralDiff;
-export function setFidelityDepsForTests(deps: {
-  factory?: ScreenshotterFactory;
-  diff?: StructuralDiffFn;
-}): void {
-  if (deps.factory) screenshotterFactory = deps.factory;
-  if (deps.diff) structuralDiff = deps.diff;
 }
 
 export const verifyImportFidelityTool: ToolDefinitionWithHandler<FidelityInput> = {
@@ -193,7 +178,7 @@ export const verifyImportFidelityTool: ToolDefinitionWithHandler<FidelityInput> 
     const rebuiltHtml = (previewRes.value as { html: string }).html;
 
     // 6. Screenshot the rebuilt page in a headless viewport.
-    const shotter = await screenshotterFactory();
+    const shotter = await createPlaywrightScreenshotter();
     if (shotter === null) {
       return {
         ok: false,
@@ -212,7 +197,7 @@ export const verifyImportFidelityTool: ToolDefinitionWithHandler<FidelityInput> 
         fullPage: true,
       });
       rebuiltBytes = shot.bytes;
-      const diff = await structuralDiff(sourceBytes, rebuiltBytes);
+      const diff = await computeStructuralDiff(sourceBytes, rebuiltBytes);
       diffFraction = diff.fraction;
       worstBand = diff.worstBand;
       bandPct = diff.bands[diff.worstBand];
