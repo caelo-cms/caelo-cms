@@ -101,6 +101,7 @@ import {
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
+import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
@@ -182,6 +183,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);
+  // issue #248 (WS2) — rebuild-quality checks: content-inventory
+  // (no information loss) + repeated-subtree boilerplate detection.
+  registry.register(checkPageContentInventoryTool);
+  registry.register(detectImportBoilerplateTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);
