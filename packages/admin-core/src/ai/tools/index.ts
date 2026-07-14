@@ -64,6 +64,7 @@ import { listThemesTool } from "./list-themes.js";
 import { logPageEditTool } from "./log-page-edit.js";
 import { mapExternalPageTypesTool } from "./map-external-page-types.js";
 import { migrateMediaTool } from "./migrate-media.js";
+import { checkRunBudgetTool, setMigrationBudgetTool } from "./migration-budget.js";
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
@@ -189,6 +190,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);
+  // issue #280 — migration cost gate: record the operator's budget +
+  // check cumulative spend against it (pause-and-ask, not auto-stop).
+  registry.register(setMigrationBudgetTool);
+  registry.register(checkRunBudgetTool);
   // issue #248 (WS2) — rebuild-quality checks: content-inventory
   // (no information loss) + repeated-subtree boilerplate detection.
   registry.register(checkPageContentInventoryTool);

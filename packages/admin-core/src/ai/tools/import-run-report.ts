@@ -10,6 +10,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
+import { formatMicrocentsAsMoney } from "../../ops/imports-cost.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -152,8 +153,40 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       return { ok: false, content: `get_import_run_report failed: ${describeError(r.error)}` };
     }
     const v = r.value as Report;
+
+    // issue #280 — fold the run's cost picture into the closing report so
+    // the operator hears what the migration cost, not just what it built.
+    // Best-effort: a cost-read failure must not sink the whole report.
+    let costLine = "";
+    const costR = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      ctx,
+      "imports.get_run_cost",
+      input,
+    );
+    if (costR.ok) {
+      const c = costR.value as {
+        spentMicrocents: number;
+        ceilingMicrocents: number | null;
+        ceilingCurrency: string | null;
+        overBudget: boolean;
+      };
+      const currency = c.ceilingCurrency ?? "USD";
+      const spent = formatMicrocentsAsMoney(c.spentMicrocents, currency);
+      costLine =
+        c.ceilingMicrocents === null
+          ? `Cost: ${spent} in AI spend across the orchestrator + subagents (no budget ceiling was set).`
+          : `Cost: ${spent} spent of a ${formatMicrocentsAsMoney(c.ceilingMicrocents, currency)} budget${
+              c.overBudget
+                ? " — budget reached; say so plainly and let the operator decide next steps"
+                : ""
+            }.`;
+    }
+
     const lines = [
       `# Migration report — ${v.sourceUrl} (${v.status})`,
+      costLine,
       `Pages: ${v.acceptedPages} built of ${v.pagesExtracted} extracted (${v.pagesSeen} URLs seen). Redirects created: ${v.redirectsCreated}.`,
       v.clusters.length > 0
         ? `Page types: ${v.clusters.map((c) => `${c.label ?? c.clusterKey} ×${c.count}`).join(", ")}`
