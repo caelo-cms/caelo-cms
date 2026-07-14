@@ -40,8 +40,10 @@ import {
   unstageChatChangesOp,
 } from "./ops/chat/stage.js";
 import { summarizeChatOp } from "./ops/chat/summarize.js";
+import { buildPageOp } from "./ops/content/build-page.js";
 import {
   createContentInstanceOp,
+  createContentInstancesManyOp,
   deleteContentInstanceOp,
   forkPlacementContentOp,
   getContentInstanceOp,
@@ -80,6 +82,7 @@ import {
 } from "./ops/content/modules.js";
 import {
   getPageModuleContentOp,
+  setPageModuleContentManyOp,
   setPageModuleContentOp,
 } from "./ops/content/page-module-content.js";
 import {
@@ -131,7 +134,6 @@ import {
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
 import { getDesignManifestOp, setDesignManifestOp } from "./ops/design_manifest.js";
-import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import {
   executeDomainProposalOp,
   listPendingDomainProposalsOp,
@@ -259,6 +261,7 @@ import {
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
 } from "./ops/owner-bootstrap-tokens.js";
+import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import {
   commentArchiveInsertOp,
@@ -527,12 +530,16 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setPageStatusOp);
   registry.register(setPagesStatusManyOp);
   registry.register(setPageModulesOp);
+  // issue #299 — bulk-first build path (CLAUDE.md §11): one call per page.
+  registry.register(buildPageOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
+  registry.register(setPageModuleContentManyOp);
   // v0.12.0 — content_instances + placement binding ops.
   registry.register(listContentInstancesOp);
   registry.register(getContentInstanceOp);
   registry.register(createContentInstanceOp);
+  registry.register(createContentInstancesManyOp);
   registry.register(setContentInstanceValuesOp);
   registry.register(deleteContentInstanceOp);
   registry.register(setPlacementContentOp);

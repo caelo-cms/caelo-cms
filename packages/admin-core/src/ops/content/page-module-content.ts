@@ -10,8 +10,8 @@
  * branch-isolated per chat until publish.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import { err, ok, pageModuleContentSetManySchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -259,5 +259,57 @@ export const setPageModuleContentOp = defineOperation({
     });
 
     return ok({ pageModuleContentId: placement.content_instance_id });
+  },
+});
+
+/**
+ * Issue #299 — bulk variant of `page_module_content.set` per CLAUDE.md
+ * §11. A content-only pass over N existing placements (run #15 fired
+ * the singular 29× at 110K–556K input tokens per round-trip).
+ *
+ * Each item runs the exact singular path — placement resolution
+ * (branch-aware), synced-placement refusal, nested-ref + field-shape
+ * validation, lock, snapshot — inside ONE shared transaction.
+ *
+ * All-or-nothing: a failure at index i throws `OperationAbortError` so
+ * items 0..i-1 roll back too. The message names `items[i]`, the
+ * placement coordinates, and forwards the singular error verbatim
+ * (which for value-shape problems names the failing FIELD, and for
+ * synced placements carries the fork/commit guidance).
+ */
+export const setPageModuleContentManyOp = defineOperation({
+  name: "page_module_content.set_many",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: pageModuleContentSetManySchema,
+  output: z.object({ updated: z.number().int().nonnegative() }),
+  handler: async (ctx, input, tx) => {
+    let updated = 0;
+    for (let i = 0; i < input.items.length; i += 1) {
+      const item = input.items[i]!;
+      const r = await setPageModuleContentOp.handler(ctx, item, tx);
+      if (!r.ok) {
+        const inner = r.error as { message?: string };
+        const queryError = {
+          kind: "HandlerError" as const,
+          operation: "page_module_content.set_many",
+          message: `items[${i}] (page ${item.pageId}, ${item.blockName}#${item.position}): ${
+            inner.message ?? r.error.kind
+          }. The whole batch was rolled back — fix this item and resend all ${input.items.length}.`,
+        };
+        if (updated > 0) throw new OperationAbortError(queryError);
+        return err(queryError);
+      }
+      updated += 1;
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "page_module_content.set_many",
+      input,
+      succeeded: true,
+      resultSummary: `updated=${updated}`,
+    });
+    return ok({ updated });
   },
 });
