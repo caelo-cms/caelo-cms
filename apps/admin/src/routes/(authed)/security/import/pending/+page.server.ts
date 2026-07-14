@@ -16,7 +16,8 @@ type ImportEstimate =
   | {
       failed?: false;
       pages: number;
-      basis: "sitemap" | "sample";
+      // issue #229 — `list` basis = the exact page-list (LIST) mode.
+      basis: "sitemap" | "sample" | "list";
       truncated: boolean;
       crawlMinutes: number;
       aiCostUsd: { low: number; high: number };
@@ -30,6 +31,8 @@ interface ImportRun {
   proposedBy: string;
   createdAt: string;
   estimate: ImportEstimate | null;
+  /** issue #229 — LIST-mode chosen URLs; null = classic depth/BFS mode. */
+  explicitUrls: string[] | null;
 }
 
 export const load: PageServerLoad = async ({ locals }) => {

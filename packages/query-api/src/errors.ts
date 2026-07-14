@@ -96,6 +96,24 @@ export type QueryError =
         readonly chatBranchId: string;
         readonly lockedAt: string;
       };
+    }
+  /**
+   * issue #264 — a per-entity sub-lease rejected the write because a
+   * SIBLING task on the SAME chat branch already holds the entity. Unlike
+   * `Locked` (a different-chat conflict), this signals overlapping task
+   * sets between parallel subagents — a disjointness violation. The AI
+   * surfaces it so the offending subagent leaves the entity to its owner.
+   */
+  | {
+      readonly kind: "SiblingLeaseConflict";
+      readonly operation: string;
+      readonly message: string;
+      readonly entityKind: string;
+      readonly entityId: string;
+      readonly holder: {
+        readonly holderKey: string;
+        readonly expiresAt: string;
+      };
     };
 
 /**
@@ -121,7 +139,9 @@ export class OperationAbortError extends Error {
 
   constructor(queryError: QueryError) {
     super(
-      queryError.kind === "HandlerError" || queryError.kind === "Locked"
+      queryError.kind === "HandlerError" ||
+        queryError.kind === "Locked" ||
+        queryError.kind === "SiblingLeaseConflict"
         ? queryError.message
         : queryError.kind,
     );

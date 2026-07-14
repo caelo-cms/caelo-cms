@@ -11,7 +11,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
-import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
+import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot, loadTemplateState } from "../../snapshots/index.js";
 import { buildPatchSet } from "../../sql-helpers.js";
 import { readSiteDefaults } from "../site_defaults.js";
@@ -339,10 +339,11 @@ export const updateTemplateOp = defineOperation({
       kind: "template",
       entityId: input.templateId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
+    if (!lock.permitted) {
       return err(
-        await lockedError(tx, "templates.update", "template", input.templateId, lock.holder),
+        await entityWriteBlockedError(tx, "templates.update", "template", input.templateId, lock),
       );
     }
     const existing = (await tx.execute(sql`
@@ -517,10 +518,11 @@ export const deleteTemplateOp = defineOperation({
       kind: "template",
       entityId: input.templateId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
+    if (!lock.permitted) {
       return err(
-        await lockedError(tx, "templates.delete", "template", input.templateId, lock.holder),
+        await entityWriteBlockedError(tx, "templates.delete", "template", input.templateId, lock),
       );
     }
     const inUse = (await tx.execute(sql`

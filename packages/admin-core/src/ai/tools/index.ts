@@ -43,6 +43,7 @@ import {
 } from "./genesis-tools.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
 import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
+import { getPageLogTool } from "./get-page-log.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
 import { assignImportPageClusterTool, listImportPageClustersTool } from "./import-page-clusters.js";
@@ -60,6 +61,7 @@ import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
+import { logPageEditTool } from "./log-page-edit.js";
 import { mapExternalPageTypesTool } from "./map-external-page-types.js";
 import { migrateMediaTool } from "./migrate-media.js";
 import { checkRunBudgetTool, setMigrationBudgetTool } from "./migration-budget.js";
@@ -103,6 +105,7 @@ import {
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
+import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
@@ -191,8 +194,17 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // check cumulative spend against it (pause-and-ask, not auto-stop).
   registry.register(setMigrationBudgetTool);
   registry.register(checkRunBudgetTool);
+  // issue #248 (WS2) — rebuild-quality checks: content-inventory
+  // (no information loss) + repeated-subtree boilerplate detection.
+  registry.register(checkPageContentInventoryTool);
+  registry.register(detectImportBoilerplateTool);
   // issue #250 (WS4) — source-vs-rebuilt fidelity verdict (self-analysis gate).
   registry.register(verifyImportFidelityTool);
+  // issue #264 — per-page work-history log: read before touching a page,
+  // append after a meaningful change, so later chats / fresh subagents keep
+  // the intent without dragging the whole originating transcript.
+  registry.register(getPageLogTool);
+  registry.register(logPageEditTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);

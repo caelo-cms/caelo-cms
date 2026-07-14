@@ -188,9 +188,11 @@ import {
   acknowledgeImportPageDiffOp,
   addImportPageNotesOp,
   assignImportPageClusterOp,
+  checkImportPageInventoryOp,
   cleanupImportRunOp,
   composeFromImportRunOp,
   createImportRunOp,
+  detectImportBoilerplateOp,
   executeImportProposalOp,
   getImportPageFidelityInputsOp,
   getImportPageScreenshotKeysOp,
@@ -254,6 +256,7 @@ import {
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
 } from "./ops/owner-bootstrap-tokens.js";
+import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import {
   commentArchiveInsertOp,
@@ -725,6 +728,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #165 — Design Manifest (per-site design language).
   registry.register(getDesignManifestOp);
   registry.register(setDesignManifestOp);
+  // issue #264 — per-page edit log (durable work history for later chats /
+  // subagents that touch the page). Append-only, ungated.
+  registry.register(appendPageLogOp);
+  registry.register(listPageLogOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
@@ -771,6 +778,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #280 — migration cost gate: operator-confirmed budget + live spend.
   registry.register(setCostCeilingOp);
   registry.register(getRunCostOp);
+  // issue #248 (WS2) — rebuild-quality checks: content-inventory
+  // (no information loss) + repeated-subtree boilerplate detection.
+  registry.register(checkImportPageInventoryOp);
+  registry.register(detectImportBoilerplateOp);
   registry.register(executeImportProposalOp);
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);
