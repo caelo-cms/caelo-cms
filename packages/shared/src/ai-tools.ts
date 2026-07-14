@@ -629,7 +629,13 @@ export const createPageToolInput = z
      * the user asks for a non-default template.
      */
     templateId: z.string().uuid().optional(),
-    status: z.enum(["draft", "published"]).default("draft"),
+    /**
+     * Optional. Omit it and `pages.create` publishes the FIRST page of a
+     * bootstrap site (0 live published pages) so the first Stage has
+     * something to serve, and drafts subsequent pages for review. Pass an
+     * explicit value only to override that. (Was `.default("draft")`.)
+     */
+    status: z.enum(["draft", "published"]).optional(),
   })
   .strict();
 
