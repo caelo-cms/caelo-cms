@@ -9,7 +9,11 @@ describe("subagentSpec", () => {
     expect(r.success).toBe(true);
     if (!r.success) return;
     expect(r.data.expectedReturnShape).toBe("verdict");
-    expect(r.data.maxCostMicrocents).toBe(50_000_000);
+    // issue #304 — no schema default: an omitted cap means "derive from
+    // the armed run budget" in the spawn orchestrator, and a default
+    // here (the old 50M µ¢) would make omission indistinguishable from
+    // an explicit choice.
+    expect(r.data.maxCostMicrocents).toBeUndefined();
     expect(r.data.timeoutMs).toBe(60_000);
   });
 

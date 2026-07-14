@@ -51,8 +51,31 @@ import {
   spawnSubagentsToolInput,
   spawnSubagentToolInput,
 } from "@caelo-cms/shared";
+import { budgetTripText, evaluateGateLevel, fetchBudgetGate } from "../chat-runner/budget-gate.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import {
+  type RunBudgetSnapshot,
+  runSubagentWaves,
+  type SubagentErrorKind,
+  type SubagentInvocationResult,
+} from "./subagent-batch.js";
+import {
+  classifyChildCompletion,
+  deriveChildCaps,
+  pageRefList,
+  SUBAGENT_MAX_WAVES,
+} from "./subagent-budget.js";
+
+export type {
+  SubagentBatchOutcome,
+  SubagentBatchProgress,
+  SubagentInvocationResult,
+} from "./subagent-batch.js";
+// issue #268/#304 — the batch/wave core and its types moved to
+// subagent-batch.ts (unit-tested there); re-exported so existing imports
+// (spawn-subagent-batch.test.ts and friends) keep resolving.
+export { runSubagentBatch } from "./subagent-batch.js";
 
 const EXCLUDED_FOR_CHILD = new Set(["spawn_subagent", "spawn_subagents"]);
 
@@ -93,16 +116,38 @@ export function parsePositiveIntEnv(name: string, defaultValue: number, min = 1)
 }
 
 /**
- * issue #268 — total spend ceiling across a whole `spawn_subagents`
- * batch. Once the running sum of the settled children's `ai_calls`
- * exceeds this, the orchestrator stops STARTING the remaining specs
- * (they resolve as `batch-aborted`) so a runaway migration can't blow
- * the budget by the width of the pool. Distinct from each spec's own
- * per-spawn `maxCostMicrocents` (which caps ONE child). $2.00 default.
+ * issue #268/#304 — FALLBACK per-wave spend ceiling for a
+ * `spawn_subagents` call, used only when NO #297 run ceiling governs the
+ * session (with an armed ceiling the wave cap derives from the remaining
+ * budget — see deriveChildCaps). Once the running sum of the settled
+ * children's `ai_calls` exceeds it, the orchestrator stops STARTING the
+ * remaining specs (they resolve as `batch-aborted`).
+ *
+ * Default $10.00: runs #14/#15 measured 90–167M µ¢ ($0.90–$1.67) of real
+ * spend PER page-batch child, so the old $2.00 default could not fund
+ * even two real children — every fan-out died into the serial fallback.
+ * $10 funds one full wave at the observed band and default parallelism
+ * (6 × ~$1.67), while still hard-lining un-ceilinged runaways.
  */
 const SUBAGENT_BATCH_CAP_MICROCENTS = parsePositiveIntEnv(
   "SUBAGENT_BATCH_CAP_MICROCENTS",
-  200_000_000, // $2.00 default
+  1_000_000_000, // $10.00 default
+);
+
+/**
+ * issue #304 — FALLBACK per-child cost cap, used only when the spec sets
+ * no explicit `maxCostMicrocents` AND no #297 run ceiling is armed (with
+ * a ceiling the cap derives from the remaining budget).
+ *
+ * Default $2.50: the empirical per-child band from runs #14/#15 is
+ * 90–167M µ¢ ($0.90–$1.67); 250M µ¢ clears the observed high end with
+ * ~1.5× headroom. The old default — 50M µ¢ hardcoded in the shared spec
+ * schema — sat BELOW the band's floor, so 100% of page-batch children
+ * errored at the cap (issue #304's headline failure).
+ */
+const SUBAGENT_CHILD_CAP_MICROCENTS = parsePositiveIntEnv(
+  "SUBAGENT_CHILD_CAP_MICROCENTS",
+  250_000_000, // $2.50 default
 );
 
 /**
@@ -124,7 +169,10 @@ const SUBAGENT_MAX_PARALLEL = parsePositiveIntEnv("SUBAGENT_MAX_PARALLEL", 6);
  * `SUBAGENT_MAX_PARALLEL`) drains it, so a 30-page migration is one tool
  * call, not five. Env-tunable.
  */
-const SUBAGENT_MAX_BATCH = parsePositiveIntEnv("SUBAGENT_MAX_BATCH", 32);
+// issue #304 — clamped to the shared Zod schema's hard max(32): an
+// env-raised batch size beyond what the validator accepts would re-create
+// the #251 drift class (provider schema invites what dispatch rejects).
+const SUBAGENT_MAX_BATCH = Math.min(32, parsePositiveIntEnv("SUBAGENT_MAX_BATCH", 32));
 
 /**
  * Run #10 D2 — the per-shape payload sketch for the submit_result
@@ -150,36 +198,15 @@ function submitInstructionFor(shape: SpawnSubagentToolInput["expectedReturnShape
 }
 
 /**
- * Run #10 D2 — structured failure classes for a spawn (CLAUDE.md §11:
- * failure surfaces are AI-actionable). `child-error` is the child's own
- * provider/runtime failure (context limit, cost cap, dead stream) —
- * NEVER parseable-looking output; `empty-result` / `shape-mismatch`
- * are result-channel failures after the automatic nudge retry;
- * `spawn-error` is plumbing (session create, stream threw).
+ * issue #304 — a spec whose cost cap has been RESOLVED (explicit value,
+ * budget-derived, or env fallback). `runOneSubagent` requires this so a
+ * child can never run against an undefined cap; both tool handlers (and
+ * the wave orchestrator) resolve before spawning.
  */
-type SubagentErrorKind =
-  | "spawn-error"
-  | "child-error"
-  | "empty-result"
-  | "shape-mismatch"
-  // issue #268 — this spec was never started: the batch had already
-  // spent past `batchMaxCostMicrocents` when its pool slot came up.
-  | "batch-aborted";
-
-interface SubagentInvocationResult {
-  role: string;
-  status: "completed" | "errored" | "timed_out";
-  resultJson: unknown;
-  costMicrocents: number;
-  durationMs: number;
-  subagentChatSessionId: string;
-  errorMessage?: string;
-  /** Run #10 D2 — which structured failure class an errored spawn belongs to. */
-  errorKind?: SubagentErrorKind;
-}
+type ResolvedSubagentSpec = SpawnSubagentToolInput & { maxCostMicrocents: number };
 
 async function runOneSubagent(
-  spec: SpawnSubagentToolInput,
+  spec: ResolvedSubagentSpec,
   ctx: Parameters<ToolDefinitionWithHandler<unknown>["handler"]>[0],
   toolCtx: Parameters<ToolDefinitionWithHandler<unknown>["handler"]>[2],
   batchId: string,
@@ -504,7 +531,7 @@ async function runOneSubagent(
   //    the legacy fallback for a child that answered in text despite
   //    the instruction.
   let resultJson: unknown;
-  let status: "completed" | "errored" = "completed";
+  let status: "completed" | "partial" | "errored" = "completed";
   let errorMessage: string | undefined;
   let errorKind: SubagentErrorKind | undefined;
   if (resultSubmitted) {
@@ -543,10 +570,30 @@ async function runOneSubagent(
   );
   const costMicrocents = costR.ok ? (costR.value as { costMicrocents: number }).costMicrocents : 0;
 
-  if (costMicrocents > spec.maxCostMicrocents) {
-    status = "errored";
-    errorKind = "child-error";
-    errorMessage = `subagent exceeded cost cap: spent ${costMicrocents} / cap ${spec.maxCostMicrocents}`;
+  // issue #304 — partial-completion instead of error. A child that
+  // DELIVERED a result never has that work discarded for cost: when its
+  // spend crossed the wrap-up line (≥85% of its cap — the same line that
+  // injected the wrap-up notice into its loop) and its rebuild result
+  // names unfinished pages, it classifies as PARTIAL and the wave
+  // orchestrator re-dispatches exactly the remainder. Only a child that
+  // blew its cap WITHOUT submitting anything stays a hard child-error
+  // (that path resolves above via childErrors — streaming.ts aborts the
+  // turn at 100%).
+  let partial: SubagentInvocationResult["partial"];
+  if (status === "completed" && resultSubmitted) {
+    const cls = classifyChildCompletion({
+      costMicrocents,
+      capMicrocents: spec.maxCostMicrocents,
+      resultJson,
+    });
+    if (cls.status === "partial" && cls.partial) {
+      status = "partial";
+      partial = cls.partial;
+      errorMessage =
+        `stopped at its cost budget after completing ${cls.partial.completedPages.length} ` +
+        `page(s); ${cls.partial.remainingPages.length} remain ` +
+        `(${pageRefList(cls.partial.remainingPages)}). Completed work is saved.`;
+    }
   }
 
   if (subagentRunId) {
@@ -569,165 +616,34 @@ async function runOneSubagent(
     subagentChatSessionId,
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorKind ? { errorKind } : {}),
-  };
-}
-
-/** issue #268 — one n-of-m tick the batch orchestrator hands its caller. */
-export interface SubagentBatchProgress {
-  /** Specs settled so far (run OR budget-aborted). */
-  finished: number;
-  /** Total specs in the batch. */
-  total: number;
-  /** Specs that actually invoked a child turn (excludes budget-aborted). */
-  ran: number;
-  /** Running sum of settled children's rolled-up cost. */
-  totalCostMicrocents: number;
-  /** Role of the spec that just settled. */
-  lastRole: string;
-  /** True once the running cost tripped the batch cap and later specs are skipped. */
-  batchAborted: boolean;
-}
-
-/** issue #268 — the batch orchestrator's return: ordered results + roll-up. */
-export interface SubagentBatchOutcome {
-  /** One result per input spec, in input order. */
-  results: SubagentInvocationResult[];
-  /** Sum of every settled child's rolled-up `ai_calls` cost. */
-  totalCostMicrocents: number;
-  /** True when at least one spec was skipped because the batch cap was hit. */
-  batchAborted: boolean;
-  /**
-   * True when the final total spend exceeded the cap — the hard budget
-   * signal. Distinct from `batchAborted`: the LAST in-flight child can
-   * tip the total over the cap with NO later specs left to skip, in
-   * which case nothing is aborted (`batchAborted` stays false) but the
-   * ceiling was still blown. Callers gating on budget MUST read this,
-   * not `batchAborted` (Copilot #291-1). `batchAborted ⟹ overBudget`,
-   * never the reverse.
-   */
-  overBudget: boolean;
-  /** Count of specs that actually ran (invoked a child turn). */
-  ran: number;
-}
-
-/**
- * The synthetic result for a spec that never started because the batch
- * had already spent past its cap. Zero cost, zero duration — it did no
- * work. AI-actionable message (CLAUDE.md §11): tells the parent exactly
- * how to recover (smaller batch, or raise the cap).
- */
-function batchAbortedResult(
-  spec: SpawnSubagentToolInput,
-  spentMicrocents: number,
-  capMicrocents: number,
-): SubagentInvocationResult {
-  return {
-    role: spec.role,
-    status: "errored",
-    resultJson: null,
-    costMicrocents: 0,
-    durationMs: 0,
-    subagentChatSessionId: "",
-    errorKind: "batch-aborted",
-    errorMessage:
-      `not started: the batch had already spent $${(spentMicrocents / 1e8).toFixed(4)} ` +
-      `(cap $${(capMicrocents / 1e8).toFixed(4)}) when this subagent's turn came up. ` +
-      "Recovery: re-run this page in a fresh, SMALLER spawn_subagents batch, or raise " +
-      "SUBAGENT_BATCH_CAP_MICROCENTS if the higher spend is expected.",
+    ...(partial ? { partial } : {}),
   };
 }
 
 /**
- * issue #268 — the concurrency + budget core of `spawn_subagents`,
- * factored out of the tool handler so it is unit-testable with a mock
- * `runSpawn` (no chat-runner, no DB, no provider). Runs `specs` through
- * a bounded worker pool:
- *
- *   - **Concurrency:** at most `maxParallel` child turns are in flight at
- *     once. `Promise.all` over N children would flood the provider; the
- *     pool caps it and drains the queue as slots free up.
- *   - **Budget abort (in-flight, not post-hoc):** each worker checks the
- *     running cost BEFORE it starts the next spec. Once the batch total
- *     exceeds `batchMaxCostMicrocents`, remaining specs resolve as
- *     `batch-aborted` WITHOUT running — so the batch can overshoot the
- *     cap by at most the cost of the children already in flight when the
- *     line was crossed, never by the full width of the untouched queue.
- *   - **Progress:** `onProgress` fires once per settled spec with the
- *     n-of-m counts + running cost, so the caller can stream live ticks.
- *
- * Results are returned in input order regardless of completion order.
- *
- * @param specs        the batch (already length-validated by the caller).
- * @param runSpawn     runs ONE subagent; the real one is `runOneSubagent`,
- *                     tests pass a mock that records max-in-flight / cost.
- * @param opts.maxParallel            max simultaneous in-flight spawns.
- * @param opts.batchMaxCostMicrocents batch-wide spend ceiling.
- * @param opts.onProgress            per-settlement n-of-m callback.
+ * issue #304 — the wave orchestrator's budget fetcher: the #297 gate
+ * state for the PARENT chat session, folded to `remaining / tripped /
+ * pauseText`. Returns null (no budget stop, fallback caps) when the tool
+ * runs outside a chat-runner context or no ceilinged run governs the
+ * session. The parent turn's own in-flight provider spend is not
+ * visible here (same bounded approximation #297 documents for
+ * subagent children); the parent loop's own gate closes that gap on its
+ * next iteration.
  */
-export async function runSubagentBatch(
-  specs: readonly SpawnSubagentToolInput[],
-  runSpawn: (spec: SpawnSubagentToolInput, index: number) => Promise<SubagentInvocationResult>,
-  opts: {
-    maxParallel: number;
-    batchMaxCostMicrocents: number;
-    onProgress?: (progress: SubagentBatchProgress) => void;
-  },
-): Promise<SubagentBatchOutcome> {
-  const total = specs.length;
-  const results = new Array<SubagentInvocationResult>(total);
-  let runningCostMicrocents = 0;
-  let finished = 0;
-  let ran = 0;
-  let batchAborted = false;
-  // Claimed synchronously (no await between read and increment) so two
-  // workers never grab the same index — JS's single-threaded loop makes
-  // this the whole mutual-exclusion story; no lock needed.
-  let cursor = 0;
-
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= total) return;
-      const spec = specs[index] as SpawnSubagentToolInput;
-
-      if (runningCostMicrocents > opts.batchMaxCostMicrocents) {
-        batchAborted = true;
-        results[index] = batchAbortedResult(
-          spec,
-          runningCostMicrocents,
-          opts.batchMaxCostMicrocents,
-        );
-      } else {
-        const result = await runSpawn(spec, index);
-        runningCostMicrocents += result.costMicrocents;
-        ran += 1;
-        results[index] = result;
-      }
-
-      finished += 1;
-      opts.onProgress?.({
-        finished,
-        total,
-        ran,
-        totalCostMicrocents: runningCostMicrocents,
-        lastRole: spec.role,
-        batchAborted,
-      });
-    }
-  };
-
-  const workerCount = Math.max(1, Math.min(opts.maxParallel, total));
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-
-  return {
-    results,
-    totalCostMicrocents: runningCostMicrocents,
-    batchAborted,
-    // Final-total budget check: catches the last-child-tips-over case
-    // that `batchAborted` (specs-were-skipped) misses (Copilot #291-1).
-    overBudget: runningCostMicrocents > opts.batchMaxCostMicrocents,
-    ran,
+function makeFetchRunBudget(
+  toolCtx: Parameters<ToolDefinitionWithHandler<unknown>["handler"]>[2],
+): (() => Promise<RunBudgetSnapshot | null>) | null {
+  const { registry, adapter, humanCtx, chatSessionId } = toolCtx;
+  if (!registry || !adapter || !humanCtx || !chatSessionId) return null;
+  return async () => {
+    const gate = await fetchBudgetGate(registry, adapter, humanCtx, chatSessionId);
+    if (gate === null) return null;
+    const { level, liveSpentMicrocents } = evaluateGateLevel(gate, 0);
+    return {
+      remainingMicrocents: gate.ceilingMicrocents - liveSpentMicrocents,
+      tripped: level === "trip",
+      pauseText: budgetTripText(gate, liveSpentMicrocents),
+    };
   };
 }
 
@@ -739,6 +655,29 @@ function summarize(results: SubagentInvocationResult[]): string {
       lines.push(
         `## ${r.role} (completed · ${r.durationMs}ms · $${cost})\n${JSON.stringify(r.resultJson, null, 2)}`,
       );
+    } else if (r.status === "partial") {
+      // issue #304 — partial is NOT a failure: the child hit its cost
+      // budget, finished its current page, and delivered what landed.
+      // The wave orchestrator already re-dispatched the remainder where
+      // budget allowed; anything still listed as remaining here needs
+      // the parent's (or the operator's) attention.
+      const sections = [
+        `## ${r.role} (partial${r.errorKind ? ` [${r.errorKind}]` : ""} · ${r.durationMs}ms · $${cost})`,
+      ];
+      if (r.errorMessage) sections.push(r.errorMessage);
+      if (r.partial && r.partial.completedPages.length > 0) {
+        sections.push(`Completed pages (saved): ${pageRefList(r.partial.completedPages)}`);
+      }
+      if (r.partial && r.partial.remainingPages.length > 0) {
+        sections.push(
+          `Remaining pages (NOT built): ${pageRefList(r.partial.remainingPages)}. ` +
+            "Re-run these in a fresh spawn_subagents call once budget allows.",
+        );
+      }
+      if (r.resultJson !== null && r.resultJson !== undefined) {
+        sections.push(JSON.stringify(r.resultJson, null, 2));
+      }
+      lines.push(sections.join("\n\n"));
     } else {
       // v0.2.67 — include the subagent's raw output (when present) +
       // a recovery hint so the parent AI can decide whether to retry,
@@ -816,15 +755,42 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
         description:
           "Payload shape the subagent submits via submit_result: verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or plain text. PICK FREEFORM for prose results.",
       },
-      maxCostMicrocents: { type: "integer", minimum: 0 },
+      maxCostMicrocents: {
+        type: "integer",
+        minimum: 0,
+        description:
+          "Per-spawn cost cap in microcents (1e8 = $1). USUALLY OMIT — the runtime derives the right cap from the approved run budget (issue #304). Set only for a deliberate tighter/looser bound.",
+      },
       timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
       activePageId: { type: "string", format: "uuid" },
     },
   },
   handler: async (ctx, input, toolCtx) => {
     const batchId = crypto.randomUUID();
-    const result = await runOneSubagent(input, ctx, toolCtx, batchId, null);
+    // issue #304 — resolve the child's cost cap: explicit spec value >
+    // derived from the armed run budget > env fallback. A tripped run
+    // ceiling refuses the spawn with the #297 pause wording instead of
+    // burning a doomed child turn.
+    const fetchRunBudget = makeFetchRunBudget(toolCtx);
+    const budget = fetchRunBudget ? await fetchRunBudget() : null;
+    if (budget !== null && (budget.tripped || budget.remainingMicrocents <= 0)) {
+      return { ok: false, content: budget.pauseText };
+    }
+    const caps = deriveChildCaps({
+      remainingRunBudgetMicrocents: budget?.remainingMicrocents ?? null,
+      plannedChildren: 1,
+      fallbackChildCapMicrocents: SUBAGENT_CHILD_CAP_MICROCENTS,
+      fallbackBatchCapMicrocents: SUBAGENT_BATCH_CAP_MICROCENTS,
+    });
+    const resolved: ResolvedSubagentSpec = {
+      ...input,
+      maxCostMicrocents: input.maxCostMicrocents ?? caps.perChildCapMicrocents,
+    };
+    const result = await runOneSubagent(resolved, ctx, toolCtx, batchId, null);
     return {
+      // Partial is not ok (there IS unfinished work) but the message +
+      // partial payload tell the parent exactly what landed and what to
+      // re-dispatch — never a bare "validation failed".
       ok: result.status === "completed",
       content: summarize([result]),
     };
@@ -844,7 +810,9 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
     // sub-leasing is the #264 lease work, not this PR — so for now
     // disjointness is the caller's contract, with no lock backstop.
     "DISJOINT-WORK CONTRACT (MANDATORY for WRITE batches): the subagents run at the same time on the SAME preview branch. They do NOT lock each other out — the entity lock is per-branch, and all siblings share this chat's branch — so two subagents writing the SAME module is a silent lost update (last writer wins), not a clean error. Therefore each spec MUST target a DISJOINT set of entities: give each subagent its own page (or its own non-overlapping page batch), and put any shared chrome (header/footer/nav) in exactly ONE dedicated spec. Never let two siblings touch the same module/page. " +
-    `Concurrency: up to ${SUBAGENT_MAX_BATCH} specs per call; at most ${SUBAGENT_MAX_PARALLEL} run at once (the rest queue and drain as slots free). Each subagent has its own per-spawn cost cap (default $0.50) + timeout (default 60s). The BATCH as a whole is capped at $2.00 (env-tunable): once the running spend crosses it, not-yet-started subagents are skipped (reported as \`batch-aborted\`) so a runaway fan-out can't blow the budget. Live n-of-m progress ("3 of 8 done") streams to the operator while the batch runs. ` +
+    `Concurrency: up to ${SUBAGENT_MAX_BATCH} specs per call; at most ${SUBAGENT_MAX_PARALLEL} run at once (the rest queue and drain as slots free). ` +
+    // issue #304 — budget-derived caps + partial-completion contract.
+    "BUDGET: per-child and batch cost caps are derived automatically from the run's approved cost budget — OMIT maxCostMicrocents unless you have a deliberate reason. A child that approaches its cap finishes its current page and returns a PARTIAL result (completed pages are saved); this tool automatically re-dispatches the remainder in follow-up waves while budget remains, so you do NOT need to retry partial children yourself. If the run's cost ceiling is reached, dispatch stops cleanly and the result says how the operator resumes. Live n-of-m progress streams to the operator while the batch runs. " +
     // v0.2.68 / run #10 D2 — same return-shape guidance as
     // spawn_subagent: results arrive via each child's submit_result
     // tool call (instruction auto-appended to each task).
@@ -887,7 +855,12 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
               description:
                 "Payload shape the subagent submits via submit_result: verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or plain text. PICK FREEFORM for prose results.",
             },
-            maxCostMicrocents: { type: "integer", minimum: 0 },
+            maxCostMicrocents: {
+              type: "integer",
+              minimum: 0,
+              description:
+                "Per-spawn cost cap in microcents (1e8 = $1). USUALLY OMIT — the runtime derives the right cap from the approved run budget (issue #304).",
+            },
             timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
             activePageId: { type: "string", format: "uuid" },
           },
@@ -904,17 +877,28 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
     }
     const batchId = crypto.randomUUID();
 
-    // issue #268 — the concurrency + in-flight-budget core lives in
-    // runSubagentBatch (unit-tested with a mock spawn). Here we wire the
-    // real spawn, cap concurrency at SUBAGENT_MAX_PARALLEL, cap total
-    // spend at SUBAGENT_BATCH_CAP_MICROCENTS, and stream n-of-m progress
-    // to the operator as each sibling settles.
-    const outcome = await runSubagentBatch(
+    // issue #268/#304 — the wave orchestrator (unit-tested with a mock
+    // spawn) owns concurrency, budget-derived caps, partial re-dispatch,
+    // and the between-waves run-budget re-check. Here we wire the real
+    // spawn, the real #297 gate read, and the n-of-m progress stream.
+    const outcome = await runSubagentWaves(
       input.subagents,
-      (spec) => runOneSubagent(spec, ctx, toolCtx, batchId, null),
+      (spec) =>
+        runOneSubagent(
+          // The wave orchestrator resolves every cap before dispatch;
+          // the fallback here is unreachable belt-and-braces for TS.
+          { ...spec, maxCostMicrocents: spec.maxCostMicrocents ?? SUBAGENT_CHILD_CAP_MICROCENTS },
+          ctx,
+          toolCtx,
+          batchId,
+          null,
+        ),
       {
         maxParallel: SUBAGENT_MAX_PARALLEL,
-        batchMaxCostMicrocents: SUBAGENT_BATCH_CAP_MICROCENTS,
+        fallbackChildCapMicrocents: SUBAGENT_CHILD_CAP_MICROCENTS,
+        fallbackBatchCapMicrocents: SUBAGENT_BATCH_CAP_MICROCENTS,
+        maxWaves: SUBAGENT_MAX_WAVES,
+        fetchRunBudget: makeFetchRunBudget(toolCtx),
         onProgress: (p) => {
           toolCtx.pushClientEvent?.({
             kind: "subagent-batch-progress",
@@ -925,35 +909,39 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
             totalCostMicrocents: p.totalCostMicrocents,
             lastRole: p.lastRole,
             batchAborted: p.batchAborted,
+            // issue #304 — remainder re-dispatches tick as later waves.
+            wave: p.wave,
           });
         },
       },
     );
 
-    // issue #268 — cost roll-up across the parallel batch is ALWAYS
-    // reported (not only on cap-exceed), so the parent sees the batch's
-    // total spend + n-of-m completion in its tool result. `overBudget`
-    // is the hard budget signal (final total > cap) — it fires even when
-    // no spec was SKIPPED (the last in-flight child tipping the total
-    // over the cap, Copilot #291-1), whereas `batchAborted` only reports
-    // the skip. We flag both conditions distinctly.
-    const overBudgetNote = outcome.overBudget
-      ? outcome.batchAborted
-        ? "\nBATCH COST CAP HIT — later subagents were skipped (see batch-aborted rows above). " +
-          "Re-run the skipped pages in a fresh batch, or raise SUBAGENT_BATCH_CAP_MICROCENTS."
-        : "\nBATCH COST CAP EXCEEDED — the in-flight subagents' spend pushed the batch over the cap " +
-          "(nothing was skipped — the ceiling was crossed by the last runners). Their edits DID land; " +
-          "treat this as over-budget and raise SUBAGENT_BATCH_CAP_MICROCENTS if the higher spend is expected."
+    // issue #268/#304 — the roll-up is ALWAYS reported. The cap line
+    // names its provenance: derived from the run budget (the normal
+    // migration path) vs the env fallback (un-ceilinged sessions).
+    const capLine =
+      outcome.capSource === "run-budget"
+        ? "caps derived from the run's approved budget"
+        : `fallback caps (no run budget armed): child $${(SUBAGENT_CHILD_CAP_MICROCENTS / 1e8).toFixed(2)} / wave $${(SUBAGENT_BATCH_CAP_MICROCENTS / 1e8).toFixed(2)}`;
+    const pauseNote = outcome.budgetStopped && outcome.pauseText ? `\n${outcome.pauseText}` : "";
+    const fallbackOverNote = outcome.fallbackOverBudget
+      ? "\nBATCH COST CAP EXCEEDED (env fallback cap) — treat as over-budget; raise " +
+        "SUBAGENT_BATCH_CAP_MICROCENTS only if the higher spend is expected."
       : "";
     const rollUp =
-      `\n\n---\nBatch: ${outcome.ran} of ${input.subagents.length} subagents ran · ` +
-      `total cost $${(outcome.totalCostMicrocents / 1e8).toFixed(4)} / cap $${(SUBAGENT_BATCH_CAP_MICROCENTS / 1e8).toFixed(4)}` +
-      overBudgetNote;
+      `\n\n---\nBatch: ${outcome.ran} child run(s) across ${outcome.waves} wave(s) for ` +
+      `${input.subagents.length} spec(s) · total cost $${(outcome.totalCostMicrocents / 1e8).toFixed(4)} · ${capLine}` +
+      fallbackOverNote +
+      pauseNote;
 
-    // `ok` is a hard budget guard: an over-budget batch is NEVER ok,
-    // even if every child that ran completed (Copilot #291-1).
+    // `ok` is a hard guard: a run-ceiling stop, a fallback-cap overrun
+    // (Copilot #291-1), or ANY spec that did not fully complete
+    // (partial remainders included) is not ok — the content above tells
+    // the parent exactly what landed and what to do next.
     const allCompleted =
-      !outcome.overBudget && outcome.results.every((r) => r.status === "completed");
+      !outcome.fallbackOverBudget &&
+      !outcome.budgetStopped &&
+      outcome.results.every((r) => r.status === "completed");
     return { ok: allCompleted, content: summarize(outcome.results) + rollUp };
   },
 };

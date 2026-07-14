@@ -30,6 +30,10 @@
     switch (status) {
       case "completed":
         return "text-green-700 dark:text-green-400";
+      // issue #304 — the child hit its cost budget, finished its current
+      // page, and submitted what landed; the remainder was re-dispatched.
+      case "partial":
+        return "text-amber-700 dark:text-amber-400";
       case "errored":
       case "timed_out":
         return "text-red-700 dark:text-red-400";

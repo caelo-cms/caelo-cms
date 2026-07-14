@@ -64,8 +64,16 @@ export const subagentSpec = z
     allowedToolNames: z.array(z.string().min(1).max(120)).optional(),
     /** Zod-validated return shape. Defaults to `verdict`. */
     expectedReturnShape: expectedReturnShape.default("verdict"),
-    /** Per-spawn cost cap; default 50_000_000 microcents = $0.50. */
-    maxCostMicrocents: z.number().int().nonnegative().default(50_000_000),
+    /**
+     * Per-spawn cost cap in microcents. OPTIONAL on purpose (issue #304):
+     * when omitted, the spawn orchestrator derives the cap from the armed
+     * run budget (#297) or falls back to SUBAGENT_CHILD_CAP_MICROCENTS.
+     * The old schema default (50M µ¢ = $0.50) sat BELOW the empirically
+     * observed 90–167M µ¢ per-child spend of migration page batches
+     * (runs #14/#15), so every child errored at the cap — a default here
+     * would make "AI omitted it" indistinguishable from "AI chose $0.50".
+     */
+    maxCostMicrocents: z.number().int().nonnegative().optional(),
     /** Per-spawn timeout; default 60s. */
     timeoutMs: z.number().int().min(1000).max(600_000).default(60_000),
     /**
@@ -85,7 +93,13 @@ export type SpawnSubagentToolInput = SubagentSpec;
 
 export const spawnSubagentsToolInput = z
   .object({
-    subagents: z.array(subagentSpec).min(1).max(8),
+    // issue #304 — 32 matches the tool's advertised provider-schema
+    // maxItems (SUBAGENT_MAX_BATCH default). The previous max(8) silently
+    // rejected the very batches the provider schema invited (#251 drift
+    // class): a 14-page migration fan-out failed Zod validation at
+    // dispatch and fell back to serial building. SUBAGENT_MAX_BATCH must
+    // never be env-raised past this hard bound.
+    subagents: z.array(subagentSpec).min(1).max(32),
   })
   .strict();
 export type SpawnSubagentsToolInput = z.infer<typeof spawnSubagentsToolInput>;
