@@ -11,6 +11,8 @@ export {
   resolveThemeFonts,
 } from "@caelo-cms/static-generator";
 export * from "./ai/chat-runner.js";
+// issue #298 — the calls×context import cost model + calibration helpers.
+export * from "./ai/import-cost-model.js";
 export * from "./ai/pricing-cache.js";
 export * from "./ai/provider.js";
 export {
