@@ -184,8 +184,13 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
   it("an allowlist resolving to ZERO live tools keeps the full catalogue (defect, never zero tools)", async () => {
     // Unreachable through skills.set/propose (issue #301 validation) —
     // seeded via raw SQL to simulate hand-edited or pre-validation data.
-    await seedSkill(ZERO_SLUG, ["totally.bogus_op", "nope.not_a_tool"], "zzbogusaudit");
-    const tools = await captureToolsForTurn("zzbogusaudit");
+    // The keyword must not substring-match any seeded skill's
+    // auto-engagement keywords: "zzbogusaudit" contains "audit" and
+    // co-engaged menu-auditor, whose (post-0157, live) allowlist made
+    // the union resolve to >0 tools — narrowing the catalogue and
+    // breaking the ZERO-live-tools premise this test exists to pin.
+    await seedSkill(ZERO_SLUG, ["totally.bogus_op", "nope.not_a_tool"], "zzbogusnix");
+    const tools = await captureToolsForTurn("zzbogusnix");
     expect(tools.length).toBeGreaterThan(50); // full catalogue, not zero
     expect(tools.some((t) => t.name === "add_module_to_layout")).toBe(true);
   });
