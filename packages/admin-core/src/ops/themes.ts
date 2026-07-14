@@ -50,7 +50,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
+import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { emitSnapshot, type SnapshotOpKind } from "../snapshots/index.js";
 import type { ThemeState } from "../snapshots/state.js";
 
@@ -351,9 +351,12 @@ export const updateThemeTokensOp = defineOperation({
         kind: "theme",
         entityId: target.id,
         chatBranchId: ctx.chatBranchId,
+        holderKey: ctx.chatTaskId,
       });
-      if (!lock.permitted && lock.holder) {
-        return err(await lockedError(tx, "themes.update_tokens", "theme", target.id, lock.holder));
+      if (!lock.permitted) {
+        return err(
+          await entityWriteBlockedError(tx, "themes.update_tokens", "theme", target.id, lock),
+        );
       }
     }
 
@@ -517,9 +520,12 @@ export const updateThemeMetaOp = defineOperation({
         kind: "theme",
         entityId: target.id,
         chatBranchId: ctx.chatBranchId,
+        holderKey: ctx.chatTaskId,
       });
-      if (!lock.permitted && lock.holder) {
-        return err(await lockedError(tx, "themes.update_meta", "theme", target.id, lock.holder));
+      if (!lock.permitted) {
+        return err(
+          await entityWriteBlockedError(tx, "themes.update_meta", "theme", target.id, lock),
+        );
       }
     }
 
@@ -614,9 +620,10 @@ export const setThemeAssetOp = defineOperation({
         kind: "theme",
         entityId: target.id,
         chatBranchId: ctx.chatBranchId,
+        holderKey: ctx.chatTaskId,
       });
-      if (!lock.permitted && lock.holder) {
-        return err(await lockedError(tx, "themes.set_asset", "theme", target.id, lock.holder));
+      if (!lock.permitted) {
+        return err(await entityWriteBlockedError(tx, "themes.set_asset", "theme", target.id, lock));
       }
     }
 
@@ -840,9 +847,10 @@ export const importThemeOp = defineOperation({
         kind: "theme",
         entityId: target.id,
         chatBranchId: ctx.chatBranchId,
+        holderKey: ctx.chatTaskId,
       });
-      if (!lock.permitted && lock.holder) {
-        return err(await lockedError(tx, "themes.import", "theme", target.id, lock.holder));
+      if (!lock.permitted) {
+        return err(await entityWriteBlockedError(tx, "themes.import", "theme", target.id, lock));
       }
     }
 

@@ -21,6 +21,12 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import {
+  acquireEntityLease,
+  type LeaseHolder,
+  releaseLeasesByBranch,
+  siblingLeaseError,
+} from "./entity-leases.js";
 
 export type LockedEntityKind =
   | "module"
@@ -54,8 +60,15 @@ export interface LockHolder {
 export interface LockCheckResult {
   /** True iff caller holds the lock OR the entity is unlocked. */
   permitted: boolean;
-  /** Set when permitted=false; holder info for the error message. */
+  /** Set when permitted=false because ANOTHER CHAT holds the branch lock. */
   holder?: LockHolder;
+  /**
+   * issue #264 — set when permitted=false because a SIBLING TASK on the
+   * SAME branch already holds the per-entity sub-lease. Distinct from
+   * `holder` (a different-chat conflict): this is a disjointness violation
+   * between parallel subagents, surfaced via {@link siblingLeaseError}.
+   */
+  siblingLease?: LeaseHolder;
 }
 
 /**
@@ -70,6 +83,14 @@ export interface LockCheckResult {
  * from `chat_sessions` so callers don't have to thread it through every
  * op handler. Lock rows reference chat_session_id directly so
  * `ON DELETE CASCADE` from a chat-session delete tears down locks.
+ *
+ * issue #264 — the branch lock alone lets parallel sibling subagents (all
+ * on the parent's branch) write the same entity, since they resolve to
+ * one session. When `holderKey` (the caller's OWN session, `ctx.chatTaskId`)
+ * is supplied, this ALSO takes a per-entity sub-lease so a sibling with a
+ * different holder is refused via `result.siblingLease`. Omitting
+ * `holderKey` (non-chat / unidentifiable writer) skips the sub-lease and
+ * falls back to branch-lock-only behaviour.
  */
 export async function checkAndAcquireEntityLock(
   tx: TransactionRunner,
@@ -77,6 +98,11 @@ export async function checkAndAcquireEntityLock(
     kind: LockedEntityKind;
     entityId: string;
     chatBranchId: string | null | undefined;
+    /** The caller's own session id (`ctx.chatTaskId`) — the lease holder. */
+    holderKey?: string | null;
+    /** Injected clock + TTL for deterministic tests; defaults otherwise. */
+    now?: Date;
+    ttlMs?: number;
   },
 ): Promise<LockCheckResult> {
   if (!args.chatBranchId) {
@@ -113,6 +139,24 @@ export async function checkAndAcquireEntityLock(
     return { permitted: true };
   }
   if (row.chat_session_id === sessionId) {
+    // Caller holds the branch lock. issue #264 — layer the per-entity
+    // sub-lease so a SIBLING task on this same branch (same resolved
+    // session, different `holderKey`) can't clobber the entity we're
+    // taking. Skipped when the writer can't be identified (no holderKey),
+    // since siblings can only be told apart by their own session id.
+    if (args.holderKey) {
+      const lease = await acquireEntityLease(tx, {
+        kind: args.kind,
+        entityId: args.entityId,
+        branchId: args.chatBranchId,
+        holderKey: args.holderKey,
+        now: args.now,
+        ttlMs: args.ttlMs,
+      });
+      if (!lease.acquired && lease.holder) {
+        return { permitted: false, siblingLease: lease.holder };
+      }
+    }
     return { permitted: true };
   }
   const lockedAt =
@@ -130,6 +174,12 @@ export async function checkAndAcquireEntityLock(
 /**
  * Release all locks held by a chat. Called by chat.publish on success
  * and by chat discard / archive paths.
+ *
+ * issue #264 — also clears every per-entity sub-lease on the chat's
+ * branch. Once a chat publishes or is discarded the branch is gone, so
+ * any residual leases (including an orphaned subagent's that never hit
+ * `subagent_runs.finish`) are dead weight; dropping them by branch keeps
+ * the entity_leases table free of tombstones referencing merged branches.
  */
 export async function releaseChatLocks(
   tx: TransactionRunner,
@@ -139,6 +189,15 @@ export async function releaseChatLocks(
     DELETE FROM chat_entity_locks
     WHERE chat_session_id = ${chatSessionId}::uuid
   `);
+  const rows = (await tx.execute(sql`
+    SELECT chat_branch_id::text AS chat_branch_id
+    FROM chat_sessions WHERE id = ${chatSessionId}::uuid
+    LIMIT 1
+  `)) as unknown as { chat_branch_id: string | null }[];
+  const branchId = rows[0]?.chat_branch_id;
+  if (branchId) {
+    await releaseLeasesByBranch(tx, branchId);
+  }
 }
 
 /**
@@ -224,4 +283,35 @@ export async function lockedError(
       ...(anchorPageLocale !== undefined ? { anchorPageLocale } : {}),
     },
   };
+}
+
+/**
+ * Build the right structured error for a blocked entity write. A
+ * `siblingLease` conflict (issue #264 — a parallel task on the same branch)
+ * yields the disjointness-violation error; otherwise a `holder` conflict
+ * (another chat holds the branch lock) yields the enriched Locked error.
+ *
+ * Every op that guards a write with {@link checkAndAcquireEntityLock}
+ * routes its `!permitted` case through this helper so both conflict kinds
+ * surface uniformly. Precondition: `result.permitted === false` with
+ * exactly one of `siblingLease` / `holder` set.
+ */
+export async function entityWriteBlockedError(
+  tx: TransactionRunner,
+  operation: string,
+  kind: LockedEntityKind,
+  entityId: string,
+  result: LockCheckResult,
+): Promise<Awaited<ReturnType<typeof lockedError>> | ReturnType<typeof siblingLeaseError>> {
+  if (result.siblingLease) {
+    return siblingLeaseError(operation, kind, entityId, result.siblingLease);
+  }
+  if (result.holder) {
+    return lockedError(tx, operation, kind, entityId, result.holder);
+  }
+  // Defensive: a blocked write must carry a conflict source. Fail loud
+  // (CLAUDE.md §2 no silent fallbacks) rather than returning a vague error.
+  throw new Error(
+    `entityWriteBlockedError called for ${operation} on ${kind} ${entityId} with no siblingLease or holder`,
+  );
 }

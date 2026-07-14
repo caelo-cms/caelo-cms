@@ -19,7 +19,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
-import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
+import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 
 const layoutBlockShape = z.object({
@@ -259,9 +259,12 @@ export const updateLayoutOp = defineOperation({
       kind: "layout",
       entityId: input.layoutId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
-      return err(await lockedError(tx, "layouts.update", "layout", input.layoutId, lock.holder));
+    if (!lock.permitted) {
+      return err(
+        await entityWriteBlockedError(tx, "layouts.update", "layout", input.layoutId, lock),
+      );
     }
     const sets: ReturnType<typeof sql>[] = [];
     if (input.displayName !== undefined) sets.push(sql`display_name = ${input.displayName}`);
