@@ -172,7 +172,10 @@ export function buildToolCatalogue(args: {
   // the full catalogue and warn loudly so the broken skill data gets fixed.
   let effectiveAllowed = allowedToolNames;
   if (effectiveAllowed) {
-    const matchCount = fullCatalogue.filter((t) => effectiveAllowed!.has(t.name)).length;
+    // Captured const: the closure below outlives TS's narrowing of the
+    // mutable `effectiveAllowed`, so hand it the already-narrowed binding.
+    const allowed = effectiveAllowed;
+    const matchCount = fullCatalogue.filter((t) => allowed.has(t.name)).length;
     if (matchCount === 0) {
       console.error("[chat-runner] skill-allowlist-zero-match", {
         chatSessionId,

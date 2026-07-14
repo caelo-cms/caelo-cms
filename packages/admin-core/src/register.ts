@@ -254,6 +254,7 @@ import {
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
 } from "./ops/owner-bootstrap-tokens.js";
+import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import {
   commentArchiveInsertOp,
@@ -725,6 +726,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #165 — Design Manifest (per-site design language).
   registry.register(getDesignManifestOp);
   registry.register(setDesignManifestOp);
+  // issue #264 — per-page edit log (durable work history for later chats /
+  // subagents that touch the page). Append-only, ungated.
+  registry.register(appendPageLogOp);
+  registry.register(listPageLogOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
