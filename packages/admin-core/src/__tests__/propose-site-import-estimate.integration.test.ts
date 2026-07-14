@@ -18,12 +18,12 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import type { AIProvider } from "../ai/provider.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
-import { registerAdminOps } from "../register.js";
 import {
   describeEstimate,
   proposeSiteImportTool,
   setSiteImportEstimatorForTests,
 } from "../ai/tools/propose-site-import.js";
+import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;

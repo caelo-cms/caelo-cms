@@ -226,6 +226,9 @@ export async function* runToolLoop(
           });
           messages = [...messages, { role: "user", content: notice }];
         }
+      }
+    }
+
     // issue #300 — proactive tool-result compaction. Successful results
     // dispatched >= 3 loops ago in THIS turn shrink to a one-line
     // summary before each provider call, so late loops stop paying for
