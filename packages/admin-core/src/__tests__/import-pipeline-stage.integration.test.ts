@@ -187,6 +187,9 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
         fontWeights: [{ value: "400", count: 8 }],
         radii: [{ value: "8px", count: 2 }],
         shadows: [],
+        // issue #32 — spacing became a required token category (loud schema);
+        // the recorded fixture predates it, so supply a minimal measured scale.
+        spacing: { "section-py": "64px", "container-px": "24px", "card-p": "16px" },
         roles: {
           body: { color: "#111111", backgroundColor: "#ffffff", fontFamily: "Inter, sans-serif" },
           button: { color: "#ffffff", backgroundColor: "#dc2626", borderRadius: "8px" },
