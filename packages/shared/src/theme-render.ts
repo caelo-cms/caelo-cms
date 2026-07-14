@@ -393,6 +393,13 @@ function emitTypography(rest: string, value: unknown, out: string[]): void {
 }
 
 function emitShadow(baseName: string, value: unknown, out: string[]): void {
+  // Literal CSS box-shadow string (the tolerant `shadowValueString` form).
+  // Emit verbatim — the DTCG object form is expanded below.
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (s.length > 0) out.push(`${baseName}:${s};`);
+    return;
+  }
   if (Array.isArray(value)) {
     // Layered shadow — join with comma so CSS receives multi-layer.
     const layers = value

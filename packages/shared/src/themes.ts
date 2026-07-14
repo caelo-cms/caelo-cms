@@ -151,9 +151,32 @@ const shadowValueObject = z
     { message: "shadow blur must be ≥ 0", path: ["blur"] },
   );
 
+/**
+ * Literal CSS `box-shadow` string — the form a model naturally emits
+ * ("0 4px 6px -1px rgba(0,0,0,0.1)", "none", comma-separated layers). The
+ * DTCG object form (`shadowValueObject`) is the canonical shape; this is the
+ * tolerant fallback so a correct CSS shadow isn't rejected as "must be a
+ * DTCG alias" (the same tolerance `gradientValueString` gives gradients).
+ * Char-class only (no nested quantifiers) → ReDoS-safe; the renderer emits
+ * the string verbatim.
+ */
+const shadowValueString = z
+  .string()
+  .min(3)
+  .max(600)
+  .regex(
+    /^(none|[\w\s.,%#()/-]+)$/i,
+    "shadow must be a CSS box-shadow value, the DTCG object form, or an alias",
+  );
+
 export const themeShadowComposite = z
   .object({
-    $value: z.union([shadowValueObject, z.array(shadowValueObject).min(1), aliasString]),
+    $value: z.union([
+      shadowValueObject,
+      z.array(shadowValueObject).min(1),
+      aliasString,
+      shadowValueString,
+    ]),
     $type: z.literal("shadow").optional(),
     $description: optionalDescription,
     $extensions: z.record(z.string(), z.unknown()).optional(),
