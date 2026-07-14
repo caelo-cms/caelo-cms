@@ -31,7 +31,9 @@ describe("composeSystemPrompt", () => {
   });
 
   it("never includes provider brand strings", () => {
-    const out = composeSystemPrompt([{ slot: "brand-voice", body: "use Claude or Anthropic terms" }]);
+    const out = composeSystemPrompt([
+      { slot: "brand-voice", body: "use Claude or Anthropic terms" },
+    ]);
     // The user's own memory body can mention anything, but the sections we
     // author must not name the provider.
     const ourSections = out.split("# Site memory")[0] ?? "";
