@@ -19,7 +19,7 @@
  * instructions in the system prompt and produces a page rendered
  * against the seed-grayscale theme.
  *
- * Scope: AI-callable module-creation tools (compose_page_from_spec,
+ * Scope: AI-callable module-creation tools (build_page,
  * add_module_to_page, add_module_to_layout, create_page). Human +
  * system callers are exempt — the gate fires only when
  * `ctx.actorKind === "ai"` because (1) human operators using the API

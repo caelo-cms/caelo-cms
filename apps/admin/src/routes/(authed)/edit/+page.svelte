@@ -204,7 +204,7 @@
   // v0.9.3 — auto-switch the iframe when the AI creates a new home page
   // mid-chat. The operator-already-on-something path uses a diff
   // against the previously-seen ids so we only switch when a HOME row
-  // newly appears (compose_page_from_spec / create_page with slug=home),
+  // newly appears (build_page / create_page with slug=home),
   // never on every load. Operators who deliberately picked a non-home
   // page keep that selection unless their pick was itself a previous
   // home — that's the build-from-scratch flow taking over.

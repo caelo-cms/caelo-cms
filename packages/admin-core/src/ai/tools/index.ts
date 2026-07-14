@@ -20,7 +20,6 @@ import { changePageSlugTool } from "./change-page-slug.js";
 import { changeTemplateTool } from "./change-template.js";
 import { checkGenesisParityTool } from "./check-genesis-parity.js";
 import { composeFromImportTool } from "./compose-from-import.js";
-import { composePageFromSpecTool } from "./compose-page-from-spec.js";
 import { createContentInstanceTool } from "./create-content-instance.js";
 import { createContentInstancesTool } from "./create-content-instances.js";
 import { createLayoutTool } from "./create-layout.js";
@@ -258,7 +257,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // site_defaults chain. Idempotent — successive calls drive the
   // bootstrap forward across the propose/execute Owner-approval gap.
   registry.register(bootstrapSiteScaffoldTool);
-  registry.register(composePageFromSpecTool);
   registry.register(revertChatChangesTool);
   // P6.7.7 — content-ops follow-ups.
   registry.register(duplicatePageTool);

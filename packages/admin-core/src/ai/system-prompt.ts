@@ -170,7 +170,7 @@ export function formatModulesBlock(
     return [
       primer,
       "",
-      "_0 modules on this install — every page composition starts by minting modules via `add_module_to_page` (or `compose_page_from_spec` for a whole page)._",
+      "_0 modules on this install — every page composition starts by minting modules via `add_module_to_page` (or `build_page` for a whole page)._",
     ].join("\n");
   }
   // Group by kind so the AI scans by intent.

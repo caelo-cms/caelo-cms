@@ -73,7 +73,7 @@ export function slugifyModuleName(
 
 /**
  * v0.12.3 (issue #106) — slug for a module minted per page-section
- * (`compose_page_from_spec`). Includes the section index so two sections
+ * (`build_page` / legacy compose). Includes the section index so two sections
  * sharing a displayName don't collide on the unique slug constraint.
  */
 export function slugifyModuleSection(

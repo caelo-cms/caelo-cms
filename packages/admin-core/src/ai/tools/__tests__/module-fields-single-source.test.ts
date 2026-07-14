@@ -30,11 +30,11 @@ const FIELD_AUTHORING_TOOLS = [
 ] as const;
 
 /**
- * compose-page-from-spec intentionally has NO module-fields surface (its
- * sections carry only displayName/html/css/js), so it must NOT reference the
- * shared schema — but it also must not grow an inline field-kind enum.
+ * The multi-module composite (`build-page.ts`) authors fields per module and
+ * MUST reference the shared schema; it's already in FIELD_AUTHORING_TOOLS
+ * below. No tool may grow an inline field-kind enum.
  */
-const NO_INLINE_ENUM_TOOLS = [...FIELD_AUTHORING_TOOLS, "compose-page-from-spec.ts"] as const;
+const NO_INLINE_ENUM_TOOLS = [...FIELD_AUTHORING_TOOLS] as const;
 
 /**
  * Signature of an inlined field-kind enum literal — a hand-written JSON-schema

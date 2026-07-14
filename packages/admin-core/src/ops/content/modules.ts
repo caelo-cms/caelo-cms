@@ -357,7 +357,7 @@ export const createModuleOp = defineOperation({
     // context (CLAUDE.md §1A).
     // v0.12.3 (issue #106) — derive the stable `type` from displayName
     // when the caller didn't author one explicitly. Every minting path
-    // (add_module_to_page/template/layout, compose_page_from_spec) flows
+    // (add_module_to_page/template/layout, build_page) flows
     // through here, so this single chokepoint guarantees every module
     // gets a type without each tool repeating the derivation.
     const moduleType = input.type ?? deriveModuleType(input.displayName);

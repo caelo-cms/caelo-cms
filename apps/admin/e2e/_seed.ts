@@ -147,7 +147,7 @@ export const SETUP_SCRIPT = `
  * v0.11.4 (issue #76 follow-up) — fast-forward the install past the
  * cold-start state so mock-AI tests that don't exercise the chat-first
  * setup path aren't blocked by the cold-start gate on
- * compose_page_from_spec / add_module_to_page / add_module_to_layout
+ * build_page / add_module_to_page / add_module_to_layout
  * (etc.).
  *
  * Real-AI scenarios (e2e-livedit) should NOT call this — they need
