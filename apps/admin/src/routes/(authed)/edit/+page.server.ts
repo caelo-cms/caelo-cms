@@ -282,6 +282,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
         chatSessionId: activeChat.id,
         role: "assistant",
         content: FIRST_RUN_WELCOME,
+        // issue #303 — producer hint for the empty-content rejection.
+        source: "first-run welcome seed (/edit)",
       });
       if (seeded.ok) {
         const reread = await execute(registry, adapter, locals.ctx, "chat.get_session", {

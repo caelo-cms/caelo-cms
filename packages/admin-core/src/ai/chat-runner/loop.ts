@@ -329,38 +329,58 @@ export async function* runToolLoop(
       break;
     }
 
-    const saved = await persistAssistantTurn(registry, adapter, humanCtx, {
-      chatSessionId,
-      content: assistantContent,
-      toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : null,
-      // v0.2.54 — persist thinking blocks alongside the assistant turn.
-      thinkingBlocks: accumulatedThinking.length > 0 ? accumulatedThinking : null,
-      status: aborted() ? "interrupted" : "complete",
-    });
-    if (saved.ok) {
-      lastAssistantMessageId = saved.messageId;
-      yield { kind: "assistant-message-saved", messageId: saved.messageId };
-    } else if (saved.sessionGone) {
-      // PR #61 follow-up — session row vanished mid-stream (Discard, fixture
-      // reset, cascade delete). A normal race: log softly + terminate the
-      // loop without an SSE error banner; no operator is on the stream.
-      console.warn("[chat-runner] session gone mid-stream; terminating quietly", {
+    // issue #303 — a turn with nothing to say must not post. A completed
+    // turn with zero visible text and zero tool calls (the v0.10.17
+    // empty-response class; also thinking-only end_turns) used to persist
+    // a silent empty assistant row that rendered as a contentless bubble —
+    // and chat.append_message now rejects that shape at the Zod boundary.
+    // Skipping the persist keeps the loop-0 diagnostics warning + the
+    // passive-turn nudge below fully functional. Aborted turns still
+    // persist (empty + status='interrupted' is exempt at the boundary) so
+    // the operator sees the "interrupted" marker where the reply died.
+    const hasPersistablePayload =
+      assistantContent.trim().length > 0 || accumulatedToolCalls.length > 0 || aborted();
+    if (hasPersistablePayload) {
+      const saved = await persistAssistantTurn(registry, adapter, humanCtx, {
         chatSessionId,
+        content: assistantContent,
+        toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : null,
+        // v0.2.54 — persist thinking blocks alongside the assistant turn.
+        thinkingBlocks: accumulatedThinking.length > 0 ? accumulatedThinking : null,
+        status: aborted() ? "interrupted" : "complete",
       });
-      stopReason = "session_gone";
-      succeeded = false;
-      break;
+      if (saved.ok) {
+        lastAssistantMessageId = saved.messageId;
+        yield { kind: "assistant-message-saved", messageId: saved.messageId };
+      } else if (saved.sessionGone) {
+        // PR #61 follow-up — session row vanished mid-stream (Discard, fixture
+        // reset, cascade delete). A normal race: log softly + terminate the
+        // loop without an SSE error banner; no operator is on the stream.
+        console.warn("[chat-runner] session gone mid-stream; terminating quietly", {
+          chatSessionId,
+        });
+        stopReason = "session_gone";
+        succeeded = false;
+        break;
+      } else {
+        // v0.2.52 — Don't silently proceed to tool dispatch when the anchor
+        // message wasn't persisted. Surface as an SSE error + a breadcrumb.
+        console.error("[chat-runner] failed to persist assistant message", {
+          chatSessionId,
+          error: saved.message,
+        });
+        yield { kind: "error", message: `Failed to save assistant message: ${saved.message}` };
+        stopReason = "error";
+        succeeded = false;
+        break;
+      }
     } else {
-      // v0.2.52 — Don't silently proceed to tool dispatch when the anchor
-      // message wasn't persisted. Surface as an SSE error + a breadcrumb.
-      console.error("[chat-runner] failed to persist assistant message", {
+      console.error("[chat-runner] empty completed turn — nothing persisted", {
         chatSessionId,
-        error: saved.message,
+        loop,
+        loopStop,
+        thinkingBlocks: accumulatedThinking.length,
       });
-      yield { kind: "error", message: `Failed to save assistant message: ${saved.message}` };
-      stopReason = "error";
-      succeeded = false;
-      break;
     }
 
     // Update messages history for the potential next loop iteration.
