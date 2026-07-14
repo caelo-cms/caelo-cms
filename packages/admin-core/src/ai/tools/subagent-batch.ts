@@ -16,10 +16,14 @@
  *     wording — never a second pause mechanism).
  */
 
-import type { SpawnSubagentToolInput } from "@caelo-cms/shared";
+import type { SpawnSubagentToolInput, SubagentModelTier } from "@caelo-cms/shared";
 import {
+  buildEscalationTask,
   buildRemainderTask,
   deriveChildCaps,
+  escalateSpecTier,
+  extractEscalations,
+  MAX_ESCALATION_DEPTH,
   MAX_ZERO_PROGRESS_WAVES,
   mergeRebuildPages,
   pageRefList,
@@ -53,7 +57,12 @@ export type SubagentErrorKind =
   | "run-budget-paused"
   // issue #304 — the SUBAGENT_MAX_WAVES belt fired while the remainder
   // was still making progress (braces: no-progress guard + budget gate).
-  | "wave-limit";
+  | "wave-limit"
+  // issue #306 — pages flagged needs_escalation with no automated rung
+  // left to route to: the flagging child already ran at the top
+  // (inherit) tier, or the page was escalated once already
+  // (MAX_ESCALATION_DEPTH). The parent AI / operator takes over.
+  | "escalation-limit";
 
 export interface SubagentInvocationResult {
   role: string;
@@ -269,6 +278,14 @@ export interface SubagentWavesOpts {
   fetchRunBudget: (() => Promise<RunBudgetSnapshot | null>) | null;
   /** Per-settlement progress tick, tagged with the wave index. */
   onProgress?: (progress: SubagentBatchProgress & { wave: number }) => void;
+  /**
+   * issue #306 — tiers (beyond `inherit`) the install has models mapped
+   * for; drives the escalation ladder (`small` steps to `mid` only when
+   * `mid` is mapped, else straight to `inherit`). Absent/empty = tiering
+   * off — escalations from small/mid still route to `inherit` (the
+   * parent's model), which needs no mapping.
+   */
+  availableTiers?: ReadonlySet<string>;
 }
 
 /** The wave orchestrator's return: final per-original-spec results + roll-up. */
@@ -296,17 +313,106 @@ export interface SubagentWavesOutcome {
   capSource: "run-budget" | "fallback" | null;
 }
 
-/** Per-original-spec state carried across waves. */
+/** Per-dispatch-line state carried across waves. Pre-#306 exactly one of
+ * these existed per original spec; escalation (issue #306) can FORK a
+ * second line off the same spec (the cost-remainder continues at the
+ * child's own tier while the escalated pages re-dispatch a tier up), so
+ * several items may share an `originalIndex` — their finalized parts are
+ * merged back into ONE result per spec by {@link mergeFinalParts}. */
 interface PendingItem {
   originalIndex: number;
   /** The untouched original spec (source of truth for the remainder brief). */
   originalSpec: SpawnSubagentToolInput;
   /** The spec to dispatch THIS wave (task rewritten for remainders). */
   waveSpec: SpawnSubagentToolInput;
+  /** issue #306 — the tier this line dispatches at (escalation raises it). */
+  tier: SubagentModelTier;
+  /** issue #306 — how many escalations led to this line (bound: 1). */
+  escalationDepth: number;
   completedPages: SubagentPageRef[];
   costSoFarMicrocents: number;
   durationSoFarMs: number;
   zeroProgressWaves: number;
+}
+
+/**
+ * issue #306 — fold several finalized parts (a forked spec's dispatch
+ * lines) back into ONE result for the original spec. Later parts win on
+ * per-page collisions (the escalated attempt has the freshest status for
+ * a page it resolved). Single-part specs — every pre-#306 flow — pass
+ * through untouched.
+ */
+function mergeFinalParts(parts: readonly SubagentInvocationResult[]): SubagentInvocationResult {
+  if (parts.length === 1) return parts[0] as SubagentInvocationResult;
+  const first = parts[0] as SubagentInvocationResult;
+  let resultJson: unknown = first.resultJson;
+  let costMicrocents = first.costMicrocents;
+  let durationMs = first.durationMs;
+  let subagentChatSessionId = first.subagentChatSessionId;
+  const completedPages: SubagentPageRef[] = [...(first.partial?.completedPages ?? [])];
+  const remainingPages: SubagentPageRef[] = [...(first.partial?.remainingPages ?? [])];
+  const errorMessages: string[] = first.errorMessage ? [first.errorMessage] : [];
+  let errorKind = first.errorKind;
+  for (const part of parts.slice(1)) {
+    costMicrocents += part.costMicrocents;
+    durationMs += part.durationMs;
+    if (part.subagentChatSessionId) subagentChatSessionId = part.subagentChatSessionId;
+    resultJson = mergeRebuildResultJson(resultJson, part.resultJson);
+    completedPages.push(...(part.partial?.completedPages ?? []));
+    remainingPages.push(...(part.partial?.remainingPages ?? []));
+    if (part.errorMessage) errorMessages.push(part.errorMessage);
+    if (!errorKind && part.errorKind) errorKind = part.errorKind;
+  }
+  const allCompleted = parts.every((p) => p.status === "completed");
+  const anyLanded = parts.some((p) => p.status === "completed") || completedPages.length > 0;
+  const status: SubagentInvocationResult["status"] = allCompleted
+    ? "completed"
+    : anyLanded
+      ? "partial"
+      : ((parts.find((p) => p.status !== "completed")?.status ??
+          "errored") as SubagentInvocationResult["status"]);
+  return {
+    role: first.role,
+    status,
+    resultJson,
+    costMicrocents,
+    durationMs,
+    subagentChatSessionId,
+    ...(errorMessages.length > 0 ? { errorMessage: errorMessages.join("\n") } : {}),
+    ...(errorKind ? { errorKind } : {}),
+    ...(status === "partial" || completedPages.length > 0 || remainingPages.length > 0
+      ? { partial: { completedPages, remainingPages } }
+      : {}),
+  };
+}
+
+/**
+ * Merge two rebuild-shaped result payloads page-wise, `b` (the later
+ * part) winning on slug/pageId collision. Non-rebuild payloads pass the
+ * non-null one through — same tolerance as {@link mergeRebuildPages}.
+ */
+function mergeRebuildResultJson(a: unknown, b: unknown): unknown {
+  const pagesOf = (v: unknown): Record<string, unknown>[] | null => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+    const pages = (v as Record<string, unknown>).pages;
+    return Array.isArray(pages) ? (pages as Record<string, unknown>[]) : null;
+  };
+  const aPages = pagesOf(a);
+  const bPages = pagesOf(b);
+  if (bPages === null) return aPages !== null ? a : (a ?? b);
+  if (aPages === null) return b;
+  const keyOf = (p: { pageId?: unknown; slug?: unknown }): string =>
+    String(p.slug ?? p.pageId ?? "");
+  const bKeys = new Set(bPages.map(keyOf).filter((k) => k !== ""));
+  const carried = aPages.filter((p) => {
+    const k = keyOf(p);
+    return k === "" || !bKeys.has(k);
+  });
+  return {
+    ...(a as Record<string, unknown>),
+    ...(b as Record<string, unknown>),
+    pages: [...carried, ...bPages],
+  };
 }
 
 /** Finalize a pending item's last partial attempt with a guard verdict. */
@@ -351,11 +457,22 @@ export async function runSubagentWaves(
   ) => Promise<SubagentInvocationResult>,
   opts: SubagentWavesOpts,
 ): Promise<SubagentWavesOutcome> {
-  const finals = new Array<SubagentInvocationResult>(specs.length);
+  // issue #306 — a spec can fork into several dispatch lines (cost
+  // remainder + escalation), so finals accumulate as PARTS per original
+  // index and merge at the end. Single-line specs merge to themselves.
+  const finalParts: SubagentInvocationResult[][] = specs.map(() => []);
+  const pushFinal = (originalIndex: number, part: SubagentInvocationResult): void => {
+    finalParts[originalIndex]?.push(part);
+  };
+  const availableTiers = opts.availableTiers ?? new Set<string>();
   let pending: PendingItem[] = specs.map((spec, i) => ({
     originalIndex: i,
     originalSpec: spec,
     waveSpec: spec,
+    // `?? "inherit"` — callers that build specs without the Zod parse
+    // (tests, internal wiring) may omit the defaulted field.
+    tier: spec.tier ?? "inherit",
+    escalationDepth: 0,
     completedPages: [],
     costSoFarMicrocents: 0,
     durationSoFarMs: 0,
@@ -378,7 +495,7 @@ export async function runSubagentWaves(
           `stopped after ${waves} dispatch waves (SUBAGENT_MAX_WAVES belt). ` +
           `${item.completedPages.length} page(s) completed so far are saved. ` +
           "Recovery: re-run the remaining pages in a fresh spawn_subagents call.";
-        finals[item.originalIndex] = {
+        pushFinal(item.originalIndex, {
           role: item.originalSpec.role,
           status: item.completedPages.length > 0 ? "partial" : "errored",
           resultJson: null,
@@ -390,7 +507,7 @@ export async function runSubagentWaves(
           ...(item.completedPages.length > 0
             ? { partial: { completedPages: item.completedPages, remainingPages: [] } }
             : {}),
-        };
+        });
       }
       break;
     }
@@ -409,7 +526,7 @@ export async function runSubagentWaves(
           `${item.completedPages.length} completed page(s) are saved` +
           (item.completedPages.length > 0 ? ` (${pageRefList(item.completedPages)})` : "") +
           ". The run resumes where it stopped once the operator raises the budget.";
-        finals[item.originalIndex] = {
+        pushFinal(item.originalIndex, {
           role: item.originalSpec.role,
           // Landed pages make this an honest PARTIAL; a spec that never
           // ran (or landed nothing) is errored-not-dispatched.
@@ -423,7 +540,7 @@ export async function runSubagentWaves(
           ...(item.completedPages.length > 0
             ? { partial: { completedPages: item.completedPages, remainingPages: [] } }
             : {}),
-        };
+        });
       }
       break;
     }
@@ -463,21 +580,80 @@ export async function runSubagentWaves(
       const item = pending[i] as PendingItem;
       const result = outcome.results[i] as SubagentInvocationResult;
 
+      // issue #306 — route needs_escalation pages ONE capability step up
+      // BEFORE the normal status handling: escalation composes with every
+      // outcome class (a child can be partial for cost AND escalate other
+      // pages — the remainder continues at its own tier below while the
+      // escalated pages fork onto a higher-tier line here).
+      const escalations = extractEscalations(result.resultJson);
+      if (escalations.length > 0) {
+        const nextTier =
+          item.escalationDepth >= MAX_ESCALATION_DEPTH
+            ? null
+            : escalateSpecTier(item.tier, availableTiers);
+        if (nextTier === null) {
+          // No automated rung left (already escalated once, or the child
+          // ran at the parent's own capability). Loud, structured stop —
+          // never a silent drop or a same-tier re-run of the confusion.
+          const reasonLines = escalations
+            .map((e) => `- ${e.slug ?? e.pageId ?? "(unidentified page)"}: ${e.reason}`)
+            .join("\n");
+          pushFinal(item.originalIndex, {
+            role: item.originalSpec.role,
+            status: "partial",
+            resultJson: null,
+            costMicrocents: 0,
+            durationMs: 0,
+            subagentChatSessionId: result.subagentChatSessionId,
+            errorKind: "escalation-limit",
+            errorMessage:
+              `${escalations.length} page(s) need work beyond what automated re-dispatch can ` +
+              `route further:\n${reasonLines}\nThese pages were NOT re-dispatched. Handle them ` +
+              "directly in this chat (or brief the operator on the open decisions).",
+          });
+        } else {
+          // Fork a fresh dispatch line one step up. It starts clean (no
+          // inherited pages/cost) — its spend and results merge back into
+          // the same original spec's final entry.
+          next.push({
+            originalIndex: item.originalIndex,
+            originalSpec: item.originalSpec,
+            tier: nextTier,
+            escalationDepth: item.escalationDepth + 1,
+            waveSpec: {
+              ...item.originalSpec,
+              tier: nextTier,
+              task: buildEscalationTask({
+                originalTask: item.originalSpec.task,
+                escalations,
+              }),
+            },
+            completedPages: [],
+            costSoFarMicrocents: 0,
+            durationSoFarMs: 0,
+            zeroProgressWaves: 0,
+          });
+        }
+      }
+
       if (result.status === "partial" && result.partial) {
         const newlyCompleted = result.partial.completedPages;
         const progressed = newlyCompleted.length > 0;
         item.zeroProgressWaves = progressed ? 0 : item.zeroProgressWaves + 1;
         if (item.zeroProgressWaves >= MAX_ZERO_PROGRESS_WAVES) {
           // Loud stop — deliverable 2's bounded-retry guard.
-          finals[item.originalIndex] = stopPartial(
-            item,
-            result,
-            "no-progress",
-            `remainder made no progress ${item.zeroProgressWaves} waves in a row ` +
-              `(${result.partial.remainingPages.length} page(s) still unfinished: ` +
-              `${pageRefList(result.partial.remainingPages)}). Stopping instead of spending ` +
-              "again on the same wall. Recovery: split these pages into smaller, more explicit " +
-              "tasks, or handle them directly.",
+          pushFinal(
+            item.originalIndex,
+            stopPartial(
+              item,
+              result,
+              "no-progress",
+              `remainder made no progress ${item.zeroProgressWaves} waves in a row ` +
+                `(${result.partial.remainingPages.length} page(s) still unfinished: ` +
+                `${pageRefList(result.partial.remainingPages)}). Stopping instead of spending ` +
+                "again on the same wall. Recovery: split these pages into smaller, more explicit " +
+                "tasks, or handle them directly.",
+            ),
           );
           continue;
         }
@@ -507,7 +683,7 @@ export async function runSubagentWaves(
         // so a third attempt would abort identically).
         item.zeroProgressWaves += 1;
         if (item.zeroProgressWaves >= MAX_ZERO_PROGRESS_WAVES) {
-          finals[item.originalIndex] = {
+          pushFinal(item.originalIndex, {
             ...result,
             // Landed pages from earlier partial waves stay visible even
             // when the last wave never started this spec.
@@ -517,7 +693,7 @@ export async function runSubagentWaves(
             ...(item.completedPages.length > 0
               ? { partial: { completedPages: item.completedPages, remainingPages: [] } }
               : {}),
-          };
+          });
         } else {
           next.push(item);
         }
@@ -527,7 +703,7 @@ export async function runSubagentWaves(
       // Terminal: completed / errored / timed_out. Fold earlier waves'
       // landed pages + spend into the final result so the parent sees one
       // full-coverage entry per original spec.
-      finals[item.originalIndex] = {
+      pushFinal(item.originalIndex, {
         ...result,
         costMicrocents: item.costSoFarMicrocents + result.costMicrocents,
         durationMs: item.durationSoFarMs + result.durationMs,
@@ -535,13 +711,15 @@ export async function runSubagentWaves(
           result.status === "completed"
             ? mergeRebuildPages(item.completedPages, result.resultJson)
             : result.resultJson,
-      };
+      });
     }
     pending = next;
   }
 
   return {
-    results: finals,
+    // issue #306 — fold forked dispatch lines (escalations) back to ONE
+    // entry per original spec. Pre-#306 flows have exactly one part.
+    results: finalParts.map((parts) => mergeFinalParts(parts)),
     totalCostMicrocents,
     waves,
     ran,

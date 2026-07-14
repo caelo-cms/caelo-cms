@@ -66,6 +66,16 @@ export type SpawnChildChatTurn = (input: {
   readonly costCapMicrocents?: number;
   /** Run #10 D2 — structured result channel for the child's `submit_result` tool. */
   readonly subagentResultCapture?: SubagentResultCapture;
+  /**
+   * issue #306 — run the child turn on THIS provider instead of the
+   * parent's. Set by the spawn handler when a spec requests a non-inherit
+   * model tier (tier resolved against `ai_providers.config.modelTiers`).
+   * The child's `ai_calls` rows carry this provider's model, so pricing
+   * (ai_pricing is keyed provider+model) and the cost dashboard's
+   * per-model split are correct without further plumbing. Absent =
+   * inherit = the parent's provider (pre-#306 behaviour, byte-identical).
+   */
+  readonly providerOverride?: AIProvider;
   readonly abortSignal?: AbortSignal;
 }) => AsyncIterable<unknown>;
 

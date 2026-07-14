@@ -23,7 +23,7 @@
  * (spawn-subagent.ts) and passed in.
  */
 
-import { validateSubagentResultValue } from "@caelo-cms/shared";
+import { type SubagentModelTier, validateSubagentResultValue } from "@caelo-cms/shared";
 
 /**
  * Fraction of the REMAINING run budget the children of one
@@ -189,6 +189,12 @@ export interface SubagentPartialState {
  * Returns null when the value is not a valid rebuild result (other
  * shapes — verdict/tree/freeform — have no page decomposition, so
  * partial re-dispatch does not apply to them).
+ *
+ * issue #306 — pages the child flagged `needs_escalation` belong to
+ * NEITHER bucket: they are not landed work, and re-dispatching them at
+ * the SAME tier (the remainder path) would re-run the exact confusion
+ * the child just refused to fumble through. The wave orchestrator routes
+ * them separately via {@link extractEscalations}.
  */
 export function extractRebuildPartial(resultJson: unknown): SubagentPartialState | null {
   const validated = validateSubagentResultValue(resultJson, "rebuild");
@@ -196,6 +202,7 @@ export function extractRebuildPartial(resultJson: unknown): SubagentPartialState
   const completedPages: SubagentPageRef[] = [];
   const remainingPages: SubagentPageRef[] = [];
   for (const page of validated.value.pages) {
+    if (page.status === "needs_escalation") continue;
     const ref: SubagentPageRef = {
       ...(page.pageId !== undefined ? { pageId: page.pageId } : {}),
       ...(page.slug !== undefined ? { slug: page.slug } : {}),
@@ -205,6 +212,104 @@ export function extractRebuildPartial(resultJson: unknown): SubagentPartialState
     else remainingPages.push(ref);
   }
   return { completedPages, remainingPages };
+}
+
+// ---------------------------------------------------------------------
+// issue #306 — escalation (needs_escalation → one capability step up)
+// ---------------------------------------------------------------------
+
+/**
+ * A page can be escalated ONCE. The re-dispatch runs at least one
+ * capability step above the child that flagged it; if THAT run still
+ * reports `needs_escalation`, the page needs the parent's (or the
+ * operator's) attention — a third automated attempt would spend without
+ * new capability to spend on.
+ */
+export const MAX_ESCALATION_DEPTH = 1;
+
+/**
+ * One escalated page: which page, and the flagging child's reason (the
+ * required `notes` of its `needs_escalation` entry). The reason is
+ * threaded verbatim into the escalated brief.
+ */
+export interface SubagentEscalationRef {
+  pageId?: string;
+  slug?: string;
+  reason: string;
+}
+
+/**
+ * Pull the `needs_escalation` pages out of a rebuild-shaped result.
+ * Empty array for non-rebuild / invalid / null results — escalation only
+ * exists for the shape that decomposes into per-page work.
+ */
+export function extractEscalations(resultJson: unknown): SubagentEscalationRef[] {
+  const validated = validateSubagentResultValue(resultJson, "rebuild");
+  if (!validated.ok || validated.shape !== "rebuild") return [];
+  const escalations: SubagentEscalationRef[] = [];
+  for (const page of validated.value.pages) {
+    if (page.status !== "needs_escalation") continue;
+    escalations.push({
+      ...(page.pageId !== undefined ? { pageId: page.pageId } : {}),
+      ...(page.slug !== undefined ? { slug: page.slug } : {}),
+      // The shared schema REQUIRES notes for needs_escalation; the
+      // fallback string only guards a hand-built result in tests.
+      reason: page.notes ?? "(no reason given)",
+    });
+  }
+  return escalations;
+}
+
+/**
+ * The tier an escalated re-dispatch runs at (issue #306 contract:
+ * "the parent's tier, or mid if the child was small"):
+ *
+ *   small → mid (when mapped) else straight to inherit — skipping an
+ *           UNMAPPED middle rung routes further UP, never silently down;
+ *   mid   → inherit (the parent chat's model);
+ *   inherit → null — there is nothing above the parent; the wave
+ *           orchestrator surfaces those pages loudly instead.
+ */
+export function escalateSpecTier(
+  tier: SubagentModelTier,
+  availableTiers: ReadonlySet<string>,
+): SubagentModelTier | null {
+  if (tier === "small") return availableTiers.has("mid") ? "mid" : "inherit";
+  if (tier === "mid") return "inherit";
+  return null;
+}
+
+/** Render an escalation ref for a brief line. */
+function escalationLabel(ref: SubagentEscalationRef): string {
+  return ref.slug ?? ref.pageId ?? "(unidentified page)";
+}
+
+/**
+ * issue #306 — the brief for the escalated re-dispatch. Like
+ * {@link buildRemainderTask} it prefixes the ORIGINAL task (ids, ground
+ * truth, return-shape contract — the escalated child is fresh), but the
+ * framing is different: these pages need something BUILT/decided that
+ * the previous pass was told not to improvise, and each page's flagged
+ * reason is the work order. Deliberately names no tiers or models.
+ */
+export function buildEscalationTask(input: {
+  originalTask: string;
+  escalations: readonly SubagentEscalationRef[];
+}): string {
+  const lines = input.escalations
+    .slice(0, 40)
+    .map((r) => `- ${escalationLabel(r)}: ${r.reason}`)
+    .join("\n");
+  return (
+    "ESCALATED TASK: a previous pass on these pages was scoped to filling KNOWN patterns and " +
+    "correctly stopped when it hit work needing new build decisions. You have full authority to " +
+    "make those decisions — create the missing modules/patterns, settle the layout questions, " +
+    "handle the unexpected structure. Work ONLY on these pages, each listed with the reason it " +
+    `was handed up:\n${lines}\n` +
+    "Do NOT hand these pages up again — resolve them, or report them failed with a concrete " +
+    "reason.\n\n" +
+    `ORIGINAL TASK (for ids, ground truth, and field semantics):\n${input.originalTask}`
+  );
 }
 
 /** How a submitted child result classifies for the batch orchestrator. */
