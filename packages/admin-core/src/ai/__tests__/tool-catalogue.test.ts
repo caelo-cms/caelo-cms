@@ -305,7 +305,7 @@ describe("buildToolCatalogue", () => {
         String(c[0]).includes("tool-catalogue-shrank"),
       );
       expect(shrankCall).toBeDefined();
-      expect((shrankCall?.[1] as { disappeared: string[] }).disappeared).toEqual([
+      expect((shrankCall![1] as { disappeared: string[] }).disappeared).toEqual([
         "add_module_to_page",
       ]);
     } finally {

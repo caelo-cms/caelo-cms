@@ -7,7 +7,7 @@
     "packages/migrations/src/schema/cms_admin/rate_limits.ts",
     "packages/provisioning/stacks/aws/edge-handler-bundle.js"
   ],
-  "ignoreBinaries": ["cms-provision"],
+  "ignoreBinaries": ["cms-provision", "gcloud"],
   "ignoreDependencies": ["@playwright/mcp", "@caelo-cms/shared"],
   "ignoreExportsUsedInFile": true,
   "ignoreIssues": {
