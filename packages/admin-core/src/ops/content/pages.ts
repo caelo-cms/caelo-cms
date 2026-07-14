@@ -22,7 +22,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
-import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
+import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
   loadPageLayoutState,
@@ -703,9 +703,10 @@ export const updatePageOp = defineOperation({
       kind: "page",
       entityId: input.pageId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
-      return err(await lockedError(tx, "pages.update", "page", input.pageId, lock.holder));
+    if (!lock.permitted) {
+      return err(await entityWriteBlockedError(tx, "pages.update", "page", input.pageId, lock));
     }
     // v0.5.3 — branched update path. When ctx.chatBranchId is set we
     // skip the live UPDATE and emit a branched snapshot carrying the
@@ -1047,10 +1048,17 @@ export const setPageModulesOp = defineOperation({
       kind: "page",
       entityId: input.pageId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!setModulesLock.permitted && setModulesLock.holder) {
+    if (!setModulesLock.permitted) {
       return err(
-        await lockedError(tx, "pages.set_modules", "page", input.pageId, setModulesLock.holder),
+        await entityWriteBlockedError(
+          tx,
+          "pages.set_modules",
+          "page",
+          input.pageId,
+          setModulesLock,
+        ),
       );
     }
     const pageRows = (await tx.execute(sql`
@@ -1316,9 +1324,12 @@ export const deletePageOp = defineOperation({
       kind: "page",
       entityId: input.pageId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!deleteLock.permitted && deleteLock.holder) {
-      return err(await lockedError(tx, "pages.delete", "page", input.pageId, deleteLock.holder));
+    if (!deleteLock.permitted) {
+      return err(
+        await entityWriteBlockedError(tx, "pages.delete", "page", input.pageId, deleteLock),
+      );
     }
     const rows = (await tx.execute(sql`
       SELECT deleted_at FROM pages WHERE id = ${input.pageId}::uuid
