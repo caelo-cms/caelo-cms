@@ -138,11 +138,19 @@ describe("list-mode site import (#229)", () => {
     );
     expect(item?.summary).toContain("specific pages");
 
-    // Owner approves → run flips to 'crawling'.
+    // Owner approves → run flips to 'crawling'. `estimateListScope`
+    // returns an UNPRICED estimate (aiCostUsd null — #298 prices it in
+    // the propose tool, which this DB-boundary test bypasses), so the
+    // #297 cost gate refuses to derive a ceiling and the approval must
+    // carry an explicit budget, exactly like the /security/import/pending
+    // form does.
     const approved = await execute(registry, adapter, systemCtx, "imports.execute_proposal", {
       runId,
+      ceiling: 5,
     });
+    if (!approved.ok) throw new Error(`execute_proposal ${JSON.stringify(approved.error)}`);
     expect(approved.ok).toBe(true);
+    expect((approved.value as { ceilingSource: string }).ceilingSource).toBe("explicit");
 
     // The orchestrator claim reads explicit_urls straight off the row;
     // reproduce that read and confirm the exact set survived the write.

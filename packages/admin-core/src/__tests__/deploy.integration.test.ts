@@ -44,6 +44,10 @@ const AI: ExecutionContext = {
 const TPL_SLUG = "p6-deploy-tpl";
 const MOD_SLUG = "p6-deploy-mod";
 const PAGE_SLUG = "p6-about";
+// issue #302 — staging/production builds fail loudly unless a published
+// page maps to index.html, so the fixture ships a root page alongside
+// the slug the assertions inspect.
+const HOME_SLUG = "home";
 
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
@@ -51,8 +55,8 @@ async function wipe(): Promise<void> {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM deploy_runs`;
-      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug = ${PAGE_SLUG})`;
-      await tx`DELETE FROM pages WHERE slug = ${PAGE_SLUG}`;
+      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${PAGE_SLUG}, ${HOME_SLUG}))`;
+      await tx`DELETE FROM pages WHERE slug IN (${PAGE_SLUG}, ${HOME_SLUG})`;
       await tx`DELETE FROM modules WHERE slug = ${MOD_SLUG}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
       await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
@@ -129,6 +133,27 @@ async function seedPage(): Promise<string> {
     status: "published",
   });
   if (!upd.ok) throw new Error("publish seed");
+
+  // issue #302 — a published root page ('home' → index.html) so full
+  // staging/production builds pass the missing-root-page guard.
+  const hp = await execute(registry, adapter, HUMAN, "pages.create", {
+    slug: HOME_SLUG,
+    title: "Home",
+    templateId,
+    locale: "en",
+  });
+  if (!hp.ok) throw new Error("home page seed");
+  const homePageId = (hp.value as { pageId: string }).pageId;
+  const hm = await execute(registry, adapter, HUMAN, "pages.set_modules", {
+    pageId: homePageId,
+    blocks: [{ blockName: "content", moduleIds: [moduleId] }],
+  });
+  if (!hm.ok) throw new Error("home set_modules seed");
+  const hupd = await execute(registry, adapter, HUMAN, "pages.update", {
+    pageId: homePageId,
+    status: "published",
+  });
+  if (!hupd.ok) throw new Error("home publish seed");
   return pageId;
 }
 
@@ -326,6 +351,42 @@ describe("P6 deploy.trigger", () => {
     } finally {
       delete process.env.CAELO_STAGING_BASE_URL;
       server.stop(true);
+    }
+  });
+
+  it("staging deploy FAILS loudly when no published page serves the site root (issue #302)", async () => {
+    // The guard itself: unpublish the fixture's root page so only
+    // non-root pages ('p6-about') remain published. A full staging
+    // build must fail in the generator — BEFORE any serve-layer
+    // verification — with the actionable rename-to-'home' message.
+    const list = await execute(registry, adapter, HUMAN, "pages.list", {});
+    if (!list.ok) throw new Error("pages.list");
+    const pages = (list.value as { pages: { id: string; slug: string }[] }).pages;
+    const home = pages.find((p) => p.slug === HOME_SLUG);
+    expect(home).toBeDefined();
+    if (!home) return;
+    const unpub = await execute(registry, adapter, HUMAN, "pages.update", {
+      pageId: home.id,
+      status: "draft",
+    });
+    if (!unpub.ok) throw new Error("unpublish home");
+    try {
+      const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.kind).toBe("HandlerError");
+      const message = "message" in result.error ? String(result.error.message) : "";
+      expect(message).toContain("no page serves the site root");
+      expect(message).toContain("change_page_slug");
+    } finally {
+      // Leave the fixture consistent for any test added after this one.
+      await execute(registry, adapter, HUMAN, "pages.update", {
+        pageId: home.id,
+        status: "published",
+      });
     }
   });
 });

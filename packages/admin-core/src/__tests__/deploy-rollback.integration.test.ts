@@ -35,6 +35,9 @@ const HUMAN: ExecutionContext = {
 const TPL_SLUG = "p6-2-rollback-tpl";
 const MOD_SLUG = "p6-2-rollback-mod";
 const PAGE_SLUG = "p6-2-rollback-page";
+// issue #302 — production builds fail loudly unless a published page
+// maps to index.html, so the fixture ships a root page too.
+const HOME_SLUG = "home";
 
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
@@ -42,8 +45,8 @@ async function wipe(): Promise<void> {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM deploy_runs`;
-      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug = ${PAGE_SLUG})`;
-      await tx`DELETE FROM pages WHERE slug = ${PAGE_SLUG}`;
+      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${PAGE_SLUG}, ${HOME_SLUG}))`;
+      await tx`DELETE FROM pages WHERE slug IN (${PAGE_SLUG}, ${HOME_SLUG})`;
       await tx`DELETE FROM modules WHERE slug = ${MOD_SLUG}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
       await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
@@ -106,6 +109,25 @@ describe("deploy.rollback", () => {
       blocks: [{ blockName: "content", moduleIds: [modId] }],
     });
     await execute(registry, adapter, HUMAN, "pages.update", { pageId, status: "published" });
+
+    // issue #302 — a published root page so the full production builds
+    // below pass the missing-root-page guard.
+    const hp = await execute(registry, adapter, HUMAN, "pages.create", {
+      slug: HOME_SLUG,
+      title: "Home",
+      templateId: tplId,
+      locale: "en",
+    });
+    if (!hp.ok) throw new Error("home seed");
+    const homePageId = (hp.value as { pageId: string }).pageId;
+    await execute(registry, adapter, HUMAN, "pages.set_modules", {
+      pageId: homePageId,
+      blocks: [{ blockName: "content", moduleIds: [modId] }],
+    });
+    await execute(registry, adapter, HUMAN, "pages.update", {
+      pageId: homePageId,
+      status: "published",
+    });
 
     // Build 1 — VERSION_ONE.
     const b1 = await execute(registry, adapter, HUMAN, "deploy.trigger", {
