@@ -129,6 +129,11 @@ export function resolveCompactionThresholdTokens(
   return parsed;
 }
 
+/** Rough token estimate for a plain string — chars/4 (issue #300 telemetry shares this heuristic). */
+export function estimateTextTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
 /**
  * Rough token estimate for one provider message: chars/4 over content
  * + tool-call JSON + thinking text, plus a flat per-image constant.
@@ -173,9 +178,23 @@ export interface CompactionResult {
   readonly estimatedTokensAfter: number;
 }
 
-/** Marker appended to a truncated tool result; `n` = chars removed. */
-function truncationMarker(n: number): string {
+/**
+ * Marker appended to a truncated tool result; `n` = chars removed.
+ * Exported (issue #300) so the proactive per-loop compaction emits the
+ * SAME marker format — one vocabulary for "this result was shortened",
+ * whoever shortened it.
+ */
+export function truncationMarker(n: number): string {
   return `\n[truncated: ${n} chars]`;
+}
+
+/**
+ * True when a tool-result body already ends with the truncation marker
+ * (cut by the #261 ceiling pass or the #300 proactive pass). The
+ * proactive pass never re-compacts a marked result.
+ */
+export function hasTruncationMarker(content: string): boolean {
+  return /\[truncated: \d+ chars\]\s*$/.test(content);
 }
 
 /**
