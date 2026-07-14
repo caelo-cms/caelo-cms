@@ -251,19 +251,40 @@ describe("imports.migrate_media (#249)", () => {
     expect(rerun.skipped).toHaveLength(1);
   });
 
-  it("fails loudly when the run has no composed pages yet", async () => {
+  it("issue #302 — warns loudly (not silently ok, not a red error) when the run has no composed pages yet", async () => {
     const run = await execute(registry, adapter, SYSTEM, "imports.create_run", {
       sourceUrl: `${baseUrl}/?issue249-empty`,
       depth: 1,
       maxPages: 5,
     });
     if (!run.ok) throw new Error(JSON.stringify(run.error));
+    const runId = (run.value as { runId: string }).runId;
+    // Scope to a page id that matches nothing so the site-wide direct-build
+    // fallback can't pick up pages left behind by sibling test files.
     const r = await execute(registry, adapter, AI, "imports.migrate_media", {
-      runId: (run.value as { runId: string }).runId,
+      runId,
+      pageIds: ["00000000-0000-4000-8000-0000000dead0"],
     });
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(JSON.stringify(r.error)).toContain("compose_from_import");
+    // Pre-#302 this was a HandlerError; every red card costs a full
+    // error→analyze→retry round-trip (#307 W4). Now: a zero-count success
+    // whose `unitsWarning` carries the likely causes, plus a warning row
+    // in the run ledger so the closing report surfaces it.
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const v = r.value as {
+        migrated: number;
+        unitsWarning: string | null;
+        unitsBySource: { directPageModules: number };
+      };
+      expect(v.migrated).toBe(0);
+      expect(v.unitsWarning).toContain("0 media units found");
+      expect(v.unitsBySource.directPageModules).toBe(0);
     }
+    const events = await sqlc`
+      SELECT severity, message FROM import_run_events
+      WHERE run_id = ${runId}::uuid AND phase = 'media' AND severity = 'warning'
+    `;
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(String(events[0]?.message)).toContain("0 media units found");
   });
 });
