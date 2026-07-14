@@ -36,6 +36,7 @@ import {
   shouldNudgePassiveTurn,
 } from "./passive-turn.js";
 import { persistAssistantTurn } from "./persistence.js";
+import { compactOldToolResults, type ToolResultOrigin } from "./proactive-compaction.js";
 import {
   blockedCallResult,
   RepeatedFailureTracker,
@@ -124,6 +125,11 @@ export async function* runToolLoop(
   // ordinary chats — resolved once at loop 0, then refreshed per iteration
   // while active so mid-turn subagent spend keeps counting).
   let budgetGate: BudgetGateState | null = null;
+  // issue #300 — origins of tool results dispatched by THIS turn
+  // (toolCallId → loop + ok), feeding the proactive per-loop compaction
+  // below. Results that predate the turn are never in this map and so
+  // stay #261's (ceiling-triggered) responsibility.
+  const toolResultOrigins = new Map<string, ToolResultOrigin>();
 
   for (let loop = 0; loop < args.maxLoops; loop++) {
     if (aborted()) break;
@@ -220,6 +226,29 @@ export async function* runToolLoop(
           });
           messages = [...messages, { role: "user", content: notice }];
         }
+    // issue #300 — proactive tool-result compaction. Successful results
+    // dispatched >= 3 loops ago in THIS turn shrink to a one-line
+    // summary before each provider call, so late loops stop paying for
+    // every early loop's full HTML dumps (run #15: loop 24 at ~556K vs
+    // loop 0 at ~103K input tokens). Runs BEFORE the #261 pre-flight
+    // estimate so the ceiling check sees the already-shrunk history —
+    // the two passes compose; they share the truncation-marker format
+    // and skip each other's output. In-memory only: the persisted
+    // transcript keeps full result bodies (tool-dispatch.ts persists
+    // at dispatch time, before this ever runs).
+    if (toolResultOrigins.size > 0) {
+      const proactive = compactOldToolResults(messages, {
+        currentLoop: loop,
+        origins: toolResultOrigins,
+      });
+      if (proactive.compacted > 0) {
+        messages = proactive.messages;
+        console.error("[chat-runner] proactive-tool-result-compaction", {
+          chatSessionId,
+          loop,
+          compacted: proactive.compacted,
+          charsSaved: proactive.charsSaved,
+        });
       }
     }
 
@@ -585,6 +614,9 @@ export async function* runToolLoop(
           toolCallId: call.id,
         });
         messages.push({ role: "tool", content, toolCallId: call.id });
+        // issue #300 — a blocked call is a failed result: registered so
+        // the origins map is complete, protected from compaction by ok=false.
+        toolResultOrigins.set(call.id, { loop, ok: false });
         continue;
       }
       yield* dispatchToolCall(
@@ -607,6 +639,12 @@ export async function* runToolLoop(
       );
     }
     messages.push(...deferredImageMessages);
+
+    // issue #300 — register this iteration's dispatched results for the
+    // proactive compaction pass at the top of later iterations.
+    for (const outcome of turnOutcomes) {
+      toolResultOrigins.set(outcome.toolCallId, { loop, ok: outcome.ok });
+    }
 
     // Breaker bookkeeping: count exact (tool + args + error) repeats. On the
     // recording that first crosses the threshold, inject ONE corrective nudge
