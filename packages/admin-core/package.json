@@ -15,7 +15,7 @@
     "lint:spdx": "bun run scripts/check-spdx-headers.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.78",
+    "@ai-sdk/anthropic": "^4.0.12",
     "@ai-sdk/google": "^3.0.74",
     "@ai-sdk/openai": "^3.0.64",
     "@caelo-cms/plugin-host": "workspace:*",
