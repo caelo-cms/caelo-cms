@@ -198,6 +198,7 @@ import {
   getImportPageScreenshotKeysOp,
   getImportRunOp,
   getImportRunReportOp,
+  getRunCalibrationOp,
   getRunCostOp,
   listImportPageClustersOp,
   listImportRunsOp,
@@ -780,6 +781,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #280 — migration cost gate: operator-confirmed budget + live spend.
   registry.register(setCostCeilingOp);
   registry.register(getRunCostOp);
+  // issue #298 — estimator learning loop: observed vs estimated per run.
+  registry.register(getRunCalibrationOp);
   // issue #248 (WS2) — rebuild-quality checks: content-inventory
   // (no information loss) + repeated-subtree boilerplate detection.
   registry.register(checkImportPageInventoryOp);
