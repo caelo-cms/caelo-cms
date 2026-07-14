@@ -40,7 +40,7 @@
     "@types/js-yaml": "4.0.9",
     "js-yaml": "4.2.0",
     "knip": "6.25.0",
-    "license-checker-rseidelsohn": "4.4.2",
+    "license-checker-rseidelsohn": "5.0.1",
     "madge": "8.0.0",
     "typescript": "6.0.3",
     "zod": "4.4.3"
