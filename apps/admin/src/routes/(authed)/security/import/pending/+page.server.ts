@@ -20,7 +20,12 @@ type ImportEstimate =
       basis: "sitemap" | "sample" | "list";
       truncated: boolean;
       crawlMinutes: number;
-      aiCostUsd: { low: number; high: number };
+      /** issue #298 — null when the proposal landed unpriced (no
+       *  ai_pricing row for the chat's provider/model); costNote says why. */
+      aiCostUsd: { low: number; high: number } | null;
+      costNote?: string;
+      estimatedCalls?: number;
+      estimatedInputTokens?: number;
     };
 
 interface ImportRun {

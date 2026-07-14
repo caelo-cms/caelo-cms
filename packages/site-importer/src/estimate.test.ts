@@ -17,7 +17,7 @@ const fetcherFor =
   };
 
 describe("estimateCrawlScope (#193)", () => {
-  it("sitemap basis: exact count + time + cost band", async () => {
+  it("sitemap basis: exact count + time; cost left unpriced for the tool (#298)", async () => {
     const urls = Array.from(
       { length: 340 },
       (_, i) => `<url><loc>https://site.example/p${i}</loc></url>`,
@@ -31,8 +31,10 @@ describe("estimateCrawlScope (#193)", () => {
     expect(e.basis).toBe("sitemap");
     expect(e.pages).toBe(340);
     expect(e.crawlMinutes).toBeGreaterThanOrEqual(3);
-    expect(e.aiCostUsd.low).toBeCloseTo(340 * 0.02, 1);
-    expect(e.aiCostUsd.high).toBeCloseTo(340 * 0.1, 1);
+    // issue #298 — pricing moved to the propose tool (calls×context model
+    // at ai_pricing rates); the scope estimator stays loudly unpriced.
+    expect(e.aiCostUsd).toBeNull();
+    expect(e.costNote).toContain("not yet priced");
   });
 
   it("sample basis: homepage links extrapolated and labelled rough", async () => {
@@ -68,6 +70,7 @@ describe("estimateListScope (#229)", () => {
     expect(e.pages).toBe(7);
     expect(e.truncated).toBe(false);
     expect(e.crawlMinutes).toBeGreaterThanOrEqual(1);
-    expect(e.aiCostUsd.low).toBeLessThanOrEqual(e.aiCostUsd.high);
+    // issue #298 — unpriced until the propose tool applies rates.
+    expect(e.aiCostUsd).toBeNull();
   });
 });

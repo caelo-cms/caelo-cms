@@ -98,7 +98,15 @@
                       ? "exact list"
                       : "rough sample"})
                   · crawl ≈ {r.estimate.crawlMinutes} min
-                  · AI rebuild ≈ ${r.estimate.aiCostUsd.low}–${r.estimate.aiCostUsd.high}
+                  <!-- issue #298 — the band comes from the calls×context
+                       model at the operator's ai_pricing rates; a null band
+                       means UNPRICED (no rates row) and the reason is said
+                       out loud instead of showing an invented number. -->
+                  {#if r.estimate.aiCostUsd}
+                    · AI rebuild ≈ ${r.estimate.aiCostUsd.low}–${r.estimate.aiCostUsd.high}
+                  {:else}
+                    · AI rebuild cost UNPRICED ({r.estimate.costNote ?? "no pricing available"})
+                  {/if}
                 </p>
               {/if}
             {/if}

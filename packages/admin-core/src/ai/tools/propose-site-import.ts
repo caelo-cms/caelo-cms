@@ -13,18 +13,29 @@
  * the blast radius. Estimation runs here, not in the op handler —
  * network work stays out of the DB transaction. A failed estimate is
  * stored loudly as {failed, reason}; the proposal still lands.
+ *
+ * issue #298 — the scope estimator no longer prices the rebuild. THIS
+ * tool prices it: pages → expected API calls → per-call context ramp →
+ * tokens → the current provider/model's ai_pricing rates (see
+ * ai/import-cost-model.ts for the calibrated constants and the run-15
+ * telemetry behind them). When no rates row exists for the chat's
+ * provider/model the band stays null with a loud costNote — the Owner
+ * then approves with an explicit budget (same contract as a failed
+ * scope estimate), never against an invented number.
  */
 
 import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import {
   type CrawlScopeEstimate,
   estimateCrawlScope,
   estimateListScope,
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
+import { estimateImportAiCost, type ImportModelRates } from "../import-cost-model.js";
 import { describeError } from "./_describe-error.js";
 import { externalFetchAllowedHosts } from "./_external-fetch-budget.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** issue #229 — cap on a LIST-mode pick. A pilot samples page TYPES
  *  (one-per-type), so a couple hundred URLs is a generous ceiling; it
@@ -72,7 +83,81 @@ export function describeEstimate(est: CrawlScopeEstimate): string {
       : e.basis === "list"
         ? `${e.pages} chosen page${e.pages === 1 ? "" : "s"} (exact list)`
         : `~${e.pages} pages extrapolated from homepage links (rough)`;
-  return `Scope: ${basis}; crawl ≈ ${e.crawlMinutes} min; AI rebuild ≈ $${e.aiCostUsd.low}–$${e.aiCostUsd.high}.`;
+  // issue #298 — an unpriced band is said out loud, never papered over
+  // with a made-up number; the Owner then approves with an explicit budget.
+  if (e.aiCostUsd === null) {
+    return `Scope: ${basis}; crawl ≈ ${e.crawlMinutes} min; AI rebuild cost UNPRICED (${e.costNote ?? "no pricing available"}) — tell the Owner to set rates at /security/ai/pricing or approve with an explicit budget.`;
+  }
+  const modelNote =
+    e.estimatedCalls !== undefined
+      ? ` (models ≈${e.estimatedCalls} AI calls; low assumes prompt-cache discounts, high none)`
+      : "";
+  return `Scope: ${basis}; crawl ≈ ${e.crawlMinutes} min; AI rebuild ≈ $${e.aiCostUsd.low}–$${e.aiCostUsd.high}${modelNote}.`;
+}
+
+/**
+ * issue #298 — price a successful scope estimate with the calls×context
+ * model at the CURRENT chat provider/model's ai_pricing rates. Pure math
+ * lives in ai/import-cost-model.ts; this resolves the rates. Every
+ * unpriceable outcome returns the scope with `aiCostUsd: null` + a loud
+ * `costNote` naming what is missing (no-fallbacks rule) — the proposal
+ * still lands and the approval form demands an explicit budget instead.
+ */
+async function priceScopeEstimate(
+  scope: Exclude<CrawlScopeEstimate, { failed: true }>,
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+): Promise<CrawlScopeEstimate> {
+  const unpriced = (costNote: string): CrawlScopeEstimate => ({
+    ...scope,
+    aiCostUsd: null,
+    costNote,
+  });
+  const provider = toolCtx.provider;
+  if (!provider) {
+    return unpriced("no AI provider attached to this tool context — cannot resolve rates");
+  }
+  const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "ai_pricing.list", {});
+  if (!r.ok) {
+    return unpriced(`ai_pricing lookup failed (${r.error.kind}) — cannot resolve rates`);
+  }
+  const rows = (
+    r.value as {
+      rows: Array<{
+        provider: string;
+        model: string;
+        operationType: "text" | "image";
+        inputMicrocents: number;
+        outputMicrocents: number | null;
+        cachedMicrocents: number | null;
+      }>;
+    }
+  ).rows.filter((row) => row.operationType === "text" && row.provider === provider.name);
+  // Exact model row wins; the provider's `*` wildcard is the stored default.
+  const row = rows.find((x) => x.model === provider.model) ?? rows.find((x) => x.model === "*");
+  if (!row) {
+    return unpriced(
+      `no ai_pricing row for ${provider.name}/${provider.model} — set rates at /security/ai/pricing`,
+    );
+  }
+  if (row.outputMicrocents === null) {
+    return unpriced(
+      `ai_pricing row for ${provider.name}/${row.model} has no output rate — fix it at /security/ai/pricing`,
+    );
+  }
+  const rates: ImportModelRates = {
+    inputMicrocentsPer1K: row.inputMicrocents,
+    outputMicrocentsPer1K: row.outputMicrocents,
+    cachedInputMicrocentsPer1K: row.cachedMicrocents,
+  };
+  const est = estimateImportAiCost(scope.pages, rates);
+  return {
+    ...scope,
+    aiCostUsd: est.aiCostUsd,
+    costNote: undefined,
+    estimatedCalls: est.calls,
+    estimatedInputTokens: est.inputTokens,
+  };
 }
 
 export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportInput> = {
@@ -124,12 +209,23 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
     const listMode = !!(input.urls && input.urls.length > 0);
     // LIST mode's scope is exact — the page count IS the list length, so
     // skip the network estimator entirely; DEPTH mode samples the site.
-    const estimate: CrawlScopeEstimate = listMode
+    const scoped: CrawlScopeEstimate = listMode
       ? estimateListScope(input.urls?.length ?? 0)
       : await estimator({
           sourceUrl: input.sourceUrl,
           allowedHosts: externalFetchAllowedHosts(),
         });
+    // issue #298 — price the scope with the calls×context model at the
+    // current provider/model's ai_pricing rates; a failed scope stays
+    // failed (nothing honest to price).
+    const estimate: CrawlScopeEstimate =
+      "failed" in scoped && scoped.failed
+        ? scoped
+        : await priceScopeEstimate(
+            scoped as Exclude<CrawlScopeEstimate, { failed: true }>,
+            ctx,
+            toolCtx,
+          );
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.propose_run", {
       ...input,
       estimate,
