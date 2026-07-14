@@ -35,6 +35,7 @@ import {
   resolveMaxOutputTokensDefault,
 } from "./limits.js";
 import { runToolLoop } from "./loop.js";
+import { resolveModelCostPerMTok } from "./model-cost.js";
 import {
   loadMemory,
   loadSession,
@@ -56,8 +57,18 @@ export async function* runChatTurn(
   input: ChatSendMessageInput,
 ): AsyncIterable<ClientEvent> {
   const { adapter, registry, provider, tools, aiCtx, humanCtx, abortSignal } = options;
-  const inputCost = options.inputCostPerMTok ?? DEFAULT_INPUT_COST_PER_M;
-  const outputCost = options.outputCostPerMTok ?? DEFAULT_OUTPUT_COST_PER_M;
+  // Cost per MTok: explicit option wins, else the ACTIVE model's ai_pricing
+  // row (same source `record_ai_call` bills from), else the Opus-tier
+  // DEFAULT_* as a last resort. Without this the streamed `usage.cost`
+  // fell back to the Opus-4.7 constants for EVERY model — a live
+  // claude-sonnet-5 turn reported ~5× its real cost
+  // (run-logs/token-efficiency-analysis.md). ai_pricing stores microcents
+  // per 1K tokens → USD per MTok is `microcents / 100_000`.
+  const modelRates = await resolveModelCostPerMTok(registry, adapter, humanCtx, provider);
+  const inputCost =
+    options.inputCostPerMTok ?? modelRates?.inputCostPerMTok ?? DEFAULT_INPUT_COST_PER_M;
+  const outputCost =
+    options.outputCostPerMTok ?? modelRates?.outputCostPerMTok ?? DEFAULT_OUTPUT_COST_PER_M;
   // v0.3.20 — raised from 5 to 25. Multi-section authoring sessions
   // routinely need >5 tool-use round-trips; see the cap-exhaustion notice
   // in loop.ts for the visible-signal half of the fix.
