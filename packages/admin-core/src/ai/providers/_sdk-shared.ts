@@ -23,6 +23,7 @@ import { jsonSchema, type ModelMessage, streamText } from "ai";
 
 import type { ChatMessageInput, GenerateInput, ProviderEvent } from "../provider.js";
 import { normalizeToolArgs } from "../tools/normalize-args.js";
+import { buildLlmDumpRecord, llmDumpEnabled, writeLlmDump } from "./_llm-dump.js";
 
 /**
  * Map our ChatMessageInput → SDK ModelMessage[]. Same shape every
@@ -391,5 +392,34 @@ export async function* runSDKStream(args: {
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     ...(extraOptions ?? {}),
   });
-  yield* translateSDKStream(result.fullStream);
+
+  // Diagnostic wire-payload dump (CAELO_DUMP_LLM). No-op when disarmed;
+  // tees the translated stream so response text + usage land in the same
+  // record as the sized request. See _llm-dump.ts.
+  if (!llmDumpEnabled()) {
+    yield* translateSDKStream(result.fullStream);
+    return;
+  }
+  let responseText = "";
+  const toolCalls: string[] = [];
+  let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
+  try {
+    for await (const ev of translateSDKStream(result.fullStream)) {
+      if (ev.kind === "text-delta") responseText += ev.text;
+      else if (ev.kind === "tool-call") toolCalls.push(ev.name);
+      else if (ev.kind === "usage")
+        usage = {
+          inputTokens: ev.inputTokens,
+          outputTokens: ev.outputTokens,
+          cachedTokens: ev.cachedTokens,
+        };
+      yield ev;
+    }
+  } finally {
+    const modelId =
+      (model as { modelId?: string }).modelId ?? (typeof model === "string" ? model : "unknown");
+    writeLlmDump(
+      buildLlmDumpRecord({ model: modelId, input, sdkTools, usage, responseText, toolCalls }),
+    );
+  }
 }
