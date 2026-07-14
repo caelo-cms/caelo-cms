@@ -47,6 +47,92 @@ export function roundsToZeroMicrocents(major: number): boolean {
   return majorUnitsToMicrocents(major) < 1;
 }
 
+/**
+ * issue #297 — safety factor between the estimate the operator approved and
+ * the ceiling the approval arms. The estimator is a band, not a promise
+ * (run #15 was 15–65× off before #298's recalibration), so the ceiling
+ * leaves headroom above `aiCostUsd.high` — but bounded headroom: the whole
+ * point of #297 is that "$1.40 estimate, $600 real" can never happen again.
+ * 3× keeps honest estimator noise from tripping the gate mid-run while
+ * still capping the worst case at the same order of magnitude the operator
+ * said yes to.
+ */
+export const ESTIMATE_CEILING_SAFETY_FACTOR = 3;
+
+/**
+ * issue #297 — the ceiling `imports.execute_proposal` arms from a stored
+ * crawl-scope estimate. Discriminated on `ok`:
+ *  - `ok: true`  → arm `ceilingMicrocents` (USD; the estimator prices in USD).
+ *  - `ok: false` → the estimate cannot honestly fund a ceiling (`failed:true`,
+ *    malformed, no cost band, or a band that rounds to 0µ¢). The caller must
+ *    demand an EXPLICIT operator budget instead — never approve into a NULL
+ *    ceiling once an estimate was shown (issue #297 acceptance).
+ */
+export type DerivedCeiling =
+  | { ok: true; ceilingMicrocents: number; currency: "USD"; estimateHighUsd: number }
+  | { ok: false; reason: string };
+
+/**
+ * Derive the auto-armed cost ceiling from a proposal's stored estimate
+ * (`import_runs.estimate`, shape from @caelo-cms/site-importer). Pure and
+ * defensive: the column is jsonb read as `unknown`, so every shape error is
+ * an explicit `ok:false` reason, not a throw.
+ */
+export function deriveCeilingFromEstimate(estimate: unknown): DerivedCeiling {
+  if (estimate === null || estimate === undefined || typeof estimate !== "object") {
+    return { ok: false, reason: "the stored estimate is missing or malformed" };
+  }
+  const e = estimate as { failed?: unknown; aiCostUsd?: unknown };
+  if (e.failed === true) {
+    return { ok: false, reason: "the scope estimate FAILED — the crawl size is unknown" };
+  }
+  const band =
+    typeof e.aiCostUsd === "object" && e.aiCostUsd !== null
+      ? (e.aiCostUsd as { high?: unknown })
+      : null;
+  const high = band?.high;
+  if (typeof high !== "number" || !Number.isFinite(high) || high < 0) {
+    return { ok: false, reason: "the estimate carries no AI cost band" };
+  }
+  const ceilingMicrocents = majorUnitsToMicrocents(high * ESTIMATE_CEILING_SAFETY_FACTOR);
+  // Representable minimum: a ceiling that stores as 0µ¢ reads as instantly
+  // over budget (spend >= 0 always). A $0 band means the estimator saw zero
+  // pages — an operator budget is the only honest ceiling then.
+  if (ceilingMicrocents < 1) {
+    return { ok: false, reason: "the estimated cost rounds to zero at microcent precision" };
+  }
+  return { ok: true, ceilingMicrocents, currency: "USD", estimateHighUsd: high };
+}
+
+/**
+ * issue #297 — fraction of the ceiling at which the live gate emits its
+ * one-shot warning into the chat (still short of pausing).
+ */
+export const BUDGET_WARN_FRACTION = 0.8;
+
+/** Live gate verdict: `warn` at ≥80% of the ceiling, `trip` at ≥100%. */
+export type BudgetGateLevel = "ok" | "warn" | "trip";
+
+/**
+ * Compare rolled-up spend against the armed ceiling. Integer-only math so
+ * the 80% boundary is exact (`spent×5 ≥ ceiling×4` ⇔ spent/ceiling ≥ 0.8);
+ * `fractionUsed` is display-only. Callers guarantee `ceilingMicrocents ≥ 1`
+ * (set_cost_ceiling and deriveCeilingFromEstimate both reject 0µ¢).
+ */
+export function evaluateBudgetGate(input: { spentMicrocents: number; ceilingMicrocents: number }): {
+  level: BudgetGateLevel;
+  fractionUsed: number;
+} {
+  const { spentMicrocents, ceilingMicrocents } = input;
+  const level: BudgetGateLevel =
+    spentMicrocents >= ceilingMicrocents
+      ? "trip"
+      : spentMicrocents * 5 >= ceilingMicrocents * 4
+        ? "warn"
+        : "ok";
+  return { level, fractionUsed: spentMicrocents / ceilingMicrocents };
+}
+
 /** Symbols for the currencies the migration flow commonly meets; anything
  *  else renders as `"<CODE> <amount>"` rather than guessing a glyph. */
 const CURRENCY_SYMBOLS: Readonly<Record<string, string>> = {

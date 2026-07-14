@@ -42,6 +42,14 @@ export * from "./media/pipeline.js";
 export * from "./media/storage.js";
 export * from "./ops/auth.js";
 export * from "./ops/deploy.js";
+// issue #297 — pure cost-gate math for the approve UI (shows the ceiling a
+// click will arm; requires a budget input when the estimate failed).
+export {
+  deriveCeilingFromEstimate,
+  ESTIMATE_CEILING_SAFETY_FACTOR,
+  formatMicrocentsAsMoney,
+  microcentsToMajorUnits,
+} from "./ops/imports-cost.js";
 export * from "./ops/roles.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";

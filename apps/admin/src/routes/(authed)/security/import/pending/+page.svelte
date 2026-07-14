@@ -83,6 +83,15 @@
                   Scope unknown — estimate failed: {r.estimate.reason}
                 </p>
               {:else}
+                <!-- issue #297 — the click arms this ceiling; the operator
+                     sees the number they are agreeing to, not just the band. -->
+                {#if r.autoBudget}
+                  <p class="mb-2 text-sm font-medium" data-testid="import-auto-budget">
+                    Budget: up to {r.autoBudget} — armed automatically from the estimate
+                    ({data.safetyFactor}× its high end). The run pauses and asks if real AI spend
+                    reaches it.
+                  </p>
+                {/if}
                 <p
                   class="mb-2 text-sm {r.estimate.pages > 500 ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}"
                   data-testid="import-estimate"
@@ -100,8 +109,23 @@
               {/if}
             {/if}
             <div class="flex gap-2">
-              <form method="post" action="?/approve" use:enhance>
+              <form method="post" action="?/approve" use:enhance class="flex items-center gap-2">
                 <input type="hidden" name="runId" value={r.id} />
+                {#if r.budgetRequired}
+                  <!-- issue #297 — estimate failed/unusable: the op rejects a
+                       budget-less approval, so the form demands one up front.
+                       No NULL-ceiling runs once an estimate was shown. -->
+                  <input
+                    name="budget"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    required
+                    placeholder="Budget in USD (required — estimate failed)"
+                    class="w-64 rounded border px-2 py-1 text-sm"
+                    data-testid="import-budget-input"
+                  />
+                {/if}
                 <Button type="submit" size="sm">Approve crawl</Button>
               </form>
               <form method="post" action="?/reject" use:enhance class="flex items-center gap-2">

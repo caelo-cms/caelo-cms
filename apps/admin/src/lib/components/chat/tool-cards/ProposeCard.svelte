@@ -68,6 +68,14 @@
   );
   void args;
 
+  // issue #297 — a site-import proposal whose scope estimate FAILED cannot
+  // auto-arm a cost ceiling, so imports.execute_proposal rejects a
+  // budget-less approval. The wording is locked by describeEstimate
+  // (propose-site-import.ts), so the card can key off it and collect the
+  // required budget inline instead of bouncing the operator to the queue.
+  const budgetRequired = $derived(/Scope estimate FAILED/.test(summary));
+  let budgetValue = $state("");
+
   // v0.2.62 — local outcome state. null = pending (default), or one of
   // the post-action terminal states. The pending row in the DB has its
   // own status flip; this is purely UI.
@@ -81,12 +89,24 @@
       outcomeError = "Missing csrf or queue url — open the pending page directly to approve.";
       return;
     }
+    // issue #297 — no NULL-ceiling approvals: when the estimate failed the
+    // server rejects a budget-less approve, so validate before posting.
+    if (action === "approve" && budgetRequired) {
+      const parsed = Number(budgetValue);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        outcomeError = "Enter a budget (USD) first — the scope estimate failed, so approval needs an explicit cost ceiling.";
+        return;
+      }
+    }
     outcome = action === "approve" ? "approving" : "rejecting";
     outcomeError = null;
     try {
       const fd = new FormData();
       fd.set("_csrf", csrfToken);
       fd.set("proposalId", proposalId);
+      if (action === "approve" && budgetRequired) {
+        fd.set("budget", budgetValue);
+      }
       const res = await fetch(`${queueUrl}?/${action}`, {
         method: "POST",
         body: fd,
@@ -167,6 +187,18 @@
       <span>Rejected.</span>
     </div>
   {:else if proposalId && queueUrl && csrfToken}
+    {#if budgetRequired}
+      <!-- issue #297 — failed estimate: collect the mandatory budget inline. -->
+      <input
+        type="number"
+        min="0.01"
+        step="0.01"
+        placeholder="Budget in USD (required — estimate failed)"
+        bind:value={budgetValue}
+        class="mt-2 w-full rounded border bg-background px-2 py-1 text-xs"
+        data-testid="propose-budget-input"
+      />
+    {/if}
     <!-- v0.2.62 — inline action buttons. Disabled while a
          submission is in flight. -->
     <div class="mt-2 flex items-center gap-2">

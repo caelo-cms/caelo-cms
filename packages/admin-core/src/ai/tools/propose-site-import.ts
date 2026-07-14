@@ -22,6 +22,11 @@ import {
   estimateListScope,
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
+import {
+  deriveCeilingFromEstimate,
+  ESTIMATE_CEILING_SAFETY_FACTOR,
+  formatMicrocentsAsMoney,
+} from "../../ops/imports-cost.js";
 import { describeError } from "./_describe-error.js";
 import { externalFetchAllowedHosts } from "./_external-fetch-budget.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -63,7 +68,9 @@ export function setSiteImportEstimatorForTests(fn: typeof estimateCrawlScope | n
 /** Human sentence for the chat + the ProposeCard. */
 export function describeEstimate(est: CrawlScopeEstimate): string {
   if ("failed" in est && est.failed) {
-    return `Scope estimate FAILED (${est.reason}) — the Owner will be approving a crawl of unknown size; say so.`;
+    // issue #297 — a failed estimate cannot arm a ceiling, so the approval
+    // form REQUIRES an explicit budget; the AI must not promise otherwise.
+    return `Scope estimate FAILED (${est.reason}) — the Owner will be approving a crawl of unknown size; say so. Approving requires entering an explicit budget on the approve form (no ceiling means no crawl).`;
   }
   const e = est as Exclude<CrawlScopeEstimate, { failed: true }>;
   const basis =
@@ -72,7 +79,14 @@ export function describeEstimate(est: CrawlScopeEstimate): string {
       : e.basis === "list"
         ? `${e.pages} chosen page${e.pages === 1 ? "" : "s"} (exact list)`
         : `~${e.pages} pages extrapolated from homepage links (rough)`;
-  return `Scope: ${basis}; crawl ≈ ${e.crawlMinutes} min; AI rebuild ≈ $${e.aiCostUsd.low}–$${e.aiCostUsd.high}.`;
+  // issue #297 — the shown number IS the contract: approving arms the cost
+  // gate at high × safety factor. Said here so both the chat message and
+  // the ProposeCard carry the ceiling the operator is agreeing to.
+  const derived = deriveCeilingFromEstimate(e);
+  const ceilingNote = derived.ok
+    ? ` Approving arms a cost ceiling of ${formatMicrocentsAsMoney(derived.ceilingMicrocents, "USD")} automatically (${ESTIMATE_CEILING_SAFETY_FACTOR}× the estimate high); the run pauses and asks if real spend reaches it.`
+    : "";
+  return `Scope: ${basis}; crawl ≈ ${e.crawlMinutes} min; AI rebuild ≈ $${e.aiCostUsd.low}–$${e.aiCostUsd.high}.${ceilingNote}`;
 }
 
 export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportInput> = {

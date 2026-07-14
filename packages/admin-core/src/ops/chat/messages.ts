@@ -11,6 +11,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { CHAT_MAX_ATTACHMENTS, chatAttachmentSchema, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { computeAiCallCostMicrocents } from "../../ai/call-cost.js";
 import { lookupPricing } from "../../ai/pricing-cache.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
@@ -239,20 +240,27 @@ export const recordAiCallOp = defineOperation({
       // LRU (60s TTL, LISTEN/NOTIFY-invalidated). Same fallback logic:
       // exact (provider, model) wins over provider-wildcard `*`.
       const p = await lookupPricing(tx, input.provider, input.model, input.operationType);
-      if (p) {
-        if (input.operationType === "image") {
-          costMicrocents = p.inputMicrocents * input.imageCount;
-        } else {
-          const inRate = p.inputMicrocents;
-          const outRate = p.outputMicrocents ?? 0;
-          const cacheRate = p.cachedMicrocents ?? inRate;
-          const billedInput = Math.max(0, input.inputTokens - input.cachedTokens);
-          costMicrocents = Math.round(
-            (billedInput * inRate) / 1000 +
-              (input.cachedTokens * cacheRate) / 1000 +
-              (input.outputTokens * outRate) / 1000,
-          );
-        }
+      const mapped = computeAiCallCostMicrocents(p, {
+        operationType: input.operationType,
+        inputTokens: input.inputTokens,
+        outputTokens: input.outputTokens,
+        cachedTokens: input.cachedTokens,
+        imageCount: input.imageCount,
+      });
+      costMicrocents = mapped.costMicrocents;
+      if (mapped.unpriced) {
+        // issue #297 — run #14's $0.00 report: a pricing-table miss used to
+        // record cost 0 with no trace, blinding the cost gate. The row still
+        // inserts (accounting must not be lost) but the gap is LOUD here and
+        // surfaced as `unpricedCallCount` in imports.get_run_cost.
+        console.error("[record_ai_call] no ai_pricing row — cost recorded as 0 (understated)", {
+          provider: input.provider,
+          model: input.model,
+          operationType: input.operationType,
+          inputTokens: input.inputTokens,
+          outputTokens: input.outputTokens,
+          fix: "add the model at /security/ai/pricing (ai_pricing.set)",
+        });
       }
     }
     const rows = (await tx.execute(sql`

@@ -15,6 +15,13 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import {
+  type BudgetGateState,
+  budgetTripText,
+  budgetWarningText,
+  evaluateGateLevel,
+  fetchBudgetGate,
+} from "./budget-gate.js";
+import {
   compactHistory,
   estimateHistoryTokens,
   KEEP_RECENT_MESSAGES,
@@ -22,6 +29,7 @@ import {
   RETRY_TOOL_RESULT_HEAD_CHARS,
   TOOL_RESULT_HEAD_CHARS,
 } from "./compaction.js";
+import { costCapUsd, microcents } from "./limits.js";
 import {
   evaluateLoopZeroDiagnostics,
   PASSIVE_ACTION_NUDGE,
@@ -112,9 +120,108 @@ export async function* runToolLoop(
   // consumed the whole budget before any visible content; re-running at
   // the same ceiling would likely fail identically).
   let maxOutputTokensThisTurn = args.maxOutputTokens;
+  // issue #297 — the import-run cost gate governing this session (null for
+  // ordinary chats — resolved once at loop 0, then refreshed per iteration
+  // while active so mid-turn subagent spend keeps counting).
+  let budgetGate: BudgetGateState | null = null;
 
   for (let loop = 0; loop < args.maxLoops; loop++) {
     if (aborted()) break;
+
+    // issue #297 — live cost gate, BEFORE the next provider call so the
+    // in-flight call always finishes and its tool results are persisted.
+    // Loop 0 always resolves (one cheap read per turn for ordinary chats);
+    // later iterations re-read only while a gate is active, folding in
+    // spend recorded by subagent children mid-turn. The current turn's own
+    // provider calls are not yet in ai_calls, so their accumulator estimate
+    // is added on top (see budget-gate.ts for the pricing approximation).
+    if (loop === 0 || budgetGate !== null) {
+      budgetGate = await fetchBudgetGate(registry, adapter, humanCtx, chatSessionId);
+    }
+    if (budgetGate !== null) {
+      const currentTurnMicrocents = microcents(
+        costCapUsd(
+          args.usage.totalIn,
+          args.usage.totalCached,
+          args.usage.totalOut,
+          args.inputCost,
+          args.outputCost,
+        ),
+      );
+      const { level, liveSpentMicrocents } = evaluateGateLevel(budgetGate, currentTurnMicrocents);
+      if (level === "trip") {
+        const notice = budgetTripText(budgetGate, liveSpentMicrocents);
+        // Ledger claim — first tripping session writes the import_run_events
+        // row; the pause message below is emitted regardless, once per
+        // halted turn, so a "continue" without a raised ceiling can never
+        // silently resume spending.
+        await execute(registry, adapter, humanCtx, "imports.record_budget_gate_event", {
+          runId: budgetGate.runId,
+          kind: "tripped",
+          spentMicrocents: liveSpentMicrocents,
+          ceilingMicrocents: budgetGate.ceilingMicrocents,
+          message: notice,
+        });
+        console.error("[chat-runner] budget-gate tripped", {
+          chatSessionId,
+          loop,
+          runId: budgetGate.runId,
+          liveSpentMicrocents,
+          ceilingMicrocents: budgetGate.ceilingMicrocents,
+        });
+        yield { kind: "text-delta", text: notice };
+        const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+          chatSessionId,
+          role: "assistant",
+          content: notice,
+          status: "complete",
+        });
+        if (noticeSave.ok) {
+          lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+          yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
+        }
+        stopReason = "cost_ceiling";
+        break;
+      }
+      if (level === "warn" && !budgetGate.warningEmitted) {
+        const notice = budgetWarningText(budgetGate, liveSpentMicrocents);
+        const claim = await execute(
+          registry,
+          adapter,
+          humanCtx,
+          "imports.record_budget_gate_event",
+          {
+            runId: budgetGate.runId,
+            kind: "warning",
+            spentMicrocents: liveSpentMicrocents,
+            ceilingMicrocents: budgetGate.ceilingMicrocents,
+            message: notice,
+          },
+        );
+        // Local flip either way — losing the claim means another session
+        // (parallel subagent) already emitted the warning.
+        budgetGate = { ...budgetGate, warningEmitted: true };
+        if (claim.ok && (claim.value as { claimed: boolean }).claimed) {
+          console.error("[chat-runner] budget-gate warning", {
+            chatSessionId,
+            loop,
+            runId: budgetGate.runId,
+            liveSpentMicrocents,
+            ceilingMicrocents: budgetGate.ceilingMicrocents,
+          });
+          // issue #29 shape — a system-origin status note: muted in the
+          // transcript for the operator, a user turn for the model so it
+          // economizes the rest of the run.
+          await execute(registry, adapter, humanCtx, "chat.append_message", {
+            chatSessionId,
+            role: "user",
+            origin: "system",
+            content: notice,
+          });
+          messages = [...messages, { role: "user", content: notice }];
+        }
+      }
+    }
 
     // issue #261 — pre-flight compaction. Estimated on every iteration
     // because tool results appended mid-loop grow the history between
@@ -539,7 +646,10 @@ export async function* runToolLoop(
   // iteration's "tool_use"; pre-fix, this block then mislabelled the
   // failure as a cap hit ("reply continue to resume") on top of the
   // real error event.
-  if (lastLoopStop === "tool_use" && !aborted() && succeeded) {
+  // issue #297 — a cost-ceiling pause mid-tool-chain leaves lastLoopStop at
+  // "tool_use"; the budget pause message already explains how to resume, so
+  // the loop-limit notice must not stack a second, misleading message.
+  if (lastLoopStop === "tool_use" && !aborted() && succeeded && stopReason !== "cost_ceiling") {
     stopReason = "max_loops";
     const notice =
       `Paused at the tool-loop limit (${args.maxLoops} iterations). The build was still in progress — ` +

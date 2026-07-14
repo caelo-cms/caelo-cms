@@ -18,7 +18,7 @@
  *                                    crawler's per-URL extraction batch.
  */
 
-import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
   err,
@@ -39,15 +39,20 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
-import {
-  buildZeroPagesAbortMessage,
-  classifyComposeRunStatus,
-  type ComposeSkip,
-  composePageSkipReason,
-} from "./compose-eligibility.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
-import { computeRunCost, majorUnitsToMicrocents, roundsToZeroMicrocents } from "./imports-cost.js";
+import {
+  buildZeroPagesAbortMessage,
+  type ComposeSkip,
+  classifyComposeRunStatus,
+  composePageSkipReason,
+} from "./compose-eligibility.js";
+import {
+  computeRunCost,
+  deriveCeilingFromEstimate,
+  majorUnitsToMicrocents,
+  roundsToZeroMicrocents,
+} from "./imports-cost.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
@@ -480,16 +485,103 @@ export const listPendingImportProposalsOp = defineOperation({
   },
 });
 
+/**
+ * issue #297 — approving an estimate ARMS the cost gate. The number the
+ * operator clicked Approve on IS the contract: the ceiling is derived from
+ * the stored estimate (`aiCostUsd.high × ESTIMATE_CEILING_SAFETY_FACTOR`)
+ * in the same transaction that flips the run to 'crawling', so no
+ * import run with a shown estimate can ever start with a NULL ceiling
+ * (run #15: est. $1.40, real ~$600/day, ceiling NULL on every run).
+ *
+ * Ceiling resolution order:
+ *  1. explicit `ceiling`+`currency` input (operator override / the
+ *     required budget when the estimate FAILED),
+ *  2. derived from the stored estimate band,
+ *  3. estimate present but unusable (failed / no band / rounds to 0) →
+ *     REJECT the approval with the reason — the UI must collect a budget,
+ *  4. no estimate stored at all (legacy Owner-direct rows) → approve
+ *     without a ceiling, exactly the pre-#297 behaviour.
+ */
 export const executeImportProposalOp = defineOperation({
   name: "imports.execute_proposal",
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z.object({ runId: z.string().uuid() }).strict(),
-  output: z.object({}),
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      /** Explicit operator budget in major units (10 = $10). Required when
+       *  the stored estimate is failed/unusable; wins over the derived
+       *  ceiling when supplied. Same round-to-0µ¢ guard as set_cost_ceiling. */
+      ceiling: z
+        .number()
+        .positive()
+        .max(1_000_000)
+        .refine((c) => !roundsToZeroMicrocents(c), {
+          message:
+            "budget too small — this amount rounds to 0 at microcent precision; enter a larger ceiling",
+        })
+        .optional(),
+      /** Currency label for the explicit ceiling; defaults to USD (the
+       *  estimator's currency). */
+      currency: z
+        .string()
+        .trim()
+        .min(2)
+        .max(8)
+        .regex(/^[A-Za-z]+$/, "currency is a letter code like EUR/USD")
+        .optional(),
+    })
+    .strict(),
+  output: z.object({
+    ceilingMicrocents: z.number().int().positive().nullable(),
+    ceilingCurrency: z.string().nullable(),
+    /** Where the armed ceiling came from: the operator's explicit budget,
+     *  the approved estimate, or none (legacy rows without an estimate). */
+    ceilingSource: z.enum(["explicit", "estimate", "none"]),
+  }),
   handler: async (ctx, input, tx) => {
+    const runRows = (await tx.execute(sql`
+      SELECT estimate FROM import_runs
+      WHERE id = ${input.runId}::uuid AND status = 'proposed'
+      LIMIT 1
+    `)) as unknown as { estimate: unknown }[];
+    const run = runRows[0];
+    if (!run) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.execute_proposal",
+        message: "proposal not found or not in proposed status",
+      });
+    }
+    const estimate =
+      typeof run.estimate === "string" ? JSON.parse(run.estimate) : (run.estimate ?? null);
+
+    let ceilingMicrocents: number | null = null;
+    let ceilingCurrency: string | null = null;
+    let ceilingSource: "explicit" | "estimate" | "none" = "none";
+    if (input.ceiling !== undefined) {
+      ceilingMicrocents = majorUnitsToMicrocents(input.ceiling);
+      ceilingCurrency = (input.currency ?? "USD").toUpperCase();
+      ceilingSource = "explicit";
+    } else if (estimate !== null) {
+      const derived = deriveCeilingFromEstimate(estimate);
+      if (!derived.ok) {
+        return err({
+          kind: "HandlerError",
+          operation: "imports.execute_proposal",
+          message: `cannot arm a cost ceiling from this proposal's estimate: ${derived.reason}. Approve with an explicit budget instead (pass \`ceiling\` in major units + optional \`currency\`; the /security/import/pending form has the input).`,
+        });
+      }
+      ceilingMicrocents = derived.ceilingMicrocents;
+      ceilingCurrency = derived.currency;
+      ceilingSource = "estimate";
+    }
+
     const rows = (await tx.execute(sql`
       UPDATE import_runs
-         SET status = 'crawling', approved_by = ${ctx.actorId}::uuid, approved_at = now()
+         SET status = 'crawling', approved_by = ${ctx.actorId}::uuid, approved_at = now(),
+             cost_ceiling_microcents = COALESCE(${ceilingMicrocents}::bigint, cost_ceiling_microcents),
+             cost_ceiling_currency   = COALESCE(${ceilingCurrency}, cost_ceiling_currency)
        WHERE id = ${input.runId}::uuid AND status = 'proposed'
        RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -506,9 +598,13 @@ export const executeImportProposalOp = defineOperation({
       operation: "imports.execute_proposal",
       input,
       succeeded: true,
-      resultSummary: `approved import run ${input.runId}`,
+      entityId: input.runId,
+      resultSummary:
+        ceilingMicrocents === null
+          ? `approved import run ${input.runId} (no estimate stored — no ceiling armed)`
+          : `approved import run ${input.runId}; armed ceiling ${ceilingMicrocents}µ¢ ${ceilingCurrency} (${ceilingSource})`,
     });
-    return ok({});
+    return ok({ ceilingMicrocents, ceilingCurrency, ceilingSource });
   },
 });
 
@@ -2043,10 +2139,16 @@ export const setCostCeilingOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const currency = input.currency.toUpperCase();
     const ceilingMicrocents = majorUnitsToMicrocents(input.ceiling);
+    // issue #297 — setting a ceiling RE-ARMS the live gate: the one-shot
+    // warn/trip claims reset so the 80% warning and the pause can fire
+    // again against the NEW ceiling (the trip message tells the operator
+    // "continue with a new ceiling" — this is that re-arm path).
     const rows = (await tx.execute(sql`
       UPDATE import_runs
       SET cost_ceiling_microcents = ${ceilingMicrocents}::bigint,
-          cost_ceiling_currency   = ${currency}
+          cost_ceiling_currency   = ${currency},
+          cost_warning_emitted_at = NULL,
+          cost_gate_tripped_at    = NULL
       WHERE id = ${input.runId}::uuid
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -2086,6 +2188,55 @@ export const setCostCeilingOp = defineOperation({
  * Read-only + advisory: this NEVER stops the run. The flow (Wave 3 skill)
  * decides whether `overBudget` means pause-and-ask.
  */
+/**
+ * issue #297 — one-pass spend roll-up for a run's session set: the
+ * orchestrator chat session + every subagent session spawned under it.
+ * Shared by `imports.get_run_cost` (report/tool surface) and
+ * `imports.get_session_budget_state` (the chat-runner's live gate) so the
+ * gate and the report can never disagree about what was spent.
+ *
+ * `unpricedCallCount` counts rows that did real token work but stored a
+ * cost of 0 — the run-#14 "$0.00 report" signature (an ai_pricing lookup
+ * miss). Surfaced loudly so an understated total is never mistaken for a
+ * cheap run (CLAUDE.md §2 no-silent-fallbacks).
+ */
+async function sumRunSpend(
+  tx: TransactionRunner,
+  chatSessionId: string | null,
+): Promise<{ spentMicrocents: number; callCount: number; unpricedCallCount: number }> {
+  const spendRows = (await tx.execute(sql`
+    WITH sessions AS (
+      SELECT ${chatSessionId}::uuid AS sid
+      WHERE ${chatSessionId}::uuid IS NOT NULL
+      UNION
+      SELECT subagent_chat_session_id
+      FROM subagent_runs
+      WHERE parent_chat_session_id = ${chatSessionId}::uuid
+    )
+    SELECT COALESCE(SUM(a.cost_estimate_microcents), 0)::bigint AS cost_microcents,
+           COUNT(a.id)::int AS call_count,
+           COUNT(a.id) FILTER (
+             WHERE a.cost_estimate_microcents = 0
+               AND (a.input_tokens + a.output_tokens) > 0
+           )::int AS unpriced_call_count
+    FROM ai_calls a
+    WHERE a.chat_session_id IN (SELECT sid FROM sessions)
+  `)) as unknown as Array<{
+    cost_microcents: number | string;
+    call_count: number;
+    unpriced_call_count: number;
+  }>;
+  const spend = spendRows[0] ?? { cost_microcents: 0, call_count: 0, unpriced_call_count: 0 };
+  return {
+    spentMicrocents:
+      typeof spend.cost_microcents === "string"
+        ? Number.parseInt(spend.cost_microcents, 10)
+        : spend.cost_microcents,
+    callCount: spend.call_count,
+    unpricedCallCount: spend.unpriced_call_count,
+  };
+}
+
 export const getRunCostOp = defineOperation({
   name: "imports.get_run_cost",
   actorScope: ["human", "ai", "system"],
@@ -2097,6 +2248,9 @@ export const getRunCostOp = defineOperation({
     chatSessionId: z.string().nullable(),
     spentMicrocents: z.number().int().nonnegative(),
     callCount: z.number().int().nonnegative(),
+    /** issue #297 — ai_calls rows that did token work but stored cost 0
+     *  (ai_pricing miss). >0 means spentMicrocents is UNDERSTATED. */
+    unpricedCallCount: z.number().int().nonnegative(),
     subagentSessionCount: z.number().int().nonnegative(),
     ceilingMicrocents: z.number().int().nonnegative().nullable(),
     ceilingCurrency: z.string().nullable(),
@@ -2133,29 +2287,11 @@ export const getRunCostOp = defineOperation({
 
     const chatSessionId = run.chat_session_id;
     // Spend across the orchestrator session + every subagent session under
-    // it, in one pass. `sessions` is empty when chatSessionId is null (an
-    // Owner-direct run with no chat) → spend rolls up to a genuine 0, not a
-    // fallback. This is the same SUM(cost_estimate_microcents) as
-    // ai_calls.aggregate_for_session, unioned across the run's session set.
-    const spendRows = (await tx.execute(sql`
-      WITH sessions AS (
-        SELECT ${chatSessionId}::uuid AS sid
-        WHERE ${chatSessionId}::uuid IS NOT NULL
-        UNION
-        SELECT subagent_chat_session_id
-        FROM subagent_runs
-        WHERE parent_chat_session_id = ${chatSessionId}::uuid
-      )
-      SELECT COALESCE(SUM(a.cost_estimate_microcents), 0)::bigint AS cost_microcents,
-             COUNT(a.id)::int AS call_count
-      FROM ai_calls a
-      WHERE a.chat_session_id IN (SELECT sid FROM sessions)
-    `)) as unknown as Array<{ cost_microcents: number | string; call_count: number }>;
-    const spend = spendRows[0] ?? { cost_microcents: 0, call_count: 0 };
-    const spentMicrocents =
-      typeof spend.cost_microcents === "string"
-        ? Number.parseInt(spend.cost_microcents, 10)
-        : spend.cost_microcents;
+    // it, in one pass (sumRunSpend; shared with the live gate). `sessions`
+    // is empty when chatSessionId is null (an Owner-direct run with no
+    // chat) → spend rolls up to a genuine 0, not a fallback.
+    const spend = await sumRunSpend(tx, chatSessionId);
+    const spentMicrocents = spend.spentMicrocents;
 
     const subagentRows = (await tx.execute(sql`
       SELECT COUNT(*)::int AS n
@@ -2182,7 +2318,7 @@ export const getRunCostOp = defineOperation({
 
     const cost = computeRunCost({
       spentMicrocents,
-      callCount: spend.call_count,
+      callCount: spend.callCount,
       subagentSessionCount,
       ceilingMicrocents,
       ceilingCurrency: run.cost_ceiling_currency,
@@ -2190,7 +2326,179 @@ export const getRunCostOp = defineOperation({
       pagesTotal,
     });
 
-    return ok({ runId: input.runId, chatSessionId, ...cost });
+    return ok({
+      runId: input.runId,
+      chatSessionId,
+      ...cost,
+      unpricedCallCount: spend.unpricedCallCount,
+    });
+  },
+});
+
+/**
+ * issue #297 — the chat-runner's live-gate lookup: given a chat session
+ * (orchestrator OR subagent child), find the active import run whose armed
+ * ceiling governs it and return the rolled-up spend + one-shot claim state.
+ * Returns `gate: null` for the overwhelmingly common case (session not tied
+ * to a ceilinged, non-terminal run) so the runner skips per-loop checks.
+ *
+ * Why `["human","ai","system"]`: this is a pure read (§11 — broad read);
+ * the chat-runner calls it with the operator's ctx once per tool-loop
+ * iteration while a gated run is active.
+ */
+export const getSessionBudgetStateOp = defineOperation({
+  name: "imports.get_session_budget_state",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ chatSessionId: z.string().uuid() }).strict(),
+  output: z.object({
+    gate: z
+      .object({
+        runId: z.string(),
+        ceilingMicrocents: z.number().int().positive(),
+        ceilingCurrency: z.string(),
+        spentMicrocents: z.number().int().nonnegative(),
+        callCount: z.number().int().nonnegative(),
+        unpricedCallCount: z.number().int().nonnegative(),
+        /** Estimate band shown at approval, for the honest "spend vs
+         *  estimate" pause message; null when the run had none. */
+        estimateLowUsd: z.number().nullable(),
+        estimateHighUsd: z.number().nullable(),
+        warningEmitted: z.boolean(),
+        tripped: z.boolean(),
+      })
+      .nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    // The session is either a run's orchestrator session or a subagent
+    // child of one (subagent_runs maps child → parent). Newest matching
+    // run wins when a session somehow spans several.
+    const rows = (await tx.execute(sql`
+      SELECT r.id::text AS id,
+             r.chat_session_id::text AS chat_session_id,
+             r.cost_ceiling_microcents,
+             r.cost_ceiling_currency,
+             r.cost_warning_emitted_at,
+             r.cost_gate_tripped_at,
+             r.estimate
+      FROM import_runs r
+      WHERE r.cost_ceiling_microcents IS NOT NULL
+        AND r.status NOT IN ('completed', 'failed')
+        AND r.chat_session_id IN (
+          SELECT ${input.chatSessionId}::uuid
+          UNION
+          SELECT parent_chat_session_id
+          FROM subagent_runs
+          WHERE subagent_chat_session_id = ${input.chatSessionId}::uuid
+        )
+      ORDER BY r.created_at DESC
+      LIMIT 1
+    `)) as unknown as Array<{
+      id: string;
+      chat_session_id: string | null;
+      cost_ceiling_microcents: number | string;
+      cost_ceiling_currency: string | null;
+      cost_warning_emitted_at: string | Date | null;
+      cost_gate_tripped_at: string | Date | null;
+      estimate: unknown;
+    }>;
+    const run = rows[0];
+    if (!run) return ok({ gate: null });
+
+    const spend = await sumRunSpend(tx, run.chat_session_id);
+    const ceilingMicrocents =
+      typeof run.cost_ceiling_microcents === "string"
+        ? Number.parseInt(run.cost_ceiling_microcents, 10)
+        : run.cost_ceiling_microcents;
+    const estimate =
+      typeof run.estimate === "string" ? JSON.parse(run.estimate) : (run.estimate ?? null);
+    const band =
+      estimate !== null && typeof estimate === "object" && !("failed" in estimate)
+        ? (estimate as { aiCostUsd?: { low?: unknown; high?: unknown } }).aiCostUsd
+        : undefined;
+    return ok({
+      gate: {
+        runId: run.id,
+        ceilingMicrocents,
+        // A ceiling row always carries its currency (set_cost_ceiling and
+        // execute_proposal write both columns together); USD only guards
+        // against pre-#280 hand-edited rows.
+        ceilingCurrency: run.cost_ceiling_currency ?? "USD",
+        spentMicrocents: spend.spentMicrocents,
+        callCount: spend.callCount,
+        unpricedCallCount: spend.unpricedCallCount,
+        estimateLowUsd: typeof band?.low === "number" ? band.low : null,
+        estimateHighUsd: typeof band?.high === "number" ? band.high : null,
+        warningEmitted: run.cost_warning_emitted_at !== null,
+        tripped: run.cost_gate_tripped_at !== null,
+      },
+    });
+  },
+});
+
+/**
+ * issue #297 — claim + record a budget-gate transition. The claim is an
+ * atomic `UPDATE … WHERE <stamp> IS NULL RETURNING`, so with parallel
+ * subagent children exactly ONE session wins the right to emit the chat
+ * warning; losers see `claimed: false` and stay quiet. A claimed
+ * transition also lands in the run's import_run_events ledger (severity
+ * 'warning' for BOTH kinds — a budget pause is an operator decision point,
+ * not a red error card; W4 zero-red discipline). `set_cost_ceiling`
+ * clears both stamps, re-arming the gate at the new ceiling.
+ *
+ * Why not ai-scoped: the transition is detected by runner code, not the
+ * model; system + the runner's human ctx are the only callers.
+ */
+export const recordBudgetGateEventOp = defineOperation({
+  name: "imports.record_budget_gate_event",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      kind: z.enum(["warning", "tripped"]),
+      spentMicrocents: z.number().int().nonnegative(),
+      ceilingMicrocents: z.number().int().positive(),
+      message: z.string().min(1).max(2000),
+    })
+    .strict(),
+  output: z.object({ claimed: z.boolean() }),
+  handler: async (ctx, input, tx) => {
+    const stamp =
+      input.kind === "warning" ? sql`cost_warning_emitted_at` : sql`cost_gate_tripped_at`;
+    const rows = (await tx.execute(sql`
+      UPDATE import_runs
+         SET ${stamp} = now()
+       WHERE id = ${input.runId}::uuid AND ${stamp} IS NULL
+       RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const claimed = rows.length > 0;
+    if (!claimed) return ok({ claimed });
+
+    await tx.execute(sql`
+      INSERT INTO import_run_events (run_id, severity, phase, message, detail)
+      VALUES (
+        ${input.runId}::uuid,
+        'warning',
+        'budget',
+        ${input.message},
+        ${jsonbParam({
+          kind: input.kind,
+          spentMicrocents: input.spentMicrocents,
+          ceilingMicrocents: input.ceilingMicrocents,
+        })}
+      )
+    `);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.record_budget_gate_event",
+      input,
+      succeeded: true,
+      entityId: input.runId,
+      resultSummary: `budget ${input.kind}: ${input.spentMicrocents}µ¢ of ${input.ceilingMicrocents}µ¢`,
+    });
+    return ok({ claimed });
   },
 });
 

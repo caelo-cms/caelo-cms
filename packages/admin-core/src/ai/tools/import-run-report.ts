@@ -179,20 +179,27 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
     if (costR.ok) {
       const c = costR.value as {
         spentMicrocents: number;
+        unpricedCallCount: number;
         ceilingMicrocents: number | null;
         ceilingCurrency: string | null;
         overBudget: boolean;
       };
       const currency = c.ceilingCurrency ?? "USD";
       const spent = formatMicrocentsAsMoney(c.spentMicrocents, currency);
+      // issue #297 — run #14's report claimed $0.00 while ai_calls rows sat
+      // unpriced; an understated total must never read as a cheap run.
+      const unpriced =
+        c.unpricedCallCount > 0
+          ? ` WARNING: ${c.unpricedCallCount} AI call(s) have no ai_pricing row (cost recorded as 0) — real spend is higher; the operator should add the model at /security/ai.`
+          : "";
       costLine =
-        c.ceilingMicrocents === null
+        (c.ceilingMicrocents === null
           ? `Cost: ${spent} in AI spend across the orchestrator + subagents (no budget ceiling was set).`
           : `Cost: ${spent} spent of a ${formatMicrocentsAsMoney(c.ceilingMicrocents, currency)} budget${
               c.overBudget
                 ? " — budget reached; say so plainly and let the operator decide next steps"
                 : ""
-            }.`;
+            }.`) + unpriced;
     }
 
     const lines = [
@@ -255,10 +262,11 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
         ? `ERROR/WARNING LEDGER — ${v.eventCounts.error} error(s), ${v.eventCounts.warning} warning(s), ${v.eventCounts.info} info logged during this migration. Surface these to the operator (report them verbatim; never claim a clean migration while errors are present):\n${v.events
             .slice(0, 40)
             .map(
-              (e) =>
-                `- [${e.severity.toUpperCase()}${e.phase ? `/${e.phase}` : ""}] ${e.message}`,
+              (e) => `- [${e.severity.toUpperCase()}${e.phase ? `/${e.phase}` : ""}] ${e.message}`,
             )
-            .join("\n")}${v.events.length > 40 ? `\n- …and ${v.events.length - 40} more (see the run report queue)` : ""}`
+            .join(
+              "\n",
+            )}${v.events.length > 40 ? `\n- …and ${v.events.length - 40} more (see the run report queue)` : ""}`
         : "Error/warning ledger: empty — nothing was flagged during this migration.",
       "",
       "Narrate this to the operator in plain words — preserved / fixed / worth-a-look.",

@@ -9,6 +9,17 @@
  *     and rolls up rebuild progress (accepted vs total import_pages).
  *   - the ceiling comparison (overBudget, remaining) tracks spend.
  *
+ * issue #297 — the auto-armed gate on top:
+ *
+ *   - imports.execute_proposal arms ceiling = estimate.high × safety factor
+ *     in the approval transaction; a failed estimate REJECTS a budget-less
+ *     approval and accepts an explicit one.
+ *   - imports.get_session_budget_state resolves the gate from the
+ *     orchestrator session AND from a subagent child, with unpriced-call
+ *     counting (the run-#14 "$0.00 report" signature).
+ *   - imports.record_budget_gate_event claims warn/trip exactly once;
+ *     imports.set_cost_ceiling re-arms by clearing both claims.
+ *
  * Do not run locally — the shared dev DB truncates. CI runs it against
  * the compose Postgres.
  */
@@ -40,10 +51,12 @@ async function cleanup(): Promise<void> {
   await sqlc.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
     await tx`DELETE FROM import_pages WHERE source_url LIKE 'https://issue280.example%'`;
-    await tx`DELETE FROM import_runs WHERE source_url LIKE 'https://issue280.example%'`;
+    await tx`DELETE FROM import_run_events WHERE run_id IN (SELECT id FROM import_runs WHERE source_url LIKE 'https://issue297.example%')`;
+    await tx`DELETE FROM import_runs WHERE source_url LIKE 'https://issue280.example%' OR source_url LIKE 'https://issue297.example%'`;
     await tx`DELETE FROM pages WHERE slug LIKE 'issue280-anchor%'`;
-    await tx`DELETE FROM subagent_runs WHERE role = 'issue280_rebuilder'`;
-    await tx`DELETE FROM chat_sessions WHERE title LIKE '%issue280%' OR subagent_role = 'issue280_rebuilder'`;
+    await tx`DELETE FROM subagent_runs WHERE role = 'issue280_rebuilder' OR role = 'issue297_rebuilder'`;
+    await tx`DELETE FROM ai_calls WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE '%issue297%')`;
+    await tx`DELETE FROM chat_sessions WHERE title LIKE '%issue280%' OR title LIKE '%issue297%' OR subagent_role IN ('issue280_rebuilder', 'issue297_rebuilder')`;
   });
 }
 
@@ -230,5 +243,267 @@ describe("imports cost gate", () => {
       runId: "00000000-0000-4000-8000-000000000280",
     });
     expect(r.ok).toBe(false);
+  });
+});
+
+const USD = 100_000_000; // microcents per $1
+
+interface ArmedApproval {
+  ceilingMicrocents: number | null;
+  ceilingCurrency: string | null;
+  ceilingSource: "explicit" | "estimate" | "none";
+}
+
+interface GateState {
+  gate: {
+    runId: string;
+    ceilingMicrocents: number;
+    ceilingCurrency: string;
+    spentMicrocents: number;
+    callCount: number;
+    unpricedCallCount: number;
+    estimateLowUsd: number | null;
+    estimateHighUsd: number | null;
+    warningEmitted: boolean;
+    tripped: boolean;
+  } | null;
+}
+
+describe("issue #297 — auto-armed ceiling + live gate state", () => {
+  let sessId: string;
+  let childId: string;
+  let armedRunId: string;
+
+  it("execute_proposal arms ceiling = estimate.high × safety factor in the approval tx", async () => {
+    const sess = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      title: "issue297 orchestrator",
+    });
+    expect(sess.ok).toBe(true);
+    if (!sess.ok) return;
+    sessId = (sess.value as { chatSessionId: string }).chatSessionId;
+    const branchId = (sess.value as { chatBranchId: string }).chatBranchId;
+
+    // Propose FROM the chat (branch ctx) so the run links to the session.
+    const prop = await execute(
+      registry,
+      adapter,
+      { ...SYSTEM, chatBranchId: branchId },
+      "imports.propose_run",
+      {
+        sourceUrl: "https://issue297.example/",
+        urls: ["https://issue297.example/a"],
+        estimate: {
+          pages: 14,
+          basis: "list",
+          truncated: false,
+          crawlMinutes: 1,
+          aiCostUsd: { low: 0.28, high: 1.4 },
+        },
+      },
+    );
+    expect(prop.ok).toBe(true);
+    if (!prop.ok) return;
+    armedRunId = (prop.value as { runId: string }).runId;
+
+    const appr = await execute(registry, adapter, SYSTEM, "imports.execute_proposal", {
+      runId: armedRunId,
+    });
+    expect(appr.ok).toBe(true);
+    if (!appr.ok) return;
+    const v = appr.value as ArmedApproval;
+    // Run #15's shown band ($0.28–$1.40) → $4.20 ceiling at factor 3.
+    expect(v.ceilingMicrocents).toBe(4.2 * USD);
+    expect(v.ceilingCurrency).toBe("USD");
+    expect(v.ceilingSource).toBe("estimate");
+
+    const cost = await execute(registry, adapter, SYSTEM, "imports.get_run_cost", {
+      runId: armedRunId,
+    });
+    expect(cost.ok).toBe(true);
+    if (!cost.ok) return;
+    expect((cost.value as { ceilingMicrocents: number | null }).ceilingMicrocents).toBe(4.2 * USD);
+  });
+
+  it("failed estimate: budget-less approval is rejected; an explicit budget arms", async () => {
+    const prop = await execute(registry, adapter, SYSTEM, "imports.propose_run", {
+      sourceUrl: "https://issue297.example/failed",
+      depth: 1,
+      maxPages: 5,
+      estimate: { failed: true, reason: "no sitemap.xml and homepage 500" },
+    });
+    expect(prop.ok).toBe(true);
+    if (!prop.ok) return;
+    const failedRunId = (prop.value as { runId: string }).runId;
+
+    const bare = await execute(registry, adapter, SYSTEM, "imports.execute_proposal", {
+      runId: failedRunId,
+    });
+    expect(bare.ok).toBe(false);
+    if (bare.ok) return;
+    expect("message" in bare.error ? bare.error.message : "").toContain("explicit budget");
+
+    const withBudget = await execute(registry, adapter, SYSTEM, "imports.execute_proposal", {
+      runId: failedRunId,
+      ceiling: 7,
+      currency: "usd",
+    });
+    expect(withBudget.ok).toBe(true);
+    if (!withBudget.ok) return;
+    const v = withBudget.value as ArmedApproval;
+    expect(v.ceilingMicrocents).toBe(7 * USD);
+    expect(v.ceilingCurrency).toBe("USD");
+    expect(v.ceilingSource).toBe("explicit");
+  });
+
+  it("get_session_budget_state resolves the gate for orchestrator AND subagent sessions, counting unpriced calls", async () => {
+    // One priced call + one call whose (provider, model) has no ai_pricing
+    // row — the run-#14 shape: real tokens, cost stored as 0.
+    await execute(registry, adapter, SYSTEM, "chat.record_ai_call", {
+      chatSessionId: sessId,
+      provider: "anthropic",
+      model: "fixture",
+      inputTokens: 100,
+      outputTokens: 50,
+      cachedTokens: 0,
+      costEstimateMicrocents: 100_000,
+      durationMs: 10,
+      succeeded: true,
+    });
+    await execute(registry, adapter, SYSTEM, "chat.record_ai_call", {
+      chatSessionId: sessId,
+      provider: "issue297-no-such-provider",
+      model: "issue297-no-such-model",
+      inputTokens: 110_000,
+      outputTokens: 1_500,
+      cachedTokens: 0,
+      durationMs: 10,
+      succeeded: true,
+    });
+
+    const state = await execute(registry, adapter, SYSTEM, "imports.get_session_budget_state", {
+      chatSessionId: sessId,
+    });
+    expect(state.ok).toBe(true);
+    if (!state.ok) return;
+    const g = (state.value as GateState).gate;
+    expect(g).not.toBeNull();
+    if (!g) return;
+    expect(g.runId).toBe(armedRunId);
+    expect(g.ceilingMicrocents).toBe(4.2 * USD);
+    expect(g.spentMicrocents).toBe(100_000);
+    expect(g.callCount).toBe(2);
+    expect(g.unpricedCallCount).toBe(1);
+    expect(g.estimateLowUsd).toBe(0.28);
+    expect(g.estimateHighUsd).toBe(1.4);
+    expect(g.warningEmitted).toBe(false);
+    expect(g.tripped).toBe(false);
+
+    // A subagent child of the orchestrator resolves the SAME gate.
+    const child = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      title: "[subagent] issue297",
+      subagentRole: "issue297_rebuilder",
+      parentChatSessionId: sessId,
+    });
+    expect(child.ok).toBe(true);
+    if (!child.ok) return;
+    childId = (child.value as { chatSessionId: string }).chatSessionId;
+    await execute(registry, adapter, SYSTEM, "subagent_runs.create_pending", {
+      parentChatSessionId: sessId,
+      parentMessageId: null,
+      subagentChatSessionId: childId,
+      batchId: null,
+      role: "issue297_rebuilder",
+      task: "rebuild",
+    });
+    const childState = await execute(
+      registry,
+      adapter,
+      SYSTEM,
+      "imports.get_session_budget_state",
+      {
+        chatSessionId: childId,
+      },
+    );
+    expect(childState.ok).toBe(true);
+    if (!childState.ok) return;
+    expect((childState.value as GateState).gate?.runId).toBe(armedRunId);
+
+    // An unrelated session has no gate.
+    const other = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      title: "issue297 unrelated",
+    });
+    if (!other.ok) return;
+    const otherState = await execute(
+      registry,
+      adapter,
+      SYSTEM,
+      "imports.get_session_budget_state",
+      {
+        chatSessionId: (other.value as { chatSessionId: string }).chatSessionId,
+      },
+    );
+    expect(otherState.ok).toBe(true);
+    if (!otherState.ok) return;
+    expect((otherState.value as GateState).gate).toBeNull();
+  });
+
+  it("gate events claim exactly once; set_cost_ceiling re-arms both claims", async () => {
+    const claim = (kind: "warning" | "tripped") =>
+      execute(registry, adapter, SYSTEM, "imports.record_budget_gate_event", {
+        runId: armedRunId,
+        kind,
+        spentMicrocents: 5 * USD,
+        ceilingMicrocents: 4.2 * USD,
+        message: `issue297 ${kind} fixture`,
+      });
+
+    const first = await claim("warning");
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect((first.value as { claimed: boolean }).claimed).toBe(true);
+    const second = await claim("warning");
+    if (!second.ok) return;
+    expect((second.value as { claimed: boolean }).claimed).toBe(false);
+    const trip = await claim("tripped");
+    if (!trip.ok) return;
+    expect((trip.value as { claimed: boolean }).claimed).toBe(true);
+
+    const state = await execute(registry, adapter, SYSTEM, "imports.get_session_budget_state", {
+      chatSessionId: sessId,
+    });
+    if (!state.ok) return;
+    expect((state.value as GateState).gate?.warningEmitted).toBe(true);
+    expect((state.value as GateState).gate?.tripped).toBe(true);
+
+    // Re-arm: a new ceiling clears both claims so the gate fires again.
+    const rearm = await execute(registry, adapter, SYSTEM, "imports.set_cost_ceiling", {
+      runId: armedRunId,
+      ceiling: 10,
+      currency: "USD",
+    });
+    expect(rearm.ok).toBe(true);
+    const after = await execute(registry, adapter, SYSTEM, "imports.get_session_budget_state", {
+      chatSessionId: sessId,
+    });
+    if (!after.ok) return;
+    const g = (after.value as GateState).gate;
+    expect(g?.ceilingMicrocents).toBe(10 * USD);
+    expect(g?.warningEmitted).toBe(false);
+    expect(g?.tripped).toBe(false);
+    const reclaimed = await claim("warning");
+    if (!reclaimed.ok) return;
+    expect((reclaimed.value as { claimed: boolean }).claimed).toBe(true);
+  });
+
+  it("get_run_cost surfaces the unpriced-call count (run #14 $0.00 regression)", async () => {
+    const r = await execute(registry, adapter, SYSTEM, "imports.get_run_cost", {
+      runId: armedRunId,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as RunCost & { unpricedCallCount: number };
+    expect(v.spentMicrocents).toBe(100_000);
+    expect(v.callCount).toBe(2);
+    expect(v.unpricedCallCount).toBe(1);
   });
 });
