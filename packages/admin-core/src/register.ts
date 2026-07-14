@@ -131,7 +131,6 @@ import {
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
 import { getDesignManifestOp, setDesignManifestOp } from "./ops/design_manifest.js";
-import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import {
   executeDomainProposalOp,
   listPendingDomainProposalsOp,
@@ -253,6 +252,7 @@ import {
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
 } from "./ops/owner-bootstrap-tokens.js";
+import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import {
   commentArchiveInsertOp,

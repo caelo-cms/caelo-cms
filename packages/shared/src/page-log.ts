@@ -117,7 +117,8 @@ export function formatPageLogBlock(entries: readonly PageLogEntry[]): string | n
     lines.push(`- [${e.entryKind}] ${summary} (${who}, ${when})`);
   }
   if (entries.length > MAX_ENTRIES) {
-    lines.push(`- ...and ${entries.length - MAX_ENTRIES} older entries.`);
+    const omitted = entries.length - MAX_ENTRIES;
+    lines.push(`- ${omitted} older ${omitted === 1 ? "entry" : "entries"} omitted.`);
   }
   return lines.join("\n");
 }
