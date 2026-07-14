@@ -39,13 +39,18 @@ export function resolveAnthropicToolSearchMode(
 ): AnthropicToolSearchMode {
   if (override) return override;
   const raw = (process.env.CAELO_ANTHROPIC_TOOL_SEARCH ?? "").toLowerCase().trim();
-  if (raw === "bm25" || raw === "regex" || raw === "off") return raw;
-  // Token efficiency: Tool-Search is ON by default. The 135-tool catalogue
-  // is ~38k tokens of schemas shipped every call; deferring them behind the
-  // server-side search transform cut real input ~104k→43k/call in the
-  // measured baseline (run-logs/token-efficiency-analysis.md). Set
-  // CAELO_ANTHROPIC_TOOL_SEARCH=off to opt back into the full inline catalogue.
-  return "bm25";
+  if (raw === "bm25" || raw === "regex") return raw;
+  // Tool-Search stays OFF by default — opt in with CAELO_ANTHROPIC_TOOL_SEARCH=
+  // bm25|regex. It defers the ~38k-token catalogue (real input ~104k→43k/call,
+  // run-logs/token-efficiency-analysis.md) BUT the e2e-livedit suite caught two
+  // regressions when it was the hard default: a turn whose only output is the
+  // server-side toolSearch call surfaces as `[chat-runner] empty-response`, and
+  // deferred discovery intermittently missed add_module_to_layout. Making it the
+  // default needs the chat-runner loop to treat a server-tool-only step as
+  // "continue", not "empty" — tracked as a follow-up. The duplicate-prose-list
+  // removal below is the safe, always-on win (~23k tokens/call) and is
+  // independent of this flag.
+  return "off";
 }
 
 export function makeProvider(config: ProviderConfig): AIProvider {
