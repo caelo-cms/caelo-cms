@@ -38,6 +38,7 @@
     "prepublishOnly": "tsc -b --force && tsc --project stacks/gcp/tsconfig.json && tsc --project stacks/gcp-firebase/tsconfig.json"
   },
   "dependencies": {
+    "@caelo-cms/edge-router": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
     "@clack/prompts": "1.7.0",
     "@pulumi/aws": "^7",

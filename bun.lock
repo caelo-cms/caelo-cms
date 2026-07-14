@@ -249,6 +249,7 @@
         "cms-provision": "./dist/cli.js",
       },
       "dependencies": {
+        "@caelo-cms/edge-router": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
         "@clack/prompts": "1.7.0",
         "@pulumi/aws": "^7",
