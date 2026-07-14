@@ -195,7 +195,7 @@ describe("buildToolCatalogue", () => {
     // message engaged this skill and the subagent lost
     // inspect_page_render + module lookup, then edited a wrong module.
     const composePageAllowlist = new Set([
-      "compose_page_from_spec",
+      "build_page",
       "create_page",
       "add_module_to_page",
       "edit_module",
@@ -248,7 +248,7 @@ describe("buildToolCatalogue", () => {
     // same way read tools do, or the skill body says "spawn subagents"
     // while the catalogue says "no such tool".
     const composePageAllowlist = new Set([
-      "compose_page_from_spec",
+      "build_page",
       "create_page",
       "add_module_to_page",
       "edit_module",

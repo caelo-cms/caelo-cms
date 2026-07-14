@@ -24,6 +24,20 @@ import { z } from "zod";
 import { awaitScreenshot } from "../screenshot-orchestrator.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
+/**
+ * Build the failure tool-result content. A TIMEOUT means the operator's
+ * browser isn't answering (tab closed / headless run) — retrying just times
+ * out again (30s each), so the message tells the model to STOP retrying and
+ * proceed (run-logs/token-efficiency-analysis.md: the model looped
+ * screenshot_page × viewports × attempts, burning minutes). AI-actionable
+ * per CLAUDE.md §11. Pure so it's unit-testable without the browser bridge.
+ */
+export function screenshotFailureContent(errorMessage: string): string {
+  const base = `screenshot_page failed: ${errorMessage}`;
+  if (!/timed out/i.test(errorMessage)) return base;
+  return `${base}. Do NOT retry screenshot_page this turn — the operator's browser is unavailable and every retry costs another 30s timeout. Proceed with the work and tell the operator you couldn't visually verify the render this turn.`;
+}
+
 const screenshotInput = z
   .object({
     pageId: z.string().uuid(),
@@ -108,7 +122,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
     } catch (e) {
       return {
         ok: false,
-        content: `screenshot_page failed: ${e instanceof Error ? e.message : String(e)}`,
+        content: screenshotFailureContent(e instanceof Error ? e.message : String(e)),
       };
     }
   },

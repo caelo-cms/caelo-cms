@@ -84,7 +84,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // after the chat-branch context is known. The initial main-only pass
   // here is needed to scope the chat lookup by activePageId; a second
   // pass below with `ctxWithBranch` brings in any pages the AI created
-  // on the chat's branch (compose_page_from_spec, create_page, ...).
+  // on the chat's branch (build_page, create_page, ...).
   let pages = pagesR.ok ? (pagesR.value as { pages: PageRow[] }).pages : [];
 
   // Pick the page to render in the iframe. URL param wins; otherwise

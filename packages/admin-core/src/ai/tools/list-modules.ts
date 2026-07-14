@@ -102,7 +102,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
             ]
               .filter(Boolean)
               .join(" ")} (catalog has ${all.length} total — retry without the filter?)`
-          : " — mint one via add_module_to_page / compose_page_from_spec";
+          : " — mint one via add_module_to_page / build_page";
       return { ok: true, content: `0 modules${filterNote}.` };
     }
 
