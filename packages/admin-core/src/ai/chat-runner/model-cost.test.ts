@@ -11,9 +11,27 @@ import { describe, expect, it } from "bun:test";
 import { type AiPricingRow, pickModelRates } from "./model-cost.js";
 
 const ROWS: AiPricingRow[] = [
-  { provider: "anthropic", model: "claude-sonnet-5", operationType: "text", inputMicrocents: 300000, outputMicrocents: 1500000 },
-  { provider: "anthropic", model: "claude-opus-4-8", operationType: "text", inputMicrocents: 500000, outputMicrocents: 2500000 },
-  { provider: "anthropic", model: "*", operationType: "text", inputMicrocents: 999999, outputMicrocents: 999999 },
+  {
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    operationType: "text",
+    inputMicrocents: 300000,
+    outputMicrocents: 1500000,
+  },
+  {
+    provider: "anthropic",
+    model: "claude-opus-4-8",
+    operationType: "text",
+    inputMicrocents: 500000,
+    outputMicrocents: 2500000,
+  },
+  {
+    provider: "anthropic",
+    model: "*",
+    operationType: "text",
+    inputMicrocents: 999999,
+    outputMicrocents: 999999,
+  },
 ];
 
 describe("pickModelRates", () => {
@@ -43,7 +61,15 @@ describe("pickModelRates", () => {
   it("returns null when the matched row has no output rate", () => {
     expect(
       pickModelRates(
-        [{ provider: "x", model: "y", operationType: "text", inputMicrocents: 1, outputMicrocents: null }],
+        [
+          {
+            provider: "x",
+            model: "y",
+            operationType: "text",
+            inputMicrocents: 1,
+            outputMicrocents: null,
+          },
+        ],
         "x",
         "y",
       ),

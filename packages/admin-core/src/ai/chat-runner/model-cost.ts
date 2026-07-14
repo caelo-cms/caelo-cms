@@ -45,7 +45,8 @@ export function pickModelRates(
   const row =
     rows.find(
       (r) => r.provider === providerName && r.model === model && r.operationType === "text",
-    ) ?? rows.find((r) => r.provider === providerName && r.model === "*" && r.operationType === "text");
+    ) ??
+    rows.find((r) => r.provider === providerName && r.model === "*" && r.operationType === "text");
   if (!row || row.outputMicrocents === null) return null;
   return {
     inputCostPerMTok: row.inputMicrocents / MICROCENTS_PER_1K_TO_USD_PER_MTOK_DIVISOR,
