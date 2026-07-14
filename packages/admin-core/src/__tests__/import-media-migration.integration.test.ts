@@ -280,10 +280,16 @@ describe("imports.migrate_media (#249)", () => {
       expect(v.unitsWarning).toContain("0 media units found");
       expect(v.unitsBySource.directPageModules).toBe(0);
     }
-    const events = await sqlc`
-      SELECT severity, message FROM import_run_events
-      WHERE run_id = ${runId}::uuid AND phase = 'media' AND severity = 'warning'
-    `;
+    // import_run_events is RLS-FORCEd behind a non-empty caelo.actor_kind
+    // GUC (0152) — a bare connection reads zero rows, so set the GUC like
+    // every other raw read in this file.
+    const events = (await sqlc.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx`
+        SELECT severity, message FROM import_run_events
+        WHERE run_id = ${runId}::uuid AND phase = 'media' AND severity = 'warning'
+      `;
+    })) as unknown as Array<{ severity: string; message: string }>;
     expect(events.length).toBeGreaterThanOrEqual(1);
     expect(String(events[0]?.message)).toContain("0 media units found");
   });
