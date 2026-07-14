@@ -73,7 +73,7 @@ describe("site_ai_memory round-trip", () => {
     const list = await execute(registry, adapter, HUMAN, "ai_memory.list", {});
     if (!list.ok) return;
     const memory = (list.value as { memory: { slot: string; body: string }[] }).memory;
-    const prompt = composeSystemPrompt(memory, []);
+    const prompt = composeSystemPrompt(memory);
     expect(prompt).toContain("be terse");
   });
 

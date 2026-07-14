@@ -348,7 +348,7 @@ const BASE_SYSTEM = [
   "You are Caelo, an AI co-editor for a content management system.",
   "Editors describe what they want changed; you respond conversationally and use tools",
   "to make the changes. Briefly state what you're about to do (one sentence), then call",
-  "the tools that do it. Never call tools other than the ones listed below.",
+  "the tools that do it. Only call tools that are actually available to you.",
   // v0.12.3 (issue #106) — recover, don't punt. The operator is
   // non-technical and describes OUTCOMES; you decide the implementation.
   "When a tool call fails validation with an error that names a valid set of choices",
@@ -411,7 +411,7 @@ const MODULE_MODEL_BLOCK = [
 const STAGING_BLOCK = [
   "## Staging",
   "",
-  "When the user asks for changes, **make them via the tools below first.** Every write lands in this chat's branch — invisible to the live site until the user clicks Stage.",
+  "When the user asks for changes, **make them via your tools first.** Every write lands in this chat's branch — invisible to the live site until the user clicks Stage.",
   "",
   "Tell the user what you did + that the Stage button in /edit ships it to staging. Don't claim a change is live.",
   "",
@@ -497,7 +497,6 @@ export interface VolatileContext {
 
 export function composeSystemPromptChunks(
   memory: readonly MemoryRow[],
-  tools: readonly ToolCatalogueEntry[],
   volatile: VolatileContext = {},
 ): SystemPromptChunk[] {
   const chunks: SystemPromptChunk[] = [
@@ -521,14 +520,14 @@ export function composeSystemPromptChunks(
     });
   }
 
-  if (tools.length > 0) {
-    const toolLines = tools.map((t) => `- **${t.name}** — ${t.description}`);
-    chunks.push({
-      body: ["# Available tools", ...toolLines].join("\n"),
-      cacheable: true,
-      label: "tools",
-    });
-  }
+  // NOTE (token efficiency): we deliberately do NOT emit a "# Available
+  // tools" system chunk. Every tool's name + description already ships in
+  // the `tools[]` array (the model's canonical tool surface); a prose copy
+  // in the system prompt duplicated all descriptions verbatim — measured at
+  // ~23k tokens/call on the 135-tool catalogue, sent on EVERY call. Tool
+  // discovery is the `tools[]` array (or the Anthropic Tool-Search transform
+  // when armed), never a second hand-maintained list. See
+  // run-logs/token-efficiency-analysis.md.
 
   // Volatile chunks go last so the cache prefix above stays byte-stable.
   if (volatile.skillsBlock && volatile.skillsBlock.trim().length > 0) {
@@ -624,11 +623,8 @@ export function composeSystemPromptChunks(
 }
 
 /** Backwards-compatible flat-string composer. */
-export function composeSystemPrompt(
-  memory: readonly MemoryRow[],
-  tools: readonly ToolCatalogueEntry[],
-): string {
-  return composeSystemPromptChunks(memory, tools)
+export function composeSystemPrompt(memory: readonly MemoryRow[]): string {
+  return composeSystemPromptChunks(memory)
     .map((c) => c.body)
     .join("\n\n");
 }

@@ -107,6 +107,19 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
 }
 
 /**
+ * Server-side tools the model may invoke but that the SDK executes itself
+ * (result fed back into the stream automatically). These must never reach
+ * our client tool-dispatch. `providerExecuted` on the part is the primary
+ * signal; this name set is the fallback when a SDK shape omits it.
+ */
+const SERVER_EXECUTED_TOOLS: ReadonlySet<string> = new Set([
+  "toolSearch",
+  "web_search",
+  "web_fetch",
+  "code_execution",
+]);
+
+/**
  * Translate SDK fullStream parts → Caelo's ProviderEvent union.
  * Identical for every SDK-backed provider — the SDK normalizes
  * provider-specific shapes into a uniform stream.
@@ -172,6 +185,13 @@ export async function* translateSDKStream(
         case "tool-call": {
           const id = (e.toolCallId as string | undefined) ?? "";
           const name = (e.toolName as string | undefined) ?? "";
+          // Provider-executed tools (Anthropic Tool-Search, web_search, …) run
+          // SERVER-side: the SDK executes them and feeds their result back into
+          // the stream itself. They must NOT reach our tool-dispatch, which
+          // would return "unknown tool: <name>" and pollute the transcript.
+          // The SDK flags them `providerExecuted`; SERVER_EXECUTED_TOOLS is a
+          // belt-and-braces fallback for SDK shapes that omit the flag.
+          if (e.providerExecuted === true || SERVER_EXECUTED_TOOLS.has(name)) break;
           const args = typeof e.input === "string" ? safeJsonParse(e.input) : (e.input as unknown);
           yield { kind: "tool-call", id, name, arguments: args };
           break;

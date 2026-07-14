@@ -81,17 +81,21 @@ describe("resolveAnthropicToolSearchMode", () => {
     expect(resolveAnthropicToolSearchMode("off")).toBe("off");
   });
 
-  it("reads from env when no override is supplied", () => {
+  it("reads from env when no override is supplied; defaults to bm25 (token efficiency)", () => {
     const prev = process.env.CAELO_ANTHROPIC_TOOL_SEARCH;
     try {
       process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "bm25";
       expect(resolveAnthropicToolSearchMode()).toBe("bm25");
       process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "REGEX";
       expect(resolveAnthropicToolSearchMode()).toBe("regex");
+      // Explicit opt-out to the full inline catalogue is honoured.
+      process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "off";
+      expect(resolveAnthropicToolSearchMode()).toBe("off");
+      // Unrecognized value OR unset → the efficient default (bm25), NOT off.
       process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "nonsense";
-      expect(resolveAnthropicToolSearchMode()).toBe("off");
+      expect(resolveAnthropicToolSearchMode()).toBe("bm25");
       delete process.env.CAELO_ANTHROPIC_TOOL_SEARCH;
-      expect(resolveAnthropicToolSearchMode()).toBe("off");
+      expect(resolveAnthropicToolSearchMode()).toBe("bm25");
     } finally {
       if (prev === undefined) delete process.env.CAELO_ANTHROPIC_TOOL_SEARCH;
       else process.env.CAELO_ANTHROPIC_TOOL_SEARCH = prev;

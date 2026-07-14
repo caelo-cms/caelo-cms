@@ -39,8 +39,13 @@ export function resolveAnthropicToolSearchMode(
 ): AnthropicToolSearchMode {
   if (override) return override;
   const raw = (process.env.CAELO_ANTHROPIC_TOOL_SEARCH ?? "").toLowerCase().trim();
-  if (raw === "bm25" || raw === "regex") return raw;
-  return "off";
+  if (raw === "bm25" || raw === "regex" || raw === "off") return raw;
+  // Token efficiency: Tool-Search is ON by default. The 135-tool catalogue
+  // is ~38k tokens of schemas shipped every call; deferring them behind the
+  // server-side search transform cut real input ~104k→43k/call in the
+  // measured baseline (run-logs/token-efficiency-analysis.md). Set
+  // CAELO_ANTHROPIC_TOOL_SEARCH=off to opt back into the full inline catalogue.
+  return "bm25";
 }
 
 export function makeProvider(config: ProviderConfig): AIProvider {
