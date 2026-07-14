@@ -37,6 +37,7 @@ import {
   type Screenshotter,
 } from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
+import { parseExplicitUrls } from "./explicit-urls.js";
 
 /**
  * issue #191 — hostnames the importer's SSRF guard exempts. Set
@@ -348,7 +349,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       //     fetch timeout ≈ 8 min).
       const rows = await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
         const claim = (await tx.execute(sql`
-            SELECT id::text AS id, source_url, depth, max_pages, crawl_state
+            SELECT id::text AS id, source_url, depth, max_pages, explicit_urls, crawl_state
             FROM import_runs
             WHERE status = 'crawling'
               AND (
@@ -363,6 +364,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           source_url: string;
           depth: number;
           max_pages: number;
+          explicit_urls: unknown;
           crawl_state: unknown;
         }>;
         if (claim.length > 0) {
@@ -378,6 +380,14 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       sourceUrl = r.source_url;
       depth = r.depth;
       maxPages = r.max_pages;
+      // issue #229 — LIST mode: the proposal pinned an exact URL set. The
+      // crawler fetches only these (+ the source origin), no BFS. jsonb
+      // may decode to an array or a JSON string depending on the client.
+      // A present-but-malformed value THROWS (run goes 'failed' with the
+      // structured message below) instead of silently degrading to BFS —
+      // the Owner approved an exact set, not a depth crawl (§2
+      // no-fallbacks). Only SQL NULL means depth mode.
+      const explicitUrls = parseExplicitUrls(r.explicit_urls);
       const resumeFrom = parseCrawlCheckpoint(r.crawl_state);
       const claimedRunId = runId;
       const flushBatch = async (pages: CrawledPage[]): Promise<void> => {
@@ -407,6 +417,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         sourceUrl,
         depth,
         maxPages,
+        // issue #229 — present ⇒ LIST mode (crawler ignores depth/maxPages
+        // BFS and fetches exactly these + the source origin). Non-null is
+        // guaranteed non-empty by parseExplicitUrls.
+        ...(explicitUrls ? { urls: explicitUrls } : {}),
         throttleMs: 100,
         // issue #191 — explicit, visible exemption list for the SSRF
         // guard (e2e fixture servers, deliberate private crawls).

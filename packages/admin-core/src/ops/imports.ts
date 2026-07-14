@@ -76,6 +76,14 @@ function parseJsonbColumn(raw: unknown): unknown {
   return typeof raw === "string" ? JSON.parse(raw) : (raw ?? null);
 }
 
+/** issue #229 — the `explicit_urls` jsonb decodes to a string[] (LIST
+ *  mode) or null (depth mode). Normalise both client paths (decoded
+ *  array vs JSON string) to `string[] | null` for the read surface. */
+function normalizeExplicitUrls(raw: unknown): string[] | null {
+  const parsed = parseJsonbColumn(raw);
+  return Array.isArray(parsed) ? parsed.filter((u): u is string => typeof u === "string") : null;
+}
+
 const runRow = z.object({
   id: z.string(),
   sourceUrl: z.string(),
@@ -96,6 +104,10 @@ const runRow = z.object({
   /** issue #193 — crawl-scope estimate ({pages, basis, crawlMinutes,
    *  aiCostUsd} or {failed, reason}); null on Owner-direct runs. */
   estimate: z.unknown().nullable(),
+  /** issue #229 — LIST-mode chosen URLs (absolute strings); null =
+   *  classic depth/BFS mode. Surfaced so the pending inbox + proposal
+   *  preview show the exact pages the crawl will fetch. */
+  explicitUrls: z.array(z.string()).nullable(),
   createdAt: z.string(),
 });
 
@@ -150,6 +162,7 @@ interface RunDb {
   error_message: string | null;
   chat_session_id?: string | null;
   estimate: unknown;
+  explicit_urls: unknown;
   created_at: string | Date;
 }
 
@@ -170,6 +183,7 @@ function toRunApi(r: RunDb): z.infer<typeof runRow> {
     errorMessage: row.error_message,
     chatSessionId: row.chat_session_id ?? null,
     estimate: typeof row.estimate === "string" ? JSON.parse(row.estimate) : (row.estimate ?? null),
+    explicitUrls: normalizeExplicitUrls(row.explicit_urls),
     createdAt: toIsoRequired(row.created_at, "import_runs.created_at"),
   }));
 }
@@ -189,7 +203,7 @@ export const listImportRunsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, chat_session_id::text AS chat_session_id,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs
       ${filter}
@@ -213,7 +227,7 @@ export const getImportRunOp = defineOperation({
     const runs = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, chat_session_id::text AS chat_session_id,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as RunDb[];
@@ -330,45 +344,81 @@ export const createImportRunOp = defineOperation({
   },
 });
 
+/** issue #229 — the crawl-scope estimate stored on a proposal. `list`
+ *  basis (exact page-list mode) joins the #193 sitemap/sample bases. */
+const crawlEstimateSchema = z
+  .union([
+    z
+      .object({
+        pages: z.number().int().min(0),
+        basis: z.enum(["sitemap", "sample", "list"]),
+        truncated: z.boolean(),
+        crawlMinutes: z.number().min(0),
+        aiCostUsd: z.object({ low: z.number().min(0), high: z.number().min(0) }),
+      })
+      .strict(),
+    z.object({ failed: z.literal(true), reason: z.string().max(1000) }).strict(),
+  ])
+  .nullable()
+  .optional();
+
+/**
+ * issue #229 — `imports.propose_run` input. TWO mutually exclusive modes:
+ *   - DEPTH mode: `depth` (BFS hops) + `maxPages` drive a same-origin
+ *     crawl that DISCOVERS pages from `sourceUrl`.
+ *   - LIST mode: `urls` names the EXACT absolute URLs to fetch (the #278
+ *     flow's per-page-type samples / scoped fill); no BFS, no depth.
+ * `sourceUrl` is always required (origin + robots scoping + run identity).
+ * Exported so the propose tool + offline tests validate against one shape.
+ */
+export const proposeImportRunInput = z
+  .object({
+    sourceUrl: z.string().url(),
+    depth: z.number().int().min(1).max(5).optional(),
+    maxPages: z.number().int().min(1).max(2000).optional(),
+    /** issue #229 — LIST mode: exact absolute URLs to fetch. Capped at
+     *  200 (a pilot samples page TYPES, it does not re-crawl the site). */
+    urls: z.array(z.string().url()).min(1).max(200).optional(),
+    /** issue #193 — computed by the proposing tool BEFORE this op
+     *  (network work stays out of the DB tx). Stored verbatim for the
+     *  Owner queue; {failed, reason} is a valid value. */
+    estimate: crawlEstimateSchema,
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.urls && v.urls.length > 0 && (v.depth !== undefined || v.maxPages !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "list mode (`urls`) is mutually exclusive with depth crawling (`depth`/`maxPages`) — pass exactly one mode",
+        path: ["urls"],
+      });
+    }
+  });
+
 export const proposeImportRunOp = defineOperation({
   name: "imports.propose_run",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      sourceUrl: z.string().url(),
-      depth: z.number().int().min(1).max(5).default(2),
-      maxPages: z.number().int().min(1).max(2000).default(50),
-      /** issue #193 — computed by the proposing tool BEFORE this op
-       *  (network work stays out of the DB tx). Stored verbatim for
-       *  the Owner queue; {failed, reason} is a valid value. */
-      estimate: z
-        .union([
-          z
-            .object({
-              pages: z.number().int().min(0),
-              basis: z.enum(["sitemap", "sample"]),
-              truncated: z.boolean(),
-              crawlMinutes: z.number().min(0),
-              aiCostUsd: z.object({ low: z.number().min(0), high: z.number().min(0) }),
-            })
-            .strict(),
-          z.object({ failed: z.literal(true), reason: z.string().max(1000) }).strict(),
-        ])
-        .nullable()
-        .optional(),
-    })
-    .strict(),
+  input: proposeImportRunInput,
   output: z.object({ runId: z.string() }),
   handler: async (ctx, input, tx) => {
     // 0124 — record the originating chat so the chat's pending strip
     // (pending_proposals.list, filtered per session) can surface this
     // run's Approve button pinned above the composer.
     const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    // issue #229 — LIST mode ignores BFS depth (fetches an exact set):
+    // store depth at its default and pin max_pages to the list length so
+    // the "up to N pages" summaries read truthfully. `explicit_urls`
+    // (jsonb string[]) drives the crawler's list branch.
+    const listMode = !!(input.urls && input.urls.length > 0);
+    const depth = input.depth ?? 2;
+    const maxPages = listMode ? (input.urls?.length ?? 0) : (input.maxPages ?? 50);
     const rows = (await tx.execute(sql`
-      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate, chat_session_id)
-      VALUES (${input.sourceUrl}, ${input.depth}, ${input.maxPages}, 'proposed', ${ctx.actorId}::uuid,
+      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate, explicit_urls, chat_session_id)
+      VALUES (${input.sourceUrl}, ${depth}, ${maxPages}, 'proposed', ${ctx.actorId}::uuid,
               ${jsonbParam(input.estimate ? input.estimate : null)},
+              ${jsonbParam(listMode ? input.urls : null)},
               ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -402,7 +452,7 @@ export const listPendingImportProposalsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, chat_session_id::text AS chat_session_id,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs
       WHERE status = 'proposed'
