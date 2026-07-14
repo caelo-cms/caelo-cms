@@ -58,6 +58,24 @@ describe("resolveListModeUrls (#229)", () => {
     expect(r.urls).toEqual(["https://site.example/", "https://site.example/a"]);
   });
 
+  it("strips ALL trailing slashes, not just one, before deduping", () => {
+    const r = resolveListModeUrls("https://site.example/", [
+      "https://site.example/a//",
+      "https://site.example/a///",
+      "https://site.example/a/",
+      "https://site.example/a",
+    ]);
+    expect(r.urls).toEqual(["https://site.example/", "https://site.example/a"]);
+  });
+
+  it("collapses a multi-slash root to the bare origin", () => {
+    const r = resolveListModeUrls("https://site.example//", [
+      "https://site.example///",
+      "https://site.example/",
+    ]);
+    expect(r.urls).toEqual(["https://site.example/"]);
+  });
+
   it("keeps distinct query strings as distinct pages", () => {
     const r = resolveListModeUrls("https://site.example/", [
       "https://site.example/list?page=1",

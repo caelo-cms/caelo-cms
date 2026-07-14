@@ -37,6 +37,7 @@ import {
   type Screenshotter,
 } from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
+import { parseExplicitUrls } from "./explicit-urls.js";
 
 /**
  * issue #191 — hostnames the importer's SSRF guard exempts. Set
@@ -85,19 +86,6 @@ function safeJsonParse(s: string): unknown {
   } catch {
     return null;
   }
-}
-
-/**
- * issue #229 — decode the `import_runs.explicit_urls` jsonb into a
- * string[] for LIST mode. Null / non-array / malformed decodes to null,
- * which the caller reads as "depth mode" — the crawler then falls back
- * to the classic BFS rather than crashing the tick.
- */
-function parseExplicitUrls(raw: unknown): string[] | null {
-  const v = typeof raw === "string" ? safeJsonParse(raw) : raw;
-  if (!Array.isArray(v)) return null;
-  const urls = v.filter((u): u is string => typeof u === "string");
-  return urls.length > 0 ? urls : null;
 }
 
 const SYSTEM_CTX = {
@@ -395,6 +383,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       // issue #229 — LIST mode: the proposal pinned an exact URL set. The
       // crawler fetches only these (+ the source origin), no BFS. jsonb
       // may decode to an array or a JSON string depending on the client.
+      // A present-but-malformed value THROWS (run goes 'failed' with the
+      // structured message below) instead of silently degrading to BFS —
+      // the Owner approved an exact set, not a depth crawl (§2
+      // no-fallbacks). Only SQL NULL means depth mode.
       const explicitUrls = parseExplicitUrls(r.explicit_urls);
       const resumeFrom = parseCrawlCheckpoint(r.crawl_state);
       const claimedRunId = runId;
@@ -426,8 +418,9 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         depth,
         maxPages,
         // issue #229 — present ⇒ LIST mode (crawler ignores depth/maxPages
-        // BFS and fetches exactly these + the source origin).
-        ...(explicitUrls && explicitUrls.length > 0 ? { urls: explicitUrls } : {}),
+        // BFS and fetches exactly these + the source origin). Non-null is
+        // guaranteed non-empty by parseExplicitUrls.
+        ...(explicitUrls ? { urls: explicitUrls } : {}),
         throttleMs: 100,
         // issue #191 — explicit, visible exemption list for the SSRF
         // guard (e2e fixture servers, deliberate private crawls).
