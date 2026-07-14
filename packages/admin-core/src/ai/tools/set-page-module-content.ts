@@ -26,7 +26,7 @@ export const setPageModuleContentTool: ToolDefinitionWithHandler<
 > = {
   name: "set_page_module_content",
   description:
-    "Set the content values for one module placement on a specific page. " +
+    "Set the content values for ONE module placement on a specific page. **Prefer `set_page_module_content_many` when a content pass touches more than one placement** (a whole page's text in one transaction — §11 bulk-first), and `build_page` when the modules don't exist yet (it places modules WITH content in one call). " +
     "v0.12.0 — page CONTENT lives in a content_instance bound to the placement. " +
     "For UNSYNCED placements (the default) this tool routes through content_instances.set_values and edits stay local to this page. " +
     "For SYNCED placements (sharing content with other pages) this tool refuses and points you at fork_placement_content (to detach first) or set_content_instance_values (to commit to the propagate-everywhere blast radius). " +
