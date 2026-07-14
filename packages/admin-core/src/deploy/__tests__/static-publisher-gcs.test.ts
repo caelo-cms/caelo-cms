@@ -15,11 +15,19 @@
  *   - per-target robots.txt + routing-manifest patches applied
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeployTarget } from "@caelo-cms/static-generator";
+// Imported for real up front so afterAll can restore the genuine module
+// after the mock.module() below — bun's mock.module is process-global and
+// would otherwise leak into every later test file in a multi-file run
+// (issue #305). Snapshot the exports BEFORE mock.module patches the
+// namespace's live bindings.
+import * as realGcsStorage from "@google-cloud/storage";
+
+const realGcsStorageExports = { ...realGcsStorage };
 
 interface MockFile {
   name: string;
@@ -135,10 +143,18 @@ mock.module("@google-cloud/storage", () => ({
   },
 }));
 
-mock.module("@caelo-cms/static-generator", () => ({
-  buildRobotsTxt: (mode: "index" | "noindex") =>
-    mode === "noindex" ? "User-agent: *\nDisallow: /\n" : "User-agent: *\nAllow: /\n",
-}));
+// NOTE: no mock.module("@caelo-cms/static-generator") here. The publisher
+// only uses buildRobotsTxt, which is a pure two-branch string function —
+// mocking the whole package used to clobber its other exports
+// (resolveThemeFonts, generateSite, …) for every test file that ran after
+// this one in a shared-process run (issue #305).
+
+afterAll(() => {
+  // Undo the process-global module mock so later test files see real GCS
+  // exports again (proposal-gc-worker, inspect-built-page, and
+  // static-publisher all import @google-cloud/storage).
+  mock.module("@google-cloud/storage", () => realGcsStorageExports);
+});
 
 let buildDir: string;
 

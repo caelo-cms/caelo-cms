@@ -16,14 +16,14 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { registerAdminOps } from "../../register.js";
-import type { AIProvider } from "../provider.js";
-import type { ToolContext } from "../tools/dispatch.js";
+import type { AIProvider } from "../ai/provider.js";
+import type { ToolContext } from "../ai/tools/dispatch.js";
+import { registerAdminOps } from "../register.js";
 import {
   describeEstimate,
   proposeSiteImportTool,
   setSiteImportEstimatorForTests,
-} from "../tools/propose-site-import.js";
+} from "../ai/tools/propose-site-import.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
