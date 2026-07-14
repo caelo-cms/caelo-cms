@@ -69,6 +69,62 @@ In CI those same files upload as the
 CSV dumps of `chat_messages`, `chat_entity_locks`, `pages`,
 `page_modules`, `page_module_content` under `db-dump/`.
 
+## Real AI cost per run (optimization metric)
+
+Every run captures its actual AI spend from the `ai_calls` table so the
+number can be tracked over time as an optimization signal. The
+`Capture real AI cost from ai_calls` step runs `if: always()` (so red
+runs still record spend) and writes
+`apps/admin/test-results/livedit/ai-cost.json` — a single
+`json_build_object` aggregate over `ai_calls`:
+
+```json
+{
+  "totalMicrocents": 187000000,
+  "calls": 14,
+  "inputTokens": 512000,
+  "outputTokens": 8200,
+  "cachedTokens": 210000,
+  "unpricedCalls": 0,
+  "byModel": [{ "model": "claude-opus-4-7", "calls": 10, "microcents": 180000000 }]
+}
+```
+
+Cost is stored in **microcents** (`1 USD = 1e8 microcents`), the real
+per-call `cost_estimate_microcents`. Because the e2e DB is fresh per
+job, **every** `ai_calls` row belongs to the run — no date filter. RLS
+on `ai_calls` is `FORCE`d behind a non-empty `caelo.actor_kind` GUC, so
+the psql query runs `SET caelo.actor_kind='system'` in the same session.
+
+The metric surfaces three ways:
+
+1. **Sticky PR comment** — `build-stats.ts` renders a `### Real AI cost
+   (this run)` section: total `$X.XX`, call count, real tokens
+   in/out/cached (sourced from `ai_calls`, **not** the loop-log token
+   sum, which is cumulative-per-turn and would double-count), and a
+   per-model `Model | Calls | Cost` table.
+2. **Run summary + annotations** — a greppable
+   `e2e-livedit-cost totalUsd=… calls=… tokensIn=… tokensOut=…
+   unpriced=… sha=…` line in `$GITHUB_STEP_SUMMARY` and a
+   `::notice title=e2e-livedit cost::` annotation. A future scraper can
+   walk run summaries to chart spend per SHA.
+3. **Durable artifact** — `ai-cost.json` uploads `if: always()` as
+   `e2e-livedit-cost-<run_id>` with 90-day retention (the failure-only
+   bundle would miss green runs).
+
+**Unpriced-call warning.** `unpricedCalls` counts rows with
+`cost_estimate_microcents = 0` despite token work — the signature of
+#297, where a missing `ai_pricing` row zeroed an otherwise real cost.
+When it is non-zero the reported total **understates** real spend; the
+PR comment renders a bold warning pointing at `/security/ai` to add
+rates, and the step emits a `::warning`.
+
+If `ai-cost.json` is absent or the capture fell back to `{}` (a failed
+psql dump), the cost section is silently omitted — older/DB-only runs
+degrade gracefully. The pure parse + format logic lives in exported
+`parseAiCost` / `formatCostSection` / `buildReport` functions in
+`build-stats.ts`, unit-tested in `build-stats.test.ts`.
+
 ## The 10× determinism recipe (post-merge gate, AC #15)
 
 Real-AI assertions need to pass consistently or they're flaky-by-design.
