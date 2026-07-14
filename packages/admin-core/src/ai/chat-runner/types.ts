@@ -194,7 +194,11 @@ export type StopReason =
   | "max_tokens"
   | "error"
   | "max_loops"
-  | "session_gone";
+  | "session_gone"
+  // issue #297 — the import-run cost gate paused the turn at its ceiling.
+  // A clean, resumable stop (`succeeded` stays true): the operator re-arms
+  // via set_migration_budget / imports.set_cost_ceiling and continues.
+  | "cost_ceiling";
 
 /**
  * Result shape of a single tool dispatch. Mirrors the subset of

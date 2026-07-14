@@ -199,12 +199,14 @@ import {
   getImportRunOp,
   getImportRunReportOp,
   getRunCostOp,
+  getSessionBudgetStateOp,
   listImportPageClustersOp,
   listImportRunsOp,
   listPendingImportProposalsOp,
   logImportRunEventOp,
   logImportRunEventsOp,
   proposeImportRunOp,
+  recordBudgetGateEventOp,
   rejectImportProposalOp,
   setCostCeilingOp,
   setRunDesignTokensOp,
@@ -780,6 +782,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #280 — migration cost gate: operator-confirmed budget + live spend.
   registry.register(setCostCeilingOp);
   registry.register(getRunCostOp);
+  // issue #297 — auto-armed ceiling: live per-loop gate state + one-shot
+  // warn/trip claims.
+  registry.register(getSessionBudgetStateOp);
+  registry.register(recordBudgetGateEventOp);
   // issue #248 (WS2) — rebuild-quality checks: content-inventory
   // (no information loss) + repeated-subtree boilerplate detection.
   registry.register(checkImportPageInventoryOp);
