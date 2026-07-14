@@ -546,11 +546,6 @@ export async function getActiveModelTiersRaw(): Promise<unknown> {
  */
 const tierCache = new Map<string, CacheEntry>();
 
-/** Drop tier-resolved providers alongside the per-name cache. */
-export function invalidateTierProviderCache(): void {
-  tierCache.clear();
-}
-
 /**
  * Resolve the ACTIVE provider but with `modelId` in place of the row's
  * configured chat model — the tier-routing path for subagent children
