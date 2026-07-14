@@ -19,7 +19,7 @@
  * provider-brand strings cross this boundary (CLAUDE.md §4).
  */
 
-import { jsonSchema, type ModelMessage, streamText } from "ai";
+import { jsonSchema, type ModelMessage, stepCountIs, streamText } from "ai";
 
 import type { ChatMessageInput, GenerateInput, ProviderEvent } from "../provider.js";
 import { normalizeToolArgs } from "../tools/normalize-args.js";
@@ -118,6 +118,14 @@ const SERVER_EXECUTED_TOOLS: ReadonlySet<string> = new Set([
   "web_fetch",
   "code_execution",
 ]);
+
+/**
+ * Max streamText steps when a provider-executed tool is present, so the model
+ * can chain a few server-side searches and then its real client tool-call
+ * within one call. Client tools have no `execute`, so the SDK still stops at
+ * them regardless of this budget.
+ */
+const PROVIDER_TOOL_STEP_BUDGET = 8;
 
 /**
  * Translate SDK fullStream parts → Caelo's ProviderEvent union.
@@ -400,6 +408,15 @@ export async function* runSDKStream(args: {
   const { model, input, systemAndMessages, extraOptions, toolsTransform } = args;
   const builtTools = buildSDKTools(input.tools) as Record<string, unknown>;
   const sdkTools = toolsTransform ? toolsTransform(builtTools) : builtTools;
+  // Multi-step ONLY when the transform injected a provider-executed tool
+  // (Anthropic Tool-Search). Those run server-side; the SDK feeds the result
+  // back, but with the default single step the turn ends right after the
+  // search with no model output → the chat-runner sees `empty-response`. A
+  // >1 step budget lets the model CONTINUE past the search to its real
+  // (client) tool-call in the same call. Our client tools have no `execute`,
+  // so the SDK still stops at them (our loop dispatches) — no behavior change
+  // when tool-search is off. See run-logs/token-efficiency-analysis.md.
+  const hasProviderTool = Object.keys(sdkTools).length > Object.keys(builtTools).length;
   const result = streamText({
     model,
     ...(systemAndMessages.system !== undefined ? { system: systemAndMessages.system } : {}),
@@ -407,6 +424,7 @@ export async function* runSDKStream(args: {
     ...(Object.keys(sdkTools).length > 0
       ? { tools: sdkTools as Parameters<typeof streamText>[0]["tools"] }
       : {}),
+    ...(hasProviderTool ? { stopWhen: stepCountIs(PROVIDER_TOOL_STEP_BUDGET) } : {}),
     maxOutputTokens: input.maxTokens ?? 32768,
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
