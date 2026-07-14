@@ -30,6 +30,10 @@
     switch (status) {
       case "completed":
         return "text-green-700 dark:text-green-400";
+      // issue #304 — the child hit its cost budget, finished its current
+      // page, and submitted what landed; the remainder was re-dispatched.
+      case "partial":
+        return "text-amber-700 dark:text-amber-400";
       case "errored":
       case "timed_out":
         return "text-red-700 dark:text-red-400";
@@ -72,6 +76,9 @@
             <TableRow>
               <TableHead>Role</TableHead>
               <TableHead>Status</TableHead>
+              <!-- issue #306 — Owner surface: tier + concrete model per run
+                   (editors never see these; brand rule CLAUDE.md §2). -->
+              <TableHead>Model</TableHead>
               <TableHead>Cost</TableHead>
               <TableHead>Duration</TableHead>
               <TableHead>Started</TableHead>
@@ -88,6 +95,19 @@
                     <span class="ml-1 text-xs">⚠</span>
                   {/if}
                 </TableCell>
+                <TableCell class="text-xs">
+                  {#if r.model}
+                    <span class="font-mono">{r.model}</span>
+                    {#if r.modelTier && r.modelTier !== "inherit"}
+                      <span
+                        class="ml-1 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground"
+                        >{r.modelTier}</span
+                      >
+                    {/if}
+                  {:else}
+                    <span class="text-muted-foreground">—</span>
+                  {/if}
+                </TableCell>
                 <TableCell class="text-xs">${(r.costMicrocents / 1e8).toFixed(4)}</TableCell>
                 <TableCell class="text-xs">{r.durationMs}ms</TableCell>
                 <TableCell class="text-xs text-muted-foreground">
@@ -97,7 +117,7 @@
               </TableRow>
               {#if r.errorMessage || r.resultJson}
                 <TableRow>
-                  <TableCell class="text-xs" {...{ colspan: 6 }}>
+                  <TableCell class="text-xs" {...{ colspan: 7 }}>
                     <details>
                       <summary class="cursor-pointer text-muted-foreground">
                         {r.errorMessage ? `error: ${r.errorMessage}` : "result"}
