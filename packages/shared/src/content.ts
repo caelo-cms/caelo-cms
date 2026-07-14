@@ -449,7 +449,15 @@ export const pageCreateSchema = z
      * not a render-time fallback (CLAUDE.md §2 no-fallbacks).
      */
     templateId: z.string().uuid().optional(),
-    status: pageStatusSchema.default("draft"),
+    /**
+     * Optional — omit to let `pages.create` pick a context-aware default:
+     * `published` on a bootstrap site (0 live published pages), else
+     * `draft`. A bootstrap homepage MUST ship or the first Stage has
+     * nothing to serve ("0 published pages for env='staging'"). Pass an
+     * explicit value to override. (Was `.default("draft")`, which silently
+     * left the first page unpublished.)
+     */
+    status: pageStatusSchema.optional(),
   })
   .strict();
 

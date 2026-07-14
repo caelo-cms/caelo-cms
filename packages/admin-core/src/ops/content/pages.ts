@@ -639,6 +639,27 @@ export const createPageOp = defineOperation({
     // chain works again — this time WITH branch isolation as a side
     // effect. Same-chat reads see the new page; cross-chat reads don't;
     // chat.merge_to_main clears the tag to graduate.
+    //
+    // Status resolution: an explicit `status` always wins. When omitted
+    // (the AI's create_page rarely sets it), a BOOTSTRAP site — zero LIVE
+    // published pages (chat_branch_id IS NULL) — publishes the page so the
+    // first Stage has something to serve; every later create drafts for
+    // review. Without this, a fresh homepage stayed `draft` and the first
+    // Stage failed with "0 published pages for env='staging'". "Live"
+    // (chat_branch_id IS NULL) is deliberate: a page still in this chat's
+    // branch isn't what staging serves, so it doesn't count as bootstrapped
+    // yet. No silent read-time fallback — this resolves a stored value at
+    // write time (CLAUDE.md §2).
+    let resolvedStatus = input.status;
+    if (resolvedStatus === undefined) {
+      const pub = (await tx.execute(sql`
+        SELECT EXISTS (
+          SELECT 1 FROM pages
+          WHERE status = 'published' AND deleted_at IS NULL AND chat_branch_id IS NULL
+        ) AS has_published
+      `)) as unknown as { has_published: boolean }[];
+      resolvedStatus = pub[0]?.has_published ? "draft" : "published";
+    }
     const rows = (await tx.execute(sql`
       INSERT INTO pages (slug, locale, name, title, template_id, status, chat_branch_id)
       VALUES (
@@ -647,7 +668,7 @@ export const createPageOp = defineOperation({
         ${input.name ?? input.title},
         ${input.title},
         ${templateId}::uuid,
-        ${input.status},
+        ${resolvedStatus},
         ${ctx.chatBranchId ?? null}::uuid
       )
       RETURNING id::text AS id
