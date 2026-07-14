@@ -267,7 +267,10 @@ const PX_LENGTH_RE = /^\d+(\.\d+)?px$/;
  * null when none qualifies. Zero and non-length values are skipped so a
  * metric only contributes when the source actually painted spacing.
  */
-function pickLength(styles: Readonly<Record<string, string>>, props: readonly string[]): string | null {
+function pickLength(
+  styles: Readonly<Record<string, string>>,
+  props: readonly string[],
+): string | null {
   for (const p of props) {
     const raw = (styles[p] ?? "").trim();
     if (raw && raw !== "0px" && PX_LENGTH_RE.test(raw)) return raw;
@@ -436,7 +439,9 @@ export function aggregateSiteDesignTokens(pages: readonly PageDesignTokens[]): S
     }
   }
   const spacing: Record<string, string> = {};
-  for (const [metric, valueMap] of [...spacingVotes.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+  for (const [metric, valueMap] of [...spacingVotes.entries()].sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
     const winner = sortFrequencies(valueMap)[0];
     if (winner) spacing[metric] = winner.value;
   }
@@ -526,7 +531,8 @@ export function flattenSiteDesignTokens(
     fontSize: role("p").fontSize ?? "",
     lineHeight: role("p").lineHeight ?? "",
   });
-  if (body) out.push({ token: "typography-body", value: JSON.stringify(body), scope: "typography" });
+  if (body)
+    out.push({ token: "typography-body", value: JSON.stringify(body), scope: "typography" });
   const heading = typographyComposite(role("h1"));
   if (heading)
     out.push({ token: "typography-heading", value: JSON.stringify(heading), scope: "typography" });

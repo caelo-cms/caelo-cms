@@ -255,10 +255,11 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
         ? `ERROR/WARNING LEDGER — ${v.eventCounts.error} error(s), ${v.eventCounts.warning} warning(s), ${v.eventCounts.info} info logged during this migration. Surface these to the operator (report them verbatim; never claim a clean migration while errors are present):\n${v.events
             .slice(0, 40)
             .map(
-              (e) =>
-                `- [${e.severity.toUpperCase()}${e.phase ? `/${e.phase}` : ""}] ${e.message}`,
+              (e) => `- [${e.severity.toUpperCase()}${e.phase ? `/${e.phase}` : ""}] ${e.message}`,
             )
-            .join("\n")}${v.events.length > 40 ? `\n- …and ${v.events.length - 40} more (see the run report queue)` : ""}`
+            .join(
+              "\n",
+            )}${v.events.length > 40 ? `\n- …and ${v.events.length - 40} more (see the run report queue)` : ""}`
         : "Error/warning ledger: empty — nothing was flagged during this migration.",
       "",
       "Narrate this to the operator in plain words — preserved / fixed / worth-a-look.",

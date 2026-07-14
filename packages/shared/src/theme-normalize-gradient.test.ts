@@ -119,7 +119,9 @@ describe("gradient tokens pass the DTCG document validator (#153)", () => {
 
 describe("gradient value-shape guards stay loud (#153, CLAUDE.md §2)", () => {
   it("rejects a flat color sent to a gradient path with a category mismatch", () => {
-    expect(() => normalizeTokens({ "gradient.hero": "#4f46e5" })).toThrow(/dimension|color|gradient/i);
+    expect(() => normalizeTokens({ "gradient.hero": "#4f46e5" })).toThrow(
+      /dimension|color|gradient/i,
+    );
   });
 
   it("a structured object with no usable stops falls through to the doc validator", () => {

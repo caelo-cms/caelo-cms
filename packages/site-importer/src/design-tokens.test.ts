@@ -213,7 +213,11 @@ describe("flattenSiteDesignTokens", () => {
     // Body composite carries family (from body) + size/line-height (from p).
     expect(flat).toContainEqual({
       token: "typography-body",
-      value: JSON.stringify({ fontFamily: "Inter, sans-serif", fontSize: "16px", lineHeight: "24px" }),
+      value: JSON.stringify({
+        fontFamily: "Inter, sans-serif",
+        fontSize: "16px",
+        lineHeight: "24px",
+      }),
       scope: "typography",
     });
     // Heading composite carries the full scale; weight coerced to a number.

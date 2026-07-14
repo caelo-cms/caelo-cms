@@ -67,16 +67,29 @@ describe("prepareLegacyAggregatedToken", () => {
       }),
     ).toEqual({
       canonicalPath: "typography.heading",
-      value: { fontFamily: "Sora, sans-serif", fontSize: "40px", fontWeight: 700, lineHeight: "1.1" },
+      value: {
+        fontFamily: "Sora, sans-serif",
+        fontSize: "40px",
+        fontWeight: 700,
+        lineHeight: "1.1",
+      },
     });
   });
 
   it("drops a typography composite whose payload is not a JSON object", () => {
     expect(
-      prepareLegacyAggregatedToken({ token: "typography-body", value: "not json", scope: "typography" }),
+      prepareLegacyAggregatedToken({
+        token: "typography-body",
+        value: "not json",
+        scope: "typography",
+      }),
     ).toBeNull();
     expect(
-      prepareLegacyAggregatedToken({ token: "typography-body", value: "[1,2]", scope: "typography" }),
+      prepareLegacyAggregatedToken({
+        token: "typography-body",
+        value: "[1,2]",
+        scope: "typography",
+      }),
     ).toBeNull();
   });
 

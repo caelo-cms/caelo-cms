@@ -614,9 +614,7 @@ function gradientObjectToCss(obj: Record<string, unknown>): string | undefined {
   }
 
   const type =
-    obj.type === "radial" || obj.type === "conic" || obj.type === "linear"
-      ? obj.type
-      : "linear";
+    obj.type === "radial" || obj.type === "conic" || obj.type === "linear" ? obj.type : "linear";
 
   // Leading orientation argument. Linear/conic accept an angle; radial
   // accepts a shape/extent hint via `direction`. Only linear gets a

@@ -14,9 +14,9 @@
 import { describe, expect, it } from "bun:test";
 import {
   buildZeroPagesAbortMessage,
-  classifyComposeRunStatus,
   COMPOSE_CRAWL_RETRY_MS,
   type ComposeSkip,
+  classifyComposeRunStatus,
   composePageSkipReason,
 } from "../ops/compose-eligibility.js";
 
@@ -85,8 +85,12 @@ describe("composePageSkipReason", () => {
   });
 
   it("composes pass / warn / not-yet-verified pages", () => {
-    expect(composePageSkipReason({ ...base, diff_status: "pass", acknowledged_at: null })).toBeNull();
-    expect(composePageSkipReason({ ...base, diff_status: "warn", acknowledged_at: null })).toBeNull();
+    expect(
+      composePageSkipReason({ ...base, diff_status: "pass", acknowledged_at: null }),
+    ).toBeNull();
+    expect(
+      composePageSkipReason({ ...base, diff_status: "warn", acknowledged_at: null }),
+    ).toBeNull();
     expect(composePageSkipReason({ ...base, diff_status: null, acknowledged_at: null })).toBeNull();
   });
 });

@@ -219,28 +219,22 @@ export const verifyImportFidelityTool: ToolDefinitionWithHandler<FidelityInput> 
     // Best-effort + non-fatal: a ledger-write failure must never sink the
     // verdict — log loud, don't throw.
     if (status !== "pass") {
-      const ledgerRes = await execute(
-        toolCtx.registry,
-        toolCtx.adapter,
-        ctx,
-        "imports.log_event",
-        {
-          runId: inputs.runId,
-          severity: status === "fail" ? ("error" as const) : ("warning" as const),
-          phase: "fidelity" as const,
-          message: `fidelity ${status} (${(diffFraction * 100).toFixed(1)}% diff${
-            inputs.sourceUrl ? ` vs ${inputs.sourceUrl}` : ""
-          }); ${bandRegion(worstBand)} diverged most`,
-          detail: {
-            sourceUrl: inputs.sourceUrl,
-            diffStatus: status,
-            diffPct: diffFraction,
-            worstBand,
-            bandPct,
-          },
-          pageId: inputs.importPageId,
+      const ledgerRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.log_event", {
+        runId: inputs.runId,
+        severity: status === "fail" ? ("error" as const) : ("warning" as const),
+        phase: "fidelity" as const,
+        message: `fidelity ${status} (${(diffFraction * 100).toFixed(1)}% diff${
+          inputs.sourceUrl ? ` vs ${inputs.sourceUrl}` : ""
+        }); ${bandRegion(worstBand)} diverged most`,
+        detail: {
+          sourceUrl: inputs.sourceUrl,
+          diffStatus: status,
+          diffPct: diffFraction,
+          worstBand,
+          bandPct,
         },
-      );
+        pageId: inputs.importPageId,
+      });
       if (!ledgerRes.ok) {
         console.error(
           `verify_import_page_fidelity: failed to append the ${status} verdict to the run ledger: ${describeError(ledgerRes.error)}`,
