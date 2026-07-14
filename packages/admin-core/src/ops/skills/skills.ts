@@ -11,6 +11,11 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok, skillAutoEngagementHints } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import {
+  describeAllowlistProblems,
+  validateAllowlistEntries,
+} from "../../ai/chat-runner/allowlist-mapping.js";
+import { liveToolNames } from "../../ai/tools/live-tool-names.js";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
@@ -151,13 +156,26 @@ export const setSkillOp = defineOperation({
   input: setSkillInput,
   output: z.object({ skillId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // issue #301 (CLAUDE.md §2 loud path) — allowlist entries must be
+    // live AI tool names; op-notation entries from the known translation
+    // table are normalized to tool names, anything else rejects the
+    // write with the bad entry + a nearest-name suggestion. A defective
+    // allowlist can never reach the chat-runner silently again.
+    const allowlist = validateAllowlistEntries(input.allowlistedTools, liveToolNames());
+    if (!allowlist.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "skills.set",
+        message: describeAllowlistProblems(allowlist.problems),
+      });
+    }
     const rows = (await tx.execute(sql`
       INSERT INTO skills (slug, display_name, description, body,
                           allowlisted_tools, auto_engagement_hints,
                           status, decided_by, decided_at)
       VALUES (
         ${input.slug}, ${input.displayName}, ${input.description}, ${input.body},
-        ${jsonbParam(input.allowlistedTools)},
+        ${jsonbParam(allowlist.normalized)},
         ${jsonbParam(input.hints)},
         ${input.status},
         ${ctx.actorId}::uuid, now()

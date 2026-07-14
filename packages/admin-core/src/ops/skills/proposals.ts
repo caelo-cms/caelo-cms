@@ -19,6 +19,11 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok, skillAutoEngagementHints } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import {
+  describeAllowlistProblems,
+  validateAllowlistEntries,
+} from "../../ai/chat-runner/allowlist-mapping.js";
+import { liveToolNames } from "../../ai/tools/live-tool-names.js";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
@@ -126,6 +131,18 @@ export const proposeSkillOp = defineOperation({
     .strict(),
   output: z.object({ proposalId: z.string() }),
   handler: async (ctx, input, tx) => {
+    // issue #301 — reject unknown allowlist entries at PROPOSAL time so
+    // the AI gets the actionable failure in its tool result immediately,
+    // not at Owner-review time. Known op-notation entries normalize to
+    // tool names so the queued proposal is already canonical.
+    const allowlist = validateAllowlistEntries(input.allowlistedTools, liveToolNames());
+    if (!allowlist.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "skills.propose",
+        message: describeAllowlistProblems(allowlist.problems),
+      });
+    }
     const rows = (await tx.execute(sql`
       INSERT INTO skill_proposals (proposed_by, chat_session_id, slug, display_name,
                                    description, body, rationale, allowlisted_tools,
@@ -133,7 +150,7 @@ export const proposeSkillOp = defineOperation({
       VALUES (
         ${ctx.actorId}::uuid, ${input.chatSessionId ?? null}, ${input.slug},
         ${input.displayName}, ${input.description}, ${input.body}, ${input.rationale},
-        ${jsonbParam(input.allowlistedTools)},
+        ${jsonbParam(allowlist.normalized)},
         ${jsonbParam(input.hints)}
       )
       RETURNING id::text AS id
@@ -247,10 +264,29 @@ export const reviewSkillProposalOp = defineOperation({
     if (input.decision === "accept") {
       // Land the skill row at status='awaiting_activation' — Owner
       // explicitly activates separately so accept ≠ go-live.
-      const allowlist =
-        typeof proposal.allowlisted_tools === "string"
-          ? proposal.allowlisted_tools
-          : JSON.stringify(proposal.allowlisted_tools ?? []);
+      //
+      // issue #301 — re-validate + normalize the allowlist at the
+      // accept boundary too: proposals queued before this validation
+      // existed (or with op-notation entries) must not mint a skill
+      // row the chat-runner would flag as defective. Fails loudly with
+      // the bad entries so the Owner rejects or the AI re-proposes.
+      const proposedAllowlist: string[] = Array.isArray(proposal.allowlisted_tools)
+        ? (proposal.allowlisted_tools as string[])
+        : typeof proposal.allowlisted_tools === "string"
+          ? (JSON.parse(proposal.allowlisted_tools) as string[])
+          : [];
+      const validated = validateAllowlistEntries(proposedAllowlist, liveToolNames());
+      if (!validated.ok) {
+        return err({
+          kind: "HandlerError",
+          operation: "skills.review_proposal",
+          message:
+            `proposal ${input.proposalId} cannot be accepted: ` +
+            describeAllowlistProblems(validated.problems) +
+            " Reject the proposal and have the skill re-proposed with live tool names.",
+        });
+      }
+      const allowlist = JSON.stringify(validated.normalized);
       const hints =
         typeof proposal.auto_engagement_hints === "string"
           ? proposal.auto_engagement_hints
