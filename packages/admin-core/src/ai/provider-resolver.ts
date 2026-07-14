@@ -174,6 +174,7 @@ let deps: ResolverDeps | null = null;
 export function configureProviderResolver(d: ResolverDeps): void {
   deps = d;
   cache.clear();
+  tierCache.clear();
 }
 
 /**
@@ -184,6 +185,10 @@ export function configureProviderResolver(d: ResolverDeps): void {
  * cross-process LISTEN ships as a P18 follow-up).
  */
 export function invalidateProviderCache(name?: ProviderName): void {
+  // issue #306 — tier-resolved providers derive from the same rows;
+  // any provider-config change invalidates them wholesale (they are
+  // few and cheap to re-resolve).
+  tierCache.clear();
   if (!name) {
     cache.clear();
     return;
@@ -289,6 +294,9 @@ async function loadActiveProviderMeta(d: ResolverDeps): Promise<{
   model: string;
   baseUrl?: string;
   maxOutputTokens?: number;
+  /** issue #306 — raw `config.modelTiers` value; validated by
+   *  `parseModelTierMap` in model-tiers.ts at the call site. */
+  modelTiersRaw?: unknown;
 } | null> {
   const rows = (await withSystemTx(
     d,
@@ -314,6 +322,7 @@ async function loadActiveProviderMeta(d: ResolverDeps): Promise<{
     model,
     ...(baseUrl ? { baseUrl } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(config.modelTiers !== undefined ? { modelTiersRaw: config.modelTiers } : {}),
   };
 }
 
@@ -339,6 +348,46 @@ async function loadProviderMeta(
     ...(baseUrl ? { baseUrl } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
   };
+}
+
+/**
+ * Load a provider's API key: DB-stored encrypted key first, then the
+ * legacy env-var fallback. Extracted from `resolveProvider` (issue #306)
+ * so tier-model resolution (`getActiveProviderForModel`) shares the exact
+ * same key path instead of duplicating the KEK-recovery behaviour.
+ */
+async function loadApiKey(
+  d: ResolverDeps,
+  name: ProviderName,
+): Promise<{ apiKey: string; source: "db" | "env" } | null> {
+  const encrypted = await loadEncryptedKeyFromDb(d, name);
+  if (encrypted) {
+    try {
+      const apiKey = await decryptSecret({
+        ciphertext: encrypted.ciphertext,
+        iv: encrypted.iv,
+        kekFingerprint: encrypted.kekFingerprint,
+      });
+      return { apiKey, source: "db" };
+    } catch (e) {
+      // v0.2.81 — KEK rotation orphaned the stored ciphertext.
+      // Treat as "no key" so the chat handler routes the operator
+      // to /security/ai with a clear "re-enter your API key" UX
+      // instead of crashing the SSE stream with a 500. The
+      // /security/ai page detects the same condition and shows a
+      // recovery affordance. Pre-v0.2.81 the Pulumi stack
+      // regenerated the KEK on every `pulumi up` (random.RandomBytes
+      // resource fixes that going forward); for installs that
+      // already lost their KEK, this catch is the recovery on-ramp.
+      const message = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[provider-resolver] DB-stored key for ${name} unreadable (${message}). Falling back to env / surfacing as not-configured.`,
+      );
+    }
+  }
+  const envKey = process.env[envNameFor(name)];
+  if (envKey) return { apiKey: envKey, source: "env" };
+  return null;
 }
 
 /**
@@ -368,45 +417,9 @@ async function resolveProvider(
     return cached.resolved;
   }
 
-  // Try DB-stored encrypted key first.
-  let apiKey: string | null = null;
-  let source: "db" | "env" = "env";
-  const encrypted = await loadEncryptedKeyFromDb(deps, name);
-  if (encrypted) {
-    try {
-      apiKey = await decryptSecret({
-        ciphertext: encrypted.ciphertext,
-        iv: encrypted.iv,
-        kekFingerprint: encrypted.kekFingerprint,
-      });
-      source = "db";
-    } catch (e) {
-      // v0.2.81 — KEK rotation orphaned the stored ciphertext.
-      // Treat as "no key" so the chat handler routes the operator
-      // to /security/ai with a clear "re-enter your API key" UX
-      // instead of crashing the SSE stream with a 500. The
-      // /security/ai page detects the same condition and shows a
-      // recovery affordance. Pre-v0.2.81 the Pulumi stack
-      // regenerated the KEK on every `pulumi up` (random.RandomBytes
-      // resource fixes that going forward); for installs that
-      // already lost their KEK, this catch is the recovery on-ramp.
-      const message = e instanceof Error ? e.message : String(e);
-      console.warn(
-        `[provider-resolver] DB-stored key for ${name} unreadable (${message}). Falling back to env / surfacing as not-configured.`,
-      );
-      apiKey = null;
-    }
-  }
-  if (!apiKey) {
-    // Env fallback.
-    const envKey = process.env[envNameFor(name)];
-    if (envKey) {
-      apiKey = envKey;
-      source = "env";
-    }
-  }
-
-  if (!apiKey) return null;
+  const key = await loadApiKey(deps, name);
+  if (!key) return null;
+  const { apiKey, source } = key;
 
   const provider = makeProvider({
     name,
@@ -505,4 +518,80 @@ export async function getProviderByName(name: ProviderName): Promise<ResolvedPro
 /** Test/debug helper — exposed names. */
 export function knownProviderNames(): ReadonlyArray<ProviderName> {
   return PROVIDER_NAMES;
+}
+
+// ---------------------------------------------------------------------
+// issue #306 — tier-model resolution support
+// ---------------------------------------------------------------------
+
+/**
+ * Raw `config.modelTiers` from the ACTIVE provider row (undefined when
+ * absent or no active row). Callers validate via `parseModelTierMap`
+ * (model-tiers.ts) so malformed config fails loudly at the spawn
+ * surface, not silently here.
+ */
+export async function getActiveModelTiersRaw(): Promise<unknown> {
+  if (!deps) {
+    throw new Error("provider-resolver not configured — call configureProviderResolver() at boot");
+  }
+  const meta = await loadActiveProviderMeta(deps);
+  return meta?.modelTiersRaw;
+}
+
+/**
+ * issue #306 — per-(name,model) cache for tier-resolved providers.
+ * Separate from the per-name `cache` on purpose: writing a tier provider
+ * into the per-name slot would evict the parent chat's resolved entry on
+ * every spawn and thrash the 60s TTL.
+ */
+const tierCache = new Map<string, CacheEntry>();
+
+/** Drop tier-resolved providers alongside the per-name cache. */
+export function invalidateTierProviderCache(): void {
+  tierCache.clear();
+}
+
+/**
+ * Resolve the ACTIVE provider but with `modelId` in place of the row's
+ * configured chat model — the tier-routing path for subagent children
+ * (issue #306). Same key + baseUrl + maxOutputTokens as the active row;
+ * only the model differs, so `ai_calls` rows and `ai_pricing` lookups
+ * (both keyed on provider+model) attribute the child's spend correctly
+ * with zero extra work.
+ *
+ * Returns null when no active provider row exists or no key resolves —
+ * the same "AI provider not configured" surface as `getActiveProvider`.
+ */
+export async function getActiveProviderForModel(modelId: string): Promise<ResolvedProvider | null> {
+  if (!deps) {
+    throw new Error("provider-resolver not configured — call configureProviderResolver() at boot");
+  }
+  const meta = await loadActiveProviderMeta(deps);
+  // No active row: tier mapping lives ON the active row, so there is
+  // nothing to route to — the env-only legacy fallback deliberately does
+  // not apply here (it has no config to carry a tier map).
+  if (!meta) return null;
+  const cacheKey = `${meta.name}::${modelId}`;
+  const now = Date.now();
+  const cached = tierCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.resolved;
+
+  const key = await loadApiKey(deps, meta.name);
+  if (!key) return null;
+  const provider = makeProvider({
+    name: meta.name,
+    model: modelId,
+    apiKey: key.apiKey,
+    ...(meta.baseUrl ? { baseUrl: meta.baseUrl } : {}),
+  });
+  const resolved: ResolvedProvider = {
+    provider,
+    source: key.source,
+    providerName: meta.name,
+    model: modelId,
+    keyFingerprint: await fingerprintKey(key.apiKey),
+    ...(meta.maxOutputTokens !== undefined ? { maxOutputTokens: meta.maxOutputTokens } : {}),
+  };
+  tierCache.set(cacheKey, { resolved, expiresAt: now + TTL_MS });
+  return resolved;
 }

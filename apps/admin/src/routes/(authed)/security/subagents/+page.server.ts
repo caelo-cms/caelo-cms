@@ -12,7 +12,11 @@ interface RunRow {
   batchId: string | null;
   role: string;
   task: string;
-  status: "pending" | "running" | "completed" | "errored" | "timed_out" | "cancelled";
+  /** issue #306 — tier the run was dispatched at + concrete model.
+   *  Owner surface: this page may show both. Null for pre-0160 rows. */
+  modelTier: "inherit" | "mid" | "small" | null;
+  model: string | null;
+  status: "pending" | "running" | "completed" | "partial" | "errored" | "timed_out" | "cancelled";
   resultJson: unknown;
   costMicrocents: number;
   durationMs: number;

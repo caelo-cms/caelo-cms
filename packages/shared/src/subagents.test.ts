@@ -168,3 +168,50 @@ describe("parseSubagentResult — freeform", () => {
     expect(parseSubagentResult("   ", "freeform").ok).toBe(false);
   });
 });
+
+describe("subagentSpec — model tier (issue #306)", () => {
+  it("defaults tier to inherit (single-model behaviour unchanged when omitted)", () => {
+    const r = subagentSpec.safeParse({ role: "qa", task: "QA the page" });
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.tier).toBe("inherit");
+  });
+
+  it("accepts mid and small, rejects unknown tiers", () => {
+    for (const tier of ["mid", "small", "inherit"]) {
+      expect(subagentSpec.safeParse({ role: "x", task: "y", tier }).success).toBe(true);
+    }
+    expect(subagentSpec.safeParse({ role: "x", task: "y", tier: "large" }).success).toBe(false);
+  });
+});
+
+describe("parseSubagentResult — needs_escalation (issue #306)", () => {
+  it("accepts a needs_escalation page WITH a reason in notes", () => {
+    const r = parseSubagentResult(
+      JSON.stringify({
+        pages: [
+          { slug: "home", status: "rebuilt" },
+          { slug: "pricing", status: "needs_escalation", notes: "no matching table module" },
+        ],
+      }),
+      "rebuild",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    if (r.shape !== "rebuild") return;
+    expect(r.value.pages[1]?.status).toBe("needs_escalation");
+    expect(r.value.pages[1]?.notes).toBe("no matching table module");
+  });
+
+  it("REJECTS needs_escalation without notes — a blind escalation cannot be briefed", () => {
+    for (const notes of [undefined, "", "   "]) {
+      const r = parseSubagentResult(
+        JSON.stringify({ pages: [{ slug: "pricing", status: "needs_escalation", notes }] }),
+        "rebuild",
+      );
+      expect(r.ok).toBe(false);
+      if (r.ok) continue;
+      expect(r.error).toContain("needs_escalation");
+    }
+  });
+});

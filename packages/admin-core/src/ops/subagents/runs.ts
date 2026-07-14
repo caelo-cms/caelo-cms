@@ -22,6 +22,12 @@ const runRow = z.object({
   batchId: z.string().nullable(),
   role: z.string(),
   task: z.string(),
+  // issue #306 — Owner observability for multi-model routing: the tier
+  // the run was dispatched at + the concrete model that served it.
+  // Nullable for rows predating 0160. Owner surface only — tier/model
+  // never enter editor-facing chat text.
+  modelTier: z.enum(["inherit", "mid", "small"]).nullable(),
+  model: z.string().nullable(),
   // issue #304 — "partial": the child hit its cost budget, finished its
   // current page, and submitted what landed (work preserved; remainder
   // re-dispatched by the spawn orchestrator).
@@ -51,6 +57,8 @@ interface RunDb {
   batch_id: string | null;
   role: string;
   task: string;
+  model_tier: "inherit" | "mid" | "small" | null;
+  model: string | null;
   status: "pending" | "running" | "completed" | "partial" | "errored" | "timed_out" | "cancelled";
   result_json: unknown;
   cost_microcents: number | string;
@@ -70,6 +78,8 @@ function rowToOut(r: RunDb): z.infer<typeof runRow> {
     batchId: r.batch_id,
     role: r.role,
     task: r.task,
+    modelTier: r.model_tier,
+    model: r.model,
     status: r.status,
     resultJson:
       typeof r.result_json === "string" ? JSON.parse(r.result_json) : (r.result_json ?? null),
@@ -108,6 +118,10 @@ export const createPendingSubagentRunOp = defineOperation({
       batchId: z.string().uuid().nullable(),
       role: z.string().min(1).max(120),
       task: z.string().min(1).max(8000),
+      // issue #306 — optional so pre-#306 callers (tests, fixtures)
+      // keep working; the spawn handler always passes both.
+      modelTier: z.enum(["inherit", "mid", "small"]).nullable().default(null),
+      model: z.string().min(1).max(200).nullable().default(null),
     })
     .strict(),
   output: z.object({ id: z.string() }),
@@ -115,11 +129,12 @@ export const createPendingSubagentRunOp = defineOperation({
     const rows = (await tx.execute(sql`
       INSERT INTO subagent_runs (
         parent_chat_session_id, parent_message_id, subagent_chat_session_id,
-        batch_id, role, task, status, started_at
+        batch_id, role, task, model_tier, model, status, started_at
       ) VALUES (
         ${input.parentChatSessionId}, ${input.parentMessageId},
         ${input.subagentChatSessionId}::uuid, ${input.batchId},
-        ${input.role}, ${input.task}, 'running', now()
+        ${input.role}, ${input.task}, ${input.modelTier}, ${input.model},
+        'running', now()
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -217,7 +232,7 @@ export const listSubagentRunsOp = defineOperation({
              parent_message_id::text AS parent_message_id,
              subagent_chat_session_id::text AS subagent_chat_session_id,
              batch_id::text AS batch_id,
-             role, task, status, result_json,
+             role, task, model_tier, model, status, result_json,
              cost_microcents, duration_ms, error_message,
              started_at, finished_at, created_at
       FROM subagent_runs
@@ -242,7 +257,7 @@ export const getSubagentRunOp = defineOperation({
              parent_message_id::text AS parent_message_id,
              subagent_chat_session_id::text AS subagent_chat_session_id,
              batch_id::text AS batch_id,
-             role, task, status, result_json,
+             role, task, model_tier, model, status, result_json,
              cost_microcents, duration_ms, error_message,
              started_at, finished_at, created_at
       FROM subagent_runs WHERE id = ${input.id}::uuid LIMIT 1

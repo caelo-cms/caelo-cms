@@ -165,13 +165,23 @@ export async function* dispatchToolCall(
             chatBranchIdOverride,
             costCapMicrocents,
             subagentResultCapture,
+            providerOverride,
             abortSignal: childAbort,
           }) =>
             deps.runChatTurn(
               {
                 adapter,
                 registry,
-                provider,
+                // issue #306 — a tier-routed child runs on its own
+                // provider instance (same provider name + key, cheaper
+                // model). ai_calls records provider.model per turn, so
+                // the child's rows carry the tier model automatically.
+                // The inherited inputCostPerMTok/outputCostPerMTok
+                // below only feed the LIVE cap approximation (real cost
+                // comes from ai_pricing inside chat.record_ai_call);
+                // parent rates >= tier rates, so the approximation errs
+                // toward wrapping up early — never toward overspend.
+                provider: providerOverride ?? provider,
                 tools,
                 aiCtx: childAiCtx,
                 humanCtx: childHumanCtx,

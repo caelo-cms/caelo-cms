@@ -122,8 +122,21 @@ export const actions: Actions = {
     // counts as no-change.
     const apiKey = apiKeyRaw.trim().length > 0 ? apiKeyRaw : undefined;
     const isActive = form.get("isActive") === "1";
-    const config: Record<string, unknown> = { model };
+    // issue #306 — START from the row's existing config so keys this form
+    // does not manage (e.g. `modelTiers`, the tier→model routing map) are
+    // preserved instead of silently wiped on every save. The form-managed
+    // keys below then overwrite/clear their own slots explicitly.
+    const existing = await execute(registry, adapter, locals.ctx, "ai_providers.list", {});
+    const existingConfig =
+      (existing.ok &&
+        (
+          existing.value as { providers: { name: string; config: Record<string, unknown> }[] }
+        ).providers.find((p) => p.name === name)?.config) ||
+      {};
+    const config: Record<string, unknown> = { ...existingConfig, model };
     if (baseUrl) config.baseUrl = baseUrl;
+    else delete config.baseUrl;
+    delete config.maxOutputTokens;
     // v0.2.53 — Optional per-provider output ceiling. Empty input clears
     // the override (resolver falls back to chat-runner's 16384 default).
     // Out-of-range or non-numeric input is rejected here so the resolver

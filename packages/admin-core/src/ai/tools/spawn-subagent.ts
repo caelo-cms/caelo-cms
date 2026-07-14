@@ -48,10 +48,15 @@ import {
   parseSubagentResult,
   type SpawnSubagentsToolInput,
   type SpawnSubagentToolInput,
+  SUBAGENT_MODEL_TIERS,
+  type SubagentModelTier,
   spawnSubagentsToolInput,
   spawnSubagentToolInput,
 } from "@caelo-cms/shared";
 import { budgetTripText, evaluateGateLevel, fetchBudgetGate } from "../chat-runner/budget-gate.js";
+import { availableMappedTiers, parseModelTierMap, resolveTierModel } from "../model-tiers.js";
+import type { AIProvider } from "../provider.js";
+import { getActiveModelTiersRaw, getActiveProviderForModel } from "../provider-resolver.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import {
@@ -63,6 +68,7 @@ import {
 import {
   classifyChildCompletion,
   deriveChildCaps,
+  escalateSpecTier,
   pageRefList,
   SUBAGENT_MAX_WAVES,
 } from "./subagent-budget.js";
@@ -180,20 +186,37 @@ const SUBAGENT_MAX_BATCH = Math.min(32, parsePositiveIntEnv("SUBAGENT_MAX_BATCH"
  * turn) so the child knows its result is collected ONLY via the
  * `submit_result` tool, never from trailing free text.
  */
-function submitInstructionFor(shape: SpawnSubagentToolInput["expectedReturnShape"]): string {
+function submitInstructionFor(
+  shape: SpawnSubagentToolInput["expectedReturnShape"],
+  tier: SubagentModelTier = "inherit",
+): string {
+  // issue #306 — tier-routed rebuild children get the escalation option:
+  // a page needing something BUILT/decided (no matching module/pattern, a
+  // layout decision, unexpected source structure) is handed back with a
+  // reason instead of fumbled through. Children at `inherit` never see it
+  // (nothing above them to route to; conservative default unchanged).
+  const escalatable = shape === "rebuild" && tier !== "inherit";
   const payload = {
     verdict: '{"pass": boolean, "issues": (string|object)[], "suggestions"?: string[]}',
     tree: '{"tree": any[], "rationale"?: string}',
     rebuild:
-      '{"pages": [{"pageId"?: uuid, "slug"?: string, "status": "rebuilt"|"skipped"|"failed", "notes"?: string}], ' +
+      `{"pages": [{"pageId"?: uuid, "slug"?: string, "status": "rebuilt"|"skipped"|"failed"${escalatable ? '|"needs_escalation"' : ""}, "notes"?: string}], ` +
       '"contentNotes"?: string[], "skipped"?: [{"item": string, "reason": string}], "summary"?: string}',
     freeform: '{"text": string} (or a plain string)',
   }[shape];
+  const escalationNote = escalatable
+    ? " ESCALATION: your task is to fill KNOWN patterns. If a page needs something NEW built or decided " +
+      "(no matching module/pattern exists, a layout decision is required, the source structure is " +
+      'unexpected), do NOT improvise — report that page as {"status": "needs_escalation", "notes": ' +
+      '"<what new thing it needs and why>"} (notes REQUIRED) and move on; the orchestrator re-dispatches ' +
+      "exactly those pages to a pass with build authority. Finish every page you CAN with the existing patterns."
+    : "";
   return (
     "MANDATORY FINAL STEP: when your work is done, deliver your result by calling the `submit_result` tool " +
     `EXACTLY ONCE with {"result": ${payload}}. ` +
     "Your result is read ONLY from that tool call — plain text at the end of your turn is NOT collected. " +
-    "If submit_result rejects your payload, fix the named fields and call it again, then end your turn."
+    "If submit_result rejects your payload, fix the named fields and call it again, then end your turn." +
+    escalationNote
   );
 }
 
@@ -211,8 +234,16 @@ async function runOneSubagent(
   toolCtx: Parameters<ToolDefinitionWithHandler<unknown>["handler"]>[2],
   batchId: string,
   parentAiCallId: string | null,
+  /**
+   * issue #306 — the tier-resolved provider for a non-inherit spec (null
+   * = inherit = the parent's provider). Resolved ONCE per handler call
+   * by {@link resolveTierProviders}; a spec whose tier has no provider
+   * here is a caller bug the handlers reject before dispatch.
+   */
+  tierProvider: AIProvider | null = null,
 ): Promise<SubagentInvocationResult> {
   const startedAt = Date.now();
+  const specTier: SubagentModelTier = spec.tier ?? "inherit";
 
   if (!toolCtx.adapter || !toolCtx.registry || !toolCtx.spawnChildChatTurn || !toolCtx.humanCtx) {
     return {
@@ -289,6 +320,12 @@ async function runOneSubagent(
       batchId,
       role: spec.role,
       task: spec.task,
+      // issue #306 — Owner observability: which tier this run was
+      // dispatched at and which concrete model served it. This is an
+      // Owner surface (security panel) — the editor-facing summarize()
+      // path never carries these strings.
+      modelTier: specTier,
+      model: tierProvider?.model ?? toolCtx.provider?.model ?? null,
     },
   );
   const subagentRunId = runRow.ok ? (runRow.value as { id: string }).id : null;
@@ -358,6 +395,9 @@ async function runOneSubagent(
         costCapMicrocents: spec.maxCostMicrocents,
         // Run #10 D2 — enables submit_result in the child's catalogue.
         subagentResultCapture,
+        // issue #306 — tier-routed children run on their own provider
+        // instance; absent = inherit = the parent's provider.
+        ...(tierProvider ? { providerOverride: tierProvider } : {}),
         abortSignal: controller.signal,
       });
       if (!stream) return { error: "spawnChildChatTurn unavailable" };
@@ -454,7 +494,7 @@ async function runOneSubagent(
   // (not left to the parent's discretion): run #10 lost all 5 rebuild
   // spawns to the free-text result channel.
   const firstTurn = await runChildTurn(
-    `${spec.task}\n\n${submitInstructionFor(spec.expectedReturnShape)}`,
+    `${spec.task}\n\n${submitInstructionFor(spec.expectedReturnShape, specTier)}`,
   );
   if ("error" in firstTurn) {
     return await failErrored(firstTurn.error, "spawn-error");
@@ -481,7 +521,7 @@ async function runOneSubagent(
         finalTextChars: firstText.length,
       });
       const retryTurn = await runChildTurn(
-        `You have not delivered your result yet — call submit_result NOW. ${submitInstructionFor(spec.expectedReturnShape)}`,
+        `You have not delivered your result yet — call submit_result NOW. ${submitInstructionFor(spec.expectedReturnShape, specTier)}`,
       );
       if ("error" in retryTurn) {
         return await failErrored(retryTurn.error, "spawn-error");
@@ -647,7 +687,77 @@ function makeFetchRunBudget(
   };
 }
 
-function summarize(results: SubagentInvocationResult[]): string {
+/**
+ * issue #306 — resolve every model tier a spawn call can dispatch at.
+ *
+ * Covers the tiers the specs REQUEST plus the rungs escalation can climb
+ * to (a `small` child's needs_escalation pages re-dispatch at `mid` when
+ * mapped). All-inherit batches return an empty map WITHOUT touching the
+ * DB — the conservative default path stays byte-identical to pre-#306.
+ *
+ * A requested-but-unresolvable tier fails the WHOLE call loudly BEFORE
+ * any child spawns (CLAUDE.md §2 — no silent downgrade to inherit); the
+ * error string names tiers only, never model ids (brand rule).
+ */
+async function resolveTierProviders(specs: readonly SpawnSubagentToolInput[]): Promise<
+  | {
+      ok: true;
+      providers: Map<SubagentModelTier, AIProvider>;
+      availableTiers: ReadonlySet<string>;
+    }
+  | { ok: false; content: string }
+> {
+  const requested = new Set<SubagentModelTier>();
+  for (const spec of specs) {
+    const tier = spec.tier ?? "inherit";
+    if (tier !== "inherit") requested.add(tier);
+  }
+  if (requested.size === 0) {
+    return { ok: true, providers: new Map(), availableTiers: new Set() };
+  }
+
+  const parsed = parseModelTierMap(await getActiveModelTiersRaw());
+  if (!parsed.ok) return { ok: false, content: parsed.error };
+  const tiers = parsed.value;
+  const availableTiers = availableMappedTiers(tiers);
+
+  // Resolve the requested tiers (loud on any miss) plus the escalation
+  // rungs reachable from them (only rungs that are actually mapped —
+  // escalation to `inherit` needs no provider).
+  const toResolve = new Set<SubagentModelTier>(requested);
+  for (const tier of requested) {
+    const up = escalateSpecTier(tier, availableTiers);
+    if (up && up !== "inherit" && availableTiers.has(up)) toResolve.add(up);
+  }
+
+  const providers = new Map<SubagentModelTier, AIProvider>();
+  for (const tier of toResolve) {
+    const model = resolveTierModel(tier, tiers);
+    if (!model.ok) return { ok: false, content: model.error };
+    if (model.value === null) continue; // inherit — unreachable here, belt for TS
+    const resolved = await getActiveProviderForModel(model.value);
+    if (!resolved) {
+      return {
+        ok: false,
+        content:
+          `model tier "${tier}" is mapped but the active AI provider could not be resolved ` +
+          "(no active provider row / no usable API key). The Owner checks the provider at " +
+          "/security/ai. Do not claim the subagents ran.",
+      };
+    }
+    providers.set(tier, resolved.provider);
+  }
+  return { ok: true, providers, availableTiers };
+}
+
+/**
+ * Editor-facing roll-up of a batch's results (this string is what the
+ * parent — and through it the operator — reads). BRAND RULE (issue #306 /
+ * CLAUDE.md §2): no model ids and no tier labels in here; tier/model
+ * detail lives on Owner surfaces (subagent security panel, cost
+ * dashboard). Exported for the brand-rule unit test.
+ */
+export function summarize(results: SubagentInvocationResult[]): string {
   const lines: string[] = [];
   for (const r of results) {
     const cost = (r.costMicrocents / 1e8).toFixed(4);
@@ -762,6 +872,15 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
           "Per-spawn cost cap in microcents (1e8 = $1). USUALLY OMIT — the runtime derives the right cap from the approved run budget (issue #304). Set only for a deliberate tighter/looser bound.",
       },
       timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
+      tier: {
+        type: "string",
+        enum: [...SUBAGENT_MODEL_TIERS],
+        description:
+          'Model tier for this child. OMIT (= "inherit") to run at this chat\'s model — the default and always safe. ' +
+          '"mid" = pattern-application work (building a page from an established design); "small" = mechanical bulk work (filling known patterns with content). ' +
+          "Only pass mid/small when this install has model tiers configured — an unconfigured tier fails loudly with recovery steps and NOTHING is spawned. " +
+          "Never name tiers or models to the operator; they see only that work is being done.",
+      },
       activePageId: { type: "string", format: "uuid" },
     },
   },
@@ -776,6 +895,13 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
     if (budget !== null && (budget.tripped || budget.remainingMicrocents <= 0)) {
       return { ok: false, content: budget.pauseText };
     }
+    // issue #306 — resolve the requested model tier BEFORE spawning; an
+    // unmapped tier is a loud structured refusal, never a silent
+    // downgrade to the parent's model.
+    const tierResolution = await resolveTierProviders([input]);
+    if (!tierResolution.ok) {
+      return { ok: false, content: tierResolution.content };
+    }
     const caps = deriveChildCaps({
       remainingRunBudgetMicrocents: budget?.remainingMicrocents ?? null,
       plannedChildren: 1,
@@ -786,7 +912,14 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
       ...input,
       maxCostMicrocents: input.maxCostMicrocents ?? caps.perChildCapMicrocents,
     };
-    const result = await runOneSubagent(resolved, ctx, toolCtx, batchId, null);
+    const result = await runOneSubagent(
+      resolved,
+      ctx,
+      toolCtx,
+      batchId,
+      null,
+      tierResolution.providers.get(input.tier ?? "inherit") ?? null,
+    );
     return {
       // Partial is not ok (there IS unfinished work) but the message +
       // partial payload tell the parent exactly what landed and what to
@@ -813,6 +946,8 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
     `Concurrency: up to ${SUBAGENT_MAX_BATCH} specs per call; at most ${SUBAGENT_MAX_PARALLEL} run at once (the rest queue and drain as slots free). ` +
     // issue #304 — budget-derived caps + partial-completion contract.
     "BUDGET: per-child and batch cost caps are derived automatically from the run's approved cost budget — OMIT maxCostMicrocents unless you have a deliberate reason. A child that approaches its cap finishes its current page and returns a PARTIAL result (completed pages are saved); this tool automatically re-dispatches the remainder in follow-up waves while budget remains, so you do NOT need to retry partial children yourself. If the run's cost ceiling is reached, dispatch stops cleanly and the result says how the operator resumes. Live n-of-m progress streams to the operator while the batch runs. " +
+    // issue #306 — tier routing + escalation contract.
+    'MODEL TIERS (issue #306, opt-in per install): each spec may set tier "mid" (pattern-application, e.g. building a page type from an approved design) or "small" (mechanical bulk content-fill into existing patterns). Default "inherit" runs at this chat\'s model. Unconfigured tiers fail the call loudly — nothing spawns. A tiered rebuild child that hits work needing NEW build decisions reports those pages as needs_escalation with a reason; this tool re-dispatches exactly those pages one capability step up automatically (one hop max), so mixed batches are safe. Never surface tier or model names to the operator. ' +
     // v0.2.68 / run #10 D2 — same return-shape guidance as
     // spawn_subagent: results arrive via each child's submit_result
     // tool call (instruction auto-appended to each task).
@@ -862,6 +997,15 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
                 "Per-spawn cost cap in microcents (1e8 = $1). USUALLY OMIT — the runtime derives the right cap from the approved run budget (issue #304).",
             },
             timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
+            tier: {
+              type: "string",
+              enum: [...SUBAGENT_MODEL_TIERS],
+              description:
+                'Model tier for this child. OMIT (= "inherit") to run at this chat\'s model — the default and always safe. ' +
+                '"mid" = pattern-application (building a page type from an established design); "small" = mechanical bulk content-fill into known patterns. ' +
+                "Only pass mid/small when this install has model tiers configured — an unconfigured tier fails the whole call loudly and NOTHING is spawned. " +
+                "A small/mid rebuild child that hits work needing NEW build decisions reports those pages as needs_escalation and this tool automatically re-dispatches them one tier up (bounded to one hop). Never name tiers or models to the operator.",
+            },
             activePageId: { type: "string", format: "uuid" },
           },
         },
@@ -876,6 +1020,14 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
       };
     }
     const batchId = crypto.randomUUID();
+
+    // issue #306 — resolve every requested tier (plus escalation rungs)
+    // ONCE, before any child runs. All-inherit batches skip the DB read
+    // and behave exactly as pre-#306.
+    const tierResolution = await resolveTierProviders(input.subagents);
+    if (!tierResolution.ok) {
+      return { ok: false, content: tierResolution.content };
+    }
 
     // issue #268/#304 — the wave orchestrator (unit-tested with a mock
     // spawn) owns concurrency, budget-derived caps, partial re-dispatch,
@@ -892,6 +1044,9 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
           toolCtx,
           batchId,
           null,
+          // issue #306 — escalation waves may raise spec.tier above the
+          // input specs' tiers; the map covers those rungs too.
+          tierResolution.providers.get(spec.tier ?? "inherit") ?? null,
         ),
       {
         maxParallel: SUBAGENT_MAX_PARALLEL,
@@ -899,6 +1054,7 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
         fallbackBatchCapMicrocents: SUBAGENT_BATCH_CAP_MICROCENTS,
         maxWaves: SUBAGENT_MAX_WAVES,
         fetchRunBudget: makeFetchRunBudget(toolCtx),
+        availableTiers: tierResolution.availableTiers,
         onProgress: (p) => {
           toolCtx.pushClientEvent?.({
             kind: "subagent-batch-progress",

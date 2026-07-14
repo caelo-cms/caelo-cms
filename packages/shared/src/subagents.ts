@@ -43,6 +43,22 @@ export type ExpectedReturnShape = z.infer<typeof expectedReturnShape>;
 export const EXPECTED_RETURN_SHAPES: readonly ExpectedReturnShape[] = expectedReturnShape.options;
 
 /**
+ * issue #306 — model tier a subagent runs at. `inherit` (the default) is
+ * today's behaviour: the child reuses the parent chat's provider+model.
+ * `mid` / `small` route the child onto a cheaper model the Owner mapped
+ * in the active provider's config (`ai_providers.config.modelTiers`).
+ * The tier VOCABULARY is deliberately abstract — tool results and
+ * editor-facing text never name the underlying model (CLAUDE.md §2:
+ * provider brand never surfaces in the editor chat UI); concrete model
+ * ids appear only on Owner surfaces (security panel, cost dashboard).
+ */
+export const subagentModelTier = z.enum(["inherit", "mid", "small"]);
+export type SubagentModelTier = z.infer<typeof subagentModelTier>;
+/** Single source of truth for the tier enum (same #251 drift-guard pattern
+ *  as EXPECTED_RETURN_SHAPES — tool JSON schemas derive from this array). */
+export const SUBAGENT_MODEL_TIERS: readonly SubagentModelTier[] = subagentModelTier.options;
+
+/**
  * One subagent spec. The parent supplies role + task + optional
  * narrowing. The handler creates the ephemeral chat session, appends
  * the task as the seed user message, calls runChatTurn directly with
@@ -76,6 +92,15 @@ export const subagentSpec = z
     maxCostMicrocents: z.number().int().nonnegative().optional(),
     /** Per-spawn timeout; default 60s. */
     timeoutMs: z.number().int().min(1000).max(600_000).default(60_000),
+    /**
+     * issue #306 — model tier for this child. Default `inherit` keeps
+     * single-model behaviour byte-identical to pre-#306 (conservative
+     * default: nothing changes until a caller opts in per-spawn AND the
+     * Owner has mapped the tier). A requested-but-unmapped tier is a
+     * LOUD structured error at spawn time — never a silent downgrade to
+     * the parent's model (CLAUDE.md §2 no-fallbacks).
+     */
+    tier: subagentModelTier.default("inherit"),
     /**
      * Optional active page id. When passed, the spawn handler routes
      * it through to the runChatTurn invocation as `activePageId`,
@@ -151,11 +176,34 @@ export const rebuildReturnShape = z
           .object({
             pageId: z.string().uuid().optional(),
             slug: z.string().min(1).max(500).optional(),
-            status: z.enum(["rebuilt", "skipped", "failed"]),
-            /** Content-completeness note: what was dropped/merged and why, or why skipped/failed. */
+            /**
+             * issue #306 — `needs_escalation`: the child detected the page
+             * needs something it is not equipped to BUILD (no matching
+             * module/pattern, a layout decision, unexpected source
+             * structure) and hands it back instead of improvising. The
+             * orchestrator re-dispatches exactly those pages one capability
+             * step up (see subagent-batch.ts escalation waves). The reason
+             * lives in `notes` and is REQUIRED for this status — a blind
+             * escalation would just re-run the same confusion at higher
+             * cost (enforced by the superRefine below).
+             */
+            status: z.enum(["rebuilt", "skipped", "failed", "needs_escalation"]),
+            /** Content-completeness note: what was dropped/merged and why, or
+             *  why skipped/failed — or, for `needs_escalation`, the REQUIRED
+             *  reason the page needs a more capable pass. */
             notes: z.string().max(2000).optional(),
           })
-          .strict(),
+          .strict()
+          .superRefine((page, ctx) => {
+            if (page.status === "needs_escalation" && !page.notes?.trim()) {
+              ctx.addIssue({
+                code: "custom",
+                path: ["notes"],
+                message:
+                  'status "needs_escalation" requires `notes` explaining WHAT new thing this page needs (missing pattern, layout decision, unexpected structure) — the escalated pass is briefed from it',
+              });
+            }
+          }),
       )
       .min(1)
       .max(100),
@@ -296,7 +344,7 @@ export function validateSubagentResultValue(
     if (!validated.success) {
       return {
         ok: false,
-        error: `rebuild shape mismatch (expected {pages: [{pageId?, slug?, status: "rebuilt"|"skipped"|"failed", notes?}], contentNotes?: string[], skipped?: [{item, reason}], summary?: string}):${observedSummary}; ${issueSummary(validated.error.issues)}`,
+        error: `rebuild shape mismatch (expected {pages: [{pageId?, slug?, status: "rebuilt"|"skipped"|"failed"|"needs_escalation", notes?}], contentNotes?: string[], skipped?: [{item, reason}], summary?: string}):${observedSummary}; ${issueSummary(validated.error.issues)}`,
       };
     }
     return { ok: true, shape: "rebuild", value: validated.data };
