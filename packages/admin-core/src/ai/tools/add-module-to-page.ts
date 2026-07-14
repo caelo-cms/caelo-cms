@@ -79,7 +79,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
 > = {
   name: "add_module_to_page",
   description:
-    "Add a module to ONE page's block — two modes. **Place mode (reuse first):** pass `moduleId` of an existing module from `## Modules` (or `list_modules`) to place it without minting a duplicate; shared modules keep pages consistent, so ALWAYS check the catalog before minting. **Mint mode:** pass `displayName` + `html` (+ `fields`) to create a new module and place it in one call. Exactly one mode per call — `moduleId` and authoring fields are mutually exclusive. " +
+    "Add ONE module to ONE page's block. **Prefer `build_page` over a chain of add_module_to_page calls whenever a page needs more than one module** — build_page places the whole ordered module list WITH content in a single transaction (§11 bulk-first); this tool is for a single incremental module on an existing page. Two modes. **Place mode (reuse first):** pass `moduleId` of an existing module from `## Modules` (or `list_modules`) to place it without minting a duplicate; shared modules keep pages consistent, so ALWAYS check the catalog before minting. **Mint mode:** pass `displayName` + `html` (+ `fields`) to create a new module and place it in one call. Exactly one mode per call — `moduleId` and authoring fields are mutually exclusive. " +
     "**Required v0.12.0 inputs for new modules:** `description` (what this module is for + when to use it — surfaced in `## Modules` so YOUR future self can pick the right module without asking the operator), `kind` (one of `chrome`|`hero`|`content`|`cta`|`utility`), `html` with `{{fieldName}}` placeholders, and explicit `fields[]` with semantic snake_case names. " +
     "**Author HTML + fields together.** Field names must describe the value (`hero_title`, `primary_cta_href`, `nav_items`), never the tag (`spanText`, `cta2label`). Lists are list-shaped fields (`text-list` for tag chips, `link-list` for nav menus, `module-list` for cards) — never numbered scalars. " +
     "**Server-side extractor fallback** still exists when you pass HTML without fields, but the names it mints are heuristic — relying on it pollutes `## Modules` with garbage. Author explicitly. " +
@@ -94,7 +94,7 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
   // block list in the `# Current page` block.
   describe: (state) => {
     const lines: string[] = [
-      "Add a module to ONE page's block: pass `moduleId` to place an EXISTING module from `## Modules` (reuse first — keeps pages consistent), or `displayName` + `html` to mint a new one. For site-wide chrome use add_module_to_layout, for template-wide use add_module_to_template.",
+      "Add ONE module to ONE page's block: pass `moduleId` to place an EXISTING module from `## Modules` (reuse first — keeps pages consistent), or `displayName` + `html` to mint a new one. Prefer `build_page` when a page needs >1 module — it places the whole list WITH content in one transaction. For site-wide chrome use add_module_to_layout, for template-wide use add_module_to_template.",
     ];
     if (state.templates.length === 0) {
       lines.push(
