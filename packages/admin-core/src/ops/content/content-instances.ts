@@ -38,13 +38,14 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
-import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
+import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
   loadContentInstanceState,
   loadContentInstanceStateWithBranchOverlay,
   loadPageLayoutState,
 } from "../../snapshots/index.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 // ─── Row shape returned by reads ─────────────────────────────────────
 
@@ -623,7 +624,7 @@ export const createContentInstanceOp = defineOperation({
         ${input.slug ?? null},
         ${input.displayName ?? null},
         ${input.purpose ?? null},
-        ${valuesJson}::jsonb,
+        ${jsonbParam(valuesJson)},
         ${ctx.actorId}::uuid,
         ${ctx.chatBranchId ?? null}::uuid
       )
@@ -718,15 +719,16 @@ export const setContentInstanceValuesOp = defineOperation({
       kind: "contentInstance",
       entityId: input.id,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
+    if (!lock.permitted) {
       return err(
-        await lockedError(
+        await entityWriteBlockedError(
           tx,
           "content_instances.set_values",
           "contentInstance",
           input.id,
-          lock.holder,
+          lock,
         ),
       );
     }
@@ -787,7 +789,7 @@ export const setContentInstanceValuesOp = defineOperation({
       const purposeSet = input.purpose !== undefined ? sql`, purpose = ${input.purpose}` : sql``;
       await tx.execute(sql`
         UPDATE content_instances
-        SET "values" = ${valuesJson}::jsonb,
+        SET "values" = ${jsonbParam(valuesJson)},
             version = ${nextVersion},
             updated_at = now(),
             updated_by = ${ctx.actorId}::uuid
@@ -850,10 +852,17 @@ export const deleteContentInstanceOp = defineOperation({
       kind: "contentInstance",
       entityId: input.id,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
+    if (!lock.permitted) {
       return err(
-        await lockedError(tx, "content_instances.delete", "contentInstance", input.id, lock.holder),
+        await entityWriteBlockedError(
+          tx,
+          "content_instances.delete",
+          "contentInstance",
+          input.id,
+          lock,
+        ),
       );
     }
 
@@ -979,9 +988,12 @@ export const setPlacementContentOp = defineOperation({
       kind: "page",
       entityId: input.pageId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
-      return err(await lockedError(tx, "placement.set_content", "page", input.pageId, lock.holder));
+    if (!lock.permitted) {
+      return err(
+        await entityWriteBlockedError(tx, "placement.set_content", "page", input.pageId, lock),
+      );
     }
 
     // Verify the placement exists (live; for branched callers, the
@@ -1137,10 +1149,11 @@ export const forkPlacementContentOp = defineOperation({
       kind: "page",
       entityId: input.pageId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
+    if (!lock.permitted) {
       return err(
-        await lockedError(tx, "placement.fork_content", "page", input.pageId, lock.holder),
+        await entityWriteBlockedError(tx, "placement.fork_content", "page", input.pageId, lock),
       );
     }
 
@@ -1184,7 +1197,7 @@ export const forkPlacementContentOp = defineOperation({
         (module_id, "values", updated_by, chat_branch_id)
       VALUES (
         ${placement.module_id}::uuid,
-        ${valuesJson}::jsonb,
+        ${jsonbParam(valuesJson)},
         ${ctx.actorId}::uuid,
         ${ctx.chatBranchId ?? null}::uuid
       )

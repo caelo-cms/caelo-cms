@@ -35,14 +35,19 @@ type NotesInput = z.infer<typeof notesInput>;
 export const addImportPageNotesTool: ToolDefinitionWithHandler<NotesInput> = {
   name: "add_import_page_notes",
   description:
-    "Record findings you made while rebuilding an imported page: typos (fix obvious ones in the rebuilt content and set applied: true), dead links, missing image alt texts, thin content, improvement ideas (applied: false — the operator decides). BATCH all of a page's notes in ONE call. These feed the migration report the operator receives at the end — record honestly, including what you could not fix.",
+    "Record findings you made while rebuilding an imported page: typos (fix obvious ones in the rebuilt content and set applied: true), dead links, missing image alt texts, thin content, improvement ideas (applied: false — the operator decides). BATCH all of a page's notes in ONE call. `importPageId` accepts EITHER id: the staging import_pages id OR the composed CMS page id you just built (from accept_page / compose_from_run) — both work, no need to look one up from the other. These feed the migration report the operator receives at the end — record honestly, including what you could not fix.",
   schema: notesInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["importPageId", "notes"],
     properties: {
-      importPageId: { type: "string", format: "uuid" },
+      importPageId: {
+        type: "string",
+        format: "uuid",
+        description:
+          "The page to attach notes to — pass EITHER the staging import_pages id OR the composed CMS page id (accepted_page_id). Both resolve to the same import page.",
+      },
       notes: {
         type: "array",
         minItems: 1,
@@ -98,7 +103,24 @@ interface Report {
   redirectsCreated: number;
   crawlErrors: { url: string; reason: string }[];
   pagesMissingScreenshot: number;
+  fidelity: {
+    pass: number;
+    warn: number;
+    fail: number;
+    unverified: number;
+    overThreshold: { sourceUrl: string; diffStatus: "warn" | "fail"; diffPct: number }[];
+  };
   siteDesignTokens: unknown;
+  boilerplate: {
+    pagesAnalyzed?: number;
+    candidates?: {
+      tag: string;
+      pageCount: number;
+      suggestedPlacement: string;
+      placementReason: string;
+      sampleText: string;
+    }[];
+  } | null;
   notes: {
     category: string;
     applied: number;
@@ -148,9 +170,33 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       v.pagesMissingScreenshot > 0
         ? `WARNING: ${v.pagesMissingScreenshot} page(s) have NO stored source screenshot (see notes/screenshot_missing) — they are UNVERIFIED: nothing confirms their rebuild matches the original. Tell the operator plainly.`
         : "Source screenshots: every page has one.",
+      // issue #250 (WS4) — fidelity rollup. Over-threshold pages MUST be
+      // named in the closing message: never report "fertig" over red pages.
+      v.fidelity.overThreshold.length > 0
+        ? `FIDELITY — ${v.fidelity.fail} failed + ${v.fidelity.warn} warn of the graded rebuilds diverge from their originals; surface these to the operator (do NOT call the migration done while they read red): ${v.fidelity.overThreshold
+            .slice(0, 10)
+            .map((p) => `${p.sourceUrl} (${p.diffStatus} ${(p.diffPct * 100).toFixed(0)}%)`)
+            .join("; ")}${v.fidelity.overThreshold.length > 10 ? "; …" : ""}.`
+        : v.fidelity.pass > 0
+          ? `Fidelity: ${v.fidelity.pass} rebuilt page(s) verified against their originals; none over threshold.`
+          : "Fidelity: no pages graded yet — run verify_import_page_fidelity on the rebuilt pages (start with the homepage) before reporting done.",
+      v.fidelity.unverified > 0
+        ? `${v.fidelity.unverified} composed page(s) were never fidelity-graded (verify_import_page_fidelity not run, or no source screenshot) — they are UNVERIFIED; tell the operator which parts of the rebuild you actually measured.`
+        : "",
       v.siteDesignTokens
         ? `Sampled design tokens (computed-style ground truth) are stored on this run: ${JSON.stringify(v.siteDesignTokens).slice(0, 1500)} — compose_from_import already applied them to the theme; cite THESE values (not guesses) when discussing the site's colors/fonts.`
         : "No sampled design tokens on this run (fetch-only crawl) — theme values came from the inline-CSS extractor.",
+      // issue #248 (WS2) — surface detected boilerplate: blocks that
+      // should be ONE shared module, not copied per page.
+      v.boilerplate?.candidates && v.boilerplate.candidates.length > 0
+        ? `Boilerplate detected (blocks repeating across pages — each should be ONE shared module, not per-page copies): ${v.boilerplate.candidates
+            .slice(0, 8)
+            .map(
+              (c) =>
+                `<${c.tag}> ×${c.pageCount} → ${c.suggestedPlacement} ("${c.sampleText.slice(0, 48)}")`,
+            )
+            .join("; ")}`
+        : "",
       ...v.notes.map(
         (n) =>
           `Notes/${n.category}: ${n.applied} fixed, ${n.suggested} suggested. Samples: ${n.samples

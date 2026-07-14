@@ -2,9 +2,13 @@
 
 /**
  * P7 — `find_media`. Search the media library by alt / filename /
- * mime. Returns matches with the WebP-800 URL (or `orig` for
- * non-image kinds) pre-resolved so the AI can drop it straight into
- * an `<img src>` in module HTML via `edit_module`.
+ * mime. Returns matches with a pre-resolved URL the AI can drop
+ * straight into an `<img src>` in module HTML via `edit_module`.
+ *
+ * run #10 D4 — the URL variant is picked from the variants that
+ * ACTUALLY exist on each asset (pickAiImageVariant): a sub-800px
+ * source never gets a webp-800 row, and advertising one anyway made
+ * the AI write unresolvable refs that failed the staging build.
  *
  * The system prompt already carries the most-recent + most-used N
  * assets; this tool exists for the "I know what I want, search for
@@ -12,11 +16,9 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { buildMediaUrl, findMediaToolInput, type MediaVariantTag } from "@caelo-cms/shared";
+import { buildMediaUrl, findMediaToolInput, pickAiImageVariant } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
-
-const RASTER_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
 
 export const findMediaTool: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").FindMediaToolInput
@@ -26,8 +28,9 @@ export const findMediaTool: ToolDefinitionWithHandler<
     "Search the media library and return matches as { id, alt, mime, width, height, url }. " +
     "Use when the user references an asset by description (e.g. 'the hero photo', 'the office image') " +
     "and you can't find a match in the ## Media block of the system prompt. " +
-    "The returned URL is the WebP-800 variant for raster images, the `orig` variant otherwise — " +
-    "drop it straight into an <img src> in module HTML via `edit_module`. " +
+    "The returned URL always points at a variant that exists on the asset (best available WebP, " +
+    "or `orig` for SVG/PDF/video and very small images) — drop it straight into an <img src> in " +
+    "module HTML via `edit_module` and do NOT rewrite the variant segment to something else. " +
     "If no match is found, ask the user to upload the asset via /content/media.",
   schema: findMediaToolInput,
   inputSchema: {
@@ -70,6 +73,7 @@ export const findMediaTool: ToolDefinitionWithHandler<
         width: number | null;
         height: number | null;
         originalName: string;
+        variants: { variant: string }[];
       }[];
     };
     if (assets.length === 0) {
@@ -79,7 +83,7 @@ export const findMediaTool: ToolDefinitionWithHandler<
       };
     }
     const lines = assets.map((a) => {
-      const variant: MediaVariantTag = RASTER_MIMES.has(a.mime) ? "webp-800" : "orig";
+      const variant = pickAiImageVariant(a.variants.map((v) => v.variant));
       const dims = a.width && a.height ? `, ${a.width}x${a.height}` : "";
       const alt = a.alt ? `, alt="${a.alt}"` : "";
       return `- ${a.originalName} (${a.mime}${dims}${alt}) → ${buildMediaUrl(a.id, variant)}`;

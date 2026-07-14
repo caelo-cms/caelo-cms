@@ -497,6 +497,10 @@ export const mediaRecentForAiOp = defineOperation({
         height: z.number().int().nullable(),
         alt: z.string(),
         usageCount: z.number().int(),
+        /** run #10 D4 — variant tags that actually exist, so AI-facing
+         *  surfaces advertise a resolvable URL (pickAiImageVariant)
+         *  instead of assuming webp-800 from the mime. */
+        variants: z.array(z.string()),
       }),
     ),
   }),
@@ -532,6 +536,20 @@ export const mediaRecentForAiOp = defineOperation({
       merged.push(r);
       if (merged.length >= input.limit) break;
     }
+
+    // run #10 D4 — variant tags per asset. Per-id query (Bun SQL array
+    // splat caveat, same as media.list); bounded by `limit` (max 60).
+    const variantTagsByAsset = new Map<string, string[]>();
+    for (const r of merged) {
+      const tags = (await tx.execute(sql`
+        SELECT variant FROM media_variants WHERE asset_id = ${r.id}::uuid
+      `)) as unknown as { variant: string }[];
+      variantTagsByAsset.set(
+        r.id,
+        tags.map((t) => t.variant),
+      );
+    }
+
     return ok({
       assets: merged.map((r) => ({
         id: r.id,
@@ -541,6 +559,7 @@ export const mediaRecentForAiOp = defineOperation({
         height: r.height,
         alt: r.alt,
         usageCount: num(r.usage_count),
+        variants: variantTagsByAsset.get(r.id) ?? [],
       })),
     });
   },

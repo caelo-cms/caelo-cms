@@ -15,6 +15,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 const providerEnum = z.enum(["self-hosted", "gcp", "aws", "azure"]);
 const environmentEnum = z.enum(["dev", "staging", "production"]);
@@ -48,7 +49,7 @@ export const setProvisioningOutputsOp = defineOperation({
         .join("");
     const rows = (await tx.execute(sql`
       INSERT INTO provisioning_outputs (provider, environment, outputs_json, outputs_hash)
-      VALUES (${input.provider}, ${input.environment}, ${json}::jsonb, ${hash})
+      VALUES (${input.provider}, ${input.environment}, ${jsonbParam(json)}, ${hash})
       ON CONFLICT (provider, environment) DO UPDATE
         SET outputs_json = EXCLUDED.outputs_json,
             outputs_hash = EXCLUDED.outputs_hash,

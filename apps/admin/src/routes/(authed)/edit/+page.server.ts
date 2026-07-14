@@ -914,6 +914,15 @@ export const actions: Actions = {
       ...(changedPageIds && changedPageIds.length > 0 ? { changedPageIds } : {}),
     });
     if (!productionDeploy.ok) {
+      // run #10 D6 — stderr breadcrumb on the publish path (same
+      // rationale as stageAndDeployStaging/#267): the inline alert and
+      // toast show describeError()'s stripped text; the full structured
+      // error only survives here.
+      console.error("[publishToProduction] deploy.trigger failed", {
+        chatSessionId,
+        changedPageIds: changedPageIds ?? null,
+        error: productionDeploy.error,
+      });
       return fail(500, {
         error: `Production build failed: ${describeError(productionDeploy.error)}`,
       });
@@ -958,7 +967,11 @@ export const actions: Actions = {
       toTarget: "production",
     });
     if (!promote.ok) {
-      return fail(500, { error: `Promote failed: ${describeError(promote.error)}` });
+      // run #10 D6 — stderr breadcrumb: "Publish live" failures must be
+      // forensically visible even when the UI feedback is missed (the
+      // layout toast dedups identical consecutive results).
+      console.error("[promoteToProduction] deploy.promote failed", { error: promote.error });
+      return fail(500, { error: `Publish live failed: ${describeError(promote.error)}` });
     }
     const v = promote.value as { fromRunId: string; toRunId: string; buildId: string };
     return {

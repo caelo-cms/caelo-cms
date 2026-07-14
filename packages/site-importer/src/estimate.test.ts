@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { estimateCrawlScope } from "./estimate.js";
+import { estimateCrawlScope, estimateListScope } from "./estimate.js";
 
 const fetcherFor =
   (texts: Record<string, { body: string; contentType?: string }>) => async (url: string) => {
@@ -58,5 +58,16 @@ describe("estimateCrawlScope (#193)", () => {
     if ("failed" in est && est.failed) {
       expect(est.reason).toContain("no sitemap.xml");
     }
+  });
+});
+
+describe("estimateListScope (#229)", () => {
+  it("list basis: page count IS the list length (no network, exact)", () => {
+    const e = estimateListScope(7);
+    expect(e.basis).toBe("list");
+    expect(e.pages).toBe(7);
+    expect(e.truncated).toBe(false);
+    expect(e.crawlMinutes).toBeGreaterThanOrEqual(1);
+    expect(e.aiCostUsd.low).toBeLessThanOrEqual(e.aiCostUsd.high);
   });
 });

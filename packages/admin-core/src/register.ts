@@ -188,10 +188,13 @@ import {
   acknowledgeImportPageDiffOp,
   addImportPageNotesOp,
   assignImportPageClusterOp,
+  checkImportPageInventoryOp,
   cleanupImportRunOp,
   composeFromImportRunOp,
   createImportRunOp,
+  detectImportBoilerplateOp,
   executeImportProposalOp,
+  getImportPageFidelityInputsOp,
   getImportPageScreenshotKeysOp,
   getImportRunOp,
   getImportRunReportOp,
@@ -244,12 +247,14 @@ import {
   setFocalPointOp,
   setMediaCdnOp,
 } from "./ops/media.js";
+import { regenerateMediaVariantsOp } from "./ops/media_regenerate.js";
 import { aggregateNotificationsOp } from "./ops/notifications.js";
 import {
   anyBootstrapTokenIssuedOp,
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
 } from "./ops/owner-bootstrap-tokens.js";
+import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import {
   commentArchiveInsertOp,
@@ -721,6 +726,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #165 — Design Manifest (per-site design language).
   registry.register(getDesignManifestOp);
   registry.register(setDesignManifestOp);
+  // issue #264 — per-page edit log (durable work history for later chats /
+  // subagents that touch the page). Append-only, ungated.
+  registry.register(appendPageLogOp);
+  registry.register(listPageLogOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
@@ -759,9 +768,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(assignImportPageClusterOp);
   // issue #198 — per-page screenshot keys (serve route + AI tool).
   registry.register(getImportPageScreenshotKeysOp);
+  // issue #250 (WS4) — fidelity verdict inputs (source vs rebuilt).
+  registry.register(getImportPageFidelityInputsOp);
   // issue #197 — rebuild notes + run report.
   registry.register(addImportPageNotesOp);
   registry.register(getImportRunReportOp);
+  // issue #248 (WS2) — rebuild-quality checks: content-inventory
+  // (no information loss) + repeated-subtree boilerplate detection.
+  registry.register(checkImportPageInventoryOp);
+  registry.register(detectImportBoilerplateOp);
   registry.register(executeImportProposalOp);
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);
@@ -838,6 +853,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaListUsagesOp);
   registry.register(mediaGetSettingsOp);
   registry.register(setMediaCdnOp);
+  // run #10 D4 — recovery path for missing derived variants.
+  registry.register(regenerateMediaVariantsOp);
   // P7 optimizations — focal-point/crops, processing status, alt proposals.
   registry.register(setFocalPointOp);
   registry.register(addCropOp);

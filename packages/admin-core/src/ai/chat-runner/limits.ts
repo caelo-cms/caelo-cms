@@ -56,6 +56,35 @@ export function resolveMaxOutputTokensDefault(model: string): number {
     : MAX_OUTPUT_TOKENS_DEFAULT;
 }
 
+/**
+ * Run #10 D5 — how long a provider call may stay COMPLETELY silent
+ * (zero stream events) before the runner aborts it and retries once.
+ * Run #10 saw a fresh chat sit 12 minutes with no first token, no SSE
+ * client events, and no persisted assistant turn — the SSE keep-alive
+ * + heartbeat kept every proxy and the client watchdog quiet, so a
+ * hung provider request looked exactly like a healthy long turn.
+ * 180s is generous headroom over worst-case time-to-first-event on a
+ * ~600k-token cached prompt; genuinely slow-but-alive calls emit
+ * stream-start/thinking events long before this fires.
+ */
+const FIRST_EVENT_TIMEOUT_MS_DEFAULT = 180_000;
+
+/**
+ * Resolve the first-event watchdog timeout. Env-tunable via
+ * CAELO_FIRST_EVENT_TIMEOUT_MS (min 1s so a typo cannot make every
+ * call abort instantly); invalid values are ignored LOUDLY (pre-1.0
+ * fail-loud, same posture as resolveMaxOutputTokensDefault).
+ */
+export function resolveFirstEventTimeoutMs(): number {
+  const envRaw = process.env.CAELO_FIRST_EVENT_TIMEOUT_MS;
+  if (envRaw !== undefined && envRaw.trim() !== "") {
+    const parsed = Number(envRaw);
+    if (Number.isFinite(parsed) && parsed >= 1000) return Math.floor(parsed);
+    console.error("[chat-runner] invalid CAELO_FIRST_EVENT_TIMEOUT_MS — ignoring", { envRaw });
+  }
+  return FIRST_EVENT_TIMEOUT_MS_DEFAULT;
+}
+
 export function microcents(usd: number): number {
   // 1 USD = 1e8 microcents.
   return Math.round(usd * 1e8);

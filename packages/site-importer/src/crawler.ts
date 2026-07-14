@@ -43,10 +43,21 @@ export interface CrawlCheckpoint {
 
 export interface CrawlOptions {
   readonly sourceUrl: string;
-  /** BFS depth from the source URL. Default 2. */
+  /** BFS depth from the source URL. Default 2. Ignored in LIST mode. */
   readonly depth?: number;
-  /** Hard ceiling on total pages crawled. Default 50. */
+  /** Hard ceiling on total pages crawled. Default 50. Ignored in LIST mode. */
   readonly maxPages?: number;
+  /**
+   * issue #229 — LIST mode. When set (non-empty), the crawler fetches
+   * EXACTLY these URLs (+ `sourceUrl` for origin scoping) — no BFS, no
+   * depth expansion, no sitemap seeding. Off-origin / unparseable URLs
+   * are dropped into `errors`, never fetched (SSRF-safe). Every fetched
+   * URL still passes the same-origin + robots + hardened-fetch gates and
+   * the identical per-page extraction pipeline; list mode only changes
+   * WHICH URLs are fetched. Mutually exclusive with depth/BFS at the
+   * propose boundary; here a present `urls` simply wins.
+   */
+  readonly urls?: readonly string[];
   /** Minimum ms between request STARTS. Default 100; robots.txt
    *  Crawl-delay raises it. */
   readonly throttleMs?: number;
@@ -83,7 +94,12 @@ export interface CrawledPage {
   readonly url: string;
   readonly proposedSlug: string;
   readonly title: string;
-  readonly modules: ReturnType<typeof extractModulesFromHtml>;
+  readonly modules: ReturnType<typeof extractModulesFromHtml>["modules"];
+  /** run #10 D3 — loud counter: comment-thread subtrees the extractor
+   *  removed (WP `#comments`, `.comment-list`, `#respond`, …). The
+   *  orchestrator persists it as a visible `comments-stripped:<n>`
+   *  import-page note; it must never vanish silently. */
+  readonly commentsStripped: number;
   readonly themeTokens: Record<string, string>;
   /** issue #194 — deterministic structural signature ("home" for the
    *  source URL); equal signatures form one page-type cluster. */
@@ -109,9 +125,77 @@ export const USER_AGENT =
   "CaleoSiteImporter/1.0 (+https://caleo-cms.com/imports; research-only crawler)";
 const UA_TOKEN = "caleositeimporter";
 
+/**
+ * issue #229 — the normalised, deduped, same-origin URL set for LIST
+ * mode. `urls` starts with the source origin (so origin scoping always
+ * has a root) and preserves the AI's chosen order after it; `skipped`
+ * names every off-origin or unparseable entry so the run's error list
+ * surfaces them (no silent drops — CLAUDE.md §2 no-fallbacks).
+ */
+export interface ListModeResolution {
+  readonly urls: string[];
+  readonly skipped: Array<{ url: string; reason: string }>;
+}
+
+/** Strip the hash + ALL trailing slashes so `/a/`, `/a//` and `/a#top`
+ *  dedupe to one key (the root collapses to `/`); query strings are
+ *  PRESERVED (an explicit `?page=2` pick is a distinct page the AI chose
+ *  on purpose). */
+function normalizeListUrl(raw: string): string {
+  const u = new URL(raw);
+  u.hash = "";
+  u.pathname = u.pathname.replace(/\/+$/, "") || "/";
+  return u.toString();
+}
+
+/**
+ * Pure resolver for LIST mode: normalise + dedupe the chosen URLs, drop
+ * anything not on the source origin (or unparseable) into `skipped`, and
+ * guarantee the source origin leads the list so the crawl always has a
+ * scoping root even if the AI forgot to include the homepage.
+ *
+ * @param sourceUrl the run's source URL — defines the allowed origin.
+ * @param urls the AI-chosen absolute URLs to fetch.
+ */
+export function resolveListModeUrls(
+  sourceUrl: string,
+  urls: readonly string[],
+): ListModeResolution {
+  const sourceNorm = normalizeListUrl(sourceUrl);
+  const sourceOrigin = new URL(sourceNorm).origin;
+  const out: string[] = [sourceNorm];
+  const seen = new Set<string>([sourceNorm]);
+  const skipped: Array<{ url: string; reason: string }> = [];
+  for (const raw of urls) {
+    let norm: string;
+    try {
+      norm = normalizeListUrl(raw);
+    } catch {
+      skipped.push({ url: raw, reason: "list-mode: unparseable URL" });
+      continue;
+    }
+    if (new URL(norm).origin !== sourceOrigin) {
+      skipped.push({
+        url: raw,
+        reason: "list-mode: off-origin URL (not same origin as sourceUrl)",
+      });
+      continue;
+    }
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(norm);
+  }
+  return { urls: out, skipped };
+}
+
 export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
-  const depth = opts.depth ?? 2;
-  const maxPages = opts.maxPages ?? 50;
+  // issue #229 — LIST mode fetches exactly the chosen URLs (+ source
+  // origin), so depth expansion is off (depth 0) and the page ceiling is
+  // the resolved list length; sitemap seeding is skipped below.
+  const listMode = !!(opts.urls && opts.urls.length > 0);
+  const listResolved = listMode ? resolveListModeUrls(opts.sourceUrl, opts.urls ?? []) : null;
+  const depth = listMode ? 0 : (opts.depth ?? 2);
+  const maxPages = listMode ? (listResolved?.urls.length ?? 0) : (opts.maxPages ?? 50);
   const batchSize = opts.batchSize ?? 25;
   const concurrency = Math.max(1, opts.concurrency ?? 4);
   const fetcher = opts.fetcher ?? makeDefaultFetcher(opts.allowedHosts ?? []);
@@ -123,10 +207,20 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
 
   const sourceParsed = new URL(opts.sourceUrl);
   const seen = new Set<string>(opts.resumeFrom?.seen ?? []);
+  // LIST mode seeds the frontier from the resolved URL set (all at depth
+  // 0, so no expansion); depth mode seeds from the single source URL and
+  // grows via BFS + sitemap.
   const queue: Array<{ url: string; depth: number }> = opts.resumeFrom
     ? [...opts.resumeFrom.queue]
-    : [{ url: opts.sourceUrl, depth: 0 }];
-  const errors: Array<{ url: string; reason: string }> = [...(opts.resumeFrom?.errors ?? [])];
+    : listResolved
+      ? listResolved.urls.map((url) => ({ url, depth: 0 }))
+      : [{ url: opts.sourceUrl, depth: 0 }];
+  const errors: Array<{ url: string; reason: string }> = [
+    ...(opts.resumeFrom?.errors ?? []),
+    // Off-origin / unparseable list entries are recorded once (fresh
+    // runs only — a resumed frontier already carries them).
+    ...(!opts.resumeFrom && listResolved ? listResolved.skipped : []),
+  ];
   let pagesCrawled = opts.resumeFrom?.pagesCrawled ?? 0;
 
   // ── Politeness rules (fetched fresh even on resume — cheap, and the
@@ -146,9 +240,10 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   }
   const throttle = Math.max(opts.throttleMs ?? 100, robots?.crawlDelayMs ?? 0);
 
-  // ── Sitemap seeding (fresh crawls only — a resumed frontier already
-  //    contains whatever the sitemap contributed) ────────────────────
-  if (opts.useSitemap !== false && !opts.resumeFrom && textFetcher) {
+  // ── Sitemap seeding (fresh DEPTH crawls only — LIST mode fetches an
+  //    exact set, and a resumed frontier already contains whatever the
+  //    sitemap contributed) ─────────────────────────────────────────
+  if (opts.useSitemap !== false && !listMode && !opts.resumeFrom && textFetcher) {
     const discovered = await discoverSitemapUrls({
       origin: sourceParsed.origin,
       fetcher: textFetcher,
@@ -220,11 +315,13 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       errors.push({ url: next.url, reason: `skipped non-html (${res.contentType})` });
       return;
     }
+    const extraction = extractModulesFromHtml(res.html);
     const page: CrawledPage = {
       url: next.url,
       proposedSlug: urlToSlug(next.url, opts.sourceUrl),
       title: extractTitle(res.html),
-      modules: extractModulesFromHtml(res.html),
+      modules: extraction.modules,
+      commentsStripped: extraction.commentsStripped,
       themeTokens: extractThemeTokens(res.html),
       signature: computePageSignature({ url: next.url, sourceUrl: opts.sourceUrl, html: res.html }),
       pageCss: extractPageCss(res.html),

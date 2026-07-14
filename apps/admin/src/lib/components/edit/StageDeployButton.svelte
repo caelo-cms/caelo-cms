@@ -34,6 +34,7 @@
     DialogHeader,
     DialogTitle,
   } from "$lib/components/ui/dialog";
+  import { formResultError, publishButtonState } from "./stage-deploy-state.js";
 
   interface PendingEntity {
     kind: string;
@@ -136,11 +137,27 @@
    * until the next attempt.
    */
   let stageError = $state<string | null>(null);
+  /**
+   * run #10 D6 — inline Publish-live failure text, same rationale as
+   * `stageError` (#267): the layout toast dedups identical consecutive
+   * form results, so a retried identical promote failure showed NO
+   * feedback at all. Persistent next to the button until the next
+   * attempt; immune to toast dedup.
+   */
+  let publishError = $state<string | null>(null);
   let popoverOpen = $state(false);
   let popoverRef = $state<HTMLDivElement | null>(null);
   let pillRef = $state<HTMLButtonElement | null>(null);
   let publishing = $state(false);
   let staging = $state(false);
+  /** run #10 D6 — shared disabled/visible-reason logic (unit-tested). */
+  const publishState = $derived(
+    publishButtonState({
+      busy: staging || publishing,
+      hasStagedBuild: lastStaged !== null,
+      productionMatchesStaging: productionMatchesStaging ?? null,
+    }),
+  );
 
   // v0.8.1 — popover dismissal. The pre-v0.8.1 popover stayed open
   // until the operator clicked the pill again; missing Esc + click-
@@ -195,6 +212,57 @@
      sync with the latest staged build?". Rendered next to both the
      Publish-live and Stage actions so the operator sees the deploy
      state without opening a modal. -->
+<!-- run #10 D6 — ONE Publish-live form for both toolbar branches. The
+     button's disabled state carries a VISIBLE reason (not tooltip-only)
+     and failures render a persistent inline alert — a Publish click can
+     no longer be a silent no-op (same pattern as #267's stage-error). -->
+{#snippet publishLiveForm(testid: string, variant: "default" | "outline")}
+  <form
+    method="post"
+    action="?/promoteToProduction"
+    use:enhance={() => {
+      publishing = true;
+      publishError = null;
+      return async ({ result, update }) => {
+        try {
+          await update({ reset: false });
+        } finally {
+          publishing = false;
+        }
+        publishError = formResultError(result);
+      };
+    }}
+    class="contents"
+  >
+    <input type="hidden" name="_csrf" value={csrfToken} />
+    <Button
+      type="submit"
+      size="sm"
+      {variant}
+      disabled={publishState.disabled}
+      title={publishState.tooltip}
+      data-testid={testid}
+    >
+      {publishing ? "Publishing…" : "Publish live"}
+    </Button>
+  </form>
+  {#if publishState.visibleReason}
+    <span class="text-xs text-muted-foreground" data-testid="publish-disabled-reason">
+      {publishState.visibleReason}
+    </span>
+  {/if}
+  {#if publishError}
+    <span
+      role="alert"
+      data-testid="publish-error"
+      title={publishError}
+      class="inline-block max-w-96 truncate align-middle text-xs font-medium text-red-700 dark:text-red-300"
+    >
+      Publish failed: {publishError}
+    </span>
+  {/if}
+{/snippet}
+
 {#snippet stagingStatus()}
   {#if lastStaged?.previewUrl}
     <a
@@ -241,33 +309,7 @@
        link + the live-matches-staging indicator inline. -->
   <div class="inline-flex items-center gap-3" data-testid="stage-deploy">
     {@render stagingStatus()}
-    <form
-      method="post"
-      action="?/promoteToProduction"
-      use:enhance={() => {
-        publishing = true;
-        return async ({ update }) => {
-          try {
-            await update({ reset: false });
-          } finally {
-            publishing = false;
-          }
-        };
-      }}
-    >
-      <input type="hidden" name="_csrf" value={csrfToken} />
-      <Button
-        type="submit"
-        size="sm"
-        disabled={publishing || productionMatchesStaging === true}
-        data-testid="promote-only-btn"
-        title={productionMatchesStaging === true
-          ? "Live already matches the current staging build — nothing to publish"
-          : "Publish the latest staging build live (atomic, no rebuild)"}
-      >
-        {publishing ? "Publishing…" : "Publish live"}
-      </Button>
-    </form>
+    {@render publishLiveForm("promote-only-btn", "default")}
   </div>
 {:else}
   <div class="relative inline-flex items-center gap-1" data-testid="stage-deploy">
@@ -345,37 +387,7 @@
       {staging ? "Staging…" : "Stage…"}
     </Button>
     {@render stagingStatus()}
-    <form
-      method="post"
-      action="?/promoteToProduction"
-      use:enhance={() => {
-        publishing = true;
-        return async ({ update }) => {
-          try {
-            await update({ reset: false });
-          } finally {
-            publishing = false;
-          }
-        };
-      }}
-      class="contents"
-    >
-      <input type="hidden" name="_csrf" value={csrfToken} />
-      <Button
-        type="submit"
-        size="sm"
-        variant="outline"
-        disabled={staging || publishing || !lastStaged || productionMatchesStaging === true}
-        title={!lastStaged
-          ? "Stage something first — Publish live needs a staging build to copy"
-          : productionMatchesStaging === true
-            ? "Live already matches the current staging build — nothing to publish"
-            : "Publish the latest staging build live (atomic, no rebuild)"}
-        data-testid="promote-btn"
-      >
-        {publishing ? "Publishing…" : "Publish live"}
-      </Button>
-    </form>
+    {@render publishLiveForm("promote-btn", "outline")}
   </div>
 {/if}
 
@@ -424,17 +436,10 @@
           } finally {
             publishing = false;
           }
-          if (result.type === "success") {
-            dialogOpen = false;
-          } else if (result.type === "failure") {
-            const data = result.data as Record<string, unknown> | undefined;
-            stageError =
-              typeof data?.error === "string"
-                ? data.error
-                : "Stage failed, and the server sent no reason. Check the server logs.";
-          } else if (result.type === "error") {
-            stageError = `Stage request crashed: ${result.error instanceof Error ? result.error.message : String(result.error)}`;
-          }
+          // run #10 D6 — shared result→message mapping with the
+          // Publish-live inline alert (stage-deploy-state.ts).
+          stageError = formResultError(result);
+          if (stageError === null) dialogOpen = false;
         };
       }}
       data-testid="stage-form"

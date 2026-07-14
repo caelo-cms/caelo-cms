@@ -27,6 +27,10 @@ import {
   ok,
 } from "@caelo-cms/shared";
 import {
+  type BoilerplatePageInput,
+  checkInventoryCoverage,
+  detectBoilerplate,
+  extractContentInventory,
   flattenSiteDesignTokens,
   type PageDesignTokens,
   type SiteDesignTokens,
@@ -34,6 +38,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
 import { updateThemeTokensOp } from "./themes.js";
@@ -75,6 +80,14 @@ function parseJsonbColumn(raw: unknown): unknown {
   return typeof raw === "string" ? JSON.parse(raw) : (raw ?? null);
 }
 
+/** issue #229 — the `explicit_urls` jsonb decodes to a string[] (LIST
+ *  mode) or null (depth mode). Normalise both client paths (decoded
+ *  array vs JSON string) to `string[] | null` for the read surface. */
+function normalizeExplicitUrls(raw: unknown): string[] | null {
+  const parsed = parseJsonbColumn(raw);
+  return Array.isArray(parsed) ? parsed.filter((u): u is string => typeof u === "string") : null;
+}
+
 const runRow = z.object({
   id: z.string(),
   sourceUrl: z.string(),
@@ -95,6 +108,10 @@ const runRow = z.object({
   /** issue #193 — crawl-scope estimate ({pages, basis, crawlMinutes,
    *  aiCostUsd} or {failed, reason}); null on Owner-direct runs. */
   estimate: z.unknown().nullable(),
+  /** issue #229 — LIST-mode chosen URLs (absolute strings); null =
+   *  classic depth/BFS mode. Surfaced so the pending inbox + proposal
+   *  preview show the exact pages the crawl will fetch. */
+  explicitUrls: z.array(z.string()).nullable(),
   createdAt: z.string(),
 });
 
@@ -149,6 +166,7 @@ interface RunDb {
   error_message: string | null;
   chat_session_id?: string | null;
   estimate: unknown;
+  explicit_urls: unknown;
   created_at: string | Date;
 }
 
@@ -169,6 +187,7 @@ function toRunApi(r: RunDb): z.infer<typeof runRow> {
     errorMessage: row.error_message,
     chatSessionId: row.chat_session_id ?? null,
     estimate: typeof row.estimate === "string" ? JSON.parse(row.estimate) : (row.estimate ?? null),
+    explicitUrls: normalizeExplicitUrls(row.explicit_urls),
     createdAt: toIsoRequired(row.created_at, "import_runs.created_at"),
   }));
 }
@@ -188,7 +207,7 @@ export const listImportRunsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, chat_session_id::text AS chat_session_id,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs
       ${filter}
@@ -212,7 +231,7 @@ export const getImportRunOp = defineOperation({
     const runs = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, chat_session_id::text AS chat_session_id,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as RunDb[];
@@ -329,45 +348,81 @@ export const createImportRunOp = defineOperation({
   },
 });
 
+/** issue #229 — the crawl-scope estimate stored on a proposal. `list`
+ *  basis (exact page-list mode) joins the #193 sitemap/sample bases. */
+const crawlEstimateSchema = z
+  .union([
+    z
+      .object({
+        pages: z.number().int().min(0),
+        basis: z.enum(["sitemap", "sample", "list"]),
+        truncated: z.boolean(),
+        crawlMinutes: z.number().min(0),
+        aiCostUsd: z.object({ low: z.number().min(0), high: z.number().min(0) }),
+      })
+      .strict(),
+    z.object({ failed: z.literal(true), reason: z.string().max(1000) }).strict(),
+  ])
+  .nullable()
+  .optional();
+
+/**
+ * issue #229 — `imports.propose_run` input. TWO mutually exclusive modes:
+ *   - DEPTH mode: `depth` (BFS hops) + `maxPages` drive a same-origin
+ *     crawl that DISCOVERS pages from `sourceUrl`.
+ *   - LIST mode: `urls` names the EXACT absolute URLs to fetch (the #278
+ *     flow's per-page-type samples / scoped fill); no BFS, no depth.
+ * `sourceUrl` is always required (origin + robots scoping + run identity).
+ * Exported so the propose tool + offline tests validate against one shape.
+ */
+export const proposeImportRunInput = z
+  .object({
+    sourceUrl: z.string().url(),
+    depth: z.number().int().min(1).max(5).optional(),
+    maxPages: z.number().int().min(1).max(2000).optional(),
+    /** issue #229 — LIST mode: exact absolute URLs to fetch. Capped at
+     *  200 (a pilot samples page TYPES, it does not re-crawl the site). */
+    urls: z.array(z.string().url()).min(1).max(200).optional(),
+    /** issue #193 — computed by the proposing tool BEFORE this op
+     *  (network work stays out of the DB tx). Stored verbatim for the
+     *  Owner queue; {failed, reason} is a valid value. */
+    estimate: crawlEstimateSchema,
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.urls && v.urls.length > 0 && (v.depth !== undefined || v.maxPages !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "list mode (`urls`) is mutually exclusive with depth crawling (`depth`/`maxPages`) — pass exactly one mode",
+        path: ["urls"],
+      });
+    }
+  });
+
 export const proposeImportRunOp = defineOperation({
   name: "imports.propose_run",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      sourceUrl: z.string().url(),
-      depth: z.number().int().min(1).max(5).default(2),
-      maxPages: z.number().int().min(1).max(2000).default(50),
-      /** issue #193 — computed by the proposing tool BEFORE this op
-       *  (network work stays out of the DB tx). Stored verbatim for
-       *  the Owner queue; {failed, reason} is a valid value. */
-      estimate: z
-        .union([
-          z
-            .object({
-              pages: z.number().int().min(0),
-              basis: z.enum(["sitemap", "sample"]),
-              truncated: z.boolean(),
-              crawlMinutes: z.number().min(0),
-              aiCostUsd: z.object({ low: z.number().min(0), high: z.number().min(0) }),
-            })
-            .strict(),
-          z.object({ failed: z.literal(true), reason: z.string().max(1000) }).strict(),
-        ])
-        .nullable()
-        .optional(),
-    })
-    .strict(),
+  input: proposeImportRunInput,
   output: z.object({ runId: z.string() }),
   handler: async (ctx, input, tx) => {
     // 0124 — record the originating chat so the chat's pending strip
     // (pending_proposals.list, filtered per session) can surface this
     // run's Approve button pinned above the composer.
     const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId);
+    // issue #229 — LIST mode ignores BFS depth (fetches an exact set):
+    // store depth at its default and pin max_pages to the list length so
+    // the "up to N pages" summaries read truthfully. `explicit_urls`
+    // (jsonb string[]) drives the crawler's list branch.
+    const listMode = !!(input.urls && input.urls.length > 0);
+    const depth = input.depth ?? 2;
+    const maxPages = listMode ? (input.urls?.length ?? 0) : (input.maxPages ?? 50);
     const rows = (await tx.execute(sql`
-      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate, chat_session_id)
-      VALUES (${input.sourceUrl}, ${input.depth}, ${input.maxPages}, 'proposed', ${ctx.actorId}::uuid,
-              ${input.estimate ? JSON.stringify(input.estimate) : null}::jsonb,
+      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate, explicit_urls, chat_session_id)
+      VALUES (${input.sourceUrl}, ${depth}, ${maxPages}, 'proposed', ${ctx.actorId}::uuid,
+              ${jsonbParam(input.estimate ? input.estimate : null)},
+              ${jsonbParam(listMode ? input.urls : null)},
               ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -401,7 +456,7 @@ export const listPendingImportProposalsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, chat_session_id::text AS chat_session_id,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs
       WHERE status = 'proposed'
@@ -648,6 +703,65 @@ export const getImportPageScreenshotKeysOp = defineOperation({
   },
 });
 
+/**
+ * issue #250 (WS4) — everything the fidelity verdict tool needs to grade one
+ * rebuilt page, resolved from EITHER id the AI is holding: the staging
+ * `import_pages.id` OR the composed `pages.id` it just built
+ * (accepted_page_id). Mirrors `imports.add_page_notes`' dual-id ergonomics so
+ * the AI never has to look one id up from the other mid-flow.
+ *
+ * Returns the source screenshot key (null = UNVERIFIED — no ground truth to
+ * diff against) and the accepted page id (null = not composed yet) so the
+ * tool can fail loudly + specifically instead of guessing.
+ */
+export const getImportPageFidelityInputsOp = defineOperation({
+  name: "imports.get_page_fidelity_inputs",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ pageRef: z.string().uuid() }).strict(),
+  output: z.object({
+    importPageId: z.string(),
+    sourceUrl: z.string().nullable(),
+    screenshotObjectKey: z.string().nullable(),
+    acceptedPageId: z.string().nullable(),
+    diffStatus: z.enum(["pass", "warn", "fail"]).nullable(),
+    diffPct: z.number().nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, source_url, screenshot_object_key,
+             accepted_page_id::text AS accepted_page_id, diff_status, diff_pct
+      FROM import_pages
+      WHERE id = ${input.pageRef}::uuid OR accepted_page_id = ${input.pageRef}::uuid
+      LIMIT 1
+    `)) as unknown as Array<{
+      id: string;
+      source_url: string | null;
+      screenshot_object_key: string | null;
+      accepted_page_id: string | null;
+      diff_status: "pass" | "warn" | "fail" | null;
+      diff_pct: number | null;
+    }>;
+    const r = rows[0];
+    if (!r) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.get_page_fidelity_inputs",
+        message:
+          "no import page matches this id — pass EITHER the staging import_pages id OR the composed page id (accepted_page_id); list the run with imports.get for valid ids",
+      });
+    }
+    return ok({
+      importPageId: r.id,
+      sourceUrl: r.source_url,
+      screenshotObjectKey: r.screenshot_object_key,
+      acceptedPageId: r.accepted_page_id,
+      diffStatus: r.diff_status,
+      diffPct: r.diff_pct,
+    });
+  },
+});
+
 export const writeExtractedPagesOp = defineOperation({
   name: "imports.write_extracted_pages",
   actorScope: ["system"],
@@ -674,6 +788,9 @@ export const writeExtractedPagesOp = defineOperation({
             signature: z.string().max(200).optional(),
             /** issue #195 — the page's <style> contents. */
             pageCss: z.string().max(600_000).optional(),
+            /** run #10 D3 — comment-thread subtrees the extractor removed.
+             *  Persisted as a loud `comments_stripped` note; never silent. */
+            commentsStripped: z.number().int().min(0).optional(),
           }),
         )
         .max(500),
@@ -683,16 +800,30 @@ export const writeExtractedPagesOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     let inserted = 0;
     for (const p of input.pages) {
+      // run #10 D3 — the extractor's comment-thread stripper reports a
+      // count; store it as a system note in the same shape the AI's
+      // add_page_notes uses so get_run_report rolls it up per category.
+      const notes =
+        p.commentsStripped !== undefined && p.commentsStripped > 0
+          ? [
+              {
+                category: "comments_stripped" as const,
+                note: `comments-stripped:${p.commentsStripped} — comment-thread markup (WP #comments/.comment-list/#respond or builder equivalent) removed at extraction`,
+                applied: true,
+              },
+            ]
+          : null;
       const r = (await tx.execute(sql`
         INSERT INTO import_pages (
           run_id, source_url, proposed_slug, proposed_title,
           proposed_modules, proposed_theme_tokens,
-          structural_signature, cluster_key, page_css
+          structural_signature, cluster_key, page_css, notes
         ) VALUES (
           ${input.runId}::uuid, ${p.sourceUrl}, ${p.proposedSlug}, ${p.proposedTitle},
-          ${JSON.stringify(p.proposedModules)}::jsonb,
-          ${JSON.stringify(p.proposedThemeTokens)}::jsonb,
-          ${p.signature ?? null}, ${p.signature ?? null}, ${p.pageCss ?? null}
+          ${jsonbParam(p.proposedModules)},
+          ${jsonbParam(p.proposedThemeTokens)},
+          ${p.signature ?? null}, ${p.signature ?? null}, ${p.pageCss ?? null},
+          ${jsonbParam(notes)}
         )
         ON CONFLICT (run_id, source_url) DO NOTHING
         RETURNING id
@@ -1002,6 +1133,15 @@ export const assignImportPageClusterOp = defineOperation({
 // no-fallbacks). The AI-facing add_import_page_notes tool deliberately
 // keeps the original five: the model reports content findings, it never
 // asserts capture state.
+// run #10 D3 — `comments_stripped` is SYSTEM-written at extraction time
+// (imports.write_extracted_pages) when the crawler removed WordPress
+// comment-thread markup; like the #247 capture notes it never comes
+// from the AI tool.
+// issue #248 (WS2) — `content_missing` is SYSTEM-written by
+// imports.check_page_inventory when the rebuilt page drops a content
+// item the source page carried. Like the #247 capture notes it never
+// comes from the AI tool: the model reports its own findings; the code
+// asserts what the loss check actually found (CLAUDE.md 2 loud honesty).
 const noteCategory = z.enum([
   "typo",
   "dead_link",
@@ -1010,12 +1150,22 @@ const noteCategory = z.enum([
   "improvement",
   "screenshot_missing",
   "design_tokens_missing",
+  "comments_stripped",
+  "content_missing",
 ]);
 
 /**
  * issue #197 — record findings made while rebuilding a page. Bulk per
  * page (§11: one call, one tx); notes APPEND to what's already there
  * so multiple passes (content rebuild, then a11y sweep) accumulate.
+ *
+ * issue #263 — `importPageId` accepts EITHER the `import_pages.id`
+ * (staging row) OR the `import_pages.accepted_page_id` (the composed
+ * CMS `pages.id` that accept_page / compose_from_run minted). Both are
+ * uuids and the AI naturally reaches for the CMS page id it just built,
+ * so the handler resolves both against one row inside the tx rather
+ * than forcing the model to round-trip through imports.get (CLAUDE.md
+ * §1A — enrich the surface so the AI doesn't have to ask).
  */
 export const addImportPageNotesOp = defineOperation({
   name: "imports.add_page_notes",
@@ -1023,6 +1173,9 @@ export const addImportPageNotesOp = defineOperation({
   database: "cms_admin",
   input: z
     .object({
+      /** Either the staging `import_pages.id` OR the composed CMS
+       *  `pages.id` (== `import_pages.accepted_page_id`); the handler
+       *  resolves either form to the owning import_pages row (#263). */
       importPageId: z.string().uuid(),
       notes: z
         .array(
@@ -1041,23 +1194,38 @@ export const addImportPageNotesOp = defineOperation({
     .strict(),
   output: z.object({ totalNotes: z.number().int() }),
   handler: async (ctx, input, tx) => {
+    // #263 — resolve the given id against BOTH the staging id and the
+    // accepted CMS page id, preferring a direct import_pages.id match
+    // (the `ORDER BY … DESC` pins it first when a value could somehow
+    // match both id spaces). One statement keeps the resolve + write in
+    // the same tx.
     const rows = (await tx.execute(sql`
-      UPDATE import_pages
+      WITH target AS (
+        SELECT id
+        FROM import_pages
+        WHERE id = ${input.importPageId}::uuid
+           OR accepted_page_id = ${input.importPageId}::uuid
+        ORDER BY (id = ${input.importPageId}::uuid) DESC
+        LIMIT 1
+      )
+      UPDATE import_pages ip
       -- (::text)::jsonb, not ::jsonb: bun-postgres infers a jsonb
       -- parameter type from the direct cast and double-encodes the
       -- string, turning the array into ONE jsonb string element.
       -- Forcing the text path keeps it an array. (INSERT targets
       -- coerce via the column type and don't hit this.)
-      SET notes = COALESCE(notes, '[]'::jsonb) || (${JSON.stringify(input.notes)}::text)::jsonb
-      WHERE id = ${input.importPageId}::uuid
-      RETURNING jsonb_array_length(notes) AS total
+      SET notes = COALESCE(ip.notes, '[]'::jsonb) || (${JSON.stringify(input.notes)}::text)::jsonb
+      FROM target
+      WHERE ip.id = target.id
+      RETURNING jsonb_array_length(ip.notes) AS total
     `)) as unknown as Array<{ total: number }>;
     const r = rows[0];
     if (!r) {
       return err({
         kind: "HandlerError",
         operation: "imports.add_page_notes",
-        message: "import page not found — list the run with imports.get for valid page ids",
+        message:
+          "import page not found — importPageId accepts either the staging import_pages.id OR the composed CMS page id (import_pages.accepted_page_id); list the run with imports.get to see both ids per page",
       });
     }
     await recordAudit(tx, {
@@ -1069,6 +1237,317 @@ export const addImportPageNotesOp = defineOperation({
       resultSummary: `+${input.notes.length} notes (total ${r.total})`,
     });
     return ok({ totalNotes: r.total });
+  },
+});
+
+/** A parsed proposed-module shape shared by the WS2 quality ops. */
+interface ProposedModuleShape {
+  blockName: string;
+  position: number;
+  html: string;
+  displayName: string;
+}
+
+function parseProposedModules(raw: unknown): ProposedModuleShape[] {
+  const parsed = typeof raw === "string" ? JSON.parse(raw) : (raw ?? []);
+  return Array.isArray(parsed) ? (parsed as ProposedModuleShape[]) : [];
+}
+
+/**
+ * Collect every string leaf from a content_instance's `values` jsonb so
+ * field-carried content (a `hero_title` filled via a content instance,
+ * not baked into the module html) is counted by the inventory check.
+ * Bounded depth guards against a pathological nested value.
+ */
+function collectStringValues(value: unknown, depth = 0, out: string[] = []): string[] {
+  if (depth > 6 || out.length > 2000) return out;
+  if (typeof value === "string") {
+    if (value.trim().length > 0) out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const v of value) collectStringValues(v, depth + 1, out);
+  } else if (value !== null && typeof value === "object") {
+    for (const v of Object.values(value)) collectStringValues(v, depth + 1, out);
+  }
+  return out;
+}
+
+/**
+ * issue #248 (WS2) — the content-inventory / no-information-loss check.
+ * The REBUILD CONTRACT (skill 0130) lets the AI rebuild markup freely;
+ * this op is the enforcement that keeps "improve" from silently becoming
+ * "drop". It compares the SOURCE page's crawled content (the imported
+ * content modules) against the REBUILT page's current modules and reports
+ * every heading / paragraph / list item / image / link / CTA that is
+ * missing. Chrome (header/footer) is excluded by default — it is
+ * layout-owned since #253 and verified once at the layout, not per page.
+ *
+ * When anything is missing the op records a LOUD `content_missing`
+ * per-page note so the closing run report surfaces the gap even if the
+ * AI forgets to relay it (CLAUDE.md 2 no silent drops). `importPageId`
+ * accepts either the staging import_pages id OR the composed CMS page id
+ * (accepted_page_id), same as add_page_notes (#263).
+ */
+export const checkImportPageInventoryOp = defineOperation({
+  name: "imports.check_page_inventory",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      importPageId: z.string().uuid(),
+      /** Include the source header/footer chrome in the check. Default
+       *  false: chrome is layout-owned (#253), not per-page content. */
+      includeChrome: z.boolean().default(false),
+      /** Cap on missing items returned inline (the note stores a count). */
+      maxReported: z.number().int().min(1).max(200).default(60),
+    })
+    .strict(),
+  output: z.object({
+    total: z.number().int(),
+    covered: z.number().int(),
+    missing: z.number().int(),
+    missingByKind: z.record(z.string(), z.number().int()),
+    missingItems: z.array(
+      z.object({
+        kind: z.string(),
+        text: z.string().nullable(),
+        href: z.string().nullable(),
+        src: z.string().nullable(),
+        sourceContext: z.string().nullable(),
+      }),
+    ),
+  }),
+  handler: async (ctx, input, tx) => {
+    // Resolve staging id OR composed CMS page id → the owning import_pages
+    // row, mirroring add_page_notes (#263).
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, accepted_page_id::text AS accepted_page_id, proposed_modules
+      FROM import_pages
+      WHERE id = ${input.importPageId}::uuid
+         OR accepted_page_id = ${input.importPageId}::uuid
+      ORDER BY (id = ${input.importPageId}::uuid) DESC
+      LIMIT 1
+    `)) as unknown as Array<{
+      id: string;
+      accepted_page_id: string | null;
+      proposed_modules: unknown;
+    }>;
+    const row = rows[0];
+    if (!row) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.check_page_inventory",
+        message:
+          "import page not found — importPageId accepts the staging import_pages.id OR the composed CMS page id; list the run with imports.get to see both",
+      });
+    }
+    if (!row.accepted_page_id) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.check_page_inventory",
+        message:
+          "this page has not been composed yet — run imports.compose_from_run (or accept_page) first, then check the rebuild against the source",
+      });
+    }
+
+    // Source content = the imported content modules (chrome excluded
+    // unless asked). This is the operator's real crawled copy.
+    const sourceModules = parseProposedModules(row.proposed_modules).filter(
+      (m) => input.includeChrome || (m.blockName !== "header" && m.blockName !== "footer"),
+    );
+    const sourceHtml = sourceModules.map((m) => m.html).join("\n");
+    const sourceInventory = extractContentInventory(sourceHtml);
+
+    // Rebuilt content = the composed page's current modules + any
+    // field-carried content on their content_instances.
+    const rebuiltRows = (await tx.execute(sql`
+      SELECT m.html AS html, ci."values" AS values
+      FROM page_modules pm
+      JOIN modules m ON m.id = pm.module_id
+      LEFT JOIN content_instances ci ON ci.id = pm.content_instance_id
+      WHERE pm.page_id = ${row.accepted_page_id}::uuid
+        AND (${input.includeChrome} OR pm.block_name NOT IN ('header', 'footer'))
+    `)) as unknown as Array<{ html: string | null; values: unknown }>;
+    const rebuiltParts: string[] = [];
+    for (const r of rebuiltRows) {
+      if (r.html) rebuiltParts.push(r.html);
+      const values = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
+      for (const s of collectStringValues(values)) rebuiltParts.push(s);
+    }
+    const rebuiltHtml = rebuiltParts.join("\n");
+
+    const report = checkInventoryCoverage(sourceInventory, rebuiltHtml);
+
+    // LOUD: a missing item is never dropped silently. Record a system
+    // note so get_run_report rolls it up; re-check overwrites nothing
+    // (notes APPEND), so the AI's fix pass can add a follow-up note.
+    if (report.missing.length > 0) {
+      const byKind = Object.entries(report.counts.missingByKind)
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${n} ${k}`)
+        .join(", ");
+      const samples = report.missing
+        .slice(0, 5)
+        .map((m) => m.text ?? m.href ?? m.src ?? m.kind)
+        .join(" | ");
+      const note = [
+        {
+          category: "content_missing" as const,
+          note: `content-loss check: ${report.missing.length}/${report.counts.total} source items missing from the rebuild (${byKind}). Samples: ${samples}. Restore them or record why each was dropped.`,
+          applied: false,
+        },
+      ];
+      await tx.execute(sql`
+        UPDATE import_pages
+           SET notes = COALESCE(notes, '[]'::jsonb) || (${JSON.stringify(note)}::text)::jsonb
+         WHERE id = ${row.id}::uuid
+      `);
+    }
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.check_page_inventory",
+      input,
+      succeeded: true,
+      resultSummary: `inventory ${report.counts.covered}/${report.counts.total} covered, ${report.missing.length} missing`,
+    });
+
+    return ok({
+      total: report.counts.total,
+      covered: report.counts.covered,
+      missing: report.missing.length,
+      missingByKind: report.counts.missingByKind,
+      missingItems: report.missing.slice(0, input.maxReported).map((m) => ({
+        kind: m.kind,
+        text: m.text ?? null,
+        href: m.href ?? null,
+        src: m.src ?? null,
+        sourceContext: m.sourceContext ?? null,
+      })),
+    });
+  },
+});
+
+const boilerplateCandidateSchema = z.object({
+  signature: z.string(),
+  kind: z.enum(["content", "structure"]),
+  tag: z.string(),
+  pageCount: z.number().int(),
+  memberPageIds: z.array(z.string()),
+  memberUrls: z.array(z.string()),
+  clusterKeys: z.array(z.string()),
+  contentVaries: z.boolean(),
+  sampleText: z.string(),
+  suggestedPlacement: z.enum(["layout", "template", "content_instance"]),
+  placementReason: z.string(),
+});
+
+/**
+ * issue #248 (WS2) — repeated-subtree boilerplate detection across a
+ * run's pages. A block that recurs on >=N pages (a CTA banner, a
+ * newsletter box, a breadcrumb zone, an author bio) is BOILERPLATE, not
+ * per-page content: the rebuild should mint it ONCE as a shared module at
+ * the right level, not copy it into every page (the Elementor-bloat
+ * mistake WS2 exists to avoid). Detection is pure, deterministic code
+ * (normalized-subtree hashing) — no model in the loop.
+ *
+ * Each candidate carries a suggested placement per the operator's ruling
+ * on #248: site-wide chrome → layout; per-page-type → template; recurring
+ * fixed content → shared content_instance; semi-dynamic (breadcrumbs) →
+ * template block whose values fill per page. A compact summary is stored
+ * on the run so the closing report can surface it.
+ */
+export const detectImportBoilerplateOp = defineOperation({
+  name: "imports.detect_boilerplate",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      /** A subtree must recur on at least this many pages. Default 3. */
+      minPages: z.number().int().min(2).max(500).default(3),
+    })
+    .strict(),
+  output: z.object({
+    pagesAnalyzed: z.number().int(),
+    candidates: z.array(boilerplateCandidateSchema),
+  }),
+  handler: async (ctx, input, tx) => {
+    const runRows = (await tx.execute(sql`
+      SELECT id::text AS id FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
+    `)) as unknown as Array<{ id: string }>;
+    if (!runRows[0]) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.detect_boilerplate",
+        message: "import run not found",
+      });
+    }
+
+    const pageRows = (await tx.execute(sql`
+      SELECT id::text AS id, source_url, proposed_modules,
+             COALESCE(cluster_key, structural_signature, 'content') AS cluster_key
+      FROM import_pages
+      WHERE run_id = ${input.runId}::uuid
+      ORDER BY created_at ASC
+    `)) as unknown as Array<{
+      id: string;
+      source_url: string;
+      proposed_modules: unknown;
+      cluster_key: string;
+    }>;
+
+    // Full page HTML (chrome INCLUDED) so header / footer / nav /
+    // breadcrumb repeats surface — the detector suggests where each lands.
+    const pages: BoilerplatePageInput[] = pageRows.map((p) => ({
+      pageId: p.id,
+      url: p.source_url,
+      clusterKey: p.cluster_key,
+      html: parseProposedModules(p.proposed_modules)
+        .map((m) => m.html)
+        .join("\n"),
+    }));
+
+    const report = detectBoilerplate(pages, { minPages: input.minPages });
+
+    // Persist a compact summary (member ids collapsed to a count) so the
+    // run report can surface detected boilerplate without recomputing.
+    const summary = {
+      generatedAt: new Date().toISOString(),
+      pagesAnalyzed: report.pagesAnalyzed,
+      candidates: report.candidates.slice(0, 20).map((c) => ({
+        // `signature` correlates a stored summary row back to the full
+        // candidate from imports.detect_boilerplate (0137 column comment).
+        signature: c.signature,
+        kind: c.kind,
+        tag: c.tag,
+        pageCount: c.pageCount,
+        clusterKeys: c.clusterKeys,
+        contentVaries: c.contentVaries,
+        sampleText: c.sampleText,
+        suggestedPlacement: c.suggestedPlacement,
+        placementReason: c.placementReason,
+      })),
+    };
+    await tx.execute(sql`
+      UPDATE import_runs
+         SET boilerplate_summary = (${JSON.stringify(summary)}::text)::jsonb
+       WHERE id = ${input.runId}::uuid
+    `);
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.detect_boilerplate",
+      input,
+      succeeded: true,
+      resultSummary: `boilerplate: ${report.candidates.length} candidates over ${report.pagesAnalyzed} pages`,
+    });
+
+    return ok({
+      pagesAnalyzed: report.pagesAnalyzed,
+      candidates: report.candidates.map((c) => ({ ...c })),
+    });
   },
 });
 
@@ -1099,9 +1578,33 @@ export const getImportRunReportOp = defineOperation({
      *  a screenshot_missing note; downstream verification (WS4) treats
      *  them as UNVERIFIED. */
     pagesMissingScreenshot: z.number(),
+    /** issue #250 (WS4) — source-vs-rebuilt fidelity rollup. `unverified`
+     *  counts composed pages that have a source screenshot but no computed
+     *  diff yet (verify_import_page_fidelity never ran) PLUS pages missing a
+     *  source screenshot — both mean "nothing measured this rebuild".
+     *  `overThreshold` lists the warn/fail pages the report must surface so
+     *  the AI never says "fertig" over red pages. */
+    fidelity: z.object({
+      pass: z.number(),
+      warn: z.number(),
+      fail: z.number(),
+      unverified: z.number(),
+      overThreshold: z.array(
+        z.object({
+          sourceUrl: z.string(),
+          diffStatus: z.enum(["warn", "fail"]),
+          diffPct: z.number(),
+        }),
+      ),
+    }),
     /** issue #247 — the site-level computed-style token aggregate;
      *  null when the run never got a Playwright render pass. */
     siteDesignTokens: z.unknown().nullable(),
+    /** issue #248 (WS2) — latest imports.detect_boilerplate summary
+     *  (candidates + suggested placement level); null until detection
+     *  runs. Surfaced so the rebuild binds boilerplate once at the right
+     *  level instead of copying it per page. */
+    boilerplate: z.unknown().nullable(),
     notes: z.array(
       z.object({
         category: noteCategory,
@@ -1115,7 +1618,8 @@ export const getImportRunReportOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
-      SELECT source_url, status, pages_seen, pages_extracted, crawl_state, site_design_tokens
+      SELECT source_url, status, pages_seen, pages_extracted, crawl_state, site_design_tokens,
+             boilerplate_summary
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as Array<{
       source_url: string;
@@ -1124,6 +1628,7 @@ export const getImportRunReportOp = defineOperation({
       pages_extracted: number;
       crawl_state: unknown;
       site_design_tokens: unknown;
+      boilerplate_summary: unknown;
     }>;
     const run = runRows[0];
     if (!run) {
@@ -1135,6 +1640,7 @@ export const getImportRunReportOp = defineOperation({
     }
     const pages = (await tx.execute(sql`
       SELECT source_url, proposed_slug, accepted_page_id, screenshot_object_key,
+             diff_status, diff_pct,
              COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
              cluster_label, notes
       FROM import_pages WHERE run_id = ${input.runId}::uuid
@@ -1144,10 +1650,38 @@ export const getImportRunReportOp = defineOperation({
       proposed_slug: string;
       accepted_page_id: string | null;
       screenshot_object_key: string | null;
+      diff_status: "pass" | "warn" | "fail" | null;
+      diff_pct: number | null;
       cluster_key: string;
       cluster_label: string | null;
       notes: unknown;
     }>;
+
+    // issue #250 (WS4) — fidelity rollup. A composed page with a source
+    // screenshot but no diff_status is UNVERIFIED (the gate never graded it);
+    // pages missing a source screenshot are unverified by definition. warn +
+    // fail are the pages the closing report must name out loud.
+    const fidelity = {
+      pass: 0,
+      warn: 0,
+      fail: 0,
+      unverified: 0,
+      overThreshold: [] as { sourceUrl: string; diffStatus: "warn" | "fail"; diffPct: number }[],
+    };
+    for (const p of pages) {
+      if (p.diff_status === "pass") fidelity.pass += 1;
+      else if (p.diff_status === "warn" || p.diff_status === "fail") {
+        fidelity[p.diff_status] += 1;
+        fidelity.overThreshold.push({
+          sourceUrl: p.source_url,
+          diffStatus: p.diff_status,
+          diffPct: p.diff_pct ?? 1,
+        });
+      } else if (p.accepted_page_id !== null || p.screenshot_object_key === null) {
+        // Composed-but-ungraded, or never screenshotted: nothing measured it.
+        fidelity.unverified += 1;
+      }
+    }
 
     // Clusters.
     const clusterMap = new Map<string, { label: string | null; count: number }>();
@@ -1225,7 +1759,9 @@ export const getImportRunReportOp = defineOperation({
       redirectsCreated,
       crawlErrors,
       pagesMissingScreenshot: pages.filter((p) => p.screenshot_object_key === null).length,
+      fidelity,
       siteDesignTokens: parseJsonbColumn(run.site_design_tokens),
+      boilerplate: parseJsonbColumn(run.boilerplate_summary),
       notes: [...byCategory.entries()].map(([category, v]) => ({
         category: category as z.infer<typeof noteCategory>,
         ...v,

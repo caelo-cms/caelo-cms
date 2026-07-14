@@ -13,6 +13,7 @@ import {
   type ExecutionContext,
   formatThemeSummary,
   listThemeCssVarNames,
+  pickAiImageVariant,
   type Theme,
   type ThemeDocument,
 } from "@caelo-cms/shared";
@@ -176,8 +177,10 @@ export async function buildCatalogBlocks(
   }
 
   // P7 — recent + most-used media so the AI can pick existing assets
-  // before suggesting an upload. URLs use the WebP-800 variant for
-  // raster images, `orig` for SVG / PDF / video. The composed page is
+  // before suggesting an upload. run #10 D4: the URL variant is picked
+  // from the variants that ACTUALLY exist on each asset (a sub-800px
+  // source never gets webp-800 — advertising it blocked the staging
+  // build on "media references unresolved"). The composed page is
   // already in `pageContextBlock` with literal /_caelo/media/... URLs;
   // this block surfaces the *catalogue* of what's available beyond
   // what the page currently uses.
@@ -194,13 +197,13 @@ export async function buildCatalogBlocks(
           height: number | null;
           originalName: string;
           usageCount: number;
+          variants: string[];
         }[];
       }
     ).assets;
     if (assets.length > 0) {
-      const RASTER = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
       const lines = assets.map((a) => {
-        const variant = RASTER.has(a.mime) ? "webp-800" : "orig";
+        const variant = pickAiImageVariant(a.variants);
         const dims = a.width && a.height ? `, ${a.width}x${a.height}` : "";
         const alt = a.alt ? `, alt="${a.alt}"` : "";
         const used = a.usageCount > 0 ? ` (used ${a.usageCount}×)` : "";

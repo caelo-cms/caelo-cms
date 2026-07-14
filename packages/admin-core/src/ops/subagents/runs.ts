@@ -11,6 +11,9 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { releaseLeasesByHolder } from "../../entity-leases.js";
+import { jsonbParam } from "../../sql-helpers.js";
+import { evaluateFinishRunAuthorization } from "./finish-authorization.js";
 
 const runRow = z.object({
   id: z.string(),
@@ -138,16 +141,67 @@ export const finishSubagentRunOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // PR #295 review — finishing a run force-releases the run's entity
+    // leases, so it must be ownership-gated: an AI actor may only finish
+    // its own run or a run its session spawned. Read the ownership
+    // columns BEFORE writing anything.
+    const owned = (await tx.execute(sql`
+      SELECT subagent_chat_session_id::text AS subagent_chat_session_id,
+             parent_chat_session_id::text AS parent_chat_session_id
+      FROM subagent_runs WHERE id = ${input.id}::uuid
+      LIMIT 1
+    `)) as unknown as {
+      subagent_chat_session_id: string;
+      parent_chat_session_id: string | null;
+    }[];
+    const run = owned[0];
+    if (!run) {
+      return err({
+        kind: "HandlerError",
+        operation: "subagent_runs.finish",
+        message:
+          `subagent run ${input.id} does not exist — nothing to finish. ` +
+          `Use subagent_runs.list to locate live runs.`,
+      });
+    }
+    const authz = evaluateFinishRunAuthorization(ctx.actorKind, ctx.chatTaskId ?? null, {
+      id: input.id,
+      subagentChatSessionId: run.subagent_chat_session_id,
+      parentChatSessionId: run.parent_chat_session_id,
+    });
+    if (!authz.allowed) {
+      // Denied before any write; the failure audit row survives the
+      // err() return (no rollback on returned errors).
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "subagent_runs.finish",
+        input,
+        succeeded: false,
+        entityId: input.id,
+        resultSummary: "denied: caller does not own this run",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "subagent_runs.finish",
+        message: authz.message,
+      });
+    }
     await tx.execute(sql`
       UPDATE subagent_runs
       SET status = ${input.status},
-          result_json = ${input.resultJson === null ? null : JSON.stringify(input.resultJson)}::jsonb,
+          result_json = ${jsonbParam(input.resultJson)},
           cost_microcents = ${input.costMicrocents}::bigint,
           duration_ms = ${input.durationMs},
           error_message = ${input.errorMessage},
           finished_at = now()
       WHERE id = ${input.id}::uuid
     `);
+    // issue #264 — auto-release every entity lease this subagent held the
+    // moment it finishes (completed / errored / timed_out / cancelled), so
+    // a sibling can take the entity immediately instead of waiting out the
+    // TTL. The subagent's own chat session id IS its lease holder_key.
+    await releaseLeasesByHolder(tx, run.subagent_chat_session_id);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

@@ -24,10 +24,18 @@
  *   parent-authored task message — parent history is never inherited.
  *   Task briefs must therefore be self-contained (ids, ground-truth
  *   fetch instructions, return-shape contract).
- *   3. Reads the subagent's final assistant message via chat.get_session.
- *   4. Parses against the spec's expectedReturnShape.
+ *   3. Run #10 D2 — collects the child's result from its `submit_result`
+ *      tool call (structured channel, validated in the child's own loop
+ *      against the shared Zod shapes). The child's final assistant text
+ *      is only a legacy fallback; a child that neither submits nor
+ *      leaves parseable text gets ONE nudge turn, then a structured
+ *      failure.
+ *   4. Run #10 D2 — child provider/runtime errors (context limit, cost
+ *      cap, stream death) surface as a STRUCTURED `child-error` spawn
+ *      failure; they are never fed to the result parser (run #10 saw a
+ *      child's own context-limit error string parsed as its "output").
  *   5. Persists a subagent_runs metadata row.
- *   6. Returns the parsed result as the parent's tool_result.
+ *   6. Returns the validated result as the parent's tool_result.
  *
  * No special "subagent runtime." Same chat-runner code path. The skill
  * matcher inside the subagent engages whichever skill the task message
@@ -47,73 +55,116 @@ import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const EXCLUDED_FOR_CHILD = new Set(["spawn_subagent", "spawn_subagents"]);
-const SUBAGENT_BATCH_CAP_MICROCENTS = Number(
-  process.env.SUBAGENT_BATCH_CAP_MICROCENTS ?? "200000000", // $2.00 default
-);
-const SUBAGENT_MAX_PARALLEL = Number(process.env.SUBAGENT_MAX_PARALLEL ?? "8");
-/**
- * P10.5 #2 — bounded concurrency. With 8 parallel subagents each
- * making 5 provider calls, naive `Promise.all` floods Anthropic's tier
- * limits and gets 429-thrashed. The semaphore caps simultaneous
- * SUBAGENT INVOCATIONS (each subagent's own provider calls run
- * sequentially inside its chat-runner loop). Defaults to 4; configurable.
- */
-const SUBAGENT_PARALLEL_API_LIMIT = Number(process.env.SUBAGENT_PARALLEL_API_LIMIT ?? "4");
 
 /**
- * Tiny p-limit-style semaphore. Avoids a dependency for ~20 LOC.
+ * issue #268 — parse an OPTIONAL numeric env override to a finite
+ * integer `>= min`. A raw `Number(process.env.X ?? "…")` turns a typo
+ * (`SUBAGENT_MAX_PARALLEL=six`) into `NaN`, which then silently poisons
+ * everything downstream: `maxItems: NaN` in the provider JSON schema,
+ * `Math.min(NaN, …)` in the pool sizing, and every `>`/`<` budget
+ * comparison (all false against NaN → the cap never fires). None of
+ * those fail loudly — they just misbehave.
+ *
+ * We do NOT hard-throw at module load. These are optional tuning knobs,
+ * and this constant initializes at import time on the admin's hot path;
+ * a single bad env var must not make importing this module throw and
+ * take down ALL AI functionality. Instead we fall back to the vetted
+ * default and `console.warn` LOUDLY, naming the offending var + value so
+ * the operator can fix it — loud, not silent (CLAUDE.md §2). `min`
+ * guards against `0`/negatives (a 0 concurrency cap would deadlock the
+ * pool; a 0 cost cap would abort every batch immediately).
+ *
+ * @param name the env var to read.
+ * @param defaultValue the vetted fallback used when unset or malformed.
+ * @param min the smallest accepted value (default 1).
  */
-function createSemaphore(max: number): (fn: () => Promise<unknown>) => Promise<unknown> {
-  let active = 0;
-  const queue: Array<() => void> = [];
-  const acquire = (): Promise<void> =>
-    new Promise<void>((resolve) => {
-      const tryAcquire = (): void => {
-        if (active < max) {
-          active += 1;
-          resolve();
-        } else {
-          queue.push(tryAcquire);
-        }
-      };
-      tryAcquire();
-    });
-  const release = (): void => {
-    active -= 1;
-    const next = queue.shift();
-    next?.();
-  };
-  return async (fn) => {
-    await acquire();
-    try {
-      return await fn();
-    } finally {
-      release();
-    }
-  };
-}
-
-/**
- * Run #8 R2c — the return instruction restated for the empty-result retry
- * turn. Mirrors the RETURN-SHAPE CONTRACT wording in the tool description
- * so the retry nudge tells the child exactly what to emit.
- */
-function returnInstructionFor(shape: SpawnSubagentToolInput["expectedReturnShape"]): string {
-  switch (shape) {
-    case "verdict":
-      return "Return ONLY JSON: {pass: boolean, issues: (string|object)[], suggestions?: string[]}.";
-    case "tree":
-      return "Return ONLY JSON: {tree: any[], rationale?: string}.";
-    case "rebuild":
-      return (
-        "Return ONLY JSON: {pages: [{pageId?: uuid, slug?: string, " +
-        'status: "rebuilt"|"skipped"|"failed", notes?: string}], ' +
-        "contentNotes?: string[], skipped?: [{item: string, reason: string}], summary?: string}."
-      );
-    case "freeform":
-      return "Reply with your result as plain text.";
+export function parsePositiveIntEnv(name: string, defaultValue: number, min = 1): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return defaultValue;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < min) {
+    console.warn(
+      `[spawn_subagent] ignoring ${name}=${JSON.stringify(raw)} — expected an integer >= ${min}; ` +
+        `falling back to ${defaultValue}. Fix the env var to tune this cap.`,
+    );
+    return defaultValue;
   }
+  return parsed;
 }
+
+/**
+ * issue #268 — total spend ceiling across a whole `spawn_subagents`
+ * batch. Once the running sum of the settled children's `ai_calls`
+ * exceeds this, the orchestrator stops STARTING the remaining specs
+ * (they resolve as `batch-aborted`) so a runaway migration can't blow
+ * the budget by the width of the pool. Distinct from each spec's own
+ * per-spawn `maxCostMicrocents` (which caps ONE child). $2.00 default.
+ */
+const SUBAGENT_BATCH_CAP_MICROCENTS = parsePositiveIntEnv(
+  "SUBAGENT_BATCH_CAP_MICROCENTS",
+  200_000_000, // $2.00 default
+);
+
+/**
+ * issue #268 — max subagents run CONCURRENTLY within one
+ * `spawn_subagents` call. A 30-page migration submits its pages as
+ * disjoint specs in one call; the orchestrator keeps at most this many
+ * child turns in flight at once and drains the rest as slots free up.
+ * The cap exists because each child fans out its own provider calls —
+ * an unbounded `Promise.all` over 30 children floods the provider's
+ * tier limits and gets 429-thrashed. Default 6 (issue #268 target band
+ * 5-8); env-tunable.
+ */
+const SUBAGENT_MAX_PARALLEL = parsePositiveIntEnv("SUBAGENT_MAX_PARALLEL", 6);
+
+/**
+ * issue #268 — max specs accepted in ONE `spawn_subagents` call. Larger
+ * than the concurrency cap on purpose: the caller hands the whole
+ * disjoint page set in one call and the pool (bounded by
+ * `SUBAGENT_MAX_PARALLEL`) drains it, so a 30-page migration is one tool
+ * call, not five. Env-tunable.
+ */
+const SUBAGENT_MAX_BATCH = parsePositiveIntEnv("SUBAGENT_MAX_BATCH", 32);
+
+/**
+ * Run #10 D2 — the per-shape payload sketch for the submit_result
+ * instruction. Appended to every task brief (and restated on the nudge
+ * turn) so the child knows its result is collected ONLY via the
+ * `submit_result` tool, never from trailing free text.
+ */
+function submitInstructionFor(shape: SpawnSubagentToolInput["expectedReturnShape"]): string {
+  const payload = {
+    verdict: '{"pass": boolean, "issues": (string|object)[], "suggestions"?: string[]}',
+    tree: '{"tree": any[], "rationale"?: string}',
+    rebuild:
+      '{"pages": [{"pageId"?: uuid, "slug"?: string, "status": "rebuilt"|"skipped"|"failed", "notes"?: string}], ' +
+      '"contentNotes"?: string[], "skipped"?: [{"item": string, "reason": string}], "summary"?: string}',
+    freeform: '{"text": string} (or a plain string)',
+  }[shape];
+  return (
+    "MANDATORY FINAL STEP: when your work is done, deliver your result by calling the `submit_result` tool " +
+    `EXACTLY ONCE with {"result": ${payload}}. ` +
+    "Your result is read ONLY from that tool call — plain text at the end of your turn is NOT collected. " +
+    "If submit_result rejects your payload, fix the named fields and call it again, then end your turn."
+  );
+}
+
+/**
+ * Run #10 D2 — structured failure classes for a spawn (CLAUDE.md §11:
+ * failure surfaces are AI-actionable). `child-error` is the child's own
+ * provider/runtime failure (context limit, cost cap, dead stream) —
+ * NEVER parseable-looking output; `empty-result` / `shape-mismatch`
+ * are result-channel failures after the automatic nudge retry;
+ * `spawn-error` is plumbing (session create, stream threw).
+ */
+type SubagentErrorKind =
+  | "spawn-error"
+  | "child-error"
+  | "empty-result"
+  | "shape-mismatch"
+  // issue #268 — this spec was never started: the batch had already
+  // spent past `batchMaxCostMicrocents` when its pool slot came up.
+  | "batch-aborted";
 
 interface SubagentInvocationResult {
   role: string;
@@ -123,6 +174,8 @@ interface SubagentInvocationResult {
   durationMs: number;
   subagentChatSessionId: string;
   errorMessage?: string;
+  /** Run #10 D2 — which structured failure class an errored spawn belongs to. */
+  errorKind?: SubagentErrorKind;
 }
 
 async function runOneSubagent(
@@ -223,16 +276,34 @@ async function runOneSubagent(
   };
   const childHumanCtx = toolCtx.humanCtx;
 
+  // Run #10 D2 — the structured result channel. The child's
+  // submit_result tool validates its payload against the shared Zod
+  // shape IN the child's own loop (a mismatch bounces back as a failed
+  // tool result the child fixes without a parent round-trip); only
+  // validated values land here.
+  let submittedResult: unknown;
+  let resultSubmitted = false;
+  const subagentResultCapture = {
+    expectedShape: spec.expectedReturnShape,
+    submit: (value: unknown): void => {
+      submittedResult = value;
+      resultSubmitted = true;
+    },
+  };
+
   // Drives ONE chat-runner turn in the child session (per-spec timeout
   // via AbortController) and forwards the child's events to the parent's
-  // sink. A closure so the R2c empty-result retry below can send a
+  // sink. A closure so the submit-nudge retry below can send a
   // follow-up turn into the SAME session — context preserved, prompt
-  // cache warm — instead of re-spawning from scratch.
+  // cache warm — instead of re-spawning from scratch. Child `error`
+  // events are collected so a provider/runtime failure inside the child
+  // surfaces as a structured child-error, never as parseable output.
   const runChildTurn = async (
     content: string,
-  ): Promise<{ timedOut: boolean } | { error: string }> => {
+  ): Promise<{ timedOut: boolean; childErrors: string[] } | { error: string }> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
+    const childErrors: string[] = [];
     try {
       // `spawnChildChatTurn` presence was checked at the top of this function.
       const stream = toolCtx.spawnChildChatTurn?.({
@@ -246,9 +317,11 @@ async function runOneSubagent(
         aiCtx: childAiCtx,
         humanCtx: childHumanCtx,
         excludedToolNames: EXCLUDED_FOR_CHILD,
-        // issue #264 — per-spawn narrowing (hard filter, validated above).
+        // issue #264 — per-spawn narrowing (hard filter, validated
+        // above). Run #10 D2 — submit_result is unioned in so a
+        // narrowed child can still deliver its structured result.
         ...(spec.allowedToolNames && spec.allowedToolNames.length > 0
-          ? { allowedToolNames: new Set(spec.allowedToolNames) }
+          ? { allowedToolNames: new Set([...spec.allowedToolNames, "submit_result"]) }
           : {}),
         // issue #264 — the child works ON THE PARENT'S BRANCH so its
         // reads see the orchestrator's branched entities and its writes
@@ -256,6 +329,8 @@ async function runOneSubagent(
         ...(toolCtx.chatBranchId ? { chatBranchIdOverride: toolCtx.chatBranchId } : {}),
         // P10.5 #3 — pre-emptive cap inside the child's chat-runner.
         costCapMicrocents: spec.maxCostMicrocents,
+        // Run #10 D2 — enables submit_result in the child's catalogue.
+        subagentResultCapture,
         abortSignal: controller.signal,
       });
       if (!stream) return { error: "spawnChildChatTurn unavailable" };
@@ -267,9 +342,16 @@ async function runOneSubagent(
       // (depth-1 cap on observability for now).
       for await (const ev of stream as AsyncIterable<{ kind: string }>) {
         if (controller.signal.aborted) {
-          return { timedOut: true };
+          return { timedOut: true, childErrors };
         }
-        const inner = ev as { kind: string };
+        const inner = ev as { kind: string; message?: unknown };
+        // Run #10 D2 — an `error` event is the child's own failure
+        // (provider 4xx, context limit after compaction, cost cap,
+        // dead stream). Recorded so the spawn resolves as a structured
+        // child-error instead of parsing whatever text is left behind.
+        if (inner.kind === "error" && typeof inner.message === "string") {
+          childErrors.push(inner.message);
+        }
         if (inner.kind !== "subagent-event" && toolCtx.pushClientEvent) {
           toolCtx.pushClientEvent({
             kind: "subagent-event",
@@ -280,7 +362,7 @@ async function runOneSubagent(
           });
         }
       }
-      return { timedOut: false };
+      return { timedOut: false, childErrors };
     } catch (e) {
       return { error: (e as Error).message };
     } finally {
@@ -315,7 +397,10 @@ async function runOneSubagent(
     return "";
   };
 
-  const failErrored = async (message: string): Promise<SubagentInvocationResult> => {
+  const failErrored = async (
+    message: string,
+    errorKind: SubagentErrorKind,
+  ): Promise<SubagentInvocationResult> => {
     if (subagentRunId) {
       await execute(toolCtx.registry, toolCtx.adapter, ctx, "subagent_runs.finish", {
         id: subagentRunId,
@@ -323,7 +408,7 @@ async function runOneSubagent(
         resultJson: null,
         costMicrocents: 0,
         durationMs: Date.now() - startedAt,
-        errorMessage: message,
+        errorMessage: `${errorKind}: ${message}`,
       });
     }
     return {
@@ -334,44 +419,62 @@ async function runOneSubagent(
       durationMs: Date.now() - startedAt,
       subagentChatSessionId,
       errorMessage: message,
+      errorKind,
     };
   };
 
-  const firstTurn = await runChildTurn(spec.task);
+  // Run #10 D2 — the submit instruction is appended to EVERY task brief
+  // (not left to the parent's discretion): run #10 lost all 5 rebuild
+  // spawns to the free-text result channel.
+  const firstTurn = await runChildTurn(
+    `${spec.task}\n\n${submitInstructionFor(spec.expectedReturnShape)}`,
+  );
   if ("error" in firstTurn) {
-    return await failErrored(firstTurn.error);
+    return await failErrored(firstTurn.error, "spawn-error");
   }
   let timedOut = firstTurn.timedOut;
-  let finalText = await readFinalAssistantText();
+  let childErrors = firstTurn.childErrors;
 
-  // Run #8 R2c — one AUTOMATIC retry when the child completed but its
-  // final assistant message is empty (run #8: "errored — subagent
-  // returned empty text · 4137ms" with no recovery). The retry is a
-  // follow-up turn in the same session, so the child keeps its context
-  // and just has to emit the result it already produced the work for.
-  if (!timedOut && finalText.trim().length === 0) {
-    console.error("[spawn_subagent] empty-final-text; retrying once", {
-      role: spec.role,
-      subagentChatSessionId,
-      expectedReturnShape: spec.expectedReturnShape,
-    });
-    const retryTurn = await runChildTurn(
-      `Your previous reply was empty — you MUST reply with your result now. ${returnInstructionFor(spec.expectedReturnShape)}`,
-    );
-    if ("error" in retryTurn) {
-      return await failErrored(retryTurn.error);
-    }
-    timedOut = retryTurn.timedOut;
-    finalText = await readFinalAssistantText();
-    if (!timedOut && finalText.trim().length === 0) {
-      // Structured, orchestrator-actionable error (CLAUDE.md §11:
-      // failure surfaces carry the next step).
-      return await failErrored(
-        "subagent returned empty text (after one automatic retry). " +
-          "Recovery: re-spawn with a SMALLER, more explicit task (fewer pages per batch), " +
-          'or with expectedReturnShape: "freeform" and the return instruction restated verbatim at the end of the task.',
+  // Run #10 D2 (supersedes run #8 R2c) — one AUTOMATIC nudge turn when
+  // the child finished cleanly but delivered no result: no
+  // submit_result call AND no final text that parses under the
+  // expected shape. The retry is a follow-up turn in the same session,
+  // so the child keeps its context and just has to submit the result
+  // it already produced the work for. Erroring/timed-out children are
+  // NOT nudged — their failure is surfaced structurally below.
+  if (!timedOut && !resultSubmitted && childErrors.length === 0) {
+    const firstText = await readFinalAssistantText();
+    const firstParse =
+      firstText.trim().length > 0 ? parseSubagentResult(firstText, spec.expectedReturnShape) : null;
+    if (!firstParse?.ok) {
+      console.error("[spawn_subagent] no submit_result; nudging once", {
+        role: spec.role,
+        subagentChatSessionId,
+        expectedReturnShape: spec.expectedReturnShape,
+        finalTextChars: firstText.length,
+      });
+      const retryTurn = await runChildTurn(
+        `You have not delivered your result yet — call submit_result NOW. ${submitInstructionFor(spec.expectedReturnShape)}`,
       );
+      if ("error" in retryTurn) {
+        return await failErrored(retryTurn.error, "spawn-error");
+      }
+      timedOut = retryTurn.timedOut;
+      childErrors = retryTurn.childErrors;
     }
+  }
+
+  // Run #10 D2 — a child that failed (provider error, context limit,
+  // cost cap, dead stream) without submitting is a CHILD-ERROR: the
+  // parent gets the child's own error message in a structured failure,
+  // never as something that looks like output to parse.
+  if (!resultSubmitted && childErrors.length > 0) {
+    return await failErrored(
+      `the subagent's session failed before delivering a result — ${childErrors[childErrors.length - 1]}. ` +
+        "This is the child's provider/runtime failure, not its output. Recovery: re-spawn with a " +
+        "SMALLER task (fewer pages per batch) and/or a higher timeoutMs / maxCostMicrocents.",
+      "child-error",
+    );
   }
 
   if (timedOut) {
@@ -396,18 +499,36 @@ async function runOneSubagent(
     };
   }
 
-  // 5. Parse against the spec's expectedReturnShape. On failure, return
-  //    the raw text under freeform shape for parent visibility.
-  const parsed = parseSubagentResult(finalText, spec.expectedReturnShape);
+  // 5. Resolve the result: the submit_result channel wins (already
+  //    validated in the child's loop); final-text parsing remains as
+  //    the legacy fallback for a child that answered in text despite
+  //    the instruction.
   let resultJson: unknown;
   let status: "completed" | "errored" = "completed";
   let errorMessage: string | undefined;
-  if (parsed.ok) {
-    resultJson = parsed.value;
+  let errorKind: SubagentErrorKind | undefined;
+  if (resultSubmitted) {
+    resultJson = submittedResult;
   } else {
-    status = "errored";
-    errorMessage = parsed.error;
-    resultJson = { raw: finalText.slice(0, 4000) };
+    const finalText = await readFinalAssistantText();
+    if (finalText.trim().length === 0) {
+      status = "errored";
+      errorKind = "empty-result";
+      errorMessage =
+        "subagent neither called submit_result nor returned final text (after one automatic nudge). " +
+        "Recovery: re-spawn with a SMALLER, more explicit task (fewer pages per batch).";
+      resultJson = null;
+    } else {
+      const parsed = parseSubagentResult(finalText, spec.expectedReturnShape);
+      if (parsed.ok) {
+        resultJson = parsed.value;
+      } else {
+        status = "errored";
+        errorKind = "shape-mismatch";
+        errorMessage = parsed.error;
+        resultJson = { raw: finalText.slice(0, 4000) };
+      }
+    }
   }
 
   // 6. Roll up the subagent's accumulated cost from ai_calls.
@@ -424,6 +545,7 @@ async function runOneSubagent(
 
   if (costMicrocents > spec.maxCostMicrocents) {
     status = "errored";
+    errorKind = "child-error";
     errorMessage = `subagent exceeded cost cap: spent ${costMicrocents} / cap ${spec.maxCostMicrocents}`;
   }
 
@@ -434,7 +556,7 @@ async function runOneSubagent(
       resultJson: resultJson as Record<string, unknown>,
       costMicrocents,
       durationMs: Date.now() - startedAt,
-      errorMessage: errorMessage ?? null,
+      errorMessage: errorMessage ? `${errorKind ? `${errorKind}: ` : ""}${errorMessage}` : null,
     });
   }
 
@@ -446,6 +568,166 @@ async function runOneSubagent(
     durationMs: Date.now() - startedAt,
     subagentChatSessionId,
     ...(errorMessage ? { errorMessage } : {}),
+    ...(errorKind ? { errorKind } : {}),
+  };
+}
+
+/** issue #268 — one n-of-m tick the batch orchestrator hands its caller. */
+export interface SubagentBatchProgress {
+  /** Specs settled so far (run OR budget-aborted). */
+  finished: number;
+  /** Total specs in the batch. */
+  total: number;
+  /** Specs that actually invoked a child turn (excludes budget-aborted). */
+  ran: number;
+  /** Running sum of settled children's rolled-up cost. */
+  totalCostMicrocents: number;
+  /** Role of the spec that just settled. */
+  lastRole: string;
+  /** True once the running cost tripped the batch cap and later specs are skipped. */
+  batchAborted: boolean;
+}
+
+/** issue #268 — the batch orchestrator's return: ordered results + roll-up. */
+export interface SubagentBatchOutcome {
+  /** One result per input spec, in input order. */
+  results: SubagentInvocationResult[];
+  /** Sum of every settled child's rolled-up `ai_calls` cost. */
+  totalCostMicrocents: number;
+  /** True when at least one spec was skipped because the batch cap was hit. */
+  batchAborted: boolean;
+  /**
+   * True when the final total spend exceeded the cap — the hard budget
+   * signal. Distinct from `batchAborted`: the LAST in-flight child can
+   * tip the total over the cap with NO later specs left to skip, in
+   * which case nothing is aborted (`batchAborted` stays false) but the
+   * ceiling was still blown. Callers gating on budget MUST read this,
+   * not `batchAborted` (Copilot #291-1). `batchAborted ⟹ overBudget`,
+   * never the reverse.
+   */
+  overBudget: boolean;
+  /** Count of specs that actually ran (invoked a child turn). */
+  ran: number;
+}
+
+/**
+ * The synthetic result for a spec that never started because the batch
+ * had already spent past its cap. Zero cost, zero duration — it did no
+ * work. AI-actionable message (CLAUDE.md §11): tells the parent exactly
+ * how to recover (smaller batch, or raise the cap).
+ */
+function batchAbortedResult(
+  spec: SpawnSubagentToolInput,
+  spentMicrocents: number,
+  capMicrocents: number,
+): SubagentInvocationResult {
+  return {
+    role: spec.role,
+    status: "errored",
+    resultJson: null,
+    costMicrocents: 0,
+    durationMs: 0,
+    subagentChatSessionId: "",
+    errorKind: "batch-aborted",
+    errorMessage:
+      `not started: the batch had already spent $${(spentMicrocents / 1e8).toFixed(4)} ` +
+      `(cap $${(capMicrocents / 1e8).toFixed(4)}) when this subagent's turn came up. ` +
+      "Recovery: re-run this page in a fresh, SMALLER spawn_subagents batch, or raise " +
+      "SUBAGENT_BATCH_CAP_MICROCENTS if the higher spend is expected.",
+  };
+}
+
+/**
+ * issue #268 — the concurrency + budget core of `spawn_subagents`,
+ * factored out of the tool handler so it is unit-testable with a mock
+ * `runSpawn` (no chat-runner, no DB, no provider). Runs `specs` through
+ * a bounded worker pool:
+ *
+ *   - **Concurrency:** at most `maxParallel` child turns are in flight at
+ *     once. `Promise.all` over N children would flood the provider; the
+ *     pool caps it and drains the queue as slots free up.
+ *   - **Budget abort (in-flight, not post-hoc):** each worker checks the
+ *     running cost BEFORE it starts the next spec. Once the batch total
+ *     exceeds `batchMaxCostMicrocents`, remaining specs resolve as
+ *     `batch-aborted` WITHOUT running — so the batch can overshoot the
+ *     cap by at most the cost of the children already in flight when the
+ *     line was crossed, never by the full width of the untouched queue.
+ *   - **Progress:** `onProgress` fires once per settled spec with the
+ *     n-of-m counts + running cost, so the caller can stream live ticks.
+ *
+ * Results are returned in input order regardless of completion order.
+ *
+ * @param specs        the batch (already length-validated by the caller).
+ * @param runSpawn     runs ONE subagent; the real one is `runOneSubagent`,
+ *                     tests pass a mock that records max-in-flight / cost.
+ * @param opts.maxParallel            max simultaneous in-flight spawns.
+ * @param opts.batchMaxCostMicrocents batch-wide spend ceiling.
+ * @param opts.onProgress            per-settlement n-of-m callback.
+ */
+export async function runSubagentBatch(
+  specs: readonly SpawnSubagentToolInput[],
+  runSpawn: (spec: SpawnSubagentToolInput, index: number) => Promise<SubagentInvocationResult>,
+  opts: {
+    maxParallel: number;
+    batchMaxCostMicrocents: number;
+    onProgress?: (progress: SubagentBatchProgress) => void;
+  },
+): Promise<SubagentBatchOutcome> {
+  const total = specs.length;
+  const results = new Array<SubagentInvocationResult>(total);
+  let runningCostMicrocents = 0;
+  let finished = 0;
+  let ran = 0;
+  let batchAborted = false;
+  // Claimed synchronously (no await between read and increment) so two
+  // workers never grab the same index — JS's single-threaded loop makes
+  // this the whole mutual-exclusion story; no lock needed.
+  let cursor = 0;
+
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= total) return;
+      const spec = specs[index] as SpawnSubagentToolInput;
+
+      if (runningCostMicrocents > opts.batchMaxCostMicrocents) {
+        batchAborted = true;
+        results[index] = batchAbortedResult(
+          spec,
+          runningCostMicrocents,
+          opts.batchMaxCostMicrocents,
+        );
+      } else {
+        const result = await runSpawn(spec, index);
+        runningCostMicrocents += result.costMicrocents;
+        ran += 1;
+        results[index] = result;
+      }
+
+      finished += 1;
+      opts.onProgress?.({
+        finished,
+        total,
+        ran,
+        totalCostMicrocents: runningCostMicrocents,
+        lastRole: spec.role,
+        batchAborted,
+      });
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(opts.maxParallel, total));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return {
+    results,
+    totalCostMicrocents: runningCostMicrocents,
+    batchAborted,
+    // Final-total budget check: catches the last-child-tips-over case
+    // that `batchAborted` (specs-were-skipped) misses (Copilot #291-1).
+    overBudget: runningCostMicrocents > opts.batchMaxCostMicrocents,
+    ran,
   };
 }
 
@@ -466,14 +748,18 @@ function summarize(results: SubagentInvocationResult[]): string {
       // it. The shape-mismatch case sets resultJson = {raw: <first
       // 4k of text>} per the parse-failure path; rendering it lets
       // the parent see what the subagent actually said.
-      const header = `## ${r.role} (${r.status}${r.errorMessage ? ` — ${r.errorMessage}` : ""} · ${r.durationMs}ms · $${cost})`;
+      // Run #10 D2 — the errorKind tag makes the failure class
+      // machine-distinguishable for the parent: `child-error` means
+      // the CHILD's session failed (its message is a provider/runtime
+      // error, not output), vs. the result-channel classes.
+      const header = `## ${r.role} (${r.status}${r.errorKind ? ` [${r.errorKind}]` : ""}${r.errorMessage ? ` — ${r.errorMessage}` : ""} · ${r.durationMs}ms · $${cost})`;
       const rawText =
         r.resultJson && typeof r.resultJson === "object" && "raw" in r.resultJson
           ? String((r.resultJson as { raw: unknown }).raw ?? "")
           : "";
       const hint =
-        r.status === "errored" && r.errorMessage?.includes("shape mismatch")
-          ? 'Recovery: re-spawn this subagent with `expectedReturnShape: "freeform"` to read the raw output, OR adjust the subagent\'s `task` prompt to make the schema fit (e.g. include `Return JSON: {pass: boolean, issues: string[]}` verbatim in the task), OR surface the raw output below directly to the user.'
+        r.status === "errored" && r.errorKind === "shape-mismatch"
+          ? 'Recovery: re-spawn this subagent with `expectedReturnShape: "freeform"` to read the raw output, OR adjust the subagent\'s `task` prompt to make the schema fit, OR surface the raw output below directly to the user.'
           : null;
       const sections: string[] = [header];
       if (rawText) {
@@ -497,16 +783,16 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
     "The subagent starts with a FRESH context — it knows NOTHING about this chat. Its `task` must be fully self-contained (ids, facts, fetch instructions, return-shape contract). It works on THIS chat's preview branch, so its edits show up in this chat's preview/publish/undo. " +
     "TOOL ACCESS: by default the subagent gets the full tool catalogue minus the spawn tools (it CAN write). Pass `allowedToolNames` (AI tool names, e.g. list_pages, edit_module) to narrow it, e.g. to read-only tools for review tasks. " +
     "DO NOT use for one-line edits or quick lookups — use a regular tool. Subagents earn their cost when work is multi-step + needs an isolated reasoning context. " +
-    // v0.2.68 — explicit return-shape schemas. Pre-v0.2.68 the AI saw
-    // only the enum names and had to guess the JSON shape; mismatches
-    // landed as cryptic "shape mismatch" errors. Each shape now has
-    // its required JSON form right in the description.
-    "RETURN-SHAPE CONTRACT — when you set `expectedReturnShape`, you MUST include the matching JSON instruction VERBATIM in the `task` field so the subagent returns the right structure: " +
-    '"verdict" → subagent must return JSON: {pass: boolean, issues: (string|object)[], suggestions?: string[]}. Use for QA / audit / review tasks ("does X meet Y criteria?"). ' +
-    '"tree" → subagent must return JSON: {tree: any[], rationale?: string}. Use for hierarchical-structure tasks (sitemap, nav tree, IA outline). ' +
-    '"rebuild" → subagent must return JSON: {pages: [{pageId?: uuid, slug?: string, status: "rebuilt"|"skipped"|"failed", notes?: string}], contentNotes?: string[], skipped?: [{item: string, reason: string}], summary?: string}. Use for migration page-rebuild tasks — the compact per-page summary is all that enters your context. ' +
-    '"freeform" → subagent returns either {text: "..."} JSON or raw text (auto-wrapped). Use when the response is prose / narrative without a fixed structure. ' +
-    "When in doubt, pick `freeform` — the parse can't fail. Pick `verdict`, `tree`, or `rebuild` only when you've explicitly told the subagent to return that shape in the task prompt.",
+    // v0.2.68 — explicit return-shape schemas. Run #10 D2 — the child
+    // now delivers its result via a `submit_result` tool call (the
+    // submit instruction is appended to the task automatically); the
+    // shapes below describe the payload it must submit.
+    "RETURN-SHAPE CONTRACT — the subagent delivers its result by calling its `submit_result` tool with a payload matching `expectedReturnShape` (the submit instruction is appended to your task automatically; your task should still explain the fields' semantics): " +
+    '"verdict" → {pass: boolean, issues: (string|object)[], suggestions?: string[]}. Use for QA / audit / review tasks ("does X meet Y criteria?"). ' +
+    '"tree" → {tree: any[], rationale?: string}. Use for hierarchical-structure tasks (sitemap, nav tree, IA outline). ' +
+    '"rebuild" → {pages: [{pageId?: uuid, slug?: string, status: "rebuilt"|"skipped"|"failed", notes?: string}], contentNotes?: string[], skipped?: [{item: string, reason: string}], summary?: string}. Use for migration page-rebuild tasks — the compact per-page summary is all that enters your context. ' +
+    '"freeform" → {text: "..."} or plain text (auto-wrapped). Use when the response is prose / narrative without a fixed structure. ' +
+    "When in doubt, pick `freeform` — validation can't fail. Pick `verdict`, `tree`, or `rebuild` when you want a machine-checkable structure back.",
   schema: spawnSubagentToolInput,
   inputSchema: {
     type: "object",
@@ -519,7 +805,7 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
         minLength: 1,
         maxLength: 8000,
         description:
-          'When using expectedReturnShape="verdict" or "tree", include the JSON-shape instruction verbatim in the task (e.g. "Return JSON: {pass: boolean, issues: string[]}") — the subagent has no other way to know what to emit.',
+          "Self-contained brief (ids, facts, fetch instructions). The submit_result instruction for the chosen expectedReturnShape is appended automatically — describe the CONTENT you want in each result field.",
       },
       allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
       expectedReturnShape: {
@@ -528,7 +814,7 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
         // schema can never drift from what the validator accepts.
         enum: [...EXPECTED_RETURN_SHAPES],
         description:
-          "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or raw text. PICK FREEFORM unless you're explicitly instructing the subagent to emit verdict/tree/rebuild JSON.",
+          "Payload shape the subagent submits via submit_result: verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or plain text. PICK FREEFORM for prose results.",
       },
       maxCostMicrocents: { type: "integer", minimum: 0 },
       timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
@@ -548,12 +834,21 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
 export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInput> = {
   name: "spawn_subagents",
   description:
-    "Spawn MULTIPLE subagents in parallel. Each subagent gets its own context window + auto-engaged skill (matcher fires inside each subagent based on its task wording). All subagents run concurrently; this tool BLOCKS until all finish. " +
-    "Use this when a task benefits from multiple angles in parallel — e.g. drafting an article and validating it via QA + legal + brand-voice review (3 parallel verdicts), or auditing a structure via a current-state auditor + a fresh-proposal generator (2 parallel angles). " +
-    "Returns ONE bundled tool result with each subagent's parsed verdict + cost + duration, keeping the prompt-cache prefix clean. Each subagent starts FRESH (self-contained task required) and gets the full catalogue minus the spawn tools unless narrowed via allowedToolNames. " +
-    "Cap: 8 parallel subagents per call. Each subagent has its own per-spawn cost cap (default $0.50) + timeout (default 60s); the batch overall is capped at $2.00 unless overridden via env. " +
-    // v0.2.68 — same return-shape guidance as spawn_subagent.
-    "RETURN-SHAPE CONTRACT (per subagent) — when you set `expectedReturnShape`, you MUST include the matching JSON instruction VERBATIM in that subagent's `task`: " +
+    "Spawn MULTIPLE subagents that run CONCURRENTLY. Each gets its own context window + auto-engaged skill (matcher fires inside each subagent based on its task wording). This tool BLOCKS until all finish and returns ONE bundled result. " +
+    "Use this when work splits into independent parcels that can run at the same time — e.g. drafting an article and validating it via QA + legal + brand-voice review (3 parallel verdicts), or the big one: a site migration where each of N pages gets its OWN per-page AI pass, all in flight together instead of one-at-a-time. " +
+    "Returns ONE bundled tool result with each subagent's parsed result + cost + duration + a batch cost roll-up, keeping the prompt-cache prefix clean. Each subagent starts FRESH (self-contained task required) and gets the full catalogue minus the spawn tools unless narrowed via allowedToolNames. " +
+    // issue #268 — disjoint-work contract. All siblings write to the
+    // SAME shared preview branch and the entity-lock system keys on the
+    // branch's session, so siblings do NOT lock each other out (they all
+    // resolve to the parent session and are all permitted). Per-sibling
+    // sub-leasing is the #264 lease work, not this PR — so for now
+    // disjointness is the caller's contract, with no lock backstop.
+    "DISJOINT-WORK CONTRACT (MANDATORY for WRITE batches): the subagents run at the same time on the SAME preview branch. They do NOT lock each other out — the entity lock is per-branch, and all siblings share this chat's branch — so two subagents writing the SAME module is a silent lost update (last writer wins), not a clean error. Therefore each spec MUST target a DISJOINT set of entities: give each subagent its own page (or its own non-overlapping page batch), and put any shared chrome (header/footer/nav) in exactly ONE dedicated spec. Never let two siblings touch the same module/page. " +
+    `Concurrency: up to ${SUBAGENT_MAX_BATCH} specs per call; at most ${SUBAGENT_MAX_PARALLEL} run at once (the rest queue and drain as slots free). Each subagent has its own per-spawn cost cap (default $0.50) + timeout (default 60s). The BATCH as a whole is capped at $2.00 (env-tunable): once the running spend crosses it, not-yet-started subagents are skipped (reported as \`batch-aborted\`) so a runaway fan-out can't blow the budget. Live n-of-m progress ("3 of 8 done") streams to the operator while the batch runs. ` +
+    // v0.2.68 / run #10 D2 — same return-shape guidance as
+    // spawn_subagent: results arrive via each child's submit_result
+    // tool call (instruction auto-appended to each task).
+    "RETURN-SHAPE CONTRACT (per subagent) — each subagent delivers its result via its `submit_result` tool, matching its `expectedReturnShape` (the submit instruction is appended to each task automatically): " +
     '"verdict" → {pass: boolean, issues: (string|object)[], suggestions?: string[]}; ' +
     '"tree" → {tree: any[], rationale?: string}; ' +
     '"rebuild" → {pages: [{pageId?, slug?, status: "rebuilt"|"skipped"|"failed", notes?}], contentNotes?: string[], skipped?: [{item, reason}], summary?: string}; ' +
@@ -568,7 +863,9 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
       subagents: {
         type: "array",
         minItems: 1,
-        maxItems: SUBAGENT_MAX_PARALLEL,
+        // issue #268 — accept the whole disjoint set in one call; the
+        // orchestrator caps how many run AT ONCE (SUBAGENT_MAX_PARALLEL).
+        maxItems: SUBAGENT_MAX_BATCH,
         items: {
           type: "object",
           additionalProperties: false,
@@ -580,7 +877,7 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
               minLength: 1,
               maxLength: 8000,
               description:
-                'When using expectedReturnShape="verdict" or "tree", include the JSON-shape instruction verbatim in the task (e.g. "Return JSON: {pass: boolean, issues: string[]}").',
+                "Self-contained brief (ids, facts, fetch instructions). The submit_result instruction for the chosen expectedReturnShape is appended automatically.",
             },
             allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
             expectedReturnShape: {
@@ -588,7 +885,7 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
               // Run #8 R2a — derived from the shared Zod enum (see above).
               enum: [...EXPECTED_RETURN_SHAPES],
               description:
-                "verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or raw. PICK FREEFORM when not explicitly instructing the subagent to emit verdict/tree/rebuild JSON.",
+                "Payload shape the subagent submits via submit_result: verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or plain text. PICK FREEFORM for prose results.",
             },
             maxCostMicrocents: { type: "integer", minimum: 0 },
             timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
@@ -599,30 +896,64 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    if (input.subagents.length > SUBAGENT_MAX_PARALLEL) {
+    if (input.subagents.length > SUBAGENT_MAX_BATCH) {
       return {
         ok: false,
-        content: `spawn_subagents max parallel = ${SUBAGENT_MAX_PARALLEL}; got ${input.subagents.length}`,
+        content: `spawn_subagents accepts at most ${SUBAGENT_MAX_BATCH} subagents per call; got ${input.subagents.length}. Split the work into multiple calls.`,
       };
     }
     const batchId = crypto.randomUUID();
-    // P10.5 #2 — bounded concurrency. SUBAGENT_PARALLEL_API_LIMIT caps
-    // simultaneous in-flight subagents. Specs queue past it; queue
-    // drains as earlier ones complete.
-    const limit = createSemaphore(SUBAGENT_PARALLEL_API_LIMIT);
-    const results = (await Promise.all(
-      input.subagents.map((spec) => limit(() => runOneSubagent(spec, ctx, toolCtx, batchId, null))),
-    )) as SubagentInvocationResult[];
-    const totalCost = results.reduce((sum, r) => sum + r.costMicrocents, 0);
-    if (totalCost > SUBAGENT_BATCH_CAP_MICROCENTS) {
-      return {
-        ok: false,
-        content:
-          `spawn_subagents batch cost cap exceeded: spent ${totalCost} / cap ${SUBAGENT_BATCH_CAP_MICROCENTS}\n\n` +
-          summarize(results),
-      };
-    }
-    const allCompleted = results.every((r) => r.status === "completed");
-    return { ok: allCompleted, content: summarize(results) };
+
+    // issue #268 — the concurrency + in-flight-budget core lives in
+    // runSubagentBatch (unit-tested with a mock spawn). Here we wire the
+    // real spawn, cap concurrency at SUBAGENT_MAX_PARALLEL, cap total
+    // spend at SUBAGENT_BATCH_CAP_MICROCENTS, and stream n-of-m progress
+    // to the operator as each sibling settles.
+    const outcome = await runSubagentBatch(
+      input.subagents,
+      (spec) => runOneSubagent(spec, ctx, toolCtx, batchId, null),
+      {
+        maxParallel: SUBAGENT_MAX_PARALLEL,
+        batchMaxCostMicrocents: SUBAGENT_BATCH_CAP_MICROCENTS,
+        onProgress: (p) => {
+          toolCtx.pushClientEvent?.({
+            kind: "subagent-batch-progress",
+            batchId,
+            finished: p.finished,
+            total: p.total,
+            ran: p.ran,
+            totalCostMicrocents: p.totalCostMicrocents,
+            lastRole: p.lastRole,
+            batchAborted: p.batchAborted,
+          });
+        },
+      },
+    );
+
+    // issue #268 — cost roll-up across the parallel batch is ALWAYS
+    // reported (not only on cap-exceed), so the parent sees the batch's
+    // total spend + n-of-m completion in its tool result. `overBudget`
+    // is the hard budget signal (final total > cap) — it fires even when
+    // no spec was SKIPPED (the last in-flight child tipping the total
+    // over the cap, Copilot #291-1), whereas `batchAborted` only reports
+    // the skip. We flag both conditions distinctly.
+    const overBudgetNote = outcome.overBudget
+      ? outcome.batchAborted
+        ? "\nBATCH COST CAP HIT — later subagents were skipped (see batch-aborted rows above). " +
+          "Re-run the skipped pages in a fresh batch, or raise SUBAGENT_BATCH_CAP_MICROCENTS."
+        : "\nBATCH COST CAP EXCEEDED — the in-flight subagents' spend pushed the batch over the cap " +
+          "(nothing was skipped — the ceiling was crossed by the last runners). Their edits DID land; " +
+          "treat this as over-budget and raise SUBAGENT_BATCH_CAP_MICROCENTS if the higher spend is expected."
+      : "";
+    const rollUp =
+      `\n\n---\nBatch: ${outcome.ran} of ${input.subagents.length} subagents ran · ` +
+      `total cost $${(outcome.totalCostMicrocents / 1e8).toFixed(4)} / cap $${(SUBAGENT_BATCH_CAP_MICROCENTS / 1e8).toFixed(4)}` +
+      overBudgetNote;
+
+    // `ok` is a hard budget guard: an over-budget batch is NEVER ok,
+    // even if every child that ran completed (Copilot #291-1).
+    const allCompleted =
+      !outcome.overBudget && outcome.results.every((r) => r.status === "completed");
+    return { ok: allCompleted, content: summarize(outcome.results) + rollUp };
   },
 };

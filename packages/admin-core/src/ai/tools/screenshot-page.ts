@@ -39,10 +39,10 @@ export type ScreenshotPageInput = z.infer<typeof screenshotInput>;
 export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> = {
   name: "screenshot_page",
   description:
-    "Capture a screenshot of the rendered page (operator's browser does the capture via html2canvas; you see the result as an image attached to the next user turn). Use for VISUAL feedback — 'is the spacing right?', 'does the hero feel crowded?', 'what's the overall layout impression?'. " +
+    "Capture a screenshot of the rendered page (operator's browser does the capture via html2canvas; the image comes back WITHIN this same turn — keep working and analyse it on your next step, do NOT end your turn to wait for it). Use for VISUAL feedback — 'is the spacing right?', 'does the hero feel crowded?', 'what's the overall layout impression?'. " +
     "ALWAYS call this after composing a page or making structural/styling changes — desktop AND mobile viewports — and fix what the screenshot reveals BEFORE telling the operator you're done (max two review rounds; skip for content-only edits). " +
-    "For CSS pathology (white halo around the header, wrong colors, broken layout) prefer `inspect_page_render` — it returns the HTML + every CSS layer separately and is faster + cheaper. " +
-    "Pass `selector` (CSS selector) to capture a SINGLE element instead of the whole page — right choice when checking one module (a footer, a hero) instead of the page. By default the capture shows THIS chat's branch preview (your pending edits included); pass `chatBranchId` only to capture a different branch. REQUIRES an active operator browser session — fails with a 30s timeout if the operator closed the tab. Only call this once per visual check; the image is attached to ONE follow-up user turn, not persisted across the chat.",
+    "For VERIFYING A REBUILT IMPORTED PAGE against its original prefer `verify_import_page_fidelity` — it diffs the source screenshot against your rebuild and returns pass/warn/fail numbers synchronously, no browser needed. For CSS pathology (white halo around the header, wrong colors, broken layout) prefer `inspect_page_render` — it returns the HTML + every CSS layer separately and is faster + cheaper. " +
+    "Pass `selector` (CSS selector) to capture a SINGLE element instead of the whole page — right choice when checking one module (a footer, a hero) instead of the page. By default the capture shows THIS chat's branch preview (your pending edits included); pass `chatBranchId` only to capture a different branch. REQUIRES an active operator browser session — fails with a 30s timeout if the operator closed the tab. The image is available to you in this turn only, not persisted across the chat.",
   schema: screenshotInput,
   inputSchema: {
     type: "object",
@@ -102,7 +102,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
       const image = await awaitScreenshot(requestId, 30_000);
       return {
         ok: true,
-        content: `Screenshot captured (${input.viewport ?? "desktop"} viewport${input.selector ? `, element ${input.selector}` : ""}). Image attached to the next user turn for analysis.`,
+        content: `Screenshot captured (${input.viewport ?? "desktop"} viewport${input.selector ? `, element ${input.selector}` : ""}). The image is available to you in THIS turn — analyse it on your next step; do not end the turn to wait for it.`,
         image,
       };
     } catch (e) {

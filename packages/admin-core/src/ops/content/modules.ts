@@ -21,13 +21,13 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
-import { checkAndAcquireEntityLock, lockedError } from "../../locks.js";
+import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
   loadModuleState,
   loadModuleStateWithBranchOverlay,
 } from "../../snapshots/index.js";
-import { buildPatchSet } from "../../sql-helpers.js";
+import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
 
 /**
@@ -372,7 +372,7 @@ export const createModuleOp = defineOperation({
         ${persistedHtml},
         ${input.css},
         ${input.js},
-        ${JSON.stringify(persistedFields)}::jsonb,
+        ${jsonbParam(persistedFields)},
         ${ctx.chatBranchId ?? null}::uuid
       )
       RETURNING id::text AS id
@@ -442,9 +442,12 @@ export const updateModuleOp = defineOperation({
       kind: "module",
       entityId: input.moduleId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
-      return err(await lockedError(tx, "modules.update", "module", input.moduleId, lock.holder));
+    if (!lock.permitted) {
+      return err(
+        await entityWriteBlockedError(tx, "modules.update", "module", input.moduleId, lock),
+      );
     }
     // Fetch the FULL prev row — we need it for both the usage-diff and
     // (v0.5.1) the branched-write path where we construct the new state
@@ -533,10 +536,7 @@ export const updateModuleOp = defineOperation({
         html: persistedHtml,
         css: input.css,
         js: input.js,
-        fields:
-          persistedFields !== undefined
-            ? sql`${JSON.stringify(persistedFields)}::jsonb`
-            : undefined,
+        fields: persistedFields !== undefined ? sql`${jsonbParam(persistedFields)}` : undefined,
       });
       await tx.execute(sql`
         UPDATE modules SET ${sets} WHERE id = ${input.moduleId}::uuid
@@ -626,9 +626,12 @@ export const deleteModuleOp = defineOperation({
       kind: "module",
       entityId: input.moduleId,
       chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
     });
-    if (!lock.permitted && lock.holder) {
-      return err(await lockedError(tx, "modules.delete", "module", input.moduleId, lock.holder));
+    if (!lock.permitted) {
+      return err(
+        await entityWriteBlockedError(tx, "modules.delete", "module", input.moduleId, lock),
+      );
     }
     const rows = (await tx.execute(sql`
       SELECT deleted_at, html FROM modules WHERE id = ${input.moduleId}::uuid

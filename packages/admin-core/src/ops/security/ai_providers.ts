@@ -17,6 +17,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { encryptSecret } from "../../security/secret-box.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 const PROVIDER_NAMES = ["anthropic", "openai", "google", "local-openai-compat"] as const;
 type ProviderName = (typeof PROVIDER_NAMES)[number];
@@ -134,7 +135,7 @@ export const setAiProvidersOp = defineOperation({
         VALUES (
           ${input.name},
           ${input.displayName},
-          ${JSON.stringify(input.config)}::jsonb,
+          ${jsonbParam(input.config)},
           ${input.isActive},
           ${ctBuf},
           ${ivBuf},
@@ -157,7 +158,7 @@ export const setAiProvidersOp = defineOperation({
         VALUES (
           ${input.name},
           ${input.displayName},
-          ${JSON.stringify(input.config)}::jsonb,
+          ${jsonbParam(input.config)},
           ${input.isActive}
         )
         ON CONFLICT (name) DO UPDATE

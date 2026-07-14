@@ -22,6 +22,7 @@
 import { jsonSchema, type ModelMessage, streamText } from "ai";
 
 import type { ChatMessageInput, GenerateInput, ProviderEvent } from "../provider.js";
+import { normalizeToolArgs } from "../tools/normalize-args.js";
 
 /**
  * Map our ChatMessageInput → SDK ModelMessage[]. Same shape every
@@ -301,6 +302,24 @@ function safeJsonParse(s: string): unknown {
  * Build the streamText({tools}) parameter from Caelo's tool catalog.
  * Schema-only (no execute) — chat-runner dispatches via its own
  * `tools.dispatch` so the SDK doesn't run the tool loop.
+ *
+ * issue #245 root cause — each tool schema carries a `validate` callback.
+ * The AI SDK parses a tool call's raw argument text via `safeParseJSON`,
+ * then runs the schema's `validate`; when `validate` is absent (as it was
+ * before this change, since we handed the SDK a bare `jsonSchema(...)`) the
+ * SDK short-circuits to `{ success: true, value }` and passes the model's
+ * raw `JSON.parse` output straight through as the tool-call `.input`. So a
+ * turn where the model emits a quoted scalar (`"position":"2"`) or a
+ * JSON-encoded object-in-a-string (`"values":"{…}"`) delivered that
+ * stringified value unchanged to dispatch, where the strict Zod parse
+ * rejected it (findings F11/F12/F17). Attaching a `validate` that runs the
+ * inputSchema-guided coercion (`normalizeToolArgs`) makes the SDK repair the
+ * encoding at parse time, so args reach dispatch already correctly typed.
+ * The dispatch-time `normalizeToolArgs` stays as idempotent defense-in-depth
+ * (it re-runs on already-coerced args as a no-op). The coercion never
+ * rejects — the Zod schema at dispatch remains the sole strict authority,
+ * so it still produces the AI-actionable error message on genuinely invalid
+ * input.
  */
 export function buildSDKTools(
   tools: GenerateInput["tools"],
@@ -308,9 +327,15 @@ export function buildSDKTools(
   const out: Record<string, { description: string; inputSchema: ReturnType<typeof jsonSchema> }> =
     {};
   for (const t of tools) {
+    const schema = t.inputSchema;
     out[t.name] = {
       description: t.description,
-      inputSchema: jsonSchema(t.inputSchema),
+      inputSchema: jsonSchema(schema, {
+        validate: (value: unknown) => ({
+          success: true,
+          value: normalizeToolArgs(value, schema).args,
+        }),
+      }),
     };
   }
   return out;

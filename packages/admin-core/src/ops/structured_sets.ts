@@ -20,8 +20,9 @@ import { err, ok, structuredSetKind, validateStructuredSetItems } from "@caelo-c
 import { sql } from "drizzle-orm";
 import { ZodError, z } from "zod";
 import { recordAudit } from "../audit.js";
-import { checkAndAcquireEntityLock, lockedError } from "../locks.js";
+import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { emitSnapshot } from "../snapshots/index.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 const setRow = z.object({
   id: z.string(),
@@ -247,10 +248,17 @@ export const setStructuredSetOp = defineOperation({
         kind: "structuredSet",
         entityId: existingId,
         chatBranchId: ctx.chatBranchId,
+        holderKey: ctx.chatTaskId,
       });
-      if (!lock.permitted && lock.holder) {
+      if (!lock.permitted) {
         return err(
-          await lockedError(tx, "structured_sets.set", "structuredSet", existingId, lock.holder),
+          await entityWriteBlockedError(
+            tx,
+            "structured_sets.set",
+            "structuredSet",
+            existingId,
+            lock,
+          ),
         );
       }
     }
@@ -380,7 +388,7 @@ export const setStructuredSetOp = defineOperation({
             ${id}::uuid,
             ${op.kind},
             ${op.itemId},
-            ${JSON.stringify(op.payload)}::jsonb
+            ${jsonbParam(op.payload)}
           )
         `);
       }

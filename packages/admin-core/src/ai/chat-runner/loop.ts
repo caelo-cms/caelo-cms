@@ -60,6 +60,11 @@ export interface ToolLoopArgs {
    * `resolveCompactionThresholdTokens()` in index.ts.
    */
   compactionThresholdTokens: number;
+  /**
+   * Run #10 D5 — first-event watchdog window override (tests). Absent
+   * ⇒ streaming.ts resolves the env-tunable default (180s).
+   */
+  firstEventTimeoutMs?: number;
   maxLoops: number;
   maxOutputTokens: number;
   temperature: number | undefined;
@@ -88,6 +93,8 @@ export async function* runToolLoop(
   let passiveNudged = false;
   // issue #261 — one-shot guard for the prompt-too-long compact+retry.
   let promptTooLongRetried = false;
+  // Run #10 D5 — one-shot guard for the first-event-timeout retry.
+  let firstEventTimeoutRetried = false;
   // Run #8 R1 — one-shot guard for the empty-content-at-output-cap retry.
   let emptyAtCapRetried = false;
   // Run #8 R1 — the retry raises the per-call ceiling (adaptive thinking
@@ -128,6 +135,7 @@ export async function* runToolLoop(
       loopStop,
       providerErr,
       promptTooLongMessage,
+      firstEventTimedOut,
       stoppingDiagnostics,
     } = yield* streamProviderTurn({
       provider,
@@ -142,8 +150,46 @@ export async function* runToolLoop(
       costCapMicrocents: args.costCapMicrocents,
       inputCost: args.inputCost,
       outputCost: args.outputCost,
+      ...(args.firstEventTimeoutMs !== undefined
+        ? { firstEventTimeoutMs: args.firstEventTimeoutMs }
+        : {}),
     });
     if (providerErr) {
+      // Run #10 D5 — the provider produced ZERO stream events inside
+      // the watchdog window (hung request / dead upstream). One
+      // automatic retry replaces the silent call; a second silence in
+      // a row becomes a VISIBLE persisted notice — never the run #10
+      // shape where keep-alives masked a hung call for 12 minutes.
+      if (firstEventTimedOut && !aborted()) {
+        if (!firstEventTimeoutRetried) {
+          firstEventTimeoutRetried = true;
+          console.error("[chat-runner] first-event-timeout-retry", { chatSessionId, loop });
+          // The retry replaces the failed call — don't burn a loop slot
+          // on a call that never produced anything.
+          loop--;
+          continue;
+        }
+        const notice =
+          "The AI provider did not start responding (no data at all) within the timeout window, " +
+          "twice in a row. This is a provider/network hang, not a content problem — please send " +
+          "your message again in a moment.";
+        console.error("[chat-runner] first-event-timeout-unrecovered", { chatSessionId, loop });
+        yield { kind: "text-delta", text: notice };
+        const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+          chatSessionId,
+          role: "assistant",
+          content: notice,
+          status: "complete",
+        });
+        if (noticeSave.ok) {
+          lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+          yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
+        }
+        yield { kind: "error", message: notice };
+        succeeded = false;
+        stopReason = "error";
+        break;
+      }
       if (promptTooLongMessage !== null) {
         if (!promptTooLongRetried) {
           // issue #261 — the estimator undercounted (system prompt +

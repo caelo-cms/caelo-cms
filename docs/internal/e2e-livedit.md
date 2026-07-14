@@ -1,7 +1,7 @@
 # e2e-livedit — Real-AI Playwright suite (issue #47)
 
 Drives the editor chat against the live Anthropic API
-(`claude-opus-4-7`, `temperature: 0`) and verifies the Live Edit
+(`claude-sonnet-5`, adaptive thinking) and verifies the Live Edit
 chat → Stage → Publish → re-edit loop end-to-end. Catches the
 regression classes the mock-AI suite at `apps/admin/e2e/` cannot:
 

@@ -72,7 +72,7 @@ jobs:
       # into $GITHUB_WORKSPACE and runs `git clean -ffdx`, so it must precede
       # the base-config checkout (which lives in a subdir).
       - name: Checkout PR head for the diff to scan
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 2
@@ -83,7 +83,7 @@ jobs:
       # `path:` subdir scopes this checkout's clean step, so the PR-head
       # working tree at $GITHUB_WORKSPACE is untouched.
       - name: Checkout base ref for trusted prompt config
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.base_ref }}
           path: .base-review-config

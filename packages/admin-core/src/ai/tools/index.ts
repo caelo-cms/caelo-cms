@@ -43,6 +43,7 @@ import {
 } from "./genesis-tools.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
 import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
+import { getPageLogTool } from "./get-page-log.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
 import { assignImportPageClusterTool, listImportPageClustersTool } from "./import-page-clusters.js";
@@ -60,6 +61,8 @@ import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
+import { logPageEditTool } from "./log-page-edit.js";
+import { mapExternalPageTypesTool } from "./map-external-page-types.js";
 import { migrateMediaTool } from "./migrate-media.js";
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
@@ -101,6 +104,8 @@ import {
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
+import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
+import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
 import { renamePageTool } from "./rename-page.js";
@@ -126,11 +131,13 @@ import { setThemeMetaTool } from "./set-theme-meta.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
 import { submitPluginTool } from "./submit-plugin.js";
+import { submitResultTool } from "./submit-result.js";
 // P11.5 — translate_page + start_translation_job moved to the translation
 // Tier-1 plugin (`packages/plugins/translation/`). The chat-runner discovers
 // them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
+import { verifyImportFidelityTool } from "./verify-import-fidelity.js";
 
 /**
  * Registers every shipped tool against a fresh ToolRegistry. Tests can
@@ -169,9 +176,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(checkGenesisParityTool);
   // issue #165 — per-site design language writer.
   registry.register(setDesignManifestTool);
-  // issue #189 — single-page external-site sensing (migration glance).
+  // issue #189 / #278 — single-page external-site sensing (facet-selectable
+  // glance) + homepage-driven page-type mapping for the migration flow.
   registry.register(inspectExternalPageTool);
   registry.register(screenshotExternalPageTool);
+  registry.register(mapExternalPageTypesTool);
   // issue #194 — page-type clusters for the migration flow.
   registry.register(listImportPageClustersTool);
   registry.register(assignImportPageClusterTool);
@@ -180,6 +189,17 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);
+  // issue #248 (WS2) — rebuild-quality checks: content-inventory
+  // (no information loss) + repeated-subtree boilerplate detection.
+  registry.register(checkPageContentInventoryTool);
+  registry.register(detectImportBoilerplateTool);
+  // issue #250 (WS4) — source-vs-rebuilt fidelity verdict (self-analysis gate).
+  registry.register(verifyImportFidelityTool);
+  // issue #264 — per-page work-history log: read before touching a page,
+  // append after a meaningful change, so later chats / fresh subagents keep
+  // the intent without dragging the whole originating transcript.
+  registry.register(getPageLogTool);
+  registry.register(logPageEditTool);
   registry.register(siteMemoryProposeTool);
   registry.register(addModuleToPageTool);
   registry.register(addModuleToTemplateTool);
@@ -231,6 +251,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // P7 — media library.
   registry.register(findMediaTool);
   registry.register(setMediaAltTool);
+  // run #10 D4 — recovery for "media references unresolved" deploy failures.
+  registry.register(regenerateMediaVariantsTool);
   // P16 — AI image generation via the active provider's image endpoint.
   registry.register(generateImageTool);
   // P8 — SEO sidecar tools.
@@ -277,6 +299,12 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // excludedToolNames stripping these two so depth is capped at 1.
   registry.register(spawnSubagentTool);
   registry.register(spawnSubagentsTool);
+  // Run #10 D2 — subagent structured final-answer channel. Visible
+  // ONLY inside child sessions: the chat-runner excludes it whenever
+  // ChatRunnerOptions.subagentResultCapture is absent (see
+  // chat-runner/index.ts), mirroring how the spawn tools are excluded
+  // FROM child sessions.
+  registry.register(submitResultTool);
   // P11 — AI submits a Tier 2 plugin for Owner approval. Activation
   // is human-only (CLAUDE.md §2). Tier 1 plugins ship via human PR.
   registry.register(submitPluginTool);

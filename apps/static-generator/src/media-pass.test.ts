@@ -191,5 +191,8 @@ describe("media-pass", () => {
     }
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toContain("media references unresolved");
+    // run #10 D4 — the failure surface must carry the recovery step
+    // (CLAUDE.md §11), not just the diagnosis.
+    expect((thrown as Error).message).toContain("regenerate_media_variants");
   });
 });

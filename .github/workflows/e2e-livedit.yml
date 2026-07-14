@@ -1,7 +1,7 @@
 name: E2E Live Edit (real AI)
 
 # Issue #47 — drives the editor chat against the real Anthropic API
-# (Opus 4.7, temperature=0) so the regression classes the mock-AI
+# (Sonnet 5, adaptive thinking) so the regression classes the mock-AI
 # suite cannot catch (empty AI turns, orphan locks, missing primers)
 # are gated on every PR. Real cost is the cost of correctness per the
 # operator direction in the issue; no schedule, no label gating, no
@@ -115,7 +115,7 @@ jobs:
       CAELO_PRODUCTION_BASE_URL: http://localhost:8082
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2

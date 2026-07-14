@@ -23,6 +23,7 @@ import { err, ok, type ProposalStatus, proposalStatus } from "@caelo-cms/shared"
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { jsonbParam } from "../sql-helpers.js";
 
 // ─── queue ───────────────────────────────────────────────────────────
 
@@ -50,8 +51,8 @@ export const queueToolApprovalOp = defineOperation({
         (tool_name, args, preview, chat_session_id, proposed_by)
       VALUES
         (${input.toolName},
-         ${JSON.stringify(input.args)}::jsonb,
-         ${JSON.stringify(input.preview)}::jsonb,
+         ${jsonbParam(input.args)},
+         ${jsonbParam(input.preview)},
          ${input.chatSessionId === undefined ? null : sql`${input.chatSessionId}::uuid`},
          ${ctx.actorId}::uuid)
       RETURNING id::text AS id

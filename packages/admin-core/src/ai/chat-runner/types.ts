@@ -11,6 +11,7 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
 import type { AIProvider } from "../provider.js";
+import type { SubagentResultCapture } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
 
 export type ClientEvent =
@@ -55,6 +56,26 @@ export type ClientEvent =
       role: string;
       subagentChatSessionId: string;
       inner: Exclude<ClientEvent, { kind: "subagent-event" }>;
+    }
+  /**
+   * issue #268 — n-of-m progress for a `spawn_subagents` batch. Emitted
+   * by the batch orchestrator each time a sibling subagent settles, so
+   * the parent chat + the UI see "3 of 8 done · $0.41" live instead of a
+   * single frozen wait until the whole fan-out returns. `finished` counts
+   * every settled spec (run OR budget-aborted); `ran` counts spawns that
+   * actually invoked a child turn. `batchAborted` flips true once the
+   * running cost trips `batchMaxCostMicrocents` and later specs are
+   * skipped rather than started.
+   */
+  | {
+      kind: "subagent-batch-progress";
+      batchId: string;
+      finished: number;
+      total: number;
+      ran: number;
+      totalCostMicrocents: number;
+      lastRole: string;
+      batchAborted: boolean;
     };
 
 export interface ChatRunnerOptions {
@@ -113,6 +134,16 @@ export interface ChatRunnerOptions {
    * provider call instead of post-hoc.
    */
   readonly costCapMicrocents?: number;
+  /**
+   * Run #10 D2 — set ONLY when this turn runs a subagent child session
+   * (the spawn handler threads it through `spawnChildChatTurn`). Its
+   * presence does two things: (a) the `submit_result` tool joins the
+   * child's catalogue (it is excluded everywhere else), and (b) the
+   * tool's handler validates payloads against `expectedShape` and
+   * delivers the validated value via `submit`, replacing free-text
+   * result parsing as the canonical child→parent channel.
+   */
+  readonly subagentResultCapture?: SubagentResultCapture;
   /**
    * v0.2.53 — Per-turn output ceiling. SSE handler reads this from
    * `getActiveProvider().maxOutputTokens` (set on `ai_providers.config`
