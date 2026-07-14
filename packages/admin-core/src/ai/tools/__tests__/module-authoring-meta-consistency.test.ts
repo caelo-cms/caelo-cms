@@ -139,4 +139,53 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     // raw Zod JSON is NOT what we hand back anymore
     expect(res.content).not.toContain('"code":"unrecognized_keys"');
   });
+
+  it("a `children` key on a layout tool steers to a `fields` link-list (nesting intent)", async () => {
+    const res = await registry.dispatch(
+      "add_module_to_layout",
+      {
+        layoutSlug: "site-default",
+        blockName: "header",
+        position: "top",
+        displayName: "Site Header",
+        html: "<header><nav></nav></header>",
+        // The observed failure: the model tries to nest a nav via `children`
+        // instead of a `fields` link-list, then re-sends it until the loop cap.
+        children: [{ type: "nav-link", label: "Home", href: "/" }],
+      },
+      dummyCtx,
+      dummyToolCtx,
+    );
+    expect(res.ok).toBe(false);
+    // names the offending key AND the correct mechanism
+    expect(res.content).toContain("children");
+    expect(res.content).toContain("`fields`");
+    expect(res.content).toContain("link-list");
+    // gives a concrete, copyable field example so it re-emits in one turn
+    expect(res.content).toContain("nav_links");
+    expect(res.content).toContain("{{#nav_links}}");
+    // still the generic drop-and-retry guidance
+    expect(res.content.toLowerCase()).toContain("retry");
+  });
+
+  it("a plain unrelated bad key does NOT trigger the nesting hint", async () => {
+    const res = await registry.dispatch(
+      "add_module_to_layout",
+      {
+        layoutSlug: "site-default",
+        blockName: "footer",
+        position: "bottom",
+        displayName: "Footer",
+        html: "<footer>x</footer>",
+        wobble: 3,
+      },
+      dummyCtx,
+      dummyToolCtx,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.content).toContain("wobble");
+    // No nesting-mechanism noise for a non-nesting key.
+    expect(res.content).not.toContain("link-list");
+    expect(res.content).not.toContain("{{#nav_links}}");
+  });
 });
