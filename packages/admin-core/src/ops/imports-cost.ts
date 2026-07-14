@@ -104,12 +104,6 @@ export function deriveCeilingFromEstimate(estimate: unknown): DerivedCeiling {
   return { ok: true, ceilingMicrocents, currency: "USD", estimateHighUsd: high };
 }
 
-/**
- * issue #297 — fraction of the ceiling at which the live gate emits its
- * one-shot warning into the chat (still short of pausing).
- */
-export const BUDGET_WARN_FRACTION = 0.8;
-
 /** Live gate verdict: `warn` at ≥80% of the ceiling, `trip` at ≥100%. */
 export type BudgetGateLevel = "ok" | "warn" | "trip";
 
