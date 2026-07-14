@@ -174,7 +174,7 @@ describe("chat branch isolation", () => {
         const aHtml =
           typeof aRow[0]?.state === "string"
             ? (JSON.parse(aRow[0].state).html as string)
-            : (aRow[0]?.state as { html: string }).html;
+            : (aRow[0]!.state as { html: string }).html;
         expect(aHtml).toContain("edit-from-A");
 
         const bRow = (await tx`
@@ -186,7 +186,7 @@ describe("chat branch isolation", () => {
         const bHtml =
           typeof bRow[0]?.state === "string"
             ? (JSON.parse(bRow[0].state).html as string)
-            : (bRow[0]?.state as { html: string }).html;
+            : (bRow[0]!.state as { html: string }).html;
         expect(bHtml).toContain("edit-from-B");
 
         // Main snapshot for module A — still the seeded "main-a" body.
@@ -199,7 +199,7 @@ describe("chat branch isolation", () => {
         const mainHtml =
           typeof mainRow[0]?.state === "string"
             ? (JSON.parse(mainRow[0].state).html as string)
-            : (mainRow[0]?.state as { html: string }).html;
+            : (mainRow[0]!.state as { html: string }).html;
         expect(mainHtml).toBe("<p>main-a</p>");
       });
     } finally {
