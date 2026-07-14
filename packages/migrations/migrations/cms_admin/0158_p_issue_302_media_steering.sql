@@ -1,12 +1,7 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- DRAFT (issue #302) — site-migrate steering: homepage-at-root + the new
+-- 0158 (issue #302) — site-migrate steering: homepage-at-root + the new
 -- migrate_media zero-units telemetry.
---
--- *** NOT A RUNNABLE MIGRATION. *** No migration number was allocated to
--- the #302 branch; the orchestrator must rename this file to the next
--- free NNNN_p_issue_302_media_steering.sql (and register it) before it
--- ships. The .txt suffix keeps every migration runner from picking it up.
 --
 -- Two targeted, guarded, idempotent amendments to the #278 flow body
 -- (0150, as amended by 0151 + 0154):
