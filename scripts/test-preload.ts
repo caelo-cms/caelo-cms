@@ -60,6 +60,21 @@
  * If `ADMIN_DATABASE_URL` / `PUBLIC_ADMIN_DATABASE_URL` are unset
  * (running `bun test` against a non-integration target), the preload
  * is a no-op except for the timeout bump.
+ *
+ * DESTRUCTIVE-RESET OPT-IN (`CAELO_TEST_DB_RESET=1`): the reset also
+ * stays OFF unless this env var is explicitly set. The DB URLs being
+ * present is NOT consent to truncate — a dev worktree with `.env`
+ * linked points these URLs at a dev install holding real operator data
+ * (chat history, pages, ai_calls), and a casual `bun test <unit-file>`
+ * must never wipe it. That exact accident happened on 2026-07-14: a
+ * unit-test run in a worktree with a linked `.env` truncated the dev
+ * DB and destroyed a chat log needed for analysis. The canonical
+ * entry points opt in: `bun run test` / `bun run coverage`
+ * (package.json sets the var) and the coverage gate's INTEGRATION
+ * pass (scripts/coverage-check.ts sets it per-spawn; the unit pass
+ * deliberately does not — unit tests must not depend on DB state).
+ * Running an integration FILE directly without the var fails on dirty
+ * data instead of destroying it — loud failure over silent data loss.
  */
 
 import { beforeAll, setDefaultTimeout } from "bun:test";
@@ -204,11 +219,21 @@ async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promis
   }
 }
 
-if (ADMIN_URL && PUBLIC_URL) {
+const RESET_OPTED_IN = process.env.CAELO_TEST_DB_RESET === "1";
+
+if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
   beforeAll(async () => {
     await Promise.all([
       resetDatabase(ADMIN_URL, ADMIN_PRESERVE),
       resetDatabase(PUBLIC_URL, PUBLIC_PRESERVE),
     ]);
   });
+} else if (ADMIN_URL && PUBLIC_URL) {
+  // URLs present but no opt-in: say so once, so an integration file run
+  // directly (dirty-data flakes possible) is explainable at a glance.
+  console.warn(
+    "[test-preload] DB URLs set but CAELO_TEST_DB_RESET != 1 — per-file DB reset DISABLED. " +
+      "Unit tests are unaffected; integration files may see pre-existing rows. " +
+      "Use `bun run test` (or set CAELO_TEST_DB_RESET=1) for the destructive per-file reset.",
+  );
 }

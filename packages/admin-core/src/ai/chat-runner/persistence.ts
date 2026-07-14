@@ -56,6 +56,11 @@ export async function persistUserMessage(
     chatSessionId: input.chatSessionId,
     role: "user",
     content: buildUserContent(input),
+    // issue #29 — carry system-origin provenance so auto-injected nudges
+    // persist as muted status lines instead of operator "You:" messages.
+    // Omitted when operator-authored (Zod optional; no origin column write
+    // → NULL → renders as a normal user turn).
+    ...(input.origin ? { origin: input.origin } : {}),
     // issue #190 — persist attachments so the transcript keeps its
     // thumbnails and the provider-history assembly sees them. The ?? []
     // matters: Zod's .default([]) only fires on PARSED input; internal

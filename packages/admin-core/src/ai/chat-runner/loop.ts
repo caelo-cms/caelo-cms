@@ -28,9 +28,14 @@ import {
   shouldNudgePassiveTurn,
 } from "./passive-turn.js";
 import { persistAssistantTurn } from "./persistence.js";
+import {
+  blockedCallResult,
+  RepeatedFailureTracker,
+  repeatedFailureNudge,
+} from "./repeat-failure-guard.js";
 import { streamProviderTurn, type UsageAccumulator } from "./streaming.js";
 import type { FilteredTool } from "./tool-catalogue.js";
-import { dispatchToolCall } from "./tool-dispatch.js";
+import { dispatchToolCall, type ToolCallOutcome } from "./tool-dispatch.js";
 import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn, StopReason } from "./types.js";
 
 export interface ToolLoopResult {
@@ -97,6 +102,12 @@ export async function* runToolLoop(
   let firstEventTimeoutRetried = false;
   // Run #8 R1 — one-shot guard for the empty-content-at-output-cap retry.
   let emptyAtCapRetried = false;
+  // Repeated-identical-failure breaker: when the model re-emits the SAME tool
+  // with the SAME args and gets the SAME error twice, stop re-dispatching that
+  // call and nudge it to change approach — so one bad-arg pattern can't burn
+  // the whole loop cap into a "Paused at the tool-loop limit". See
+  // `repeat-failure-guard.ts`.
+  const failureTracker = new RepeatedFailureTracker();
   // Run #8 R1 — the retry raises the per-call ceiling (adaptive thinking
   // consumed the whole budget before any visible content; re-running at
   // the same ceiling would likely fail identically).
@@ -393,7 +404,7 @@ export async function* runToolLoop(
 
     if (aborted()) break;
     lastLoopStop = loopStop;
-    if (loopStop !== "tool_use" || accumulatedToolCalls.length === 0) {
+    if (accumulatedToolCalls.length === 0) {
       // issue #106 — passive-turn recovery. The model sometimes describes
       // the change it's about to make and ends the turn WITHOUT emitting the
       // tool call. Nudge once and re-run; the nudge rides in-memory only.
@@ -426,9 +437,49 @@ export async function* runToolLoop(
     // Run #8 live-edit CI — image follow-ups collect here and append
     // AFTER the loop, so every tool result of the turn precedes the
     // first user (image) message (see dispatchToolCall's parameter doc).
+    //
+    // Pairing invariant — dispatch EVERY accumulated tool call, whatever
+    // the stop_reason. The tool_use blocks that reached `accumulatedToolCalls`
+    // are complete (the stream parser only emits a tool-call on
+    // content_block_stop), so a non-`tool_use` stop (`max_tokens` when
+    // adaptive thinking burned the output budget right after emitting the
+    // tool_use, or a stray `end_turn`) does NOT mean the call was partial —
+    // it means the model stopped generating AFTER committing to the call.
+    // Pre-fix this branch was gated on `loopStop === "tool_use"`, so a
+    // `max_tokens` stop skipped dispatch entirely: the assistant tool_use
+    // was persisted but no tool_result was, leaving a dangling pair that
+    // Anthropic 400s on every subsequent turn ("tool results are missing for
+    // tool calls …") — a permanent, reload-proof brick (the offer_choices
+    // free-text-answer wedge). Dispatching here keeps the persisted
+    // transcript pairing-complete so a free-text OR click answer next turn
+    // replays a valid history.
     const deferredImageMessages: ChatMessageInput[] = [];
+    const turnOutcomes: ToolCallOutcome[] = [];
     for (const call of accumulatedToolCalls) {
       if (aborted()) break;
+      // Breaker: an identical (tool + args) call already failed identically
+      // twice this turn. Don't re-run it — reply with a synthetic failed
+      // result so the tool_use/tool_result pairing stays complete (Anthropic
+      // 400s on a dangling tool_use) without spending another dispatch on a
+      // call known to fail the same way.
+      if (failureTracker.isBlocked(call.name, call.arguments)) {
+        const content = blockedCallResult(call.name);
+        yield {
+          kind: "tool-start",
+          toolCallId: call.id,
+          name: call.name,
+          arguments: call.arguments,
+        };
+        yield { kind: "tool-result", toolCallId: call.id, ok: false, content };
+        await execute(registry, adapter, humanCtx, "chat.append_message", {
+          chatSessionId,
+          role: "tool",
+          content,
+          toolCallId: call.id,
+        });
+        messages.push({ role: "tool", content, toolCallId: call.id });
+        continue;
+      }
       yield* dispatchToolCall(
         call,
         messages,
@@ -445,9 +496,39 @@ export async function* runToolLoop(
           runChatTurn: args.runChatTurn,
         },
         deferredImageMessages,
+        turnOutcomes,
       );
     }
     messages.push(...deferredImageMessages);
+
+    // Breaker bookkeeping: count exact (tool + args + error) repeats. On the
+    // recording that first crosses the threshold, inject ONE corrective nudge
+    // (an in-memory user turn the operator never sees) so the model changes
+    // approach instead of re-sending the identical failing call until the cap.
+    for (const outcome of turnOutcomes) {
+      if (outcome.ok) continue;
+      const { tripped, count } = failureTracker.record(outcome);
+      if (tripped) {
+        console.error("[chat-runner] repeated-identical-failure", {
+          chatSessionId,
+          toolName: outcome.name,
+          count,
+        });
+        messages = [
+          ...messages,
+          { role: "user", content: repeatedFailureNudge(outcome.name, count) },
+        ];
+      }
+    }
+
+    // Only loop again when the model actually signalled it wants to keep
+    // going with a `tool_use` stop. Any other stop_reason ends the turn now
+    // that the pairing is complete — the tool results ARE persisted, and the
+    // cap-exhaustion notice below fires only on a trailing `tool_use` stop.
+    if (loopStop !== "tool_use") {
+      stopReason = loopStop;
+      break;
+    }
   }
 
   // v0.3.20 — cap-exhaustion notice. If the for-loop ran to completion AND

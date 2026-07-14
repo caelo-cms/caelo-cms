@@ -128,6 +128,17 @@ interface Report {
     suggested: number;
     samples: { sourceUrl: string; note: string; applied: boolean }[];
   }[];
+  // issue #28 — the run-scoped error/warning ledger.
+  eventCounts: { error: number; warning: number; info: number };
+  events: {
+    id: string;
+    severity: "warning" | "error" | "info";
+    phase: string | null;
+    message: string;
+    detail: unknown;
+    pageId: string | null;
+    createdAt: string | null;
+  }[];
 }
 
 export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
@@ -236,6 +247,20 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
             .map((s) => `"${s.note}" (${s.applied ? "fixed" : "suggested"}, ${s.sourceUrl})`)
             .join("; ")}`,
       ),
+      // issue #28 — the run's error/warning LEDGER. Every problem hit during
+      // the migration, consolidated. The operator ASKED for all migration
+      // errors to be reviewable; report them verbatim — do NOT call the
+      // migration clean while errors remain in the ledger.
+      v.events.length > 0
+        ? `ERROR/WARNING LEDGER — ${v.eventCounts.error} error(s), ${v.eventCounts.warning} warning(s), ${v.eventCounts.info} info logged during this migration. Surface these to the operator (report them verbatim; never claim a clean migration while errors are present):\n${v.events
+            .slice(0, 40)
+            .map(
+              (e) => `- [${e.severity.toUpperCase()}${e.phase ? `/${e.phase}` : ""}] ${e.message}`,
+            )
+            .join(
+              "\n",
+            )}${v.events.length > 40 ? `\n- …and ${v.events.length - 40} more (see the run report queue)` : ""}`
+        : "Error/warning ledger: empty — nothing was flagged during this migration.",
       "",
       "Narrate this to the operator in plain words — preserved / fixed / worth-a-look.",
     ].filter((l) => l !== "");

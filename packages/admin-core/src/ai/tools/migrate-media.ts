@@ -48,12 +48,38 @@ export const migrateMediaTool: ToolDefinitionWithHandler<
       modulesRewritten: number;
       templatesRewritten: number;
       skipped: Array<{ url: string; reason: string }>;
+      logoWarning: string | null;
     };
     const mb = (v.migratedBytes / (1024 * 1024)).toFixed(2);
     const lines = [
       `media migration: ${v.migrated} asset(s) downloaded (${mb} MB), ${v.dedupedExisting} reused existing library asset(s) (same content hash), ${v.alreadyLocal} reference(s) already pointed at Caelo media. Rewrote ${v.modulesRewritten} module(s) and ${v.templatesRewritten} template(s).`,
     ];
     if (v.skipped.length > 0) {
+      // issue #28 — record every skipped asset in the run's error/warning
+      // LEDGER so the closing report surfaces them even if this turn's text
+      // scrolls away. Best-effort + non-fatal: a ledger-write failure must
+      // never sink a media migration that actually moved assets — log loud,
+      // don't throw. One bulk call (CLAUDE.md §11), not one per asset.
+      const ledgerRes = await execute(
+        toolCtx.registry,
+        toolCtx.adapter,
+        ctx,
+        "imports.log_events",
+        {
+          events: v.skipped.map((s) => ({
+            runId: input.runId,
+            severity: "warning" as const,
+            phase: "media" as const,
+            message: `media asset not migrated: ${s.url} (${s.reason})`,
+            detail: { url: s.url, reason: s.reason },
+          })),
+        },
+      );
+      if (!ledgerRes.ok) {
+        console.error(
+          `migrate_media: failed to append ${v.skipped.length} skipped-asset event(s) to the run ledger: ${describeError(ledgerRes.error)}`,
+        );
+      }
       lines.push(
         `${v.skipped.length} asset(s) could NOT be migrated — surface this list to the operator (these URLs still point at the source site and will break when it goes away):`,
         ...v.skipped.map((s) => `- ${s.url} — ${s.reason}`),
@@ -62,6 +88,15 @@ export const migrateMediaTool: ToolDefinitionWithHandler<
       lines.push(
         "Every discovered asset reference now points at Caelo media — no remaining source-host dependencies.",
       );
+    }
+    // Logo-preservation guardrail (op already recorded this in the run
+    // ledger). Surface it LOUDLY here too so the model fixes the redraw
+    // in THIS turn instead of only hearing about it at the closing
+    // report: the source header had a real logo image, the rebuild does
+    // not reference it — the operator's brand logo must be imported, not
+    // hand-authored as a text/CSS wordmark.
+    if (v.logoWarning) {
+      lines.push(`LOGO NOT PRESERVED — ${v.logoWarning}`);
     }
     return { ok: true, content: lines.join("\n") };
   },

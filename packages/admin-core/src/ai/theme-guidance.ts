@@ -61,8 +61,12 @@ export const TOKEN_SHAPE_HINTS =
   "tokens, and fontFamily is a plain string). Shadow leaves are " +
   "`{$type: 'shadow', $value: {color: '#0b132b33', offsetX: '0px', offsetY: '2px', " +
   "blur: '8px', spread: '0px'}}` (structured object or array of them — NEVER a raw CSS string). " +
-  "Gradient leaves keep the token envelope with a CSS string $value " +
-  "(`gradient.hero = {$type: 'gradient', $value: 'linear-gradient(...)'}`); never alias " +
+  "Gradient leaves are a CSS `*-gradient(...)` string, NOT a color — set them at the " +
+  "`gradient.*` namespace and the `$type` is inferred: e.g. " +
+  "`set: {'gradient.hero': {$type: 'gradient', $value: 'linear-gradient(135deg, #4f46e5, #7c3aed)'}}` " +
+  "(the bare string `'linear-gradient(135deg, #4f46e5, #7c3aed)'` or a loose name like " +
+  "`heroGradient` also work — the server routes any `gradient.*`/`*Gradient` name to a gradient " +
+  "token). Only `linear-`/`radial-`/`conic-gradient(...)` values are valid; never alias " +
   "({group.token}) unless the target exists.";
 
 export const DEPTH_AND_SURFACE_HINTS =

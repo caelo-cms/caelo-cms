@@ -3,13 +3,19 @@
 /**
  * issue #249 (WS3) — `imports.migrate_media`. A migration is not done
  * while the source host still serves the assets: kill the old server
- * and the "migrated" site loses every image. This op runs AFTER
- * `imports.compose_from_run` and, in one boundary:
+ * and the "migrated" site loses every image. This op runs AFTER the
+ * pages exist (either `imports.compose_from_run` OR the #278 homepage-first
+ * direct-build flow) and, in one boundary:
  *
  *   1. reads the run's composed module bodies (page modules via
  *      import_pages.accepted_page_id, plus the layout-bound chrome
  *      modules `imported-<runid8>-header/footer`) and the cluster
- *      templates' replayed CSS,
+ *      templates' replayed CSS. When that compose linkage is empty —
+ *      the #278 direct-build flow creates pages via `pages.create`
+ *      without an `import_pages.accepted_page_id` and names its chrome
+ *      differently — it FALLS BACK to the live migration-built site:
+ *      every non-deleted page module, the layout-bound chrome (where
+ *      the header logo lives), and non-empty template CSS,
  *   2. discovers every external asset reference (img src/srcset,
  *      source/video/audio src+poster, CSS url(...) incl. inline
  *      styles),
@@ -40,7 +46,13 @@ import {
   type MediaStorageAdapter,
   ok,
 } from "@caelo-cms/shared";
-import { isExternalUrlBlockedError, safeExternalFetchBinary } from "@caelo-cms/site-importer";
+import {
+  isExternalUrlBlockedError,
+  type ProposedModuleBlock,
+  rebuiltHeaderHasLogoRef,
+  safeExternalFetchBinary,
+  sourceHeaderHasLogoImage,
+} from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -53,6 +65,7 @@ import {
 } from "../media/import-asset-urls.js";
 import { runMediaPipeline } from "../media/pipeline.js";
 import { getMediaStorage, getMediaStorageProvider } from "../media/storage.js";
+import { jsonbParam } from "../sql-helpers.js";
 import { mediaRecordUsageOp, mediaUploadOp } from "./media.js";
 
 const PER_FILE_MAX_BYTES = 15 * 1024 * 1024;
@@ -97,7 +110,7 @@ function originalNameFromUrl(url: string): string {
 const skippedEntry = z.object({ url: z.string(), reason: z.string() });
 
 /** One rewritable text (module html/css or template css) + its base URL. */
-interface TextUnit {
+export interface TextUnit {
   kind: "module" | "template";
   id: string;
   /** Empty string for templates (css-only units). */
@@ -107,11 +120,94 @@ interface TextUnit {
   baseUrl: string;
 }
 
+/** Raw module row (page module OR layout-bound chrome) for the fallback. */
+export interface ModuleTextRow {
+  id: string;
+  html: string;
+  css: string;
+}
+
+/** Raw template row (css-only) for the fallback. */
+export interface TemplateCssRow {
+  id: string;
+  css: string;
+}
+
+/**
+ * Assemble rewritable text units for the DIRECT-BUILD migration flow
+ * (issue #278 homepage-first), where pages are created straight through
+ * `pages.create` and never get an `import_pages.accepted_page_id`
+ * linkage — so the compose-keyed collection in the handler finds nothing.
+ *
+ * The units come from the live migration-built site instead of the
+ * compose staging rows:
+ *   - every non-deleted page module (`pageModules`),
+ *   - the active layout's chrome modules bound via `layout_modules`
+ *     (`chromeModules`) — this is where the header LOGO lives,
+ *   - non-empty template CSS (`templates`).
+ *
+ * Every unit resolves relative asset refs against `sourceUrl` (the run's
+ * origin): a migration runs on a fresh site, so the run origin is the
+ * correct base for all of them — mirroring how the compose path already
+ * bases its chrome + template units on `run.source_url`.
+ *
+ * Modules are deduped by id (a module placed on several pages, or bound
+ * as chrome AND also present as a page module, is rewritten and
+ * usage-counted exactly once). Page modules are inserted first so their
+ * row wins the dedup, matching the compose path's ordering.
+ *
+ * Pure (no I/O) so the handler's fallback collection is unit-testable
+ * without Postgres.
+ */
+export function assembleDirectBuildUnits(
+  rows: {
+    pageModules: readonly ModuleTextRow[];
+    chromeModules: readonly ModuleTextRow[];
+    templates: readonly TemplateCssRow[];
+  },
+  sourceUrl: string,
+): TextUnit[] {
+  const moduleUnitsById = new Map<string, TextUnit>();
+  for (const m of [...rows.pageModules, ...rows.chromeModules]) {
+    if (!moduleUnitsById.has(m.id)) {
+      moduleUnitsById.set(m.id, {
+        kind: "module",
+        id: m.id,
+        html: m.html,
+        css: m.css,
+        baseUrl: sourceUrl,
+      });
+    }
+  }
+  return [
+    ...moduleUnitsById.values(),
+    ...rows.templates.map((t) => ({
+      kind: "template" as const,
+      id: t.id,
+      html: "",
+      css: t.css,
+      baseUrl: sourceUrl,
+    })),
+  ];
+}
+
 export const migrateImportMediaOp = defineOperation({
   name: "imports.migrate_media",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ runId: z.string().uuid() }).strict(),
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      /**
+       * Optional scope for the DIRECT-BUILD fallback (issue #278): restrict
+       * the page-module + template-CSS collection to these built page ids.
+       * Omitted → site-wide (the safe default, since a migration runs on a
+       * fresh site where every page is the migration's). Ignored on the
+       * compose path, which keys off the run's `import_pages` linkage.
+       */
+      pageIds: z.array(z.string().uuid()).optional(),
+    })
+    .strict(),
   output: z.object({
     /** Assets downloaded + inserted into the media library. */
     migrated: z.number().int(),
@@ -124,6 +220,16 @@ export const migrateImportMediaOp = defineOperation({
     templatesRewritten: z.number().int(),
     /** Every reference that could NOT be migrated, with the reason. */
     skipped: z.array(skippedEntry),
+    /**
+     * Logo-preservation guardrail: set when the source homepage header
+     * carried a real logo image but the rebuilt chrome header references
+     * none (no Caelo-media <img>, no {{theme_logo_url}}, no bound theme
+     * logo asset) — i.e. the logo was hand-authored as a text/CSS
+     * wordmark instead of imported. The message is also appended to the
+     * run's error/warning ledger so the closing report surfaces it.
+     * `null` when the logo was preserved, or the source had no logo image.
+     */
+    logoWarning: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
@@ -214,7 +320,7 @@ export const migrateImportMediaOp = defineOperation({
         });
       }
     }
-    const units: TextUnit[] = [
+    let units: TextUnit[] = [
       ...moduleUnitsById.values(),
       ...templateRows.map((t) => ({
         kind: "template" as const,
@@ -224,12 +330,75 @@ export const migrateImportMediaOp = defineOperation({
         baseUrl: run.source_url,
       })),
     ];
+
+    // Direct-build fallback (issue #278). The homepage-first flow builds
+    // pages straight through `pages.create` and binds chrome via
+    // `layout_modules`, so NONE of the three compose-keyed queries above
+    // match (no `import_pages.accepted_page_id`, chrome named differently).
+    // When they yield nothing, collect the rewritable texts from the LIVE
+    // migration-built site instead: every non-deleted page module, the
+    // layout-bound chrome (where the header logo lives), and non-empty
+    // template CSS. A migration runs on a fresh site, so site-wide is safe;
+    // `input.pageIds` narrows it when a caller wants to.
+    if (units.length === 0) {
+      // Zod validated each id as a UUID, so the raw ARRAY literal is
+      // injection-safe (same pattern as imports.reassign_cluster /
+      // pages.delete_many). `sql.raw("")` is a no-op predicate.
+      const pageFilter =
+        input.pageIds && input.pageIds.length > 0
+          ? sql`AND p.id = ANY(${sql.raw(
+              `ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`,
+            )})`
+          : sql.raw("");
+
+      const fbPageModuleRows = (await tx.execute(sql`
+        SELECT DISTINCT m.id::text AS id, m.html, m.css
+        FROM modules m
+        JOIN page_modules pm ON pm.module_id = m.id
+        JOIN pages p ON p.id = pm.page_id
+        WHERE p.deleted_at IS NULL AND m.deleted_at IS NULL ${pageFilter}
+      `)) as unknown as Array<{ id: string; html: string; css: string }>;
+
+      // Chrome binds at the layout (issue #253): find the header/footer
+      // modules attached to the layout(s) that the built pages' templates
+      // reference. This is where the header LOGO <img> lives.
+      const fbChromeRows = (await tx.execute(sql`
+        SELECT DISTINCT m.id::text AS id, m.html, m.css
+        FROM modules m
+        JOIN layout_modules lm ON lm.module_id = m.id
+        JOIN templates t ON t.layout_id = lm.layout_id
+        JOIN pages p ON p.template_id = t.id
+        WHERE m.deleted_at IS NULL AND t.deleted_at IS NULL
+          AND p.deleted_at IS NULL ${pageFilter}
+      `)) as unknown as Array<{ id: string; html: string; css: string }>;
+
+      const fbTemplateRows = (await tx.execute(sql`
+        SELECT DISTINCT t.id::text AS id, t.css
+        FROM templates t
+        JOIN pages p ON p.template_id = t.id
+        WHERE p.deleted_at IS NULL AND t.deleted_at IS NULL
+          AND t.css <> '' ${pageFilter}
+      `)) as unknown as Array<{ id: string; css: string }>;
+
+      units = assembleDirectBuildUnits(
+        {
+          pageModules: fbPageModuleRows,
+          chromeModules: fbChromeRows,
+          templates: fbTemplateRows,
+        },
+        run.source_url,
+      );
+    }
+
     if (units.length === 0) {
       return err({
         kind: "HandlerError",
         operation: "imports.migrate_media",
         message:
-          "no composed modules found for this run — run compose_from_import first, then migrate media",
+          "no rewritable modules found for this run — neither the compose linkage " +
+          "(import_pages.accepted_page_id) nor the direct-build site (page modules + " +
+          "layout chrome + template CSS) yielded any content. Compose or build the " +
+          "pages first, then migrate media.",
       });
     }
 
@@ -445,6 +614,20 @@ export const migrateImportMediaOp = defineOperation({
       await mediaRecordUsageOp.handler(ctx, { deltas: usageDeltas }, tx);
     }
 
+    // ------------------------------------------------------------------
+    // 5. Logo-preservation guardrail. Media has just been re-hosted, so
+    // this is the moment of truth: if the source homepage header carried
+    // a real logo image but the rebuilt chrome header references none of
+    // {Caelo-media <img>, {{theme_logo_url}}, bound theme logo asset},
+    // the operator's brand logo was hand-authored as a text/CSS wordmark
+    // instead of imported (the searchviu live-run defect). Prose in the
+    // skill forbids it; this is the structural backstop that makes the
+    // miss LOUD in the run's error/warning ledger (CLAUDE.md §2, §11).
+    // Conservative: fires only when a source logo image is positively
+    // detected, so a genuine styled-text wordmark is never flagged.
+    // ------------------------------------------------------------------
+    const logoWarning = await detectRedrawnLogo(tx, input.runId, run.source_url);
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -463,6 +646,97 @@ export const migrateImportMediaOp = defineOperation({
       modulesRewritten,
       templatesRewritten,
       skipped,
+      logoWarning,
     });
   },
 });
+
+/**
+ * The logo-preservation guardrail's DB half. Reads (a) the crawled
+ * homepage's extracted source blocks, (b) the rebuilt chrome header
+ * module (post-rewrite, so a just-migrated logo shows its `/_caelo/`
+ * src), and (c) the active theme's bound logo asset. Returns a warning
+ * string when the source had a logo image and the rebuild references
+ * none of the three logo signals — and appends that warning to the run's
+ * `import_run_events` ledger in the same transaction (best-effort:
+ * detection must never sink a media migration that actually moved
+ * assets). Returns `null` when the logo was preserved or the source had
+ * none.
+ *
+ * `tx` is the open Query-API transaction; `runId` the migration run;
+ * `sourceUrl` the run's origin (used to find the homepage import_page).
+ */
+async function detectRedrawnLogo(
+  tx: Parameters<typeof migrateImportMediaOp.handler>[2],
+  runId: string,
+  sourceUrl: string,
+): Promise<string | null> {
+  // Source signal: the homepage import_page's extracted blocks. Prefer
+  // the row whose source_url matches the run origin; fall back to the
+  // earliest-crawled page for the run (the homepage is crawled first).
+  const homepageRows = (await tx.execute(sql`
+    SELECT proposed_modules
+    FROM import_pages
+    WHERE run_id = ${runId}::uuid
+    ORDER BY (source_url = ${sourceUrl}) DESC, created_at ASC
+    LIMIT 1
+  `)) as unknown as Array<{ proposed_modules: unknown }>;
+  const blocks = (homepageRows[0]?.proposed_modules ?? []) as ProposedModuleBlock[];
+  if (!Array.isArray(blocks) || blocks.length === 0) return null;
+
+  const sourceLogo = sourceHeaderHasLogoImage(blocks);
+  if (!sourceLogo.hasLogo) return null;
+
+  // Rebuild signal 1+2: the rebuilt chrome header module(s), re-read
+  // AFTER the rewrite above so a migrated logo <img> already carries its
+  // /_caelo/ src. Two ways the header is attached, checked together so the
+  // guardrail evaluates the REAL header regardless of build path:
+  //   (a) compose flow — a module named `imported-<runid8>-header`,
+  //   (b) direct-build flow (#278) — a module bound to the layout's
+  //       `header` block via layout_modules (no import-slug convention).
+  // If EITHER header carries a real logo ref, the logo was preserved.
+  const headerRows = (await tx.execute(sql`
+    SELECT m.html
+    FROM modules m
+    WHERE m.deleted_at IS NULL AND (
+      m.slug = ${`imported-${runId.slice(0, 8)}-header`}
+      OR m.id IN (
+        SELECT lm.module_id
+        FROM layout_modules lm
+        JOIN templates t ON t.layout_id = lm.layout_id
+        JOIN pages p ON p.template_id = t.id
+        WHERE lm.block_name = 'header' AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+      )
+    )
+  `)) as unknown as Array<{ html: string }>;
+  for (const row of headerRows) {
+    if (rebuiltHeaderHasLogoRef(row.html ?? "")) return null;
+  }
+
+  // Rebuild signal 3: a bound theme logo asset (set via themes.set_asset
+  // + a {{theme_logo_url}} the template engine resolves). If the operator
+  // bound the logo at the theme, the header need not carry it inline.
+  const themeRows = (await tx.execute(sql`
+    SELECT logo_media_id::text AS logo_media_id FROM themes WHERE is_active = true LIMIT 1
+  `)) as unknown as Array<{ logo_media_id: string | null }>;
+  if (themeRows[0]?.logo_media_id) return null;
+
+  // All three signals absent → the logo was redrawn. Record it LOUDLY.
+  const message =
+    `header logo was NOT imported: the source homepage header carried a real logo asset ` +
+    `(${sourceLogo.evidence ?? "image"}) but the rebuilt header references neither a Caelo-hosted ` +
+    `logo <img>, a {{theme_logo_url}} placeholder, nor a bound theme logo asset — it was likely ` +
+    `hand-authored as a text/CSS wordmark. Preserve the source logo as a real <img> (so migrate_media ` +
+    `re-hosts it) or bind it once with set_theme_asset({slot:'logo'}) + {{theme_logo_url}}, then re-run.`;
+  await tx.execute(sql`
+    INSERT INTO import_run_events (run_id, severity, phase, message, detail)
+    VALUES (
+      ${runId}::uuid,
+      'warning',
+      'media',
+      ${message},
+      ${jsonbParam({ check: "logo-preserved", sourceEvidence: sourceLogo.evidence ?? null })}
+    )
+  `);
+  return message;
+}

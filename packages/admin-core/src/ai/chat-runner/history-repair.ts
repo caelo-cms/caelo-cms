@@ -45,9 +45,10 @@ export interface HistoryRepairResult {
  * Drop orphan tool_results and strip unanswered tool_uses so every
  * surviving pair is complete. Duplicate tool_results for one id keep
  * only the first occurrence (a second one is the same 400 as an
- * orphan). Assistant messages left with no text, no tool calls, and no
- * thinking after stripping are dropped entirely — an empty assistant
- * content array is itself a provider-side rejection.
+ * orphan). Assistant messages left with no text and no surviving tool
+ * calls after stripping are dropped entirely — an assistant turn that is
+ * empty OR carries only orphaned thinking blocks is itself a
+ * provider-side rejection.
  */
 export function repairToolCallPairing(messages: readonly ChatMessageInput[]): HistoryRepairResult {
   // Pass 1 — global id inventory. Results virtually always follow their
@@ -89,10 +90,17 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
       for (const tc of m.toolCalls) {
         if (!toolResultIds.has(tc.id)) strippedToolCallIds.push(tc.id);
       }
-      const stillHasContent =
-        m.content.length > 0 ||
-        answered.length > 0 ||
-        (m.thinkingBlocks !== undefined && m.thinkingBlocks.length > 0);
+      // Thinking blocks do NOT count as surviving content here: an
+      // assistant message left with ONLY thinking after its tool_use is
+      // stripped is itself a provider-side 400 (Anthropic requires a
+      // thinking block to lead into a text/tool_use response or be the
+      // final turn — a bare thinking-only turn mid-conversation is
+      // rejected). Those blocks are also orphaned: their signature signed
+      // the now-removed tool_use, so replaying them buys nothing. Dropping
+      // the whole message is what lets a thinking-enabled session that was
+      // bricked by a dangling tool_use (the `max_tokens`-after-tool_use
+      // wedge) heal on its next load, not just a thinking-off one.
+      const stillHasContent = m.content.length > 0 || answered.length > 0;
       if (!stillHasContent) {
         droppedEmptyAssistantMessages += 1;
         continue;

@@ -32,6 +32,7 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
   description:
     "Materialise a completed import run into drafts: aggregates extracted theme tokens, creates a template bound to the default layout, and turns every staged page into a draft page + modules. " +
     "Use ONLY after the import worker has run (status='ready_for_review' or 'completed'). For a brand-new import, call `propose_site_import` first — that queues the crawl + waits for Owner approval. " +
+    "If the run is still crawling this returns SUCCESS with a 'still crawling' message (NOT an error) — that is expected timing: poll `imports.get` and call compose again once the run reads ready_for_review. A genuine error only comes back when the run FAILED or does not exist. " +
     "Idempotent: re-running on the same runId skips already-accepted pages.",
   schema: composeFromImportToolInput,
   inputSchema: {
@@ -58,21 +59,36 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
     if (!r.ok) {
       return { ok: false, content: `imports.compose_from_run failed: ${describeError(r.error)}` };
     }
-    const v = r.value as {
-      themeTokensApplied: number;
-      designTokenSource: "sampled" | "extractor" | "none";
-      layoutId: string;
-      templateId: string;
-      templatesByCluster: Record<string, string>;
-      pageIds: string[];
-      homepageId: string | null;
-      skippedAlreadyAccepted: number;
-      designInventory: string | null;
-      redirectsCreated: number;
-      chromeBound: string[];
-      chromeNotes: string[];
-      tokenNotes: string[];
-    };
+    const result = r.value as
+      | { status: "crawling"; runStatus: "crawling" | "proposed"; retryAfterMs: number }
+      | {
+          status: "composed";
+          themeTokensApplied: number;
+          designTokenSource: "sampled" | "extractor" | "none";
+          layoutId: string;
+          templateId: string;
+          templatesByCluster: Record<string, string>;
+          pageIds: string[];
+          homepageId: string | null;
+          skippedAlreadyAccepted: number;
+          skippedPages: Array<{ slug: string; sourceUrl: string; reason: string }>;
+          designInventory: string | null;
+          redirectsCreated: number;
+          chromeBound: string[];
+          chromeNotes: string[];
+          tokenNotes: string[];
+        };
+    // Still-crawling is EXPECTED timing, not a failure — return ok so the
+    // model keeps polling `imports.get` instead of showing a red card.
+    if (result.status === "crawling") {
+      return {
+        ok: true,
+        content:
+          `The import crawl is still running (status=${result.runStatus}) — it has not reached ready_for_review yet. ` +
+          `Do NOT treat this as an error. Wait ~${Math.round(result.retryAfterMs / 1000)}s, check \`imports.get\`, and call compose again the moment the run reads ready_for_review.`,
+      };
+    }
+    const v = result;
     const clusterList = Object.entries(v.templatesByCluster)
       .map(([k, id]) => `${k}→${id.slice(0, 8)}`)
       .join(", ");
@@ -92,6 +108,12 @@ export const composeFromImportTool: ToolDefinitionWithHandler<
           : "",
         v.chromeNotes.length > 0
           ? `Chrome notes (surface these to the operator, do not work around them silently): ${v.chromeNotes.join(", ")}.`
+          : "",
+        // Pages held back by a per-page gate (unacknowledged screenshot
+        // fail). Never a silent drop — name them so the operator can
+        // acknowledge or exclude and re-run.
+        v.skippedPages.length > 0
+          ? `Pages SKIPPED (surface these — do not claim they were built): ${v.skippedPages.map((p) => `'${p.slug}' — ${p.reason}`).join(" | ")}`
           : "",
         // Run #8 — crawled vars the theme layer refused (e.g. WP preset
         // font SIZES that are not font families). Loud, never silent.

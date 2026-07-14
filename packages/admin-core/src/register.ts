@@ -202,6 +202,8 @@ import {
   listImportPageClustersOp,
   listImportRunsOp,
   listPendingImportProposalsOp,
+  logImportRunEventOp,
+  logImportRunEventsOp,
   proposeImportRunOp,
   rejectImportProposalOp,
   setCostCeilingOp,
@@ -786,6 +788,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);
   registry.register(updatePageDiffOp);
+  // issue #28 — run-scoped error/warning ledger.
+  registry.register(logImportRunEventOp);
+  registry.register(logImportRunEventsOp);
   // issue #247 — run-level computed-style token aggregate.
   registry.register(setRunDesignTokensOp);
   registry.register(acknowledgeImportPageDiffOp);

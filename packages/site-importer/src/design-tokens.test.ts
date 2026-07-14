@@ -182,10 +182,100 @@ describe("flattenSiteDesignTokens", () => {
       { token: "color-link", value: "#0066cc", scope: "color" },
       { token: "color-primary", value: "#dc2626", scope: "color" },
       { token: "color-primary-contrast", value: "#ffffff", scope: "color" },
-      { token: "font-family", value: "Inter, sans-serif", scope: "font" },
-      { token: "font-heading", value: "Sora, sans-serif", scope: "font" },
+      {
+        token: "typography-body",
+        value: JSON.stringify({ fontFamily: "Inter, sans-serif" }),
+        scope: "typography",
+      },
+      {
+        token: "typography-heading",
+        value: JSON.stringify({ fontFamily: "Sora, sans-serif" }),
+        scope: "typography",
+      },
       { token: "radius-base", value: "8px", scope: "radius" },
     ]);
+  });
+
+  it("folds the measured type scale into typography composites", () => {
+    const site = aggregateSiteDesignTokens([
+      deriveDesignTokens([
+        sample("body", { fontFamily: "Inter, sans-serif" }),
+        sample("p", { fontSize: "16px", lineHeight: "24px" }),
+        sample("h1", {
+          fontFamily: "Sora, sans-serif",
+          fontSize: "40px",
+          fontWeight: "700",
+          lineHeight: "1.1",
+        }),
+      ]),
+    ]);
+    const flat = flattenSiteDesignTokens(site);
+    // Body composite carries family (from body) + size/line-height (from p).
+    expect(flat).toContainEqual({
+      token: "typography-body",
+      value: JSON.stringify({
+        fontFamily: "Inter, sans-serif",
+        fontSize: "16px",
+        lineHeight: "24px",
+      }),
+      scope: "typography",
+    });
+    // Heading composite carries the full scale; weight coerced to a number.
+    expect(flat).toContainEqual({
+      token: "typography-heading",
+      value: JSON.stringify({
+        fontFamily: "Sora, sans-serif",
+        fontSize: "40px",
+        lineHeight: "1.1",
+        fontWeight: 700,
+      }),
+      scope: "typography",
+    });
+  });
+
+  it("skips line-height:normal (not a CSS length the theme accepts)", () => {
+    const site = aggregateSiteDesignTokens([
+      deriveDesignTokens([
+        sample("body", { fontFamily: "Inter" }),
+        sample("p", { fontSize: "16px", lineHeight: "normal" }),
+      ]),
+    ]);
+    const flat = flattenSiteDesignTokens(site);
+    const bodyTok = flat.find((t) => t.token === "typography-body");
+    expect(bodyTok).toBeDefined();
+    const composite = JSON.parse(bodyTok!.value) as Record<string, unknown>;
+    expect(composite.fontSize).toBe("16px");
+    expect("lineHeight" in composite).toBe(false);
+  });
+
+  it("emits the measured spacing scale as space-* tokens", () => {
+    const site = aggregateSiteDesignTokens([
+      deriveDesignTokens([
+        sample("section", { paddingTop: "64px" }),
+        sample("container", { paddingLeft: "24px", paddingRight: "24px" }),
+        sample("card", { paddingTop: "16px", paddingLeft: "20px" }),
+        sample("button", { paddingTop: "12px", paddingLeft: "20px" }),
+      ]),
+    ]);
+    const flat = flattenSiteDesignTokens(site);
+    expect(flat).toContainEqual({ token: "space-section", value: "64px", scope: "space" });
+    expect(flat).toContainEqual({ token: "space-container", value: "24px", scope: "space" });
+    expect(flat).toContainEqual({ token: "space-card", value: "16px", scope: "space" });
+    expect(flat).toContainEqual({ token: "space-button", value: "12px", scope: "space" });
+  });
+
+  it("skips zero and non-length spacing (no default invented)", () => {
+    const site = aggregateSiteDesignTokens([
+      deriveDesignTokens([
+        // Section with only zero padding + a real gap fallback.
+        sample("section", { paddingTop: "0px", paddingBottom: "0px", gap: "48px" }),
+        // Card with no non-zero spacing at all → no space-card token.
+        sample("card", { paddingTop: "0px", paddingLeft: "0px" }),
+      ]),
+    ]);
+    const flat = flattenSiteDesignTokens(site);
+    expect(flat).toContainEqual({ token: "space-section", value: "48px", scope: "space" });
+    expect(flat.some((t) => t.token === "space-card")).toBe(false);
   });
 
   it("emits nothing for roles that were never sampled", () => {

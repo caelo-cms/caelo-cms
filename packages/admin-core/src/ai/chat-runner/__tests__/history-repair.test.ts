@@ -134,6 +134,47 @@ describe("repairToolCallPairing (run #10 D1)", () => {
     expect(r.messages.map((m) => m.role)).toEqual(["user"]);
     expect(r.droppedToolResultIds).toEqual(["(missing toolCallId)"]);
   });
+
+  it("heals the offer_choices free-text-answer wedge (dangling ask + thinking, no result)", () => {
+    // The live brick: the model reached a design checkpoint, emitted
+    // offer_choices TWICE, and the stream stopped at `max_tokens` right
+    // after the tool_use blocks (adaptive thinking burned the budget), so
+    // neither ask was ever dispatched — two dangling tool_use ids with
+    // signature-bearing thinking and no text. The operator answered by
+    // TYPING free text instead of clicking. Every later turn 400'd with
+    // "tool results are missing for tool calls toolu_014…, toolu_01W…".
+    const input: ChatMessageInput[] = [
+      { role: "user", content: "design the homepage hero" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "toolu_014TWADPKDFAs31Ya6XnRHoW", name: "offer_choices", arguments: {} },
+          { id: "toolu_01WJ2BZfArG452qnnz17MhE1", name: "offer_choices", arguments: {} },
+        ],
+        thinkingBlocks: [{ thinking: "weighing two hero directions", signature: "sig-abc" }],
+      },
+      { role: "user", content: "ja, mach weiter" },
+    ];
+    const r = repairToolCallPairing(input);
+
+    // Both dangling asks are stripped — the exact ids from the 400.
+    expect(r.strippedToolCallIds).toEqual([
+      "toolu_014TWADPKDFAs31Ya6XnRHoW",
+      "toolu_01WJ2BZfArG452qnnz17MhE1",
+    ]);
+    // The provider-bound history contains NO unpaired tool_use — the shape
+    // that triggered the 400 is gone.
+    expect(r.messages.some((m) => m.role === "assistant" && (m.toolCalls?.length ?? 0) > 0)).toBe(
+      false,
+    );
+    // The now-orphaned thinking-only assistant turn is dropped entirely (a
+    // bare thinking turn mid-conversation is itself a provider-side 400) —
+    // this is what lets the THINKING-enabled bricked session heal on reload.
+    expect(r.droppedEmptyAssistantMessages).toBe(1);
+    expect(r.messages.map((m) => m.role)).toEqual(["user", "user"]);
+    expect(r.messages.some((m) => m.thinkingBlocks && m.thinkingBlocks.length > 0)).toBe(false);
+  });
 });
 
 describe("buildProviderHistory runs the repair (poisoned-session replay)", () => {
@@ -197,5 +238,44 @@ describe("buildProviderHistory runs the repair (poisoned-session replay)", () =>
     // The intact pair survives.
     expect(out.some((m) => m.role === "tool" && m.toolCallId === "toulu_1")).toBe(true);
     expect(out.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
+  });
+
+  it("heals a reloaded offer_choices wedge: no unpaired tool_use reaches the provider", async () => {
+    // The persisted transcript exactly as chat.get_session returns it after
+    // the loop left a dangling offer_choices pair (thinking on). A page
+    // reload then a free-text answer replays this — it must NOT 400.
+    const persisted: HistoryMessage[] = [
+      {
+        role: "user",
+        content: "design the homepage hero",
+        toolCalls: null,
+        toolCallId: null,
+        thinkingBlocks: null,
+      },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "toolu_014TWADPKDFAs31Ya6XnRHoW", name: "offer_choices", arguments: {} },
+          { id: "toolu_01WJ2BZfArG452qnnz17MhE1", name: "offer_choices", arguments: {} },
+        ],
+        toolCallId: null,
+        thinkingBlocks: [{ thinking: "weighing two hero directions", signature: "sig-abc" }],
+      },
+      {
+        role: "user",
+        content: "ja, mach weiter",
+        toolCalls: null,
+        toolCallId: null,
+        thinkingBlocks: null,
+      },
+    ];
+    const out = await buildProviderHistory(persisted, noopLoader);
+    // No assistant message carries a tool_use at all — the dangling pair
+    // that produced "tool results are missing for tool calls …" is gone.
+    expect(out.some((m) => (m.toolCalls?.length ?? 0) > 0)).toBe(false);
+    // The orphaned thinking-only turn is dropped; only the two user turns
+    // remain, so the replay is a clean, valid request.
+    expect(out.map((m) => m.role)).toEqual(["user", "user"]);
   });
 });

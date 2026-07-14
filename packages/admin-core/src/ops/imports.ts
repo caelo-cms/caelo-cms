@@ -41,6 +41,12 @@ import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
+import {
+  buildZeroPagesAbortMessage,
+  type ComposeSkip,
+  classifyComposeRunStatus,
+  composePageSkipReason,
+} from "./compose-eligibility.js";
 import { computeRunCost, majorUnitsToMicrocents, roundsToZeroMicrocents } from "./imports-cost.js";
 import { updateThemeTokensOp } from "./themes.js";
 
@@ -53,6 +59,10 @@ const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed
 // precedent as import_runs.estimate) so a schema evolution never bricks
 // list/get.
 const tokenFrequency = z.object({ value: z.string().max(500), count: z.number().int().min(1) });
+// issue #32 — measured spacing scale (space-section / -container /
+// -card / -button). Bounded like the role records so stored jsonb can
+// never balloon.
+const spacingScale = z.record(z.string().max(40), z.string().max(80));
 const pageDesignTokensSchema: z.ZodType<PageDesignTokens> = z.object({
   palette: z.array(tokenFrequency).max(16),
   backgrounds: z.array(tokenFrequency).max(16),
@@ -61,6 +71,7 @@ const pageDesignTokensSchema: z.ZodType<PageDesignTokens> = z.object({
   fontWeights: z.array(tokenFrequency).max(16),
   radii: z.array(tokenFrequency).max(16),
   shadows: z.array(tokenFrequency).max(16),
+  spacing: spacingScale,
   roles: z.record(z.string(), z.record(z.string(), z.string().max(500))),
 });
 const siteDesignTokensSchema: z.ZodType<SiteDesignTokens> = z.object({
@@ -71,6 +82,7 @@ const siteDesignTokensSchema: z.ZodType<SiteDesignTokens> = z.object({
   fontWeights: z.array(tokenFrequency).max(16),
   radii: z.array(tokenFrequency).max(16),
   shadows: z.array(tokenFrequency).max(16),
+  spacing: spacingScale,
   roles: z.record(z.string(), z.record(z.string(), z.string().max(500))),
   pageCount: z.number().int().min(0),
 });
@@ -556,6 +568,117 @@ export const updateImportRunStatusOp = defineOperation({
 });
 
 /**
+ * issue #28 — the run-scoped error/warning LEDGER. One `import_run_events`
+ * row shape, validated at the write boundary. Emitters (media migration,
+ * fidelity gate, crawl) append events as they hit problems; the run report
+ * reads them back so every error/warning is reviewable, not just the single
+ * last-fatal `import_runs.error_message`.
+ *
+ * `detail` is arbitrary structured context (a skipped asset's url+reason, a
+ * diff pct, …) stored through `jsonbParam` — never double-encoded. `pageId`
+ * optionally links the event to the import page it concerns.
+ */
+export const importRunEventInput = z
+  .object({
+    runId: z.string().uuid(),
+    severity: z.enum(["warning", "error", "info"]),
+    /** Migration stage that emitted the event (crawl | media | fidelity |
+     *  inventory | compose | …). Free text so a new stage needs no schema
+     *  change; capped to keep the ledger legible. */
+    phase: z.string().min(1).max(60).optional(),
+    message: z.string().min(1).max(2000),
+    /** Structured payload for the report surface. */
+    detail: z.unknown().optional(),
+    /** Optional import_pages id (or composed page id) the event concerns. */
+    pageId: z.string().uuid().optional(),
+  })
+  .strict();
+
+/**
+ * issue #28 — append ONE event to a run's ledger. Routine
+ * (human+ai+system, no gate): a ledger write is additive and trivially
+ * revertable. Prefer `imports.log_events` when appending >1 event
+ * (a media run skips many assets at once) — one tool call, one tx.
+ */
+export const logImportRunEventOp = defineOperation({
+  name: "imports.log_event",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: importRunEventInput,
+  output: z.object({ eventId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      INSERT INTO import_run_events (run_id, severity, phase, message, detail, page_id)
+      VALUES (
+        ${input.runId}::uuid,
+        ${input.severity},
+        ${input.phase ?? null},
+        ${input.message},
+        ${jsonbParam(input.detail ?? null)},
+        ${input.pageId ?? null}
+      )
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const eventId = rows[0]?.id;
+    if (!eventId) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.log_event",
+        message: "no row returned",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.log_event",
+      input,
+      succeeded: true,
+      entityId: input.runId,
+      resultSummary: `${input.severity}${input.phase ? `/${input.phase}` : ""}: ${input.message.slice(0, 120)}`,
+    });
+    return ok({ eventId });
+  },
+});
+
+/**
+ * issue #28 — append MANY events to run ledgers in one transaction (CLAUDE.md
+ * §11 bulk-first). Partial failure is impossible: all rows insert or none do.
+ * Events may span more than one run (the array carries `runId` per row), so
+ * one migration step's mixed findings post in a single call.
+ */
+export const logImportRunEventsOp = defineOperation({
+  name: "imports.log_events",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ events: z.array(importRunEventInput).min(1).max(500) }).strict(),
+  output: z.object({ inserted: z.number() }),
+  handler: async (ctx, input, tx) => {
+    for (const e of input.events) {
+      await tx.execute(sql`
+        INSERT INTO import_run_events (run_id, severity, phase, message, detail, page_id)
+        VALUES (
+          ${e.runId}::uuid,
+          ${e.severity},
+          ${e.phase ?? null},
+          ${e.message},
+          ${jsonbParam(e.detail ?? null)},
+          ${e.pageId ?? null}
+        )
+      `);
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.log_events",
+      input,
+      succeeded: true,
+      resultSummary: `appended ${input.events.length} event(s)`,
+    });
+    return ok({ inserted: input.events.length });
+  },
+});
+
+/**
  * P14 polish — Owner acknowledges a `fail`-classified screenshot diff
  * so the page becomes accept-able. AI cannot ack — actorScope is
  * human + system only, matching the §11.A "hard-to-revert" pattern
@@ -722,6 +845,9 @@ export const getImportPageFidelityInputsOp = defineOperation({
   input: z.object({ pageRef: z.string().uuid() }).strict(),
   output: z.object({
     importPageId: z.string(),
+    /** issue #28 — the owning run, so the fidelity gate can append a
+     *  warn/fail event to the run's error/warning ledger. */
+    runId: z.string(),
     sourceUrl: z.string().nullable(),
     screenshotObjectKey: z.string().nullable(),
     acceptedPageId: z.string().nullable(),
@@ -730,30 +856,54 @@ export const getImportPageFidelityInputsOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, source_url, screenshot_object_key,
+      SELECT id::text AS id, run_id::text AS run_id, source_url, screenshot_object_key,
              accepted_page_id::text AS accepted_page_id, diff_status, diff_pct
       FROM import_pages
       WHERE id = ${input.pageRef}::uuid OR accepted_page_id = ${input.pageRef}::uuid
       LIMIT 1
     `)) as unknown as Array<{
       id: string;
+      run_id: string;
       source_url: string | null;
       screenshot_object_key: string | null;
       accepted_page_id: string | null;
       diff_status: "pass" | "warn" | "fail" | null;
       diff_pct: number | null;
     }>;
-    const r = rows[0];
+    let r = rows[0];
+
+    // Direct-build fallback (issue #278). The homepage-first flow creates
+    // pages via `pages.create`, so no import_page carries their id as
+    // `accepted_page_id` and the linkage lookup above misses. Resolve the
+    // source import_page by matching the BUILT page's slug against the
+    // crawled `proposed_slug` (the crawl DID store the source screenshot +
+    // proposed_modules). The built page id is what the fidelity gate must
+    // render, so it becomes the effective `accepted_page_id`.
+    if (!r) {
+      const bySlug = (await tx.execute(sql`
+        SELECT ip.id::text AS id, ip.run_id::text AS run_id, ip.source_url,
+               ip.screenshot_object_key, p.id::text AS accepted_page_id,
+               ip.diff_status, ip.diff_pct
+        FROM pages p
+        JOIN import_pages ip ON ip.proposed_slug = p.slug
+        WHERE p.id = ${input.pageRef}::uuid AND p.deleted_at IS NULL
+        ORDER BY (ip.screenshot_object_key IS NOT NULL) DESC, ip.created_at DESC
+        LIMIT 1
+      `)) as unknown as typeof rows;
+      r = bySlug[0];
+    }
+
     if (!r) {
       return err({
         kind: "HandlerError",
         operation: "imports.get_page_fidelity_inputs",
         message:
-          "no import page matches this id — pass EITHER the staging import_pages id OR the composed page id (accepted_page_id); list the run with imports.get for valid ids",
+          "no import page matches this id — pass EITHER the staging import_pages id, the composed page id (accepted_page_id), OR (for a directly-built #278 page) a built page whose slug matches a crawled source page. List the run with imports.get for the source pages and their slugs.",
       });
     }
     return ok({
       importPageId: r.id,
+      runId: r.run_id,
       sourceUrl: r.source_url,
       screenshotObjectKey: r.screenshot_object_key,
       acceptedPageId: r.accepted_page_id,
@@ -1332,13 +1482,31 @@ export const checkImportPageInventoryOp = defineOperation({
       accepted_page_id: string | null;
       proposed_modules: unknown;
     }>;
-    const row = rows[0];
+    let row = rows[0];
+
+    // Direct-build fallback (issue #278). A #278-built page has no
+    // `import_pages.accepted_page_id` linkage; resolve the source
+    // import_page by matching the built page's slug against the crawled
+    // `proposed_slug`, and treat the built page id as the composed page so
+    // the rebuilt-modules diff below runs against it.
+    if (!row) {
+      const bySlug = (await tx.execute(sql`
+        SELECT ip.id::text AS id, p.id::text AS accepted_page_id, ip.proposed_modules
+        FROM pages p
+        JOIN import_pages ip ON ip.proposed_slug = p.slug
+        WHERE p.id = ${input.importPageId}::uuid AND p.deleted_at IS NULL
+        ORDER BY ip.created_at DESC
+        LIMIT 1
+      `)) as unknown as typeof rows;
+      row = bySlug[0];
+    }
+
     if (!row) {
       return err({
         kind: "HandlerError",
         operation: "imports.check_page_inventory",
         message:
-          "import page not found — importPageId accepts the staging import_pages.id OR the composed CMS page id; list the run with imports.get to see both",
+          "import page not found — importPageId accepts the staging import_pages.id, the composed CMS page id, OR (for a directly-built #278 page) a built page whose slug matches a crawled source page; list the run with imports.get to see the source pages and slugs",
       });
     }
     if (!row.accepted_page_id) {
@@ -1616,6 +1784,28 @@ export const getImportRunReportOp = defineOperation({
         ),
       }),
     ),
+    /** issue #28 — the run-scoped error/warning LEDGER. Every problem hit
+     *  during the migration (skipped media asset, page that failed the
+     *  fidelity gate, crawl fetch error) so the closing report surfaces
+     *  them all, not just the single last-fatal `import_runs.error_message`.
+     *  Ordered error → warning → info, then newest-first within a severity.
+     *  Capped at 500 rows to bound the payload. */
+    eventCounts: z.object({
+      error: z.number(),
+      warning: z.number(),
+      info: z.number(),
+    }),
+    events: z.array(
+      z.object({
+        id: z.string(),
+        severity: z.enum(["warning", "error", "info"]),
+        phase: z.string().nullable(),
+        message: z.string(),
+        detail: z.unknown().nullable(),
+        pageId: z.string().nullable(),
+        createdAt: z.string().nullable(),
+      }),
+    ),
   }),
   handler: async (_ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
@@ -1746,6 +1936,40 @@ export const getImportRunReportOp = defineOperation({
       }
     }
 
+    // issue #28 — the run-scoped error/warning LEDGER. Ordered error →
+    // warning → info (the severity the report leads with), newest-first
+    // within a severity. Capped so a pathological run can't blow the payload.
+    const eventRows = (await tx.execute(sql`
+      SELECT id::text AS id, severity, phase, message, detail,
+             page_id::text AS page_id, created_at
+      FROM import_run_events
+      WHERE run_id = ${input.runId}::uuid
+      ORDER BY CASE severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+               created_at DESC
+      LIMIT 500
+    `)) as unknown as Array<{
+      id: string;
+      severity: "warning" | "error" | "info";
+      phase: string | null;
+      message: string;
+      detail: unknown;
+      page_id: string | null;
+      created_at: string | Date | null;
+    }>;
+    const eventCounts = { error: 0, warning: 0, info: 0 };
+    const events = eventRows.map((e) => {
+      eventCounts[e.severity] += 1;
+      return {
+        id: e.id,
+        severity: e.severity,
+        phase: e.phase,
+        message: e.message,
+        detail: parseJsonbColumn(e.detail),
+        pageId: e.page_id,
+        createdAt: toIso(e.created_at),
+      };
+    });
+
     return ok({
       sourceUrl: run.source_url,
       status: run.status,
@@ -1767,6 +1991,8 @@ export const getImportRunReportOp = defineOperation({
         category: category as z.infer<typeof noteCategory>,
         ...v,
       })),
+      eventCounts,
+      events,
     });
   },
 });
@@ -2043,32 +2269,53 @@ export const composeFromImportRunOp = defineOperation({
       includeImportPageIds: z.array(z.string().uuid()).optional(),
     })
     .strict(),
-  output: z.object({
-    themeTokensApplied: z.number().int(),
-    /** Run #8 — crawled vars the theme layer refused, loud + verbatim
-     *  (`theme-token-skipped-nonfont-typography:<token>=<value>`). */
-    tokenNotes: z.array(z.string()),
-    /** issue #247 — where the applied theme values came from:
-     *  'sampled' = computed-style ground truth (extractor as extras),
-     *  'extractor' = inline-CSS fallback only, 'none' = no tokens. */
-    designTokenSource: z.enum(["sampled", "extractor", "none"]),
-    layoutId: z.string(),
-    /** The homepage cluster's template (first template when no home). */
-    templateId: z.string(),
-    /** issue #195 — one template per confirmed page-type cluster. */
-    templatesByCluster: z.record(z.string(), z.string()),
-    pageIds: z.array(z.string()),
-    homepageId: z.string().nullable(),
-    skippedAlreadyAccepted: z.number().int(),
-    /** issue #195 — formatted genesis-inventory over the homepage. */
-    designInventory: z.string().nullable(),
-    /** issue #196 — 301s written from old URLs to new Caelo paths. */
-    redirectsCreated: z.number().int(),
-    /** issue #253 — chrome blocks bound at the layout ("header"/"footer"). */
-    chromeBound: z.array(z.string()),
-    /** issue #253 — loud chrome notes (missing layout block, slot already bound). */
-    chromeNotes: z.array(z.string()),
-  }),
+  // Discriminated on `status` so "the crawl is still running" is a
+  // structured, non-error outcome the runner can poll on — not a red
+  // error card. `composed` carries the full synthesis result; `crawling`
+  // carries only the retry hint. A genuinely FAILED/absent run still
+  // returns `err(...)` (loud red), never `crawling`.
+  output: z.discriminatedUnion("status", [
+    z.object({
+      status: z.literal("crawling"),
+      /** Which not-ready state the run is in (crawling vs not-yet-started). */
+      runStatus: z.enum(["crawling", "proposed"]),
+      /** Suggested wait before the AI re-checks `imports.get`. */
+      retryAfterMs: z.number().int(),
+    }),
+    z.object({
+      status: z.literal("composed"),
+      themeTokensApplied: z.number().int(),
+      /** Run #8 — crawled vars the theme layer refused, loud + verbatim
+       *  (`theme-token-skipped-nonfont-typography:<token>=<value>`). */
+      tokenNotes: z.array(z.string()),
+      /** issue #247 — where the applied theme values came from:
+       *  'sampled' = computed-style ground truth (extractor as extras),
+       *  'extractor' = inline-CSS fallback only, 'none' = no tokens. */
+      designTokenSource: z.enum(["sampled", "extractor", "none"]),
+      layoutId: z.string(),
+      /** The homepage cluster's template (first template when no home). */
+      templateId: z.string(),
+      /** issue #195 — one template per confirmed page-type cluster. */
+      templatesByCluster: z.record(z.string(), z.string()),
+      pageIds: z.array(z.string()),
+      homepageId: z.string().nullable(),
+      skippedAlreadyAccepted: z.number().int(),
+      /** Pages that were eligible but held back by a per-page gate
+       *  (unacknowledged screenshot-diff fail). Surfaced loudly so the
+       *  operator sees WHICH pages need attention — never a silent drop. */
+      skippedPages: z.array(
+        z.object({ slug: z.string(), sourceUrl: z.string(), reason: z.string() }),
+      ),
+      /** issue #195 — formatted genesis-inventory over the homepage. */
+      designInventory: z.string().nullable(),
+      /** issue #196 — 301s written from old URLs to new Caelo paths. */
+      redirectsCreated: z.number().int(),
+      /** issue #253 — chrome blocks bound at the layout ("header"/"footer"). */
+      chromeBound: z.array(z.string()),
+      /** issue #253 — loud chrome notes (missing layout block, slot already bound). */
+      chromeNotes: z.array(z.string()),
+    }),
+  ]),
   handler: async (ctx, input, tx) => {
     // 1. Run must exist + be reviewable.
     const runRows = (await tx.execute(sql`
@@ -2088,11 +2335,24 @@ export const composeFromImportRunOp = defineOperation({
         message: "import run not found",
       });
     }
-    if (run.status !== "ready_for_review" && run.status !== "completed") {
+    // The background crawl flips the run to `ready_for_review` when done.
+    // Being called mid-crawl is EXPECTED timing (the AI/flow polls), not
+    // a failure: return a structured "not ready, keep polling" outcome as
+    // `ok` so it does not surface as a red error card. Only a genuinely
+    // FAILED (or unknown) run is a hard, loud error.
+    const classification = classifyComposeRunStatus(run.status, input.runId);
+    if (classification.kind === "not_ready") {
+      return ok({
+        status: "crawling" as const,
+        runStatus: classification.runStatus,
+        retryAfterMs: classification.retryAfterMs,
+      });
+    }
+    if (classification.kind === "error") {
       return err({
         kind: "HandlerError",
         operation: "imports.compose_from_run",
-        message: `run is ${run.status}; wait for ready_for_review before composing`,
+        message: classification.message,
       });
     }
 
@@ -2445,6 +2705,7 @@ export const composeFromImportRunOp = defineOperation({
     // so the homepage lands before the fan-out (homepage-first is the
     // migration contract).
     const createdPageIds: string[] = [];
+    const skippedPages: ComposeSkip[] = [];
     const templateIdsByCluster = new Map<string, string>();
     let homepageId: string | null = null;
     let redirectsCreated = 0;
@@ -2472,7 +2733,11 @@ export const composeFromImportRunOp = defineOperation({
 
       for (const r of members) {
         // Block on unacknowledged screenshot fail — same gate as accept_page.
-        if (r.diff_status === "fail" && !r.acknowledged_at) {
+        // Record WHY so a run that skips every page fails loudly below
+        // instead of silently returning templates-but-zero-pages.
+        const skip = composePageSkipReason(r);
+        if (skip) {
+          skippedPages.push(skip);
           continue;
         }
         const proposedModules = parseModules(r.proposed_modules);
@@ -2491,7 +2756,17 @@ export const composeFromImportRunOp = defineOperation({
           RETURNING id::text AS id
         `)) as unknown as { id: string }[];
         const pageId = pageInsert[0]?.id;
-        if (!pageId) continue;
+        if (!pageId) {
+          // An upsert with DO UPDATE ... RETURNING always yields a row;
+          // an empty result is a genuine write failure, not a normal
+          // skip. Abort loudly (rollback) rather than silently dropping
+          // the page — CLAUDE.md §2 (no silent degradation).
+          throw new OperationAbortError({
+            kind: "HandlerError",
+            operation: "imports.compose_from_run",
+            message: `page insert returned no row for '${r.proposed_slug}' (${r.source_url}) — nothing from this compose was applied.`,
+          });
+        }
         createdPageIds.push(pageId);
         if (clusterKey === "home" || r.proposed_slug === "home" || homepageId === null) {
           if (clusterKey === "home" || r.proposed_slug === "home" || homepageId === null) {
@@ -2526,7 +2801,16 @@ export const composeFromImportRunOp = defineOperation({
             RETURNING id::text AS id
           `)) as unknown as { id: string }[];
           const moduleId = modInsert[0]?.id;
-          if (!moduleId) continue;
+          if (!moduleId) {
+            // Swallowing this left a page missing its content module
+            // silently. A DO UPDATE ... RETURNING always yields a row —
+            // an empty result is a real failure. Abort loudly (rollback).
+            throw new OperationAbortError({
+              kind: "HandlerError",
+              operation: "imports.compose_from_run",
+              message: `module insert returned no row for '${r.proposed_slug}' block '${m.blockName}' pos ${m.position} — nothing from this compose was applied.`,
+            });
+          }
           // v0.12.0 — mint a fresh unsynced content_instance per placement
           // so page_modules.content_instance_id NOT NULL is satisfied.
           const ciInsert = (await tx.execute(sql`
@@ -2535,7 +2819,13 @@ export const composeFromImportRunOp = defineOperation({
             RETURNING id::text AS id
           `)) as unknown as { id: string }[];
           const newCiId = ciInsert[0]?.id;
-          if (!newCiId) continue;
+          if (!newCiId) {
+            throw new OperationAbortError({
+              kind: "HandlerError",
+              operation: "imports.compose_from_run",
+              message: `content_instance insert returned no row for '${r.proposed_slug}' block '${m.blockName}' pos ${m.position} — nothing from this compose was applied.`,
+            });
+          }
           await tx.execute(sql`
             INSERT INTO page_modules
               (page_id, block_name, position, module_id, content_instance_id, sync_mode)
@@ -2625,6 +2915,21 @@ export const composeFromImportRunOp = defineOperation({
       });
     }
 
+    // Templates were created but EVERY eligible page was skipped by a
+    // per-page gate. Pre-fix this returned `ok` with `pageIds: []`, so
+    // the AI saw "templates but no pages" and invented a "format reason"
+    // to fall back to the fragile direct-build path. Fail loudly instead
+    // (rollback), naming exactly which pages were skipped and why, so the
+    // operator/AI can acknowledge or exclude them and re-run — CLAUDE.md
+    // §2 (no silent degradation: never templates-but-silently-zero-pages).
+    if (createdPageIds.length === 0) {
+      throw new OperationAbortError({
+        kind: "HandlerError",
+        operation: "imports.compose_from_run",
+        message: buildZeroPagesAbortMessage(templateIdsByCluster.size, skippedPages),
+      });
+    }
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -2632,10 +2937,11 @@ export const composeFromImportRunOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.runId,
-      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} redirects=${redirectsCreated} skipped=${skippedAlreadyAccepted}`,
+      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} redirects=${redirectsCreated} skippedAccepted=${skippedAlreadyAccepted} skippedGated=${skippedPages.length}`,
     });
 
     return ok({
+      status: "composed" as const,
       themeTokensApplied: aggregatedTokens.length - tokenNotes.length,
       tokenNotes,
       designTokenSource,
@@ -2645,6 +2951,11 @@ export const composeFromImportRunOp = defineOperation({
       pageIds: createdPageIds,
       homepageId,
       skippedAlreadyAccepted,
+      skippedPages: skippedPages.map((s) => ({
+        slug: s.slug,
+        sourceUrl: s.sourceUrl,
+        reason: s.reason,
+      })),
       designInventory,
       redirectsCreated,
       chromeBound,
@@ -2712,6 +3023,29 @@ export function prepareLegacyAggregatedToken(t: {
   // (a CSS shadow string) landed in `spacing.*` and the
   // TokenCategoryMismatch aborted the ENTIRE compose_from_run. No
   // guessing (CLAUDE.md 2): what we cannot place, we drop below.
+  // issue #32 — sampled typography composites arrive with scope
+  // "typography" and a JSON-serialised sub-field object
+  // ({fontFamily, fontSize, fontWeight, lineHeight}). Land them at the
+  // DTCG composite root so the renderer emits the full type scale
+  // (--font-<role> / --text-<role> / --font-weight-<role> /
+  // --leading-<role>). normalizeTokens/themeTypographyComposite validate
+  // the object shape; a malformed payload is our own serialisation bug,
+  // so we drop it (skip) rather than abort the whole compose.
+  if (t.scope === "typography") {
+    const basename = t.token.startsWith("typography-")
+      ? t.token.slice("typography-".length)
+      : t.token;
+    if (!basename) return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(t.value);
+    } catch {
+      return null;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return { canonicalPath: `typography.${basename}`, value: parsed };
+  }
+
   const name = t.token.toLowerCase();
   let category: string;
   if (t.scope === "color") category = "color";

@@ -52,6 +52,14 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "tool";
   content: string;
+  /**
+   * issue #29 — provenance for role='user' rows. "system" marks an
+   * auto-injected status line (crawl-completion nudge, post-approval
+   * continuation) the operator did not type; it renders as a muted,
+   * centered status note instead of a "You:" bubble. "operator" / null /
+   * undefined = the operator typed it.
+   */
+  origin?: "operator" | "system" | null;
   /** v0.2.46 — present on tool-role messages. Drives ToolCardRouter
    *  dispatch so tool results render as domain-specific cards instead
    *  of plain text blobs. Optional because pre-v0.2.46 chat_messages

@@ -251,7 +251,12 @@ describe("imports.migrate_media (#249)", () => {
     expect(rerun.skipped).toHaveLength(1);
   });
 
-  it("fails loudly when the run has no composed pages yet", async () => {
+  it("scans the directly-built site when the run has no composed pages (#278 fallback)", async () => {
+    // Pre-#278 this errored with "run compose_from_import first". The
+    // direct-build fallback now scans the live site (page modules, layout
+    // chrome, template CSS) for source-host references instead — a fresh
+    // seeded site has no source-host URLs, so the op succeeds with zero
+    // migrated assets rather than refusing outright.
     const run = await execute(registry, adapter, SYSTEM, "imports.create_run", {
       sourceUrl: `${baseUrl}/?issue249-empty`,
       depth: 1,
@@ -261,9 +266,11 @@ describe("imports.migrate_media (#249)", () => {
     const r = await execute(registry, adapter, AI, "imports.migrate_media", {
       runId: (run.value as { runId: string }).runId,
     });
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(JSON.stringify(r.error)).toContain("compose_from_import");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const v = r.value as { migrated: number; modulesRewritten: number };
+      expect(v.migrated).toBe(0);
+      expect(v.modulesRewritten).toBe(0);
     }
   });
 });

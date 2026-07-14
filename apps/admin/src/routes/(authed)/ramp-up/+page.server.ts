@@ -215,14 +215,22 @@ export const actions: Actions = {
       runId,
     });
     if (!r.ok) return fail(400, { error: `Synthesis failed (${r.error.kind}).` });
-    const v = r.value as {
-      themeTokensApplied: number;
-      layoutId: string;
-      templateId: string;
-      pageIds: string[];
-      homepageId: string | null;
-      skippedAlreadyAccepted: number;
-    };
+    const result = r.value as
+      | { status: "crawling"; runStatus: "crawling" | "proposed"; retryAfterMs: number }
+      | {
+          status: "composed";
+          themeTokensApplied: number;
+          layoutId: string;
+          templateId: string;
+          pageIds: string[];
+          homepageId: string | null;
+          skippedAlreadyAccepted: number;
+        };
+    // Still crawling is not a failure — tell the page to keep waiting.
+    if (result.status === "crawling") {
+      return { ok: true, composed: false, crawling: true };
+    }
+    const v = result;
     return {
       ok: true,
       composed: true,

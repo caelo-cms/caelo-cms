@@ -25,6 +25,10 @@ export const appendChatMessageOp = defineOperation({
       chatSessionId: z.string().uuid(),
       role: z.enum(["user", "assistant", "tool"]),
       content: z.string(),
+      // issue #29 — provenance for role='user' rows the operator did not
+      // type. 'system' = auto-injected status line (crawl nudge, post-
+      // approval continuation); 'operator' / omitted = operator-authored.
+      origin: z.enum(["operator", "system"]).nullable().optional(),
       toolCalls: z.array(z.unknown()).nullable().optional(),
       toolCallId: z.string().nullable().optional(),
       tokensIn: z.number().int().nullable().optional(),
@@ -75,13 +79,14 @@ export const appendChatMessageOp = defineOperation({
     try {
       rows = (await tx.execute(sql`
         INSERT INTO chat_messages (
-          chat_session_id, role, content, tool_calls, tool_call_id,
+          chat_session_id, role, content, origin, tool_calls, tool_call_id,
           tokens_in, tokens_out, cached_tokens, status, thinking_blocks, attachments
         )
         SELECT
           ${input.chatSessionId}::uuid,
           ${input.role},
           ${input.content},
+          ${input.origin ?? null},
           ${jsonbParam(input.toolCalls ? input.toolCalls : null)},
           ${input.toolCallId ?? null},
           ${input.tokensIn ?? null}::int,

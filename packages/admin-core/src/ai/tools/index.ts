@@ -46,7 +46,6 @@ import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
 import { getPageLogTool } from "./get-page-log.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
-import { assignImportPageClusterTool, listImportPageClustersTool } from "./import-page-clusters.js";
 import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
@@ -182,9 +181,13 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(inspectExternalPageTool);
   registry.register(screenshotExternalPageTool);
   registry.register(mapExternalPageTypesTool);
-  // issue #194 — page-type clusters for the migration flow.
-  registry.register(listImportPageClustersTool);
-  registry.register(assignImportPageClusterTool);
+  // issue #194 cluster-review tools (list/assign page clusters) were retired
+  // in the #278 homepage-first flow: the AI maps page types from the homepage's
+  // own nav/footer (map_external_page_types) instead of crawling everything and
+  // grouping by structural signature. compose_from_import still auto-clusters
+  // internally; that machinery is unchanged. The two AI-facing cluster tools are
+  // deliberately no longer registered so the model can't be steered back into a
+  // blind-crawl + manual cluster-review path that contradicts the active skill.
   // issue #198 — stored crawl screenshots as model-visible pixels.
   registry.register(getImportPageScreenshotTool);
   // issue #197 — rebuild notes + the migration's closing report.

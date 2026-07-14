@@ -26,6 +26,18 @@ import type {
   ToolDispatchResult,
 } from "./types.js";
 
+/**
+ * One tool dispatch's outcome, reported back to the loop so the
+ * repeated-identical-failure breaker can observe results without re-parsing
+ * the mutated `messages` array. See `repeat-failure-guard.ts`.
+ */
+export interface ToolCallOutcome {
+  name: string;
+  arguments: unknown;
+  ok: boolean;
+  content: string;
+}
+
 /** Everything `dispatchToolCall` needs from the orchestrator. */
 export interface DispatchDeps {
   registry: OperationRegistry;
@@ -62,6 +74,12 @@ export async function* dispatchToolCall(
    * turn's tool results.
    */
   deferredImageMessages: ChatMessageInput[],
+  /**
+   * The loop appends this call's outcome here so the
+   * repeated-identical-failure breaker can count exact (tool + args + error)
+   * repeats. Optional so out-of-loop callers (tests) can omit it.
+   */
+  outcomes?: ToolCallOutcome[],
 ): AsyncGenerator<ClientEvent, void> {
   const { registry, adapter, humanCtx, aiCtxWithBranch, provider, tools, options } = deps;
 
@@ -256,6 +274,13 @@ export async function* dispatchToolCall(
       content: result.content,
     });
   }
+
+  outcomes?.push({
+    name: call.name,
+    arguments: call.arguments,
+    ok: result.ok,
+    content: result.content,
+  });
 
   yield {
     kind: "tool-result",

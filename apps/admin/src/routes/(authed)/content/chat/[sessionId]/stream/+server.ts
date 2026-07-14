@@ -45,7 +45,13 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     chips?: unknown[];
     activePageId?: string;
     attachments?: unknown;
+    // issue #29 — 'system' marks an auto-injected nudge (crawl completion,
+    // post-approval continuation) the operator did not type.
+    origin?: unknown;
   };
+  // issue #29 — Zod at the boundary; anything other than the literal
+  // "system" (including absent) is treated as operator-authored.
+  const origin = body.origin === "system" ? ("system" as const) : undefined;
   // issue #190 — Zod at the boundary for operator-attached images.
   const { CHAT_MAX_ATTACHMENTS, chatAttachmentSchema } = await import("@caelo-cms/shared");
   const { z } = await import("zod");
@@ -173,6 +179,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
               ? (body.chips as { moduleId: string; selector: string; label: string }[])
               : [],
             attachments: attachmentsParse.data,
+            ...(origin ? { origin } : {}),
             ...(typeof body.activePageId === "string" && body.activePageId.length > 0
               ? { activePageId: body.activePageId }
               : {}),

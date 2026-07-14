@@ -125,6 +125,7 @@ export const verifyImportFidelityTool: ToolDefinitionWithHandler<FidelityInput> 
     }
     const inputs = inputsRes.value as {
       importPageId: string;
+      runId: string;
       sourceUrl: string | null;
       screenshotObjectKey: string | null;
       acceptedPageId: string | null;
@@ -211,6 +212,35 @@ export const verifyImportFidelityTool: ToolDefinitionWithHandler<FidelityInput> 
     }
 
     const { status } = computeFidelityStatus(diffFraction);
+
+    // issue #28 — a page that does NOT pass the fidelity gate is a run-level
+    // problem the operator must be able to review after the fact. Append it
+    // to the run's error/warning LEDGER (warn → 'warning', fail → 'error').
+    // Best-effort + non-fatal: a ledger-write failure must never sink the
+    // verdict — log loud, don't throw.
+    if (status !== "pass") {
+      const ledgerRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.log_event", {
+        runId: inputs.runId,
+        severity: status === "fail" ? ("error" as const) : ("warning" as const),
+        phase: "fidelity" as const,
+        message: `fidelity ${status} (${(diffFraction * 100).toFixed(1)}% diff${
+          inputs.sourceUrl ? ` vs ${inputs.sourceUrl}` : ""
+        }); ${bandRegion(worstBand)} diverged most`,
+        detail: {
+          sourceUrl: inputs.sourceUrl,
+          diffStatus: status,
+          diffPct: diffFraction,
+          worstBand,
+          bandPct,
+        },
+        pageId: inputs.importPageId,
+      });
+      if (!ledgerRes.ok) {
+        console.error(
+          `verify_import_page_fidelity: failed to append the ${status} verdict to the run ledger: ${describeError(ledgerRes.error)}`,
+        );
+      }
+    }
 
     // 7. Persist the rebuilt screenshot (best-effort, for the review
     //    side-by-side) + the verdict. update_page_diff is system-scoped:
