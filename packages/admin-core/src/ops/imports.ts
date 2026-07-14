@@ -593,7 +593,6 @@ export const importRunEventInput = z
     pageId: z.string().uuid().optional(),
   })
   .strict();
-export type ImportRunEventInput = z.infer<typeof importRunEventInput>;
 
 /**
  * issue #28 — append ONE event to a run's ledger. Routine

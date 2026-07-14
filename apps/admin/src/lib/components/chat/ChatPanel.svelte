@@ -393,7 +393,7 @@
         if (data.status === "ready_for_review") {
           stopImportPolling();
           crawlRun = null;
-          pendingImportNudge = `Crawl finished: run ${runId.slice(0, 8)} reached ready_for_review (${data.pagesExtracted} pages staged). The imported pages are ready — continue building from the homepage.`;
+          pendingImportNudge = `Crawl finished: run ${runId.slice(0, 8)} reached ready_for_review (${data.pagesExtracted} pages staged). The crawled pages are ready — continue building from the homepage.`;
         } else if (data.status === "failed") {
           stopImportPolling();
           pendingImportNudge = `Crawl failed: run ${runId.slice(0, 8)} — ${data.errorMessage ?? "no error message"}. Tell me what happened and what you'll try instead.`;
