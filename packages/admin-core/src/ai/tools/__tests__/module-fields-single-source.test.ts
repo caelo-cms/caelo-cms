@@ -35,12 +35,15 @@ const FIELD_AUTHORING_TOOLS = [
 const NO_INLINE_ENUM_TOOLS = [...FIELD_AUTHORING_TOOLS, "compose-page-from-spec.ts"] as const;
 
 /**
- * Signature of an inlined field-kind enum literal — a `kind` enum that lists
- * the module field kinds (rather than the module-`kind` chrome/hero/... enum,
- * which legitimately appears as a separate property). Keyed on the list/
- * nested kinds that only ever belong to the field schema.
+ * Signature of an inlined field-kind enum literal — a hand-written JSON-schema
+ * `enum: [...]` array carrying the list/nested field kinds (rather than the
+ * module-`kind` chrome/hero/... enum, which legitimately appears as a separate
+ * property). Keyed on the enum construct, not on any quoted occurrence of the
+ * kind names: tool DESCRIPTIONS legitimately show `kind:"link-list"` in
+ * copyable examples for the AI (CLAUDE.md §1A nesting steering) — only a
+ * schema enum array re-introduces the drift.
  */
-const INLINE_FIELD_ENUM = /"text-list"|"link-list"|"module-list"/;
+const INLINE_FIELD_ENUM = /enum:\s*\[[^\]]*"(?:text-list|link-list|module-list)"/;
 
 describe("MODULE_FIELDS_JSON_SCHEMA stays the single source of truth", () => {
   for (const file of FIELD_AUTHORING_TOOLS) {
