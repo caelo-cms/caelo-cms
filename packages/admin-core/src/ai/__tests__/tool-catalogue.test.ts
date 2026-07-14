@@ -2,9 +2,11 @@
 
 /**
  * Unit tests for buildToolCatalogue — the tool-registration half of the
- * chat-runner split (issue #15). Locks in the issue-#106 root-cause guard
- * (a skill allowlist that matches ZERO live tools must fall back to the full
- * catalogue, never strand the AI with zero tools), plus the allowlist
+ * chat-runner split (issue #15). Locks in the issue-#301 allowlist
+ * resolution (op-notation entries translate to tool names; unresolved
+ * entries log individually; a zero-resolution allowlist is a
+ * skill-definition DEFECT that keeps the full catalogue so the AI is
+ * never stranded — the issue-#106 guarantee), plus the allowlist
  * narrowing and the subagent-exclusion paths. No DB needed.
  */
 
@@ -61,25 +63,112 @@ describe("buildToolCatalogue", () => {
     ]);
   });
 
-  it("issue #106: a zero-match allowlist is treated as absent → full catalogue + loud warn", () => {
+  it("issue #301: op-notation entries translate to tool names and the allowlist APPLIES (run #15 regression)", () => {
+    // The qa-check shape from run #15: op-notation read allowlist. Before
+    // #301 this zero-matched and silently shipped the full catalogue —
+    // the reviewer subagent kept every write tool. Now the entries
+    // translate (structured_sets.list → list_structured_sets, pages.list
+    // → list_pages), the allowlist applies, and the write tools drop.
+    const tools = registry(
+      "edit_module",
+      "add_module_to_page",
+      "list_structured_sets",
+      "list_pages",
+    );
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = buildToolCatalogue({
+        tools,
+        toolDescribeState: state,
+        allowedToolNames: new Set(["structured_sets.list", "pages.list"]),
+        engagedSkills: [],
+        excluded: undefined,
+        chatSessionId,
+      });
+      // Writes stripped (none allowlisted), reads stay.
+      expect(result.map((t) => t.name).sort()).toEqual(["list_pages", "list_structured_sets"]);
+      // A successful translation is not a defect — nothing logged.
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("skill-allowlist"))).toBe(false);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("issue #301: a zero-resolution allowlist is a DEFECT — full catalogue + structured event, never zero tools", () => {
     const tools = registry("edit_module", "add_module_to_page");
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
       const result = buildToolCatalogue({
         tools,
         toolDescribeState: state,
-        // Op-style names that match no live AI tool name (the menu-auditor bug).
-        allowedToolNames: new Set(["structured_sets.list", "pages.list"]),
+        // Garbage that neither matches a live tool nor the translation table.
+        allowedToolNames: new Set(["pages.frobnicate", "totally.bogus_op"]),
         engagedSkills: [],
         excluded: undefined,
         chatSessionId,
       });
-      // The AI is NOT stranded: it gets the whole catalogue back.
+      // The AI is NOT stranded (the issue-#106 guarantee): full catalogue.
       expect(result.map((t) => t.name).sort()).toEqual(["add_module_to_page", "edit_module"]);
-      // And the misconfiguration is logged loudly so the skill data gets fixed.
-      expect(
-        errSpy.mock.calls.some((c) => String(c[0]).includes("skill-allowlist-zero-match")),
-      ).toBe(true);
+      // Each unresolved entry is logged individually…
+      const unresolvedCalls = errSpy.mock.calls.filter((c) =>
+        String(c[0]).includes("skill-allowlist-unresolved-entry"),
+      );
+      expect(unresolvedCalls.length).toBe(2);
+      // …and the zero-resolution state is a distinct defect event.
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("skill-allowlist-defect"))).toBe(
+        true,
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("issue #301: a partial resolution applies the resolved subset and logs each unresolved entry with a suggestion", () => {
+    const tools = registry("edit_module", "add_module_to_page", "list_pages");
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = buildToolCatalogue({
+        tools,
+        toolDescribeState: state,
+        allowedToolNames: new Set(["edit_modul", "edit_module"]),
+        engagedSkills: [],
+        excluded: undefined,
+        chatSessionId,
+      });
+      // The resolved subset narrows writes; reads stay.
+      expect(result.map((t) => t.name).sort()).toEqual(["edit_module", "list_pages"]);
+      const unresolvedCall = errSpy.mock.calls.find((c) =>
+        String(c[0]).includes("skill-allowlist-unresolved-entry"),
+      );
+      expect(unresolvedCall).toBeDefined();
+      const payload = unresolvedCall?.[1] as { entry: string; suggestion: string | null };
+      expect(payload.entry).toBe("edit_modul");
+      expect(payload.suggestion).toBe("edit_module");
+      // No defect event: the allowlist resolved to at least one live tool.
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("skill-allowlist-defect"))).toBe(
+        false,
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("issue #301: an allowlist of only context-served ops narrows nothing and is not a defect", () => {
+    // glossary.list / ai_memory.list are known reads served via system-
+    // prompt context blocks — nothing to narrow, nothing to warn about.
+    const tools = registry("edit_module", "list_pages");
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = buildToolCatalogue({
+        tools,
+        toolDescribeState: state,
+        allowedToolNames: new Set(["glossary.list", "ai_memory.list"]),
+        engagedSkills: [],
+        excluded: undefined,
+        chatSessionId,
+      });
+      expect(result.map((t) => t.name).sort()).toEqual(["edit_module", "list_pages"]);
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("skill-allowlist"))).toBe(false);
     } finally {
       errSpy.mockRestore();
     }

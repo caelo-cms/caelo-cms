@@ -235,3 +235,88 @@ describe("seeded base skills", () => {
     expect(tools).toContain("add_module_to_layout");
   });
 });
+
+// issue #301 — allowlists name AI tool names, never Query-API op names.
+// Save-time validation is the loud path (CLAUDE.md §2): unknown entries
+// reject with the bad entry + a nearest-name suggestion; known
+// op-notation entries normalize to tool names on write. Migration 0157
+// normalized the 0033-seeded reviewer skills.
+describe("skill allowlist validation (issue #301)", () => {
+  it("skills.set rejects an unknown allowlist entry, naming it with a suggestion", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.set", {
+      slug: "test-p10a-badallow",
+      displayName: "Bad allowlist",
+      body: "Body",
+      allowlistedTools: ["edit_modul"],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.kind).toBe("HandlerError");
+      if (r.error.kind === "HandlerError") {
+        expect(r.error.message).toContain('"edit_modul"');
+        expect(r.error.message).toContain('"edit_module"');
+      }
+    }
+  });
+
+  it("skills.set normalizes op-notation entries to tool names on write", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.set", {
+      slug: "test-p10a-opnames",
+      displayName: "Op notation",
+      body: "Body",
+      allowlistedTools: ["pages.list", "structured_sets.get", "edit_module", "glossary.list"],
+    });
+    expect(r.ok).toBe(true);
+    const get = await execute(registry, adapter, systemCtx, "skills.get", {
+      slug: "test-p10a-opnames",
+    });
+    if (!get.ok) return;
+    const skill = (get.value as { skill: { allowlistedTools: string[] } | null }).skill;
+    // Translated + deduped; the context-served glossary read drops.
+    expect(skill?.allowlistedTools).toEqual(["list_pages", "get_structured_set", "edit_module"]);
+  });
+
+  it("skills.propose rejects an unknown allowlist entry at proposal time (AI-actionable failure)", async () => {
+    const r = await execute(registry, adapter, aiCtx, "skills.propose", {
+      slug: "test-p10a-badpropose",
+      displayName: "Bad propose",
+      body: "Body",
+      rationale: "Why",
+      allowlistedTools: ["pages.frobnicate"],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.kind).toBe("HandlerError");
+      if (r.error.kind === "HandlerError") {
+        expect(r.error.message).toContain('"pages.frobnicate"');
+      }
+    }
+  });
+
+  it("migration 0157: the seeded reviewer skills carry tool-name allowlists", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+    if (!r.ok) return;
+    const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
+    const bySlug = new Map(skills.map((s) => [s.slug, s.allowlistedTools]));
+    expect(bySlug.get("qa-check")).toEqual([
+      "inspect_page_render",
+      "list_pages",
+      "get_structured_set",
+      "list_structured_sets",
+    ]);
+    expect(bySlug.get("legal-check")).toEqual(["inspect_page_render", "list_pages"]);
+    expect(bySlug.get("menu-auditor")).toEqual([
+      "list_structured_sets",
+      "get_structured_set",
+      "find_redirects",
+      "list_pages",
+    ]);
+    expect(bySlug.get("page-categorizer")).toEqual(["list_pages"]);
+    // No active skill may carry an op-notation entry at all.
+    for (const s of skills) {
+      for (const entry of s.allowlistedTools) {
+        expect(entry).not.toContain(".");
+      }
+    }
+  });
+});

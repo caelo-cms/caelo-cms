@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Tool-catalogue assembly: the skill-allowlist intersection (incl. the
- * issue-#106 zero-match fallback), the P10.5 subagent exclusion, the
- * issue-#264 per-spawn allowlist, and the P11.5 Tier-1 plugin-tool
- * folding. Extracted verbatim from the pre-split `chat-runner.ts`.
+ * Tool-catalogue assembly: the skill-allowlist resolution (issue #301
+ * op→tool translation; the issue-#106 "never strand the AI at zero
+ * tools" guarantee), the P10.5 subagent exclusion, the issue-#264
+ * per-spawn allowlist, and the P11.5 Tier-1 plugin-tool folding.
+ * Extracted from the pre-split `chat-runner.ts`.
  */
 
 import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
@@ -14,6 +15,7 @@ import type { ChatEngagement } from "@caelo-cms/shared";
 import type { ToolDefinition } from "../provider.js";
 import type { ToolDescribeState } from "../tools/describe-state.js";
 import type { ToolRegistry } from "../tools/index.js";
+import { resolveAllowlistEntries } from "./allowlist-mapping.js";
 
 /** A catalogue entry in provider-`tools` shape (== ToolDefinition). */
 export type FilteredTool = ToolDefinition;
@@ -127,8 +129,10 @@ function warnOnDisappearedTools(chatSessionId: string, names: readonly string[])
 /**
  * Builds the per-turn tool catalogue: starts from the full registry
  * catalogue (state-aware descriptions), narrows by the engaged-skill
- * allowlist (treating a zero-match allowlist as absent), drops excluded
- * tools, then folds in the active Tier-1 plugin tools.
+ * allowlist (entries resolved exact-first then via the issue-#301
+ * op→tool translation table; a zero-resolution allowlist keeps the
+ * full catalogue and emits a `skill-allowlist-defect` event), drops
+ * excluded tools, then folds in the active Tier-1 plugin tools.
  */
 export function buildToolCatalogue(args: {
   tools: ToolRegistry;
@@ -158,30 +162,54 @@ export function buildToolCatalogue(args: {
   } = args;
 
   const fullCatalogue = tools.catalogue(toolDescribeState);
-  // issue #106 (step-13 root cause) — an engaged skill's allowlist that
-  // matches ZERO live tools is a misconfiguration, never an intent. The
-  // step-13 footer walk hit this: "add a footer with navigation links"
-  // auto-engaged the `menu-auditor` skill, whose `allowlistedTools` list
-  // Query-API op names (`structured_sets.list`, `pages.list`, …) instead of
-  // the AI tool names the catalogue uses (`list_structured_sets`,
-  // `list_pages`, …). The intersection was empty, so the AI was handed ZERO
-  // tools, couldn't call add_module_to_layout, and narrated the footer
-  // instead of building it (and the passive-turn nudge correctly couldn't
-  // fire — there was nothing to nudge toward). Narrowing the AI to zero
-  // tools strands it; treat a zero-match allowlist as absent: fall back to
-  // the full catalogue and warn loudly so the broken skill data gets fixed.
-  let effectiveAllowed = allowedToolNames;
-  if (effectiveAllowed) {
-    const matchCount = fullCatalogue.filter((t) => effectiveAllowed!.has(t.name)).length;
-    if (matchCount === 0) {
-      console.error("[chat-runner] skill-allowlist-zero-match", {
+  // issue #106 → issue #301 — allowlist entries are resolved, never
+  // string-matched blind. Seeded skills (migration 0033) carried
+  // Query-API op names (`structured_sets.list`, `pages.list`, …) while
+  // the catalogue uses AI tool names (`list_structured_sets`,
+  // `list_pages`, …); the old code intersected the raw strings, got
+  // zero matches, and silently widened back to the full catalogue —
+  // run #15 hit that hidden fallback 5× in one session, shipping the
+  // whole catalogue on turns the skill meant to narrow (CLAUDE.md §2).
+  // Now each entry resolves via exact tool-name match first, then the
+  // explicit op→tool translation table (allowlist-mapping.ts):
+  //   - the resolved subset applies as the allowlist;
+  //   - unresolved entries are logged individually with a nearest-name
+  //     suggestion (`skill-allowlist-unresolved-entry`);
+  //   - an allowlist that resolves to ZERO live tools is a
+  //     skill-definition defect: the chat keeps the full catalogue so
+  //     the AI is never stranded with zero tools (the original #106
+  //     failure), but the defect is a structured `skill-allowlist-defect`
+  //     event — save-time validation in the skills ops (issue #301)
+  //     rejects such rows, so reaching this branch means a pre-0157 row
+  //     or hand-edited data. Surfacing this event in the Owner skills
+  //     panel (/security/skills) is the tracked follow-up on issue #301.
+  let effectiveAllowed: Set<string> | null = null;
+  if (allowedToolNames) {
+    const liveNames = new Set<string>(fullCatalogue.map((t) => t.name));
+    for (const { spec } of pluginToolsRegistry.list()) liveNames.add(spec.name);
+    const resolution = resolveAllowlistEntries(allowedToolNames, liveNames);
+    for (const u of resolution.unresolved) {
+      console.error("[chat-runner] skill-allowlist-unresolved-entry", {
         chatSessionId,
-        allowlist: [...effectiveAllowed],
+        entry: u.entry,
+        suggestion: u.suggestion,
         engagedSkills: engagedSkills.map((e) => e.slug),
-        note: "allowlist matched no live tool (likely op-names vs tool-names) — ignoring it",
       });
-      effectiveAllowed = null;
     }
+    if (resolution.resolvedToolNames.size > 0) {
+      effectiveAllowed = new Set(resolution.resolvedToolNames);
+    } else if (resolution.unresolved.length > 0) {
+      console.error("[chat-runner] skill-allowlist-defect", {
+        chatSessionId,
+        allowlist: [...allowedToolNames],
+        unresolved: resolution.unresolved,
+        engagedSkills: engagedSkills.map((e) => e.slug),
+        note: "allowlist resolved to zero live tools — skill row is defective; catalogue stays full so the chat keeps working. Fix the skill's allowlistedTools (skills.set now rejects unknown entries).",
+      });
+    }
+    // else: every entry was context-served (glossary/style-guide/site-
+    // memory reads that live in the system prompt, not the catalogue) —
+    // there is nothing to narrow, which matches the skill's intent.
   }
   const builtinTools = fullCatalogue.filter((t) => {
     // Run #8 R2b/R5 — skill allowlists narrow WRITE tools only; read

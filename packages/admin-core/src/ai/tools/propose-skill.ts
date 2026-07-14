@@ -18,7 +18,7 @@ export const proposeSkillTool: ToolDefinitionWithHandler<ProposeSkillToolInput> 
     "Draft a new AI skill (instructional body that augments your future system prompt) and queue it for Owner review. " +
     "TWO-STEP: this only QUEUES the proposal — an Owner reviews it at /security/skills/proposals and either accepts (creating a 'awaiting_activation' skill) or rejects. After acceptance the Owner separately activates the skill site-wide. " +
     "Do NOT claim the skill is active. Use this when the user explicitly asks you to learn a new behaviour, codify a workflow, or persist a habit. " +
-    "Inputs: slug (lowercase-with-hyphens), displayName, description, body (the skill instructions), rationale (why this skill helps), allowlistedTools (optional list of tool names this skill restricts the catalogue to), hints (optional auto-engagement matcher hints).",
+    "Inputs: slug (lowercase-with-hyphens), displayName, description, body (the skill instructions), rationale (why this skill helps), allowlistedTools (optional list of AI TOOL names — e.g. edit_module, list_pages — that this skill narrows the catalogue's WRITE tools to; Query-API op names like pages.list are rejected), hints (optional auto-engagement matcher hints).",
   schema: proposeSkillToolInput,
   inputSchema: {
     type: "object",
