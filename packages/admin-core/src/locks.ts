@@ -21,7 +21,12 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
-import { acquireEntityLease, type LeaseHolder, siblingLeaseError } from "./entity-leases.js";
+import {
+  acquireEntityLease,
+  type LeaseHolder,
+  releaseLeasesByBranch,
+  siblingLeaseError,
+} from "./entity-leases.js";
 
 export type LockedEntityKind =
   | "module"
@@ -184,12 +189,15 @@ export async function releaseChatLocks(
     DELETE FROM chat_entity_locks
     WHERE chat_session_id = ${chatSessionId}::uuid
   `);
-  await tx.execute(sql`
-    DELETE FROM entity_leases
-    WHERE branch_id IN (
-      SELECT chat_branch_id FROM chat_sessions WHERE id = ${chatSessionId}::uuid
-    )
-  `);
+  const rows = (await tx.execute(sql`
+    SELECT chat_branch_id::text AS chat_branch_id
+    FROM chat_sessions WHERE id = ${chatSessionId}::uuid
+    LIMIT 1
+  `)) as unknown as { chat_branch_id: string | null }[];
+  const branchId = rows[0]?.chat_branch_id;
+  if (branchId) {
+    await releaseLeasesByBranch(tx, branchId);
+  }
 }
 
 /**

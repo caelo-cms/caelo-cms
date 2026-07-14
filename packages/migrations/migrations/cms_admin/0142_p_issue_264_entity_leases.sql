@@ -65,9 +65,45 @@ CREATE INDEX entity_leases_branch_idx ON entity_leases (branch_id);
 
 ALTER TABLE entity_leases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE entity_leases FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS entity_leases_authenticated_scope ON entity_leases;
-CREATE POLICY entity_leases_authenticated_scope ON entity_leases
-  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
-  WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
+
+-- Per-actor scoping (PR #295 review). A bare "any authenticated actor"
+-- policy would let any AI session delete or rewrite any lease — a
+-- lease-steal primitive. Scope per actor kind:
+--   * system — migrations, seeds, GC, test truncation: unrestricted.
+--   * human  — unrestricted: the ops that clear leases wholesale
+--     (chat.publish / chat.merge_to_main / chat.archive_session via
+--     releaseChatLocks) are human+system at the Query API layer, and a
+--     lease row has no owning human actor to scope by.
+--   * ai     — only rows on the branch the AI is currently writing
+--     (caelo.chat_branch_id) or held by its own session
+--     (caelo.chat_task_id). This covers every runtime AI path:
+--     acquire / refresh / expired-takeover in acquireEntityLease run
+--     with the row's branch_id in caelo.chat_branch_id (including
+--     SEEING a live sibling's row so the refusal stays clean), and
+--     subagent_runs.finish's release-by-holder runs from the parent
+--     orchestrator's turn whose branch is where the child's leases live.
+--   * plugin / unset GUCs — no disjunct matches; fail closed.
+DROP POLICY IF EXISTS entity_leases_per_actor_scope ON entity_leases;
+CREATE POLICY entity_leases_per_actor_scope ON entity_leases
+  USING (
+    current_setting('caelo.actor_kind', true) IN ('human', 'system')
+    OR (
+      current_setting('caelo.actor_kind', true) = 'ai'
+      AND (
+        branch_id = NULLIF(current_setting('caelo.chat_branch_id', true), '')::uuid
+        OR holder_key = NULLIF(current_setting('caelo.chat_task_id', true), '')
+      )
+    )
+  )
+  WITH CHECK (
+    current_setting('caelo.actor_kind', true) IN ('human', 'system')
+    OR (
+      current_setting('caelo.actor_kind', true) = 'ai'
+      AND (
+        branch_id = NULLIF(current_setting('caelo.chat_branch_id', true), '')::uuid
+        OR holder_key = NULLIF(current_setting('caelo.chat_task_id', true), '')
+      )
+    )
+  );
 
 COMMIT;
