@@ -53,9 +53,13 @@ beforeAll(async () => {
         (${HUMAN.actorId}::uuid, 'human', 'issue-264 page-log human')
       ON CONFLICT (id) DO NOTHING
     `;
+    // templates.layout_id is NOT NULL (layout binding is mandatory) — bind
+    // the CI-seeded site-default layout, same as the other integration
+    // fixtures (content-rls, preview-render-list-iteration).
     await tx`
-      INSERT INTO templates (id, slug, display_name, html)
-      VALUES (${TEMPLATE_ID}::uuid, 'issue-264-page-log-tpl', 'issue-264 tpl', '<main></main>')
+      INSERT INTO templates (id, slug, display_name, html, layout_id)
+      VALUES (${TEMPLATE_ID}::uuid, 'issue-264-page-log-tpl', 'issue-264 tpl', '<main></main>',
+              (SELECT id FROM layouts WHERE slug = 'site-default'))
       ON CONFLICT (id) DO NOTHING
     `;
     await tx`
