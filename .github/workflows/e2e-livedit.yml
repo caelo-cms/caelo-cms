@@ -13,6 +13,18 @@ name: E2E Live Edit (real AI)
 # planning variance. Revisit the model choice once the suite has been
 # stable for a few weeks. Model is pinned in
 # `apps/admin/playwright.livedit.config.ts:E2E_LIVEDIT_MODEL`.
+#
+# Cost-metric follow-up: the `Capture real AI cost from ai_calls` step
+# dumps the run's real spend (SUM of cost_estimate_microcents, tokens,
+# per-model breakdown, unpriced-call count) to
+# `apps/admin/test-results/livedit/ai-cost.json`. It surfaces three
+# ways: (1) a greppable `e2e-livedit-cost …` line in the run summary +
+# a `::notice`, (2) an always()-uploaded `e2e-livedit-cost-<run_id>`
+# artifact (90-day retention) as the durable per-run record, and (3) a
+# `### Real AI cost (this run)` section in the sticky PR comment via
+# build-stats.ts. This is the per-run optimization metric requested by
+# the operator; it became meaningful once #297 fixed the missing
+# ai_pricing row that had been zeroing cost_estimate_microcents.
 
 on:
   pull_request:
@@ -176,6 +188,65 @@ jobs:
           ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
         run: bun run e2e-livedit
 
+      # Capture the REAL AI cost of this run from `ai_calls` (operator ask
+      # — a per-run cost that can serve as an optimization metric over
+      # time). The compose Postgres stays up until the final teardown, so
+      # any post-run position works. Every ai_calls row belongs to THIS
+      # run (the DB is fresh per job — migrated then seeded+driven by the
+      # suite), so no date filter is needed. `unpricedCalls` flags the
+      # #297 signature — a missing `ai_pricing` row zeroing an otherwise
+      # token-heavy call, which UNDERSTATES the real cost. RLS on
+      # `ai_calls` is FORCEd behind a non-empty `caelo.actor_kind` GUC, so
+      # we `SET` it in the same session before selecting. `-q` suppresses
+      # the `SET` command tag so stdout is pure JSON. `if: always()` so a
+      # red suite still records its spend. Never fails the job.
+      - name: Capture real AI cost from ai_calls
+        if: always()
+        env:
+          PGHOST: localhost
+        run: |
+          set -uo pipefail
+          OUT_DIR=apps/admin/test-results/livedit
+          OUT="${OUT_DIR}/ai-cost.json"
+          mkdir -p "${OUT_DIR}"
+          PGPASSWORD=${ADMIN_ROLE_PASSWORD} \
+            psql "${ADMIN_DATABASE_URL}" -qAtc \
+            "SET caelo.actor_kind='system'; SELECT json_build_object('totalMicrocents', COALESCE(SUM(cost_estimate_microcents),0), 'calls', COUNT(*), 'inputTokens', COALESCE(SUM(input_tokens),0), 'outputTokens', COALESCE(SUM(output_tokens),0), 'cachedTokens', COALESCE(SUM(cached_tokens),0), 'unpricedCalls', COUNT(*) FILTER (WHERE cost_estimate_microcents=0 AND (input_tokens>0 OR output_tokens>0)), 'byModel', COALESCE((SELECT json_agg(m) FROM (SELECT model, COUNT(*) AS calls, SUM(cost_estimate_microcents) AS microcents FROM ai_calls GROUP BY model ORDER BY SUM(cost_estimate_microcents) DESC) m), '[]'::json)) FROM ai_calls" \
+            > "${OUT}" 2>/dev/null || echo '{}' > "${OUT}"
+          # Guard: an empty/whitespace file is as useless as a missing one.
+          if [ ! -s "${OUT}" ]; then echo '{}' > "${OUT}"; fi
+          echo "ai-cost.json:"; cat "${OUT}"; echo
+
+          # Durable, greppable per-run metric — a future scraper can walk
+          # run summaries for `e2e-livedit-cost` to chart spend over time.
+          MICRO=$(jq -r '.totalMicrocents // 0' "${OUT}" 2>/dev/null || echo 0)
+          CALLS=$(jq -r '.calls // 0' "${OUT}" 2>/dev/null || echo 0)
+          TIN=$(jq -r '.inputTokens // 0' "${OUT}" 2>/dev/null || echo 0)
+          TOUT=$(jq -r '.outputTokens // 0' "${OUT}" 2>/dev/null || echo 0)
+          UNPRICED=$(jq -r '.unpricedCalls // 0' "${OUT}" 2>/dev/null || echo 0)
+          USD=$(awk -v m="${MICRO}" 'BEGIN { printf "%.4f", m/100000000 }')
+          {
+            echo '```'
+            echo "e2e-livedit-cost totalUsd=${USD} calls=${CALLS} tokensIn=${TIN} tokensOut=${TOUT} unpriced=${UNPRICED} sha=${GITHUB_SHA}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "::notice title=e2e-livedit cost::\$${USD} (${CALLS} calls)"
+          if [ "${UNPRICED}" != "0" ]; then
+            echo "::warning title=e2e-livedit cost::${UNPRICED} unpriced ai_calls row(s) — real cost is HIGHER than \$${USD}; add ai_pricing rates."
+          fi
+
+      # Durable per-run cost record — the trend metric the operator wants.
+      # Separate from the failure-only artifact below: this uploads on
+      # every run (green + red) so the metric series has no gaps.
+      - name: Upload AI cost metric (always)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-livedit-cost-${{ github.run_id }}
+          path: apps/admin/test-results/livedit/ai-cost.json
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Dump diagnostic DB tables on failure
         if: failure()
         env:
@@ -306,11 +377,11 @@ jobs:
           ERR_CONTEXT_MDS=("${ERR_CONTEXT_DIR}"/*.md)
 
           # PR #61 follow-up — `build-stats.ts` parses admin.log +
-          # playwright-report.json and emits an API-stats block + a
-          # per-scenario results table. We splice it in between the
-          # screenshots and the error details. Falls through silently
-          # if the script errors so a bug here can't block the rest
-          # of the comment.
+          # playwright-report.json + ai-cost.json and emits a Real-AI-cost
+          # block, an API-stats block, and a per-scenario results table.
+          # We splice it in between the screenshots and the error details.
+          # Falls through silently if the script errors so a bug here
+          # can't block the rest of the comment.
           STATS_FILE=/tmp/e2e-livedit-stats.md
           (
             cd "${GITHUB_WORKSPACE}"
