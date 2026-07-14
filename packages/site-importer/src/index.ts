@@ -44,6 +44,8 @@ export {
   type CrawlOptions,
   type CrawlResult,
   crawlSite,
+  type ListModeResolution,
+  resolveListModeUrls,
 } from "./crawler.js";
 export {
   aggregateSiteDesignTokens,
@@ -62,6 +64,7 @@ export {
   type CrawlScopeEstimate,
   type EstimateOptions,
   estimateCrawlScope,
+  estimateListScope,
 } from "./estimate.js";
 export {
   type ExtractedModule,
