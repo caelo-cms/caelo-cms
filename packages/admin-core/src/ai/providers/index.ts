@@ -39,15 +39,19 @@ export function resolveAnthropicToolSearchMode(
 ): AnthropicToolSearchMode {
   if (override) return override;
   const raw = (process.env.CAELO_ANTHROPIC_TOOL_SEARCH ?? "").toLowerCase().trim();
-  if (raw === "bm25" || raw === "regex" || raw === "off") return raw;
-  // Tool-Search is ON by default (opt out with CAELO_ANTHROPIC_TOOL_SEARCH=off).
-  // It defers the ~38k-token catalogue behind a server-side search — measured
-  // real input ~104k→43k/call (run-logs/token-efficiency-analysis.md). The
-  // empty-response regression the e2e first caught (a turn whose only output is
-  // the server-side toolSearch call) is fixed at the root in _sdk-shared.ts:
-  // a >1 step budget when a provider-executed tool is present lets the model
-  // continue past the search to its real tool-call in the same call.
-  return "bm25";
+  if (raw === "bm25" || raw === "regex") return raw;
+  // Tool-Search stays OFF by default — opt in with CAELO_ANTHROPIC_TOOL_SEARCH=
+  // bm25|regex. It defers the ~38k-token catalogue (real input ~104k→43k/call,
+  // run-logs/token-efficiency-analysis.md) but is NOT production-ready as a hard
+  // default yet: the e2e-livedit suite reproducibly failed two scenarios with it
+  // on — `[chat-runner] empty-response` on the homepage flow and missed
+  // add_module_to_layout discovery on the footer flow — and the >1-step
+  // provider-tool budget in _sdk-shared.ts (which fixes the single-step
+  // empty-response) did NOT clear them, so the root is deeper (SDK server-tool
+  // integration). It also collapses the prompt cache (9% vs 93% — a cost
+  // trade-off for long turns). The always-on win is the removed duplicate
+  // prose tool-list below (~23k tokens/call), independent of this flag.
+  return "off";
 }
 
 export function makeProvider(config: ProviderConfig): AIProvider {

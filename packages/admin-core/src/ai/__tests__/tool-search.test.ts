@@ -81,21 +81,19 @@ describe("resolveAnthropicToolSearchMode", () => {
     expect(resolveAnthropicToolSearchMode("off")).toBe("off");
   });
 
-  it("reads from env when no override is supplied; defaults to bm25 (empty-response root fixed)", () => {
+  it("reads from env when no override is supplied; defaults to off (opt-in; e2e-blocked)", () => {
     const prev = process.env.CAELO_ANTHROPIC_TOOL_SEARCH;
     try {
       process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "bm25";
       expect(resolveAnthropicToolSearchMode()).toBe("bm25");
       process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "REGEX";
       expect(resolveAnthropicToolSearchMode()).toBe("regex");
-      // Explicit opt-out to the full inline catalogue is honoured.
-      process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "off";
-      expect(resolveAnthropicToolSearchMode()).toBe("off");
-      // Unrecognized value OR unset → the efficient default (bm25).
+      // Unrecognized value OR unset → off (opt-in; see the resolver comment
+      // for why it isn't the hard default — e2e-reproducible regressions).
       process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "nonsense";
-      expect(resolveAnthropicToolSearchMode()).toBe("bm25");
+      expect(resolveAnthropicToolSearchMode()).toBe("off");
       delete process.env.CAELO_ANTHROPIC_TOOL_SEARCH;
-      expect(resolveAnthropicToolSearchMode()).toBe("bm25");
+      expect(resolveAnthropicToolSearchMode()).toBe("off");
     } finally {
       if (prev === undefined) delete process.env.CAELO_ANTHROPIC_TOOL_SEARCH;
       else process.env.CAELO_ANTHROPIC_TOOL_SEARCH = prev;
