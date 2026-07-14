@@ -30,6 +30,7 @@
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import InlineDiff from "./InlineDiff.svelte";
   import { parseProposalContent } from "./proposal-parser.js";
+  import { collapseStatusNotes } from "./status-notes.js";
   import StreamingMarkdown from "./StreamingMarkdown.svelte";
   import ToolCardRouter from "./tool-cards/ToolCardRouter.svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "./types.js";
@@ -474,6 +475,14 @@
    */
   async function sendAutoMessage(text: string): Promise<void> {
     if (streaming) return;
+    // issue #303 — a nudge with nothing to say must not post: an empty
+    // system-origin row renders as a bare "Status:" note (and the
+    // append_message boundary now rejects it server-side too). Loud
+    // console signal instead of a silent junk row.
+    if (text.trim().length === 0) {
+      console.error("[chat] sendAutoMessage called with empty text — nudge dropped");
+      return;
+    }
     composer = text;
     // issue #29 — every auto-message is system-driven (crawl-completion
     // nudge, post-approval continuation, queued choice answer). The model
@@ -1517,7 +1526,12 @@
             onscroll={handleTranscriptScroll}
             class="subtle-scrollbar flex-1 space-y-2 overflow-y-auto"
           >
-            {#each messages.filter((m) => !showFailedOnly || m.role !== "tool" || isFailedToolMessage(m.content)) as m (m.id)}
+            <!-- issue #303 — collapseStatusNotes runs BEFORE the failed-only
+                 filter so toggling the filter never merges status runs that
+                 had a tool card between them. It drops empty legacy notes
+                 and keeps only the latest of consecutive near-identical
+                 crawl-wait ticks. -->
+            {#each collapseStatusNotes(messages).filter((m) => !showFailedOnly || m.role !== "tool" || isFailedToolMessage(m.content)) as m (m.id)}
               {#if m.role === "tool"}
                 <!-- v0.2.46 — tool messages render as per-tool cards via
                      the router; falls back to plain markdown when no

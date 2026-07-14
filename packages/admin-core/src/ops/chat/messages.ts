@@ -47,8 +47,53 @@ export const appendChatMessageOp = defineOperation({
         .optional(),
       // issue #190 — operator-attached images on user messages.
       attachments: z.array(chatAttachmentSchema).max(CHAT_MAX_ATTACHMENTS).nullable().optional(),
+      // issue #303 — optional producer hint, NOT persisted (no column, no
+      // migration). Only used to name the guilty call site in the
+      // empty-content rejection below so the failure is diagnosable from
+      // logs alone instead of "some producer somewhere posted nothing".
+      source: z.string().max(120).optional(),
     })
-    .strict(),
+    .strict()
+    // issue #303 — operators saw bare "Status:" notes: rows persisted with
+    // empty bodies render as a label with no content. A producer with
+    // nothing to say must not post a message, so empty content fails HERE,
+    // loudly (CLAUDE.md §2 no-fallbacks), instead of landing as a
+    // contentless transcript row.
+    //
+    // Scope of the constraint:
+    //   - user rows (operator-typed AND origin='system' auto-nudges) must
+    //     always carry text;
+    //   - assistant rows may be empty only as tool-call shells (text lives
+    //     in the tool_use blocks) or when the stream was interrupted before
+    //     any text landed (abort at loop 0);
+    //   - tool rows are exempt: a tool_result row must persist even when a
+    //     tool returns an empty string — dropping it would leave a dangling
+    //     tool_use that 400s every subsequent provider call (run #10's
+    //     session-wedge class).
+    .superRefine((val, ctx) => {
+      if (val.content.trim().length > 0) return;
+      const producer = val.source ?? "unknown producer — pass `source` at the call site";
+      if (val.role === "user") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["content"],
+          message:
+            `empty user-message content (producer: ${producer}). ` +
+            "A status/nudge producer with nothing to say must not call chat.append_message at all — skip the post instead.",
+        });
+        return;
+      }
+      const isToolCallShell = Array.isArray(val.toolCalls) && val.toolCalls.length > 0;
+      if (val.role === "assistant" && !isToolCallShell && val.status !== "interrupted") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["content"],
+          message:
+            `empty assistant-message content with no tool calls (producer: ${producer}). ` +
+            "Persist assistant turns only when they carry text, tool calls, or were interrupted mid-stream.",
+        });
+      }
+    }),
   output: messageRow,
   handler: async (_ctx, input, tx) => {
     // Two-layer defense against the chat_sessions-deleted-mid-stream

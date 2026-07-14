@@ -297,6 +297,8 @@ export async function* dispatchToolCall(
     role: "tool",
     content: result.content,
     toolCallId: call.id,
+    // issue #303 — producer hint for the empty-content diagnostics.
+    source: `tool result (${call.name})`,
   });
   messages.push({ role: "tool", content: result.content, toolCallId: call.id });
   // v0.3.0 — when the tool returned an image (screenshot_page is
