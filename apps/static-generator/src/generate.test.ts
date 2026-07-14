@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { buildRobotsTxt, pageOutputPath, zeroPageBuildError } from "./generate.js";
+import {
+  buildRobotsTxt,
+  missingRootPageError,
+  pageOutputPath,
+  zeroPageBuildError,
+} from "./generate.js";
 
 describe("pageOutputPath", () => {
   it("emits index.html for empty/root slugs", () => {
@@ -134,5 +139,68 @@ describe("zeroPageBuildError", () => {
   it("allows any build with at least one page", () => {
     expect(zeroPageBuildError({ pageCount: 1, env: "staging", incremental: false })).toBeNull();
     expect(zeroPageBuildError({ pageCount: 92, env: "production", incremental: false })).toBeNull();
+  });
+});
+
+// issue #302 (run #14 finding) — a build where no page lands at the bucket
+// root ships a site whose `/` 404s. The migration flow built the homepage
+// under a source-derived slug and nothing failed; this guard makes it loud.
+describe("missingRootPageError", () => {
+  it("REGRESSION run #14: fails a staging build whose homepage has a source-derived slug", () => {
+    const msg = missingRootPageError({
+      outputPaths: ["startseite/index.html", "pricing/index.html", "blog/a/index.html"],
+      rootEligibleSlugs: ["startseite", "pricing", "blog/a"],
+      env: "staging",
+      incremental: false,
+    });
+    expect(msg).not.toBeNull();
+    expect(msg).toContain("no page serves the site root");
+    // The message carries the next step for the AI (CLAUDE.md §11).
+    expect(msg).toContain("change_page_slug");
+    expect(msg).toContain("'home'");
+  });
+
+  it("passes when the homepage slug is 'home' (emitted at index.html)", () => {
+    expect(
+      missingRootPageError({
+        outputPaths: ["index.html", "pricing/index.html"],
+        rootEligibleSlugs: ["home", "pricing"],
+        env: "production",
+        incremental: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("skips dev builds and incremental builds", () => {
+    const args = {
+      outputPaths: ["about/index.html"],
+      rootEligibleSlugs: ["about"],
+    } as const;
+    expect(missingRootPageError({ ...args, env: "dev", incremental: false })).toBeNull();
+    expect(missingRootPageError({ ...args, env: "staging", incremental: true })).toBeNull();
+  });
+
+  it("skips when no page could claim the root (all locales prefixed)", () => {
+    expect(
+      missingRootPageError({
+        outputPaths: ["de/index.html", "fr/index.html"],
+        rootEligibleSlugs: [],
+        env: "production",
+        incremental: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("caps the slug sample at 10 entries", () => {
+    const slugs = Array.from({ length: 15 }, (_, i) => `page-${i}`);
+    const msg = missingRootPageError({
+      outputPaths: slugs.map((s) => `${s}/index.html`),
+      rootEligibleSlugs: slugs,
+      env: "staging",
+      incremental: false,
+    });
+    expect(msg).toContain("page-9");
+    expect(msg).not.toContain("page-10");
+    expect(msg).toContain(", …");
   });
 });
