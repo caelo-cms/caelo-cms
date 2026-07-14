@@ -23,19 +23,23 @@ let registry: OperationRegistry;
 let sqlc: SQL;
 
 const AI: ExecutionContext = {
-  actorId: "00000000-0000-0000-0000-0000000264a1",
+  actorId: "00000000-0000-4000-8000-0000000264a1",
   actorKind: "ai",
   requestId: "issue-264-page-log-test",
 };
 const HUMAN: ExecutionContext = {
-  actorId: "00000000-0000-0000-0000-0000000264b1",
+  actorId: "00000000-0000-4000-8000-0000000264b1",
   actorKind: "human",
   requestId: "issue-264-page-log-test-human",
 };
 
-const TEMPLATE_ID = "00000000-0000-0000-0000-0000002640c1";
-const PAGE_ID = "00000000-0000-0000-0000-0000002640d1";
-const MISSING_PAGE_ID = "00000000-0000-0000-0000-0000002640ff";
+// Fixture ids carry the RFC-4122 version-4 + variant nibbles ("-4000-8000-")
+// because Zod v4's `z.string().uuid()` rejects the all-zero-version form —
+// a version-0 fixture id fails the op's input validation before the DB is
+// ever reached (the CI round-2 failure mode).
+const TEMPLATE_ID = "00000000-0000-4000-8000-0000002640c1";
+const PAGE_ID = "00000000-0000-4000-8000-0000002640d1";
+const MISSING_PAGE_ID = "00000000-0000-4000-8000-0000002640ff";
 
 beforeAll(async () => {
   registry = new OperationRegistry();
@@ -83,6 +87,10 @@ describe("page_log ops (issue #264)", () => {
       summary: "should not land",
     });
     expect(r.ok).toBe(false);
+    // Pin the error KIND: the handler's own no-live-page error, not a
+    // validation rejection — otherwise a malformed fixture id makes this
+    // test pass vacuously without exercising the fail-loud path.
+    if (!r.ok) expect(r.error.kind).toBe("HandlerError");
   });
 
   it("appends entries and lists them newest-first with jsonb detail preserved", async () => {
@@ -92,6 +100,7 @@ describe("page_log ops (issue #264)", () => {
       summary: "Two-column hero to match the source.",
       detail: { chosen: "two-column", moduleIds: ["m1", "m2"] },
     });
+    if (!first.ok) console.error("page_log.append failed:", JSON.stringify(first.error));
     expect(first.ok).toBe(true);
     expect((first.value as { entryId: string }).entryId).toMatch(/[0-9a-f-]{36}/);
 
@@ -101,9 +110,11 @@ describe("page_log ops (issue #264)", () => {
       entryKind: "operator_answer",
       summary: "Keep the original blue.",
     });
+    if (!second.ok) console.error("page_log.append failed:", JSON.stringify(second.error));
     expect(second.ok).toBe(true);
 
     const listed = await execute(registry, adapter, AI, "page_log.list", { pageId: PAGE_ID });
+    if (!listed.ok) console.error("page_log.list failed:", JSON.stringify(listed.error));
     expect(listed.ok).toBe(true);
     const entries = (listed.value as { entries: PageLogEntry[] }).entries;
     expect(entries.length).toBeGreaterThanOrEqual(2);
@@ -126,6 +137,7 @@ describe("page_log ops (issue #264)", () => {
       pageId: PAGE_ID,
       limit: 1,
     });
+    if (!limited.ok) console.error("page_log.list failed:", JSON.stringify(limited.error));
     expect(limited.ok).toBe(true);
     expect((limited.value as { entries: PageLogEntry[] }).entries).toHaveLength(1);
   });
