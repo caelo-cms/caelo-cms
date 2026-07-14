@@ -292,6 +292,26 @@ describe("buildToolCatalogue", () => {
     expect(result.map((t) => t.name).sort()).toEqual(["edit_module", "list_pages"]);
   });
 
+  it("child-session exclusion strips screenshot_page despite its read-only-name immunity", () => {
+    // screenshot_page matches the read-only naming convention (screenshot_),
+    // so the skill-allowlist narrowing never drops it. But a subagent has no
+    // operator browser, so spawn_subagent adds it to the child's excluded set
+    // — and `excluded` is a HARD filter that overrides the read immunity.
+    // Guards the fix for the 14×-timeout / edit→screenshot→edit thrash.
+    const tools = registry("edit_module", "inspect_page_render", "screenshot_page");
+    const result = buildToolCatalogue({
+      tools,
+      toolDescribeState: state,
+      allowedToolNames: new Set(["edit_module"]),
+      engagedSkills: [],
+      excluded: new Set(["spawn_subagent", "spawn_subagents", "screenshot_page"]),
+      chatSessionId,
+    });
+    const names = result.map((t) => t.name).sort();
+    expect(names).toContain("inspect_page_render"); // server-side verify path survives
+    expect(names).not.toContain("screenshot_page");
+  });
+
   it("run #8 R2b: spawnAllowed remains a HARD filter for read tools too", () => {
     // A parent that explicitly narrows a review subagent to two read
     // tools gets exactly those — the read-immunity applies to SKILL
