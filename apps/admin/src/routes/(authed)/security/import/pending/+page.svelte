@@ -88,7 +88,10 @@
                   data-testid="import-estimate"
                 >
                   {#if r.estimate.pages > 500}⚠ Large site:{/if}
-                  ~{r.estimate.pages}{r.estimate.truncated ? "+" : ""} pages
+                  <!-- issue #229 — list basis is the exact Owner-chosen
+                       count; the "~" approximation marker only applies to
+                       sitemap/sample estimates. -->
+                  {r.estimate.basis === "list" ? "" : "~"}{r.estimate.pages}{r.estimate.truncated ? "+" : ""} pages
                   ({r.estimate.basis === "sitemap"
                     ? "from sitemap"
                     : r.estimate.basis === "list"

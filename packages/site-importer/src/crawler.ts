@@ -137,13 +137,14 @@ export interface ListModeResolution {
   readonly skipped: Array<{ url: string; reason: string }>;
 }
 
-/** Strip the hash + a trailing slash so `/a/` and `/a#top` dedupe to
- *  one key; query strings are PRESERVED (an explicit `?page=2` pick is a
- *  distinct page the AI chose on purpose). */
+/** Strip the hash + ALL trailing slashes so `/a/`, `/a//` and `/a#top`
+ *  dedupe to one key (the root collapses to `/`); query strings are
+ *  PRESERVED (an explicit `?page=2` pick is a distinct page the AI chose
+ *  on purpose). */
 function normalizeListUrl(raw: string): string {
   const u = new URL(raw);
   u.hash = "";
-  u.pathname = u.pathname.replace(/\/$/, "") || "/";
+  u.pathname = u.pathname.replace(/\/+$/, "") || "/";
   return u.toString();
 }
 

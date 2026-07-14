@@ -8,7 +8,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { formatPageLogBlock, type PageLogEntry, pageLogAppendInputSchema } from "./page-log.js";
+import {
+  formatPageLogBlock,
+  type PageLogEntry,
+  pageLogAppendInputSchema,
+  pageLogEntrySchema,
+} from "./page-log.js";
 
 const PAGE = "11111111-1111-4111-8111-aaaaaaaaaaaa";
 
@@ -113,8 +118,46 @@ describe("formatPageLogBlock", () => {
     );
     const block = formatPageLogBlock(many) as string;
     // 8 shown + a truncation notice line.
-    expect(block).toContain("older entries");
+    expect(block).toContain("32 older entries omitted.");
     expect((block.match(/^- \[/gm) ?? []).length).toBe(8);
     expect(Buffer.byteLength(block, "utf8")).toBeLessThan(2048);
+  });
+
+  it("uses the singular form when exactly one older entry is omitted", () => {
+    const nine: PageLogEntry[] = Array.from({ length: 9 }, (_, i) => entry({ id: `id-${i}` }));
+    const block = formatPageLogBlock(nine) as string;
+    expect(block).toContain("1 older entry omitted.");
+    expect(block).not.toContain("entries omitted");
+  });
+});
+
+describe("pageLogEntrySchema", () => {
+  // This is the contract `page_log.list` re-validates every DB row against,
+  // so schema-drift shapes (non-ISO timestamp, unknown enum value) must fail.
+  const valid = entry({});
+
+  it("accepts a well-formed row", () => {
+    expect(pageLogEntrySchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("rejects a createdAt that is not an ISO datetime", () => {
+    for (const createdAt of ["2026-07-13", "yesterday", "1720900000000"]) {
+      expect(pageLogEntrySchema.safeParse({ ...valid, createdAt }).success).toBe(false);
+    }
+  });
+
+  it("rejects an unknown actorKind or entryKind (enum drift)", () => {
+    expect(pageLogEntrySchema.safeParse({ ...valid, actorKind: "robot" }).success).toBe(false);
+    expect(pageLogEntrySchema.safeParse({ ...valid, entryKind: "deleted" }).success).toBe(false);
+  });
+
+  it("rejects a non-uuid id and unknown keys (strict)", () => {
+    expect(pageLogEntrySchema.safeParse({ ...valid, id: "row-1" }).success).toBe(false);
+    expect(pageLogEntrySchema.safeParse({ ...valid, extra: 1 }).success).toBe(false);
+  });
+
+  it("rejects a non-object detail but accepts null", () => {
+    expect(pageLogEntrySchema.safeParse({ ...valid, detail: "corrupt" }).success).toBe(false);
+    expect(pageLogEntrySchema.safeParse({ ...valid, detail: null }).success).toBe(true);
   });
 });
