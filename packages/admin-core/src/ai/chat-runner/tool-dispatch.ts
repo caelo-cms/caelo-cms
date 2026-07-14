@@ -32,6 +32,9 @@ import type {
  * the mutated `messages` array. See `repeat-failure-guard.ts`.
  */
 export interface ToolCallOutcome {
+  /** issue #300 — lets the loop map outcomes back onto the tool-result
+   *  messages for the proactive compaction origins map. */
+  toolCallId: string;
   name: string;
   arguments: unknown;
   ok: boolean;
@@ -276,6 +279,7 @@ export async function* dispatchToolCall(
   }
 
   outcomes?.push({
+    toolCallId: call.id,
     name: call.name,
     arguments: call.arguments,
     ok: result.ok,
