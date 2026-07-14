@@ -67,6 +67,11 @@ export async function persistUserMessage(
     // callers (subagents, MCP bridge, tests) construct the object
     // literally and may omit the field.
     ...((input.attachments ?? []).length > 0 ? { attachments: input.attachments } : {}),
+    // issue #303 — producer hint for the empty-content rejection.
+    source:
+      input.origin === "system"
+        ? "auto-nudge (origin=system via stream route)"
+        : "operator chat message",
   });
   return userMsg.ok;
 }
@@ -147,6 +152,8 @@ export async function persistAssistantTurn(
     toolCalls: args.toolCalls,
     thinkingBlocks: args.thinkingBlocks,
     status: args.status,
+    // issue #303 — producer hint for the empty-content rejection.
+    source: "chat-runner assistant turn (persistAssistantTurn)",
   });
   if (save.ok) return { ok: true, messageId: (save.value as { messageId: string }).messageId };
   const e = save.error;

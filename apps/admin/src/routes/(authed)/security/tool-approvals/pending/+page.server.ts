@@ -176,6 +176,8 @@ export const actions: Actions = {
               0,
               8000,
             ),
+          // issue #303 — producer hint for the empty-content rejection.
+          source: "tool-approvals approve action",
         });
       } catch (err) {
         console.error("[tool-approvals.approve] chat.append_message failed", {

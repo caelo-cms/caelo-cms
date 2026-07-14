@@ -11,6 +11,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import { CHAT_MAX_ATTACHMENTS, chatAttachmentSchema, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { computeAiCallCostMicrocents } from "../../ai/call-cost.js";
 import { lookupPricing } from "../../ai/pricing-cache.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
@@ -46,8 +47,53 @@ export const appendChatMessageOp = defineOperation({
         .optional(),
       // issue #190 — operator-attached images on user messages.
       attachments: z.array(chatAttachmentSchema).max(CHAT_MAX_ATTACHMENTS).nullable().optional(),
+      // issue #303 — optional producer hint, NOT persisted (no column, no
+      // migration). Only used to name the guilty call site in the
+      // empty-content rejection below so the failure is diagnosable from
+      // logs alone instead of "some producer somewhere posted nothing".
+      source: z.string().max(120).optional(),
     })
-    .strict(),
+    .strict()
+    // issue #303 — operators saw bare "Status:" notes: rows persisted with
+    // empty bodies render as a label with no content. A producer with
+    // nothing to say must not post a message, so empty content fails HERE,
+    // loudly (CLAUDE.md §2 no-fallbacks), instead of landing as a
+    // contentless transcript row.
+    //
+    // Scope of the constraint:
+    //   - user rows (operator-typed AND origin='system' auto-nudges) must
+    //     always carry text;
+    //   - assistant rows may be empty only as tool-call shells (text lives
+    //     in the tool_use blocks) or when the stream was interrupted before
+    //     any text landed (abort at loop 0);
+    //   - tool rows are exempt: a tool_result row must persist even when a
+    //     tool returns an empty string — dropping it would leave a dangling
+    //     tool_use that 400s every subsequent provider call (run #10's
+    //     session-wedge class).
+    .superRefine((val, ctx) => {
+      if (val.content.trim().length > 0) return;
+      const producer = val.source ?? "unknown producer — pass `source` at the call site";
+      if (val.role === "user") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["content"],
+          message:
+            `empty user-message content (producer: ${producer}). ` +
+            "A status/nudge producer with nothing to say must not call chat.append_message at all — skip the post instead.",
+        });
+        return;
+      }
+      const isToolCallShell = Array.isArray(val.toolCalls) && val.toolCalls.length > 0;
+      if (val.role === "assistant" && !isToolCallShell && val.status !== "interrupted") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["content"],
+          message:
+            `empty assistant-message content with no tool calls (producer: ${producer}). ` +
+            "Persist assistant turns only when they carry text, tool calls, or were interrupted mid-stream.",
+        });
+      }
+    }),
   output: messageRow,
   handler: async (_ctx, input, tx) => {
     // Two-layer defense against the chat_sessions-deleted-mid-stream
@@ -239,20 +285,27 @@ export const recordAiCallOp = defineOperation({
       // LRU (60s TTL, LISTEN/NOTIFY-invalidated). Same fallback logic:
       // exact (provider, model) wins over provider-wildcard `*`.
       const p = await lookupPricing(tx, input.provider, input.model, input.operationType);
-      if (p) {
-        if (input.operationType === "image") {
-          costMicrocents = p.inputMicrocents * input.imageCount;
-        } else {
-          const inRate = p.inputMicrocents;
-          const outRate = p.outputMicrocents ?? 0;
-          const cacheRate = p.cachedMicrocents ?? inRate;
-          const billedInput = Math.max(0, input.inputTokens - input.cachedTokens);
-          costMicrocents = Math.round(
-            (billedInput * inRate) / 1000 +
-              (input.cachedTokens * cacheRate) / 1000 +
-              (input.outputTokens * outRate) / 1000,
-          );
-        }
+      const mapped = computeAiCallCostMicrocents(p, {
+        operationType: input.operationType,
+        inputTokens: input.inputTokens,
+        outputTokens: input.outputTokens,
+        cachedTokens: input.cachedTokens,
+        imageCount: input.imageCount,
+      });
+      costMicrocents = mapped.costMicrocents;
+      if (mapped.unpriced) {
+        // issue #297 — run #14's $0.00 report: a pricing-table miss used to
+        // record cost 0 with no trace, blinding the cost gate. The row still
+        // inserts (accounting must not be lost) but the gap is LOUD here and
+        // surfaced as `unpricedCallCount` in imports.get_run_cost.
+        console.error("[record_ai_call] no ai_pricing row — cost recorded as 0 (understated)", {
+          provider: input.provider,
+          model: input.model,
+          operationType: input.operationType,
+          inputTokens: input.inputTokens,
+          outputTokens: input.outputTokens,
+          fix: "add the model at /security/ai/pricing (ai_pricing.set)",
+        });
       }
     }
     const rows = (await tx.execute(sql`

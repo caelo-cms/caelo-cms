@@ -25,6 +25,8 @@ const FIELD_AUTHORING_TOOLS = [
   "add-module-to-layout.ts",
   "add-module-to-template.ts",
   "edit-module.ts",
+  // issue #299 — build_page authors per-module fields[] too.
+  "build-page.ts",
 ] as const;
 
 /**

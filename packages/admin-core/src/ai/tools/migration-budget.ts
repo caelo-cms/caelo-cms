@@ -46,7 +46,7 @@ type SetBudgetInput = z.infer<typeof setBudgetInput>;
 export const setMigrationBudgetTool: ToolDefinitionWithHandler<SetBudgetInput> = {
   name: "set_migration_budget",
   description:
-    "Record the operator-CONFIRMED money ceiling for a migration run, in the currency they named. Call this ONCE at plan time, AFTER you proposed an estimated cost and the operator agreed an amount (e.g. they said 'up to €10' → ceiling 10, currency 'EUR'). `ceiling` is the whole-run budget in major units (10 for €10), not per-page. Do NOT invent a ceiling the operator never confirmed. To change it later (operator raises the budget), call this again with the new amount. Then use `check_run_budget` to track spend against it.",
+    "Record the operator-CONFIRMED money ceiling for a migration run, in the currency they named. Approving an import proposal already arms a ceiling automatically from the estimate (3x its high end), so call this only when the operator names a DIFFERENT amount — or to RAISE the budget after the automatic gate paused the run ('Cost ceiling reached'): recording a new ceiling re-arms the gate and the run can continue. `ceiling` is the whole-run budget in major units (10 for €10), not per-page. Do NOT invent a ceiling the operator never confirmed. Use `check_run_budget` to track spend against it.",
   schema: setBudgetInput,
   inputSchema: {
     type: "object",
@@ -93,6 +93,9 @@ type CheckBudgetInput = z.infer<typeof checkBudgetInput>;
 interface RunCostResult {
   spentMicrocents: number;
   callCount: number;
+  /** issue #297 — calls recorded at cost 0 because no ai_pricing row
+   *  matched; spend is understated while this is >0. */
+  unpricedCallCount: number;
   subagentSessionCount: number;
   ceilingMicrocents: number | null;
   ceilingCurrency: string | null;
@@ -144,7 +147,11 @@ export const checkRunBudgetTool: ToolDefinitionWithHandler<CheckBudgetInput> = {
     }
 
     const ceiling = money(v.ceilingMicrocents);
-    const noteSuffix = v.currencyNote ? ` (${v.currencyNote})` : "";
+    const unpricedNote =
+      v.unpricedCallCount > 0
+        ? ` WARNING: ${v.unpricedCallCount} AI call(s) recorded no cost because no ai_pricing row matches their model — real spend is HIGHER than shown; tell the operator to add the model at /security/ai.`
+        : "";
+    const noteSuffix = (v.currencyNote ? ` (${v.currencyNote})` : "") + unpricedNote;
 
     if (v.overBudget) {
       const moreLine =

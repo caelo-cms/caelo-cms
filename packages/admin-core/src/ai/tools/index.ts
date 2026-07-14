@@ -6,6 +6,7 @@ import { addModuleToTemplateTool } from "./add-module-to-template.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
 import { autofillPageSeoTool } from "./autofill-page-seo.js";
 import { bootstrapSiteScaffoldTool } from "./bootstrap-site-scaffold.js";
+import { buildPageTool } from "./build-page.js";
 import { bulkCreateRedirectsTool } from "./bulk-create-redirects.js";
 import { bulkDeleteRedirectsTool } from "./bulk-delete-redirects.js";
 import { bulkOptimizeSeoTool } from "./bulk-optimize-seo.js";
@@ -21,6 +22,7 @@ import { checkGenesisParityTool } from "./check-genesis-parity.js";
 import { composeFromImportTool } from "./compose-from-import.js";
 import { composePageFromSpecTool } from "./compose-page-from-spec.js";
 import { createContentInstanceTool } from "./create-content-instance.js";
+import { createContentInstancesTool } from "./create-content-instances.js";
 import { createLayoutTool } from "./create-layout.js";
 import { createPageTool } from "./create-page.js";
 import { createTemplateTool } from "./create-template.js";
@@ -117,6 +119,7 @@ import { setContentInstanceValuesTool } from "./set-content-instance-values.js";
 import { setDesignManifestTool } from "./set-design-manifest.js";
 import { setMediaAltTool } from "./set-media-alt.js";
 import { setPageModuleContentTool } from "./set-page-module-content.js";
+import { setPageModuleContentManyTool } from "./set-page-module-content-many.js";
 import { setPageSeoTool } from "./set-page-seo.js";
 import { setPageStatusTool } from "./set-page-status.js";
 import { setPageTitleTool } from "./set-page-title.js";
@@ -147,6 +150,12 @@ export function createDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(editModuleTool);
   registry.register(setPageModuleContentTool);
+  // issue #299 — bulk-first build path (CLAUDE.md §11): one call builds a
+  // page (modules + content + placements); the _many variants batch
+  // incremental passes on existing pages.
+  registry.register(buildPageTool);
+  registry.register(setPageModuleContentManyTool);
+  registry.register(createContentInstancesTool);
   // v0.12.0 — content_instances + placement binding tools.
   registry.register(listContentInstancesTool);
   registry.register(getContentInstanceTool);

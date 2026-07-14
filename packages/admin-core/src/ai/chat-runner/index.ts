@@ -27,6 +27,7 @@ import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments
 import { resolveCompactionThresholdTokens } from "./compaction.js";
 import { buildPostCatalogueBlocks } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
+import { buildContextSplitEstimate } from "./context-split.js";
 import {
   DEFAULT_INPUT_COST_PER_M,
   DEFAULT_OUTPUT_COST_PER_M,
@@ -220,6 +221,19 @@ export async function* runChatTurn(
     chatSessionId: input.chatSessionId,
     ...phaseMs,
     totalPreProviderMs: Date.now() - startedAt,
+  });
+
+  // issue #300 part A — one context-split line per turn: where the
+  // loop-0 input tokens go (system prompt / per-label context blocks /
+  // per-skill bodies / tool catalogue / history), chars/4 ESTIMATE.
+  // This is the yardstick every future context diet is measured with.
+  console.error("[chat-runner] context-split", {
+    chatSessionId: input.chatSessionId,
+    ...buildContextSplitEstimate({
+      systemChunks,
+      providerTools: filteredTools,
+      messages: baseMessages,
+    }),
   });
 
   // 3. Run the tool loop.

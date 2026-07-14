@@ -48,11 +48,33 @@ export const migrateMediaTool: ToolDefinitionWithHandler<
       modulesRewritten: number;
       templatesRewritten: number;
       skipped: Array<{ url: string; reason: string }>;
+      unitsBySource: {
+        composePageModules: number;
+        composeChrome: number;
+        composeTemplates: number;
+        directPageModules: number;
+        directChrome: number;
+        directTemplates: number;
+      };
+      unitsWarning: string | null;
       logoWarning: string | null;
     };
+    // issue #302 — ZERO units is never a silent ok: the op logged a
+    // warning event; here the tool result says it in plain text so the
+    // model diagnoses it in the SAME turn instead of claiming success.
+    if (v.unitsWarning) {
+      return {
+        ok: true,
+        content:
+          `media migration did NOT run: ${v.unitsWarning}\n` +
+          "Do not report media as migrated. Fix the cause above, then call migrate_media again.",
+      };
+    }
+    const u = v.unitsBySource;
     const mb = (v.migratedBytes / (1024 * 1024)).toFixed(2);
     const lines = [
       `media migration: ${v.migrated} asset(s) downloaded (${mb} MB), ${v.dedupedExisting} reused existing library asset(s) (same content hash), ${v.alreadyLocal} reference(s) already pointed at Caelo media. Rewrote ${v.modulesRewritten} module(s) and ${v.templatesRewritten} template(s).`,
+      `Rewritable units by source — compose: ${u.composePageModules} page module(s), ${u.composeChrome} chrome, ${u.composeTemplates} template(s); direct-build: ${u.directPageModules} page module(s), ${u.directChrome} chrome, ${u.directTemplates} template(s).`,
     ];
     if (v.skipped.length > 0) {
       // issue #28 — record every skipped asset in the run's error/warning

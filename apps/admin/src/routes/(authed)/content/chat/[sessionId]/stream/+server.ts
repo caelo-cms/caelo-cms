@@ -52,6 +52,20 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   // issue #29 — Zod at the boundary; anything other than the literal
   // "system" (including absent) is treated as operator-authored.
   const origin = body.origin === "system" ? ("system" as const) : undefined;
+  // issue #303 — empty/whitespace content must never reach
+  // chat.append_message: a persisted empty row renders as a bare
+  // "Status:" (system origin) or "You:" note with no body. ChatPanel
+  // guards its composer, but this route is an open surface (auto-nudges,
+  // future clients) — a producer with nothing to say must not post, so
+  // reject here with the fix in the message instead of persisting junk.
+  if (typeof body.content !== "string" || body.content.trim().length === 0) {
+    throw error(
+      400,
+      `chat message content must be a non-empty string (got ${
+        typeof body.content === "string" ? "empty/whitespace" : typeof body.content
+      }${origin ? ", origin=system" : ""}) — a status/nudge producer with nothing to say must not post a message at all`,
+    );
+  }
   // issue #190 — Zod at the boundary for operator-attached images.
   const { CHAT_MAX_ATTACHMENTS, chatAttachmentSchema } = await import("@caelo-cms/shared");
   const { z } = await import("zod");

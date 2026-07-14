@@ -275,6 +275,45 @@ export function zeroPageBuildError(args: {
 }
 
 /**
+ * issue #302 (run #14 finding) — a full staging/production build where NO
+ * page lands at the bucket root (`index.html`) ships a site whose `/`
+ * 404s. The migration flow hit exactly this: the rebuilt homepage carried
+ * a source-derived slug, `pageOutputPath` only roots the slugs "", "home"
+ * and "index", and nothing failed — the operator found the 404 by hand.
+ * Per CLAUDE.md §2 (no fallbacks pre-1.0) this fails loudly with the fix
+ * spelled out instead of shipping an unservable root.
+ *
+ * Scope mirrors `zeroPageBuildError`: full builds on non-dev targets. It
+ * only fires when at least one page COULD have claimed the root (a page
+ * whose locale has no URL prefix — strategy 'none' or no locale config);
+ * an all-subdirectory/subdomain locale setup roots its locales elsewhere
+ * and is not this guard's business.
+ *
+ * @returns the error message to throw, or null when the build may proceed.
+ *   Pure so the guard is unit-testable without a DB.
+ */
+export function missingRootPageError(args: {
+  /** Every emitted page path (relative, e.g. "index.html", "about/index.html"). */
+  outputPaths: readonly string[];
+  /** Slugs of pages whose locale would emit at the root level (no prefix). */
+  rootEligibleSlugs: readonly string[];
+  env: DeployTarget["env"];
+  incremental: boolean;
+}): string | null {
+  if (args.env === "dev" || args.incremental) return null;
+  if (args.outputPaths.includes("index.html")) return null;
+  if (args.rootEligibleSlugs.length === 0) return null;
+  const sample = args.rootEligibleSlugs.slice(0, 10).join(", ");
+  return (
+    `static-generator: no page serves the site root '/' for env='${args.env}' — ` +
+    `none of the ${args.outputPaths.length} published page(s) maps to index.html, so visitors hitting the bare domain get a 404. ` +
+    "The homepage must use the slug 'home' (or 'index') to ship at '/'. " +
+    "Rename the intended homepage's slug (AI: `change_page_slug` to 'home'; UI: the page's settings) and re-run the deploy. " +
+    `Root-eligible slugs in this build: ${sample}${args.rootEligibleSlugs.length > 10 ? ", …" : ""}`
+  );
+}
+
+/**
  * Renders the robots.txt body. `index` mode allows everything; `noindex`
  * blocks all crawlers — required for staging per CMS_REQUIREMENTS §6.
  */
@@ -398,6 +437,24 @@ export async function generateSite(args: {
       { code: r.code, urlStrategy: r.url_strategy, urlHost: r.url_host },
     ]),
   );
+
+  // issue #302 — fail loudly when no page will land at the bucket root.
+  const plannedPaths = pageRows.map((p) =>
+    pageOutputPath(p.slug, localeByCode.get(p.locale), target.pageUrlStyle),
+  );
+  const rootEligibleSlugs = pageRows
+    .filter((p) => {
+      const cfg = localeByCode.get(p.locale);
+      return cfg === undefined || cfg.urlStrategy === "none";
+    })
+    .map((p) => p.slug);
+  const rootError = missingRootPageError({
+    outputPaths: plannedPaths,
+    rootEligibleSlugs,
+    env: target.env,
+    incremental: (args.changedPageIds?.length ?? 0) > 0,
+  });
+  if (rootError !== null) throw new Error(rootError);
 
   // P6.7.6 — load layout modules once for the whole build, keyed by
   // layout_id. Per-page composition picks its layout's set; same

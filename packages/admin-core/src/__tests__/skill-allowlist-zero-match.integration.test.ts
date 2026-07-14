@@ -1,19 +1,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #106 (step-13 round-3 root cause) — an engaged skill whose
- * allowlist matches ZERO live tools must NOT strand the AI with an empty
- * tool catalogue.
+ * issue #106 / issue #301 — skill-allowlist resolution end-to-end
+ * through runChatTurn.
  *
- * The step-13 footer walk failed because "add a footer with navigation
- * links" auto-engaged the `menu-auditor` skill, whose `allowlistedTools`
- * list Query-API op names (`structured_sets.list`, `pages.list`, …) rather
- * than the AI tool names the catalogue uses (`list_structured_sets`,
- * `list_pages`, …). The intersection was empty, the AI got ZERO tools,
- * couldn't call add_module_to_layout, and narrated the footer instead of
- * building it. The chat-runner now treats a zero-match allowlist as absent
- * (full catalogue) and warns — while a VALID partial allowlist still
- * narrows surgically.
+ * issue #106 (step-13 round-3): an op-notation allowlist zero-matched
+ * the tool-name catalogue and stranded the AI with ZERO tools. The fix
+ * then was "treat zero-match as absent" — which issue #301 exposed as
+ * a hidden fallback (CLAUDE.md §2): run #15 logged
+ * `skill-allowlist-zero-match` 5× while the reviewer skills' allowlists
+ * were silently ignored and the FULL catalogue (write tools included)
+ * shipped on turns the skill meant to narrow.
+ *
+ * The #301 contract asserted here:
+ *   - op-notation entries TRANSLATE via the explicit table
+ *     (allowlist-mapping.ts) and the allowlist APPLIES;
+ *   - an allowlist that resolves to zero live tools is a
+ *     skill-definition DEFECT: the catalogue stays full (never zero
+ *     tools — the #106 guarantee) and a `skill-allowlist-defect` event
+ *     fires; save-time validation makes such rows unreachable except
+ *     via pre-0157 data or raw SQL (as seeded below).
  *
  * Run #8 R2b/R5 amended the narrowing contract: a skill allowlist
  * narrows WRITE tools only; read-only tools (list_/get_/inspect_/find_/
@@ -146,16 +152,45 @@ async function captureToolsForTurn(skillKeyword: string): Promise<CapturedTool[]
   return provider.capturedTools;
 }
 
-describe("skill allowlist zero-match guard (issue #106)", () => {
-  it("a zero-match allowlist (op-names not tool-names) falls back to the full catalogue", async () => {
-    // Mirrors menu-auditor's broken shape: Query-API op names that match no
-    // AI tool. Without the guard this strands the AI with zero tools.
+describe("skill allowlist resolution (issue #106 / issue #301)", () => {
+  it("an op-notation allowlist TRANSLATES and applies — write tools drop, reads stay (run #15 regression)", async () => {
+    // The pre-0157 menu-auditor shape, seeded via raw SQL exactly like
+    // migration 0033 did. Before #301 these entries zero-matched and the
+    // allowlist was silently IGNORED — full catalogue, write tools
+    // included. Now they translate (structured_sets.list →
+    // list_structured_sets, pages.list → list_pages, redirects.list →
+    // find_redirects) and the reviewer skill's read-only intent holds.
     await seedSkill(
       ZERO_SLUG,
       ["structured_sets.list", "pages.list", "redirects.list"],
       "zzbogusaudit",
     );
     const tools = await captureToolsForTurn("zzbogusaudit");
+    const names = tools.map((t) => t.name);
+    // The translated reads are present…
+    expect(names).toContain("list_structured_sets");
+    expect(names).toContain("list_pages");
+    expect(names).toContain("find_redirects");
+    // …and the write tools the run-#15 fallback used to leak are gone.
+    expect(names).not.toContain("add_module_to_layout");
+    expect(names).not.toContain("edit_module");
+    expect(names).not.toContain("set_structured_set");
+    // Every survivor is read-only or an orchestration tool (run #8/#9 immunity).
+    for (const name of names) {
+      expect(isReadOnlyToolName(name) || isOrchestrationToolName(name)).toBe(true);
+    }
+  });
+
+  it("an allowlist resolving to ZERO live tools keeps the full catalogue (defect, never zero tools)", async () => {
+    // Unreachable through skills.set/propose (issue #301 validation) —
+    // seeded via raw SQL to simulate hand-edited or pre-validation data.
+    // The keyword must not substring-match any seeded skill's
+    // auto-engagement keywords: "zzbogusaudit" contains "audit" and
+    // co-engaged menu-auditor, whose (post-0157, live) allowlist made
+    // the union resolve to >0 tools — narrowing the catalogue and
+    // breaking the ZERO-live-tools premise this test exists to pin.
+    await seedSkill(ZERO_SLUG, ["totally.bogus_op", "nope.not_a_tool"], "zzbogusnix");
+    const tools = await captureToolsForTurn("zzbogusnix");
     expect(tools.length).toBeGreaterThan(50); // full catalogue, not zero
     expect(tools.some((t) => t.name === "add_module_to_layout")).toBe(true);
   });

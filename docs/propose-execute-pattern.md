@@ -48,7 +48,18 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 
 Plus three older proposal flows that share the spirit but predate
 the unified shape: `site_memory_proposals`, `skill_proposals`,
-`media_alt_proposals`.
+`media_alt_proposals` — and the site-import flow, which queues on
+`import_runs` itself (`status='proposed'` → `imports.execute_proposal`).
+
+Import approval note (issue #297): approving an import proposal is
+not just a status flip — the approval ARMS the run's cost ceiling
+from the estimate the operator saw (`aiCostUsd.high ×
+ESTIMATE_CEILING_SAFETY_FACTOR`, in the same transaction). When the
+stored estimate is failed/unusable, `imports.execute_proposal`
+REJECTS a budget-less approval and the approve UI collects an
+explicit `ceiling` instead. General lesson for gated domains whose
+preview contains a resource promise: the shown number is the
+contract, so the execute op should bind it, not merely display it.
 
 Theme activation note: approving a `propose_activate_theme` flips
 the active row in the DB only — the production static build keeps

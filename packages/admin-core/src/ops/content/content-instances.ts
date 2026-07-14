@@ -23,10 +23,11 @@
  * branched-create rows immediately.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
 import {
   contentInstanceCreateSchema,
   contentInstanceDeleteSchema,
+  contentInstancesCreateManySchema,
   contentInstanceUpdateSchema,
   err,
   forkPlacementContentSchema,
@@ -662,6 +663,57 @@ export const createContentInstanceOp = defineOperation({
     }
 
     return ok({ contentInstanceId });
+  },
+});
+
+// ─── content_instances.create_many ───────────────────────────────────
+
+/**
+ * Issue #299 — bulk variant of `content_instances.create` per CLAUDE.md
+ * §11 (run #15 fired the singular 9× in a row for what was ONE
+ * conceptual operation). Each item runs the exact singular path —
+ * module check, slug-dup check, nested-ref + field-shape validation,
+ * audit, snapshot — inside ONE shared transaction.
+ *
+ * All-or-nothing: a failure at index i throws `OperationAbortError`
+ * so items 0..i-1 roll back too (a `return err` after partial writes
+ * would COMMIT them — see errors.ts). The message names `instances[i]`
+ * and forwards the singular validator's field-naming message verbatim.
+ */
+export const createContentInstancesManyOp = defineOperation({
+  name: "content_instances.create_many",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: contentInstancesCreateManySchema,
+  output: z.object({ contentInstanceIds: z.array(z.string()) }),
+  handler: async (ctx, input, tx) => {
+    const contentInstanceIds: string[] = [];
+    for (let i = 0; i < input.instances.length; i += 1) {
+      const item = input.instances[i]!;
+      const r = await createContentInstanceOp.handler(ctx, item, tx);
+      if (!r.ok) {
+        const inner = r.error as { message?: string };
+        const queryError = {
+          kind: "HandlerError" as const,
+          operation: "content_instances.create_many",
+          message: `instances[${i}] (moduleId=${item.moduleId}${item.slug ? `, slug=${item.slug}` : ""}): ${
+            inner.message ?? r.error.kind
+          }. The whole batch was rolled back — fix this item and resend all ${input.instances.length}.`,
+        };
+        if (contentInstanceIds.length > 0) throw new OperationAbortError(queryError);
+        return err(queryError);
+      }
+      contentInstanceIds.push((r.value as { contentInstanceId: string }).contentInstanceId);
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "content_instances.create_many",
+      input,
+      succeeded: true,
+      resultSummary: `created=${contentInstanceIds.length}`,
+    });
+    return ok({ contentInstanceIds });
   },
 });
 

@@ -15,6 +15,13 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import {
+  type BudgetGateState,
+  budgetTripText,
+  budgetWarningText,
+  evaluateGateLevel,
+  fetchBudgetGate,
+} from "./budget-gate.js";
+import {
   compactHistory,
   estimateHistoryTokens,
   KEEP_RECENT_MESSAGES,
@@ -22,12 +29,14 @@ import {
   RETRY_TOOL_RESULT_HEAD_CHARS,
   TOOL_RESULT_HEAD_CHARS,
 } from "./compaction.js";
+import { costCapUsd, microcents } from "./limits.js";
 import {
   evaluateLoopZeroDiagnostics,
   PASSIVE_ACTION_NUDGE,
   shouldNudgePassiveTurn,
 } from "./passive-turn.js";
 import { persistAssistantTurn } from "./persistence.js";
+import { compactOldToolResults, type ToolResultOrigin } from "./proactive-compaction.js";
 import {
   blockedCallResult,
   RepeatedFailureTracker,
@@ -112,9 +121,139 @@ export async function* runToolLoop(
   // consumed the whole budget before any visible content; re-running at
   // the same ceiling would likely fail identically).
   let maxOutputTokensThisTurn = args.maxOutputTokens;
+  // issue #297 — the import-run cost gate governing this session (null for
+  // ordinary chats — resolved once at loop 0, then refreshed per iteration
+  // while active so mid-turn subagent spend keeps counting).
+  let budgetGate: BudgetGateState | null = null;
+  // issue #300 — origins of tool results dispatched by THIS turn
+  // (toolCallId → loop + ok), feeding the proactive per-loop compaction
+  // below. Results that predate the turn are never in this map and so
+  // stay #261's (ceiling-triggered) responsibility.
+  const toolResultOrigins = new Map<string, ToolResultOrigin>();
 
   for (let loop = 0; loop < args.maxLoops; loop++) {
     if (aborted()) break;
+
+    // issue #297 — live cost gate, BEFORE the next provider call so the
+    // in-flight call always finishes and its tool results are persisted.
+    // Loop 0 always resolves (one cheap read per turn for ordinary chats);
+    // later iterations re-read only while a gate is active, folding in
+    // spend recorded by subagent children mid-turn. The current turn's own
+    // provider calls are not yet in ai_calls, so their accumulator estimate
+    // is added on top (see budget-gate.ts for the pricing approximation).
+    if (loop === 0 || budgetGate !== null) {
+      budgetGate = await fetchBudgetGate(registry, adapter, humanCtx, chatSessionId);
+    }
+    if (budgetGate !== null) {
+      const currentTurnMicrocents = microcents(
+        costCapUsd(
+          args.usage.totalIn,
+          args.usage.totalCached,
+          args.usage.totalOut,
+          args.inputCost,
+          args.outputCost,
+        ),
+      );
+      const { level, liveSpentMicrocents } = evaluateGateLevel(budgetGate, currentTurnMicrocents);
+      if (level === "trip") {
+        const notice = budgetTripText(budgetGate, liveSpentMicrocents);
+        // Ledger claim — first tripping session writes the import_run_events
+        // row; the pause message below is emitted regardless, once per
+        // halted turn, so a "continue" without a raised ceiling can never
+        // silently resume spending.
+        await execute(registry, adapter, humanCtx, "imports.record_budget_gate_event", {
+          runId: budgetGate.runId,
+          kind: "tripped",
+          spentMicrocents: liveSpentMicrocents,
+          ceilingMicrocents: budgetGate.ceilingMicrocents,
+          message: notice,
+        });
+        console.error("[chat-runner] budget-gate tripped", {
+          chatSessionId,
+          loop,
+          runId: budgetGate.runId,
+          liveSpentMicrocents,
+          ceilingMicrocents: budgetGate.ceilingMicrocents,
+        });
+        yield { kind: "text-delta", text: notice };
+        const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+          chatSessionId,
+          role: "assistant",
+          content: notice,
+          status: "complete",
+        });
+        if (noticeSave.ok) {
+          lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+          yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
+        }
+        stopReason = "cost_ceiling";
+        break;
+      }
+      if (level === "warn" && !budgetGate.warningEmitted) {
+        const notice = budgetWarningText(budgetGate, liveSpentMicrocents);
+        const claim = await execute(
+          registry,
+          adapter,
+          humanCtx,
+          "imports.record_budget_gate_event",
+          {
+            runId: budgetGate.runId,
+            kind: "warning",
+            spentMicrocents: liveSpentMicrocents,
+            ceilingMicrocents: budgetGate.ceilingMicrocents,
+            message: notice,
+          },
+        );
+        // Local flip either way — losing the claim means another session
+        // (parallel subagent) already emitted the warning.
+        budgetGate = { ...budgetGate, warningEmitted: true };
+        if (claim.ok && (claim.value as { claimed: boolean }).claimed) {
+          console.error("[chat-runner] budget-gate warning", {
+            chatSessionId,
+            loop,
+            runId: budgetGate.runId,
+            liveSpentMicrocents,
+            ceilingMicrocents: budgetGate.ceilingMicrocents,
+          });
+          // issue #29 shape — a system-origin status note: muted in the
+          // transcript for the operator, a user turn for the model so it
+          // economizes the rest of the run.
+          await execute(registry, adapter, humanCtx, "chat.append_message", {
+            chatSessionId,
+            role: "user",
+            origin: "system",
+            content: notice,
+          });
+          messages = [...messages, { role: "user", content: notice }];
+        }
+      }
+    }
+
+    // issue #300 — proactive tool-result compaction. Successful results
+    // dispatched >= 3 loops ago in THIS turn shrink to a one-line
+    // summary before each provider call, so late loops stop paying for
+    // every early loop's full HTML dumps (run #15: loop 24 at ~556K vs
+    // loop 0 at ~103K input tokens). Runs BEFORE the #261 pre-flight
+    // estimate so the ceiling check sees the already-shrunk history —
+    // the two passes compose; they share the truncation-marker format
+    // and skip each other's output. In-memory only: the persisted
+    // transcript keeps full result bodies (tool-dispatch.ts persists
+    // at dispatch time, before this ever runs).
+    if (toolResultOrigins.size > 0) {
+      const proactive = compactOldToolResults(messages, {
+        currentLoop: loop,
+        origins: toolResultOrigins,
+      });
+      if (proactive.compacted > 0) {
+        messages = proactive.messages;
+        console.error("[chat-runner] proactive-tool-result-compaction", {
+          chatSessionId,
+          loop,
+          compacted: proactive.compacted,
+          charsSaved: proactive.charsSaved,
+        });
+      }
+    }
 
     // issue #261 — pre-flight compaction. Estimated on every iteration
     // because tool results appended mid-loop grow the history between
@@ -329,38 +468,58 @@ export async function* runToolLoop(
       break;
     }
 
-    const saved = await persistAssistantTurn(registry, adapter, humanCtx, {
-      chatSessionId,
-      content: assistantContent,
-      toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : null,
-      // v0.2.54 — persist thinking blocks alongside the assistant turn.
-      thinkingBlocks: accumulatedThinking.length > 0 ? accumulatedThinking : null,
-      status: aborted() ? "interrupted" : "complete",
-    });
-    if (saved.ok) {
-      lastAssistantMessageId = saved.messageId;
-      yield { kind: "assistant-message-saved", messageId: saved.messageId };
-    } else if (saved.sessionGone) {
-      // PR #61 follow-up — session row vanished mid-stream (Discard, fixture
-      // reset, cascade delete). A normal race: log softly + terminate the
-      // loop without an SSE error banner; no operator is on the stream.
-      console.warn("[chat-runner] session gone mid-stream; terminating quietly", {
+    // issue #303 — a turn with nothing to say must not post. A completed
+    // turn with zero visible text and zero tool calls (the v0.10.17
+    // empty-response class; also thinking-only end_turns) used to persist
+    // a silent empty assistant row that rendered as a contentless bubble —
+    // and chat.append_message now rejects that shape at the Zod boundary.
+    // Skipping the persist keeps the loop-0 diagnostics warning + the
+    // passive-turn nudge below fully functional. Aborted turns still
+    // persist (empty + status='interrupted' is exempt at the boundary) so
+    // the operator sees the "interrupted" marker where the reply died.
+    const hasPersistablePayload =
+      assistantContent.trim().length > 0 || accumulatedToolCalls.length > 0 || aborted();
+    if (hasPersistablePayload) {
+      const saved = await persistAssistantTurn(registry, adapter, humanCtx, {
         chatSessionId,
+        content: assistantContent,
+        toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : null,
+        // v0.2.54 — persist thinking blocks alongside the assistant turn.
+        thinkingBlocks: accumulatedThinking.length > 0 ? accumulatedThinking : null,
+        status: aborted() ? "interrupted" : "complete",
       });
-      stopReason = "session_gone";
-      succeeded = false;
-      break;
+      if (saved.ok) {
+        lastAssistantMessageId = saved.messageId;
+        yield { kind: "assistant-message-saved", messageId: saved.messageId };
+      } else if (saved.sessionGone) {
+        // PR #61 follow-up — session row vanished mid-stream (Discard, fixture
+        // reset, cascade delete). A normal race: log softly + terminate the
+        // loop without an SSE error banner; no operator is on the stream.
+        console.warn("[chat-runner] session gone mid-stream; terminating quietly", {
+          chatSessionId,
+        });
+        stopReason = "session_gone";
+        succeeded = false;
+        break;
+      } else {
+        // v0.2.52 — Don't silently proceed to tool dispatch when the anchor
+        // message wasn't persisted. Surface as an SSE error + a breadcrumb.
+        console.error("[chat-runner] failed to persist assistant message", {
+          chatSessionId,
+          error: saved.message,
+        });
+        yield { kind: "error", message: `Failed to save assistant message: ${saved.message}` };
+        stopReason = "error";
+        succeeded = false;
+        break;
+      }
     } else {
-      // v0.2.52 — Don't silently proceed to tool dispatch when the anchor
-      // message wasn't persisted. Surface as an SSE error + a breadcrumb.
-      console.error("[chat-runner] failed to persist assistant message", {
+      console.error("[chat-runner] empty completed turn — nothing persisted", {
         chatSessionId,
-        error: saved.message,
+        loop,
+        loopStop,
+        thinkingBlocks: accumulatedThinking.length,
       });
-      yield { kind: "error", message: `Failed to save assistant message: ${saved.message}` };
-      stopReason = "error";
-      succeeded = false;
-      break;
     }
 
     // Update messages history for the potential next loop iteration.
@@ -478,6 +637,9 @@ export async function* runToolLoop(
           toolCallId: call.id,
         });
         messages.push({ role: "tool", content, toolCallId: call.id });
+        // issue #300 — a blocked call is a failed result: registered so
+        // the origins map is complete, protected from compaction by ok=false.
+        toolResultOrigins.set(call.id, { loop, ok: false });
         continue;
       }
       yield* dispatchToolCall(
@@ -500,6 +662,12 @@ export async function* runToolLoop(
       );
     }
     messages.push(...deferredImageMessages);
+
+    // issue #300 — register this iteration's dispatched results for the
+    // proactive compaction pass at the top of later iterations.
+    for (const outcome of turnOutcomes) {
+      toolResultOrigins.set(outcome.toolCallId, { loop, ok: outcome.ok });
+    }
 
     // Breaker bookkeeping: count exact (tool + args + error) repeats. On the
     // recording that first crosses the threshold, inject ONE corrective nudge
@@ -539,7 +707,10 @@ export async function* runToolLoop(
   // iteration's "tool_use"; pre-fix, this block then mislabelled the
   // failure as a cap hit ("reply continue to resume") on top of the
   // real error event.
-  if (lastLoopStop === "tool_use" && !aborted() && succeeded) {
+  // issue #297 — a cost-ceiling pause mid-tool-chain leaves lastLoopStop at
+  // "tool_use"; the budget pause message already explains how to resume, so
+  // the loop-limit notice must not stack a second, misleading message.
+  if (lastLoopStop === "tool_use" && !aborted() && succeeded && stopReason !== "cost_ceiling") {
     stopReason = "max_loops";
     const notice =
       `Paused at the tool-loop limit (${args.maxLoops} iterations). The build was still in progress — ` +

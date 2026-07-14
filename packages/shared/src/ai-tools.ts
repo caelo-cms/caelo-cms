@@ -397,6 +397,10 @@ export const AI_TOOLS = [
   "delete_content_instance",
   "set_placement_content",
   "fork_placement_content",
+  // issue #299 — bulk-first build path (§11)
+  "build_page",
+  "create_content_instances",
+  "set_page_module_content_many",
 ] as const;
 export type AiToolName = (typeof AI_TOOLS)[number];
 export type AddModuleToPageToolInput = z.infer<typeof addModuleToPageToolInput>;
