@@ -165,6 +165,44 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
     }
     const v = r.value as Report;
 
+    // issue #298 — observed vs estimated, the estimator's learning loop.
+    // Best-effort like the cost line: a calibration-read failure must not
+    // sink the report.
+    let calibrationLine = "";
+    const calR = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      ctx,
+      "imports.get_run_calibration",
+      input,
+    );
+    if (calR.ok) {
+      const cal = calR.value as {
+        observed: {
+          turnCount: number;
+          inputTokens: number;
+          outputTokens: number;
+          spentMicrocents: number;
+          pagesBuilt: number;
+          apiCallsInferred: number;
+        };
+        estimated: { pages: number; aiCostUsdLow: number; aiCostUsdHigh: number } | null;
+        derived: { callsPerPage: number | null; baseContextTokensPerCall: number | null };
+      };
+      const o = cal.observed;
+      if (o.turnCount > 0) {
+        const spent = formatMicrocentsAsMoney(o.spentMicrocents, "USD");
+        const estimatedPart = cal.estimated
+          ? `estimated $${cal.estimated.aiCostUsdLow}–$${cal.estimated.aiCostUsdHigh} for ${cal.estimated.pages} page(s); `
+          : "no cost band was estimated for this run; ";
+        const derivedPart =
+          cal.derived.callsPerPage !== null && cal.derived.baseContextTokensPerCall !== null
+            ? ` Observed constants: ~${cal.derived.callsPerPage.toFixed(1)} calls/page, ~${Math.round(cal.derived.baseContextTokensPerCall / 1000)}K base context/call.`
+            : "";
+        calibrationLine = `Estimator calibration — ${estimatedPart}observed ${spent} (${(o.inputTokens / 1e6).toFixed(1)}M input / ${(o.outputTokens / 1e3).toFixed(0)}K output tokens over ${o.turnCount} turn(s), ${o.pagesBuilt} page(s) built).${derivedPart}`;
+      }
+    }
+
     // issue #280 — fold the run's cost picture into the closing report so
     // the operator hears what the migration cost, not just what it built.
     // Best-effort: a cost-read failure must not sink the whole report.
@@ -205,6 +243,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
     const lines = [
       `# Migration report — ${v.sourceUrl} (${v.status})`,
       costLine,
+      calibrationLine,
       `Pages: ${v.acceptedPages} built of ${v.pagesExtracted} extracted (${v.pagesSeen} URLs seen). Redirects created: ${v.redirectsCreated}.`,
       v.clusters.length > 0
         ? `Page types: ${v.clusters.map((c) => `${c.label ?? c.clusterKey} ×${c.count}`).join(", ")}`

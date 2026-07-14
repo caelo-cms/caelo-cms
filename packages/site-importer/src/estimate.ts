@@ -11,10 +11,14 @@
  * LOUDLY as {failed, reason} — the Owner then approves knowing the
  * scope is unknown, which is itself information.
  *
- * The cost model is a deliberately simple pages × per-page band kept
- * in named constants below. It exists to prevent surprise bills
- * (CLAUDE.md §11.C: cost before create), not to invoice anyone —
- * hence a WIDE band, not a number with false precision.
+ * issue #298 — this module estimates SCOPE only (page count, basis,
+ * crawl time). It no longer prices the AI rebuild: the old
+ * pages × $0.02–$0.10 heuristic was 15–65× under run #15's real cost
+ * (`run-logs/run15-analysis.md`). Pricing needs the operator's current
+ * ai_pricing rates, which live behind the Query API — so the propose
+ * tool fills `aiCostUsd` from admin-core's calls×context model
+ * (ai/import-cost-model.ts) after scoping; this package emits
+ * `aiCostUsd: null` plus a loud `costNote` when unpriced.
  */
 
 import { safeExternalFetch } from "./safe-fetch.js";
@@ -22,15 +26,6 @@ import { discoverSitemapUrls, type TextFetcher } from "./sitemap.js";
 
 /** Mean seconds per crawled page: 100ms politeness + fetch + extract. */
 const EST_SECONDS_PER_PAGE = 0.6;
-/**
- * AI rebuild cost band per page in USD. Assumes ~6-10k tokens per page
- * (extraction context + module authoring + review) at current mid-tier
- * provider pricing. Low = light content pages; high = design-heavy
- * pages with repair rounds. Revisit when the cost dashboard has real
- * per-migration telemetry.
- */
-const EST_COST_PER_PAGE_LOW_USD = 0.02;
-const EST_COST_PER_PAGE_HIGH_USD = 0.1;
 /** No sitemap → same-host links on the homepage × this factor. */
 const SAMPLE_EXTRAPOLATION_FACTOR = 3;
 
@@ -44,7 +39,16 @@ export type CrawlScopeEstimate =
       readonly basis: "sitemap" | "sample" | "list";
       readonly truncated: boolean;
       readonly crawlMinutes: number;
-      readonly aiCostUsd: { readonly low: number; readonly high: number };
+      /** issue #298 — priced by the propose tool (calls×context model at
+       *  the current ai_pricing rates); null while unpriced, with the
+       *  reason in `costNote`. */
+      readonly aiCostUsd: { readonly low: number; readonly high: number } | null;
+      /** Loud reason whenever `aiCostUsd` is null (no-fallbacks rule). */
+      readonly costNote?: string;
+      /** issue #298 — decision support behind the band: the call/token
+       *  model the price came from. */
+      readonly estimatedCalls?: number;
+      readonly estimatedInputTokens?: number;
     };
 
 export interface EstimateOptions {
@@ -58,29 +62,29 @@ export interface EstimateOptions {
 
 type ScopeSuccess = Exclude<CrawlScopeEstimate, { failed: true }>;
 
-function bandFor(pages: number): ScopeSuccess {
+function scopeFor(pages: number): ScopeSuccess {
   return {
     pages,
     basis: "sitemap",
     truncated: false,
     crawlMinutes: Math.max(1, Math.round((pages * EST_SECONDS_PER_PAGE) / 60)),
-    aiCostUsd: {
-      low: Math.round(pages * EST_COST_PER_PAGE_LOW_USD * 100) / 100,
-      high: Math.round(pages * EST_COST_PER_PAGE_HIGH_USD * 100) / 100,
-    },
+    // issue #298 — unpriced here; the propose tool fills the band from the
+    // calls×context model at the operator's current ai_pricing rates.
+    aiCostUsd: null,
+    costNote: "not yet priced — the propose tool prices scope at the current ai_pricing rates",
   };
 }
 
 /**
  * issue #229 — deterministic scope for LIST mode. No network work: the
  * page count IS the chosen URL-list length, so the "blast radius"
- * (§11.A) is exact rather than sampled. Reuses the same crawl-time and
- * cost band as the depth path so the Owner reads one consistent preview.
+ * (§11.A) is exact rather than sampled. Reuses the same crawl-time shape
+ * as the depth path so the Owner reads one consistent preview.
  *
  * @param urlCount number of explicit URLs the AI chose to fetch.
  */
 export function estimateListScope(urlCount: number): ScopeSuccess {
-  return { ...bandFor(urlCount), basis: "list", truncated: false };
+  return { ...scopeFor(urlCount), basis: "list", truncated: false };
 }
 
 /** Count same-host <a href> paths on one page (crude size signal). */
@@ -130,7 +134,7 @@ export async function estimateCrawlScope(opts: EstimateOptions): Promise<CrawlSc
     });
     if (discovered.urls.length > 0) {
       return {
-        ...bandFor(discovered.urls.length),
+        ...scopeFor(discovered.urls.length),
         basis: "sitemap",
         truncated: discovered.truncated,
       };
@@ -147,7 +151,7 @@ export async function estimateCrawlScope(opts: EstimateOptions): Promise<CrawlSc
     }
     const linkCount = countSameHostPaths(home.body, opts.sourceUrl);
     const pages = Math.max(1, linkCount * SAMPLE_EXTRAPOLATION_FACTOR);
-    return { ...bandFor(pages), basis: "sample", truncated: false };
+    return { ...scopeFor(pages), basis: "sample", truncated: false };
   } catch (e) {
     return { failed: true, reason: e instanceof Error ? e.message : String(e) };
   }

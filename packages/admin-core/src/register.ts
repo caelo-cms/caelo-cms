@@ -198,6 +198,7 @@ import {
   getImportPageScreenshotKeysOp,
   getImportRunOp,
   getImportRunReportOp,
+  getRunCalibrationOp,
   getRunCostOp,
   getSessionBudgetStateOp,
   listImportPageClustersOp,
@@ -786,6 +787,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // warn/trip claims.
   registry.register(getSessionBudgetStateOp);
   registry.register(recordBudgetGateEventOp);
+  // issue #298 — estimator learning loop: observed vs estimated per run.
+  registry.register(getRunCalibrationOp);
   // issue #248 (WS2) — rebuild-quality checks: content-inventory
   // (no information loss) + repeated-subtree boilerplate detection.
   registry.register(checkImportPageInventoryOp);

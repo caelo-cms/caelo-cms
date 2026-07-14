@@ -37,6 +37,7 @@ import {
 } from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { deriveRunCalibration } from "../ai/import-cost-model.js";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
@@ -367,7 +368,12 @@ export const createImportRunOp = defineOperation({
 });
 
 /** issue #229 — the crawl-scope estimate stored on a proposal. `list`
- *  basis (exact page-list mode) joins the #193 sitemap/sample bases. */
+ *  basis (exact page-list mode) joins the #193 sitemap/sample bases.
+ *  issue #298 — `aiCostUsd` is nullable: the band comes from the
+ *  calls×context model at the current ai_pricing rates, and when no rates
+ *  row exists the proposal lands UNPRICED (costNote says why) rather than
+ *  with an invented number. estimatedCalls/estimatedInputTokens carry the
+ *  model behind the band for the calibration read path. */
 const crawlEstimateSchema = z
   .union([
     z
@@ -376,7 +382,10 @@ const crawlEstimateSchema = z
         basis: z.enum(["sitemap", "sample", "list"]),
         truncated: z.boolean(),
         crawlMinutes: z.number().min(0),
-        aiCostUsd: z.object({ low: z.number().min(0), high: z.number().min(0) }),
+        aiCostUsd: z.object({ low: z.number().min(0), high: z.number().min(0) }).nullable(),
+        costNote: z.string().max(1000).optional(),
+        estimatedCalls: z.number().int().min(0).optional(),
+        estimatedInputTokens: z.number().int().min(0).optional(),
       })
       .strict(),
     z.object({ failed: z.literal(true), reason: z.string().max(1000) }).strict(),
@@ -2498,6 +2507,156 @@ export const recordBudgetGateEventOp = defineOperation({
       resultSummary: `budget ${input.kind}: ${input.spentMicrocents}µ¢ of ${input.ceilingMicrocents}µ¢`,
     });
     return ok({ claimed });
+  },
+});
+
+/**
+ * issue #298 — the learning-loop read path: "observed vs estimated" for a
+ * run, so the estimator's constants get calibrated from real telemetry
+ * instead of hand-measured log archaeology. Rolls up ai_calls across the
+ * orchestrator + subagent sessions (same session CTE as get_run_cost, plus
+ * token sums), reads the stored proposal estimate, and derives observed
+ * CALLS_PER_PAGE / BASE_CONTEXT via ai/import-cost-model.ts.
+ *
+ * NOTE: ai_calls records one row per TURN (chat-runner accumulates its
+ * loops into a single row), so the API-call count is model-INVERTED from
+ * the token total and flagged as such — see ImportRunObservation.
+ * Deliberately compute-on-read: no stored calibration table (and no
+ * migration) until the constants prove stable across providers.
+ */
+export const getRunCalibrationOp = defineOperation({
+  name: "imports.get_run_calibration",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ runId: z.string().uuid() }).strict(),
+  output: z.object({
+    runId: z.string(),
+    observed: z.object({
+      /** ai_calls rows (turns), NOT API loops. */
+      turnCount: z.number().int().nonnegative(),
+      inputTokens: z.number().int().nonnegative(),
+      outputTokens: z.number().int().nonnegative(),
+      spentMicrocents: z.number().int().nonnegative(),
+      pagesBuilt: z.number().int().nonnegative(),
+      /** Model-inverted from inputTokens (loop counts are not persisted). */
+      apiCallsInferred: z.number().int().nonnegative(),
+    }),
+    /** The band the operator approved; null when the estimate failed or
+     *  the run predates #298's model. */
+    estimated: z
+      .object({
+        pages: z.number().int().nonnegative(),
+        aiCostUsdLow: z.number().nonnegative(),
+        aiCostUsdHigh: z.number().nonnegative(),
+        estimatedCalls: z.number().int().nonnegative().nullable(),
+      })
+      .nullable(),
+    derived: z.object({
+      callsPerPage: z.number().nullable(),
+      baseContextTokensPerCall: z.number().nullable(),
+      historyGrowthTokensPerCall: z.number().nullable(),
+      meanInputTokensPerCall: z.number().nullable(),
+    }),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const runRows = (await tx.execute(sql`
+      SELECT chat_session_id::text AS chat_session_id, estimate
+      FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
+    `)) as unknown as Array<{ chat_session_id: string | null; estimate: unknown }>;
+    const run = runRows[0];
+    if (!run) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.get_run_calibration",
+        message: "import run not found — pass a valid runId (list runs with imports.list)",
+      });
+    }
+    const chatSessionId = run.chat_session_id;
+    const aggRows = (await tx.execute(sql`
+      WITH sessions AS (
+        SELECT ${chatSessionId}::uuid AS sid
+        WHERE ${chatSessionId}::uuid IS NOT NULL
+        UNION
+        SELECT subagent_chat_session_id
+        FROM subagent_runs
+        WHERE parent_chat_session_id = ${chatSessionId}::uuid
+      )
+      SELECT COUNT(a.id)::int AS turn_count,
+             COALESCE(SUM(a.input_tokens), 0)::bigint AS input_tokens,
+             COALESCE(SUM(a.output_tokens), 0)::bigint AS output_tokens,
+             COALESCE(SUM(a.cost_estimate_microcents), 0)::bigint AS spent_microcents
+      FROM ai_calls a
+      WHERE a.chat_session_id IN (SELECT sid FROM sessions)
+    `)) as unknown as Array<{
+      turn_count: number;
+      input_tokens: bigint | string | number;
+      output_tokens: bigint | string | number;
+      spent_microcents: bigint | string | number;
+    }>;
+    const toNum = (v: bigint | string | number): number =>
+      typeof v === "bigint" ? Number(v) : typeof v === "string" ? Number.parseInt(v, 10) : v;
+    const agg = aggRows[0] ?? {
+      turn_count: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      spent_microcents: 0,
+    };
+    const pageRows = (await tx.execute(sql`
+      SELECT COUNT(accepted_page_id)::int AS built
+      FROM import_pages WHERE run_id = ${input.runId}::uuid
+    `)) as unknown as Array<{ built: number }>;
+    const pagesBuilt = pageRows[0]?.built ?? 0;
+
+    const observation = {
+      turnCount: agg.turn_count,
+      inputTokens: toNum(agg.input_tokens),
+      outputTokens: toNum(agg.output_tokens),
+      pagesBuilt,
+    };
+    const cal = deriveRunCalibration(observation);
+
+    // The stored estimate is jsonb-as-unknown; read defensively (same
+    // stance as #297's deriveCeilingFromEstimate) — an old or failed
+    // estimate yields `estimated: null`, never a throw.
+    const est = (typeof run.estimate === "string" ? JSON.parse(run.estimate) : run.estimate) as {
+      failed?: unknown;
+      pages?: unknown;
+      aiCostUsd?: { low?: unknown; high?: unknown } | null;
+      estimatedCalls?: unknown;
+    } | null;
+    const estimated =
+      est &&
+      est.failed !== true &&
+      typeof est.pages === "number" &&
+      est.aiCostUsd &&
+      typeof est.aiCostUsd.low === "number" &&
+      typeof est.aiCostUsd.high === "number"
+        ? {
+            pages: est.pages,
+            aiCostUsdLow: est.aiCostUsd.low,
+            aiCostUsdHigh: est.aiCostUsd.high,
+            estimatedCalls: typeof est.estimatedCalls === "number" ? est.estimatedCalls : null,
+          }
+        : null;
+
+    return ok({
+      runId: input.runId,
+      observed: {
+        turnCount: observation.turnCount,
+        inputTokens: observation.inputTokens,
+        outputTokens: observation.outputTokens,
+        spentMicrocents: toNum(agg.spent_microcents),
+        pagesBuilt,
+        apiCallsInferred: cal.apiCalls,
+      },
+      estimated,
+      derived: {
+        callsPerPage: cal.callsPerPage,
+        baseContextTokensPerCall: cal.baseContextTokensPerCall,
+        historyGrowthTokensPerCall: cal.historyGrowthTokensPerCall,
+        meanInputTokensPerCall: cal.meanInputTokensPerCall,
+      },
+    });
   },
 });
 
