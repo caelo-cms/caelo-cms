@@ -278,6 +278,11 @@ async function main(): Promise<number> {
   const integExit = runTests(integration, ["--isolate"], {
     CAELO_OP_COVERAGE: "1",
     CAELO_OP_COVERAGE_FILE: OP_COVERAGE_FILE,
+    // Destructive per-file DB reset (scripts/test-preload.ts) is opt-in so a
+    // casual `bun test <file>` can never truncate a dev install. The
+    // integration tier is the one place that needs it; the unit pass above
+    // deliberately runs without it — unit tests must not depend on DB state.
+    CAELO_TEST_DB_RESET: "1",
   });
   if (integExit !== 0) {
     console.error(

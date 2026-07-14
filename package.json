@@ -13,8 +13,8 @@
   "scripts": {
     "typecheck": "tsc -b && bun run --filter=@caelo-cms/admin typecheck",
     "typecheck:clean": "tsc -b --clean",
-    "test": "bun test --isolate",
-    "coverage": "bun test --coverage",
+    "test": "CAELO_TEST_DB_RESET=1 bun test --isolate",
+    "coverage": "CAELO_TEST_DB_RESET=1 bun test --coverage",
     "coverage:check": "bun run scripts/coverage-check.ts",
     "lint": "biome check . && bun run --filter=@caelo-cms/admin-core lint:audit && bun run --filter=@caelo-cms/admin-core lint:spdx",
     "lint:fix": "biome check --write .",
