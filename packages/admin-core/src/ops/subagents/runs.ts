@@ -22,7 +22,18 @@ const runRow = z.object({
   batchId: z.string().nullable(),
   role: z.string(),
   task: z.string(),
-  status: z.enum(["pending", "running", "completed", "errored", "timed_out", "cancelled"]),
+  // issue #304 — "partial": the child hit its cost budget, finished its
+  // current page, and submitted what landed (work preserved; remainder
+  // re-dispatched by the spawn orchestrator).
+  status: z.enum([
+    "pending",
+    "running",
+    "completed",
+    "partial",
+    "errored",
+    "timed_out",
+    "cancelled",
+  ]),
   resultJson: z.unknown().nullable(),
   costMicrocents: z.number().int().nonnegative(),
   durationMs: z.number().int().nonnegative(),
@@ -40,7 +51,7 @@ interface RunDb {
   batch_id: string | null;
   role: string;
   task: string;
-  status: "pending" | "running" | "completed" | "errored" | "timed_out" | "cancelled";
+  status: "pending" | "running" | "completed" | "partial" | "errored" | "timed_out" | "cancelled";
   result_json: unknown;
   cost_microcents: number | string;
   duration_ms: number;
@@ -131,7 +142,9 @@ export const finishSubagentRunOp = defineOperation({
   input: z
     .object({
       id: z.string().uuid(),
-      status: z.enum(["completed", "errored", "timed_out", "cancelled"]),
+      // issue #304 — "partial" is a finished state (leases released like
+      // any other): the child submitted a partial result at its cost cap.
+      status: z.enum(["completed", "partial", "errored", "timed_out", "cancelled"]),
       resultJson: z.unknown().nullable(),
       costMicrocents: z.number().int().nonnegative(),
       durationMs: z.number().int().nonnegative(),

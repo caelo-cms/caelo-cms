@@ -14,6 +14,7 @@ import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 
 import type { AIProvider, ChatMessageInput } from "../provider.js";
+import { capWrapUpNoticeText, shouldWrapUpAtCap } from "../tools/subagent-budget.js";
 import {
   type BudgetGateState,
   budgetTripText,
@@ -124,6 +125,13 @@ export async function* runToolLoop(
   // ordinary chats — resolved once at loop 0, then refreshed per iteration
   // while active so mid-turn subagent spend keeps counting).
   let budgetGate: BudgetGateState | null = null;
+  // issue #304 — one-shot guard for the cost-cap wrap-up notice (subagent
+  // child turns only: costCapMicrocents is set exclusively by the spawn
+  // handler). At ≥85% of the cap the child is told to finish its current
+  // work item and submit a PARTIAL result, so the 100% hard abort in
+  // streaming.ts (which discards the turn) should never be reached by a
+  // cooperative child.
+  let capWrapUpNudged = false;
 
   for (let loop = 0; loop < args.maxLoops; loop++) {
     if (aborted()) break;
@@ -220,6 +228,44 @@ export async function* runToolLoop(
           });
           messages = [...messages, { role: "user", content: notice }];
         }
+      }
+    }
+
+    // issue #304 — per-child cost-cap wrap-up. When a subagent child's
+    // billable spend this turn crosses the wrap-up line (≥85% of its
+    // cap), inject ONE system-origin instruction to finish the current
+    // work item and submit a partial result. This is what turns "child
+    // errors at the cap, all work discarded" (runs #14/#15) into "child
+    // returns {status: partial, completedPages, remainder}" that the
+    // spawn orchestrator re-dispatches. Same pricing approximation as
+    // the #297 gate above (per-MTok runner rates; ai_calls reconciles at
+    // turn end).
+    if (args.costCapMicrocents !== undefined && !capWrapUpNudged) {
+      const spentMicrocents = microcents(
+        costCapUsd(
+          args.usage.totalIn,
+          args.usage.totalCached,
+          args.usage.totalOut,
+          args.inputCost,
+          args.outputCost,
+        ),
+      );
+      if (spentMicrocents > 0 && shouldWrapUpAtCap(spentMicrocents, args.costCapMicrocents)) {
+        capWrapUpNudged = true;
+        const notice = capWrapUpNoticeText(spentMicrocents, args.costCapMicrocents);
+        console.error("[chat-runner] cost-cap wrap-up nudge", {
+          chatSessionId,
+          loop,
+          spentMicrocents,
+          costCapMicrocents: args.costCapMicrocents,
+        });
+        await execute(registry, adapter, humanCtx, "chat.append_message", {
+          chatSessionId,
+          role: "user",
+          origin: "system",
+          content: notice,
+        });
+        messages = [...messages, { role: "user", content: notice }];
       }
     }
 
