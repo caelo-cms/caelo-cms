@@ -58,7 +58,10 @@ test("no empty status notes render; crawl ticks collapse; boundary 400s empty co
 
   // Drive one mock-AI turn and capture the CSRF token the panel sends,
   // so the boundary probe below runs as a fully-authenticated client.
-  const composer = page.getByRole("textbox");
+  // Target the composer by its testid: the chat route now also renders a
+  // rename `input[name="title"]`, so a bare getByRole("textbox") matches
+  // two elements and fails Playwright strict mode.
+  const composer = page.getByTestId("chat-composer");
   await composer.fill("hello");
   const reqPromise = page.waitForRequest(/\/content\/chat\/[^/]+\/stream$/);
   await composer.press("Enter");
