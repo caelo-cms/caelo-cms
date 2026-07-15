@@ -192,16 +192,12 @@ export async function* runChatTurn(
     skillsBlock: ctx.preBlocks.skillsBlock,
   });
 
-  const systemChunks = composeSystemPromptChunks(
-    memory,
-    filteredTools.map((t) => ({ name: t.name, description: t.description })),
-    {
-      ...ctx.preBlocks,
-      subagentsBlock: postBlocks.subagentsBlock,
-      pluginsBlock: postBlocks.pluginsBlock,
-      pluginContextBlock: postBlocks.pluginContextBlock,
-    },
-  );
+  const systemChunks = composeSystemPromptChunks(memory, {
+    ...ctx.preBlocks,
+    subagentsBlock: postBlocks.subagentsBlock,
+    pluginsBlock: postBlocks.pluginsBlock,
+    pluginContextBlock: postBlocks.pluginContextBlock,
+  });
 
   // AI calls all run with chatBranchId set so the snapshot lands tagged.
   const aiCtxWithBranch: ExecutionContext = {

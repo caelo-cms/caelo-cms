@@ -499,7 +499,6 @@ export interface VolatileContext {
 
 export function composeSystemPromptChunks(
   memory: readonly MemoryRow[],
-  tools: readonly ToolCatalogueEntry[],
   volatile: VolatileContext = {},
 ): SystemPromptChunk[] {
   const chunks: SystemPromptChunk[] = [
@@ -523,14 +522,13 @@ export function composeSystemPromptChunks(
     });
   }
 
-  if (tools.length > 0) {
-    const toolLines = tools.map((t) => `- **${t.name}** — ${t.description}`);
-    chunks.push({
-      body: ["# Available tools", ...toolLines].join("\n"),
-      cacheable: true,
-      label: "tools",
-    });
-  }
+  // NB: we do NOT render a `# Available tools` prose block here. The full tool
+  // set — names, descriptions, AND JSON schemas — is already sent as the
+  // provider `tools` param on every call, so a prose listing was a pure
+  // duplicate: ~23.5k tokens (≈ a third of the cold-call system prompt) that
+  // told the model nothing the schema array didn't. Dropping it shrinks the
+  // cold call by ~22% with zero capability loss. (Warm calls were cached, so
+  // this mainly buys back the first, un-cached call of each turn.)
 
   // Volatile chunks go last so the cache prefix above stays byte-stable.
   if (volatile.skillsBlock && volatile.skillsBlock.trim().length > 0) {
@@ -626,11 +624,8 @@ export function composeSystemPromptChunks(
 }
 
 /** Backwards-compatible flat-string composer. */
-export function composeSystemPrompt(
-  memory: readonly MemoryRow[],
-  tools: readonly ToolCatalogueEntry[],
-): string {
-  return composeSystemPromptChunks(memory, tools)
+export function composeSystemPrompt(memory: readonly MemoryRow[]): string {
+  return composeSystemPromptChunks(memory)
     .map((c) => c.body)
     .join("\n\n");
 }
