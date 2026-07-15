@@ -95,7 +95,7 @@ export const editModuleToolInput = z
      * to replace the declared schema.
      */
     fields: z.array(moduleFieldSchema).max(64).optional(),
-    /** issue #164 slice 2 — see addModuleToPageToolInput.bindThemeLiterals. */
+    /** issue #164 slice 2 — see addModuleToolInput.bindThemeLiterals. */
     bindThemeLiterals: z.boolean().optional(),
   })
   .strict();
@@ -129,87 +129,38 @@ export const siteMemoryProposeToolInput = z
  * entry; the dispatcher walks this map at registration time.
  */
 /**
- * P6.7.3 — `add_module_to_page` AI tool. Two modes (issue #159):
- *
- *   - **Mint mode** (`displayName` + `html`): creates a new module and
- *     inserts it into a target page's block at the requested position.
- *     The tool generates a unique slug.
- *   - **Place mode** (`moduleId`): inserts an EXISTING module — the
- *     reuse path CLAUDE.md §1A demands. Authoring fields must be absent;
- *     the module renders live-referenced, so shared edits cascade.
- *
- * Exactly one mode per call, enforced by the superRefine below so a
- * mixed call fails at the boundary with a named problem instead of
- * silently preferring one interpretation.
+ * The ONE `add_module` input — consolidates add_module_to_{page,layout,template}
+ * (audit #2). `target` picks the destination; `targetRef` is a slug OR a uuid
+ * (resolved server-side — a slug is friendlier for the AI to hold than a uuid).
+ * Same two modes as before: `moduleId` reuses an existing module (now for ALL
+ * three targets — layout used to be mint-only), or the authoring fields mint a
+ * new one (raw html is fine — moduleize turns it into a proper module). Exactly
+ * one mode, enforced by the shared superRefine.
  */
-export const addModuleToPageToolInput = z
+export const addModuleToolInput = z
   .object({
-    pageId: z.string().uuid(),
+    target: z.enum(["page", "layout", "template"]),
+    /** Slug or uuid of the page / layout / template. Resolved server-side. */
+    targetRef: z.string().min(1).max(200),
     blockName: z.string().min(1).max(80),
-    /** "top" | "bottom" | a 0-based integer index. */
     position: positionInputSchema,
-    /**
-     * issue #159 — place-existing mode. Pass the id of a module from the
-     * `## Modules` catalog to add it to this page without minting a
-     * duplicate. Mutually exclusive with every authoring field below.
-     */
+    /** Reuse an existing module by id (any target). Mutually exclusive with the
+     *  authoring fields. */
     moduleId: z.string().uuid().optional(),
     displayName: z.string().min(1).max(128).optional(),
-    /**
-     * v0.12.0 — what this module is for + when to use it. Surfaced in
-     * the AI's `## Modules` block; passing a meaningful value lets the
-     * AI's future self pick the right module by intent. Optional at
-     * the Zod boundary so legacy callers keep working; the tool
-     * description requires it for new modules.
-     */
     description: z.string().max(1000).optional(),
-    /** v0.12.0 — coarse role tag for the `## Modules` block. */
     kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
-    /**
-     * v0.12.3 (issue #106) — stable `type` (the reusable class, e.g.
-     * `button`) a parent module's `allowedModuleTypes` whitelist matches
-     * against. Optional — derived from displayName when omitted. Pass it
-     * to mint an instance of an existing class (a second `button`
-     * variant should share `type: "button"` so it satisfies a CTA's
-     * allowlist).
-     */
     type: slugSchema.optional(),
     html: z.string().min(1).max(50_000).optional(),
     css: z.string().max(50_000).optional(),
     js: z.string().max(50_000).optional(),
-    /**
-     * v0.5.21 — module field schema (v0.4.0 module/content split). The
-     * AI declares fields here when creating a module that uses `{{name}}`
-     * substitutions; per-page content gets filled via
-     * `set_page_module_content` later. Optional — modules with no
-     * field schema are static HTML.
-     */
     fields: z.array(moduleFieldSchema).max(64).optional(),
-    /**
-     * issue #164 slice 2 — mechanically rewrite color/gradient literals
-     * that EQUAL active-theme token values to `var(--…)` before the
-     * write. Opt-in: the Genesis materialisation path sets it so draft
-     * palettes bind to the tokens they were extracted into.
-     */
     bindThemeLiterals: z.boolean().optional(),
   })
   .strict()
   .superRefine((input, ctx) => {
-    // issue #159 — exactly one mode. A mixed call is ambiguous (place
-    // the existing module, or mint a near-duplicate?) so it fails loud
-    // with the two valid shapes named.
     const authoringKeys = (
-      [
-        "displayName",
-        "html",
-        "css",
-        "js",
-        "fields",
-        "description",
-        "kind",
-        "type",
-        "bindThemeLiterals",
-      ] as const
+      ["displayName", "html", "css", "js", "fields", "description", "kind", "type", "bindThemeLiterals"] as const
     ).filter((k) => input[k] !== undefined);
     if (input.moduleId !== undefined) {
       if (authoringKeys.length > 0) {
@@ -231,89 +182,7 @@ export const addModuleToPageToolInput = z
       });
     }
   });
-
-/**
- * P6.7.3 — `add_module_to_template` AI tool. Fans a module out to every
- * page using the target template, inserting at the same block + position.
- * Used for "template-wide" content (a per-blog-post sidebar, a product
- * disclaimer, etc.).
- *
- * issue #243 — two modes, mirroring `add_module_to_page`:
- *
- *   - **Mint mode** (`displayName` + `html`): creates a new module and
- *     fans it out to every bound page.
- *   - **Place mode** (`moduleId`): fans out an EXISTING module — the
- *     reuse path CLAUDE.md §1A/§3.2 demands (reuse one shared/chrome/
- *     pattern module across a page-type template). Before #243 the AI
- *     could only mint here and fell back to `add_module_to_page` to place
- *     a shared module, which silently only worked when the template had
- *     exactly one page. Authoring fields must be absent in place mode; the
- *     module renders live-referenced, so shared edits cascade.
- *
- * Exactly one mode per call, enforced by the superRefine below so a mixed
- * call fails at the boundary with a named problem instead of silently
- * preferring one interpretation.
- */
-export const addModuleToTemplateToolInput = z
-  .object({
-    templateId: z.string().uuid(),
-    blockName: z.string().min(1).max(80),
-    position: positionInputSchema,
-    /**
-     * issue #243 — place-existing mode. Pass the id of a module from the
-     * `## Modules` catalog to fan it out across the template's pages
-     * without minting a duplicate. Mutually exclusive with every authoring
-     * field below.
-     */
-    moduleId: z.string().uuid().optional(),
-    displayName: z.string().min(1).max(128).optional(),
-    /**
-     * issue #106 (step-13 round-4) — same decision-support metadata as
-     * addModuleToPageToolInput. Omitting these while the page tool accepted
-     * them meant the AI's one authoring pattern (CLAUDE.md §1A) was rejected
-     * with `unrecognized_keys` on the template/layout tools. All optional —
-     * modules.create derives `type` from displayName when absent.
-     */
-    description: z.string().max(1000).optional(),
-    kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
-    type: slugSchema.optional(),
-    // issue #243 — html is now optional (place mode omits it); the
-    // superRefine re-requires displayName + html together for mint mode.
-    html: z.string().min(1).max(50_000).optional(),
-    css: z.string().max(50_000).optional(),
-    js: z.string().max(50_000).optional(),
-    /** v0.5.21 — see addModuleToPageToolInput.fields for context. */
-    fields: z.array(moduleFieldSchema).max(64).optional(),
-  })
-  .strict()
-  .superRefine((input, ctx) => {
-    // issue #243 — exactly one mode, identical gate to add_module_to_page
-    // (see addModuleToPageToolInput.superRefine). A mixed call is ambiguous
-    // (fan out the existing module, or mint a near-duplicate?) so it fails
-    // loud with the two valid shapes named.
-    const authoringKeys = (
-      ["displayName", "html", "css", "js", "fields", "description", "kind", "type"] as const
-    ).filter((k) => input[k] !== undefined);
-    if (input.moduleId !== undefined) {
-      if (authoringKeys.length > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            `moduleId places an EXISTING module — drop ${authoringKeys.join(", ")}. ` +
-            "To change a shared module's structure use edit_module; to mint a new one omit moduleId.",
-        });
-      }
-      return;
-    }
-    if (input.displayName === undefined || input.html === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "Pass either `moduleId` (place an existing module from ## Modules) " +
-          "or `displayName` + `html` (mint a new module).",
-      });
-    }
-  });
+export type AddModuleToolInput = z.infer<typeof addModuleToolInput>;
 
 /**
  * v0.2.16 — `add_plugin_to_page` AI tool. Inserts a plugin's
@@ -368,8 +237,7 @@ export const forkPlacementContentToolInput = forkPlacementContentSchema;
 export const AI_TOOLS = [
   "edit_module",
   "site_memory_propose",
-  "add_module_to_page",
-  "add_module_to_template",
+  "add_module",
   "create_page",
   "rename_page",
   "set_page_title",
@@ -378,7 +246,6 @@ export const AI_TOOLS = [
   "remove_module_from_page",
   "set_structured_set",
   "update_theme",
-  "add_module_to_layout",
   "remove_module_from_layout",
   "set_template_layout",
   "create_layout",
@@ -403,8 +270,6 @@ export const AI_TOOLS = [
   "set_page_module_content_many",
 ] as const;
 export type AiToolName = (typeof AI_TOOLS)[number];
-export type AddModuleToPageToolInput = z.infer<typeof addModuleToPageToolInput>;
-export type AddModuleToTemplateToolInput = z.infer<typeof addModuleToTemplateToolInput>;
 export type AddPluginToPageToolInput = z.infer<typeof addPluginToPageToolInput>;
 export type ListContentInstancesToolInput = z.infer<typeof listContentInstancesToolInput>;
 export type GetContentInstanceToolInput = z.infer<typeof getContentInstanceToolInput>;
@@ -476,7 +341,7 @@ export const chatSendMessageInput = z
     /**
      * P6.7.3 — the active /edit page id, threaded so the chat-runner can
      * compose a Current-page volatile chunk in the system prompt and so
-     * tools that operate on a page (add_module_to_page) know the target
+     * tools that operate on a page (add_module target='page') know the target
      * without a chip. Optional because the standalone chat editor at
      * /content/chat doesn't have a page context.
      */
@@ -738,39 +603,6 @@ export const setStructuredSetToolInput = z
 // `set_theme_tokens` (loose-name patch) / `propose_create_theme`
 // (gated mint) / `propose_activate_theme` (gated flip) — see
 // packages/admin-core/src/ai/tools/{update-theme-tokens,get-theme,…}.ts.
-
-/**
- * P6.7.6 — layout-layer tools. Layouts are site-wide chrome (header /
- * footer / nav) that wraps every page on every template bound to the
- * layout. `add_module_to_layout` reaches every page across the site
- * with one call; `set_template_layout` re-points a template's chrome.
- * `create_layout` and `set_site_defaults` are Owner-only at the op
- * level — AI calls reject with ActorScopeRejected and the chat surfaces
- * the permission requirement.
- */
-export const addModuleToLayoutToolInput = z
-  .object({
-    layoutSlug: slugInputSchema,
-    blockName: z.string().min(1).max(80),
-    position: positionInputSchema,
-    displayName: z.string().min(1).max(128),
-    /**
-     * issue #106 (step-13 round-4) — same decision-support metadata as
-     * addModuleToPageToolInput. Layout chrome is authored with the identical
-     * pattern page modules use (CLAUDE.md §1A); these were missing here, so a
-     * call carrying them was rejected with `unrecognized_keys`. All optional —
-     * modules.create derives `type` from displayName when absent.
-     */
-    description: z.string().max(1000).optional(),
-    kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
-    type: slugSchema.optional(),
-    html: z.string().min(1).max(50_000),
-    css: z.string().max(50_000).optional(),
-    js: z.string().max(50_000).optional(),
-    /** v0.5.21 — see addModuleToPageToolInput.fields for context. */
-    fields: z.array(moduleFieldSchema).max(64).optional(),
-  })
-  .strict();
 
 export const removeModuleFromLayoutToolInput = z
   .object({
@@ -1104,7 +936,6 @@ export type AiMemorySetInput = z.infer<typeof aiMemorySetInput>;
 export type AiMemoryReviewInput = z.infer<typeof aiMemoryReviewInput>;
 export type AiProvidersSetInput = z.infer<typeof aiProvidersSetInput>;
 export type AiProvidersClearKeyInput = z.infer<typeof aiProvidersClearKeyInput>;
-export type AddModuleToLayoutToolInput = z.infer<typeof addModuleToLayoutToolInput>;
 export type RemoveModuleFromLayoutToolInput = z.infer<typeof removeModuleFromLayoutToolInput>;
 export type SetTemplateLayoutToolInput = z.infer<typeof setTemplateLayoutToolInput>;
 export type CreateLayoutToolInput = z.infer<typeof createLayoutToolInput>;

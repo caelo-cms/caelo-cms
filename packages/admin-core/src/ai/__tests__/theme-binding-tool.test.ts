@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { addModuleToPageToolInput, type ExecutionContext, ok } from "@caelo-cms/shared";
+import { addModuleToolInput, type ExecutionContext, ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../register.js";
 import type { ToolContext } from "../tools/dispatch.js";
 import { editModuleTool } from "../tools/edit-module.js";
@@ -78,8 +78,9 @@ describe("bindThemeLiterals (issue #164 slice 2)", () => {
   });
 
   it("place mode rejects the flag at the boundary (mode exclusivity)", () => {
-    const r = addModuleToPageToolInput.safeParse({
-      pageId: "11111111-1111-4111-8111-111111111101",
+    const r = addModuleToolInput.safeParse({
+      target: "page",
+      targetRef: "11111111-1111-4111-8111-111111111101",
       blockName: "content",
       position: "bottom",
       moduleId: "11111111-1111-4111-8111-111111111102",

@@ -14,12 +14,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import {
-  addModuleToLayoutToolInput,
-  addModuleToPageToolInput,
-  addModuleToTemplateToolInput,
-  positionInputSchema,
-} from "./ai-tools.js";
+import { addModuleToolInput, positionInputSchema } from "./ai-tools.js";
 
 const UUID = "11111111-1111-4111-8111-aaaaaaaaaaaa";
 
@@ -101,9 +96,10 @@ describe("positionInputSchema (v0.6.2)", () => {
     });
   });
 
-  it("propagates to addModuleToPageToolInput", () => {
-    const r = addModuleToPageToolInput.safeParse({
-      pageId: UUID,
+  it("propagates to addModuleToolInput (target='page')", () => {
+    const r = addModuleToolInput.safeParse({
+      target: "page",
+      targetRef: UUID,
       blockName: "content",
       position: "0", // the AI's typical mistake
       displayName: "x",
@@ -112,9 +108,10 @@ describe("positionInputSchema (v0.6.2)", () => {
     expect(r.success).toBe(true);
   });
 
-  it("propagates to addModuleToTemplateToolInput", () => {
-    const r = addModuleToTemplateToolInput.safeParse({
-      templateId: UUID,
+  it("propagates to addModuleToolInput (target='template')", () => {
+    const r = addModuleToolInput.safeParse({
+      target: "template",
+      targetRef: UUID,
       blockName: "content",
       position: "3",
       displayName: "x",
@@ -123,9 +120,10 @@ describe("positionInputSchema (v0.6.2)", () => {
     expect(r.success).toBe(true);
   });
 
-  it("propagates to addModuleToLayoutToolInput", () => {
-    const r = addModuleToLayoutToolInput.safeParse({
-      layoutSlug: "site-default",
+  it("propagates to addModuleToolInput (target='layout')", () => {
+    const r = addModuleToolInput.safeParse({
+      target: "layout",
+      targetRef: "site-default",
       blockName: "header",
       position: "0",
       displayName: "x",

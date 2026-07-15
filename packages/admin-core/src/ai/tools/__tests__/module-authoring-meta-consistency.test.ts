@@ -1,76 +1,51 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #106 (step-13 round-4 deviation) — the three module-authoring tools
- * (add_module_to_page / add_module_to_layout / add_module_to_template) must
- * expose the SAME decision-support metadata (`description`, `kind`, `type`).
+ * issue #106 + audit #2 — the module-authoring surface must expose the
+ * decision-support metadata (`description`, `kind`, `type`) AND fail loudly +
+ * actionably when the model emits an invalid call.
  *
- * Root cause of the deviation: only add_module_to_page accepted these keys.
- * The AI authors layout/template chrome with the identical pattern it uses for
- * page modules (CLAUDE.md §1A — one consistent authoring surface), so it passed
- * `kind`/`type`/`description` on the layout tool and the dispatcher rejected the
- * call with `unrecognized_keys`. That is the exact issue-#106 class: a valid AI
- * intent rejected by an inconsistent AI-facing surface.
+ * History: this originally pinned that the THREE tools
+ * (add_module_to_{page,layout,template}) carried an identical meta block —
+ * the drift that produced the #106 footer bug. Audit #2 collapsed them into a
+ * single `add_module` routed by `target`, so "consistency across three tools"
+ * is now structural (there is one schema). What remains worth pinning:
  *
- * Two guarantees pinned here:
- *  1. ROOT-CAUSE — all three tools' inputSchemas (and the Zod schemas behind
- *     them) accept description/kind/type, so the AI never hits the rejection.
- *  2. RECOVERY — when the AI *does* emit an invalid call, the dispatcher hands
- *     back an AI-actionable error that names the bad keys AND lists the tool's
- *     expected argument set, so the model self-corrects in one turn instead of
- *     punting to the operator (CLAUDE.md §11).
+ *  1. ROOT-CAUSE — `add_module`'s inputSchema (and the Zod schema behind it)
+ *     accepts description/kind/type on every target, so the AI's one authoring
+ *     pattern (CLAUDE.md §1A) is never rejected with `unrecognized_keys`.
+ *  2. RECOVERY — an invalid call hands back an AI-actionable error naming the
+ *     bad key + the expected argument set, and a nesting-intent key (`children`)
+ *     steers the model to a `fields` link-list instead (CLAUDE.md §11).
  */
 
 import { describe, expect, it } from "bun:test";
-import {
-  addModuleToLayoutToolInput,
-  addModuleToPageToolInput,
-  addModuleToTemplateToolInput,
-} from "@caelo-cms/shared";
-import { addModuleToLayoutTool } from "../add-module-to-layout.js";
-import { addModuleToPageTool } from "../add-module-to-page.js";
-import { addModuleToTemplateTool } from "../add-module-to-template.js";
+import { addModuleToolInput } from "@caelo-cms/shared";
+import { addModuleTool } from "../add-module.js";
 import { createDefaultToolRegistry } from "../index.js";
 
 const META_KEYS = ["description", "kind", "type"] as const;
 const KIND_ENUM = ["chrome", "hero", "content", "cta", "utility"];
 
-const TOOLS = [
-  { tool: addModuleToPageTool, name: "add_module_to_page" },
-  { tool: addModuleToLayoutTool, name: "add_module_to_layout" },
-  { tool: addModuleToTemplateTool, name: "add_module_to_template" },
-] as const;
-
-describe("module-authoring tools — description/kind/type are consistent (#106)", () => {
-  for (const { tool, name } of TOOLS) {
-    it(`${name}.inputSchema exposes description/kind/type`, () => {
-      const props = tool.inputSchema.properties as Record<string, Record<string, unknown>>;
-      for (const key of META_KEYS) {
-        expect(props[key]).toBeDefined();
-      }
-      expect(props.kind.enum).toEqual(KIND_ENUM);
-      expect(props.type.pattern).toBe("^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$");
-      expect(props.description.type).toBe("string");
-    });
-  }
-
-  it("all three inputSchemas carry an IDENTICAL meta-prop block (no drift)", () => {
-    const metaOf = (s: Record<string, unknown>) => {
-      const props = s.properties as Record<string, unknown>;
-      return { description: props.description, kind: props.kind, type: props.type };
-    };
-    const page = metaOf(addModuleToPageTool.inputSchema);
-    expect(metaOf(addModuleToLayoutTool.inputSchema)).toEqual(page);
-    expect(metaOf(addModuleToTemplateTool.inputSchema)).toEqual(page);
+describe("add_module — description/kind/type are exposed (#106)", () => {
+  it("inputSchema exposes description/kind/type", () => {
+    const props = addModuleTool.inputSchema.properties as Record<string, Record<string, unknown>>;
+    for (const key of META_KEYS) {
+      expect(props[key]).toBeDefined();
+    }
+    expect(props.kind.enum).toEqual(KIND_ENUM);
+    expect(props.type.pattern).toBe("^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$");
+    expect(props.description.type).toBe("string");
   });
 });
 
-describe("module-authoring Zod schemas accept the metadata (#106)", () => {
+describe("addModuleToolInput accepts the metadata on every target (#106)", () => {
   const meta = { kind: "chrome", type: "site-footer", description: "global footer" };
 
-  it("addModuleToLayoutToolInput accepts kind/type/description", () => {
-    const r = addModuleToLayoutToolInput.safeParse({
-      layoutSlug: "site-default",
+  it("target='layout' accepts kind/type/description", () => {
+    const r = addModuleToolInput.safeParse({
+      target: "layout",
+      targetRef: "site-default",
       blockName: "footer",
       position: "bottom",
       displayName: "Footer",
@@ -80,9 +55,10 @@ describe("module-authoring Zod schemas accept the metadata (#106)", () => {
     expect(r.success).toBe(true);
   });
 
-  it("addModuleToTemplateToolInput accepts kind/type/description", () => {
-    const r = addModuleToTemplateToolInput.safeParse({
-      templateId: "00000000-0000-0000-0000-000000000000",
+  it("target='template' accepts kind/type/description", () => {
+    const r = addModuleToolInput.safeParse({
+      target: "template",
+      targetRef: "00000000-0000-0000-0000-000000000000",
       blockName: "sidebar",
       position: 0,
       displayName: "Sidebar",
@@ -92,9 +68,10 @@ describe("module-authoring Zod schemas accept the metadata (#106)", () => {
     expect(r.success).toBe(true);
   });
 
-  it("the same payload still parses on addModuleToPageToolInput (parity)", () => {
-    const r = addModuleToPageToolInput.safeParse({
-      pageId: "00000000-0000-0000-0000-000000000000",
+  it("target='page' accepts kind/type/description", () => {
+    const r = addModuleToolInput.safeParse({
+      target: "page",
+      targetRef: "home",
       blockName: "content",
       position: "top",
       displayName: "Hero",
@@ -102,6 +79,18 @@ describe("module-authoring Zod schemas accept the metadata (#106)", () => {
       ...meta,
     });
     expect(r.success).toBe(true);
+  });
+
+  it("reuse mode (moduleId) rejects authoring fields as mutually exclusive", () => {
+    const r = addModuleToolInput.safeParse({
+      target: "layout",
+      targetRef: "site-default",
+      blockName: "footer",
+      position: "bottom",
+      moduleId: "00000000-0000-0000-0000-000000000000",
+      html: "<footer>x</footer>",
+    });
+    expect(r.success).toBe(false);
   });
 });
 
@@ -114,9 +103,10 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
 
   it("names the unrecognized key AND lists the expected argument set", async () => {
     const res = await registry.dispatch(
-      "add_module_to_page",
+      "add_module",
       {
-        pageId: "00000000-0000-0000-0000-000000000000",
+        target: "page",
+        targetRef: "home",
         blockName: "content",
         position: "top",
         displayName: "Hero",
@@ -131,7 +121,7 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     expect(res.content).toContain("bogusKey");
     expect(res.content.toLowerCase()).toContain("unrecognized");
     // hands the model the expected shape so it can self-correct
-    expect(res.content).toContain("Expected arguments for `add_module_to_page`");
+    expect(res.content).toContain("Expected arguments for `add_module`");
     expect(res.content).toContain("required:");
     expect(res.content).toContain("optional:");
     // and tells it to retry rather than punt
@@ -140,11 +130,12 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     expect(res.content).not.toContain('"code":"unrecognized_keys"');
   });
 
-  it("a `children` key on a layout tool steers to a `fields` link-list (nesting intent)", async () => {
+  it("a `children` key steers to a `fields` link-list (nesting intent)", async () => {
     const res = await registry.dispatch(
-      "add_module_to_layout",
+      "add_module",
       {
-        layoutSlug: "site-default",
+        target: "layout",
+        targetRef: "site-default",
         blockName: "header",
         position: "top",
         displayName: "Site Header",
@@ -170,9 +161,10 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
 
   it("a plain unrelated bad key does NOT trigger the nesting hint", async () => {
     const res = await registry.dispatch(
-      "add_module_to_layout",
+      "add_module",
       {
-        layoutSlug: "site-default",
+        target: "layout",
+        targetRef: "site-default",
         blockName: "footer",
         position: "bottom",
         displayName: "Footer",

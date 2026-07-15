@@ -50,7 +50,7 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
   description:
     "Generate an image from a natural-language prompt via the active AI provider's image endpoint (DALL·E for OpenAI, Imagen for Gemini). " +
     "Use for marketing visuals, product mockups, hero illustrations. The result is uploaded to media; the returned `mediaId` " +
-    "is suitable for `add_module_to_page` HTML referencing `<img src='/media/<id>'>`. " +
+    "is suitable for `add_module` HTML referencing `<img src='/media/<id>'>`. " +
     "Image generation has its own daily budget separate from text — if exhausted you'll get a structured `ImageBudgetExceeded` error. " +
     "Verify the prompt is on-brand before calling; image generation is rarely cheap.",
   schema: generateImageInput,

@@ -17,9 +17,14 @@
  * That is the seam AC #1 silently regresses through (e.g. an activePage
  * population refactor, or the catalogue not being rebuilt per turn). This
  * captures the exact `tools` array the provider receives for a real focused
- * page and asserts add_module_to_page.blockName / move_module.toBlockName are
- * pinned to that page's template blocks — and that with no focused page they
- * fall back to a free-string (no enum).
+ * page and asserts move_module.toBlockName is pinned to that page's template
+ * blocks — and that with no focused page it falls back to a free-string (no
+ * enum).
+ *
+ * NOTE (audit #2): the former `add_module_to_page` also threaded this enum. Its
+ * successor `add_module` routes by `target`, so blockName can't be enum-pinned
+ * at generation time (the target isn't known yet) — `move_module` is now the
+ * single-target consumer that threads the enum, and this test tracks it.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -28,7 +33,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { runChatTurn } from "../ai/chat-runner.js";
 import type { AIProvider, GenerateInput, ProviderEvent, ProviderName } from "../ai/provider.js";
-import { addModuleToPageTool } from "../ai/tools/add-module-to-page.js";
+import { addModuleTool } from "../ai/tools/add-module.js";
 import { ToolRegistry } from "../ai/tools/dispatch.js";
 import { moveModuleTool } from "../ai/tools/move-module.js";
 import { registerAdminOps } from "../register.js";
@@ -130,13 +135,13 @@ afterAll(async () => {
 });
 
 function toolsFor(tools: ToolRegistry): ToolRegistry {
-  tools.register(addModuleToPageTool);
+  tools.register(addModuleTool);
   tools.register(moveModuleTool);
   return tools;
 }
 
 describe("blockName enum threads activePageId -> provider tools (AC #1, #106 opt 3)", () => {
-  it("pins add_module_to_page.blockName + move_module.toBlockName to the focused page's blocks", async () => {
+  it("pins move_module.toBlockName to the focused page's blocks", async () => {
     const session = await execute(registry, adapter, HUMAN, "chat.create_session", {
       title: `${PFX}-focused`,
     });
@@ -161,7 +166,6 @@ describe("blockName enum threads activePageId -> provider tools (AC #1, #106 opt
     expect(provider.capturedTools).not.toBeNull();
     // The enum reached the provider's tools payload, scoped to THIS page's
     // template blocks — not a free string the model could fill with "hero".
-    expect(enumOf(provider.capturedTools, "add_module_to_page", "blockName")).toEqual(["content"]);
     expect(enumOf(provider.capturedTools, "move_module", "toBlockName")).toEqual(["content"]);
   });
 
@@ -188,7 +192,6 @@ describe("blockName enum threads activePageId -> provider tools (AC #1, #106 opt
     }
 
     expect(provider.capturedTools).not.toBeNull();
-    expect(enumOf(provider.capturedTools, "add_module_to_page", "blockName")).toBeUndefined();
     expect(enumOf(provider.capturedTools, "move_module", "toBlockName")).toBeUndefined();
   });
 });

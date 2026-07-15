@@ -287,7 +287,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       ok: true,
       content:
         `Site scaffold ready — layout ${targetLayout.slug} (id=${targetLayout.id}), template ${targetTemplate.slug} (id=${targetTemplate.id}), site_defaults pinned. ` +
-        `This was the SETUP step, not the deliverable. Continue with the user's original ask now: call create_page for each page they described (omit templateId — it's pinned), then add_module_to_page / set_page_module_content to fill them in. ` +
+        `This was the SETUP step, not the deliverable. Continue with the user's original ask now: call create_page for each page they described (omit templateId — it's pinned), then add_module / set_page_module_content to fill them in. ` +
         `Do not stop here unless the user only asked for the scaffold.`,
       nextAction: {
         tool: "create_page",

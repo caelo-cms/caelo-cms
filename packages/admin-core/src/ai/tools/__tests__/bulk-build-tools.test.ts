@@ -21,7 +21,7 @@ import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "../_module-fields-schema.js";
-import { addModuleToPageTool } from "../add-module-to-page.js";
+import { addModuleTool } from "../add-module.js";
 import { buildPageTool } from "../build-page.js";
 import { createContentInstanceTool } from "../create-content-instance.js";
 import { createContentInstancesTool } from "../create-content-instances.js";
@@ -62,24 +62,24 @@ describe("build_page schema stays on the shared single sources (#106 discipline)
     }
   });
 
-  it("meta block matches add_module_to_page's exactly (no drift across authoring tools)", () => {
-    const pageProps = addModuleToPageTool.inputSchema.properties as Record<string, unknown>;
+  it("meta block matches add_module's exactly (no drift across authoring tools)", () => {
+    const addProps = addModuleTool.inputSchema.properties as Record<string, unknown>;
     const buildProps = moduleItemProps();
     for (const key of ["description", "kind", "type"]) {
-      expect(buildProps[key]).toEqual(pageProps[key] as never);
+      expect(buildProps[key]).toEqual(addProps[key] as never);
     }
   });
 });
 
 describe("§11 bulk-first steering wording", () => {
   it("build_page tells the AI to prefer it over the singular chain", () => {
-    expect(buildPageTool.description).toContain("Prefer this over add_module_to_page");
+    expect(buildPageTool.description).toContain("Prefer this over add_module");
     expect(buildPageTool.description).toContain("ONE transaction");
   });
 
-  it("add_module_to_page points multi-module work at build_page", () => {
-    expect(addModuleToPageTool.description).toContain("build_page");
-    expect(addModuleToPageTool.description).toContain("more than one module");
+  it("add_module points multi-module work at build_page", () => {
+    expect(addModuleTool.description).toContain("build_page");
+    expect(addModuleTool.description).toContain("more than one module");
   });
 
   it("create_page points known-content builds at build_page", () => {
