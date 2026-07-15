@@ -494,6 +494,18 @@ export const pageUpdateSchema = z
     slug: slugSchema.optional(),
     templateId: z.string().uuid().optional(),
     status: pageStatusSchema.optional(),
+    /**
+     * Only meaningful together with `slug`. A slug change rewrites the page's
+     * public URL, so the op creates a 301 from the old path by default and
+     * rewrites every nav-menu / link-list / module-body link that pointed at
+     * it — all inside the same transaction as the slug write.
+     *
+     * `'skip'` suppresses ONLY the redirect (the link rewrites still run) and
+     * is for the rare case where the operator explicitly says the old URL
+     * should 404. Defaults to `'auto'`: silently dropping the 301 would strand
+     * every inbound link, which is never a safe default (CLAUDE.md §2).
+     */
+    redirectFromOld: z.enum(["auto", "skip"]).optional(),
   })
   .strict();
 

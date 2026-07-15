@@ -172,23 +172,14 @@ try {
       )
       ON CONFLICT (kind, slug) DO NOTHING
     `;
-    await tx`
-      INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
-      VALUES (
-        'theme', 'site', 'Site theme',
-        ${[
-          { token: "color-primary", value: "#3b82f6", scope: "color" },
-          { token: "color-bg", value: "#ffffff", scope: "color" },
-          { token: "color-fg", value: "#0f172a", scope: "color" },
-          { token: "color-accent", value: "#6366f1", scope: "color" },
-          { token: "font-heading", value: "system-ui, sans-serif", scope: "font" },
-          { token: "font-body", value: "system-ui, sans-serif", scope: "font" },
-          { token: "space-unit", value: "0.5rem", scope: "space" },
-        ]}::jsonb,
-        ${actorId}::uuid
-      )
-      ON CONFLICT (kind, slug) DO NOTHING
-    `;
+    // NO `kind='theme'` row here. v0.11.0 (migration 0097) moved themes out of
+    // `structured_sets` into their own `themes` table and dropped `theme` from
+    // `structuredSetKind` — 0097 even deletes any legacy row, because
+    // `structuredSetKind.parse(r.kind)` throws on read once the kind is gone.
+    // This seed kept re-inserting it after the migration had cleaned it up,
+    // which poisoned every freshly-seeded dev DB: `structured_sets.list`
+    // (unfiltered) threw a ZodError, taking the AI's `list_structured_sets`
+    // tool down with it. Themes seed through the `themes` table instead.
     await tx`
       INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
       VALUES (
