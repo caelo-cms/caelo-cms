@@ -381,6 +381,13 @@ export async function* runSDKStream(args: {
   const sdkTools = toolsTransform ? toolsTransform(builtTools) : builtTools;
   const result = streamText({
     model,
+    // AI SDK 7 made system-in-messages a hard error by default. Our Anthropic
+    // adapter deliberately puts each cacheable system CHUNK in the messages
+    // array as a `role:"system"` message with per-part `cacheControl` — that is
+    // exactly the multi-breakpoint prompt-caching shape the @ai-sdk/anthropic
+    // docs still support, and it's how we keep the ~93% cache hit across turns.
+    // Opt back in so the streamed turn doesn't throw AI_InvalidPromptError.
+    allowSystemInMessages: true,
     ...(systemAndMessages.system !== undefined ? { system: systemAndMessages.system } : {}),
     messages: systemAndMessages.messages,
     ...(Object.keys(sdkTools).length > 0
