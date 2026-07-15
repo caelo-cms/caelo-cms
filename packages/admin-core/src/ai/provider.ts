@@ -120,6 +120,14 @@ export interface GenerateInput {
    * ≥ 1024 and < maxTokens. Providers without thinking ignore this.
    */
   readonly thinking?: { readonly budgetTokens: number };
+  /**
+   * Force the model's tool use for a structured-output call. `{type:"tool",
+   * toolName}` pins it to one tool (the `moduleize` submit_module pattern);
+   * "required" forces some tool; "auto"/"none" are the SDK defaults/off.
+   * Providers that don't support forcing ignore it. Without it, a single-tool
+   * prompt is NOT reliably obeyed — the model may reply with prose instead.
+   */
+  readonly toolChoice?: { readonly type: "tool"; readonly toolName: string } | "auto" | "required" | "none";
 }
 
 export type ProviderEvent =

@@ -264,6 +264,7 @@ import {
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
 } from "./ops/owner-bootstrap-tokens.js";
+import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import {
@@ -744,6 +745,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // subagents that touch the page). Append-only, ungated.
   registry.register(appendPageLogOp);
   registry.register(listPageLogOp);
+  registry.register(logModuleizeAttemptOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);

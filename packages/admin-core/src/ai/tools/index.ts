@@ -85,9 +85,7 @@ import {
   proposeEmailConfigSetTool,
   proposeExperimentActivateTool,
   proposeExperimentCompleteTool,
-  proposeLayoutCreateTool,
   proposeLayoutDeleteTool,
-  proposeLayoutSetBlocksTool,
   proposeLayoutUpdateTool,
   proposeMcpTokenCreateTool,
   proposeMcpTokenRevokeTool,
@@ -337,10 +335,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // registered in the operation registry; this surfaces them as
   // chat-runner-callable tools so the AI can actually queue
   // proposals through the standard tool-call loop.
-  registry.register(proposeLayoutCreateTool);
   registry.register(proposeLayoutUpdateTool);
   registry.register(proposeLayoutDeleteTool);
-  registry.register(proposeLayoutSetBlocksTool);
   registry.register(proposeUserCreateTool);
   registry.register(proposeUserSetRolesTool);
   registry.register(proposeUserDeleteTool);

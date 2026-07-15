@@ -292,12 +292,30 @@ export const createTemplateOp = defineOperation({
         slotNames.push(name);
       }
     }
+    // Optional `blocks` metadata SYMMETRIC with create_layout: each entry
+    // enriches the derived block's display_name + position. Its `name` MUST
+    // match a <caelo-slot> — a declared block with no slot renders nothing,
+    // so we reject the mismatch loudly rather than silently drop it
+    // (CLAUDE.md §2 no-fallbacks). When `blocks` is omitted, every slot
+    // derives display_name = name, position = order of appearance (unchanged).
+    const blockMeta = new Map((input.blocks ?? []).map((b) => [b.name, b]));
+    const orphan = (input.blocks ?? []).find((b) => !seenSlots.has(b.name));
+    if (orphan) {
+      return err({
+        kind: "HandlerError",
+        operation: "templates.create",
+        message: `blocks[] entry "${orphan.name}" has no matching <caelo-slot name="${orphan.name}"> in html — a block with no slot renders nothing. Add the slot tag or drop the block.`,
+      });
+    }
     for (let i = 0; i < slotNames.length; i++) {
       const blockName = slotNames[i];
       if (!blockName) continue;
+      const meta = blockMeta.get(blockName);
+      const displayName = meta?.displayName ?? blockName;
+      const position = meta?.position ?? i;
       await tx.execute(sql`
         INSERT INTO template_blocks (template_id, name, display_name, position)
-        VALUES (${templateId}::uuid, ${blockName}, ${blockName}, ${i})
+        VALUES (${templateId}::uuid, ${blockName}, ${displayName}, ${position})
         ON CONFLICT DO NOTHING
       `);
     }

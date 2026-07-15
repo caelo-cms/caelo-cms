@@ -384,6 +384,24 @@ export const templateCreateSchema = z
      * time. (Stored data, not a render-time fallback — see CLAUDE.md §2.)
      */
     layoutId: z.string().uuid().optional(),
+    /**
+     * Optional block-set metadata — SYMMETRIC with `create_layout` and
+     * `propose_update_template`, which both take `blocks`. Omit it and the
+     * handler auto-derives one block per `<caelo-slot name="X">` in `html`
+     * (displayName = name, position = order of appearance) — the common case.
+     * Pass it to give blocks a nicer `displayName` or an explicit `position`;
+     * every entry's `name` MUST match a `<caelo-slot>` in `html` (a block with
+     * no slot renders nothing), else the create fails loudly (CLAUDE.md §2).
+     */
+    blocks: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(80),
+          displayName: z.string().min(1).max(200),
+          position: z.number().int().min(0).max(1000),
+        }),
+      )
+      .optional(),
   })
   .strict();
 
@@ -449,7 +467,15 @@ export const pageCreateSchema = z
      * not a render-time fallback (CLAUDE.md §2 no-fallbacks).
      */
     templateId: z.string().uuid().optional(),
-    status: pageStatusSchema.default("draft"),
+    /**
+     * Optional — omit to let `pages.create` pick a context-aware default:
+     * `published` on a bootstrap site (0 live published pages), else
+     * `draft`. A bootstrap homepage MUST ship or the first Stage has
+     * nothing to serve ("0 published pages for env='staging'"). Pass an
+     * explicit value to override. (Was `.default("draft")`, which silently
+     * left the first page unpublished.)
+     */
+    status: pageStatusSchema.optional(),
   })
   .strict();
 

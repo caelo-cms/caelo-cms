@@ -40,7 +40,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { addModuleToTemplateToolInput, slugifyModuleName } from "@caelo-cms/shared";
+import { addModuleToTemplateToolInput } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
@@ -50,6 +50,7 @@ import {
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
 import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
+import { mintModuleFromHtml } from "./_mint-module.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageRow {
@@ -190,27 +191,21 @@ export const addModuleToTemplateTool: ToolDefinitionWithHandler<
             "Pass either `moduleId` (fan out an existing module) or `displayName` + `html` (mint a new one).",
         };
       }
-      slug = slugifyModuleName(displayName);
-      const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
-        slug,
-        displayName,
-        // issue #106 — forward decision-support metadata; type derived from
-        // displayName by modules.create when omitted.
-        ...(input.description !== undefined ? { description: input.description } : {}),
-        ...(input.kind !== undefined ? { kind: input.kind } : {}),
-        ...(input.type !== undefined ? { type: input.type } : {}),
+      // Mint via the shared moduleize path (raw html → parametrised module +
+      // semantic fields, off the main turn). See _mint-module.
+      const minted = await mintModuleFromHtml(ctx, toolCtx, {
         html,
-        css: input.css ?? "",
-        js: input.js ?? "",
-        ...(input.fields ? { fields: input.fields } : {}),
+        displayNameHint: displayName,
+        fieldsHint: input.fields,
+        description: input.description,
+        kind: input.kind,
+        type: input.type,
+        css: input.css,
+        js: input.js,
       });
-      if (!created.ok) {
-        return {
-          ok: false,
-          content: `modules.create failed: ${describeError(created.error)}`,
-        };
-      }
-      newModuleId = (created.value as { moduleId: string }).moduleId;
+      if (!minted.ok) return { ok: false, content: minted.content };
+      newModuleId = minted.moduleId;
+      slug = minted.slug;
     }
 
     const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.list", {});

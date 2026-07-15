@@ -166,6 +166,10 @@ export class AnthropicProvider implements AIProvider {
     // v0.2.54 — extended thinking. Anthropic-specific provider
     // option; OpenAI/Gemini don't have an equivalent body param.
     const extraOptions: Record<string, unknown> = {};
+    // Structured-output forcing: pin the model to a specific tool so a
+    // single-tool call (moduleize's submit_module) is actually made instead
+    // of a prose reply. streamText accepts toolChoice verbatim.
+    if (input.toolChoice !== undefined) extraOptions.toolChoice = input.toolChoice;
     if (input.thinking) {
       extraOptions.providerOptions = {
         anthropic: {

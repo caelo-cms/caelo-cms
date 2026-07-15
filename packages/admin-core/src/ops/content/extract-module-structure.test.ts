@@ -171,24 +171,35 @@ describe("validateTemplatizedModule", () => {
     if (!r.ok) expect(r.message).toContain("{{body}}");
   });
 
-  it("accepts module + module-list placeholder forms", () => {
-    // `{{>name}}` is single-nested, `{{#name}}` + `{{/name}}` is list.
-    const html = "<div>{{>cta}}{{#items}}<p>{{title}}</p>{{/items}}</div>";
+  it("accepts module + module-list placeholder forms (loop-inner refs are item-scoped)", () => {
+    // `{{>name}}` is single-nested, `{{#name}}` + `{{/name}}` is a list. The
+    // `{{item_title}}` INSIDE the loop is a per-item field, not a top-level one,
+    // so it is neither required as a declared field nor flagged as undeclared.
+    const html = "<div>{{>cta}}{{#items}}<p>{{item_title}}</p>{{/items}}<h2>{{heading}}</h2></div>";
     const r = validateTemplatizedModule(html, [
-      {
-        name: "cta",
-        kind: "module",
-        label: "CTA",
-        allowedModuleTypes: ["button"],
-      } as never,
-      {
-        name: "items",
-        kind: "module-list",
-        label: "Items",
-        allowedModuleTypes: ["card"],
-      } as never,
-      { name: "title", kind: "text", label: "Title" },
+      { name: "cta", kind: "module", label: "CTA", allowedModuleTypes: ["button"] } as never,
+      { name: "items", kind: "module-list", label: "Items", allowedModuleTypes: ["card"] } as never,
+      { name: "heading", kind: "text", label: "Heading" },
     ]);
     expect(r.ok).toBe(true);
+  });
+
+  it("accepts a link-list whose loop references item sub-fields {{label}} / {{href}}", () => {
+    // The exact shape moduleize emits for a nav/footer menu — previously
+    // rejected with 'placeholder {{href}} references undeclared field "href"'.
+    const html = `<nav>{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}</nav>`;
+    const r = validateTemplatizedModule(html, [
+      { name: "nav_links", kind: "link-list", label: "Nav Links" } as never,
+    ]);
+    expect(r.ok).toBe(true);
+  });
+
+  it("still rejects an undeclared TOP-LEVEL placeholder (outside any loop)", () => {
+    const html = `<nav>{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}</nav><h1>{{ghost}}</h1>`;
+    const r = validateTemplatizedModule(html, [
+      { name: "nav_links", kind: "link-list", label: "Nav Links" } as never,
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain("{{ghost}}");
   });
 });

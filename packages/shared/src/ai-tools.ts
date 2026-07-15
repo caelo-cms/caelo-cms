@@ -629,7 +629,13 @@ export const createPageToolInput = z
      * the user asks for a non-default template.
      */
     templateId: z.string().uuid().optional(),
-    status: z.enum(["draft", "published"]).default("draft"),
+    /**
+     * Optional. Omit it and `pages.create` publishes the FIRST page of a
+     * bootstrap site (0 live published pages) so the first Stage has
+     * something to serve, and drafts subsequent pages for review. Pass an
+     * explicit value only to override that. (Was `.default("draft")`.)
+     */
+    status: z.enum(["draft", "published"]).optional(),
   })
   .strict();
 
@@ -646,6 +652,19 @@ export const createTemplateToolInput = z
     html: z.string().min(1).max(2_000_000),
     css: z.string().max(2_000_000).default(""),
     layoutId: z.string().uuid().optional(),
+    // Optional block-set metadata, symmetric with create_layout. Omit to
+    // auto-derive blocks from <caelo-slot> tags; pass to set displayName /
+    // position (each name must match a slot). Enforced op-side in
+    // templates.create (loud reject on a slot-less block).
+    blocks: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(80),
+          displayName: z.string().min(1).max(200),
+          position: z.number().int().min(0).max(1000),
+        }),
+      )
+      .optional(),
   })
   .strict();
 

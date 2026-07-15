@@ -387,6 +387,7 @@ const MODULE_MODEL_BLOCK = [
   "Tool selection:",
   "",
   "- **Creating or composing a page with MORE THAN ONE section → use `build_page` (ONE call).** It creates the page + every section module (each with its own semantic `fields[]`) + their content in a single all-or-nothing transaction. Do NOT hand-orchestrate `create_page` + `add_module_to_page`×N + `set_page_module_content`×N — that is the exact N+1 round-trip chain build_page exists to replace (§11 bulk-first). Reach for `add_module_to_page` only to add ONE more module to an already-built page.",
+  "- **Site chrome (footer, header, nav) lives in the LAYOUT — it is ONE site-wide operation.** A single `add_module_to_layout` places the module on the layout, and a layout is shared by every page bound to it, so the chrome appears on ALL those pages at once. When the operator says \"add a footer to every page\" / \"put a nav on the whole site\", that is `add_module_to_layout` (one call) — NOT a per-page loop, NOT creating pages to host it, and NEVER a subagent. A footer/header nav is a `nav-menu` structured-set (see the structured-sets guidance): `set_structured_set({kind:'nav-menu', …})` for the links, then one `add_module_to_layout` for the rendering module.",
   "- Use `edit_module` to change structure / styling / layout / the list of fields a module exposes.",
   "  → Affects every page using the module, branched to this chat until publish.",
   "- Use `set_page_module_content` to change what a specific placement on a specific page shows in its fields.",
@@ -498,7 +499,6 @@ export interface VolatileContext {
 
 export function composeSystemPromptChunks(
   memory: readonly MemoryRow[],
-  tools: readonly ToolCatalogueEntry[],
   volatile: VolatileContext = {},
 ): SystemPromptChunk[] {
   const chunks: SystemPromptChunk[] = [
@@ -522,14 +522,13 @@ export function composeSystemPromptChunks(
     });
   }
 
-  if (tools.length > 0) {
-    const toolLines = tools.map((t) => `- **${t.name}** — ${t.description}`);
-    chunks.push({
-      body: ["# Available tools", ...toolLines].join("\n"),
-      cacheable: true,
-      label: "tools",
-    });
-  }
+  // NB: we do NOT render a `# Available tools` prose block here. The full tool
+  // set — names, descriptions, AND JSON schemas — is already sent as the
+  // provider `tools` param on every call, so a prose listing was a pure
+  // duplicate: ~23.5k tokens (≈ a third of the cold-call system prompt) that
+  // told the model nothing the schema array didn't. Dropping it shrinks the
+  // cold call by ~22% with zero capability loss. (Warm calls were cached, so
+  // this mainly buys back the first, un-cached call of each turn.)
 
   // Volatile chunks go last so the cache prefix above stays byte-stable.
   if (volatile.skillsBlock && volatile.skillsBlock.trim().length > 0) {
@@ -625,11 +624,8 @@ export function composeSystemPromptChunks(
 }
 
 /** Backwards-compatible flat-string composer. */
-export function composeSystemPrompt(
-  memory: readonly MemoryRow[],
-  tools: readonly ToolCatalogueEntry[],
-): string {
-  return composeSystemPromptChunks(memory, tools)
+export function composeSystemPrompt(memory: readonly MemoryRow[]): string {
+  return composeSystemPromptChunks(memory)
     .map((c) => c.body)
     .join("\n\n");
 }
