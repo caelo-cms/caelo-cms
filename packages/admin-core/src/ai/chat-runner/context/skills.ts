@@ -27,6 +27,7 @@ import {
   resolveEngagements,
   skillAutoEngagementHints,
 } from "@caelo-cms/shared";
+import { isReadOnlyToolName } from "../tool-catalogue.js";
 
 export interface SkillsContext {
   skillsBlock: string | undefined;
@@ -193,7 +194,19 @@ export async function buildSkillsContext(
       const allowlists = engagedSkills
         .filter((e) => !(e.source === "auto" && e.rationale === "always-on"))
         .map((e) => activeSkills.find((s) => s.id === e.skillId)?.allowlistedTools ?? [])
-        .filter((arr) => arr.length > 0);
+        .filter((arr) => arr.length > 0)
+        // A read-only-ONLY allowlist (every tool is a list_/get_/inspect_/find_/…
+        // read) must NOT narrow the turn. Audit-role skills — menu-auditor,
+        // qa-check, legal-check, page-categorizer — auto-engage on keyword
+        // overlap with a BUILD request (e.g. "add a footer with navigation
+        // links" → menu-auditor via "navigation"/"links"), and their read-only
+        // allowlist would strip EVERY write tool from the main editor. It could
+        // then no longer author the footer directly and was forced to spawn
+        // subagents (which get the full catalogue) purely to perform the writes
+        // — the root of the layout-footer over-spawn flake. The skill's guidance
+        // body still loads; only the hard catalogue narrowing is treated as
+        // advisory here, same spirit as the alwaysOn exception above.
+        .filter((arr) => arr.some((t) => !isReadOnlyToolName(t)));
       if (allowlists.length > 0) {
         allowedToolNames = new Set(allowlists.flat());
       }
@@ -256,10 +269,11 @@ export async function buildPostCatalogueBlocks(args: {
     if (matched || skillMentionsSubagents) {
       subagentsBlock = [
         "# Subagents",
-        "You can fan out parallel reasoning angles via `spawn_subagent` (single) or `spawn_subagents` (parallel batch). Each child is its own chat-runner turn with its own auto-engaged skill — its task wording drives which skill engages (e.g. role='qa', task='QA the article' → engages qa-check; role='menu-auditor' → engages menu-auditor).",
-        "Use when the work has multiple distinct perspectives that benefit from isolated context (audit + propose, QA + legal + brand-voice, US-perspective + EU-perspective).",
-        "DO NOT use for one-line edits or quick lookups — those are regular tool calls. Subagents earn their cost when each angle is multi-step.",
-        "Each subagent returns a parsed verdict (or tree, or freeform). Ingest the results, then decide your next move.",
+        "Subagents BUILD in parallel — they are a throughput tool to get independent work done faster, NOT a way to think, reason, or review in parallel. Reach for them only when you have SEVERAL pieces of work that don't depend on each other (e.g. rebuild 5 page clusters during a migration, or build 3 unrelated modules at once). YOU do the planning: decompose the work into concrete, fully-specified build briefs, then dispatch them together via `spawn_subagents`.",
+        "Each child starts with a FRESH context and knows nothing about this chat, so every brief must carry what it needs to build its piece on its own: the exact structure, the content/copy, the ids, and the decisions you already made. The children build in parallel and return; you assemble the results.",
+        "`spawn_subagent` (single) is for ONE bounded, multi-step build task that deserves its own isolated context (e.g. rebuild one page cluster). `spawn_subagents` (plural) runs a batch of such tasks in parallel.",
+        "DO NOT spawn a subagent to do your own reasoning, to review your own work, or for anything you can finish in one or two tool calls. A single module, a footer/header/nav, one edit, a quick lookup → call the tool directly. A subagent for a single edit only adds latency and cost.",
+        "Each subagent returns its built result (or, for an explicitly-scoped review task, a verdict). Ingest the results, then decide your next move.",
       ].join("\n");
     }
   }

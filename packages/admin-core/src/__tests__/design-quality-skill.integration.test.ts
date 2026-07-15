@@ -46,7 +46,15 @@ describe("design-quality skill (issue #154)", () => {
     expect(skill).not.toBeNull();
     expect(skill?.status).toBe("active");
     expect(skill?.hints.keywords).toContain("redesign");
-    expect(skill?.hints.chipTrigger).toBe(true);
+    // 0162 — engage on real design INTENT only. The generic substrings
+    // (build/design/layout/section/style/homepage/hero) were dropped because
+    // they matched routine module edits, and chipTrigger is now OFF so a small
+    // scoped chip edit no longer drags in the 2-round screenshot self-review
+    // loop. Design-quality fires on redesign/restyle/"make it beautiful", not
+    // on every element-chip tweak.
+    expect(skill?.hints.chipTrigger).toBe(false);
+    expect(skill?.hints.keywords).not.toContain("layout");
+    expect(skill?.hints.keywords).not.toContain("build");
     for (const section of [
       "HIERARCHY",
       "RHYTHM",
