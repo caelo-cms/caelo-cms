@@ -27,11 +27,22 @@ describe("layout-create is a single canonical tool", () => {
     expect(schema?.required).toContain("blocks");
   });
 
-  it("the sibling layout propose-tools (update/delete/set_blocks) still exist", () => {
+  it("the sibling layout propose-tools (update/delete) still exist", () => {
     // Removing the create duplicate must not touch the rest of the gated
-    // layout surface — those stay in the propose-tools batch.
+    // layout surface.
     expect(registry.get("propose_update_layout")).toBeDefined();
     expect(registry.get("propose_delete_layout")).toBeDefined();
-    expect(registry.get("propose_set_layout_blocks")).toBeDefined();
+  });
+
+  it("1b: layout-update carries blocks inline; the separate set-blocks tool is gone", () => {
+    // Redefining a layout's block-set is folded into propose_update_layout
+    // (symmetric with propose_update_template), so the standalone
+    // propose_set_layout_blocks AI tool is removed. One tool, one atomic
+    // proposal for html + blocks.
+    const update = registry.get("propose_update_layout");
+    const schema = (update as { inputSchema?: { properties?: Record<string, unknown> } } | undefined)
+      ?.inputSchema;
+    expect(schema?.properties?.blocks).toBeDefined();
+    expect(registry.get("propose_set_layout_blocks")).toBeUndefined();
   });
 });

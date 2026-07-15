@@ -52,13 +52,26 @@ export const proposeLayoutUpdateTool = makeProposeTool({
   toolName: "propose_update_layout",
   opName: "layouts.propose_update",
   pendingQueuePath: "/security/layouts/pending",
-  when: "Propose an HTML/CSS/displayName edit to an existing layout. The change cascades to every page on every bound template.",
+  when:
+    "Propose an edit to an existing layout — HTML, CSS, displayName, AND/OR its block-set (`blocks`) — in ONE proposal (symmetric with propose_update_template). " +
+    "Send html + blocks together so they apply atomically. Every block `name` needs a matching <caelo-slot name=\"<name>\"> in html, and the set MUST include a `content` block. The change cascades to every page on every bound template.",
   schema: z
     .object({
       layoutId: uuid,
       displayName: z.string().min(1).max(200).optional(),
       html: z.string().max(50_000).optional(),
       css: z.string().max(50_000).optional(),
+      blocks: z
+        .array(
+          z.object({
+            name: z.string().min(1).max(80),
+            displayName: z.string().min(1).max(200),
+            position: z.number().int().min(0).max(1000),
+          }),
+        )
+        .min(1)
+        .max(20)
+        .optional(),
     })
     .strict(),
   inputSchema: {
@@ -70,6 +83,23 @@ export const proposeLayoutUpdateTool = makeProposeTool({
       displayName: { type: "string", minLength: 1, maxLength: 200 },
       html: { type: "string", maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
+      blocks: {
+        type: "array",
+        description:
+          "Optional — REPLACES the layout's block-set atomically with the html/css edit (fold of the former propose_set_layout_blocks). Every `name` needs a matching <caelo-slot> in html; the set must include a `content` entry.",
+        minItems: 1,
+        maxItems: 20,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name", "displayName", "position"],
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 80 },
+            displayName: { type: "string", minLength: 1, maxLength: 200 },
+            position: { type: "integer", minimum: 0, maximum: 1000 },
+          },
+        },
+      },
     },
   },
   summarize: (_input, preview) =>
@@ -92,38 +122,12 @@ export const proposeLayoutDeleteTool = makeProposeTool({
     `delete layout "${preview.slug ?? "?"}" (${preview.affectedTemplateCount ?? "?"} templates re-bind)`,
 });
 
-export const proposeLayoutSetBlocksTool = makeProposeTool({
-  toolName: "propose_set_layout_blocks",
-  opName: "layouts.propose_set_blocks",
-  pendingQueuePath: "/security/layouts/pending",
-  when: "Propose redefining the named slots/blocks in a layout. Module references in those slots may need re-binding.",
-  schema: z
-    .object({
-      layoutId: uuid,
-      blocks: z.array(z.object({ name: z.string(), displayName: z.string() })),
-    })
-    .strict(),
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["layoutId", "blocks"],
-    properties: {
-      layoutId: { type: "string", format: "uuid" },
-      blocks: {
-        type: "array",
-        items: {
-          type: "object",
-          required: ["name", "displayName"],
-          properties: {
-            name: { type: "string" },
-            displayName: { type: "string" },
-          },
-        },
-      },
-    },
-  },
-  summarize: (input) => `set ${input.blocks.length} layout blocks`,
-});
+// NB: no `propose_set_layout_blocks` AI tool. Redefining a layout's block-set
+// is now folded into `propose_update_layout` via its optional `blocks[]` (send
+// html + blocks in ONE proposal, exactly like propose_update_template). One
+// tool, one atomic proposal — no separate blockset tool with a divergent
+// (position-less) schema. The underlying `layouts.propose_set_blocks` op stays
+// for the panel UI + the execute path.
 
 // ─── users ───────────────────────────────────────────────────────────
 

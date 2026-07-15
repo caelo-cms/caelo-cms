@@ -93,8 +93,18 @@ const proposeUpdateInput = z
     displayName: z.string().min(1).max(200).optional(),
     html: z.string().min(1).max(50_000).optional(),
     css: z.string().max(50_000).optional(),
+    // 1b — fold the block-set into update, SYMMETRIC with propose_update_template
+    // (which carries `blocks` inline). Optional; when present it REPLACES the
+    // layout's block-set atomically with the html/css/displayName edit, and must
+    // include a `content` entry (same invariant as the old propose_set_blocks)
+    // or pages bound to this layout lose their content slot.
+    blocks: z.array(layoutBlockShape).min(1).max(20).optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => v.blocks === undefined || v.blocks.some((b) => b.name === "content"), {
+    message: "blocks must include a `content` entry",
+    path: ["blocks"],
+  });
 
 export const proposeLayoutUpdateOp = defineOperation({
   name: "layouts.propose_update",
@@ -256,6 +266,21 @@ export const executeLayoutProposalOp = defineOperation({
         tx,
       );
       if (!r.ok) return passthroughError(r.error, "update");
+      // 1b — a folded block-set (propose_update carried `blocks`): apply it
+      // AFTER the html/css edit, so set_blocks validates against the NEW html,
+      // reusing the exact op the standalone set_blocks path uses. updateLayoutOp
+      // ignores the extra `blocks` field (it reads only its own keys).
+      const blocks = (payload as { blocks?: unknown }).blocks;
+      if (Array.isArray(blocks) && blocks.length > 0) {
+        const rb = await setLayoutBlocksOp.handler(
+          ctx,
+          { layoutId: row.layout_id, blocks } as Parameters<
+            typeof setLayoutBlocksOp.handler
+          >[1],
+          tx,
+        );
+        if (!rb.ok) return passthroughError(rb.error, "update");
+      }
     } else if (row.kind === "delete") {
       const r = await deleteLayoutOp.handler(
         ctx,

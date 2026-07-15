@@ -86,7 +86,6 @@ import {
   proposeExperimentActivateTool,
   proposeExperimentCompleteTool,
   proposeLayoutDeleteTool,
-  proposeLayoutSetBlocksTool,
   proposeLayoutUpdateTool,
   proposeMcpTokenCreateTool,
   proposeMcpTokenRevokeTool,
@@ -338,7 +337,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // proposals through the standard tool-call loop.
   registry.register(proposeLayoutUpdateTool);
   registry.register(proposeLayoutDeleteTool);
-  registry.register(proposeLayoutSetBlocksTool);
   registry.register(proposeUserCreateTool);
   registry.register(proposeUserSetRolesTool);
   registry.register(proposeUserDeleteTool);
