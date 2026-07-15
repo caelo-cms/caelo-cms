@@ -16,7 +16,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { addModuleToPageToolInput, slugifyModuleName } from "@caelo-cms/shared";
+import { addModuleToPageToolInput } from "@caelo-cms/shared";
 import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
@@ -27,7 +27,7 @@ import {
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
 import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
-import { bindCssToTheme } from "./_theme-binding.js";
+import { mintModuleFromHtml } from "./_mint-module.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface PageWithModules {
@@ -133,9 +133,9 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
     let newModuleId: string;
     let slug: string;
     let placedExisting = false;
-    let extractedFields: { name: string; kind: string }[] | undefined;
     let bindingReport = "";
     let boundCss = "";
+    let mintedKind: "chrome" | "hero" | "content" | "cta" | "utility" | undefined = input.kind;
     if (input.moduleId !== undefined) {
       const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.get", {
         moduleId: input.moduleId,
@@ -163,40 +163,26 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
             "Pass either `moduleId` (place an existing module) or `displayName` + `html` (mint a new one).",
         };
       }
-      slug = slugifyModuleName(displayName);
-      // issue #164 slice 2 — opt-in mechanical token binding.
-      boundCss = input.css ?? "";
-      if (input.bindThemeLiterals === true && boundCss.length > 0) {
-        const bound = await bindCssToTheme(ctx, toolCtx, boundCss);
-        boundCss = bound.css;
-        bindingReport = bound.report;
-      }
-      const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
-        slug,
-        displayName,
-        // v0.12.0 — plumb the AI-supplied description + kind so the
-        // `## Modules` catalog can render decision-support context.
-        // Defaults to "" + "content" if the AI omits — see CLAUDE.md §1A
-        // for why the AI SHOULD pass them.
-        ...(input.description !== undefined ? { description: input.description } : {}),
-        ...(input.kind !== undefined ? { kind: input.kind } : {}),
-        // v0.12.3 (issue #106) — forward an AI-authored stable type; the op
-        // derives it from displayName when omitted.
-        ...(input.type !== undefined ? { type: input.type } : {}),
+      // Mint via the shared moduleize path: raw html → parametrised module +
+      // semantic fields[] (a small, focused AI call off the main turn), then
+      // modules.create. `fields` is a HINT here, not required. See _mint-module.
+      const minted = await mintModuleFromHtml(ctx, toolCtx, {
         html,
-        css: boundCss,
-        js: input.js ?? "",
-        ...(input.fields ? { fields: input.fields } : {}),
+        displayNameHint: displayName,
+        fieldsHint: input.fields,
+        description: input.description,
+        kind: input.kind,
+        type: input.type,
+        css: input.css,
+        js: input.js,
+        bindThemeLiterals: input.bindThemeLiterals,
       });
-      if (!created.ok) {
-        return {
-          ok: false,
-          content: `modules.create failed: ${describeError(created.error)}`,
-        };
-      }
-      newModuleId = (created.value as { moduleId: string }).moduleId;
-      extractedFields = (created.value as { extractedFields?: { name: string; kind: string }[] })
-        .extractedFields;
+      if (!minted.ok) return { ok: false, content: minted.content };
+      newModuleId = minted.moduleId;
+      slug = minted.slug;
+      boundCss = minted.css;
+      bindingReport = minted.note;
+      mintedKind = minted.kind;
     }
 
     const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
@@ -256,21 +242,13 @@ export const addModuleToPageTool: ToolDefinitionWithHandler<
         content: `existing module ${newModuleId} (slug=${slug}) placed in block "${input.blockName}" at position ${insertIdx}. It renders live-referenced — fill per-page values via set_page_module_content; structural edits via edit_module affect every page using it.`,
       };
     }
-    // v0.12.0 — surface the extractor's inferred fields when the AI
-    // didn't supply `fields[]` so the AI sees the heuristic names
-    // it'll need to live with (or rename via edit_module).
-    const extracted = extractedFields ?? [];
-    const extractedHint =
-      extracted.length > 0
-        ? ` ⚠️ Extractor fallback used — minted heuristic field names: ${extracted.map((f) => `${f.name} (${f.kind})`).join(", ")}. **Next time, author HTML + fields together** with semantic snake_case names so \`## Modules\` stays useful.`
-        : "";
-    const missingMetaHint =
-      input.description === undefined || input.kind === undefined
-        ? ` ⚠️ Missing \`description\` / \`kind\` — \`## Modules\` shows this module as "(no description)" which hurts your future self's picks. Patch via edit_module.`
-        : "";
+    // moduleize authors semantic fields[] + description + kind on the mint
+    // path, so the old extractor-garbage + missing-meta warnings no longer
+    // apply. `bindingReport` (from the mint helper) carries the moduleize
+    // summary + any theme-binding report.
     return {
       ok: true,
-      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}.${bindingReport}${extractedHint}${missingMetaHint}${await cssVarWarningSuffix(ctx, toolCtx, boundCss)}${await designGuardSuffix(ctx, toolCtx, { css: boundCss, displayName: input.displayName, kind: input.kind, type: input.type })}`,
+      content: `module ${newModuleId} (slug=${slug}) added to block "${input.blockName}" at position ${insertIdx}.${bindingReport}${await cssVarWarningSuffix(ctx, toolCtx, boundCss)}${await designGuardSuffix(ctx, toolCtx, { css: boundCss, displayName: input.displayName, kind: mintedKind, type: input.type })}`,
     };
   },
 };

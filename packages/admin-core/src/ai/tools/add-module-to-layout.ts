@@ -16,7 +16,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { addModuleToLayoutToolInput, slugifyModuleName } from "@caelo-cms/shared";
+import { addModuleToLayoutToolInput } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
@@ -30,6 +30,7 @@ import {
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
 import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
+import { mintModuleFromHtml } from "./_mint-module.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 interface LayoutDetail {
@@ -179,25 +180,21 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
         },
       };
     }
-    const slug = slugifyModuleName(input.displayName);
-    const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {
-      slug,
-      displayName: input.displayName,
-      // issue #106 — forward the decision-support metadata so layout chrome
-      // lands in `## Modules` with the same context page modules carry.
-      // modules.create derives `type` from displayName when omitted.
-      ...(input.description !== undefined ? { description: input.description } : {}),
-      ...(input.kind !== undefined ? { kind: input.kind } : {}),
-      ...(input.type !== undefined ? { type: input.type } : {}),
+    // Mint via the shared moduleize path (raw html → parametrised module +
+    // semantic fields, off the main turn). See _mint-module.
+    const minted = await mintModuleFromHtml(ctx, toolCtx, {
       html: input.html,
-      css: input.css ?? "",
-      js: input.js ?? "",
-      ...(input.fields ? { fields: input.fields } : {}),
+      displayNameHint: input.displayName,
+      fieldsHint: input.fields,
+      description: input.description,
+      kind: input.kind,
+      type: input.type,
+      css: input.css,
+      js: input.js,
     });
-    if (!created.ok) {
-      return { ok: false, content: `modules.create failed: ${describeError(created.error)}` };
-    }
-    const newModuleId = (created.value as { moduleId: string }).moduleId;
+    if (!minted.ok) return { ok: false, content: minted.content };
+    const newModuleId = minted.moduleId;
+    const slug = minted.slug;
 
     const existingRes = await execute(
       toolCtx.registry,
@@ -237,7 +234,7 @@ export const addModuleToLayoutTool: ToolDefinitionWithHandler<
     }
     return {
       ok: true,
-      content: `module ${newModuleId} (slug=${slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${insertIdx}; chrome now reaches every page on every template bound to this layout${await cssVarWarningSuffix(ctx, toolCtx, input.css)}${await designGuardSuffix(ctx, toolCtx, { css: input.css, displayName: input.displayName, kind: input.kind, type: input.type })}`,
+      content: `module ${newModuleId} (slug=${slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${insertIdx}; chrome now reaches every page on every template bound to this layout${minted.note}${await cssVarWarningSuffix(ctx, toolCtx, minted.css)}${await designGuardSuffix(ctx, toolCtx, { css: minted.css, displayName: input.displayName, kind: minted.kind, type: input.type })}`,
     };
   },
 };
