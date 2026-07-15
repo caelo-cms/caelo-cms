@@ -85,7 +85,22 @@ describe("pageCreateSchema (no raw HTML invariant)", () => {
     expect(r.success).toBe(true);
     if (!r.success) return;
     expect(r.data.locale).toBe("en");
-    expect(r.data.status).toBe("draft");
+    // status is intentionally OPTIONAL (no schema default): pages.create
+    // resolves it at write time — published on a bootstrap site, else draft.
+    // Omitting it here leaves it undefined for the handler to resolve.
+    expect(r.data.status).toBeUndefined();
+  });
+
+  it("preserves an explicit status (the schema never overrides it)", () => {
+    const r = pageCreateSchema.safeParse({
+      slug: "home",
+      title: "Home",
+      templateId: "11111111-1111-4111-8111-111111111111",
+      status: "published",
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.status).toBe("published");
   });
 
   it("rejects an `html` field — §3.1 invariant in code", () => {
