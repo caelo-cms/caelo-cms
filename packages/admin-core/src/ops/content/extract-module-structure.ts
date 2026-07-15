@@ -403,13 +403,26 @@ export function validateTemplatizedModule(
 ): { ok: true } | { ok: false; message: string } {
   const declared = new Set(fields.map((f) => f.name));
   const referenced = new Set<string>();
-  // Match primitive {{name}}, single-nested {{>name}}, and module-list
-  // {{#name}} / {{/name}} forms — all count as references.
+  // List-loop scoping: placeholders INSIDE a `{{#listField}}…{{/listField}}`
+  // block are the list's ITEM sub-fields — for a link-list `{{label}}`/`{{href}}`,
+  // for a text-list the item scalar, for a module-list the nested `{{>child}}`.
+  // They are NOT top-level module fields, so strip each loop BODY (keeping the
+  // `{{#X}}{{/X}}` markers, which reference the list field X itself) before
+  // collecting top-level references. Without this, a valid nav/link-list module
+  // — `{{#nav_links}}<a href="{{href}}">…{{/nav_links}}` — was rejected with
+  // 'placeholder {{href}} references undeclared field "href"' (found via the
+  // ai_moduleize_attempts telemetry: moduleize failed every list module).
+  const topLevelHtml = html.replace(
+    /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}[\s\S]*?\{\{\s*\/\s*\1\s*\}\}/g,
+    (_full, name: string) => `{{#${name}}}{{/${name}}}`,
+  );
+  // Match primitive {{name}}, single-nested {{>name}}, and list/section
+  // {{#name}} / {{/name}} markers — all count as (top-level) references.
   const ref = /\{\{\s*(?:>|#|\/)?\s*([a-z][a-z0-9_]*)\s*\}\}/g;
-  let m: RegExpExecArray | null = ref.exec(html);
+  let m: RegExpExecArray | null = ref.exec(topLevelHtml);
   while (m !== null) {
     if (m[1]) referenced.add(m[1]);
-    m = ref.exec(html);
+    m = ref.exec(topLevelHtml);
   }
   for (const name of referenced) {
     if (!declared.has(name)) {
