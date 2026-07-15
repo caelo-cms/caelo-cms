@@ -80,6 +80,21 @@ export const createTemplateTool: ToolDefinitionWithHandler<
       html: { type: "string", minLength: 1 },
       css: { type: "string" },
       layoutId: { type: "string", format: "uuid" },
+      blocks: {
+        type: "array",
+        description:
+          "Optional block-set metadata (same shape as create_layout). Omit it to auto-derive one block per <caelo-slot name=\"X\"> in html (displayName = name). Pass it only to give a block a nicer displayName or an explicit position; every `name` MUST match a <caelo-slot> in html.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name", "displayName", "position"],
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 80 },
+            displayName: { type: "string", minLength: 1, maxLength: 200 },
+            position: { type: "integer", minimum: 0, maximum: 1000 },
+          },
+        },
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {

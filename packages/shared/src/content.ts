@@ -384,6 +384,24 @@ export const templateCreateSchema = z
      * time. (Stored data, not a render-time fallback — see CLAUDE.md §2.)
      */
     layoutId: z.string().uuid().optional(),
+    /**
+     * Optional block-set metadata — SYMMETRIC with `create_layout` and
+     * `propose_update_template`, which both take `blocks`. Omit it and the
+     * handler auto-derives one block per `<caelo-slot name="X">` in `html`
+     * (displayName = name, position = order of appearance) — the common case.
+     * Pass it to give blocks a nicer `displayName` or an explicit `position`;
+     * every entry's `name` MUST match a `<caelo-slot>` in `html` (a block with
+     * no slot renders nothing), else the create fails loudly (CLAUDE.md §2).
+     */
+    blocks: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(80),
+          displayName: z.string().min(1).max(200),
+          position: z.number().int().min(0).max(1000),
+        }),
+      )
+      .optional(),
   })
   .strict();
 

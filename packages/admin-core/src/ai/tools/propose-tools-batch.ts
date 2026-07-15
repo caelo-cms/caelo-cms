@@ -40,34 +40,13 @@ const uuid = z.string().uuid();
 
 // ─── layouts ─────────────────────────────────────────────────────────
 
-export const proposeLayoutCreateTool = makeProposeTool({
-  toolName: "propose_create_layout",
-  opName: "layouts.propose_create",
-  pendingQueuePath: "/security/layouts/pending",
-  when:
-    "Propose a new site-wide layout (chrome shared across templates: header, footer, navigation). " +
-    "Use when the operator describes a new shell that will host multiple templates.",
-  schema: z
-    .object({
-      slug: z.string().min(1).max(120),
-      displayName: z.string().min(1).max(200),
-      html: z.string().max(50_000),
-      css: z.string().max(50_000).optional(),
-    })
-    .strict(),
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["slug", "displayName", "html"],
-    properties: {
-      slug: { type: "string", minLength: 1, maxLength: 120 },
-      displayName: { type: "string", minLength: 1, maxLength: 200 },
-      html: { type: "string", maxLength: 50_000 },
-      css: { type: "string", maxLength: 50_000 },
-    },
-  },
-  summarize: (input) => `create layout "${input.displayName}" (${input.slug})`,
-});
+// NB: no `propose_create_layout` here. Layout-create is offered to the AI as
+// the dedicated `create_layout` tool (ai/tools/create-layout.ts), which wraps
+// the SAME `layouts.propose_create` op but carries the required `blocks[]`
+// (block-set metadata) that this batch shape lacked. Two tools for one gated
+// action — with divergent schemas (blocks vs no-blocks) — was pure catalogue
+// confusion + wasted schema tokens, so the blockless duplicate is dropped.
+// The update/delete/set_blocks propose tools below stay.
 
 export const proposeLayoutUpdateTool = makeProposeTool({
   toolName: "propose_update_layout",

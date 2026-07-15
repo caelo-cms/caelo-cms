@@ -652,6 +652,19 @@ export const createTemplateToolInput = z
     html: z.string().min(1).max(2_000_000),
     css: z.string().max(2_000_000).default(""),
     layoutId: z.string().uuid().optional(),
+    // Optional block-set metadata, symmetric with create_layout. Omit to
+    // auto-derive blocks from <caelo-slot> tags; pass to set displayName /
+    // position (each name must match a slot). Enforced op-side in
+    // templates.create (loud reject on a slot-less block).
+    blocks: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(80),
+          displayName: z.string().min(1).max(200),
+          position: z.number().int().min(0).max(1000),
+        }),
+      )
+      .optional(),
   })
   .strict();
 
