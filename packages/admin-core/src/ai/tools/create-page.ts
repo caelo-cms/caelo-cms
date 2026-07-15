@@ -20,7 +20,7 @@ export const createPageTool: ToolDefinitionWithHandler<
 > = {
   name: "create_page",
   description:
-    "Create a new EMPTY page. **Prefer `build_page` when you already know the page's modules** — it creates the page AND places the full module list with content in one transaction (§11 bulk-first), instead of create_page + N× add_module_to_page. Three identifiers — `name` (internal editor label), `title` (HTML <title> tag), `slug` (URL path). " +
+    "Create a new EMPTY page. **Prefer `build_page` when you already know the page's modules** — it creates the page AND places the full module list with content in one transaction (§11 bulk-first), instead of create_page + N× add_module. Three identifiers — `name` (internal editor label), `title` (HTML <title> tag), `slug` (URL path). " +
     "Slug must match `[a-z0-9][a-z0-9-]*` — for the homepage use `home` (NOT `/` or empty). For 'About Us' use `about`. " +
     "If the user only mentions one identifier (e.g. 'create About Us'), default `title` and `name` to that value and slugify for the URL. " +
     "`templateId` is OPTIONAL: omit it to use the site default template (see `## Site defaults` for the slug, `## Templates → layouts` for UUIDs of non-default templates). " +

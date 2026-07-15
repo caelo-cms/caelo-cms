@@ -14,7 +14,7 @@ import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
 } from "../_layout-module-fields.js";
-import { addModuleToLayoutTool } from "../add-module-to-layout.js";
+import { addModuleTool } from "../add-module.js";
 
 describe("findUnrenderableLayoutFields (#106)", () => {
   it("flags a defaultable field that has no default", () => {
@@ -63,16 +63,16 @@ describe("findUnrenderableLayoutFields (#106)", () => {
   });
 
   it("error body names the fix and forbids content_instances", () => {
-    const msg = unrenderableLayoutFieldsError("add_module_to_layout", "layout", [
+    const msg = unrenderableLayoutFieldsError("add_module", "layout", [
       { name: "copyright", reason: "`copyright` (kind `text`) has no `default`" },
     ]);
     expect(msg).toContain("field DEFAULTS");
     expect(msg).toContain("Do NOT call create_content_instance");
-    expect(msg).toContain("add_module_to_layout");
+    expect(msg).toContain("add_module");
   });
 });
 
-describe("add_module_to_layout handler enforces the guard (#106)", () => {
+describe("add_module (target='layout') handler enforces the guard (#106)", () => {
   const aiCtx = {
     actorId: "00000000-0000-0000-0000-0000000000a1",
     actorKind: "ai",
@@ -89,13 +89,14 @@ describe("add_module_to_layout handler enforces the guard (#106)", () => {
     get adapter(): never {
       throw new Error("DB touched — guard did not short-circuit");
     },
-  } as unknown as Parameters<typeof addModuleToLayoutTool.handler>[2];
+  } as unknown as Parameters<typeof addModuleTool.handler>[2];
 
   it("rejects a field with no default, before any DB call", async () => {
-    const res = await addModuleToLayoutTool.handler(
+    const res = await addModuleTool.handler(
       aiCtx,
       {
-        layoutSlug: "site-default",
+        target: "layout",
+        targetRef: "site-default",
         blockName: "footer",
         position: "bottom",
         displayName: "Site Footer",
@@ -111,10 +112,11 @@ describe("add_module_to_layout handler enforces the guard (#106)", () => {
   });
 
   it("rejects a module-list field on layout chrome", async () => {
-    const res = await addModuleToLayoutTool.handler(
+    const res = await addModuleTool.handler(
       aiCtx,
       {
-        layoutSlug: "site-default",
+        target: "layout",
+        targetRef: "site-default",
         blockName: "footer",
         position: 0,
         displayName: "Promo Footer",

@@ -23,7 +23,7 @@ export const createLayoutTool: ToolDefinitionWithHandler<
     "an Owner must click Approve to actually create the layout. DO NOT claim the layout exists. " +
     'Use when the user wants a chrome variant that none of the existing layouts cover (e.g. "a campaign layout ' +
     'with a banner and no footer"). After Approve, you can bind templates to it via `set_template_layout` or ' +
-    "fill its blocks via `add_module_to_layout`.",
+    "fill its blocks via `add_module` (target='layout').",
   schema: createLayoutToolInput,
   inputSchema: {
     type: "object",

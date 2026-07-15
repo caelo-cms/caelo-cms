@@ -82,7 +82,7 @@ export function formatStructuredSetsBlock(
     "- `set_structured_set({ kind, slug, displayName, items })` — UPSERT. Creates the set when the slug doesn't exist; REPLACES `items` if it does (NOT append — pass the full desired list).",
     "- `delete_structured_set({ kind, slug })` — remove a set.",
     "",
-    "Renderer convention: a module with slug `<kind>-<slug>` auto-renders the matching `<kind>/<slug>` set. Currently only `nav-menu-<slug>` and `language-selector-<slug>` auto-wire — for the other kinds, the rendering module's HTML/JS references the items directly via the structured-sets API. To wire a brand-new nav menu onto a layout: (1) `set_structured_set({ kind: 'nav-menu', slug: 'X', displayName: '…', items: [...] })` to create the items, (2) ensure a module named `nav-menu-X` is on the layout's header (or footer) block — use `add_module_to_layout` if it doesn't exist yet.",
+    "Renderer convention: a module with slug `<kind>-<slug>` auto-renders the matching `<kind>/<slug>` set. Currently only `nav-menu-<slug>` and `language-selector-<slug>` auto-wire — for the other kinds, the rendering module's HTML/JS references the items directly via the structured-sets API. To wire a brand-new nav menu onto a layout: (1) `set_structured_set({ kind: 'nav-menu', slug: 'X', displayName: '…', items: [...] })` to create the items, (2) ensure a module named `nav-menu-X` is on the layout's header (or footer) block — use `add_module` (target='layout') if it doesn't exist yet.",
     "",
     'If the user mentions "navigation", "the nav", "the menu", "header links", "footer menu" — that\'s a nav-menu, NOT a module to edit. Reach for `set_structured_set` with `kind: "nav-menu"` first.',
   ].join("\n");
@@ -162,15 +162,15 @@ export function formatModulesBlock(
     "",
     'The full module catalog on this install. Pick modules by **kind** + **description** — the operator describes outcomes ("add a footer to the blog"), you decide which module fits.',
     "",
-    "Tools: `list_modules` (full catalog; filter by kind/search), `add_module_to_page` (pass `moduleId` to place an existing module — reuse first; or `displayName` + `html` + `fields` to mint new, REQUIRES `description` + `kind` + semantic snake_case field names), `add_module_to_template` / `add_module_to_layout` (template-/site-wide variants), `edit_module` (modify HTML/fields/description).",
+    "Tools: `list_modules` (full catalog; filter by kind/search), `add_module` (one tool routed by `target`: 'page' | 'layout' | 'template'; pass `moduleId` to place an existing module — reuse first; or `displayName` + `html` + `fields` to mint new, REQUIRES `description` + `kind` + semantic snake_case field names), `edit_module` (modify HTML/fields/description).",
     "",
-    "**When the catalog has no fit:** mint a new module directly through `add_module_to_page` (or the template/layout variant) with a meaningful `description` (what the module is for, when to use it) — authoring and placement happen in one call; there is no separate create step. Don't ask the operator which module to use — pick the closest fit by kind, or mint a new one.",
+    "**When the catalog has no fit:** mint a new module directly through `add_module` (pick `target`='page'/'template'/'layout') with a meaningful `description` (what the module is for, when to use it) — authoring and placement happen in one call; there is no separate create step. Don't ask the operator which module to use — pick the closest fit by kind, or mint a new one.",
   ].join("\n");
   if (modules.length === 0) {
     return [
       primer,
       "",
-      "_0 modules on this install — every page composition starts by minting modules via `add_module_to_page` (or `build_page` for a whole page)._",
+      "_0 modules on this install — every page composition starts by minting modules via `add_module` (target='page') (or `build_page` for a whole page)._",
     ].join("\n");
   }
   // Group by kind so the AI scans by intent.
@@ -386,8 +386,8 @@ const MODULE_MODEL_BLOCK = [
   "",
   "Tool selection:",
   "",
-  "- **Creating or composing a page with MORE THAN ONE section → use `build_page` (ONE call).** It creates the page + every section module (each with its own semantic `fields[]`) + their content in a single all-or-nothing transaction. Do NOT hand-orchestrate `create_page` + `add_module_to_page`×N + `set_page_module_content`×N — that is the exact N+1 round-trip chain build_page exists to replace (§11 bulk-first). Reach for `add_module_to_page` only to add ONE more module to an already-built page.",
-  "- **Site chrome (footer, header, nav) lives in the LAYOUT — it is ONE site-wide operation.** A single `add_module_to_layout` places the module on the layout, and a layout is shared by every page bound to it, so the chrome appears on ALL those pages at once. When the operator says \"add a footer to every page\" / \"put a nav on the whole site\", that is `add_module_to_layout` (one call) — NOT a per-page loop, NOT creating pages to host it, and NEVER a subagent. A footer/header nav is a `nav-menu` structured-set (see the structured-sets guidance): `set_structured_set({kind:'nav-menu', …})` for the links, then one `add_module_to_layout` for the rendering module.",
+  "- **Creating or composing a page with MORE THAN ONE section → use `build_page` (ONE call).** It creates the page + every section module (each with its own semantic `fields[]`) + their content in a single all-or-nothing transaction. Do NOT hand-orchestrate `create_page` + `add_module`×N + `set_page_module_content`×N — that is the exact N+1 round-trip chain build_page exists to replace (§11 bulk-first). Reach for `add_module` (target='page') only to add ONE more module to an already-built page.",
+  "- **Site chrome (footer, header, nav) lives in the LAYOUT — it is ONE site-wide operation.** A single `add_module` with target='layout' places the module on the layout, and a layout is shared by every page bound to it, so the chrome appears on ALL those pages at once. When the operator says \"add a footer to every page\" / \"put a nav on the whole site\", that is one `add_module` (target='layout') call — NOT a per-page loop, NOT creating pages to host it, and NEVER a subagent. A footer/header nav is a `nav-menu` structured-set (see the structured-sets guidance): `set_structured_set({kind:'nav-menu', …})` for the links, then one `add_module` (target='layout') for the rendering module.",
   "- Use `edit_module` to change structure / styling / layout / the list of fields a module exposes.",
   "  → Affects every page using the module, branched to this chat until publish.",
   "- Use `set_page_module_content` to change what a specific placement on a specific page shows in its fields.",

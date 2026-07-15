@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { addModuleToPageTool } from "../add-module-to-page.js";
+import { addModuleTool } from "../add-module.js";
 import { editModuleTool } from "../edit-module.js";
 
 // Mirror of slugSchema's regex source in @caelo-cms/shared (content.ts).
@@ -25,8 +25,8 @@ function typeArg(schema: Record<string, unknown>): Record<string, unknown> {
 }
 
 describe("module-authoring tools — `type` arg mirrors the Zod slug pattern (#106 opt 2)", () => {
-  it("add_module_to_page.inputSchema.type carries the slug pattern", () => {
-    const t = typeArg(addModuleToPageTool.inputSchema);
+  it("add_module.inputSchema.type carries the slug pattern", () => {
+    const t = typeArg(addModuleTool.inputSchema);
     expect(t.type).toBe("string");
     expect(t.pattern).toBe(SLUG_PATTERN);
   });

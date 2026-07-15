@@ -16,7 +16,7 @@ import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../register.js";
-import { addModuleToTemplateTool } from "../tools/add-module-to-template.js";
+import { addModuleTool } from "../tools/add-module.js";
 import type { ToolContext } from "../tools/dispatch.js";
 
 const registry = new OperationRegistry();
@@ -97,13 +97,14 @@ function toolCtxWith(calls: string[]): ToolContext {
   return { adapter, registry } as ToolContext;
 }
 
-describe("add_module_to_template place mode (issue #243)", () => {
+describe("add_module (target='template') place mode (issue #243)", () => {
   it("fans an existing module out to every bound page without minting a duplicate", async () => {
     const calls: string[] = [];
-    const res = await addModuleToTemplateTool.handler(
+    const res = await addModuleTool.handler(
       AI,
       {
-        templateId: TEMPLATE_ID,
+        target: "template",
+        targetRef: TEMPLATE_ID,
         blockName: "content",
         position: "bottom",
         moduleId: SHARED.id,
@@ -122,10 +123,11 @@ describe("add_module_to_template place mode (issue #243)", () => {
 
   it("mint mode still chains modules.create (no regression)", async () => {
     const calls: string[] = [];
-    const res = await addModuleToTemplateTool.handler(
+    const res = await addModuleTool.handler(
       AI,
       {
-        templateId: TEMPLATE_ID,
+        target: "template",
+        targetRef: TEMPLATE_ID,
         blockName: "content",
         position: "bottom",
         displayName: "Fresh footer",

@@ -48,7 +48,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
     "List the FULL module catalog with decision-support metadata: id, slug, type, kind, description, field names, and placement usage. " +
     "Use when the `## Modules` block is truncated (>40 modules), when you need to verify a reuse candidate before minting, or to find modules by `kind`/`search`. " +
     "Do NOT call when `## Modules` already shows a fitting module — the block carries the same data. " +
-    "Returns metadata only (no HTML/CSS/JS bodies). Prefer placing an existing module (`add_module_to_page` with `moduleId`) over minting a near-duplicate.",
+    "Returns metadata only (no HTML/CSS/JS bodies). Prefer placing an existing module (`add_module` with `moduleId`) over minting a near-duplicate.",
   schema: listModulesInput,
   inputSchema: {
     type: "object",
@@ -102,7 +102,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
             ]
               .filter(Boolean)
               .join(" ")} (catalog has ${all.length} total — retry without the filter?)`
-          : " — mint one via add_module_to_page / build_page";
+          : " — mint one via add_module / build_page";
       return { ok: true, content: `0 modules${filterNote}.` };
     }
 

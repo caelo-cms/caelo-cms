@@ -21,9 +21,8 @@ const TOOLS_DIR = join(import.meta.dir, "..");
 
 /** Tools that author a module `fields[]` surface — MUST use the shared schema. */
 const FIELD_AUTHORING_TOOLS = [
-  "add-module-to-page.ts",
-  "add-module-to-layout.ts",
-  "add-module-to-template.ts",
+  // audit #2 — the ONE module-placement tool (was add-module-to-{page,layout,template}).
+  "add-module.ts",
   "edit-module.ts",
   // issue #299 — build_page authors per-module fields[] too.
   "build-page.ts",

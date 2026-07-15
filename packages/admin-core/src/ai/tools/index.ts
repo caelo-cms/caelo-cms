@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { addModuleToLayoutTool } from "./add-module-to-layout.js";
-import { addModuleToPageTool } from "./add-module-to-page.js";
-import { addModuleToTemplateTool } from "./add-module-to-template.js";
+import { addModuleTool } from "./add-module.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
 import { autofillPageSeoTool } from "./autofill-page-seo.js";
 import { bootstrapSiteScaffoldTool } from "./bootstrap-site-scaffold.js";
@@ -215,8 +213,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(getPageLogTool);
   registry.register(logPageEditTool);
   registry.register(siteMemoryProposeTool);
-  registry.register(addModuleToPageTool);
-  registry.register(addModuleToTemplateTool);
+  // audit #2 — ONE module-placement tool routed by `target`
+  // (page/layout/template). Replaces add_module_to_{page,layout,template};
+  // adds reuse-by-moduleId on the layout target (the old asymmetry).
+  registry.register(addModuleTool);
   // v0.2.16 — place a plugin's output on a page (synthetic placeholder
   // module). Tier-1 plugins go live at next deploy; Tier-2 stubs reject
   // with a clear "execution runtime pending" message.
@@ -242,8 +242,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listStructuredSetsTool);
   registry.register(getStructuredSetTool);
   registry.register(deleteStructuredSetTool);
-  // P6.7.6 — layout layer.
-  registry.register(addModuleToLayoutTool);
+  // P6.7.6 — layout layer. (add_module target='layout' handles placement;
+  // registered above alongside page/template.)
   registry.register(removeModuleFromLayoutTool);
   registry.register(setTemplateLayoutTool);
   registry.register(createLayoutTool);

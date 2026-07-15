@@ -22,7 +22,7 @@ export const setPageSeoTool: ToolDefinitionWithHandler<
     "Use ONLY for explicit user instructions like 'set the home page meta description to X'. " +
     "Don't use for first-publish auto-fill — call `autofill_page_seo`. " +
     "Don't use for explicit re-optimization with keyword context — call `optimize_page_seo`. " +
-    "Routine content edits (edit_module / add_module_to_page) MUST NOT touch SEO fields.",
+    "Routine content edits (edit_module / add_module) MUST NOT touch SEO fields.",
   schema: setPageSeoToolInput,
   inputSchema: {
     type: "object",

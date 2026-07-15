@@ -123,14 +123,14 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
   name: "build_page",
   description:
     "Build a WHOLE page in ONE call: the page (create new via `page: {slug, title}` or target existing via `page: {pageId}`) plus the FULL ordered module list — each entry places one module into a template block, top to bottom. ONE transaction: any invalid entry aborts the whole call (the error names `modules[i]` and the failing field) and nothing is written. " +
-    "**Prefer this over add_module_to_page / create_page / create_content_instance chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module_to_page only for a single incremental module on an existing page. " +
-    "**Per module, two modes** (same contract as add_module_to_page): pass `moduleId` to place an EXISTING module from `## Modules` (reuse first — shared modules keep pages consistent), or `displayName` + `html` (+ required `description`, `kind`, explicit `fields[]`) to mint a new one. Field names are semantic snake_case (`hero_title`, `primary_cta_href`); repeats are LIST fields (`text-list`, `link-list`, `module-list`), never numbered scalars. " +
+    "**Prefer this over add_module / create_page / create_content_instance chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module (target='page') only for a single incremental module on an existing page. " +
+    "**Per module, two modes** (same contract as add_module): pass `moduleId` to place an EXISTING module from `## Modules` (reuse first — shared modules keep pages consistent), or `displayName` + `html` (+ required `description`, `kind`, explicit `fields[]`) to mint a new one. Field names are semantic snake_case (`hero_title`, `primary_cta_href`); repeats are LIST fields (`text-list`, `link-list`, `module-list`), never numbered scalars. " +
     "**Per module, `content` fills the placement**: `{source:'inline', values:{hero_title:'…'}}` for page-local content (the routine case); `{source:'shared', purpose:'…', values:{…}}` to mint a REUSABLE instance other pages can bind (synced by default); `{source:'existing', contentInstanceId}` to bind a row from `## Content Library`. Omit `content` for an empty private instance you fill later. " +
     "Typical call: `{page:{slug:'pricing', title:'Pricing'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`. " +
-    "For site-wide chrome (header/footer) use add_module_to_layout — chrome is layout-owned and never rides in a page body.",
+    "For site-wide chrome (header/footer) use add_module (target='layout') — chrome is layout-owned and never rides in a page body.",
   describe: (state) => {
     const lines: string[] = [
-      "Build a WHOLE page in ONE call: page (new: `page.slug`+`page.title` — or existing: `page.pageId`) + the full ordered `modules[]` list with per-module content. One transaction, all-or-nothing. Prefer this over add_module_to_page / create_page / create_content_instance chains whenever a page needs >1 module (§11 bulk-first).",
+      "Build a WHOLE page in ONE call: page (new: `page.slug`+`page.title` — or existing: `page.pageId`) + the full ordered `modules[]` list with per-module content. One transaction, all-or-nothing. Prefer this over add_module / create_page / create_content_instance chains whenever a page needs >1 module (§11 bulk-first).",
     ];
     if (state.templates.length === 0) {
       lines.push(

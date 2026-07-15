@@ -17,9 +17,7 @@
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
 
-import { addModuleToLayoutTool } from "../add-module-to-layout.js";
-import { addModuleToPageTool } from "../add-module-to-page.js";
-import { addModuleToTemplateTool } from "../add-module-to-template.js";
+import { addModuleTool } from "../add-module.js";
 import { bootstrapSiteScaffoldTool } from "../bootstrap-site-scaffold.js";
 import { createPageTool } from "../create-page.js";
 import { createTemplateTool } from "../create-template.js";
@@ -233,33 +231,31 @@ describe("describe() callbacks on the 6 high-value tools", () => {
     expect(d).toContain("On first set BOTH");
   });
 
-  it("add_module_to_layout enumerates (layoutSlug, blockName) pairs", () => {
-    const d = addModuleToLayoutTool.describe!(POPULATED);
-    expect(d).toContain("site-default → blocks: header/content/footer");
+  it("add_module enumerates each layout's (slug → blocks) for target='layout'", () => {
+    const d = addModuleTool.describe!(POPULATED);
+    expect(d).toContain("Layout (slug → blocks): site-default → header/content/footer");
   });
 
-  it("add_module_to_layout warns when no layouts exist", () => {
-    const d = addModuleToLayoutTool.describe!(FRESH);
-    expect(d).toContain("NO layouts exist");
+  it("add_module lists template (slug → templateId) for target='template'", () => {
+    const d = addModuleTool.describe!(POPULATED);
+    expect(d).toContain("home-template=00000000-0000-0000-0000-000000000010");
+    expect(d).toContain("blog-post=00000000-0000-0000-0000-000000000011");
   });
 
-  it("add_module_to_template lists template UUIDs with slugs", () => {
-    const d = addModuleToTemplateTool.describe!(POPULATED);
-    expect(d).toContain("home-template → templateId=00000000-0000-0000-0000-000000000010");
-    expect(d).toContain("blog-post → templateId=00000000-0000-0000-0000-000000000011");
+  it("add_module always carries the target-routing primer + position guidance", () => {
+    const d = addModuleTool.describe!(POPULATED);
+    expect(d).toContain("`target`='page'|'layout'|'template'");
+    expect(d).toContain("position");
   });
 
-  it("add_module_to_template warns when no templates exist", () => {
-    const d = addModuleToTemplateTool.describe!(FRESH);
-    expect(d).toContain("NO templates exist");
-  });
-
-  it("add_module_to_page warns about fresh-install state without listing every page", () => {
-    const dFresh = addModuleToPageTool.describe!(FRESH);
-    expect(dFresh).toContain("NO templates");
-    const dPop = addModuleToPageTool.describe!(POPULATED);
-    expect(dPop).toContain("Pass `pageId`");
-    expect(dPop).toContain("position");
+  it("add_module omits layout/template enumerations on a fresh install", () => {
+    const d = addModuleTool.describe!(FRESH);
+    // No layouts/templates yet → those enumeration lines don't render, but the
+    // routing primer + position guidance always do.
+    expect(d).not.toContain("Layout (slug → blocks)");
+    expect(d).not.toContain("Templates (slug → templateId)");
+    expect(d).toContain("target='page'");
+    expect(d).toContain("position");
   });
 
   it("bootstrap_site_scaffold STAGE 0 — no layout: describes proposal queue path", () => {

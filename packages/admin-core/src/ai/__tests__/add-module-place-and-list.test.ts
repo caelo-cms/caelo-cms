@@ -18,7 +18,7 @@ import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../register.js";
-import { addModuleToPageTool } from "../tools/add-module-to-page.js";
+import { addModuleTool } from "../tools/add-module.js";
 import type { ToolContext } from "../tools/dispatch.js";
 import { listModulesTool } from "../tools/list-modules.js";
 
@@ -95,13 +95,14 @@ function toolCtxWith(calls: string[]): ToolContext {
   return { adapter, registry } as ToolContext;
 }
 
-describe("add_module_to_page place mode (issue #159)", () => {
+describe("add_module (target='page') place mode (issue #159)", () => {
   it("splices an existing module without calling modules.create", async () => {
     const calls: string[] = [];
-    const res = await addModuleToPageTool.handler(
+    const res = await addModuleTool.handler(
       AI,
       {
-        pageId: "11111111-1111-4111-8111-11111111ea9e",
+        target: "page",
+        targetRef: "11111111-1111-4111-8111-11111111ea9e",
         blockName: "content",
         position: "top",
         moduleId: HERO.id,

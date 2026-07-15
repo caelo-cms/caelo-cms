@@ -92,7 +92,7 @@ export async function buildSiteBlocks(
     if (layouts.length > 0) {
       layoutsBlock = [
         "# Layouts on this site (site-wide chrome)",
-        "Layouts wrap every page on every template bound to them. The `content` block always holds the rendered template; other blocks (header, footer, nav) are filled by `add_module_to_layout`.",
+        "Layouts wrap every page on every template bound to them. The `content` block always holds the rendered template; other blocks (header, footer, nav) are filled by `add_module` (target='layout').",
         // P18 — include each layout's UUID so the AI can pass `layoutId`
         // to `create_template` / `set_template_layout` without a
         // `layouts.list` round-trip. (`create_template.layoutId` is
@@ -103,10 +103,10 @@ export async function buildSiteBlocks(
             `- ${l.slug} (id=${l.id}) "${l.displayName}" — blocks: ${l.blocks.map((b) => b.name).join(", ")}`,
         ),
         "",
-        "Three add-module surfaces — pick by intent:",
-        "- one page only        → `add_module_to_page`",
-        "- every page on a template → `add_module_to_template`",
-        "- every page on the site (or a whole layout) → `add_module_to_layout` (e.g. layoutSlug='site-default', blockName='footer')",
+        "One `add_module` tool, routed by `target` — pick by intent:",
+        "- one page only        → `add_module` target='page' (targetRef = the page slug or id)",
+        "- every page on a template → `add_module` target='template' (targetRef = the template slug or id)",
+        "- every page on the site (or a whole layout) → `add_module` target='layout' (targetRef='site-default', blockName='footer')",
         "",
         "Adding a plugin's output (comments, contact form, ratings, newsletter) to a page → `add_plugin_to_page` (per-page placeholder; the static-generator + Web Component handle the rest). Plugins must be installed + active — see `# Plugins` for available slugs.",
         "",

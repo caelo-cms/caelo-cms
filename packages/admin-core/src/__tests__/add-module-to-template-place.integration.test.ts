@@ -19,7 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { addModuleToTemplateTool } from "../ai/tools/add-module-to-template.js";
+import { addModuleTool } from "../ai/tools/add-module.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
 
@@ -122,12 +122,12 @@ afterAll(async () => {
   await adapter.close();
 });
 
-describe("add_module_to_template place-existing path (issue #243)", () => {
+describe("add_module (target='template') place-existing path (issue #243)", () => {
   it("fans the existing module out to every bound page and mints no duplicate", async () => {
     const toolCtx = { adapter, registry } as ToolContext;
-    const res = await addModuleToTemplateTool.handler(
+    const res = await addModuleTool.handler(
       SYSTEM,
-      { templateId, blockName: "content", position: "bottom", moduleId },
+      { target: "template", targetRef: templateId, blockName: "content", position: "bottom", moduleId },
       toolCtx,
     );
 
