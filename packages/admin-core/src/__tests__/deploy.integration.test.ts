@@ -380,7 +380,9 @@ describe("P6 deploy.trigger", () => {
       expect(result.error.kind).toBe("HandlerError");
       const message = "message" in result.error ? String(result.error.message) : "";
       expect(message).toContain("no page serves the site root");
-      expect(message).toContain("change_page_slug");
+      // The error must name the tool that actually exists. `change_page_slug`
+      // was folded into `update_pages_many` (audit #3, PR #323).
+      expect(message).toContain("update_pages_many");
     } finally {
       // Leave the fixture consistent for any test added after this one.
       await execute(registry, adapter, HUMAN, "pages.update", {
