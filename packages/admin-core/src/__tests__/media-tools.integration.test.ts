@@ -100,11 +100,7 @@ describe("find_media", () => {
   });
 
   it("returns a clean no-match message (not an error) when nothing hits", async () => {
-    const r = await findMediaTool.handler(
-      SYSTEM,
-      { query: "no-such-asset-zzz-98765" },
-      toolCtx(),
-    );
+    const r = await findMediaTool.handler(SYSTEM, { query: "no-such-asset-zzz-98765" }, toolCtx());
     expect(r.ok).toBe(true);
     expect(r.content).toContain("No media matched");
   });
