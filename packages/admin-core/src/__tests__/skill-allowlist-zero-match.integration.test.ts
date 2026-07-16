@@ -172,7 +172,7 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
     expect(names).toContain("list_pages");
     expect(names).toContain("find_redirects");
     // …and the write tools the run-#15 fallback used to leak are gone.
-    expect(names).not.toContain("add_module_to_layout");
+    expect(names).not.toContain("add_module");
     expect(names).not.toContain("edit_module");
     expect(names).not.toContain("set_structured_set");
     // Every survivor is read-only or an orchestration tool (run #8/#9 immunity).
@@ -192,7 +192,7 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
     await seedSkill(ZERO_SLUG, ["totally.bogus_op", "nope.not_a_tool"], "zzbogusnix");
     const tools = await captureToolsForTurn("zzbogusnix");
     expect(tools.length).toBeGreaterThan(50); // full catalogue, not zero
-    expect(tools.some((t) => t.name === "add_module_to_layout")).toBe(true);
+    expect(tools.some((t) => t.name === "add_module")).toBe(true);
   });
 
   it("a VALID partial allowlist still narrows WRITE tools surgically (reads always stay — run #8 R2b/R5)", async () => {
@@ -202,8 +202,7 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
     // The allowlisted write tool is present…
     expect(names).toContain("edit_module");
     // …every OTHER write tool is narrowed away…
-    expect(names).not.toContain("add_module_to_layout");
-    expect(names).not.toContain("add_module_to_page");
+    expect(names).not.toContain("add_module");
     expect(names).not.toContain("create_page");
     expect(names).not.toContain("set_page_module_content");
     // …and every remaining tool is read-only by the naming convention
