@@ -3,8 +3,9 @@
 /**
  * `set_pages_status_many` is the ONE page-status tool — audit follow-up folded
  * the singular `set_page_status` into it (n=1 is a one-item `pageIds` array).
- * These tests pin both the single-page case (proving the fold works) and the
- * bulk case + the all-or-nothing rollback contract, against real Postgres (§6).
+ * These tests pin the single-page case (proving the fold works), the bulk case,
+ * and the real missing-id contract (skipped, not a rollback — the tool
+ * description used to claim otherwise), against real Postgres (§6).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";

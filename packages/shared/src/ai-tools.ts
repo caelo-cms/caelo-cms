@@ -256,10 +256,10 @@ export const AI_TOOLS = [
   // audit #4 — one delete tool for 1..200 pages, disposition per page.
   // The former singular delete_page folded in (n=1 is a one-item array).
   "delete_pages_many",
-  "remove_module_from_page",
+  // one remove-module tool routed by target (page|layout).
+  "remove_module_from",
   "set_structured_set",
   "update_theme",
-  "remove_module_from_layout",
   "set_template_layout",
   "create_layout",
   "set_site_defaults",
@@ -546,12 +546,20 @@ export const createTemplateToolInput = z
   })
   .strict();
 
-export const removeModuleFromPageToolInput = z
+/**
+ * The ONE remove-module input — `target` picks page vs layout, `targetRef` is a
+ * slug OR a uuid (resolved server-side). Mirrors `add_module` so placement and
+ * un-placement share one shape. (No `template` target: there is no
+ * remove_module_from_template, matching the add-side history.)
+ */
+export const removeModuleFromToolInput = z
   .object({
-    pageId: z.string().uuid(),
+    target: z.enum(["page", "layout"]),
+    targetRef: z.string().min(1).max(200),
     moduleId: z.string().uuid(),
   })
   .strict();
+export type RemoveModuleFromToolInput = z.infer<typeof removeModuleFromToolInput>;
 
 export const setStructuredSetToolInput = z
   .object({
@@ -573,13 +581,6 @@ export const setStructuredSetToolInput = z
 // `set_theme_tokens` (loose-name patch) / `propose_create_theme`
 // (gated mint) / `propose_activate_theme` (gated flip) — see
 // packages/admin-core/src/ai/tools/{update-theme-tokens,get-theme,…}.ts.
-
-export const removeModuleFromLayoutToolInput = z
-  .object({
-    layoutSlug: slugInputSchema,
-    moduleId: z.string().uuid(),
-  })
-  .strict();
 
 export const setTemplateLayoutToolInput = z
   .object({
@@ -883,7 +884,6 @@ export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
 export type ComposeFromImportToolInput = z.infer<typeof composeFromImportToolInput>;
 export type MigrateImportMediaToolInput = z.infer<typeof migrateImportMediaToolInput>;
-export type RemoveModuleFromPageToolInput = z.infer<typeof removeModuleFromPageToolInput>;
 export type SetStructuredSetToolInput = z.infer<typeof setStructuredSetToolInput>;
 // v0.10.22 — `UpdateThemeToolInput` removed alongside `update_theme` tool.
 export type ChatCreateSessionInput = z.infer<typeof chatCreateSessionInput>;
@@ -894,7 +894,6 @@ export type AiMemorySetInput = z.infer<typeof aiMemorySetInput>;
 export type AiMemoryReviewInput = z.infer<typeof aiMemoryReviewInput>;
 export type AiProvidersSetInput = z.infer<typeof aiProvidersSetInput>;
 export type AiProvidersClearKeyInput = z.infer<typeof aiProvidersClearKeyInput>;
-export type RemoveModuleFromLayoutToolInput = z.infer<typeof removeModuleFromLayoutToolInput>;
 export type SetTemplateLayoutToolInput = z.infer<typeof setTemplateLayoutToolInput>;
 export type CreateLayoutToolInput = z.infer<typeof createLayoutToolInput>;
 export type SetSiteDefaultsToolInput = z.infer<typeof setSiteDefaultsToolInput>;

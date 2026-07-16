@@ -104,7 +104,7 @@ export async function buildPageContext(
         "- edit_module — change an existing module's content (always reference a real module id from a BEGIN marker above).",
         "- add_module (target='page', targetRef = this page's slug or id) — insert a NEW module into a block on THIS page only. Use for one-off content (a CTA on the homepage, an FAQ on /about). Position is 'top', 'bottom', or a 0-based index.",
         '- add_module (target=\'template\', targetRef = the Template id above) — create a NEW module and fan it out to EVERY page using this template at the same block + position. Use only when the user explicitly asks for site-wide content ("add a footer to every page", "a header banner across the site").',
-        "- remove_module_from_page — drop a module from a page's layout (the module row stays for re-use elsewhere).",
+        "- remove_module_from (target='page', targetRef = this page's slug or id) — drop a module's reference from this page (the module row stays for re-use elsewhere). Use target='layout' to detach site-wide chrome.",
         "",
         "Tool guidance (page lifecycle — three independent identifiers):",
         "- A page has THREE separately-editable identifiers. Never silently substitute one for another:",
