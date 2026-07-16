@@ -3339,7 +3339,7 @@ export const composeFromImportRunOp = defineOperation({
             throw new OperationAbortError({
               kind: "HandlerError",
               operation: "imports.compose_from_run",
-              message: `redirect ${sourcePath} → ${caeloPath} would shadow the existing page '${sourcePath.slice(1)}' (${shadow[0].id}). Rename one of them (change_page_slug) or exclude this import page, then re-run compose. Nothing from this compose was applied.`,
+              message: `redirect ${sourcePath} → ${caeloPath} would shadow the existing page '${sourcePath.slice(1)}' (${shadow[0].id}). Rename one of them (update_pages_many with a new slug) or exclude this import page, then re-run compose. Nothing from this compose was applied.`,
             });
           }
           // Upsert keeps re-composes idempotent; pointing an existing

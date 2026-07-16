@@ -20,7 +20,7 @@ export const autofillPageSeoTool: ToolDefinitionWithHandler<
     "Use this only on draft pages whose SEO is unfilled. " +
     "Returns AlreadyAutofilled when the page's SEO was previously auto-filled — in that case, " +
     "ask the user whether they want to explicitly re-optimize via `optimize_page_seo`. " +
-    "Aim for 50–60 char title (set via `set_page_title`) and 150–160 char meta description.",
+    "Aim for 50–60 char title (set via `update_pages_many`) and 150–160 char meta description.",
   schema: autofillPageSeoToolInput,
   inputSchema: {
     type: "object",

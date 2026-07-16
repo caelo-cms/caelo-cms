@@ -103,6 +103,8 @@ const pageUpdateItem = z
     slug: z.string().min(1).max(120).optional(),
     templateId: uuid.optional(),
     status: z.enum(["draft", "published", "archived"]).optional(),
+    /** Only meaningful with `slug`. 'skip' suppresses the automatic 301. */
+    redirectFromOld: z.enum(["auto", "skip"]).optional(),
   })
   .strict();
 const updateInput = z.object({ updates: z.array(pageUpdateItem).min(1).max(200) }).strict();
@@ -111,11 +113,15 @@ type UpdateInput = z.infer<typeof updateInput>;
 export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
   name: "update_pages_many",
   description:
-    "Bulk metadata edits across 1–200 pages in one tool call. " +
-    "Use when the operator says 'archive all draft posts', 'rename these 8 landing pages', 'move these pages to the {tpl} template'. " +
-    "Each item is the same shape as `pages.update` (pageId + optional name/title/slug/templateId/status); per-item failures " +
-    "(not-found, version conflict) are reported but the rest of the batch still applies. " +
-    "Prefer this over multiple `rename_page` / `set_page_title` / `change_page_slug` / `change_template` calls when targeting > 1 page. " +
+    "Edit page metadata — the ONE tool for it, for 1 page or 200 (pass a single-item `updates` array for one page; there is no separate rename/retitle/reslug tool). " +
+    "Use for 'rename this page', 'change the browser-tab title', 'move this to /pricing', 'archive all draft posts', 'move these pages to the {tpl} template'. " +
+    "**A page has THREE independently-editable identifiers — never substitute one for another:** " +
+    "`name` = the internal editor label (page picker / breadcrumbs; not public), " +
+    "`title` = the HTML <title> tag (browser tab + search results), " +
+    "`slug` = the URL path. If the operator just says 'rename' without saying which, ASK before guessing — 'rename' usually means `name`. " +
+    "**Changing `slug` moves the page's public URL**: a 301 from the old URL is created automatically and every nav-menu / link-list / module link pointing at it is rewritten, in one transaction. " +
+    "Pass `redirectFromOld: 'skip'` ONLY when the operator explicitly says the old URL should 404 — the default keeps inbound links alive. " +
+    "Per-item failures (not-found, version conflict) are reported; the rest of the batch still applies. " +
     "DO NOT use for SEO sidecar (`pages_seo.set_many`) or modules (`update_modules_many`) — those have their own bulk tools.",
   schema: updateInput,
   inputSchema: {
@@ -134,11 +140,33 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
           properties: {
             pageId: { type: "string", format: "uuid" },
             expectedVersion: { type: "integer", minimum: 0 },
-            name: { type: "string", minLength: 1, maxLength: 256 },
-            title: { type: "string", minLength: 1, maxLength: 256 },
-            slug: { type: "string", minLength: 1, maxLength: 120 },
+            name: {
+              type: "string",
+              minLength: 1,
+              maxLength: 256,
+              description: "Internal editor label (page picker / breadcrumbs). Not public.",
+            },
+            title: {
+              type: "string",
+              minLength: 1,
+              maxLength: 256,
+              description: "HTML <title> — browser tab + search results.",
+            },
+            slug: {
+              type: "string",
+              minLength: 1,
+              maxLength: 120,
+              description:
+                "URL path. Changing it auto-creates a 301 from the old URL and rewrites links pointing at it.",
+            },
             templateId: { type: "string", format: "uuid" },
             status: { type: "string", enum: ["draft", "published", "archived"] },
+            redirectFromOld: {
+              type: "string",
+              enum: ["auto", "skip"],
+              description:
+                "Only with `slug`. 'skip' suppresses the 301 — use only if the operator says the old URL should 404.",
+            },
           },
         },
       },
