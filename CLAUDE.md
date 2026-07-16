@@ -214,10 +214,10 @@ The pattern, used uniformly across every gated domain:
 | locales | create, delete, set_default, update_strategy | URL-strategy change cascades; redirects required for every existing page in the affected locale. |
 | layouts | create, delete | Site-wide chrome change; affects every bound template's pages. |
 | plugins | activate | Per CMS_REQUIREMENTS §17.4 — already required; restated here for the unified pattern. |
-| site_defaults | set_default_layout, set_default_template, set_seo (when site_base_url changes) | Affects every new page going forward; base URL change rewrites every canonical at next deploy. |
-| snapshots | revert_site | Atomic site-wide rewind; one click rewinds hours of editor work. |
-| redirects | delete_many with `matches` substring matching ≥10 rows | Hard to predict the blast radius of a regex-style match. |
-| deploy | promote, rollback | Production-affecting; stays human-only per CMS_REQUIREMENTS §6 (Ops decision boundary, not a confirmation problem — these don't get the propose/execute split). |
+| site_defaults | set_seo (when site_base_url changes) | Base URL change rewrites every canonical at next deploy. NOTE: `site_defaults.set` (default layout/template) is deliberately NOT gated — it's AI-writable because existing content is unaffected, the change is snapshot-revertable, and first-run UX requires it. The justification lives at the op. |
+| snapshots | revert_site | Atomic site-wide rewind; one click rewinds hours of editor work. (Only `revert_site`. The granular `revert_page` / `revert_module` / `revert_template` are gated today too — whether they need to be is open: each is undoable by another revert, which by the test below argues routine.) |
+| redirects | delete_many with `matches` substring matching ≥10 rows | Hard to predict the blast radius of a regex-style match; every deleted 301 strands an inbound link. Implemented as an AI-actor cap at the op (`AI_MATCHES_DELETE_LIMIT`), not a propose/execute pair: the AI is told to enumerate via `find_redirects` and delete by explicit `redirectIds`, which makes the blast radius visible instead of guessed. A human running the same call is unaffected — they ARE the decision the gate exists to obtain. |
+| deploy | promote, rollback | Production-affecting. DOES get the propose/execute split (`propose_deploy_promote` / `propose_deploy_rollback` → `deploy.execute_proposal`). An earlier revision of this table said deploy was human-only with no split; the split shipped deliberately (commit b4126607) so the AI can draft the promote and the Owner just clicks. |
 
 Routine ops — content edits, structured-sets writes, single-redirect tweaks, page slug changes, SEO field updates, media writes, alt proposals, role-list reads — stay `human + ai + system` *without* the gate. The AI proceeds on the routine 95% and asks for one click on the dangerous 5%.
 

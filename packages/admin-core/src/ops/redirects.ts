@@ -302,6 +302,23 @@ export const createRedirectsManyOp = defineOperation({
   },
 });
 
+/**
+ * CLAUDE.md §11.A — "redirects | delete_many with `matches` substring matching
+ * ≥10 rows | Hard to predict the blast radius of a regex-style match."
+ *
+ * `matches` is an unbounded ILIKE (`%<matches>%`): `matches: "/"` matches every
+ * rooted path, i.e. every redirect on the site. Until this guard, the ONLY
+ * thing standing between the AI and that was a sentence in the tool description
+ * ("Always run find_redirects FIRST") — a prompt, not a boundary, which is
+ * exactly what §2 rules out. Every deleted 301 is an inbound link stranded, and
+ * the recovery ("manually re-create N redirects") is §11.A's own definition of
+ * hard-to-revert.
+ *
+ * Enforced for AI actors only: a human running the same call is making the
+ * decision themselves, which is what the gate exists to obtain.
+ */
+const AI_MATCHES_DELETE_LIMIT = 10;
+
 export const deleteRedirectsManyOp = defineOperation({
   name: "redirects.delete_many",
   actorScope: ["human", "ai", "system"],
@@ -353,6 +370,32 @@ export const deleteRedirectsManyOp = defineOperation({
         deleted += r.length;
       }
     } else if (input.matches) {
+      // Count BEFORE deleting: the AI must not discover the blast radius by
+      // having already caused it (§11.A).
+      if (ctx.actorKind === "ai") {
+        const rows = (await tx.execute(sql`
+          SELECT count(*)::int AS n FROM redirects WHERE from_path ILIKE ${`%${input.matches}%`}
+        `)) as unknown as { n: number }[];
+        const wouldDelete = rows[0]?.n ?? 0;
+        if (wouldDelete >= AI_MATCHES_DELETE_LIMIT) {
+          await recordAudit(tx, {
+            actorId: ctx.actorId,
+            requestId: ctx.requestId,
+            operation: "redirects.delete_many",
+            input,
+            succeeded: false,
+            resultSummary: `blocked: matches='${input.matches}' would delete ${wouldDelete} redirects (limit ${AI_MATCHES_DELETE_LIMIT})`,
+          });
+          return err({
+            kind: "HandlerError",
+            operation: "redirects.delete_many",
+            message:
+              `matches='${input.matches}' would delete ${wouldDelete} redirects — over the ${AI_MATCHES_DELETE_LIMIT}-row limit for a substring match (CLAUDE.md §11.A: the blast radius of a regex-style match is hard to predict, and every deleted 301 strands an inbound link). ` +
+              `Nothing was deleted. Next step: call find_redirects({matches:'${input.matches}'}) to list them, show the operator the list and the count, and — once they confirm which ones to drop — call this op again with an explicit \`redirectIds\` array. ` +
+              `A narrower \`matches\` that hits fewer than ${AI_MATCHES_DELETE_LIMIT} rows also works.`,
+          });
+        }
+      }
       const r = (await tx.execute(sql`
         DELETE FROM redirects WHERE from_path ILIKE ${`%${input.matches}%`} RETURNING 1
       `)) as unknown as { exists: number }[];
