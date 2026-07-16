@@ -249,9 +249,10 @@ export const AI_TOOLS = [
   "site_memory_propose",
   "add_module",
   "create_page",
-  "rename_page",
-  "set_page_title",
-  "change_page_slug",
+  // audit #3 — page metadata (name/title/slug/template/status) is one tool for
+  // 1..200 pages: `update_pages_many`. The former rename_page / set_page_title
+  // / change_page_slug were single-field wrappers over the same pages.update.
+  "update_pages_many",
   "delete_page",
   "remove_module_from_page",
   "set_structured_set",
@@ -261,7 +262,7 @@ export const AI_TOOLS = [
   "create_layout",
   "set_site_defaults",
   "duplicate_page",
-  "change_template",
+  "repoint_page_template",
   "move_module",
   "reorder_module",
   "set_nav_menu",
@@ -543,33 +544,6 @@ export const createTemplateToolInput = z
   })
   .strict();
 
-export const renamePageToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    newName: z.string().min(1).max(256),
-  })
-  .strict();
-
-export const setPageTitleToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    newTitle: z.string().min(1).max(256),
-  })
-  .strict();
-
-export const changePageSlugToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    newSlug: slugInputSchema,
-    /**
-     * `auto` (default): create a 301 from the old slug → new slug.
-     * `skip`: only choose when the user explicitly says they don't
-     * want existing inbound links to redirect.
-     */
-    redirectFromOld: z.enum(["auto", "skip"]).default("auto"),
-  })
-  .strict();
-
 export const deletePageToolInput = z
   .object({
     pageId: z.string().uuid(),
@@ -676,7 +650,7 @@ export const duplicatePageToolInput = z
   })
   .strict();
 
-export const changeTemplateToolInput = z
+export const repointPageTemplateToolInput = z
   .object({
     pageId: z.string().uuid(),
     newTemplateId: z.string().uuid(),
@@ -931,9 +905,6 @@ export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
 export type ComposeFromImportToolInput = z.infer<typeof composeFromImportToolInput>;
 export type MigrateImportMediaToolInput = z.infer<typeof migrateImportMediaToolInput>;
-export type RenamePageToolInput = z.infer<typeof renamePageToolInput>;
-export type SetPageTitleToolInput = z.infer<typeof setPageTitleToolInput>;
-export type ChangePageSlugToolInput = z.infer<typeof changePageSlugToolInput>;
 export type DeletePageToolInput = z.infer<typeof deletePageToolInput>;
 export type RemoveModuleFromPageToolInput = z.infer<typeof removeModuleFromPageToolInput>;
 export type SetStructuredSetToolInput = z.infer<typeof setStructuredSetToolInput>;
@@ -951,7 +922,7 @@ export type SetTemplateLayoutToolInput = z.infer<typeof setTemplateLayoutToolInp
 export type CreateLayoutToolInput = z.infer<typeof createLayoutToolInput>;
 export type SetSiteDefaultsToolInput = z.infer<typeof setSiteDefaultsToolInput>;
 export type DuplicatePageToolInput = z.infer<typeof duplicatePageToolInput>;
-export type ChangeTemplateToolInput = z.infer<typeof changeTemplateToolInput>;
+export type RepointPageTemplateToolInput = z.infer<typeof repointPageTemplateToolInput>;
 export type MoveModuleToolInput = z.infer<typeof moveModuleToolInput>;
 export type ReorderModuleToolInput = z.infer<typeof reorderModuleToolInput>;
 // v0.10.22 — `SetNavMenuToolInput` removed alongside `set_nav_menu` tool.

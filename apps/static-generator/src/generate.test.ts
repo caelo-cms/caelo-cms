@@ -156,7 +156,7 @@ describe("missingRootPageError", () => {
     expect(msg).not.toBeNull();
     expect(msg).toContain("no page serves the site root");
     // The message carries the next step for the AI (CLAUDE.md §11).
-    expect(msg).toContain("change_page_slug");
+    expect(msg).toContain("update_pages_many");
     expect(msg).toContain("'home'");
   });
 

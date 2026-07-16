@@ -82,7 +82,7 @@ describe("P5 actor scope: modules.update widened to include AI", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("AI can call pages.update (P6.7.5 — drives rename_page / set_page_title / change_page_slug)", async () => {
+  it("AI can call pages.update (P6.7.5 — drives update_pages_many)", async () => {
     // Non-existent page → HandlerError(page not found), NOT
     // ActorScopeRejected. Proves the validator allows AI through.
     const r = await execute(registry, adapter, AI, "pages.update", {

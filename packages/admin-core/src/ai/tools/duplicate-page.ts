@@ -7,7 +7,7 @@
  * duplicated page inherits the source page's templateId by default;
  * pass `targetTemplateId` to clone into a different page-type, but
  * note that block names must line up (mismatched names need a
- * follow-up `change_template` to migrate orphans).
+ * follow-up `repoint_page_template` to migrate orphans).
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -23,7 +23,7 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
     "Clone an existing page under a new slug. Modules are shared by reference (edits propagate to both pages). " +
     "Use when the user says 'make a copy of this page' or 'duplicate the about page'. " +
     "If cloning to a different page-type via `targetTemplateId`, block names must align — if they don't, modules in " +
-    "unmatched blocks orphan immediately. Follow up with `change_template` to migrate or drop those orphans. " +
+    "unmatched blocks orphan immediately. Follow up with `repoint_page_template` to migrate or drop those orphans. " +
     "Soft-deleted modules on the source are filtered out at clone time; the audit log surfaces the dropped count.",
   schema: duplicatePageToolInput,
   inputSchema: {

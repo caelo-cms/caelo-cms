@@ -14,8 +14,6 @@ import {
   updatePagesManyTool,
 } from "./bulk-pages-modules.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
-import { changePageSlugTool } from "./change-page-slug.js";
-import { changeTemplateTool } from "./change-template.js";
 import { checkGenesisParityTool } from "./check-genesis-parity.js";
 import { composeFromImportTool } from "./compose-from-import.js";
 import { createContentInstanceTool } from "./create-content-instance.js";
@@ -105,8 +103,8 @@ import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./re
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
-import { renamePageTool } from "./rename-page.js";
 import { reorderModuleTool } from "./reorder-module.js";
+import { repointPageTemplateTool } from "./repoint-page-template.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotExternalPageTool } from "./screenshot-external-page.js";
 import { screenshotPageTool } from "./screenshot-page.js";
@@ -117,7 +115,6 @@ import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageModuleContentManyTool } from "./set-page-module-content-many.js";
 import { setPageSeoTool } from "./set-page-seo.js";
 import { setPageStatusTool } from "./set-page-status.js";
-import { setPageTitleTool } from "./set-page-title.js";
 import { setPagesStatusManyTool } from "./set-pages-status-many.js";
 import { setPlacementContentTool } from "./set-placement-content.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
@@ -228,9 +225,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // the source site; the tool description tells the AI to call it
   // right after compose_from_import.
   registry.register(migrateMediaTool);
-  registry.register(renamePageTool);
-  registry.register(setPageTitleTool);
-  registry.register(changePageSlugTool);
+  // audit #3 — page metadata (name / title / slug / template / status) is ONE
+  // tool for 1..200 pages: update_pages_many. The former rename_page /
+  // set_page_title / change_page_slug were thin single-field wrappers over
+  // pages.update, and the slug side-effects now live in that op.
   registry.register(deletePageTool);
   registry.register(removeModuleFromPageTool);
   // v0.10.22 — unified structured-sets CRUD surface. Replaces the
@@ -258,7 +256,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(revertChatChangesTool);
   // P6.7.7 — content-ops follow-ups.
   registry.register(duplicatePageTool);
-  registry.register(changeTemplateTool);
+  registry.register(repointPageTemplateTool);
   registry.register(moveModuleTool);
   registry.register(reorderModuleTool);
   // P7 — media library.

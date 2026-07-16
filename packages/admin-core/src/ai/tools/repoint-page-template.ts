@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7.7 — `change_template`. Re-points a page's templateId, migrating
+ * P6.7.7 — `repoint_page_template`. Re-points a page's templateId, migrating
  * modules where the old + new template share block names. Modules in
  * orphaned blocks (block name not present on the new template) are
  * either dropped or relocated to a designated block per
@@ -16,14 +16,14 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { changeTemplateToolInput } from "@caelo-cms/shared";
+import { repointPageTemplateToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
-export const changeTemplateTool: ToolDefinitionWithHandler<
-  import("@caelo-cms/shared").ChangeTemplateToolInput
+export const repointPageTemplateTool: ToolDefinitionWithHandler<
+  import("@caelo-cms/shared").RepointPageTemplateToolInput
 > = {
-  name: "change_template",
+  name: "repoint_page_template",
   description:
     "Re-point a page to a different template (page-type). Modules in matching block names migrate; " +
     "modules in unmatched blocks are dropped or moved to a named block per `orphanDisposition`. " +
@@ -31,7 +31,7 @@ export const changeTemplateTool: ToolDefinitionWithHandler<
     "After the call, surface the returned `migratedBlocks` and `droppedModules` lists in your reply. " +
     "Prefer `update_pages_many` when re-pointing > 1 page to the same template (note: it does NOT do block-migration; " +
     "use this single-page tool when block-migration is needed, even repeated).",
-  schema: changeTemplateToolInput,
+  schema: repointPageTemplateToolInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,

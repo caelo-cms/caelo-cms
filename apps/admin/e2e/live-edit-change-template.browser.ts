@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7.7 — `change_template` re-points a page's templateId, migrating
+ * P6.7.7 — `repoint_page_template` re-points a page's templateId, migrating
  * modules where block names line up; orphans drop or relocate per
  * disposition. Verifies via direct AI-tool execution: the response
  * surfaces `migratedBlocks` + `droppedModules`.

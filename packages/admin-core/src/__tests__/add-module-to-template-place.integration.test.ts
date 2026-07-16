@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #243 — `add_module_to_template` place-existing path, end-to-end
+ * issue #243 — `add_module` (target='template') place-existing path, end-to-end
  * against real Postgres. Seeds a template + two bound pages + one already-
  * existing module, then drives the tool handler in place mode (`moduleId`)
  * and asserts:
  *   - the SAME module lands in the target block on BOTH pages;
  *   - no duplicate module was minted (the reuse invariant — before #243
- *     the AI had to fall back to add_module_to_page, which only worked
+ *     the AI had to fall back to a per-page placement, which only worked
  *     when the template had exactly one page).
  *
  * Driven with a `system` actor so the AI cold-start gate is bypassed

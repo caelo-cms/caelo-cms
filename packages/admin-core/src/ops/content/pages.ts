@@ -9,6 +9,7 @@
 
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  type ExecutionContext,
   err,
   extractMediaRefs,
   localeSchema,
@@ -31,7 +32,13 @@ import {
   loadPageStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
+// A slug change fans out beyond the pages table (301 + link rewrites). These
+// handlers are composed on the caller's tx so the whole move is atomic; none
+// of these modules import pages.ts back, so there is no import cycle.
+import { createRedirectOp } from "../redirects.js";
+import { rewriteModuleLinksOp } from "../seo.js";
 import { readSiteDefaults } from "../site_defaults.js";
+import { listStructuredSetsOp, setStructuredSetOp } from "../structured_sets.js";
 import { recomputePageContentHash } from "./content_hash.js";
 
 const pageRowSchema = z.object({
@@ -705,12 +712,134 @@ export const createPageOp = defineOperation({
   },
 });
 
+/**
+ * A slug change rewrites a page's public URL, so it is never JUST a field
+ * write: the old URL must keep working (301) and every link that pointed at
+ * it must follow. This runs those side-effects on the CALLER'S `tx`, so the
+ * slug write + redirect + link rewrites commit or roll back together.
+ *
+ * Why it lives in the op and not the tool: the side-effects used to sit in the
+ * `change_page_slug` tool as a chain of separate `execute()` calls. That left
+ * two holes — (a) `pages.update_many` (the tool the AI is explicitly steered to
+ * for multi-page edits) went straight to the field write and silently produced
+ * ZERO redirects, stranding every inbound link, and (b) the chain was not
+ * atomic despite claiming to be, so a mid-chain failure left a moved page with
+ * no redirect. Both callers now inherit the full semantics for free
+ * (CLAUDE.md §11: a cross-domain patch spanning >1 op call belongs inside one op).
+ */
+async function applySlugChangeSideEffects(
+  ctx: ExecutionContext,
+  tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
+  args: {
+    oldSlug: string;
+    newSlug: string;
+    locale: string;
+    redirectFromOld: "auto" | "skip";
+  },
+): Promise<{ rewrittenSets: number; rewrittenModules: number }> {
+  const oldPath = publicPathFor(args.oldSlug, args.locale);
+  const newPath = publicPathFor(args.newSlug, args.locale);
+
+  // Rewrite nav-menu / link-list hrefs (recursing into nav-menu children).
+  // Queried per-kind rather than listing everything and filtering here: these
+  // are the only two kinds that carry hrefs, so the other kinds are pure waste.
+  let rewrittenSets = 0;
+  const hrefKinds = ["nav-menu", "link-list"] as const;
+  for (const kind of hrefKinds) {
+    const listed = await listStructuredSetsOp.handler(ctx, { kind }, tx);
+    if (!listed.ok) continue;
+    const sets = (
+      listed.value as {
+        sets: { kind: string; slug: string; displayName: string; items: unknown }[];
+      }
+    ).sets;
+    for (const s of sets) {
+      const next = rewriteHrefs(s.items as unknown[], oldPath, newPath);
+      if (!next.changed) continue;
+      const w = await setStructuredSetOp.handler(
+        ctx,
+        {
+          kind: s.kind as "nav-menu" | "link-list",
+          slug: s.slug,
+          displayName: s.displayName,
+          items: next.items,
+        },
+        tx,
+      );
+      if (w.ok) rewrittenSets += 1;
+    }
+  }
+
+  // The long tail: <a href="/old…"> inside module bodies. System actor so the
+  // writes pass RLS regardless of who initiated the slug change.
+  const moduleRewrite = await rewriteModuleLinksOp.handler(
+    { ...ctx, actorKind: "system" },
+    { oldSlug: args.oldSlug, newSlug: args.newSlug },
+    tx,
+  );
+  const rewrittenModules = moduleRewrite.ok
+    ? (moduleRewrite.value as { rewrittenModuleIds: string[] }).rewrittenModuleIds.length
+    : 0;
+
+  if (args.redirectFromOld !== "skip") {
+    const red = await createRedirectOp.handler(
+      ctx,
+      { fromPath: oldPath, toPath: newPath, statusCode: 301 },
+      tx,
+    );
+    // Loud, not silent: a slug change whose 301 failed to land is exactly the
+    // state that strands inbound links, so it must abort the whole tx.
+    if (!red.ok) throw new Error(`slug change aborted — redirect ${oldPath} → ${newPath} failed`);
+  }
+  return { rewrittenSets, rewrittenModules };
+}
+
+/**
+ * Public URL for a page. Mirrors the historical `change_page_slug` behaviour
+ * (default locale is unprefixed).
+ *
+ * FIXME(issue #323): "en" is hardcoded as the default locale here, matching
+ * the tool this logic came from. The default locale is admin-configurable
+ * (CMS_REQUIREMENTS §17.4), so this should read the locale config instead.
+ * Kept behaviour-preserving in the move; tracked separately.
+ */
+function publicPathFor(slug: string, locale: string): string {
+  return locale === "en" ? `/${slug}` : `/${locale}/${slug}`;
+}
+
+interface HrefRewriteResult {
+  items: unknown[];
+  changed: boolean;
+}
+/** Swap `oldPath` → `newPath` on every item href, recursing into children. */
+function rewriteHrefs(items: unknown[], oldPath: string, newPath: string): HrefRewriteResult {
+  let changed = false;
+  const next = items.map((it) => {
+    if (!it || typeof it !== "object") return it;
+    const obj = it as Record<string, unknown>;
+    const out: Record<string, unknown> = { ...obj };
+    if (typeof obj.href === "string" && obj.href === oldPath) {
+      out.href = newPath;
+      changed = true;
+    }
+    if (Array.isArray(obj.children)) {
+      const child = rewriteHrefs(obj.children as unknown[], oldPath, newPath);
+      if (child.changed) {
+        out.children = child.items;
+        changed = true;
+      }
+    }
+    return out;
+  });
+  return { items: next, changed };
+}
+
 export const updatePageOp = defineOperation({
   name: "pages.update",
-  // P6.7.5 — AI calls this via the rename_page / set_page_title /
-  // change_page_slug tools. The tool layer carries the intent split
-  // (name vs title vs slug) so the AI can never silently substitute
-  // one identifier for another.
+  // P6.7.5 — the three identifiers (name / title / slug) are separate optional
+  // fields so a caller can never silently substitute one for another. A `slug`
+  // change additionally fires the URL side-effects (301 + link rewrites) in
+  // this same transaction — see applySlugChangeSideEffects.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: pageUpdateSchema,
@@ -840,6 +969,17 @@ export const updatePageOp = defineOperation({
       await tx.execute(sql`
         UPDATE pages SET ${sets} WHERE id = ${input.pageId}::uuid
       `);
+      // The URL moved — keep the old one alive and drag every link along, in
+      // THIS transaction. Every caller of pages.update (incl. the update_many
+      // bulk path) inherits this; before, only the change_page_slug tool did.
+      if (input.slug !== undefined && input.slug !== existing.slug) {
+        await applySlugChangeSideEffects(ctx, tx, {
+          oldSlug: existing.slug,
+          newSlug: input.slug,
+          locale: existing.locale,
+          redirectFromOld: input.redirectFromOld ?? "auto",
+        });
+      }
       state = await loadPageState(tx, input.pageId);
     }
     await recordAudit(tx, {
