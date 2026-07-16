@@ -798,7 +798,7 @@ async function applySlugChangeSideEffects(
  * Public URL for a page. Mirrors the historical `change_page_slug` behaviour
  * (default locale is unprefixed).
  *
- * FIXME(issue #323): "en" is hardcoded as the default locale here, matching
+ * FIXME(issue #326): "en" is hardcoded as the default locale here, matching
  * the tool this logic came from. The default locale is admin-configurable
  * (CMS_REQUIREMENTS §17.4), so this should read the locale config instead.
  * Kept behaviour-preserving in the move; tracked separately.
