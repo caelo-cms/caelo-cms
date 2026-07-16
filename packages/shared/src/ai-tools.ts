@@ -841,14 +841,6 @@ export type BulkCreateRedirectsToolInput = z.infer<typeof bulkCreateRedirectsToo
  * `status='published'`. Use the bulk form for "publish all drafts" or
  * any N>1 flip — saves N round-trips + N snapshot writes + N audit rows.
  */
-export const setPageStatusToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    status: z.enum(["draft", "published"]),
-  })
-  .strict();
-export type SetPageStatusToolInput = z.infer<typeof setPageStatusToolInput>;
-
 export const setPagesStatusManyToolInput = z
   .object({
     pageIds: z.array(z.string().uuid()).min(1).max(200),
