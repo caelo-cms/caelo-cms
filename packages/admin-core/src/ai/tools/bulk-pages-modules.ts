@@ -18,8 +18,13 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { moduleUpdateSchema } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
+import {
+  MODULE_FIELDS_JSON_SCHEMA,
+  MODULE_META_JSON_SCHEMA_PROPS,
+} from "./_module-fields-schema.js";
 import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -224,16 +229,17 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
 
 // ─── update_modules_many ─────────────────────────────────────────────
 
-const moduleUpdateItem = z
-  .object({
-    moduleId: uuid,
-    displayName: z.string().min(1).max(256).optional(),
-    html: z.string().optional(),
-    css: z.string().optional(),
-    js: z.string().optional(),
-  })
+// audit #4 follow-up — reuse the shared `moduleUpdateSchema` (the SAME schema
+// modules.update / modules.update_many validate against) rather than a
+// hand-written subset. The old subset was `{moduleId, displayName, html, css,
+// js}` — it `.strict()`-rejected `description`/`kind`/`type`/`fields` before
+// they reached the op that DOES support them, so a bulk edit could not change
+// a module's field schema or metadata and the AI had to fall back to N×
+// edit_module (the exact N+1 chain the bulk tool exists to replace). Reusing
+// the shared schema means the tool can never be a subset of the op again.
+const moduleUpdateInput = z
+  .object({ updates: z.array(moduleUpdateSchema).min(1).max(200) })
   .strict();
-const moduleUpdateInput = z.object({ updates: z.array(moduleUpdateItem).min(1).max(200) }).strict();
 type ModuleUpdateInput = z.infer<typeof moduleUpdateInput>;
 
 export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput> = {
@@ -242,8 +248,9 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
     "Bulk module body edits across 1–200 modules in one tool call. " +
     "Use when the operator says 'change the CTA in these 5 hero modules', 'fix the typo across these footer modules', " +
     "'apply this CSS tweak to all card modules'. " +
-    "Each item is the same shape as `edit_module` (moduleId + optional displayName/html/css/js); per-item failures " +
-    "are reported but the rest of the batch still applies. " +
+    "Each item is the FULL `edit_module` shape (moduleId + optional displayName/description/kind/type/html/css/js/fields) — " +
+    "including `fields` and `kind`/`description`, so a bulk edit can restructure a module's field schema, not just its body. " +
+    "Per-item failures are reported but the rest of the batch still applies. " +
     "Prefer this over multiple `edit_module` calls when targeting > 1 module. Each updated module emits its own " +
     "snapshot, so revert_module (or revert_site) can undo the lot.",
   schema: moduleUpdateInput,
@@ -263,9 +270,13 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
           properties: {
             moduleId: { type: "string", format: "uuid" },
             displayName: { type: "string", minLength: 1, maxLength: 256 },
+            // Same shared meta + fields schemas add_module / edit_module use —
+            // so the bulk tool exposes the identical authoring surface.
+            ...MODULE_META_JSON_SCHEMA_PROPS,
             html: { type: "string" },
             css: { type: "string" },
             js: { type: "string", description: MODULE_JS_CONTRACT },
+            fields: MODULE_FIELDS_JSON_SCHEMA,
           },
         },
       },
