@@ -81,21 +81,57 @@ describe("resolveAnthropicToolSearchMode", () => {
     expect(resolveAnthropicToolSearchMode("off")).toBe("off");
   });
 
-  it("reads from env when no override is supplied", () => {
+  it("reads from env when no override is supplied; unset defaults to bm25", () => {
     const prev = process.env.CAELO_ANTHROPIC_TOOL_SEARCH;
     try {
       process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "bm25";
       expect(resolveAnthropicToolSearchMode()).toBe("bm25");
       process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "REGEX";
       expect(resolveAnthropicToolSearchMode()).toBe("regex");
+      process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "off";
+      expect(resolveAnthropicToolSearchMode()).toBe("off");
+      // Tool Search is the default since the catalogue crossed 100
+      // tools: unset (and unknown values) resolve to bm25, and the
+      // operator opts OUT with the explicit "off".
       process.env.CAELO_ANTHROPIC_TOOL_SEARCH = "nonsense";
-      expect(resolveAnthropicToolSearchMode()).toBe("off");
+      expect(resolveAnthropicToolSearchMode()).toBe("bm25");
       delete process.env.CAELO_ANTHROPIC_TOOL_SEARCH;
-      expect(resolveAnthropicToolSearchMode()).toBe("off");
+      expect(resolveAnthropicToolSearchMode()).toBe("bm25");
     } finally {
       if (prev === undefined) delete process.env.CAELO_ANTHROPIC_TOOL_SEARCH;
       else process.env.CAELO_ANTHROPIC_TOOL_SEARCH = prev;
     }
+  });
+});
+
+describe("AnthropicProvider cache-breakpoint cap", () => {
+  it("tags at most 4 system chunks with cacheControl (Anthropic's hard limit)", async () => {
+    const { mock, provider } = makeMockAndProvider({ toolSearch: "off" });
+    // 5 cacheable chunks — the tool-playbook chunk pushed the composer
+    // past the old exactly-4 shape; the provider must cap, not 400.
+    const chunks = ["base", "tool-playbook", "module-model", "staging", "memory"].map((label) => ({
+      body: `[${label}]`,
+      cacheable: true,
+      label,
+    }));
+    await drain(
+      provider.generate({
+        systemPrompt: chunks,
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+      }),
+    );
+    const prompt = mock.doStreamCalls[0]!.prompt as Array<{
+      role: string;
+      providerOptions?: { anthropic?: { cacheControl?: unknown } };
+    }>;
+    const sys = prompt.filter((m) => m.role === "system");
+    expect(sys.length).toBe(5);
+    const tagged = sys.filter((m) => m.providerOptions?.anthropic?.cacheControl);
+    expect(tagged.length).toBe(4);
+    // The FIRST chunk is the untagged one — it still rides inside every
+    // later breakpoint's cached prefix.
+    expect(sys[0]?.providerOptions?.anthropic?.cacheControl).toBeUndefined();
   });
 });
 
@@ -164,6 +200,36 @@ describe("AnthropicProvider tool-search transform (W2)", () => {
     for (const t of regular) {
       expect(t.providerOptions?.anthropic?.deferLoading).toBe(true);
     }
+  });
+
+  it("keeps alwaysLoaded (core) tools fully loaded while deferring the rest", async () => {
+    const { mock, provider } = makeMockAndProvider({ toolSearch: "bm25" });
+    const tools = fakeTools(15).map((t, i) =>
+      // Flag the first three as core workflow tools.
+      i < 3 ? { ...t, alwaysLoaded: true } : t,
+    );
+    await drain(
+      provider.generate({
+        systemPrompt: "sys",
+        messages: [{ role: "user", content: "hi" }],
+        tools,
+      }),
+    );
+    const sent = mock.doStreamCalls[0]!.tools as Array<{
+      name?: string;
+      providerOptions?: { anthropic?: { deferLoading?: boolean } };
+    }>;
+    for (const t of sent) {
+      if (!t.name?.startsWith("tool_")) continue; // skip the search tool
+      const idx = Number(t.name.slice("tool_".length));
+      if (idx < 3) {
+        expect(t.providerOptions?.anthropic?.deferLoading).toBeUndefined();
+      } else {
+        expect(t.providerOptions?.anthropic?.deferLoading).toBe(true);
+      }
+    }
+    // The search tool is still injected alongside the core set.
+    expect(sent.find((t) => t.name === "toolSearch")).toBeDefined();
   });
 
   it("uses the regex variant when toolSearch=regex", async () => {

@@ -29,6 +29,7 @@ import { estimateHistoryTokens, estimateTextTokens } from "./compaction.js";
  */
 const CORE_PROMPT_LABELS: ReadonlySet<string> = new Set([
   "base",
+  "tool-playbook",
   "module-model",
   "staging",
   "memory",

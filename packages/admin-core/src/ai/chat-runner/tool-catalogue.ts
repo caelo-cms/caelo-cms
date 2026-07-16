@@ -13,6 +13,7 @@ import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
 import type { ChatEngagement } from "@caelo-cms/shared";
 
 import type { ToolDefinition } from "../provider.js";
+import { CORE_TOOL_NAMES } from "../tools/core-tools.js";
 import type { ToolDescribeState } from "../tools/describe-state.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { resolveAllowlistEntries } from "./allowlist-mapping.js";
@@ -239,8 +240,12 @@ export function buildToolCatalogue(args: {
     if (spawnAllowed && !spawnAllowed.has(spec.name)) return false;
     return true;
   });
-  const result = [
-    ...builtinTools,
+  // Tool-search hint: core workflow tools keep full definitions in
+  // every request (see core-tools.ts); the rest may be deferred behind
+  // the provider's tool-search surface. Plugin tools are long-tail by
+  // definition — always deferrable.
+  const result: FilteredTool[] = [
+    ...builtinTools.map((t) => (CORE_TOOL_NAMES.has(t.name) ? { ...t, alwaysLoaded: true } : t)),
     ...pluginTools.map(({ spec }) => ({
       name: spec.name,
       description: spec.description,

@@ -20,6 +20,15 @@ export interface ToolDefinition {
   readonly description: string;
   /** JSON Schema describing the tool input. */
   readonly inputSchema: Record<string, unknown>;
+  /**
+   * Tool-search hint: when a provider defers tool loading behind a
+   * search surface (Anthropic Tool Search), tools flagged here keep
+   * their full definition in every request. Set from CORE_TOOL_NAMES
+   * (the everyday workflow tools named in the system prompt's tool
+   * playbook) so the model can call them without a discovery
+   * round-trip. Providers without deferred loading ignore the flag.
+   */
+  readonly alwaysLoaded?: boolean;
 }
 
 export interface ChatMessageInput {

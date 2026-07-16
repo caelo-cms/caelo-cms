@@ -435,4 +435,40 @@ describe("buildToolCatalogue", () => {
     });
     expect(result.map((t) => t.name)).toEqual(["list_pages"]);
   });
+
+  // Tool Search default-on — core workflow tools carry alwaysLoaded so
+  // the Anthropic transform keeps their full definitions in every
+  // request; the long tail defers behind the search tool.
+  it("tags core tools with alwaysLoaded and leaves the long tail untagged", () => {
+    const tools = registry("edit_module", "build_page", "set_page_seo", "list_pages");
+    const result = buildToolCatalogue({
+      tools,
+      toolDescribeState: state,
+      allowedToolNames: null,
+      engagedSkills: [],
+      excluded: undefined,
+      chatSessionId,
+    });
+    const byName = new Map(result.map((t) => [t.name, t]));
+    expect(byName.get("edit_module")?.alwaysLoaded).toBe(true);
+    expect(byName.get("build_page")?.alwaysLoaded).toBe(true);
+    expect(byName.get("list_pages")?.alwaysLoaded).toBe(true);
+    // set_page_seo is deliberately long-tail: named in the playbook,
+    // loaded on demand via tool search.
+    expect(byName.get("set_page_seo")?.alwaysLoaded).toBeUndefined();
+  });
+});
+
+describe("CORE_TOOL_NAMES", () => {
+  it("every core tool name matches a tool in the default registry (no drift)", async () => {
+    const { CORE_TOOL_NAMES } = await import("../tools/core-tools.js");
+    const { createDefaultToolRegistry } = await import("../tools/index.js");
+    const live = new Set(
+      createDefaultToolRegistry()
+        .catalogue(state)
+        .map((t) => t.name),
+    );
+    const dead = [...CORE_TOOL_NAMES].filter((n) => !live.has(n));
+    expect(dead).toEqual([]);
+  });
 });

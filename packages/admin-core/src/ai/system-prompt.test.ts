@@ -4,7 +4,7 @@ import { describe, expect, it } from "bun:test";
 import { composeSystemPromptChunks } from "./system-prompt.js";
 
 describe("composeSystemPromptChunks", () => {
-  it("emits base + module-model + staging + memory as cacheable chunks in stable order", () => {
+  it("emits base + tool-playbook + module-model + staging + memory as cacheable chunks in stable order", () => {
     const chunks = composeSystemPromptChunks([{ slot: "tone", body: "calm" }]);
     // v0.4.0 — the module-model chunk sits between base and memory and is
     // cacheable (stable across every call).
@@ -12,8 +12,34 @@ describe("composeSystemPromptChunks", () => {
     // it explains the pending → staged → published flow.
     // 0163 — NO `tools` chunk: the tool set is already sent as the provider
     // `tools` param, so a prose duplicate was ~23.5k wasted tokens per cold call.
-    expect(chunks.map((c) => c.label)).toEqual(["base", "module-model", "staging", "memory"]);
+    // Tool Search default-on — the tool-playbook chunk replaces the deferred
+    // long tail's descriptions with an intent → tool-name map.
+    expect(chunks.map((c) => c.label)).toEqual([
+      "base",
+      "tool-playbook",
+      "module-model",
+      "staging",
+      "memory",
+    ]);
     for (const c of chunks) expect(c.cacheable).toBe(true);
+  });
+
+  // Tool Search default-on — the playbook is how the model knows which
+  // DEFERRED tool to search for. Lock the workflow anchors + the
+  // discovery instruction so a rewrite can't silently drop them.
+  it("tool-playbook names the workflow tools and the tool-search discovery path", () => {
+    const chunks = composeSystemPromptChunks([]);
+    const playbook = chunks.find((c) => c.label === "tool-playbook");
+    expect(playbook).toBeDefined();
+    const body = playbook?.body ?? "";
+    // One anchor per workflow: create / modify / extend / import.
+    expect(body).toContain("`build_page`");
+    expect(body).toContain("`set_page_module_content`");
+    expect(body).toContain("`add_module`");
+    expect(body).toContain("`propose_site_import`");
+    // The discovery instruction: more tools exist + search loads them.
+    expect(body).toContain("NOT the full catalogue");
+    expect(body).toContain("tool-search tool");
   });
 
   it("appends chips as a non-cacheable trailing chunk", () => {
@@ -35,7 +61,13 @@ describe("composeSystemPromptChunks", () => {
     const chunks = composeSystemPromptChunks([]);
     // v0.4.0 — base + module-model are always present.
     // v0.5.5 — staging joins them as a third permanent cacheable chunk.
-    expect(chunks.map((c) => c.label)).toEqual(["base", "module-model", "staging"]);
+    // Tool Search default-on — tool-playbook joins as the fourth.
+    expect(chunks.map((c) => c.label)).toEqual([
+      "base",
+      "tool-playbook",
+      "module-model",
+      "staging",
+    ]);
   });
 
   // v0.5.9 — wording-lock: production silent-fail traced to STAGING_BLOCK

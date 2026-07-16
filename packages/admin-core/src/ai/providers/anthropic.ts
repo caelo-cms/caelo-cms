@@ -52,9 +52,11 @@ const DEFAULT_BASE_URL = "https://api.anthropic.com";
  * caelo's chat-runner handles via its existing ToolRegistry path.
  *
  * Anthropic released this with Opus 4.5 / Sonnet 4.5 (Nov 2025); newer
- * models inherit the capability. Off by default — operator opts in via
- * `CAELO_ANTHROPIC_TOOL_SEARCH={bm25|regex}` after confirming the
- * deployed model supports it.
+ * models inherit the capability. ON by default (`bm25`) since the
+ * catalogue crossed 100 tools — the operator can opt out (or switch
+ * algorithm) via `CAELO_ANTHROPIC_TOOL_SEARCH={off|bm25|regex}`.
+ * Core workflow tools stay fully loaded (see tools/core-tools.ts);
+ * only the long tail defers behind the search surface.
  */
 export type AnthropicToolSearchMode = "off" | "bm25" | "regex";
 
@@ -63,9 +65,10 @@ interface AnthropicProviderOptions {
   readonly model: string;
   readonly baseUrl?: string;
   /**
-   * v0.6.0 W2 — enable server-side Tool Search to drop per-turn
-   * tool-description tokens. Off by default; opt-in via
-   * `CAELO_ANTHROPIC_TOOL_SEARCH={bm25|regex}` env var.
+   * v0.6.0 W2 — server-side Tool Search drops per-turn tool-description
+   * tokens for the deferred long tail. Defaults to `bm25` via
+   * `resolveAnthropicToolSearchMode`; opt out (or switch algorithm) with
+   * the `CAELO_ANTHROPIC_TOOL_SEARCH={off|bm25|regex}` env var.
    */
   readonly toolSearch?: AnthropicToolSearchMode;
   /**
@@ -75,6 +78,16 @@ interface AnthropicProviderOptions {
    */
   readonly _modelOverride?: import("ai").LanguageModel;
 }
+
+/**
+ * Anthropic rejects requests carrying more than 4 `cache_control`
+ * breakpoints. A breakpoint caches the ENTIRE prefix before it, so when
+ * the composer emits more cacheable chunks than the limit, tagging only
+ * the LAST 4 loses nothing: the untagged leading chunks are still
+ * inside every later breakpoint's cached prefix — they just stop being
+ * standalone fallback prefixes of their own.
+ */
+const MAX_CACHE_BREAKPOINTS = 4;
 
 /**
  * System prompt → SDK system shape. The SDK accepts a string OR
@@ -101,11 +114,14 @@ function buildSystemAndMessages(
     return { system: prompt, messages: userMessages };
   }
   // Chunked prompt — each cacheable chunk gets its own
-  // SystemModelMessage with anthropic.cacheControl.
-  const sysMessages: SystemModelMessage[] = prompt.map((c) => ({
+  // SystemModelMessage with anthropic.cacheControl, capped at the
+  // API's breakpoint limit (see MAX_CACHE_BREAKPOINTS above).
+  const cacheableIndices = prompt.flatMap((c, i) => (c.cacheable ? [i] : []));
+  const tagged = new Set(cacheableIndices.slice(-MAX_CACHE_BREAKPOINTS));
+  const sysMessages: SystemModelMessage[] = prompt.map((c, i) => ({
     role: "system",
     content: c.body,
-    ...(c.cacheable
+    ...(tagged.has(i)
       ? { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } }
       : {}),
   }));
@@ -201,12 +217,18 @@ export class AnthropicProvider implements AIProvider {
         engaged: useToolSearch,
       });
     }
+    // Core workflow tools (ToolDefinition.alwaysLoaded, set from
+    // CORE_TOOL_NAMES) keep their full definition in every request so a
+    // routine edit never needs a discovery round-trip; only the long
+    // tail defers behind the search tool.
+    const alwaysLoadedNames = new Set(input.tools.filter((t) => t.alwaysLoaded).map((t) => t.name));
     const toolsTransform = useToolSearch
       ? (built: Record<string, unknown>): Record<string, unknown> => {
-          // Mark every caelo tool as deferred so its description does
-          // NOT ship in the first request body — Claude has to call
-          // the search tool to discover it.
-          for (const def of Object.values(built)) {
+          // Mark every non-core caelo tool as deferred so its
+          // description does NOT ship in the first request body —
+          // Claude calls the search tool to discover it.
+          for (const [name, def] of Object.entries(built)) {
+            if (alwaysLoadedNames.has(name)) continue;
             if (def && typeof def === "object") {
               const existing = (def as { providerOptions?: Record<string, unknown> })
                 .providerOptions;
