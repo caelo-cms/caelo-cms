@@ -2,15 +2,19 @@
 
 /**
  * Composes the system prompt sent to the AI provider on every chat
- * call. Pulls Owner-curated `site_ai_memory` slots, orders them
- * deterministically (so prompt-cache hits accumulate across calls),
- * and appends a brief tool catalogue.
+ * call. Pulls Owner-curated `site_ai_memory` slots and orders them
+ * deterministically (so prompt-cache hits accumulate across calls).
+ * There is NO prose tool catalogue: loaded tools ship as the provider
+ * `tools` param, and the deferred long tail (Tool Search, on by
+ * default) is covered by the `tool-playbook` chunk's intent →
+ * tool-name map.
  *
  * Returns ordered chunks (P5.2 #4) so adapters that support prompt-
- * cache can mark the long-lived chunks (`base`, `memory`, `tools`)
- * cacheable while leaving short-lived chunks (per-turn chips,
- * engaged-skill bodies) outside the cache. `composeSystemPromptString`
- * concatenates for callers that don't care about the structure.
+ * cache can mark the long-lived chunks (`base`, `tool-playbook`,
+ * `module-model`, `staging`, `memory`) cacheable while leaving
+ * short-lived chunks (per-turn chips, engaged-skill bodies) outside
+ * the cache. `composeSystemPromptString` concatenates for callers
+ * that don't care about the structure.
  */
 
 const SLOT_ORDER = [
@@ -34,11 +38,6 @@ const SLOT_HEADINGS: Record<(typeof SLOT_ORDER)[number], string> = {
 export interface MemoryRow {
   readonly slot: string;
   readonly body: string;
-}
-
-export interface ToolCatalogueEntry {
-  readonly name: string;
-  readonly description: string;
 }
 
 /**
@@ -348,7 +347,9 @@ const BASE_SYSTEM = [
   "You are Caelo, an AI co-editor for a content management system.",
   "Editors describe what they want changed; you respond conversationally and use tools",
   "to make the changes. Briefly state what you're about to do (one sentence), then call",
-  "the tools that do it. Never call tools other than the ones listed below.",
+  "the tools that do it. Never invent tool names: call tools from your tool list, and when",
+  "a capability seems missing, use the tool-search tool (when present) to discover and load",
+  "more — the catalogue is larger than what is pre-loaded (see the tool playbook below).",
   // v0.12.3 (issue #106) — recover, don't punt. The operator is
   // non-technical and describes OUTCOMES; you decide the implementation.
   "When a tool call fails validation with an error that names a valid set of choices",
@@ -401,6 +402,34 @@ const MODULE_MODEL_BLOCK = [
   'When the operator says "the hero looks ugly, redesign it" → edit_module.',
   "When the operator says \"this contact info should be the same on /about and /contact\" → create_content_instance + set_placement_content({syncMode:'synced'}) on both placements.",
   "When in doubt: structural / cross-page styling → edit_module; per-page content → set_page_module_content; explicit cross-page CONTENT reuse → set_placement_content with syncMode='synced'.",
+].join("\n");
+
+// Tool playbook — the standing map from operator intent to tool names.
+// Exists because Tool Search (on by default) defers most of the ~125-tool
+// catalogue: only the core workflow tools (tools/core-tools.ts) ship with
+// full schemas every turn, so this block is how the model knows WHICH
+// deferred tool to search for without a blind-discovery round-trip.
+// KEEP IN SYNC with CORE_TOOL_NAMES: every tool this block presents as
+// the default path must be in the always-loaded core set.
+const TOOL_PLAYBOOK_BLOCK = [
+  "## How Caelo fits together (tool playbook)",
+  "",
+  "The site is assembled, not hand-coded:",
+  "- A **page** binds to a **template** (which defines named blocks); each block holds an ordered list of **module placements**.",
+  "- A **layout** is the chrome shell (header / footer / nav) shared by every template bound to it — site-wide elements live THERE, never per page.",
+  "- A **module** is HTML/CSS/JS plus typed fields; a **content_instance** holds one module's field values (synced = shared across pages, unsynced = private to one placement).",
+  '- Every write lands in this chat\'s branch until the user clicks Stage (see ## Staging). Hard-to-revert actions (deploys, locales, users/roles, layout/template deletes, site reverts) go through `propose_*` tools that queue an Owner-approval card — say "I prepared this — click Approve", never claim they are applied.',
+  "",
+  "Standard workflows (tool names are exact):",
+  "- **Create a new page** → ONE `build_page` call (page + every section module + content, one transaction). `create_page` only for an intentionally empty shell; `duplicate_page` to clone an existing page.",
+  "- **Modify a page** → what changes picks the tool: text/images on ONE page → `set_page_module_content` (batch: `set_page_module_content_many`); design/structure of a section (affects every page using that module) → `edit_module`; page name/title/slug → `update_pages_many`; draft/published → `set_pages_status_many`; delete → `delete_pages_many`; SEO → `set_page_seo` / `optimize_page_seo`.",
+  "- **Extend a page** → `add_module` routed by `target`: 'page' (this page only), 'layout' (site-wide chrome — ONE call covers all pages), 'template' (every page of one type). Rearrange with `move_module` (across blocks) / `reorder_module` (within a block); detach with `remove_module_from`.",
+  "- **Navigation / menus** → `set_structured_set({kind:'nav-menu'})` for the links (never hardcode them into module HTML); read current items first via `get_structured_set`.",
+  "- **Same content on N pages** → `create_content_instance` + `set_placement_content({syncMode:'synced'})` per placement; edit everywhere at once with `set_content_instance_values`; detach one page with `fork_placement_content`.",
+  "- **Import / migrate an existing site** → `propose_site_import` (Owner approves the crawl) → wait for ready_for_review → `compose_from_import` → `migrate_media` → per page: `check_page_content_inventory` + `verify_import_page_fidelity`, record findings via `add_import_page_notes`, close with `get_import_run_report`.",
+  "- **Media** → `find_media` (search the library), `generate_image`, `set_media_alt`. **Redirects** → `bulk_create_redirects` / `find_redirects` / `bulk_delete_redirects`. **Theme & design** → `get_theme`, `set_theme_tokens`, `propose_create_theme`, `set_design_manifest`. **Inspect rendered output** → `inspect_page_render`, `screenshot_page`, `inspect_built_page`. **Parallel work** → `spawn_subagents`.",
+  "",
+  'These are the highlights, NOT the full catalogue — ~125 tools exist (bulk SEO, locales, users/roles, plugins, genesis drafts, theme history, snapshot reverts, …). Only the core tools carry full schemas up front; the rest load on demand. Use the tool-search tool in your tool list to find and load them — search by the exact names above or by keyword ("redirect", "locale", "revert") — and do so proactively whenever a task needs a capability you don\'t see loaded.',
 ].join("\n");
 
 // v0.5.5 — staging model. Every chat write is "pending" until the user
@@ -503,6 +532,7 @@ export function composeSystemPromptChunks(
 ): SystemPromptChunk[] {
   const chunks: SystemPromptChunk[] = [
     { body: BASE_SYSTEM, cacheable: true, label: "base" },
+    { body: TOOL_PLAYBOOK_BLOCK, cacheable: true, label: "tool-playbook" },
     { body: MODULE_MODEL_BLOCK, cacheable: true, label: "module-model" },
     { body: STAGING_BLOCK, cacheable: true, label: "staging" },
   ];
