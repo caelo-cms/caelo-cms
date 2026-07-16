@@ -4,19 +4,23 @@
  * P9 — `propose_add_locale`. Two-step per CLAUDE.md §11.A: AI queues
  * the proposal; the operator approves on the chat's proposal card
  * to apply. AI calls to the execute path hit ActorScopeRejected.
+ *
+ * Built with `makeProposeTool` so the two-step contract wording is the
+ * factory's, not a hand-copy — this tool used to spell it out itself and had
+ * already drifted (it told the AI to "link them to the queue", i.e. point the
+ * operator at an admin page, which is the exact thing the factory's wording
+ * exists to prevent).
  */
 
-import { execute } from "@caelo-cms/query-api";
 import { type ProposeAddLocaleToolInput, proposeAddLocaleToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { makeProposeTool } from "./_make-propose-tool.js";
 
-export const proposeAddLocaleTool: ToolDefinitionWithHandler<ProposeAddLocaleToolInput> = {
-  name: "propose_add_locale",
-  description:
+export const proposeAddLocaleTool = makeProposeTool<ProposeAddLocaleToolInput>({
+  toolName: "propose_add_locale",
+  opName: "locales.propose_create",
+  pendingQueuePath: "/security/locales/pending",
+  when:
     "Propose adding a new locale (language) to the site. " +
-    "TWO-STEP: this only QUEUES the change — approved on the chat's proposal card (queue: /security/locales/pending). " +
-    "Do NOT claim the locale was added; tell the user the proposal is queued and link them to the queue. " +
     "Inputs: code (BCP-47, e.g. 'de' or 'de-AT'), displayName, urlStrategy ('none' | 'subdirectory' | 'subdomain' | 'domain'), urlHost (required for subdomain/domain). " +
     "Default urlStrategy is 'subdirectory' — leave it unless the user explicitly asks for subdomain/domain. " +
     "Subdomain + domain require the Advanced URL Routing toggle (Owner enables under /security/locales).",
@@ -40,24 +44,5 @@ export const proposeAddLocaleTool: ToolDefinitionWithHandler<ProposeAddLocaleToo
       urlHost: { type: ["string", "null"], minLength: 1, maxLength: 253 },
     },
   },
-  handler: async (ctx, input, toolCtx) => {
-    const r = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      ctx,
-      "locales.propose_create",
-      input,
-    );
-    if (!r.ok) {
-      return { ok: false, content: `propose_add_locale failed: ${describeError(r.error)}` };
-    }
-    const { proposalId, preview } = r.value as { proposalId: string; preview: unknown };
-    return {
-      ok: true,
-      content:
-        `Queued proposal ${proposalId} to add locale '${input.code}' (${input.urlStrategy}). ` +
-        `Preview: ${JSON.stringify(preview)}. ` +
-        `Approve it on the proposal card in this chat (queue: /security/locales/pending).`,
-    };
-  },
-};
+  summarize: (input) => `add locale '${input.code}' (${input.urlStrategy ?? "subdirectory"})`,
+});
