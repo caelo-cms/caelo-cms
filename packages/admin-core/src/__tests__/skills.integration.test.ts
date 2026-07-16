@@ -208,20 +208,23 @@ describe("seeded base skills", () => {
     // exist" when asked to set meta-descriptions on a fresh build.
     expect(tools).toContain("set_page_seo");
     // v0.7.5 — add_module_to_layout (migration 0088). Added by 0081,
-    // silently dropped by 0083, missed by 0085 + 0086. The header /
-    // footer / nav chrome lives at the layout level; without this
-    // tool in the allowlist the AI literally cannot see it when the
-    // bootstrap-site skill engages, and the only escape is the
+    // silently dropped by 0083, missed by 0085 + 0086, restored by 0088.
+    // 0164 renamed it: the three add_module_to_* tools became one
+    // `add_module` routed by `target` (#322), so the allowlist now lists
+    // `add_module`. The header / footer / nav chrome lives at the layout
+    // level; without this tool in the allowlist the AI literally cannot see
+    // it when the bootstrap-site skill engages, and the only escape is the
     // dead-end of stuffing chrome into a page's content block.
-    expect(tools).toContain("add_module_to_layout");
+    expect(tools).toContain("add_module");
   });
 
   // v0.6.1 — compose-page is the most frequently engaged skill on
   // build prompts. Migration 0086 added the three SEO tools to its
   // allowlist so the AI never surfaces "I don't have a tool for that"
   // for SEO during a compose flow.
-  // v0.7.5 — also requires add_module_to_layout (same regression as
-  // bootstrap-site, dropped by 0083, restored by 0088).
+  // v0.7.5 — also requires the layout-chrome tool (same regression as
+  // bootstrap-site, dropped by 0083, restored by 0088, renamed to
+  // `add_module` by 0164 / #322).
   it("compose-page allowlists SEO + layout-chrome tools", async () => {
     const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
     if (!r.ok) return;
@@ -232,7 +235,10 @@ describe("seeded base skills", () => {
     expect(tools).toContain("set_page_seo");
     expect(tools).toContain("autofill_page_seo");
     expect(tools).toContain("optimize_page_seo");
-    expect(tools).toContain("add_module_to_layout");
+    expect(tools).toContain("add_module");
+    // The rename must be complete — no dead tool names left in the allowlist.
+    expect(tools).not.toContain("add_module_to_layout");
+    expect(tools).not.toContain("compose_page_from_spec");
   });
 });
 
