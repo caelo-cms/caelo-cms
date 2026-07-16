@@ -29,11 +29,11 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { validateTemplatizedModule } from "../ops/content/extract-module-structure.js";
+import type { AIProvider, ProviderEvent } from "./provider.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./tools/_module-fields-schema.js";
-import type { AIProvider, ProviderEvent } from "./provider.js";
 
 /** The clean module the block produces. */
 export interface ModuleizeResult {
@@ -168,13 +168,21 @@ function safeJson(s: string): unknown {
  * Validate the tool-call args: shape (Zod) THEN the module contract
  * (placeholder ↔ field). Returns the parsed result or a human error string.
  */
-function validate(args: unknown): { ok: true; value: ModuleizeResult } | { ok: false; error: string } {
+function validate(
+  args: unknown,
+): { ok: true; value: ModuleizeResult } | { ok: false; error: string } {
   if (args === undefined) {
-    return { ok: false, error: "did not call submit_module (no tool call / unparseable arguments)" };
+    return {
+      ok: false,
+      error: "did not call submit_module (no tool call / unparseable arguments)",
+    };
   }
   const parsed = moduleizeOutputSchema.safeParse(args);
   if (!parsed.success) {
-    return { ok: false, error: `submit_module arguments invalid: ${parsed.error.message.slice(0, 400)}` };
+    return {
+      ok: false,
+      error: `submit_module arguments invalid: ${parsed.error.message.slice(0, 400)}`,
+    };
   }
   const contract = validateTemplatizedModule(parsed.data.html, parsed.data.fields);
   if (!contract.ok) return { ok: false, error: contract.message };

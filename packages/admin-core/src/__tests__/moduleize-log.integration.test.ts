@@ -51,7 +51,7 @@ describe("ai_moduleize.log_attempt", () => {
       inputHtml: "MZLOG-<h1>x</h1>",
       fieldsHint: null,
       attempts: 2,
-      errors: ["placeholder {{ghost}} references undeclared field \"ghost\""],
+      errors: ['placeholder {{ghost}} references undeclared field "ghost"'],
       outcome: "ok_after_repair",
       finalFields: [{ name: "hero_title", kind: "text", label: "Hero Title" }],
       model: "claude-sonnet-5",

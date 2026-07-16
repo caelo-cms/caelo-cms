@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { OperationRegistry } from "@caelo-cms/query-api";
+import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
 import {
   executeAiProvidersProposalOp,
   listPendingAiProvidersProposalsOp,
@@ -264,7 +265,6 @@ import {
   consumeBootstrapTokenOp,
   insertBootstrapTokenOp,
 } from "./ops/owner-bootstrap-tokens.js";
-import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import {

@@ -160,7 +160,17 @@ export const addModuleToolInput = z
   .strict()
   .superRefine((input, ctx) => {
     const authoringKeys = (
-      ["displayName", "html", "css", "js", "fields", "description", "kind", "type", "bindThemeLiterals"] as const
+      [
+        "displayName",
+        "html",
+        "css",
+        "js",
+        "fields",
+        "description",
+        "kind",
+        "type",
+        "bindThemeLiterals",
+      ] as const
     ).filter((k) => input[k] !== undefined);
     if (input.moduleId !== undefined) {
       if (authoringKeys.length > 0) {

@@ -27,8 +27,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import {
-  addModuleToolInput,
   type AddModuleToolInput,
+  addModuleToolInput,
   type ExecutionContext,
 } from "@caelo-cms/shared";
 import { blockNotFoundError } from "./_block-name-enum.js";
@@ -125,7 +125,14 @@ async function resolveModule(
     const mod = (got.value as { module: { id: string; slug: string } }).module;
     return {
       ok: true,
-      module: { moduleId: mod.id, slug: mod.slug, note: "", css: input.css ?? "", kind: input.kind, reused: true },
+      module: {
+        moduleId: mod.id,
+        slug: mod.slug,
+        note: "",
+        css: input.css ?? "",
+        kind: input.kind,
+        reused: true,
+      },
     };
   }
   // mint via moduleize (html + displayName guaranteed present by the schema superRefine)
@@ -143,7 +150,14 @@ async function resolveModule(
   if (!minted.ok) return { ok: false, content: minted.content };
   return {
     ok: true,
-    module: { moduleId: minted.moduleId, slug: minted.slug, note: minted.note, css: minted.css, kind: minted.kind, reused: false },
+    module: {
+      moduleId: minted.moduleId,
+      slug: minted.slug,
+      note: minted.note,
+      css: minted.css,
+      kind: minted.kind,
+      reused: false,
+    },
   };
 }
 
@@ -171,14 +185,19 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
       lines.push(
         "Layout (slug → blocks): " +
           state.layouts
-            .map((l) => `${l.slug} → ${l.blocks.length > 0 ? l.blocks.map((b) => b.name).join("/") : "(none)"}`)
+            .map(
+              (l) =>
+                `${l.slug} → ${l.blocks.length > 0 ? l.blocks.map((b) => b.name).join("/") : "(none)"}`,
+            )
             .join("; ") +
           ".",
       );
     }
     if (state.templates.length > 0) {
       lines.push(
-        "Templates (slug → templateId): " + state.templates.map((t) => `${t.slug}=${t.id}`).join("; ") + ".",
+        "Templates (slug → templateId): " +
+          state.templates.map((t) => `${t.slug}=${t.id}`).join("; ") +
+          ".",
       );
     }
     lines.push('`position`: "top"/"bottom" or a bare integer (prefer the integer).');
@@ -257,8 +276,11 @@ async function placeOnPage(
 ): Promise<ToolResult> {
   const pageId = await resolvePageId(ctx, toolCtx, input.targetRef);
   if (pageId === null) return refNotFound("page", input.targetRef);
-  const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", { pageId });
-  if (!got.ok) return { ok: false, content: `pages.get_with_modules failed: ${describeError(got.error)}` };
+  const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
+    pageId,
+  });
+  if (!got.ok)
+    return { ok: false, content: `pages.get_with_modules failed: ${describeError(got.error)}` };
   const page = (got.value as { page: PageWithModules }).page;
   const targetBlock = page.blocks.find((b) => b.blockName === input.blockName);
   if (!targetBlock)
@@ -268,12 +290,17 @@ async function placeOnPage(
       pageId,
       argName: "blockName",
     });
-  const { ids, idx } = spliceAt(targetBlock.modules.map((m) => m.moduleId), mod.moduleId, input.position);
+  const { ids, idx } = spliceAt(
+    targetBlock.modules.map((m) => m.moduleId),
+    mod.moduleId,
+    input.position,
+  );
   const set = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_modules", {
     pageId,
     blocks: withBlockIds(page.blocks, input.blockName, ids),
   });
-  if (!set.ok) return { ok: false, content: `pages.set_modules failed: ${describeError(set.error)}` };
+  if (!set.ok)
+    return { ok: false, content: `pages.set_modules failed: ${describeError(set.error)}` };
   return {
     ok: true,
     content: `${label} ${mod.moduleId} (slug=${mod.slug}) added to page block "${input.blockName}" at position ${idx}.${mod.note}${suffix}`,
@@ -308,14 +335,20 @@ async function placeOnLayout(
     layoutId: layout.id,
     blockName: input.blockName,
   });
-  if (!existing.ok) return { ok: false, content: `layout_modules.get failed: ${describeError(existing.error)}` };
-  const { ids, idx } = spliceAt((existing.value as { moduleIds: string[] }).moduleIds, mod.moduleId, input.position);
+  if (!existing.ok)
+    return { ok: false, content: `layout_modules.get failed: ${describeError(existing.error)}` };
+  const { ids, idx } = spliceAt(
+    (existing.value as { moduleIds: string[] }).moduleIds,
+    mod.moduleId,
+    input.position,
+  );
   const set = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layout_modules.set", {
     layoutId: layout.id,
     blockName: input.blockName,
     moduleIds: ids,
   });
-  if (!set.ok) return { ok: false, content: `layout_modules.set failed: ${describeError(set.error)}` };
+  if (!set.ok)
+    return { ok: false, content: `layout_modules.set failed: ${describeError(set.error)}` };
   return {
     ok: true,
     content: `${label} ${mod.moduleId} (slug=${mod.slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${idx}; chrome now reaches every page on every template bound to this layout.${mod.note}${suffix}`,
@@ -333,8 +366,11 @@ async function placeOnTemplate(
   const templateId = await resolveTemplateId(ctx, toolCtx, input.targetRef);
   if (templateId === null) return refNotFound("template", input.targetRef);
   const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.list", {});
-  if (!listed.ok) return { ok: false, content: `pages.list failed: ${describeError(listed.error)}` };
-  const targetPages = (listed.value as { pages: PageRow[] }).pages.filter((p) => p.templateId === templateId);
+  if (!listed.ok)
+    return { ok: false, content: `pages.list failed: ${describeError(listed.error)}` };
+  const targetPages = (listed.value as { pages: PageRow[] }).pages.filter(
+    (p) => p.templateId === templateId,
+  );
   if (targetPages.length === 0) {
     return {
       ok: true,
@@ -349,7 +385,9 @@ async function placeOnTemplate(
   const placements: string[] = [];
   const failures: string[] = [];
   for (const p of targetPages) {
-    const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", { pageId: p.id });
+    const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
+      pageId: p.id,
+    });
     if (!got.ok) {
       failures.push(`${p.slug} (${describeError(got.error)})`);
       continue;
@@ -358,10 +396,16 @@ async function placeOnTemplate(
     const targetBlock = detail.blocks.find((b) => b.blockName === input.blockName);
     if (!targetBlock) {
       const allowed = detail.blocks.map((b) => b.blockName).join(", ");
-      failures.push(`${p.slug} (block "${input.blockName}" not on this page's template — available: ${allowed})`);
+      failures.push(
+        `${p.slug} (block "${input.blockName}" not on this page's template — available: ${allowed})`,
+      );
       continue;
     }
-    const { ids, idx } = spliceAt(targetBlock.modules.map((m) => m.moduleId), mod.moduleId, input.position);
+    const { ids, idx } = spliceAt(
+      targetBlock.modules.map((m) => m.moduleId),
+      mod.moduleId,
+      input.position,
+    );
     const set = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_modules", {
       pageId: p.id,
       blocks: withBlockIds(detail.blocks, input.blockName, ids),
@@ -420,23 +464,42 @@ function refNotFound(target: string, ref: string): ToolResult {
   };
 }
 
-async function resolvePageId(ctx: ExecutionContext, toolCtx: ToolContext, ref: string): Promise<string | null> {
+async function resolvePageId(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  ref: string,
+): Promise<string | null> {
   if (UUID_RE.test(ref)) return ref;
   const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.list", {});
   if (!listed.ok) return null;
   return (listed.value as { pages: PageRow[] }).pages.find((p) => p.slug === ref)?.id ?? null;
 }
 
-async function resolveLayoutSlug(ctx: ExecutionContext, toolCtx: ToolContext, ref: string): Promise<string> {
+async function resolveLayoutSlug(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  ref: string,
+): Promise<string> {
   if (!UUID_RE.test(ref)) return ref; // already a slug
   const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "list_layouts", {});
   if (!listed.ok) return ref;
-  return (listed.value as { layouts: { id: string; slug: string }[] }).layouts.find((l) => l.id === ref)?.slug ?? ref;
+  return (
+    (listed.value as { layouts: { id: string; slug: string }[] }).layouts.find((l) => l.id === ref)
+      ?.slug ?? ref
+  );
 }
 
-async function resolveTemplateId(ctx: ExecutionContext, toolCtx: ToolContext, ref: string): Promise<string | null> {
+async function resolveTemplateId(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  ref: string,
+): Promise<string | null> {
   if (UUID_RE.test(ref)) return ref;
   const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "list_templates", {});
   if (!listed.ok) return null;
-  return (listed.value as { templates: { id: string; slug: string }[] }).templates.find((t) => t.slug === ref)?.id ?? null;
+  return (
+    (listed.value as { templates: { id: string; slug: string }[] }).templates.find(
+      (t) => t.slug === ref,
+    )?.id ?? null
+  );
 }

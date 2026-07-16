@@ -58,3 +58,10 @@ output/production/
 .caelo-dev-key
 packages/plugins/*/manifest.sig
 packages/plugins/*/manifest.json
+
+# Downloaded webfont cache (apps/static-generator/src/fonts-resolver.ts writes
+# the woff2 binaries + manifest here at build time). Generated, never authored:
+# leaving it untracked-but-unignored let a `git add -A` sweep font binaries into
+# a commit, and made `biome check .` fail on the generated manifests.
+data/fonts/
+apps/admin/data/fonts/

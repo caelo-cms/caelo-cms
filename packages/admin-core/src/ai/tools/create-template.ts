@@ -83,7 +83,7 @@ export const createTemplateTool: ToolDefinitionWithHandler<
       blocks: {
         type: "array",
         description:
-          "Optional block-set metadata (same shape as create_layout). Omit it to auto-derive one block per <caelo-slot name=\"X\"> in html (displayName = name). Pass it only to give a block a nicer displayName or an explicit position; every `name` MUST match a <caelo-slot> in html.",
+          'Optional block-set metadata (same shape as create_layout). Omit it to auto-derive one block per <caelo-slot name="X"> in html (displayName = name). Pass it only to give a block a nicer displayName or an explicit position; every `name` MUST match a <caelo-slot> in html.',
         items: {
           type: "object",
           additionalProperties: false,
