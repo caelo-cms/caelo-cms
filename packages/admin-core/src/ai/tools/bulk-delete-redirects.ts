@@ -20,6 +20,10 @@ export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
     "`redirectIds`, `fromPaths`, `matches`. " +
     "Always run `find_redirects` FIRST to preview what will be removed; surface the count to the user " +
     "before calling this. " +
+    "**`matches` is capped at 10 rows for you** (CLAUDE.md §11.A — a substring match's blast radius is hard to " +
+    "predict, and every deleted 301 strands an inbound link). If it would hit more, the call is REJECTED and " +
+    "nothing is deleted: list them with `find_redirects`, show the operator the list, and delete the confirmed " +
+    "ones by explicit `redirectIds`. That path is uncapped because you enumerated exactly what goes. " +
     "Don't use for a single deletion — use `redirects.delete` instead.",
   schema: bulkDeleteRedirectsToolInput,
   inputSchema: {

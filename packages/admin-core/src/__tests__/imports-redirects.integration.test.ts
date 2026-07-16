@@ -178,7 +178,9 @@ describe("compose redirects (#196)", () => {
     if (!r.ok) {
       const msg = JSON.stringify(r.error);
       expect(msg).toContain("would shadow");
-      expect(msg).toContain("change_page_slug");
+      // The error must name the tool that actually exists. `change_page_slug`
+      // was folded into `update_pages_many` (audit #3, PR #323).
+      expect(msg).toContain("update_pages_many");
     }
   });
 });
