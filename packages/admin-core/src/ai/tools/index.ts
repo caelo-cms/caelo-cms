@@ -22,7 +22,6 @@ import { createLayoutTool } from "./create-layout.js";
 import { createPageTool } from "./create-page.js";
 import { createTemplateTool } from "./create-template.js";
 import { deleteContentInstanceTool } from "./delete-content-instance.js";
-import { deletePageTool } from "./delete-page.js";
 import { deleteStructuredSetTool } from "./delete-structured-set.js";
 import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
@@ -229,7 +228,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // tool for 1..200 pages: update_pages_many. The former rename_page /
   // set_page_title / change_page_slug were thin single-field wrappers over
   // pages.update, and the slug side-effects now live in that op.
-  registry.register(deletePageTool);
   registry.register(removeModuleFromPageTool);
   // v0.10.22 — unified structured-sets CRUD surface. Replaces the
   // kind-specific wrappers `set_nav_menu` and `update_theme`. The AI

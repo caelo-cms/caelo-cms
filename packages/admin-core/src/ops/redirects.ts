@@ -30,7 +30,9 @@ const redirectRow = z.object({
 
 export const createRedirectOp = defineOperation({
   name: "redirects.create",
-  // P6.7.5 — AI tools (change_page_slug, delete_page) write here.
+  // P6.7.5 — the page-update + page-delete ops write here (slug-change 301s and
+  // dead-URL redirects); the AI reaches those via update_pages_many /
+  // delete_pages_many.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

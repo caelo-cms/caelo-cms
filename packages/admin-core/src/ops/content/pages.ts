@@ -1473,12 +1473,26 @@ export const setPageModulesOp = defineOperation({
 
 export const deletePageOp = defineOperation({
   name: "pages.delete",
-  // P6.7.5 — AI calls this via the `delete_page` tool. The tool layer
-  // requires an explicit `disposition` (404 vs redirect) and a
-  // confirmed `redirectTo`; the op stays a plain soft-delete.
+  // P6.7.5 — soft-delete. `disposition` decides what the dead URL does:
+  // omitted (or '404') = the URL 404s; 'redirect' = a 301 from the old path to
+  // `redirectTo`, created on THIS tx. The dead-URL side-effect lives in the op
+  // (audit #4) so bulk delete (`pages.delete_many`, which loops this handler)
+  // inherits it atomically — before, the 301 lived in the `delete_page` tool
+  // and the bulk path silently produced none (every bulk-deleted page left a
+  // dead URL with no redirect). `disposition` is optional because the human UI
+  // + translation-variant deletes are plain soft-deletes; the AI-facing tool
+  // requires it so the AI can never silently strand a dead URL.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ pageId: z.string().uuid() }),
+  input: z
+    .object({
+      pageId: z.string().uuid(),
+      disposition: z.enum(["404", "redirect"]).optional(),
+      redirectTo: z.string().min(1).max(500).optional(),
+    })
+    .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
+      message: "disposition 'redirect' requires redirectTo",
+    }),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
     const deleteLock = await checkAndAcquireEntityLock(tx, {
@@ -1566,6 +1580,20 @@ export const deletePageOp = defineOperation({
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: input.pageId, state }],
       });
+    }
+    // Dead-URL redirect, on this tx. `state` carries the page's slug + locale
+    // (delete doesn't change them). A failed 301 aborts the delete rather than
+    // leaving the URL silently unredirected (§2 no-fallbacks).
+    if (input.disposition === "redirect" && state) {
+      const oldPath = publicPathFor(state.slug, state.locale);
+      const red = await createRedirectOp.handler(
+        ctx,
+        { fromPath: oldPath, toPath: input.redirectTo as string, statusCode: 301 },
+        tx,
+      );
+      if (!red.ok) {
+        throw new Error(`page delete aborted — redirect ${oldPath} → ${input.redirectTo} failed`);
+      }
     }
     return ok({});
   },
@@ -1990,7 +2018,28 @@ export const deletePagesManyOp = defineOperation({
   name: "pages.delete_many",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ pageIds: z.array(z.string().uuid()).min(1).max(200) }).strict(),
+  // audit #4 — per-item `disposition` so a bulk delete carries the SAME
+  // dead-URL semantics as a single delete: each page can 404 or 301 to its own
+  // target, all on one tx. (Was a flat `pageIds` list with no disposition, so
+  // every bulk-deleted page silently 404'd.)
+  input: z
+    .object({
+      deletions: z
+        .array(
+          z
+            .object({
+              pageId: z.string().uuid(),
+              disposition: z.enum(["404", "redirect"]).optional(),
+              redirectTo: z.string().min(1).max(500).optional(),
+            })
+            .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
+              message: "disposition 'redirect' requires redirectTo",
+            }),
+        )
+        .min(1)
+        .max(200),
+    })
+    .strict(),
   output: z.object({
     deleted: z.number().int(),
     alreadyDeleted: z.number().int(),
@@ -1998,13 +2047,15 @@ export const deletePagesManyOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     // v0.5.7 — delegate to deletePageOp per row so bulk delete picks up
-    // the v0.5.3 branched-delete + per-page-lock behaviour automatically.
+    // the v0.5.3 branched-delete + per-page-lock behaviour automatically,
+    // and (audit #4) the per-page redirect disposition too.
     // Pre-loop check for "not found" / "already deleted" so the result
     // shape stays the same (deleted / alreadyDeleted / notFound counts).
     let deleted = 0;
     let alreadyDeleted = 0;
     let notFound = 0;
-    for (const id of input.pageIds) {
+    for (const item of input.deletions) {
+      const id = item.pageId;
       const rows = (await tx.execute(sql`
         SELECT deleted_at FROM pages WHERE id = ${id}::uuid
       `)) as unknown as { deleted_at: Date | null }[];
@@ -2017,7 +2068,11 @@ export const deletePagesManyOp = defineOperation({
         alreadyDeleted += 1;
         continue;
       }
-      const r = await deletePageOp.handler(ctx, { pageId: id }, tx);
+      const r = await deletePageOp.handler(
+        ctx,
+        { pageId: id, disposition: item.disposition, redirectTo: item.redirectTo },
+        tx,
+      );
       if (r.ok) deleted += 1;
       // Any other error (Locked etc) falls through to the bulk caller
       // via the audit row + non-OK return on the next iteration. For
