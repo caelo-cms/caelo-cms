@@ -274,9 +274,7 @@ export const executeLayoutProposalOp = defineOperation({
       if (Array.isArray(blocks) && blocks.length > 0) {
         const rb = await setLayoutBlocksOp.handler(
           ctx,
-          { layoutId: row.layout_id, blocks } as Parameters<
-            typeof setLayoutBlocksOp.handler
-          >[1],
+          { layoutId: row.layout_id, blocks } as Parameters<typeof setLayoutBlocksOp.handler>[1],
           tx,
         );
         if (!rb.ok) return passthroughError(rb.error, "update");

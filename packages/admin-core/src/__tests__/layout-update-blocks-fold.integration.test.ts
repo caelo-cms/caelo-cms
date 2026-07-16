@@ -43,7 +43,9 @@ async function wipe(): Promise<void> {
   }
 }
 
-async function blocksOf(layoutId: string): Promise<{ name: string; display_name: string; position: number }[]> {
+async function blocksOf(
+  layoutId: string,
+): Promise<{ name: string; display_name: string; position: number }[]> {
   const sql = new SQL(ADMIN_URL!);
   try {
     return (await sql.begin(async (tx) => {

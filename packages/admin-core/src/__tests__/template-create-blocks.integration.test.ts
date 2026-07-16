@@ -45,7 +45,9 @@ async function wipe(): Promise<void> {
   }
 }
 
-async function blocksOf(templateId: string): Promise<{ name: string; display_name: string; position: number }[]> {
+async function blocksOf(
+  templateId: string,
+): Promise<{ name: string; display_name: string; position: number }[]> {
   const sql = new SQL(ADMIN_URL!);
   try {
     return (await sql.begin(async (tx) => {
@@ -101,7 +103,11 @@ describe("templates.create blocks metadata", () => {
     if (!r.ok) return;
     const blocks = await blocksOf((r.value as { templateId: string }).templateId);
     const byName = new Map(blocks.map((b) => [b.name, b]));
-    expect(byName.get("content")).toEqual({ name: "content", display_name: "Main Content", position: 0 });
+    expect(byName.get("content")).toEqual({
+      name: "content",
+      display_name: "Main Content",
+      position: 0,
+    });
     expect(byName.get("header")).toEqual({ name: "header", display_name: "Top Bar", position: 1 });
   });
 

@@ -54,7 +54,7 @@ export const proposeLayoutUpdateTool = makeProposeTool({
   pendingQueuePath: "/security/layouts/pending",
   when:
     "Propose an edit to an existing layout — HTML, CSS, displayName, AND/OR its block-set (`blocks`) — in ONE proposal (symmetric with propose_update_template). " +
-    "Send html + blocks together so they apply atomically. Every block `name` needs a matching <caelo-slot name=\"<name>\"> in html, and the set MUST include a `content` block. The change cascades to every page on every bound template.",
+    'Send html + blocks together so they apply atomically. Every block `name` needs a matching <caelo-slot name="<name>"> in html, and the set MUST include a `content` block. The change cascades to every page on every bound template.',
   schema: z
     .object({
       layoutId: uuid,

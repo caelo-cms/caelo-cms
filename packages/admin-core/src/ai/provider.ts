@@ -127,7 +127,11 @@ export interface GenerateInput {
    * Providers that don't support forcing ignore it. Without it, a single-tool
    * prompt is NOT reliably obeyed — the model may reply with prose instead.
    */
-  readonly toolChoice?: { readonly type: "tool"; readonly toolName: string } | "auto" | "required" | "none";
+  readonly toolChoice?:
+    | { readonly type: "tool"; readonly toolName: string }
+    | "auto"
+    | "required"
+    | "none";
 }
 
 export type ProviderEvent =

@@ -16,7 +16,8 @@
       "!**/playwright-report",
       "!**/test-results",
       "!**/output",
-      "!claude-workflow"
+      "!claude-workflow",
+      "!**/data/fonts"
     ]
   },
   "formatter": {

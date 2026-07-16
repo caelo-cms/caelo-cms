@@ -127,7 +127,13 @@ describe("add_module (target='template') place-existing path (issue #243)", () =
     const toolCtx = { adapter, registry } as ToolContext;
     const res = await addModuleTool.handler(
       SYSTEM,
-      { target: "template", targetRef: templateId, blockName: "content", position: "bottom", moduleId },
+      {
+        target: "template",
+        targetRef: templateId,
+        blockName: "content",
+        position: "bottom",
+        moduleId,
+      },
       toolCtx,
     );
 

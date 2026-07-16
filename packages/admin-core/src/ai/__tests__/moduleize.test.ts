@@ -8,9 +8,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { moduleize, type ModuleizeRetryRecord } from "../moduleize.js";
-import { MultiFixtureProvider } from "../providers/anthropic.js";
+import { type ModuleizeRetryRecord, moduleize } from "../moduleize.js";
 import type { ProviderEvent } from "../provider.js";
+import { MultiFixtureProvider } from "../providers/anthropic.js";
 
 function submitCall(args: unknown): ProviderEvent[] {
   return [
@@ -82,7 +82,12 @@ describe("moduleize", () => {
       submitCall(INVALID),
     ]);
     await expect(
-      moduleize({ provider, html: RAW_HTML, maxRepairs: 2, onRetry: async (r) => void records.push(r) }),
+      moduleize({
+        provider,
+        html: RAW_HTML,
+        maxRepairs: 2,
+        onRetry: async (r) => void records.push(r),
+      }),
     ).rejects.toThrow(/moduleize failed after 3 attempts/);
     expect(records).toHaveLength(1);
     expect(records[0]?.outcome).toBe("failed");

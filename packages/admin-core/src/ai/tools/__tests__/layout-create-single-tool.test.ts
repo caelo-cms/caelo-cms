@@ -40,8 +40,9 @@ describe("layout-create is a single canonical tool", () => {
     // propose_set_layout_blocks AI tool is removed. One tool, one atomic
     // proposal for html + blocks.
     const update = registry.get("propose_update_layout");
-    const schema = (update as { inputSchema?: { properties?: Record<string, unknown> } } | undefined)
-      ?.inputSchema;
+    const schema = (
+      update as { inputSchema?: { properties?: Record<string, unknown> } } | undefined
+    )?.inputSchema;
     expect(schema?.properties?.blocks).toBeDefined();
     expect(registry.get("propose_set_layout_blocks")).toBeUndefined();
   });
