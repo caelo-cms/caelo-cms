@@ -253,7 +253,9 @@ export const AI_TOOLS = [
   // 1..200 pages: `update_pages_many`. The former rename_page / set_page_title
   // / change_page_slug were single-field wrappers over the same pages.update.
   "update_pages_many",
-  "delete_page",
+  // audit #4 — one delete tool for 1..200 pages, disposition per page.
+  // The former singular delete_page folded in (n=1 is a one-item array).
+  "delete_pages_many",
   "remove_module_from_page",
   "set_structured_set",
   "update_theme",
@@ -543,22 +545,6 @@ export const createTemplateToolInput = z
       .optional(),
   })
   .strict();
-
-export const deletePageToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    /** '404' returns a not-found; 'redirect' creates a 301 to redirectTo. */
-    disposition: z.enum(["404", "redirect"]),
-    redirectTo: z.string().min(1).max(500).optional(),
-  })
-  .strict()
-  .refine(
-    (v) => v.disposition === "404" || (v.redirectTo !== undefined && v.redirectTo.length > 0),
-    {
-      message: "redirectTo is required when disposition='redirect'",
-      path: ["redirectTo"],
-    },
-  );
 
 export const removeModuleFromPageToolInput = z
   .object({
@@ -905,7 +891,6 @@ export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
 export type ComposeFromImportToolInput = z.infer<typeof composeFromImportToolInput>;
 export type MigrateImportMediaToolInput = z.infer<typeof migrateImportMediaToolInput>;
-export type DeletePageToolInput = z.infer<typeof deletePageToolInput>;
 export type RemoveModuleFromPageToolInput = z.infer<typeof removeModuleFromPageToolInput>;
 export type SetStructuredSetToolInput = z.infer<typeof setStructuredSetToolInput>;
 // v0.10.22 — `UpdateThemeToolInput` removed alongside `update_theme` tool.

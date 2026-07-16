@@ -27,7 +27,21 @@ const uuid = z.string().uuid();
 
 // ─── delete_pages_many ───────────────────────────────────────────────
 
-const deleteInput = z.object({ pageIds: z.array(uuid).min(1).max(200) }).strict();
+// audit #4 — each deletion carries its own dead-URL disposition (folds the
+// former singular `delete_page` tool: n=1 is a one-item array). `disposition`
+// is REQUIRED per item so the AI can never silently leave a dead URL
+// unredirected — the guard that used to live on delete_page.
+const deletionItem = z
+  .object({
+    pageId: uuid,
+    disposition: z.enum(["404", "redirect"]),
+    redirectTo: z.string().min(1).max(500).optional(),
+  })
+  .strict()
+  .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
+    message: "disposition 'redirect' requires redirectTo",
+  });
+const deleteInput = z.object({ deletions: z.array(deletionItem).min(1).max(200) }).strict();
 type DeleteInput = z.infer<typeof deleteInput>;
 
 /**
@@ -53,29 +67,50 @@ const DELETE_PAGES_MANY_APPROVAL_THRESHOLD = 5;
 export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
   name: "delete_pages_many",
   description:
-    "Bulk soft-delete 1–200 pages in one tool call. " +
-    "Use when the operator says 'delete these N pages', 'drop these stale posts', 'remove the entire {category} tree'. " +
-    "Prefer this over multiple `delete_page` calls when N > 1 — saves tool-call rounds + lets the operator revert " +
-    "the lot in one site snapshot. Each page is soft-deleted and emits its own page snapshot, so revert_site (or " +
-    "individual revert_page) restores them. The result reports {deleted, alreadyDeleted, notFound}. " +
+    "Soft-delete pages — the ONE delete tool, for 1 page or 200 (pass a single-item `deletions` array for one page; there is no separate delete_page tool). " +
+    "Use when the operator says 'delete this page', 'delete these N pages', 'drop these stale posts', 'remove the entire {category} tree'. " +
+    "**Each page needs a `disposition` for its dead URL** — never leave that to chance: " +
+    "`'404'` = the old URL returns not-found; `'redirect'` = a 301 from the old URL to `redirectTo` (required for that item). " +
+    "ALWAYS confirm the disposition with the operator, and when proposing 'redirect' suggest a sensible target (parent section, sibling page, or /). " +
+    "Different pages in one call may take different dispositions. Each page emits its own snapshot, so `propose_revert_site` (or individual `revert_page`) restores them. " +
+    "Result: {deleted, alreadyDeleted, notFound}. " +
     `Deleting ${DELETE_PAGES_MANY_APPROVAL_THRESHOLD}+ pages needs one Owner click in chat before the delete runs.`,
-  needsApproval: (input) => input.pageIds.length >= DELETE_PAGES_MANY_APPROVAL_THRESHOLD,
+  needsApproval: (input) => input.deletions.length >= DELETE_PAGES_MANY_APPROVAL_THRESHOLD,
   buildApprovalPreview: (input) => ({
     op: "delete_pages_many",
-    pageCount: input.pageIds.length,
-    samplePageIds: input.pageIds.slice(0, 5),
+    pageCount: input.deletions.length,
+    samplePageIds: input.deletions.slice(0, 5).map((d) => d.pageId),
   }),
   schema: deleteInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["pageIds"],
+    required: ["deletions"],
     properties: {
-      pageIds: {
+      deletions: {
         type: "array",
         minItems: 1,
         maxItems: 200,
-        items: { type: "string", format: "uuid" },
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["pageId", "disposition"],
+          properties: {
+            pageId: { type: "string", format: "uuid" },
+            disposition: {
+              type: "string",
+              enum: ["404", "redirect"],
+              description:
+                "What the dead URL does: '404' = not-found; 'redirect' = 301 to redirectTo.",
+            },
+            redirectTo: {
+              type: "string",
+              minLength: 1,
+              maxLength: 500,
+              description: "Required when disposition='redirect' — the 301 target path.",
+            },
+          },
+        },
       },
     },
   },
@@ -85,9 +120,10 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
       return { ok: false, content: `pages.delete_many failed: ${describeError(r.error)}` };
     }
     const v = r.value as { deleted: number; alreadyDeleted: number; notFound: number };
+    const redirected = input.deletions.filter((d) => d.disposition === "redirect").length;
     return {
       ok: true,
-      content: `Deleted ${v.deleted} pages (alreadyDeleted=${v.alreadyDeleted}, notFound=${v.notFound}). Use \`propose_revert_site\` to undo if needed.`,
+      content: `Deleted ${v.deleted} pages (alreadyDeleted=${v.alreadyDeleted}, notFound=${v.notFound}); ${redirected} got a 301, the rest 404. Use \`propose_revert_site\` to undo if needed.`,
     };
   },
 };
