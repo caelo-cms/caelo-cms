@@ -47,4 +47,14 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "list_modules",
   "find_media",
   "offer_choices",
+  // Design self-review loop — the AI iterates screenshot -> inspect ->
+  // edit_module -> screenshot many times per build (the #155 rounds).
+  // These reads fire on every iteration, so deferring them made the
+  // model pay a tool-search round-trip per design round (live-edit run
+  // 2026-07: 21 toolSearch calls in one turn, several 40-56s loops).
+  // They are the hot path of the everyday design workflow, not long tail.
+  "get_theme",
+  "screenshot_page",
+  "inspect_page_render",
+  "inspect_built_page",
 ]);

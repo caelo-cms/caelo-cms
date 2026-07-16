@@ -34,6 +34,14 @@ The suite needs:
    real tokens on every run.
 3. **Migrations applied.** `bun run db:migrate` if you haven't run
    the regular dev path yet.
+4. **Running from a git worktree?** The `caddy-staging` /
+   `caddy-production` containers bind-mount `./apps/admin/output/*`
+   relative to the checkout that started `docker compose`. If you run
+   the suite from a *different* worktree, its Stage writes to that
+   worktree's `output/` while Caddy still serves the main checkout's —
+   the build-verification guard then fails Stage with a `runId`
+   mismatch. Point the suite at the mounted dir:
+   `export CAELO_OUTPUT_ROOT=<main-checkout>/apps/admin`.
 
 Then from anywhere in the repo:
 

@@ -206,22 +206,26 @@ export class AnthropicProvider implements AIProvider {
         ? Math.max(1, Number(thresholdRaw))
         : 10;
     const useToolSearch = this.#toolSearch !== "off" && input.tools.length >= threshold;
-    if (this.#toolSearch !== "off" && process.env.CAELO_DEBUG_TOOL_SEARCH === "1") {
-      // Telemetry: log whether the transform actually engaged this turn,
-      // so the operator can confirm BM25 fired (or didn't) without
-      // tracing the wire-level Anthropic request.
-      console.log("[anthropic.toolSearch]", {
-        mode: this.#toolSearch,
-        toolCount: input.tools.length,
-        threshold,
-        engaged: useToolSearch,
-      });
-    }
     // Core workflow tools (ToolDefinition.alwaysLoaded, set from
     // CORE_TOOL_NAMES) keep their full definition in every request so a
     // routine edit never needs a discovery round-trip; only the long
     // tail defers behind the search tool.
     const alwaysLoadedNames = new Set(input.tools.filter((t) => t.alwaysLoaded).map((t) => t.name));
+    if (this.#toolSearch !== "off" && process.env.CAELO_DEBUG_TOOL_SEARCH === "1") {
+      // Telemetry: log whether the transform engaged this turn AND the
+      // loaded-vs-deferred split, so the operator can confirm BM25 fired
+      // (and that the core set stayed loaded) without tracing the
+      // wire-level Anthropic request.
+      console.log("[anthropic.toolSearch]", {
+        mode: this.#toolSearch,
+        toolCount: input.tools.length,
+        threshold,
+        engaged: useToolSearch,
+        alwaysLoaded: alwaysLoadedNames.size,
+        deferred: useToolSearch ? input.tools.length - alwaysLoadedNames.size : 0,
+        alwaysLoadedNames: [...alwaysLoadedNames].sort(),
+      });
+    }
     const toolsTransform = useToolSearch
       ? (built: Record<string, unknown>): Record<string, unknown> => {
           // Mark every non-core caelo tool as deferred so its
