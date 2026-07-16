@@ -100,8 +100,7 @@ import {
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
 import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
-import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
-import { removeModuleFromPageTool } from "./remove-module-from-page.js";
+import { removeModuleFromTool } from "./remove-module-from.js";
 import { reorderModuleTool } from "./reorder-module.js";
 import { repointPageTemplateTool } from "./repoint-page-template.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
@@ -113,7 +112,6 @@ import { setMediaAltTool } from "./set-media-alt.js";
 import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageModuleContentManyTool } from "./set-page-module-content-many.js";
 import { setPageSeoTool } from "./set-page-seo.js";
-import { setPageStatusTool } from "./set-page-status.js";
 import { setPagesStatusManyTool } from "./set-pages-status-many.js";
 import { setPlacementContentTool } from "./set-placement-content.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
@@ -228,7 +226,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // tool for 1..200 pages: update_pages_many. The former rename_page /
   // set_page_title / change_page_slug were thin single-field wrappers over
   // pages.update, and the slug side-effects now live in that op.
-  registry.register(removeModuleFromPageTool);
+  registry.register(removeModuleFromTool);
   // v0.10.22 — unified structured-sets CRUD surface. Replaces the
   // kind-specific wrappers `set_nav_menu` and `update_theme`. The AI
   // discriminates by `kind` argument; the per-kind JSON Schema on
@@ -240,7 +238,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(deleteStructuredSetTool);
   // P6.7.6 — layout layer. (add_module target='layout' handles placement;
   // registered above alongside page/template.)
-  registry.register(removeModuleFromLayoutTool);
   registry.register(setTemplateLayoutTool);
   registry.register(createLayoutTool);
   registry.register(setSiteDefaultsTool);
@@ -290,7 +287,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // v0.9.13 — singular + bulk status flip. Drafts are LIVE-EDIT ONLY;
   // only `published` pages ship to Stage / Production. Bulk variant
   // saves N round-trips when the user asks to flip a batch.
-  registry.register(setPageStatusTool);
   registry.register(setPagesStatusManyTool);
   // P9 — locale propose tools (CLAUDE.md §11.A two-step gate).
   registry.register(proposeAddLocaleTool);

@@ -488,7 +488,7 @@ export const setLayoutModulesOp = defineOperation({
  *   - Reject if any layout_modules row references a block name
  *     that's NOT in the new set; FK cascade would orphan, so we
  *     surface the conflict and ask the operator to detach modules
- *     first via remove_module_from_layout.
+ *     first via remove_module_from (target='layout').
  *
  * Owner-only (`["human","system"]`). Block CRUD is the topology of
  * the layout; ops on `layout_modules` are the chrome-content surface
@@ -549,7 +549,7 @@ export const setLayoutBlocksOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "layout_blocks.set",
-        message: `cannot drop block(s) still referenced by layout_modules: ${orphanRows.map((r) => r.block_name).join(", ")}. Detach the modules first via remove_module_from_layout.`,
+        message: `cannot drop block(s) still referenced by layout_modules: ${orphanRows.map((r) => r.block_name).join(", ")}. Detach the modules first via remove_module_from (target='layout').`,
       });
     }
 

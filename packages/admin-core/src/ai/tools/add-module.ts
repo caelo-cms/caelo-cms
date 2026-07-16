@@ -481,7 +481,7 @@ async function resolveLayoutSlug(
   ref: string,
 ): Promise<string> {
   if (!UUID_RE.test(ref)) return ref; // already a slug
-  const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "list_layouts", {});
+  const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.list", {});
   if (!listed.ok) return ref;
   return (
     (listed.value as { layouts: { id: string; slug: string }[] }).layouts.find((l) => l.id === ref)
@@ -495,7 +495,7 @@ async function resolveTemplateId(
   ref: string,
 ): Promise<string | null> {
   if (UUID_RE.test(ref)) return ref;
-  const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "list_templates", {});
+  const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "templates.list", {});
   if (!listed.ok) return null;
   return (
     (listed.value as { templates: { id: string; slug: string }[] }).templates.find(
