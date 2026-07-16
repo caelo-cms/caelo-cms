@@ -14,7 +14,6 @@ import {
   updatePagesManyTool,
 } from "./bulk-pages-modules.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
-import { changeTemplateTool } from "./change-template.js";
 import { checkGenesisParityTool } from "./check-genesis-parity.js";
 import { composeFromImportTool } from "./compose-from-import.js";
 import { createContentInstanceTool } from "./create-content-instance.js";
@@ -105,6 +104,7 @@ import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromLayoutTool } from "./remove-module-from-layout.js";
 import { removeModuleFromPageTool } from "./remove-module-from-page.js";
 import { reorderModuleTool } from "./reorder-module.js";
+import { repointPageTemplateTool } from "./repoint-page-template.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotExternalPageTool } from "./screenshot-external-page.js";
 import { screenshotPageTool } from "./screenshot-page.js";
@@ -256,7 +256,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(revertChatChangesTool);
   // P6.7.7 — content-ops follow-ups.
   registry.register(duplicatePageTool);
-  registry.register(changeTemplateTool);
+  registry.register(repointPageTemplateTool);
   registry.register(moveModuleTool);
   registry.register(reorderModuleTool);
   // P7 — media library.

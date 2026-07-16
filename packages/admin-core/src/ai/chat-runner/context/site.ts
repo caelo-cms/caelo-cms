@@ -132,7 +132,7 @@ export async function buildSiteBlocks(
       }
     }
     // P18 — include each template's UUID so the AI can pass it as
-    // `templateId` to `create_page` / `change_template` without a
+    // `templateId` to `create_page` / `repoint_page_template` without a
     // separate `templates.list` round-trip. Same for the layout it
     // binds to. (`create_page.templateId` is optional and resolves to
     // site_defaults; this is for the "use a non-default template" path.)

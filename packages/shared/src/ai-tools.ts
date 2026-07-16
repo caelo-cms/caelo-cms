@@ -262,7 +262,7 @@ export const AI_TOOLS = [
   "create_layout",
   "set_site_defaults",
   "duplicate_page",
-  "change_template",
+  "repoint_page_template",
   "move_module",
   "reorder_module",
   "set_nav_menu",
@@ -650,7 +650,7 @@ export const duplicatePageToolInput = z
   })
   .strict();
 
-export const changeTemplateToolInput = z
+export const repointPageTemplateToolInput = z
   .object({
     pageId: z.string().uuid(),
     newTemplateId: z.string().uuid(),
@@ -922,7 +922,7 @@ export type SetTemplateLayoutToolInput = z.infer<typeof setTemplateLayoutToolInp
 export type CreateLayoutToolInput = z.infer<typeof createLayoutToolInput>;
 export type SetSiteDefaultsToolInput = z.infer<typeof setSiteDefaultsToolInput>;
 export type DuplicatePageToolInput = z.infer<typeof duplicatePageToolInput>;
-export type ChangeTemplateToolInput = z.infer<typeof changeTemplateToolInput>;
+export type RepointPageTemplateToolInput = z.infer<typeof repointPageTemplateToolInput>;
 export type MoveModuleToolInput = z.infer<typeof moveModuleToolInput>;
 export type ReorderModuleToolInput = z.infer<typeof reorderModuleToolInput>;
 // v0.10.22 — `SetNavMenuToolInput` removed alongside `set_nav_menu` tool.
