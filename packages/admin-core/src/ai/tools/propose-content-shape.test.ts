@@ -48,26 +48,57 @@ const PROPOSE_TOOL_FILES = [
 // different UX, not routed through ProposeCard.
 const EXEMPT_FROM_CANONICAL_LOCK = new Set(["propose-skill.ts"]);
 
-const CANONICAL_PREFIX_PATTERN = /content:\s*[`"']Queued proposal /;
+/**
+ * The COLON is the load-bearing character, not the "Queued proposal " prefix.
+ * ProposeCard's parser is `/^Queued proposal ([0-9a-f-]{36}):\s*([^.]+)\./` —
+ * it needs `Queued proposal <uuid>: <summary>.`
+ *
+ * This pattern used to be `/content:\s*[`"']Queued proposal /` — prefix only.
+ * That hole is why the four locale tools shipped
+ * `Queued proposal ${proposalId} to add locale 'de'` (no colon): they passed
+ * this lock and still never rendered an Approve card, because the parser
+ * requires the colon this test wasn't checking. Requiring `${…}:` closes it.
+ */
+const CANONICAL_PREFIX_PATTERN = /content:\s*[`"']Queued proposal \$\{[^}]+\}:/;
 const FORBIDDEN_NON_CANONICAL = /content:\s*[`"']Queued (?!proposal\b)/;
+
+/**
+ * A file that builds its tools with `makeProposeTool` has no content template
+ * of its own — the factory owns it (and `_make-propose-tool.ts` is itself in
+ * PROPOSE_TOOL_FILES, so the canonical shape is still locked, once, where it
+ * actually lives). Delegating is the PREFERRED shape; this lets the lock say
+ * "canonical template OR delegates to the thing that has one".
+ */
+const DELEGATES_TO_FACTORY = /makeProposeTool[<(]/;
 
 describe("propose-tool content shape (v0.5.11)", () => {
   for (const file of PROPOSE_TOOL_FILES) {
-    it(`${file} emits canonical "Queued proposal <uuid>:" content`, () => {
+    it(`${file} emits canonical "Queued proposal <uuid>:" content (or delegates)`, () => {
       const path = join(TOOLS_DIR, file);
       const src = readFileSync(path, "utf8");
 
-      // Must contain at least one canonical content template.
-      const hasCanonical = CANONICAL_PREFIX_PATTERN.test(src);
+      // Either the file carries a canonical content template itself, or it
+      // hands the job to makeProposeTool (which carries the only copy).
+      const ok = CANONICAL_PREFIX_PATTERN.test(src) || DELEGATES_TO_FACTORY.test(src);
       // Must NOT contain any non-canonical "Queued <something> proposal"
       // template (e.g. "Queued layout-create proposal", "Queued import
       // proposal", "Queued promote proposal" all caused the v0.5.11 bug).
       const hasForbidden = FORBIDDEN_NON_CANONICAL.test(src);
 
-      expect(hasCanonical).toBe(true);
+      expect(
+        ok,
+        `${file} must either emit \`Queued proposal \${id}: …\` or use makeProposeTool`,
+      ).toBe(true);
       expect(hasForbidden).toBe(false);
     });
   }
+
+  it("the factory itself carries a template the ProposeCard parser accepts", () => {
+    // The one copy every delegating tool relies on. Mirrors
+    // apps/admin/src/lib/components/chat/proposal-parser.ts.
+    const src = readFileSync(join(TOOLS_DIR, "_make-propose-tool.ts"), "utf8");
+    expect(CANONICAL_PREFIX_PATTERN.test(src)).toBe(true);
+  });
 
   it("no tool file under ai/tools/ emits a non-canonical 'Queued X proposal' template", () => {
     // Catch-all: future propose-style tool that ships in a different
