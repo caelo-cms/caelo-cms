@@ -43,6 +43,7 @@ import {
   recordAiCall,
 } from "./persistence.js";
 import type { UsageAccumulator } from "./streaming.js";
+import { buildGatedFilteredTools, SUPERSEDED_PROPOSE_TOOLS } from "../tools/gated-tools.js";
 import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
@@ -185,7 +186,7 @@ export async function* runChatTurn(
     options.excludedToolNames,
     options.subagentResultCapture !== undefined,
   );
-  const filteredTools = buildToolCatalogue({
+  const catalogueTools = buildToolCatalogue({
     tools,
     allowedToolNames: ctx.allowedToolNames,
     engagedSkills: ctx.engagedSkills,
@@ -193,6 +194,19 @@ export async function* runChatTurn(
     spawnAllowed: options.allowedToolNames,
     chatSessionId: input.chatSessionId,
   });
+  // Slice 1 (SDK approval gate) — fold in the SDK-executed gated tools and
+  // drop the `propose_*` tools they supersede, so the model has exactly ONE
+  // way to run a gated action (the approval-gated real op). `execute` closes
+  // over the OWNER's live ctx (humanCtx has no chatBranchId → live-commit),
+  // matching the old execute_proposal's live application. On a subagent turn
+  // the gated tools are omitted (a child never fronts an Owner approval).
+  const isSubagentTurn = options.subagentResultCapture !== undefined;
+  const filteredTools = isSubagentTurn
+    ? catalogueTools
+    : [
+        ...catalogueTools.filter((t) => !SUPERSEDED_PROPOSE_TOOLS.has(t.name)),
+        ...buildGatedFilteredTools(registry, adapter, humanCtx),
+      ];
 
   // Blocks that depend on the filtered catalogue (subagents / plugins).
   const postBlocks = await buildPostCatalogueBlocks({
