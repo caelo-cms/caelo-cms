@@ -45,30 +45,6 @@ export function isReadOnlyToolName(name: string): boolean {
 }
 
 /**
- * Run #9 R7 — orchestration tools are skill-allowlist-immune, like read
- * tools. Skill allowlists are curated around a workflow's DOMAIN write
- * tools (compose-page lists edit_module, create_page, …); none of them
- * predates the 0132 subagent contract, so none lists spawn_subagent —
- * and the site-migrate orchestrator lost its fan-out primitive the
- * moment a co-engaged skill (compose-page via sticky engagement)
- * contributed an allowlist ("Mir steht kein Subagenten-Werkzeug zur
- * Verfügung"). A skill opting into subagents in its BODY while the
- * allowlist strips the TOOL is exactly the #251 drift class; the fix
- * is structural, not another per-skill allowlist migration.
- *
- * `excluded` (the P10.5 depth cap — child sessions never see spawn
- * tools) and `spawnAllowed` (explicit per-spawn narrowing) remain HARD
- * filters, so this immunity never grants a subagent the ability to
- * spawn its own children.
- */
-const ORCHESTRATION_TOOL_NAMES = new Set(["spawn_subagent", "spawn_subagents"]);
-
-/** True when the tool is a subagent-orchestration primitive (spawn_subagent / spawn_subagents). */
-export function isOrchestrationToolName(name: string): boolean {
-  return ORCHESTRATION_TOOL_NAMES.has(name);
-}
-
-/**
  * Run #10 D2 — the subagent structured-result tool. Registered in the
  * default registry so child sessions can dispatch it, but visible ONLY
  * when the turn carries a `subagentResultCapture` (i.e. it IS a child
