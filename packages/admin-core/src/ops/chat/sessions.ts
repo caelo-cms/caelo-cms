@@ -306,7 +306,8 @@ export const getChatSessionOp = defineOperation({
     }
     const msgs = (await tx.execute(sql`
       SELECT id::text AS id, role, content, origin, tool_calls, tool_call_id,
-             tokens_in, tokens_out, created_at, thinking_blocks, attachments
+             tokens_in, tokens_out, created_at, thinking_blocks, attachments,
+             response_messages
       FROM chat_messages
       WHERE chat_session_id = ${input.chatSessionId}::uuid
       ORDER BY created_at ASC
@@ -322,6 +323,7 @@ export const getChatSessionOp = defineOperation({
       created_at: string | Date;
       thinking_blocks: unknown;
       attachments: unknown;
+      response_messages: unknown;
     }[];
     const iso = (v: string | Date | null): string | null => {
       if (v === null) return null;
@@ -355,6 +357,10 @@ export const getChatSessionOp = defineOperation({
           typeof m.attachments === "string"
             ? (JSON.parse(m.attachments) as unknown)
             : m.attachments;
+        const parsedResponseMessages =
+          typeof m.response_messages === "string"
+            ? (JSON.parse(m.response_messages) as unknown)
+            : m.response_messages;
         return {
           id: m.id,
           role: m.role,
@@ -372,6 +378,12 @@ export const getChatSessionOp = defineOperation({
           attachments:
             Array.isArray(parsedAttachments) && parsedAttachments.length > 0
               ? (parsedAttachments as import("@caelo-cms/shared").ChatAttachment[])
+              : null,
+          // Option C — the SDK-canonical ModelMessage assembly for an
+          // assistant turn; replayed verbatim as history (CLAUDE.md §12).
+          responseMessages:
+            Array.isArray(parsedResponseMessages) && parsedResponseMessages.length > 0
+              ? (parsedResponseMessages as unknown[])
               : null,
         };
       }),

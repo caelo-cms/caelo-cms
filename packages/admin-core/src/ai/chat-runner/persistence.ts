@@ -28,6 +28,13 @@ export interface LoadedSession {
     thinkingBlocks: { thinking: string; signature: string }[] | null;
     /** issue #190 — operator-attached images on user messages. */
     attachments: import("@caelo-cms/shared").ChatAttachment[] | null;
+    /**
+     * Option C — the SDK-canonical ModelMessage assembly persisted for an
+     * assistant turn. When present, replay hands these straight back to the
+     * SDK instead of reconstructing from content/toolCalls/thinkingBlocks
+     * (CLAUDE.md §12). Null on user/tool rows and legacy assistant rows.
+     */
+    responseMessages: unknown[] | null;
   }[];
 }
 
@@ -143,6 +150,8 @@ export async function persistAssistantTurn(
     /** Client calls + serverExecuted-tagged Tool Search calls, one jsonb. */
     toolCalls: (AccumulatedToolCall | AccumulatedServerToolCall)[] | null;
     thinkingBlocks: { thinking: string; signature: string }[] | null;
+    /** Option C — the SDK's canonical ModelMessage assembly for this turn. */
+    responseMessages: unknown[] | null;
     status: "interrupted" | "complete";
   },
 ): Promise<{ ok: true; messageId: string } | { ok: false; sessionGone: boolean; message: string }> {
@@ -152,6 +161,7 @@ export async function persistAssistantTurn(
     content: args.content,
     toolCalls: args.toolCalls,
     thinkingBlocks: args.thinkingBlocks,
+    responseMessages: args.responseMessages,
     status: args.status,
     // issue #303 — producer hint for the empty-content rejection.
     source: "chat-runner assistant turn (persistAssistantTurn)",

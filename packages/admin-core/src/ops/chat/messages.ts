@@ -45,6 +45,13 @@ export const appendChatMessageOp = defineOperation({
         .array(z.object({ thinking: z.string(), signature: z.string() }))
         .nullable()
         .optional(),
+      // Option C (2026-07) — the SDK's canonical ModelMessage assembly for
+      // this assistant turn (`result.response.messages`), stored verbatim.
+      // Replay hands these straight back to the SDK, so tool pairing +
+      // reasoning signatures + provider-executed tool blocks stay correct
+      // without any reconstruction (CLAUDE.md §12). Opaque jsonb — the shape
+      // is the SDK's, owned by the provider layer.
+      responseMessages: z.array(z.unknown()).nullable().optional(),
       // issue #190 — operator-attached images on user messages.
       attachments: z.array(chatAttachmentSchema).max(CHAT_MAX_ATTACHMENTS).nullable().optional(),
       // issue #303 — optional producer hint, NOT persisted (no column, no
@@ -126,7 +133,8 @@ export const appendChatMessageOp = defineOperation({
       rows = (await tx.execute(sql`
         INSERT INTO chat_messages (
           chat_session_id, role, content, origin, tool_calls, tool_call_id,
-          tokens_in, tokens_out, cached_tokens, status, thinking_blocks, attachments
+          tokens_in, tokens_out, cached_tokens, status, thinking_blocks, attachments,
+          response_messages
         )
         SELECT
           ${input.chatSessionId}::uuid,
@@ -140,7 +148,8 @@ export const appendChatMessageOp = defineOperation({
           ${input.cachedTokens ?? null}::int,
           ${input.status ?? "complete"},
           ${jsonbParam(input.thinkingBlocks && input.thinkingBlocks.length > 0 ? input.thinkingBlocks : null)},
-          ${jsonbParam(input.attachments && input.attachments.length > 0 ? input.attachments : null)}
+          ${jsonbParam(input.attachments && input.attachments.length > 0 ? input.attachments : null)},
+          ${jsonbParam(input.responseMessages && input.responseMessages.length > 0 ? input.responseMessages : null)}
         WHERE EXISTS (
           SELECT 1 FROM chat_sessions WHERE id = ${input.chatSessionId}::uuid
         )

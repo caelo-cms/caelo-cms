@@ -35,6 +35,13 @@ export interface StreamTurnResult {
   /** Provider-executed (Tool Search) calls — recorded, never dispatched. */
   accumulatedServerToolCalls: AccumulatedServerToolCall[];
   accumulatedThinking: { thinking: string; signature: string }[];
+  /**
+   * Option C (2026-07) — the SDK's canonical ModelMessage assembly for
+   * this provider call (`turn-messages` event). Persisted per assistant
+   * turn and replayed verbatim as history (CLAUDE.md §12). Empty when the
+   * turn errored/aborted before the response resolved.
+   */
+  accumulatedTurnMessages: unknown[];
   loopStop: "end_turn" | "tool_use" | "max_tokens" | "error" | "max_loops" | "session_gone";
   providerErr: boolean;
   /**
@@ -82,6 +89,8 @@ export async function* streamProviderTurn(args: {
   // v0.2.54 — accumulate thinking blocks emitted on this turn for
   // persistence + round-trip on the next loop's provider call.
   const accumulatedThinking: { thinking: string; signature: string }[] = [];
+  // Option C — the SDK's canonical messages for this provider call.
+  let accumulatedTurnMessages: unknown[] = [];
   let loopStop: StreamTurnResult["loopStop"] = "end_turn";
   let providerErr = false;
   let promptTooLongMessage: string | null = null;
@@ -193,6 +202,11 @@ export async function* streamProviderTurn(args: {
         // stream) is dropped rather than persisted unpaired.
         const call = accumulatedServerToolCalls.find((c) => c.id === ev.id);
         if (call) call.result = ev.result;
+      } else if (ev.kind === "turn-messages") {
+        // Option C — the SDK's canonical assembly for THIS provider call
+        // (streamProviderTurn drives exactly one). The loop persists it as
+        // this assistant turn's replay history.
+        accumulatedTurnMessages = [...ev.messages];
       } else if (ev.kind === "usage") {
         usage.totalIn += ev.inputTokens;
         usage.totalOut += ev.outputTokens;
@@ -245,6 +259,7 @@ export async function* streamProviderTurn(args: {
     accumulatedToolCalls,
     accumulatedServerToolCalls,
     accumulatedThinking,
+    accumulatedTurnMessages,
     loopStop,
     providerErr,
     promptTooLongMessage,
