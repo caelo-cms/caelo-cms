@@ -158,18 +158,6 @@ export interface GenerateInput {
    * ≥ 1024 and < maxTokens. Providers without thinking ignore this.
    */
   readonly thinking?: { readonly budgetTokens: number };
-  /**
-   * Force the model's tool use for a structured-output call. `{type:"tool",
-   * toolName}` pins it to one tool (the `moduleize` submit_module pattern);
-   * "required" forces some tool; "auto"/"none" are the SDK defaults/off.
-   * Providers that don't support forcing ignore it. Without it, a single-tool
-   * prompt is NOT reliably obeyed — the model may reply with prose instead.
-   */
-  readonly toolChoice?:
-    | { readonly type: "tool"; readonly toolName: string }
-    | "auto"
-    | "required"
-    | "none";
 }
 
 /**
@@ -248,8 +236,47 @@ export type ProviderEvent =
    */
   | { kind: "thinking-stop"; thinking: string; signature: string };
 
+/**
+ * Structured-output request. The model returns ONE object matching
+ * `jsonSchema` — the SDK-native path (`generateObject`) that replaces the
+ * old force-a-`submit_*`-tool-and-parse-its-args pattern (CLAUDE.md §12).
+ * No tool loop, no prose: the SDK constrains the response to the schema and
+ * hands back the parsed object. Callers that need contract checks BEYOND the
+ * schema (moduleize's placeholder↔field + content-preservation rules) run
+ * them on `object` and re-request with a repair message on failure.
+ */
+export interface GenerateObjectInput {
+  readonly systemPrompt: string;
+  readonly messages: readonly ChatMessageInput[];
+  /** JSON Schema (draft-07 object) the response must satisfy. */
+  readonly jsonSchema: Record<string, unknown>;
+  readonly maxTokens?: number;
+  readonly temperature?: number;
+  readonly abortSignal?: AbortSignal;
+}
+
+/** Result of a `generateObject` call. */
+export interface GenerateObjectResult {
+  /**
+   * The schema-valid object, or `undefined` when the model failed to
+   * produce one that parses (the SDK's `NoObjectGeneratedError` — a
+   * REPAIRABLE outcome the caller re-prompts on, distinct from a thrown
+   * provider/API error which is not repairable).
+   */
+  readonly object: unknown | undefined;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly model: string;
+}
+
 export interface AIProvider {
   readonly name: ProviderName;
   readonly model: string;
   generate(input: GenerateInput): AsyncIterable<ProviderEvent>;
+  /**
+   * SDK-native structured output. Every provider implements this (no
+   * optional-method fallback — CLAUDE.md §2 fail-loud): a missing
+   * implementation would silently degrade moduleize's structured path.
+   */
+  generateObject(input: GenerateObjectInput): Promise<GenerateObjectResult>;
 }

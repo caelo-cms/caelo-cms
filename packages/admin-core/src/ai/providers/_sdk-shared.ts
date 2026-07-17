@@ -19,9 +19,20 @@
  * provider-brand strings cross this boundary (CLAUDE.md §4).
  */
 
-import { jsonSchema, type ModelMessage, streamText } from "ai";
+import {
+  generateObject,
+  jsonSchema,
+  type ModelMessage,
+  NoObjectGeneratedError,
+  streamText,
+} from "ai";
 
-import type { ChatMessageInput, GenerateInput, ProviderEvent } from "../provider.js";
+import type {
+  ChatMessageInput,
+  GenerateInput,
+  GenerateObjectResult,
+  ProviderEvent,
+} from "../provider.js";
 import { normalizeToolArgs } from "../tools/normalize-args.js";
 
 /**
@@ -476,5 +487,63 @@ export async function* runSDKStream(args: {
     yield { kind: "turn-messages", messages: response.messages };
   } catch {
     /* no canonical messages for an aborted/errored turn */
+  }
+}
+
+/**
+ * SDK-native structured output shared by all SDK-backed providers
+ * (CLAUDE.md §12). Constrains the response to `rawJsonSchema` via
+ * `generateObject` and returns the parsed object — no forced `submit_*`
+ * tool, no arg-string parsing.
+ *
+ * Error contract mirrors the old stream-drain path so moduleize's repair
+ * loop is unchanged:
+ * - a schema-invalid / no-parseable-object result (`NoObjectGeneratedError`)
+ *   returns `{ object: undefined }` — the caller re-prompts (repairable);
+ * - any other throw (provider/API/network) propagates — NOT repairable.
+ */
+export async function runSDKGenerateObject(args: {
+  model: import("ai").LanguageModel;
+  modelId: string;
+  systemAndMessages: { system?: string; messages: ModelMessage[] };
+  rawJsonSchema: Record<string, unknown>;
+  maxTokens?: number;
+  temperature?: number;
+  abortSignal?: AbortSignal;
+  extraOptions?: Record<string, unknown>;
+}): Promise<GenerateObjectResult> {
+  const { model, modelId, systemAndMessages, rawJsonSchema, extraOptions } = args;
+  try {
+    const result = await generateObject({
+      model,
+      schema: jsonSchema(rawJsonSchema),
+      allowSystemInMessages: true,
+      ...(systemAndMessages.system !== undefined ? { system: systemAndMessages.system } : {}),
+      messages: systemAndMessages.messages,
+      maxOutputTokens: args.maxTokens ?? 8192,
+      ...(args.temperature !== undefined ? { temperature: args.temperature } : {}),
+      ...(args.abortSignal ? { abortSignal: args.abortSignal } : {}),
+      ...(extraOptions ?? {}),
+    });
+    return {
+      object: result.object,
+      inputTokens: result.usage.inputTokens ?? 0,
+      outputTokens: result.usage.outputTokens ?? 0,
+      model: modelId,
+    };
+  } catch (e) {
+    if (NoObjectGeneratedError.isInstance(e)) {
+      // The model replied but the output didn't parse to the schema. This
+      // is the repairable case — surface it as "no object" so the caller's
+      // validate()+repair loop re-prompts, exactly as the old undefined
+      // tool-args path did. Usage (if the SDK attached it) still counts.
+      return {
+        object: undefined,
+        inputTokens: e.usage?.inputTokens ?? 0,
+        outputTokens: e.usage?.outputTokens ?? 0,
+        model: modelId,
+      };
+    }
+    throw e;
   }
 }

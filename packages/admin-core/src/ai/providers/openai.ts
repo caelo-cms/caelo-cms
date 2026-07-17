@@ -16,8 +16,15 @@
 
 import { createOpenAI } from "@ai-sdk/openai";
 
-import type { AIProvider, GenerateInput, ProviderEvent, ProviderName } from "../provider.js";
-import { runSDKStream, toSDKMessages } from "./_sdk-shared.js";
+import type {
+  AIProvider,
+  GenerateInput,
+  GenerateObjectInput,
+  GenerateObjectResult,
+  ProviderEvent,
+  ProviderName,
+} from "../provider.js";
+import { runSDKGenerateObject, runSDKStream, toSDKMessages } from "./_sdk-shared.js";
 
 interface OpenAiProviderOptions {
   readonly apiKey: string;
@@ -56,6 +63,21 @@ export class OpenAiProvider implements AIProvider {
       model: this.#model,
       input,
       systemAndMessages: { system, messages: toSDKMessages(input.messages) },
+    });
+  }
+
+  async generateObject(input: GenerateObjectInput): Promise<GenerateObjectResult> {
+    return runSDKGenerateObject({
+      model: this.#model,
+      modelId: this.model,
+      systemAndMessages: {
+        system: input.systemPrompt,
+        messages: toSDKMessages(input.messages),
+      },
+      rawJsonSchema: input.jsonSchema,
+      ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+      ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
   }
 }

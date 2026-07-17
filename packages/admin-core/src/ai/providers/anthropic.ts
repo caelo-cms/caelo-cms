@@ -35,10 +35,12 @@ import type {
   AIProvider,
   ChatMessageInput,
   GenerateInput,
+  GenerateObjectInput,
+  GenerateObjectResult,
   ProviderEvent,
   ProviderName,
 } from "../provider.js";
-import { runSDKStream, toSDKMessages } from "./_sdk-shared.js";
+import { runSDKGenerateObject, runSDKStream, toSDKMessages } from "./_sdk-shared.js";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 
@@ -358,10 +360,6 @@ export class AnthropicProvider implements AIProvider {
     // v0.2.54 — extended thinking. Anthropic-specific provider
     // option; OpenAI/Gemini don't have an equivalent body param.
     const extraOptions: Record<string, unknown> = {};
-    // Structured-output forcing: pin the model to a specific tool so a
-    // single-tool call (moduleize's submit_module) is actually made instead
-    // of a prose reply. streamText accepts toolChoice verbatim.
-    if (input.toolChoice !== undefined) extraOptions.toolChoice = input.toolChoice;
     if (input.thinking) {
       extraOptions.providerOptions = {
         anthropic: {
@@ -490,6 +488,25 @@ export class AnthropicProvider implements AIProvider {
       yield ev;
     }
   }
+
+  async generateObject(input: GenerateObjectInput): Promise<GenerateObjectResult> {
+    // Claude 4.6+ reject `temperature` with a 400 (see isAdaptiveModel).
+    // moduleize passes temperature:0, so strip it for the adaptive class
+    // exactly as `generate` does — otherwise the structured call 400s.
+    const temperature =
+      input.temperature !== undefined && isAdaptiveModel(this.model)
+        ? undefined
+        : input.temperature;
+    return runSDKGenerateObject({
+      model: this.#model,
+      modelId: this.model,
+      systemAndMessages: buildSystemAndMessages(input.systemPrompt, undefined, input.messages),
+      rawJsonSchema: input.jsonSchema,
+      ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+      ...(temperature !== undefined ? { temperature } : {}),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    });
+  }
 }
 
 /**
@@ -510,6 +527,13 @@ export class FixtureProvider implements AIProvider {
 
   async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
     for (const e of this.#events) yield e;
+  }
+
+  // FixtureProvider scripts the streaming (generate) path only. Tests that
+  // need structured output script their own generateObject (see
+  // moduleize.test.ts) — fail loud if this stub is reached (CLAUDE.md §2).
+  async generateObject(_input: GenerateObjectInput): Promise<GenerateObjectResult> {
+    throw new Error("FixtureProvider.generateObject is not scripted — use a structured fixture");
   }
 }
 
