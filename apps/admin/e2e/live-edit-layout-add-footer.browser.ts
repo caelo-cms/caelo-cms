@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7.6 — proves `add_module_to_layout` reaches every page on every
+ * P6.7.6 — proves `add_module (target=layout)` reaches every page on every
  * template bound to the layout. The AI-tool path is exercised via a
- * fixture provider that streams a single `add_module_to_layout` call
+ * fixture provider that streams a single `add_module (target=layout)` call
  * with layoutSlug='site-default'. After the tool runs, the seeded
  * `home` page renders with the new footer.
  *
@@ -28,7 +28,7 @@ test.beforeAll(() => {
   resetOverlayLayoutFor("dev-owner@example.com");
   // Earlier specs (template-switch, isolation) may have re-pointed
   // home-template or attached layout_modules to site-default. Reset
-  // to a known state so the AI's add_module_to_layout call lands on
+  // to a known state so the AI's add_module (target=layout) call lands on
   // a clean slate.
   runBunInline(
     `
@@ -82,19 +82,26 @@ test.afterAll(async () => {
   );
 });
 
-test("add_module_to_layout reaches every page on the layout", async ({ context, page }) => {
+test("add_module (target=layout) reaches every page on the layout", async ({ context, page }) => {
   await registerTestProvider(BASE, PROVIDER, [
     [
       {
         kind: "tool-call",
         id: `tu_layout_${ts}`,
-        name: "add_module_to_layout",
+        // add_module (target=layout) was consolidated into the target-routed
+        // `add_module` (target='layout'). Explicit fields + values skip
+        // the moduleize sub-call (which would consume the next mock turn)
+        // and exercise the layout `values`→field-default path.
+        name: "add_module",
         arguments: {
-          layoutSlug: "site-default",
+          target: "layout",
+          targetRef: "site-default",
           blockName: "footer",
           position: "bottom",
           displayName: "AI Site Footer",
-          html: `<footer>${FOOTER_TEXT}</footer>`,
+          html: "<footer>{{copy}}</footer>",
+          fields: [{ name: "copy", kind: "text", label: "Copy" }],
+          values: { copy: FOOTER_TEXT },
         },
       },
       { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
