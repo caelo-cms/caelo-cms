@@ -373,7 +373,43 @@ If the maintainer hits a manual step the CLI doesn't handle, the FIRST commit of
 
 ---
 
-## 12. When in doubt
+## 12. The AI provider SDK is the boundary — use its shapes, don't reinvent
+
+We reach every model through the **Vercel AI SDK** (`ai` + `@ai-sdk/anthropic|openai|google`). That is a deliberate choice: it is our model-swap layer (Anthropic today, OpenAI/Gemini/local behind the same `AIProvider`). The load-bearing rule that follows from that choice:
+
+**If the SDK has a shape for something, use the SDK's shape. Do not invent a parallel format on top of it.** The moment we hand-roll what the SDK already gives us — message history, tool pairing, structured output, reasoning signatures — we take on the SDK dependency *and* the burden of keeping our parallel format correct, and we get neither the SDK's correctness guarantees nor a clean seam to swap models. This is not hypothetical: reconstructing conversation history from `streamText`'s `fullStream` instead of the SDK's `response.messages` is exactly what produced the run-B6 tool-search 400 (a `server_tool_use` block replayed without its paired `tool_search_tool_result`). The SDK pairs those blocks for us; we dropped that and rebuilt it wrong.
+
+**The two-lane mental model.** The SDK gives every turn two outputs, and their roles must not be blurred:
+- **`fullStream`** — a *live event stream* for rendering (text/reasoning deltas, tool-call announcements → SSE to the client). Display only.
+- **`response.messages` / `responseMessages`** — the *canonical conversation history* the SDK assembles, with provider-executed tool blocks, reasoning + signatures, and tool pairing already correct. This is what you persist and pass back on the next call.
+
+### SDK surface → our current status (audit, 2026-07)
+
+The table is the reference for "where do we still diverge, and is that deliberate?" A `gap` is drift to close over time; `by design` is a divergence we keep on purpose (with the reason).
+
+| SDK surface | Idiomatic SDK use | Our status |
+|---|---|---|
+| Text gen (`generateText` / `streamText`) | call it, read the stream | ✅ we call `streamText` |
+| **Conversation history** | persist + replay `response.messages` | ❌ **gap** — we rebuild history from `fullStream` in our own `ChatMessageInput` format (root of the tool-search replay bug; the responseMessages work closes this) |
+| **Provider-executed tools** (tool search, web search/fetch, code exec) | the SDK pairs `server_tool_use` + its result in `response.messages` | ❌ **gap** — folded into the history gap above; we currently drop server-tool blocks rather than replay them |
+| **Reasoning / thinking** | reasoning parts + signatures ride in `response.messages` | ⚠️ **gap** — we hand-manage `thinkingBlocks` + `providerOptions.anthropic.signature` manually; closes with the history work |
+| **Structured output** | `Output.object({ schema })` on generate/stream (v7; `generateObject` is deprecated) | ⚠️ **gap** — we force a `submit_*` tool and read its args (moduleize, subagent `submit_result`) instead of `Output.object()` |
+| Tool *definition* / dispatch loop | `tool({ inputSchema, execute })` + the SDK's tool loop | ✅ **by design** — we pass tool schemas but NO `execute`; the chat-runner owns the loop so snapshot emission, audit, cost cap, and subagent spawning happen between calls. Keep. |
+| **Tool approval** (human-in-the-loop) | `toolApproval` / `needsApproval` (v7) | ⚠️ **by design, but check** — our propose/execute gate (§11.A) + the W5 `needsApproval` dispatch gate are a parallel system, because we own the loop and the approval is DB-backed (proposal queue). Reasonable; revisit if the SDK's approach ever covers the queue. |
+| **Image generation** | `experimental_generateImage` / provider image tools | ❌ **gap** — `image-provider.ts` calls OpenAI/Google image endpoints by raw `fetch`; migrate onto the SDK image API |
+| Embeddings (`embed` / `embedMany`) | SDK embed functions | — not used yet (tool-search-with-embeddings is a possible future) |
+| MCP | SDK MCP *client* (`experimental_createMCPClient`) | ✅ **by design** — we are the MCP *server* (`caleo_chat`) + a plugin host; we don't consume MCP as a client. Different direction, not drift. |
+| Agent loop | `Agent` / `ToolLoopAgent` + `stopWhen` | ✅ **by design** — same reason as the tool loop: we need control the Agent class doesn't give us (branch scope, cost cap, subagent depth). Keep our chat-runner loop. |
+
+### The rule for new work
+
+- Before building anything that touches provider I/O — a new content type in history, a new structured-output call, a new provider capability — **check this table and the SDK docs first.** If the SDK has the shape, use it. If we already drifted there, prefer closing the gap over extending the parallel path.
+- When a gap is genuinely load-bearing to close (the history/`responseMessages` one is), it gets its own focused change with a persistence migration, not a patch onto the hand-rolled format.
+- A `by design` divergence needs a one-line reason at the code site (like the "no `execute` — the chat-runner owns the loop" note). If you can't write the reason, it's drift, not design.
+
+---
+
+## 13. When in doubt
 
 - Read the relevant section of `CMS_REQUIREMENTS.md` first — most architectural questions have already been decided.
 - Then consult `plans/MASTER_PLAN.md` and the relevant `plans/phases/phase_<N>_*.md` for execution specifics.
