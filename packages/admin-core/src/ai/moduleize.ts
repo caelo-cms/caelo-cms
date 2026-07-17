@@ -29,7 +29,7 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { validateTemplatizedModule } from "../ops/content/extract-module-structure.js";
-import type { AIProvider, ProviderEvent } from "./provider.js";
+import type { AIProvider } from "./provider.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -71,22 +71,21 @@ export interface ModuleizeArgs {
   readonly abortSignal?: AbortSignal;
 }
 
-const SUBMIT_TOOL_NAME = "submit_module";
-
-const submitModuleTool = {
-  name: SUBMIT_TOOL_NAME,
-  description:
-    "Return the moduleized result: the HTML rewritten with {{snake_case}} placeholders for every value a person would edit, the matching fields[] schema, plus a short displayName, a kind, and a one-line description.",
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["html", "fields", "displayName", "kind"],
-    properties: {
-      html: { type: "string", minLength: 1 },
-      fields: MODULE_FIELDS_JSON_SCHEMA,
-      displayName: { type: "string", minLength: 1, maxLength: 128 },
-      ...MODULE_META_JSON_SCHEMA_PROPS,
-    },
+/**
+ * The JSON Schema the structured-output call must satisfy (CLAUDE.md §12 —
+ * SDK-native `generateObject`, not a forced `submit_*` tool). The SDK
+ * constrains the model's response to this shape; `moduleizeOutputSchema`
+ * (Zod) re-validates + the module contract checks run on top.
+ */
+const MODULEIZE_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["html", "fields", "displayName", "kind"],
+  properties: {
+    html: { type: "string", minLength: 1 },
+    fields: MODULE_FIELDS_JSON_SCHEMA,
+    displayName: { type: "string", minLength: 1, maxLength: 128 },
+    ...MODULE_META_JSON_SCHEMA_PROPS,
   },
 } as const;
 
@@ -105,7 +104,7 @@ const SYSTEM = [
   "2. Emit a `fields[]` entry for each placeholder with a SEMANTIC snake_case name that describes the VALUE (`hero_title`, `primary_cta_href`, `nav_items`), never the tag. Pick the right kind: text, richtext, url, image, number, boolean, link; repeating content is a LIST field (`text-list`, `link-list`, `module-list`) — never numbered scalars (label, label2, ...).",
   "   EVERY field MUST carry `default` = the ORIGINAL value you replaced in the input HTML (the exact heading text, the exact href, ...). The raw copy must never be lost — placements without custom content render these defaults.",
   "3. Give the module a short displayName, a kind (chrome|hero|content|cta|utility), and a one-line description (what it is + when to use it).",
-  "Every `{{field}}` in html MUST have a matching fields[] entry and vice-versa. Return the result by calling the `submit_module` tool — do not reply with prose.",
+  "Every `{{field}}` in html MUST have a matching fields[] entry and vice-versa. Return a single JSON object matching the schema (html, fields, displayName, kind, description) — do not reply with prose.",
 ].join("\n");
 
 function userMessage(args: ModuleizeArgs): string {
@@ -117,7 +116,7 @@ function userMessage(args: ModuleizeArgs): string {
   return parts.join("");
 }
 
-/** Drain one generate() call, returning the submit_module args + usage. */
+/** Run one structured-output call, returning the parsed object + usage. */
 async function runOnce(
   provider: AIProvider,
   systemPrompt: string,
@@ -130,38 +129,33 @@ async function runOnce(
   model: string;
   providerError?: string;
 }> {
-  let toolArgs: unknown;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let providerError: string | undefined;
-  const stream = provider.generate({
-    systemPrompt,
-    messages: [{ role: "user", content: message }],
-    tools: [submitModuleTool],
-    // Force the single tool so the model returns structured args, not prose.
-    toolChoice: { type: "tool", toolName: SUBMIT_TOOL_NAME },
-    maxTokens: 8192,
-    temperature: 0,
-    ...(abortSignal ? { abortSignal } : {}),
-  });
-  for await (const ev of stream as AsyncIterable<ProviderEvent>) {
-    if (ev.kind === "tool-call" && ev.name === SUBMIT_TOOL_NAME) {
-      toolArgs = typeof ev.arguments === "string" ? safeJson(ev.arguments) : ev.arguments;
-    } else if (ev.kind === "usage") {
-      inputTokens = ev.inputTokens;
-      outputTokens = ev.outputTokens;
-    } else if (ev.kind === "error") {
-      providerError = ev.message;
-    }
-  }
-  return { args: toolArgs, inputTokens, outputTokens, model: provider.model, providerError };
-}
-
-function safeJson(s: string): unknown {
   try {
-    return JSON.parse(s);
-  } catch {
-    return undefined;
+    const result = await provider.generateObject({
+      systemPrompt,
+      messages: [{ role: "user", content: message }],
+      jsonSchema: MODULEIZE_JSON_SCHEMA as unknown as Record<string, unknown>,
+      maxTokens: 8192,
+      temperature: 0,
+      ...(abortSignal ? { abortSignal } : {}),
+    });
+    // `object === undefined` is the SDK's NoObjectGeneratedError (the model
+    // replied but nothing parsed to the schema) — a REPAIRABLE outcome, so
+    // return it as undefined args and let validate() re-prompt. A thrown
+    // error below is a hard provider/API failure — not repairable.
+    return {
+      args: result.object,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      model: result.model,
+    };
+  } catch (e) {
+    return {
+      args: undefined,
+      inputTokens: 0,
+      outputTokens: 0,
+      model: provider.model,
+      providerError: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 
@@ -176,14 +170,14 @@ function validate(
   if (args === undefined) {
     return {
       ok: false,
-      error: "did not call submit_module (no tool call / unparseable arguments)",
+      error: "did not return a parseable module object (no schema-valid output)",
     };
   }
   const parsed = moduleizeOutputSchema.safeParse(args);
   if (!parsed.success) {
     return {
       ok: false,
-      error: `submit_module arguments invalid: ${parsed.error.message.slice(0, 400)}`,
+      error: `module object invalid: ${parsed.error.message.slice(0, 400)}`,
     };
   }
   const contract = validateTemplatizedModule(parsed.data.html, parsed.data.fields);
@@ -264,7 +258,7 @@ export async function moduleize(args: ModuleizeArgs): Promise<ModuleizeResult> {
     }
     errors.push(result.error);
     // Feed the error back for the next repair pass.
-    message = `${userMessage(args)}\n\nYour previous attempt was rejected: ${result.error}\nFix it and call submit_module again.`;
+    message = `${userMessage(args)}\n\nYour previous attempt was rejected: ${result.error}\nFix it and return the corrected module object.`;
   }
 
   // Exhausted the repair budget — record the failure, then fail loudly.

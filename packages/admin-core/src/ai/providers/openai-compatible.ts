@@ -41,5 +41,6 @@ export function makeOpenAiCompatibleProvider(cfg: OpenAiCompatibleConfig): AIPro
     name: "local-openai-compat" as ProviderName,
     model: cfg.model,
     generate: inner.generate.bind(inner),
+    generateObject: inner.generateObject.bind(inner),
   };
 }
