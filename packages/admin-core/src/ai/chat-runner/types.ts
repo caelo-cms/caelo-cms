@@ -19,6 +19,21 @@ export type ClientEvent =
   | { kind: "tool-start"; toolCallId: string; name: string; arguments: unknown }
   | { kind: "tool-result"; toolCallId: string; ok: boolean; content: string }
   | { kind: "tool-result-cached"; toolCallId: string }
+  /**
+   * Slice 1 (SDK approval gate) — a gated tool call is paused awaiting the
+   * Owner's decision. ChatPanel renders an inline Approve/Reject card with
+   * the preview; approving POSTs the tool-approval-response and re-opens the
+   * stream in resume mode. `preview` is the AI-actionable blast-radius the
+   * gated tool computed for the operator.
+   */
+  | {
+      kind: "tool-approval-request";
+      approvalId: string;
+      toolCallId: string;
+      name: string;
+      arguments: unknown;
+      preview: string;
+    }
   | { kind: "assistant-message-saved"; messageId: string }
   | { kind: "interrupted"; messageId: string | null }
   | { kind: "usage"; inputTokens: number; outputTokens: number; cachedTokens: number; cost: number }
@@ -204,6 +219,20 @@ export interface AccumulatedServerToolCall {
   serverExecuted: true;
 }
 
+/**
+ * Slice 1 (SDK approval gate) — a gated tool call the SDK paused before
+ * executing. Carries the SDK's `approvalId` (needed to append the matching
+ * tool-approval-response on resume) + the call it gates, so the loop can
+ * surface an in-chat Approve/Reject card and skip dispatching the paired
+ * tool-call.
+ */
+export interface ApprovalRequest {
+  approvalId: string;
+  toolCallId: string;
+  name: string;
+  arguments: unknown;
+}
+
 /** Loop terminal states tracked across the chat-runner turn. */
 export type StopReason =
   | "end_turn"
@@ -215,7 +244,12 @@ export type StopReason =
   // issue #297 — the import-run cost gate paused the turn at its ceiling.
   // A clean, resumable stop (`succeeded` stays true): the operator re-arms
   // via set_migration_budget / imports.set_cost_ceiling and continues.
-  | "cost_ceiling";
+  | "cost_ceiling"
+  // Slice 1 (SDK approval gate) — the model called a gated tool; the turn is
+  // paused awaiting the Owner's in-chat Approve/Reject. Clean + resumable
+  // (`succeeded` stays true): approving appends a tool-approval-response and
+  // re-runs the turn.
+  | "awaiting_approval";
 
 /**
  * Result shape of a single tool dispatch. Mirrors the subset of

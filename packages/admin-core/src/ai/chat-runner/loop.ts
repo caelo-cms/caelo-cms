@@ -15,6 +15,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import { capWrapUpNoticeText, shouldWrapUpAtCap } from "../tools/subagent-budget.js";
+import { buildApprovalPreview } from "./approval.js";
 import {
   type BudgetGateState,
   budgetTripText,
@@ -328,6 +329,7 @@ export async function* runToolLoop(
       accumulatedText,
       accumulatedToolCalls,
       accumulatedServerToolCalls,
+      accumulatedApprovalRequests,
       accumulatedThinking,
       accumulatedTurnMessages,
       loopStop,
@@ -666,6 +668,64 @@ export async function* runToolLoop(
       break;
     }
 
+    // Slice 1 (SDK approval gate) — the model called one or more gated tools;
+    // the SDK PAUSED before their execute and surfaced tool-approval-requests.
+    // Surface each as an in-chat Approve/Reject card and STOP the turn: the
+    // paused assistant turn (tool-call + approval-request blocks) is already
+    // persisted via Option C responseMessages, so approving = appending a
+    // tool-approval-response and re-running. We do NOT dispatch the gated
+    // tool-calls (the SDK owns their execute once approved) and, to keep the
+    // paused pairing clean, do NOT dispatch the rest of the turn's calls
+    // either — the whole turn resumes together after the decision.
+    if (accumulatedApprovalRequests.length > 0) {
+      for (const req of accumulatedApprovalRequests) {
+        yield {
+          kind: "tool-approval-request",
+          approvalId: req.approvalId,
+          toolCallId: req.toolCallId,
+          name: req.name,
+          arguments: req.arguments,
+          preview: buildApprovalPreview(req.name, req.arguments),
+        };
+      }
+      // Autonomous / e2e runs: no human is on the stream to click Approve, so
+      // auto-grant each pending approval — append the SDK tool-approval-response
+      // (verbatim ModelMessage via the Option C passthrough) and CONTINUE the
+      // loop. The next provider call resumes the paused turn: the SDK runs the
+      // gated tool's execute (Owner ctx) and the model continues. Production
+      // leaves the turn paused (below) for the Owner's in-chat decision.
+      if (process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1") {
+        for (const req of accumulatedApprovalRequests) {
+          messages.push({
+            role: "tool",
+            content: "",
+            sdkMessages: [
+              {
+                role: "tool",
+                content: [
+                  { type: "tool-approval-response", approvalId: req.approvalId, approved: true },
+                ],
+              },
+            ],
+          });
+        }
+        console.error("[chat-runner] auto-approved (e2e)", {
+          chatSessionId,
+          approvals: accumulatedApprovalRequests.map((r) => r.name),
+        });
+        continue;
+      }
+      // Production — pause the turn awaiting the Owner's in-chat Approve/Reject.
+      // The paused assistant turn (tool-call + approval-request) is persisted
+      // via Option C responseMessages, so resume = append the response + re-run.
+      console.error("[chat-runner] awaiting-approval", {
+        chatSessionId,
+        approvals: accumulatedApprovalRequests.map((r) => ({ name: r.name, id: r.approvalId })),
+      });
+      stopReason = "awaiting_approval";
+      break;
+    }
+
     // Dispatch each tool call sequentially and append a tool result.
     // P5.2 #3 — dedupe by (chat_session_id, tool_call_id).
     // Run #8 live-edit CI — image follow-ups collect here and append
@@ -785,7 +845,16 @@ export async function* runToolLoop(
   // issue #297 — a cost-ceiling pause mid-tool-chain leaves lastLoopStop at
   // "tool_use"; the budget pause message already explains how to resume, so
   // the loop-limit notice must not stack a second, misleading message.
-  if (lastLoopStop === "tool_use" && !aborted() && succeeded && stopReason !== "cost_ceiling") {
+  // Slice 1 — an approval pause also leaves lastLoopStop at "tool_use" (the
+  // model wanted the gated tool); the awaiting-approval stop already
+  // explains the resume, so don't stack the loop-limit notice on top.
+  if (
+    lastLoopStop === "tool_use" &&
+    !aborted() &&
+    succeeded &&
+    stopReason !== "cost_ceiling" &&
+    stopReason !== "awaiting_approval"
+  ) {
     stopReason = "max_loops";
     const notice =
       `Paused at the tool-loop limit (${args.maxLoops} iterations). The build was still in progress — ` +

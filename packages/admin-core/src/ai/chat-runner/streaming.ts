@@ -18,6 +18,7 @@ import type { FilteredTool } from "./tool-catalogue.js";
 import type {
   AccumulatedServerToolCall,
   AccumulatedToolCall,
+  ApprovalRequest,
   ClientEvent,
   StoppingDiagnostics,
 } from "./types.js";
@@ -34,6 +35,13 @@ export interface StreamTurnResult {
   accumulatedToolCalls: AccumulatedToolCall[];
   /** Provider-executed (Tool Search) calls — recorded, never dispatched. */
   accumulatedServerToolCalls: AccumulatedServerToolCall[];
+  /**
+   * Slice 1 (SDK approval gate) — gated tool calls the SDK PAUSED before
+   * executing, awaiting a human tool-approval-response. The loop surfaces
+   * these to the operator (in-chat Approve/Reject), does NOT dispatch the
+   * matching tool-calls, and stops the turn. Empty on a normal turn.
+   */
+  accumulatedApprovalRequests: ApprovalRequest[];
   accumulatedThinking: { thinking: string; signature: string }[];
   /**
    * Option C (2026-07) — the SDK's canonical ModelMessage assembly for
@@ -86,6 +94,8 @@ export async function* streamProviderTurn(args: {
   const accumulatedText: string[] = [];
   const accumulatedToolCalls: AccumulatedToolCall[] = [];
   const accumulatedServerToolCalls: AccumulatedServerToolCall[] = [];
+  // Slice 1 (SDK approval gate) — gated tool calls the SDK paused.
+  const accumulatedApprovalRequests: ApprovalRequest[] = [];
   // v0.2.54 — accumulate thinking blocks emitted on this turn for
   // persistence + round-trip on the next loop's provider call.
   const accumulatedThinking: { thinking: string; signature: string }[] = [];
@@ -202,6 +212,16 @@ export async function* streamProviderTurn(args: {
         // stream) is dropped rather than persisted unpaired.
         const call = accumulatedServerToolCalls.find((c) => c.id === ev.id);
         if (call) call.result = ev.result;
+      } else if (ev.kind === "tool-approval-request") {
+        // Slice 1 — a gated tool paused before execute. Record it so the
+        // loop surfaces the in-chat Approve/Reject and skips dispatching the
+        // paired tool-call (the SDK owns that execute once approved).
+        accumulatedApprovalRequests.push({
+          approvalId: ev.approvalId,
+          toolCallId: ev.toolCallId,
+          name: ev.name,
+          arguments: ev.arguments,
+        });
       } else if (ev.kind === "turn-messages") {
         // Option C — the SDK's canonical assembly for THIS provider call
         // (streamProviderTurn drives exactly one). The loop persists it as
@@ -258,6 +278,7 @@ export async function* streamProviderTurn(args: {
     accumulatedText,
     accumulatedToolCalls,
     accumulatedServerToolCalls,
+    accumulatedApprovalRequests,
     accumulatedThinking,
     accumulatedTurnMessages,
     loopStop,
