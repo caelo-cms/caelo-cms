@@ -187,6 +187,23 @@ export interface AccumulatedToolCall {
   arguments: unknown;
 }
 
+/**
+ * A provider-executed (server) tool call — Anthropic Tool Search. The
+ * API ran it inside the request; we never dispatch it, but per the
+ * tool-search docs its call + result blocks must be replayed UNCHANGED
+ * on every subsequent request so discovered tools stay loaded without
+ * re-searching. Persisted inside the same `tool_calls` jsonb as client
+ * calls, tagged `serverExecuted: true`.
+ */
+export interface AccumulatedServerToolCall {
+  id: string;
+  name: string;
+  arguments: unknown;
+  /** The provider-computed result (tool_search: `[{type:'tool_reference', toolName}]`). */
+  result?: unknown;
+  serverExecuted: true;
+}
+
 /** Loop terminal states tracked across the chat-runner turn. */
 export type StopReason =
   | "end_turn"

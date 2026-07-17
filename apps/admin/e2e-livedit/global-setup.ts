@@ -113,6 +113,13 @@ export default async function globalSetup(): Promise<void> {
     // admin (crawler, estimator, inspection tools). Test admin only —
     // production never sets this.
     CAELO_IMPORTER_ALLOWED_HOSTS: "127.0.0.1,localhost",
+    // 2026-07 — no human clicks Approve in an autonomous run, so any
+    // propose_* the AI fires would stall (run-B5: the AI's correct
+    // layout-CSS fix sat unapproved and the white band persisted). This
+    // e2e-only flag makes the chat-runner execute each of the chat's
+    // pending proposals as the Owner would, exercising the full
+    // propose→execute path. Test admin ONLY — never production.
+    CAELO_E2E_AUTO_APPROVE_PROPOSALS: "1",
     // Run #9 CI fix (issue #262) — svelte-adapter-bun defaults
     // BODY_SIZE_LIMIT to 512K, and the chat screenshot postback can
     // exceed it (selector captures of image-heavy elements even as

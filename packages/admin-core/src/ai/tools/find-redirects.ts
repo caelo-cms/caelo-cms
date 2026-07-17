@@ -1,52 +1,50 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P8 AI-first review pass — `find_redirects`. List + filter the
- * redirects table without paginating through everything. Pre-flight
- * for `bulk_delete_redirects` ("delete redirects from /old-blog/*"
- * → AI calls find first to confirm the count, then bulk-deletes).
+ * P8 — `find_redirects` (2026-07: makeListReadTool — TOON output). The
+ * uniform `filter` param maps to the op's server-side substring query so
+ * matching runs over the WHOLE table, not one fetched page.
  */
 
-import { execute } from "@caelo-cms/query-api";
-import { findRedirectsToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ExecutionContext } from "@caelo-cms/shared";
+import { z } from "zod";
+import { makeListReadTool } from "./_make-read-tool.js";
+import type { ToolContext } from "./dispatch.js";
 
-export const findRedirectsTool: ToolDefinitionWithHandler<
-  import("@caelo-cms/shared").FindRedirectsToolInput
-> = {
+const findRedirectsInput = z
+  .object({
+    statusCode: z
+      .union([z.literal(301), z.literal(302), z.literal(307), z.literal(308), z.literal(410)])
+      .optional(),
+  })
+  .strict();
+
+export const findRedirectsTool = makeListReadTool<
+  z.infer<typeof findRedirectsInput>,
+  { fromPath: string; toPath: string; statusCode: number }
+>({
   name: "find_redirects",
   description:
-    "Search redirects by substring of fromPath or toPath, optionally filtered by statusCode. " +
-    "Returns up to `limit` matches plus a totalCount. " +
-    "Use as a pre-flight check before `bulk_delete_redirects` so the user sees what will be removed. " +
-    "Don't use to grab a single redirect by exact fromPath — use `redirects.lookup` (one-row lookup) instead.",
-  schema: findRedirectsToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      query: { type: "string", maxLength: 500 },
-      statusCode: { type: "integer", enum: [301, 302, 307, 308, 410] },
-      limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
-    },
-  },
-  handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "redirects.list", input);
-    if (!r.ok) return { ok: false, content: `redirects.list failed: ${describeError(r.error)}` };
-    const { redirects, totalCount } = r.value as {
-      redirects: { fromPath: string; toPath: string; statusCode: number }[];
-      totalCount: number;
-    };
-    if (redirects.length === 0) {
-      return { ok: true, content: `No redirects matched. Total in table: ${totalCount}.` };
-    }
-    const lines = redirects.map((r) => `- ${r.fromPath} → ${r.toPath} (${r.statusCode})`);
-    return {
-      ok: true,
-      content: `Matches (showing ${redirects.length} of ${totalCount}):\n${lines.join("\n")}`,
-      // v0.6.0 alpha.3 — structured payload for W3 retryWithArgs.
-      value: { redirects, totalCount },
-    };
-  },
-};
+    "Search redirects (TOON rows: fromPath, toPath, status). `filter` matches fromPath/toPath server-side across the whole table; optional `statusCode`; `limit`/`offset`/`full` as usual. " +
+    "Use as a pre-flight check before `bulk_delete_redirects` so the user sees what will be removed.",
+  opName: "redirects.list",
+  input: findRedirectsInput,
+  buildOpInput: (
+    input: { statusCode?: number; filter?: string; limit?: number; full?: boolean },
+    _ctx: ExecutionContext,
+    _toolCtx: ToolContext,
+  ) => ({
+    ...(input.filter !== undefined ? { query: input.filter } : {}),
+    ...(input.statusCode !== undefined ? { statusCode: input.statusCode } : {}),
+    limit: input.full ? 200 : Math.min(input.limit ?? 50, 200),
+  }),
+  label: "redirects",
+  rows: (value) =>
+    (value as { redirects: { fromPath: string; toPath: string; statusCode: number }[] }).redirects,
+  columns: [
+    { key: "from", value: (r) => r.fromPath },
+    { key: "to", value: (r) => r.toPath },
+    { key: "status", value: (r) => r.statusCode },
+  ],
+  emptyMessage: "No redirects matched.",
+});

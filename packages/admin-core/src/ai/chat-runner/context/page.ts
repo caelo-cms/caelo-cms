@@ -10,14 +10,12 @@ import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 
 import { sanitizeMarkerDisplayName } from "../../marker-text.js";
-import type { ToolDescribeStateActivePage } from "../../tools/describe-state.js";
 
 /**
  * P6.7.3 — Current-page volatile chunk. When the live-edit surface sends
  * `activePageId`, load the page + its modules + the template's blocks and
  * surface that as a per-call context block so the AI knows what's on the
- * page and which tool to use. Also returns `activePageForState` for the
- * ToolDescribeState blockName enum (issue #106).
+ * page and which tool to use.
  */
 export async function buildPageContext(
   registry: OperationRegistry,
@@ -26,13 +24,8 @@ export async function buildPageContext(
   activePageId: string | undefined,
 ): Promise<{
   pageContextBlock: string | undefined;
-  activePageForState: ToolDescribeStateActivePage | null;
 }> {
   let pageContextBlock: string | undefined;
-  // v0.12.3 (issue #106) — captured for ToolDescribeState so the
-  // add_module_to_page / move_module describeSchema can pin blockName to
-  // a generation-time enum of THIS page's actual template blocks.
-  let activePageForState: ToolDescribeStateActivePage | null = null;
   if (activePageId) {
     const pageR = await execute(registry, adapter, humanCtxWithBranch, "pages.get_with_modules", {
       pageId: activePageId,
@@ -51,11 +44,6 @@ export async function buildPageContext(
             modules: { moduleId: string; slug: string; displayName: string; html: string }[];
           }[];
         };
-      };
-      activePageForState = {
-        id: v.page.id,
-        templateId: v.page.templateId,
-        blockNames: v.page.blocks.map((b) => b.blockName),
       };
       // P6.7.4 — render the page like a visitor would see it, with each
       // module's full HTML wrapped in BEGIN/END markers carrying the
@@ -131,7 +119,7 @@ export async function buildPageContext(
       pageContextBlock = lines.join("\n");
     }
   }
-  return { pageContextBlock, activePageForState };
+  return { pageContextBlock };
 }
 
 /**

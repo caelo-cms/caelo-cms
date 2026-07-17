@@ -1,51 +1,36 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * v0.11.0 — AI tool: list_themes. Thin read over `themes.list`.
- * The system-prompt `## Theme` block already names the active theme
- * at session start; this tool fetches the full list (active + variants)
- * so the AI can pick a target slug when the operator asks to activate
- * or edit a non-active theme.
+ * v0.11.0 — `list_themes` (2026-07: makeListReadTool — TOON output,
+ * uniform filter/limit/offset/full). Carries the UUID because
+ * propose_activate_theme requires it (issue #106 step-13 deviation).
  */
 
-import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { makeListReadTool } from "./_make-read-tool.js";
 
-const listThemesToolInput = z.object({}).strict();
-type ListThemesToolInput = z.infer<typeof listThemesToolInput>;
+const listThemesInput = z.object({}).strict();
 
-interface ThemeRow {
-  id: string;
-  slug: string;
-  displayName: string;
-  isActive: boolean;
-}
-
-export const listThemesTool: ToolDefinitionWithHandler<ListThemesToolInput> = {
+export const listThemesTool = makeListReadTool<
+  Record<string, never>,
+  { id: string; slug: string; displayName: string; isActive: boolean }
+>({
   name: "list_themes",
   description:
-    "List every theme on this site (one row is active; the rest are variants). " +
-    "Returns each theme's id (UUID), slug, displayName, and isActive flag. Use when the operator " +
-    "mentions a theme by name and you need its slug or id — the id is what `propose_activate_theme` " +
-    "takes as `themeId`, so you can activate a variant straight from this list without a get_theme " +
-    "round-trip.",
-  schema: listThemesToolInput,
-  inputSchema: { type: "object", additionalProperties: false, properties: {} },
-  handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.list", input);
-    if (!r.ok) return { ok: false, content: `themes.list failed: ${describeError(r.error)}` };
-    const themes = (r.value as { themes: ThemeRow[] }).themes;
-    if (themes.length === 0) {
-      return { ok: true, content: "No themes on this site yet." };
-    }
-    // issue #106 (step-13 deviation) — surface the id. `propose_activate_theme`
-    // requires the theme UUID; omitting it here forced the AI into an extra
-    // get_theme / DTCG read just to learn the id of a theme it had just listed.
-    const lines = themes.map(
-      (t) => `- ${t.slug} ("${t.displayName}")${t.isActive ? " [active]" : ""} — id ${t.id}`,
-    );
-    return { ok: true, content: lines.join("\n") };
-  },
-};
+    "List every theme with UUID, slug, display name, and active flag (TOON rows). " +
+    "Standard list params: `filter`, `limit`/`offset`, `full: true`. " +
+    "propose_activate_theme requires the UUID listed here.",
+  opName: "themes.list",
+  input: listThemesInput,
+  label: "themes",
+  rows: (value) =>
+    (value as { themes: { id: string; slug: string; displayName: string; isActive: boolean }[] })
+      .themes,
+  columns: [
+    { key: "slug", value: (t) => t.slug },
+    { key: "id", value: (t) => t.id },
+    { key: "displayName", value: (t) => t.displayName },
+    { key: "active", value: (t) => (t.isActive ? "yes" : "") },
+  ],
+  emptyMessage: "No themes on this site yet.",
+});

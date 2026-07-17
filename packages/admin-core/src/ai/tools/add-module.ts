@@ -30,6 +30,7 @@ import {
   type AddModuleToolInput,
   addModuleToolInput,
   type ExecutionContext,
+  type ModuleField,
 } from "@caelo-cms/shared";
 import { blockNotFoundError } from "./_block-name-enum.js";
 import { checkColdStartGate } from "./_cold-start-gate.js";
@@ -74,6 +75,30 @@ interface ResolvedModule {
   css: string;
   kind: AddModuleToolInput["kind"];
   reused: boolean;
+  /** The module's stored fields — echoed in every result so the main
+   *  agent knows the content shape without a follow-up modules.get. */
+  fields: readonly ModuleField[] | undefined;
+}
+
+/** ` Fields: title(text), cta_href(link).` — appended to every ok result. */
+function fieldsSummary(fields: readonly ModuleField[] | undefined): string {
+  if (!fields || fields.length === 0) return "";
+  return ` Fields: ${fields.map((f) => `${f.name}(${f.kind})`).join(", ")}.`;
+}
+
+/**
+ * One rule, every target: initial content arrives via `values`. Chrome
+ * has no content_instance, so for target='layout' the values become the
+ * minted module's field defaults (the schema already guaranteed explicit
+ * fields + matching keys).
+ */
+function mergeValuesIntoDefaults(
+  fields: readonly ModuleField[],
+  values: Record<string, unknown>,
+): ModuleField[] {
+  return fields.map((f) =>
+    values[f.name] !== undefined ? ({ ...f, default: values[f.name] } as ModuleField) : f,
+  );
 }
 
 /** Insert `moduleId` into `existing` at the requested position; returns new list + index. */
@@ -122,7 +147,9 @@ async function resolveModule(
           "The moduleId must come from `## Modules` or `list_modules` — to mint a new module instead, omit moduleId and pass displayName + html.",
       };
     }
-    const mod = (got.value as { module: { id: string; slug: string } }).module;
+    const mod = (
+      got.value as { module: { id: string; slug: string; fields?: readonly ModuleField[] } }
+    ).module;
     return {
       ok: true,
       module: {
@@ -132,14 +159,21 @@ async function resolveModule(
         css: input.css ?? "",
         kind: input.kind,
         reused: true,
+        fields: mod.fields,
       },
     };
   }
-  // mint via moduleize (html + displayName guaranteed present by the schema superRefine)
+  // mint via moduleize (html + displayName guaranteed present by the schema
+  // superRefine). One-rule content: for layout, `values` become the minted
+  // fields' defaults (chrome renders from defaults — no content_instance).
+  const fieldsHint =
+    input.target === "layout" && input.values !== undefined && input.fields !== undefined
+      ? mergeValuesIntoDefaults(input.fields, input.values)
+      : input.fields;
   const minted = await mintModuleFromHtml(ctx, toolCtx, {
     html: input.html as string,
     displayNameHint: input.displayName as string,
-    fieldsHint: input.fields,
+    fieldsHint,
     description: input.description,
     kind: input.kind,
     type: input.type,
@@ -157,6 +191,7 @@ async function resolveModule(
       css: minted.css,
       kind: minted.kind,
       reused: false,
+      fields: minted.fields,
     },
   };
 }
@@ -168,41 +203,16 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     "**Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. " +
     "`target` = 'page' | 'layout' | 'template'. `targetRef` is the slug OR uuid of that page/layout/template (both resolve). " +
     "Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `## Modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` and the authoring fields are mutually exclusive. " +
-    "**Layout chrome renders from field DEFAULTS only** (no content_instance binding): on target='layout' every `{{field}}` must carry its value in that field's `default` (a footer nav is a `link-list` default; copyright is a `text` default). Do NOT use create_content_instance / set_placement_content for layout chrome. " +
+    "**The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. " +
     "`blockName` must be a real block on the target; the handler returns the available block set if it isn't. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `"0"`).',
-  describe: (state) => {
-    const lines: string[] = [
-      "Add ONE module. `target`='page'|'layout'|'template'; `targetRef`=slug or uuid. Pass `moduleId` to reuse an existing module from `## Modules` (keeps pages consistent), or `displayName`+`html` to mint one. Prefer `build_page` when a page needs >1 module.",
-      "target='layout' → site-wide chrome; every `{{field}}` needs its value in the field `default` (no content_instance). target='template' → fans out to every page of that page-type. target='page' → one page only.",
-    ];
-    if (state.activePage && state.activePage.blockNames.length > 0) {
-      lines.push(
-        `Active page blocks (for target='page'): ${state.activePage.blockNames.map((b) => `\`${b}\``).join(", ")}. A block name is a template slot — NOT a module \`kind\`.`,
-      );
-    }
-    if (state.layouts.length > 0) {
-      lines.push(
-        "Layout (slug → blocks): " +
-          state.layouts
-            .map(
-              (l) =>
-                `${l.slug} → ${l.blocks.length > 0 ? l.blocks.map((b) => b.name).join("/") : "(none)"}`,
-            )
-            .join("; ") +
-          ".",
-      );
-    }
-    if (state.templates.length > 0) {
-      lines.push(
-        "Templates (slug → templateId): " +
-          state.templates.map((t) => `${t.slug}=${t.id}`).join("; ") +
-          ".",
-      );
-    }
-    lines.push('`position`: "top"/"bottom" or a bare integer (prefer the integer).');
-    return lines.join(" ");
-  },
+  // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe
+  // embedded active-page blocks + layout/template slugs into the tool
+  // definition, busting Anthropic's tools-prefix cache on every page
+  // switch or structural write. The same facts live in the volatile
+  // `# Current page` / `## Layouts` / `## Templates` context blocks and
+  // list_layouts / list_templates; a blockName mismatch returns a
+  // structured error naming the valid set.
   schema: addModuleToolInput,
   inputSchema: {
     type: "object",
@@ -231,6 +241,12 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
       js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
       bindThemeLiterals: { type: "boolean" },
       fields: MODULE_FIELDS_JSON_SCHEMA,
+      values: {
+        type: "object",
+        additionalProperties: true,
+        description:
+          "Initial content, applied in the SAME call ({fieldName: value, …}) — the ONE place content goes on every target. page/template: fills the placement(s). layout: stored as the minted module's field defaults (requires explicit `fields`; not valid with moduleId reuse). A mint with fields but neither values nor defaults is rejected.",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {
@@ -239,7 +255,13 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     // instead of shipping raw `{{…}}` site-wide. Mint mode only; reuse places
     // an already-reviewed module.
     if (input.target === "layout" && input.moduleId === undefined) {
-      const unrenderable = findUnrenderableLayoutFields(input.fields);
+      // Check renderability AFTER folding `values` into the defaults —
+      // one-rule content means the copy usually arrives via `values`.
+      const effectiveFields =
+        input.values !== undefined && input.fields !== undefined
+          ? mergeValuesIntoDefaults(input.fields, input.values)
+          : input.fields;
+      const unrenderable = findUnrenderableLayoutFields(effectiveFields);
       if (unrenderable.length > 0) {
         return {
           ok: false,
@@ -301,10 +323,74 @@ async function placeOnPage(
   });
   if (!set.ok)
     return { ok: false, content: `pages.set_modules failed: ${describeError(set.error)}` };
+  // 2026-07 — apply the placement's initial content IN THIS CALL (a
+  // fresh module must never render empty waiting for a second
+  // set_page_module_content round-trip).
+  let valuesNote = "";
+  if (input.values !== undefined) {
+    const fill = await fillPlacementValues(
+      ctx,
+      toolCtx,
+      pageId,
+      input.blockName,
+      idx,
+      input.values,
+    );
+    if (!fill.ok) return fill;
+    valuesNote = " Initial content applied.";
+  }
   return {
     ok: true,
-    content: `${label} ${mod.moduleId} (slug=${mod.slug}) added to page block "${input.blockName}" at position ${idx}.${mod.note}${suffix}`,
+    content: `${label} ${mod.moduleId} (slug=${mod.slug}) added to page block "${input.blockName}" at position ${idx}.${valuesNote}${fieldsSummary(mod.fields)}${mod.note}${suffix}`,
   };
+}
+
+/**
+ * Fill a just-created placement's content_instance with the initial
+ * values. Reads the placement back (branch-aware) to learn the instance
+ * id pages.set_modules minted, then writes through the standard
+ * set_values op so field-shape validation applies.
+ */
+async function fillPlacementValues(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  pageId: string,
+  blockName: string,
+  position: number,
+  values: Record<string, unknown>,
+): Promise<{ ok: true } | ToolResult> {
+  const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
+    pageId,
+  });
+  if (!got.ok)
+    return { ok: false, content: `pages.get_with_modules failed: ${describeError(got.error)}` };
+  const page = (got.value as { page: PageWithModules }).page;
+  const block = page.blocks.find((b) => b.blockName === blockName);
+  const placement = block?.modules[position] as { contentInstanceId?: string | null } | undefined;
+  const instanceId = placement?.contentInstanceId;
+  if (!instanceId) {
+    return {
+      ok: false,
+      content: `placed the module, but could not resolve the new placement's content_instance to apply \`values\` — fill it via set_page_module_content({pageId: "${pageId}", blockName: "${blockName}", position: ${position}, values: …}).`,
+    };
+  }
+  const write = await execute(
+    toolCtx.registry,
+    toolCtx.adapter,
+    ctx,
+    "content_instances.set_values",
+    {
+      id: instanceId,
+      values,
+    },
+  );
+  if (!write.ok) {
+    return {
+      ok: false,
+      content: `placed the module, but applying \`values\` failed: ${describeError(write.error)}`,
+    };
+  }
+  return { ok: true };
 }
 
 async function placeOnLayout(
@@ -351,7 +437,7 @@ async function placeOnLayout(
     return { ok: false, content: `layout_modules.set failed: ${describeError(set.error)}` };
   return {
     ok: true,
-    content: `${label} ${mod.moduleId} (slug=${mod.slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${idx}; chrome now reaches every page on every template bound to this layout.${mod.note}${suffix}`,
+    content: `${label} ${mod.moduleId} (slug=${mod.slug}) added to layout "${layout.slug}" block "${input.blockName}" at position ${idx}; chrome now reaches every page on every template bound to this layout.${fieldsSummary(mod.fields)}${mod.note}${suffix}`,
   };
 }
 
@@ -410,11 +496,29 @@ async function placeOnTemplate(
       pageId: p.id,
       blocks: withBlockIds(detail.blocks, input.blockName, ids),
     });
-    if (set.ok) placements.push(`${p.slug}@${idx}`);
-    else failures.push(`${p.slug} (${describeError(set.error)})`);
+    if (set.ok) {
+      // 2026-07 — the fan-out carries the initial copy too: every
+      // created placement starts with the same values (unsynced, so
+      // pages can diverge later).
+      if (input.values !== undefined) {
+        const fill = await fillPlacementValues(
+          ctx,
+          toolCtx,
+          p.id,
+          input.blockName,
+          idx,
+          input.values,
+        );
+        if (!fill.ok) {
+          failures.push(`${p.slug} (placed, but values failed: ${fill.content})`);
+          continue;
+        }
+      }
+      placements.push(`${p.slug}@${idx}`);
+    } else failures.push(`${p.slug} (${describeError(set.error)})`);
   }
   const summary = [
-    `${label} ${mod.moduleId} (slug=${mod.slug}) added to block "${input.blockName}" on ${placements.length} of ${targetPages.length} pages using this template.${mod.note}${suffix}`,
+    `${label} ${mod.moduleId} (slug=${mod.slug}) added to block "${input.blockName}" on ${placements.length} of ${targetPages.length} pages using this template.${fieldsSummary(mod.fields)}${mod.note}${suffix}`,
     placements.length > 0 ? `placed: ${placements.join(", ")}` : null,
     failures.length > 0 ? `failed: ${failures.join("; ")}` : null,
   ]

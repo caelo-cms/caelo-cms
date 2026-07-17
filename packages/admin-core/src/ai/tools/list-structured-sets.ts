@@ -1,69 +1,38 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * v0.10.22 — AI tool: list_structured_sets. Thin wrapper over the
- * `structured_sets.list` op. The system-prompt block at session start
- * already shows existing sets + (for nav-menus, up to 30 items) their
- * inlined items; this tool exists for mid-conversation refresh after
- * writes and for non-nav-menu kinds where the prompt block shows
- * counts only.
- *
- * Part of the unified structured-sets CRUD surface: list / get / set /
- * delete. v0.10.22 replaced the kind-specific wrappers (`set_nav_menu`,
- * `update_theme`) with this generic API.
+ * v0.10.22 — `list_structured_sets` (2026-07: makeListReadTool — TOON
+ * output, uniform filter/limit/offset/full).
  */
 
-import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { makeListReadTool } from "./_make-read-tool.js";
 
-const listStructuredSetsToolInput = z
+const listStructuredSetsInput = z
   .object({
     kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list", "language-selector"]).optional(),
   })
   .strict();
 
-type ListStructuredSetsToolInput = z.infer<typeof listStructuredSetsToolInput>;
-
-export const listStructuredSetsTool: ToolDefinitionWithHandler<ListStructuredSetsToolInput> = {
+export const listStructuredSetsTool = makeListReadTool<
+  z.infer<typeof listStructuredSetsInput>,
+  { kind: string; slug: string; displayName: string; items: unknown }
+>({
   name: "list_structured_sets",
   description:
-    "List structured-data sets on this site. Pass `kind` to filter (nav-menu, tags, taxonomy, link-list, language-selector); omit to return all kinds. " +
-    "The system-prompt block above already shows existing sets at session start; call this only if you need fresh state after a write or if the prompt block was truncated. " +
-    "Theme tokens are not structured sets (v0.11.0+) — use `list_themes` / `get_theme` instead.",
-  schema: listStructuredSetsToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      kind: {
-        enum: ["nav-menu", "tags", "taxonomy", "link-list", "language-selector"],
-      },
-    },
-  },
-  handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "structured_sets.list", input);
-    if (!r.ok) {
-      return { ok: false, content: `structured_sets.list failed: ${describeError(r.error)}` };
-    }
-    const sets = (
-      r.value as {
-        sets: { kind: string; slug: string; displayName: string; items: unknown }[];
-      }
-    ).sets;
-    if (sets.length === 0) {
-      return {
-        ok: true,
-        content: input.kind
-          ? `No structured sets of kind '${input.kind}' on this site.`
-          : "No structured sets on this site yet.",
-      };
-    }
-    const lines = sets.map((s) => {
-      const itemCount = Array.isArray(s.items) ? s.items.length : 0;
-      return `- ${s.kind}/${s.slug} ("${s.displayName}") — ${itemCount} item${itemCount === 1 ? "" : "s"}`;
-    });
-    return { ok: true, content: lines.join("\n") };
-  },
-};
+    "List structured-data sets (nav menus, tags, taxonomies, link-lists, language-selectors) with item counts (TOON rows). " +
+    "Optional `kind`, plus the standard list params: `filter`, `limit`/`offset`, `full: true`. " +
+    "The context block inlines nav-menu items at session start; call this after writes or when the listing was truncated.",
+  opName: "structured_sets.list",
+  input: listStructuredSetsInput,
+  label: "structured_sets",
+  rows: (value) =>
+    (value as { sets: { kind: string; slug: string; displayName: string; items: unknown }[] }).sets,
+  columns: [
+    { key: "kind", value: (s) => s.kind },
+    { key: "slug", value: (s) => s.slug },
+    { key: "displayName", value: (s) => s.displayName },
+    { key: "items", value: (s) => (Array.isArray(s.items) ? s.items.length : 0) },
+  ],
+  emptyMessage: "No structured sets on this site yet — create one with set_structured_set.",
+});

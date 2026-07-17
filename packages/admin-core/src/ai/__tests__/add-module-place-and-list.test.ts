@@ -5,7 +5,7 @@
  *
  *   1. `add_module_to_page` place mode: an existing moduleId is spliced
  *      into the block WITHOUT a modules.create call (the reuse path).
- *   2. `list_modules`: full-catalog read with kind/search filters,
+ *   2. `list_modules`: full-catalog read with kind/filter params,
  *      metadata only — html/css/js must never leak into the payload.
  *
  * Fake-adapter pattern as in cold-start-gate.test.ts: the real
@@ -125,7 +125,8 @@ describe("list_modules (issue #159)", () => {
     expect(res.ok).toBe(true);
     expect(res.content).toContain("hero-banner");
     expect(res.content).toContain("site-footer");
-    expect(res.content).toContain("placements=3");
+    expect(res.content).toContain("placements");
+    expect(res.content).toMatch(/,3(?: \(|,|\n|$)/); // usage count rendered in the placements column
     expect(res.content).toContain("unplaced");
     const payload = JSON.stringify((res as { value?: unknown }).value ?? {});
     expect(payload).toContain(HERO.id);
@@ -139,14 +140,14 @@ describe("list_modules (issue #159)", () => {
     expect(byKind.content).toContain("site-footer");
     expect(byKind.content).not.toContain("hero-banner");
 
-    const bySearch = await listModulesTool.handler(AI, { search: "headline" }, toolCtxWith([]));
+    const bySearch = await listModulesTool.handler(AI, { filter: "headline" }, toolCtxWith([]));
     expect(bySearch.ok).toBe(true);
     expect(bySearch.content).toContain("hero-banner");
     expect(bySearch.content).not.toContain("site-footer");
   });
 
   it("suggests dropping the filter when it matches nothing", async () => {
-    const res = await listModulesTool.handler(AI, { search: "zzz-nope" }, toolCtxWith([]));
+    const res = await listModulesTool.handler(AI, { filter: "zzz-nope" }, toolCtxWith([]));
     expect(res.ok).toBe(true);
     expect(res.content).toContain("0 modules");
     expect(res.content).toContain("retry without the filter");

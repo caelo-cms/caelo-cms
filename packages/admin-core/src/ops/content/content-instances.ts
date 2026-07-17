@@ -45,6 +45,7 @@ import {
   loadContentInstanceState,
   loadContentInstanceStateWithBranchOverlay,
   loadPageLayoutState,
+  loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
@@ -1048,18 +1049,20 @@ export const setPlacementContentOp = defineOperation({
       );
     }
 
-    // Verify the placement exists (live; for branched callers, the
-    // page-set-modules op is the right tool for placements that exist
-    // only in a branch snapshot).
-    const placementRows = (await tx.execute(sql`
-      SELECT module_id::text AS module_id
-      FROM page_modules
-      WHERE page_id = ${input.pageId}::uuid
-        AND block_name = ${input.blockName}
-        AND position = ${input.position}
-      LIMIT 1
-    `)) as unknown as { module_id: string }[];
-    const placement = placementRows[0];
+    // Verify the placement exists — via the BRANCH-OVERLAID layout, the
+    // same source the branched write below re-emits from. A chat's
+    // just-created placements live only in `page_layout_snapshots`, not
+    // live `page_modules`; the old live SELECT here 404'd every binding a
+    // chat made against its own fresh placement ("no placement at
+    // (content, 0)"), forcing a fallback to set_page_module_content
+    // (live-edit nested-CTA turn: 4 failed set_placement_content calls).
+    const overlaidLayout = await loadPageLayoutStateWithBranchOverlay(
+      tx,
+      input.pageId,
+      ctx.chatBranchId ?? null,
+    );
+    const overlaidBlock = overlaidLayout.blocks.find((b) => b.blockName === input.blockName);
+    const placement = overlaidBlock?.placements?.[input.position];
     if (!placement) {
       return err({
         kind: "HandlerError",
@@ -1098,11 +1101,11 @@ export const setPlacementContentOp = defineOperation({
         message: "content_instance not found or deleted",
       });
     }
-    if (ci.module_id !== placement.module_id) {
+    if (ci.module_id !== placement.moduleId) {
       return err({
         kind: "HandlerError",
         operation: "placement.set_content",
-        message: `content_instance ${input.contentInstanceId} is for module ${ci.module_id}, but the placement uses module ${placement.module_id}. Pick a content_instance for the placement's module.`,
+        message: `content_instance ${input.contentInstanceId} is for module ${ci.module_id}, but the placement uses module ${placement.moduleId}. Pick a content_instance for the placement's module.`,
       });
     }
 
@@ -1119,10 +1122,15 @@ export const setPlacementContentOp = defineOperation({
       `);
     } else {
       // Branched: re-emit the page's layout snapshot with the new
-      // binding. Read current layout, swap this placement's binding,
-      // emit. Mirrors how pages.set_modules constructs the branched
+      // binding. Read the BRANCH-OVERLAID layout (not live — the page's
+      // placements may exist only in this chat's branch), swap this
+      // placement's binding, emit. Mirrors pages.set_modules' branched
       // snapshot but limited to one placement.
-      const layoutState = await loadPageLayoutState(tx, input.pageId);
+      const layoutState = await loadPageLayoutStateWithBranchOverlay(
+        tx,
+        input.pageId,
+        ctx.chatBranchId,
+      );
       const nextBlocks = layoutState.blocks.map((b) => {
         if (b.blockName !== input.blockName) return b;
         const placements = (b.placements ?? []).map((p, i) =>

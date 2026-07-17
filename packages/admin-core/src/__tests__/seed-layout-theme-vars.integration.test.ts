@@ -101,3 +101,67 @@ describe("migration 0104 — seed layout theme vars (issue #157)", () => {
     }
   });
 });
+
+/** The 0104-rewritten seed CSS that 0166 empties (padding + surface opinion). */
+const SEED_0104_CSS =
+  ".caelo-layout-header,.caelo-layout-footer{padding:1rem 2rem;background:var(--color-background);color:var(--color-foreground)}.caelo-layout-main{padding:2rem 0}";
+
+function migration0166Body(): string {
+  return readFileSync(
+    join(
+      import.meta.dir,
+      "../../../migrations/migrations/cms_admin/0166_p_seed_layout_minimal_no_opinion.sql",
+    ),
+    "utf8",
+  )
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("--"))
+    .join("\n");
+}
+
+describe("migration 0166 — seed layout ships no visual opinion (white-band root cause)", () => {
+  it("empties the pristine seed CSS, leaves edited layouts alone", async () => {
+    const sql = new SQL(ADMIN_URL as string);
+    const conn = await sql.reserve();
+    try {
+      await conn`BEGIN`;
+      await conn`SELECT set_config('caelo.actor_kind', 'system', true)`;
+
+      await conn`UPDATE layouts SET css = ${SEED_0104_CSS} WHERE slug = 'site-default'`;
+      const editedCss = `${SEED_0104_CSS}.brand{color:hotpink}`;
+      await conn`
+        INSERT INTO layouts (slug, display_name, html, css)
+        VALUES ('issue-166-edited', 'Edited (0166 test)',
+                '<html><body><caelo-slot name="content">_</caelo-slot></body></html>',
+                ${editedCss})
+      `;
+
+      await conn.unsafe(migration0166Body());
+
+      const rows = (await conn`
+        SELECT slug, css FROM layouts WHERE slug IN ('site-default', 'issue-166-edited')
+      `) as { slug: string; css: string }[];
+      const bySlug = new Map(rows.map((r) => [r.slug, r.css]));
+
+      // Pristine seed → empty: no padding/background opinion survives.
+      expect(bySlug.get("site-default")).toBe("");
+      expect(bySlug.get("site-default")).not.toContain("padding");
+      expect(bySlug.get("site-default")).not.toContain("background");
+
+      // An edited layout is byte-identical — the guard matches the exact
+      // seed string, so AI/operator layout work is never clobbered.
+      expect(bySlug.get("issue-166-edited")).toBe(editedCss);
+
+      // Idempotent replay.
+      await conn.unsafe(migration0166Body());
+      const again = (await conn`SELECT css FROM layouts WHERE slug = 'site-default'`) as {
+        css: string;
+      }[];
+      expect(again[0]?.css).toBe("");
+    } finally {
+      await conn`ROLLBACK`.catch(() => {});
+      conn.release();
+      await sql.end({ timeout: 5 });
+    }
+  });
+});

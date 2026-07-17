@@ -114,9 +114,21 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
     });
     try {
       const image = await awaitScreenshot(requestId, 30_000);
+      // Capture geometry as FACT text (2026-07, run B4): the model
+      // doubted a selector crop and had no way to verify. With the
+      // canvas + page dimensions in the result, crop-vs-full-page is
+      // decidable without vision judgment — and auditable from logs.
+      const m = image.meta;
+      const geometry = m
+        ? input.selector
+          ? m.canvasWidth >= m.pageWidth && m.canvasHeight >= m.pageHeight * 0.95
+            ? ` The crop is ${m.canvasWidth}×${m.canvasHeight}px — effectively the WHOLE ${m.pageWidth}×${m.pageHeight}px page; your selector matched a full-page wrapper. Use a more specific selector for a tighter crop.`
+            : ` Crop: ${m.canvasWidth}×${m.canvasHeight}px out of the ${m.pageWidth}×${m.pageHeight}px page.`
+          : ` Image: ${m.canvasWidth}×${m.canvasHeight}px (full page: ${m.pageWidth}×${m.pageHeight}px).`
+        : "";
       return {
         ok: true,
-        content: `Screenshot captured (${input.viewport ?? "desktop"} viewport${input.selector ? `, element ${input.selector}` : ""}). The image is available to you in THIS turn — analyse it on your next step; do not end the turn to wait for it.`,
+        content: `Screenshot captured (${input.viewport ?? "desktop"} viewport${input.selector ? `, element ${input.selector}` : ""}).${geometry} The image is available to you in THIS turn — analyse it on your next step; do not end the turn to wait for it.`,
         image,
       };
     } catch (e) {

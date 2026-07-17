@@ -27,14 +27,31 @@ describe("addModuleToolInput modes (issue #159)", () => {
     expect(r.success).toBe(true);
   });
 
-  it("accepts mint mode: displayName + html (+ fields)", () => {
+  it("accepts mint mode: displayName + html (+ fields carrying content)", () => {
+    // 2026-07 — a mint with declared fields must bring its content in
+    // the same call (`values` or field defaults); bare fields would
+    // render empty placeholders and are rejected.
+    const r = addModuleToolInput.safeParse({
+      ...BASE,
+      displayName: "Hero",
+      html: "<h1>{{hero_title}}</h1>",
+      fields: [{ name: "hero_title", label: "Hero title", kind: "text" }],
+      values: { hero_title: "Welcome" },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects mint mode with fields but neither values nor defaults (empty placeholders)", () => {
     const r = addModuleToolInput.safeParse({
       ...BASE,
       displayName: "Hero",
       html: "<h1>{{hero_title}}</h1>",
       fields: [{ name: "hero_title", label: "Hero title", kind: "text" }],
     });
-    expect(r.success).toBe(true);
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(JSON.stringify(r.error.issues)).toContain("initial content");
+    }
   });
 
   it("accepts place mode against a layout target too", () => {

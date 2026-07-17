@@ -30,48 +30,18 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").SetSiteDefaultsToolInput
 > = {
   name: "set_site_defaults",
+  // 2026-07 — STATIC on purpose: tool definitions are part of Anthropic's
+  // prompt-cache prefix, so state-dependent text here busted the cache on
+  // every site change. Current values + valid slugs live in the volatile
+  // `## Site defaults` / `## Layouts` context blocks (after the cache
+  // breakpoints) and in get_site_defaults / list_layouts / list_templates.
   description:
     "Set the site-wide default layout and/or default template. New pages created without an explicit layout/template " +
     "fall back to these. SAFE TO CALL DIRECTLY — only affects future creates; existing pages keep their pinned ids. " +
-    "Pass slugs (e.g. `home-template`, `site-default`), not UUIDs. Useful on a fresh install when `# Site defaults` " +
-    "in the system prompt shows '(none configured yet)' and the operator wants to set them up.",
-  // v0.6.0 W1 — state-aware: tell the AI which slugs it can pass for
-  // defaultLayoutSlug / defaultTemplateSlug RIGHT NOW based on what
-  // exists. Static description says "pass slugs", live version lists
-  // the actual valid options + flags the "no layouts/templates yet"
-  // state that requires create_layout + create_template first.
-  describe: (state) => {
-    const lines: string[] = [
-      "Set the site-wide default layout and/or default template.",
-      "SAFE TO CALL DIRECTLY — only affects future creates; existing pages keep their pinned ids.",
-    ];
-    if (state.siteDefaults) {
-      lines.push(
-        `Current defaults: layout="${state.siteDefaults.defaultLayoutSlug}", template="${state.siteDefaults.defaultTemplateSlug}". ` +
-          "Pass only the fields you want to change.",
-      );
-    } else {
-      lines.push(
-        "Site defaults is currently empty. On first set BOTH `defaultLayoutSlug` and `defaultTemplateSlug` are required " +
-          "(supplying only one rejects with a clear error).",
-      );
-    }
-    if (state.layouts.length > 0) {
-      lines.push(`Available layout slugs: ${state.layouts.map((l) => l.slug).join(", ")}.`);
-    } else {
-      lines.push(
-        "No layouts exist yet — call create_layout first (this op will reject until at least one layout exists).",
-      );
-    }
-    if (state.templates.length > 0) {
-      lines.push(`Available template slugs: ${state.templates.map((t) => t.slug).join(", ")}.`);
-    } else {
-      lines.push(
-        "No templates exist yet — call create_template (after create_layout) before set_site_defaults.",
-      );
-    }
-    return lines.join(" ");
-  },
+    "Pass slugs (e.g. `home-template`, `site-default`), not UUIDs — current values and the valid slugs are in the " +
+    "`## Site defaults` / `## Layouts` context blocks (or get_site_defaults / list_layouts / list_templates). " +
+    "On the FIRST set both `defaultLayoutSlug` and `defaultTemplateSlug` are required; afterwards pass only the field you change. " +
+    "With no layouts/templates on the site yet, bootstrap first (create_layout → create_template) — the op rejects loudly until then.",
   schema: setSiteDefaultsToolInput,
   inputSchema: {
     type: "object",

@@ -52,10 +52,21 @@ import { createModuleOp } from "./modules.js";
 import { createPageOp } from "./pages.js";
 
 /** Human-readable label for error messages: index + best identifier. */
-function moduleLabel(index: number, entry: { displayName?: string; moduleId?: string }): string {
-  const name = entry.displayName ?? entry.moduleId ?? "?";
+function moduleLabel(
+  index: number,
+  entry: { displayName?: string; moduleId?: string | { $ref: string } },
+): string {
+  const idLabel = typeof entry.moduleId === "string" ? entry.moduleId : entry.moduleId?.$ref;
+  const name = entry.displayName ?? idLabel ?? "?";
   return `modules[${index}] ("${name}")`;
 }
+
+/**
+ * Thrown by the {"$ref"} resolver when a handle doesn't match an earlier
+ * entry — caught in the entry loop and converted to a structured fail()
+ * so the AI sees WHICH handle failed and the handles that exist.
+ */
+class LocalRefError extends Error {}
 
 /** Structured recovery hint shape (mirrors QueryError.HandlerError.nextAction). */
 interface BuildPageNextAction {
@@ -78,6 +89,14 @@ export const buildPageOp = defineOperation({
     /** True when this call created the page (vs targeting an existing one). */
     createdPage: z.boolean(),
     placements: z.array(buildPagePlacementResultSchema),
+    /** Detached (nested-only) entries: minted + content-bound, not placed. */
+    detached: z.array(
+      z.object({
+        ref: z.string(),
+        moduleId: z.string(),
+        contentInstanceId: z.string(),
+      }),
+    ),
     /** Extractor-fallback field names per minted module that omitted `fields[]`. */
     extractedFieldsByIndex: z.record(
       z.string(),
@@ -186,11 +205,23 @@ export const buildPageOp = defineOperation({
       SELECT name FROM template_blocks WHERE template_id = ${templateId}::uuid ORDER BY position ASC
     `)) as unknown as { name: string }[];
     const allowedBlocks = new Set(blockRows.map((r) => r.name));
+    // Well-known layout-level chrome. When the rejected block is one of
+    // these, the model conflated a LAYOUT block (header/footer/nav, seen
+    // in list_layouts as `header|content|footer`) with a PAGE-template
+    // block — build_page places into template blocks only. Route it to
+    // the fix instead of a bare "Available blocks" list, or the model
+    // re-tries the same call until max_loops (live-edit run B5).
+    const CHROME_BLOCKS = new Set(["header", "footer", "nav", "navigation", "sidebar", "banner"]);
     for (const [i, entry] of input.modules.entries()) {
-      if (!allowedBlocks.has(entry.blockName)) {
+      // Detached entries (no blockName) skip placement — nothing to check.
+      if (entry.blockName !== undefined && !allowedBlocks.has(entry.blockName)) {
+        const chromeHint = CHROME_BLOCKS.has(entry.blockName.toLowerCase())
+          ? ` "${entry.blockName}" is site-wide LAYOUT chrome, not a page block — build_page places into page-template blocks only. ` +
+            `Place it once on the layout instead: add_module({target:'layout', targetRef:'<layout-slug>', blockName:'${entry.blockName.toLowerCase()}', …}) (find the slug via list_layouts), and drop this entry from build_page.`
+          : "";
         return fail(
           `${moduleLabel(i, entry)}: block "${entry.blockName}" does not exist on this page's template. ` +
-            `Available blocks: ${[...allowedBlocks].join(", ")}`,
+            `Available blocks: ${[...allowedBlocks].join(", ")}.${chromeHint}`,
         );
       }
     }
@@ -199,10 +230,57 @@ export const buildPageOp = defineOperation({
     const additions: ResolvedBuildPlacement[] = [];
     const mintedFlags: boolean[] = [];
     const extractedFieldsByIndex: Record<string, { name: string; kind: string }[]> = {};
+    // Local `ref` handles → the ids this call minted for them. Later
+    // entries embed a nested module by writing {"$ref": "<ref>"} in a
+    // module / module-list field value; resolution replaces it with the
+    // real {moduleId, contentInstanceId} BEFORE content validation.
+    // Array order = dependency order (a ref must point at an earlier
+    // entry), which keeps resolution single-pass and deterministic.
+    const localRefs = new Map<string, { moduleId: string; contentInstanceId: string }>();
+    const detached: { ref: string; moduleId: string; contentInstanceId: string }[] = [];
+    const resolveLocalRefs = (value: unknown, entryIndex: number): unknown => {
+      if (Array.isArray(value)) return value.map((v) => resolveLocalRefs(v, entryIndex));
+      if (value !== null && typeof value === "object") {
+        const keys = Object.keys(value as Record<string, unknown>);
+        if (keys.length === 1 && keys[0] === "$ref") {
+          const handle = (value as { $ref: unknown }).$ref;
+          const resolved = typeof handle === "string" ? localRefs.get(handle) : undefined;
+          if (!resolved) {
+            throw new LocalRefError(
+              `modules[${entryIndex}]: {"$ref": ${JSON.stringify(handle)}} does not match any EARLIER entry's ref. ` +
+                `Available refs at this point: ${[...localRefs.keys()].join(", ") || "(none)"} — ` +
+                "order entries so referenced modules come first.",
+            );
+          }
+          return resolved;
+        }
+        return Object.fromEntries(
+          Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+            k,
+            resolveLocalRefs(v, entryIndex),
+          ]),
+        );
+      }
+      return value;
+    };
     for (const [i, entry] of input.modules.entries()) {
       let moduleId: string;
       let minted = false;
-      if (entry.moduleId !== undefined) {
+      if (entry.moduleId !== undefined && typeof entry.moduleId !== "string") {
+        // Place mode via local ref: re-place a module minted EARLIER in
+        // this call (the feature-cards case — one card module, three
+        // placements). Resolves to the referenced entry's moduleId; the
+        // entry's own `content` mints/binds its own instance as usual.
+        const handle = entry.moduleId.$ref;
+        const resolved = localRefs.get(handle);
+        if (!resolved) {
+          return fail(
+            `${moduleLabel(i, entry)}: moduleId {"$ref": ${JSON.stringify(handle)}} does not match any EARLIER entry's ref. ` +
+              `Available refs at this point: ${[...localRefs.keys()].join(", ") || "(none)"} — order entries so referenced modules come first.`,
+          );
+        }
+        moduleId = resolved.moduleId;
+      } else if (entry.moduleId !== undefined) {
         // Place mode — branch-aware existence check (a module minted
         // earlier in this same chat must be placeable).
         const branchFilter = branchVisibilityFilter(ctx);
@@ -273,7 +351,21 @@ export const buildPageOp = defineOperation({
 
       // Content resolution — every placement binds a content_instance
       // (page_modules.content_instance_id is NOT NULL).
-      const content: BuildPageContent = entry.content ?? { source: "inline", values: {} };
+      let content: BuildPageContent = entry.content ?? { source: "inline", values: {} };
+      // Resolve {"$ref": "<handle>"} markers against earlier entries'
+      // minted ids BEFORE validation — the module/module-list field
+      // validator expects the real {moduleId, contentInstanceId} shape.
+      if (content.source !== "existing") {
+        try {
+          content = {
+            ...content,
+            values: resolveLocalRefs(content.values, i) as Record<string, unknown>,
+          };
+        } catch (e) {
+          if (e instanceof LocalRefError) return fail(e.message);
+          throw e;
+        }
+      }
       let contentInstanceId: string;
       let syncMode: "synced" | "unsynced";
       if (content.source === "existing") {
@@ -336,6 +428,16 @@ export const buildPageOp = defineOperation({
         syncMode = content.source === "shared" ? content.syncMode : "unsynced";
       }
 
+      // Register the local handle for later entries' {"$ref"} values.
+      if (entry.ref !== undefined) {
+        localRefs.set(entry.ref, { moduleId, contentInstanceId });
+      }
+      if (entry.blockName === undefined) {
+        // Detached (nested-only) entry: minted + content-bound, no
+        // placement. The schema guarantees `ref` is set here.
+        detached.push({ ref: entry.ref as string, moduleId, contentInstanceId });
+        continue;
+      }
       additions.push({ blockName: entry.blockName, moduleId, contentInstanceId, syncMode });
       mintedFlags.push(minted);
     }
@@ -411,6 +513,7 @@ export const buildPageOp = defineOperation({
         syncMode: p.syncMode,
         minted: mintedFlags[i] ?? false,
       })),
+      detached,
       extractedFieldsByIndex,
     });
   },

@@ -67,7 +67,20 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
       const content: (
         | { type: "reasoning"; text: string; providerOptions?: unknown }
         | { type: "text"; text: string }
-        | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
+        | {
+            type: "tool-call";
+            toolCallId: string;
+            toolName: string;
+            input: unknown;
+            providerExecuted?: boolean;
+          }
+        | {
+            type: "tool-result";
+            toolCallId: string;
+            toolName: string;
+            output: { type: "json"; value: unknown };
+            providerExecuted: boolean;
+          }
       )[] = [];
       // Thinking blocks first — Anthropic's signature verification
       // requires this ordering. Other providers ignore the
@@ -80,6 +93,21 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
         });
       }
       if (m.content.length > 0) content.push({ type: "text", text: m.content });
+      // Anthropic Tool Search server_tool_use blocks are DELIBERATELY not
+      // replayed (2026-07, run-B6). The docs' round-trip — pass the
+      // server_tool_use + its tool_search_tool_result back unchanged so
+      // discovered tools stay loaded — assumes you control the raw
+      // Messages blocks. Through streamText's fullStream abstraction the
+      // paired `tool_search_tool_result` does NOT surface reliably as a
+      // consumable part (the wire SSE has it; the fullStream drops it),
+      // so we'd emit a lone server_tool_use and Anthropic 400s:
+      // "tool_search_tool_bm25 tool use ... without a corresponding
+      // tool_search_tool_bm25_tool_result block" — killing the whole
+      // turn. Dropping the block is always correct: the model simply
+      // re-searches when it next needs a deferred tool (cheap; the
+      // shipped chunks build searches ~never anyway). `serverToolCalls`
+      // stays captured/persisted for audit + the wire log; it just isn't
+      // sent back to the provider.
       for (const tc of m.toolCalls ?? []) {
         content.push({
           type: "tool-call",
@@ -169,10 +197,35 @@ export async function* translateSDKStream(
           break;
         }
         case "tool-call": {
-          const id = (e.toolCallId as string | undefined) ?? "";
           const name = (e.toolName as string | undefined) ?? "";
+          const id = (e.toolCallId as string | undefined) ?? "";
           const args = typeof e.input === "string" ? safeJsonParse(e.input) : (e.input as unknown);
+          // Provider-executed server tools (Anthropic Tool Search) ran
+          // inside the request already. Forwarding them as regular
+          // tool-calls sent them into chat-runner dispatch (`unknown
+          // tool: tool_search_tool_bm25`, run V2) — but DROPPING them
+          // is wrong too: the tool-search docs require the call/result
+          // blocks to be replayed unchanged on subsequent requests, or
+          // the model forgets its discovered tools and re-searches.
+          // Emit a dedicated event the loop records without dispatch.
+          // Name check as belt-and-braces: some SDK paths deliver the
+          // server tool call without the flag.
+          if (e.providerExecuted === true || name.startsWith("tool_search_tool")) {
+            yield { kind: "server-tool-call", id, name, arguments: args };
+            break;
+          }
           yield { kind: "tool-call", id, name, arguments: args };
+          break;
+        }
+        case "tool-result": {
+          // Only provider-executed results ride the stream (client tool
+          // results are produced by our own loop, never by the SDK).
+          const name = (e.toolName as string | undefined) ?? "";
+          if (e.providerExecuted === true || name.startsWith("tool_search_tool")) {
+            const id = (e.toolCallId as string | undefined) ?? "";
+            const result = "output" in e ? e.output : (e as { result?: unknown }).result;
+            yield { kind: "server-tool-result", id, name, result };
+          }
           break;
         }
         case "finish-step": {

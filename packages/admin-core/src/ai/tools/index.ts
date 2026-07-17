@@ -4,6 +4,7 @@ import { addModuleTool } from "./add-module.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
 import { autofillPageSeoTool } from "./autofill-page-seo.js";
 import { bootstrapSiteScaffoldTool } from "./bootstrap-site-scaffold.js";
+import { bugReportTool } from "./bug-report.js";
 import { buildPageTool } from "./build-page.js";
 import { bulkCreateRedirectsTool } from "./bulk-create-redirects.js";
 import { bulkDeleteRedirectsTool } from "./bulk-delete-redirects.js";
@@ -122,6 +123,17 @@ import { setThemeAssetTool } from "./set-theme-asset.js";
 import { setThemeMetaTool } from "./set-theme-meta.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
+import {
+  getDesignManifestTool,
+  getSiteDefaultsTool,
+  listAiProvidersTool,
+  listDomainsTool,
+  listEntityLocksTool,
+  listLocalesTool,
+  listPendingProposalsTool,
+  listRolesTool,
+  listUsersTool,
+} from "./state-read-tools.js";
 import { submitPluginTool } from "./submit-plugin.js";
 import { submitResultTool } from "./submit-result.js";
 // P11.5 — translate_page + start_translation_job moved to the translation
@@ -207,6 +219,22 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(getPageLogTool);
   registry.register(logPageEditTool);
   registry.register(siteMemoryProposeTool);
+  // 2026-07 — the AI's defect channel: report a Caelo bug once, keep
+  // working via a workaround, abort only when truly blocked.
+  registry.register(bugReportTool);
+  // 2026-07 chunk audit — on-demand state endpoints for every context
+  // chunk that had no read tool. The chunks are turn-start snapshots;
+  // these fetch CURRENT state so the AI never repeats a confirmed write
+  // because a stale chunk still shows the old value.
+  registry.register(getSiteDefaultsTool);
+  registry.register(getDesignManifestTool);
+  registry.register(listLocalesTool);
+  registry.register(listPendingProposalsTool);
+  registry.register(listEntityLocksTool);
+  registry.register(listUsersTool);
+  registry.register(listRolesTool);
+  registry.register(listAiProvidersTool);
+  registry.register(listDomainsTool);
   // audit #2 — ONE module-placement tool routed by `target`
   // (page/layout/template). Replaces add_module_to_{page,layout,template};
   // adds reuse-by-moduleId on the layout target (the old asymmetry).

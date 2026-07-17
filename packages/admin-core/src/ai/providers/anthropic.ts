@@ -27,6 +27,7 @@
  * (CLAUDE.md §4).
  */
 
+import { appendFileSync, writeFileSync } from "node:fs";
 import { anthropic as anthropicGlobal, createAnthropic } from "@ai-sdk/anthropic";
 import type { ModelMessage, SystemModelMessage } from "ai";
 
@@ -40,6 +41,177 @@ import type {
 import { runSDKStream, toSDKMessages } from "./_sdk-shared.js";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
+
+/**
+ * Debug wire tap. When `CAELO_DEBUG_AI_WIRE=1`, every provider call
+ * appends its FULL outgoing request (system prompt + messages + the
+ * loaded/deferred tool split) and the raw incoming response (thinking +
+ * text + tool calls with args + stop reason) to the file named by
+ * `CAELO_AI_WIRE_LOG` (default `ai-wire.log` in the cwd). Zero cost when
+ * the flag is unset — the tap is skipped entirely. Never enable in
+ * production: prompts + tool args are written verbatim in the clear.
+ */
+function wirePath(): string | null {
+  if (process.env.CAELO_DEBUG_AI_WIRE !== "1") return null;
+  return process.env.CAELO_AI_WIRE_LOG ?? "ai-wire.log";
+}
+
+/**
+ * Raw-wire fetch interceptor. When the wire tap is on, wraps `fetch` so
+ * the COMPLETE HTTP request body sent to Anthropic and the COMPLETE
+ * response body received are written verbatim (1:1, no reconstruction)
+ * to a `<wireLog>.raw.jsonl` sidecar — one JSON object per line:
+ * `{dir:"request", ...body}` then `{dir:"response", status, ...body}`.
+ * This is the actual provider payload (system array with cache_control,
+ * provider tools with defer_loading, etc.), NOT the human-readable
+ * reconstruction dumpWireRequest emits. Streaming responses are teed so
+ * the SDK still consumes the stream; the raw SSE text is captured
+ * alongside. Same production caveat as the tap: never enable live.
+ */
+function makeWireFetch(rawPath: string): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const stamp = new Date().toISOString();
+    if (init?.body && typeof init.body === "string") {
+      try {
+        appendFileSync(
+          rawPath,
+          `${JSON.stringify({ dir: "request", stamp, body: JSON.parse(init.body) })}\n`,
+        );
+      } catch {
+        appendFileSync(
+          rawPath,
+          `${JSON.stringify({ dir: "request", stamp, rawBody: init.body })}\n`,
+        );
+      }
+    }
+    const res = await fetch(input as RequestInfo, init);
+    const ct = res.headers.get("content-type") ?? "";
+    // Non-streaming JSON: read the clone body directly. Streaming SSE:
+    // tee the stream, capture one branch as text, hand the other back.
+    if (ct.includes("application/json")) {
+      const text = await res.clone().text();
+      let parsed: unknown = text;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        /* keep raw text */
+      }
+      appendFileSync(
+        rawPath,
+        `${JSON.stringify({ dir: "response", stamp, status: res.status, body: parsed })}\n`,
+      );
+      return res;
+    }
+    if (res.body) {
+      const [a, b] = res.body.tee();
+      void (async () => {
+        try {
+          const chunks: string[] = [];
+          const reader = a.getReader();
+          const dec = new TextDecoder();
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(dec.decode(value, { stream: true }));
+          }
+          appendFileSync(
+            rawPath,
+            `${JSON.stringify({ dir: "response", stamp, status: res.status, sse: chunks.join("") })}\n`,
+          );
+        } catch {
+          /* best-effort capture */
+        }
+      })();
+      return new Response(b, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+      });
+    }
+    return res;
+  }) as typeof fetch;
+}
+
+function dumpWireRequest(path: string, model: string, input: GenerateInput): void {
+  const stamp = new Date().toISOString();
+  const sys =
+    typeof input.systemPrompt === "string"
+      ? input.systemPrompt
+      : input.systemPrompt
+          .map(
+            (c) =>
+              `--- chunk [${c.label ?? "?"}]${c.cacheable ? " (cacheable)" : ""} ---\n${c.body}`,
+          )
+          .join("\n");
+  const loaded = input.tools.filter((t) => t.alwaysLoaded).map((t) => t.name);
+  const deferred = input.tools.filter((t) => !t.alwaysLoaded).map((t) => t.name);
+  const lines = [
+    `\n\n=================== >>> REQUEST ${stamp}  model=${model} ===================`,
+    `----- SYSTEM PROMPT (${sys.length} chars) -----`,
+    sys,
+    `----- MESSAGES (${input.messages.length}) -----`,
+    ...input.messages.map((m, i) => {
+      const body = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+      // Tool-only assistant turns used to render as a bare `[assistant]`
+      // line (the dump printed only text content), leaving the [tool]
+      // results below visually orphaned. Emit the RAW wire-shape JSON of
+      // every tool_use block instead — no summarising, no truncation —
+      // and stamp tool results with the toolCallId they answer, so
+      // call ↔ result pairs are matchable by id alone.
+      const callLines = [
+        ...(m.serverToolCalls ?? []).map(
+          (c) =>
+            `\n[assistant.server_tool_use] ${JSON.stringify({ id: c.id, name: c.name, input: c.arguments, result: c.result })}`,
+        ),
+        ...(m.toolCalls ?? []).map(
+          (c) =>
+            `\n[assistant.tool_use] ${JSON.stringify({ id: c.id, name: c.name, input: c.arguments })}`,
+        ),
+      ].join("");
+      const roleLabel = m.role === "tool" && m.toolCallId ? `tool_result ${m.toolCallId}` : m.role;
+      // 2026-07 (run B4 forensics) — screenshots are ephemeral, so a
+      // doubted capture was unauditable. Save every image part as a
+      // sidecar file next to the wire log and reference it inline.
+      let imageNote = "";
+      for (const [j, part] of (m.additionalContent ?? []).entries()) {
+        if (part.type !== "image") continue;
+        const ext = part.mediaType === "image/png" ? "png" : "jpg";
+        const file = `${path}.msg${i}-img${j}.${ext}`;
+        try {
+          writeFileSync(file, Buffer.from(part.base64, "base64"));
+          imageNote += ` [image saved: ${file} (${Math.round((part.base64.length * 3) / 4 / 1024)} kB)]`;
+        } catch {
+          imageNote += ` [image: ${Math.round((part.base64.length * 3) / 4 / 1024)} kB — sidecar write failed]`;
+        }
+      }
+      return `[${roleLabel}] ${body}${imageNote}${callLines}`;
+    }),
+    `----- TOOLS (${input.tools.length}): ${loaded.length} loaded, ${deferred.length} deferred -----`,
+    `loaded:   ${loaded.join(", ")}`,
+    `deferred: ${deferred.join(", ")}`,
+  ];
+  appendFileSync(path, `${lines.join("\n")}\n`);
+}
+
+function dumpWireResponse(
+  path: string,
+  parts: {
+    thinking: string;
+    text: string;
+    calls: { name: string; args: unknown }[];
+    stop: string;
+    elapsedMs: number;
+  },
+): void {
+  const stamp = new Date().toISOString();
+  const lines = [
+    `----- RESPONSE ${stamp} stop=${parts.stop} elapsed=${(parts.elapsedMs / 1000).toFixed(1)}s -----`,
+  ];
+  if (parts.thinking) lines.push(`[thinking] ${parts.thinking}`);
+  if (parts.text) lines.push(`[text] ${parts.text}`);
+  for (const c of parts.calls) lines.push(`[tool-call] ${c.name}(${JSON.stringify(c.args)})`);
+  appendFileSync(path, `${lines.join("\n")}\n`);
+}
 
 /**
  * v0.6.0 W2 — Anthropic Tool Search. When `toolSearch` is set to a
@@ -163,11 +335,15 @@ export class AnthropicProvider implements AIProvider {
       this.#model = options._modelOverride;
       return;
     }
+    // Raw-wire capture: when the tap is on, inject a fetch that writes
+    // the verbatim request + response bodies to <wireLog>.raw.jsonl.
+    const wire = wirePath();
     const provider = createAnthropic({
       apiKey: options.apiKey,
       ...(options.baseUrl && options.baseUrl !== DEFAULT_BASE_URL
         ? { baseURL: options.baseUrl }
         : {}),
+      ...(wire ? { fetch: makeWireFetch(`${wire}.raw.jsonl`) } : {}),
     });
     // Cast through `string` for forward-compat with new model ids.
     this.#model = provider(options.model as Parameters<typeof provider>[0]);
@@ -206,22 +382,26 @@ export class AnthropicProvider implements AIProvider {
         ? Math.max(1, Number(thresholdRaw))
         : 10;
     const useToolSearch = this.#toolSearch !== "off" && input.tools.length >= threshold;
-    if (this.#toolSearch !== "off" && process.env.CAELO_DEBUG_TOOL_SEARCH === "1") {
-      // Telemetry: log whether the transform actually engaged this turn,
-      // so the operator can confirm BM25 fired (or didn't) without
-      // tracing the wire-level Anthropic request.
-      console.log("[anthropic.toolSearch]", {
-        mode: this.#toolSearch,
-        toolCount: input.tools.length,
-        threshold,
-        engaged: useToolSearch,
-      });
-    }
     // Core workflow tools (ToolDefinition.alwaysLoaded, set from
     // CORE_TOOL_NAMES) keep their full definition in every request so a
     // routine edit never needs a discovery round-trip; only the long
     // tail defers behind the search tool.
     const alwaysLoadedNames = new Set(input.tools.filter((t) => t.alwaysLoaded).map((t) => t.name));
+    if (this.#toolSearch !== "off" && process.env.CAELO_DEBUG_TOOL_SEARCH === "1") {
+      // Telemetry: log whether the transform engaged this turn AND the
+      // loaded-vs-deferred split, so the operator can confirm BM25 fired
+      // (and that the core set stayed loaded) without tracing the
+      // wire-level Anthropic request.
+      console.log("[anthropic.toolSearch]", {
+        mode: this.#toolSearch,
+        toolCount: input.tools.length,
+        threshold,
+        engaged: useToolSearch,
+        alwaysLoaded: alwaysLoadedNames.size,
+        deferred: useToolSearch ? input.tools.length - alwaysLoadedNames.size : 0,
+        alwaysLoadedNames: [...alwaysLoadedNames].sort(),
+      });
+    }
     const toolsTransform = useToolSearch
       ? (built: Record<string, unknown>): Record<string, unknown> => {
           // Mark every non-core caelo tool as deferred so its
@@ -245,11 +425,23 @@ export class AnthropicProvider implements AIProvider {
           // language scoring — default; better when descriptions are
           // prose-y) and regex (exact-pattern; better when tools share
           // a strict naming convention).
+          //
+          // The dict KEY must be the tool's CANONICAL wire name
+          // (`tool_search_tool_bm25` / `tool_search_tool_regex` — the
+          // adapter hardcodes that `name` on the request regardless of
+          // key). Under the old alias key `toolSearch`, incoming events
+          // and replayed history carried "toolSearch" while the wire
+          // knew only the canonical name — so when the model imitated
+          // the alias from history, Anthropic treated it as a CLIENT
+          // tool and our dispatcher failed it with `unknown tool:
+          // toolSearch` (live-edit run B3). Matching names end the class.
           const searchTool =
             this.#toolSearch === "regex"
               ? anthropicGlobal.tools.toolSearchRegex_20251119()
               : anthropicGlobal.tools.toolSearchBm25_20251119();
-          return { ...built, toolSearch: searchTool };
+          const searchToolName =
+            this.#toolSearch === "regex" ? "tool_search_tool_regex" : "tool_search_tool_bm25";
+          return { ...built, [searchToolName]: searchTool };
         }
       : undefined;
     // Claude 4.6+ models reject `temperature` with a 400 ("temperature
@@ -262,13 +454,41 @@ export class AnthropicProvider implements AIProvider {
       input.temperature !== undefined && isAdaptiveModel(this.model)
         ? { ...input, temperature: undefined }
         : input;
-    yield* runSDKStream({
+    const stream = runSDKStream({
       model: this.#model,
       input: effectiveInput,
       systemAndMessages,
       extraOptions,
       ...(toolsTransform ? { toolsTransform } : {}),
     });
+    const wire = wirePath();
+    if (!wire) {
+      yield* stream;
+      return;
+    }
+    // Wire tap: dump the outgoing request, then accumulate the streamed
+    // response so it can be dumped alongside on the terminal `done`.
+    dumpWireRequest(wire, this.model, input);
+    const startedAt = Date.now();
+    let text = "";
+    let thinking = "";
+    const calls: { name: string; args: unknown }[] = [];
+    for await (const ev of stream) {
+      if (ev.kind === "text-delta") text += ev.text;
+      else if (ev.kind === "thinking-delta") thinking += ev.text;
+      else if (ev.kind === "tool-call") calls.push({ name: ev.name, args: ev.arguments });
+      else if (ev.kind === "server-tool-call")
+        calls.push({ name: `[server] ${ev.name}`, args: ev.arguments });
+      else if (ev.kind === "done")
+        dumpWireResponse(wire, {
+          thinking,
+          text,
+          calls,
+          stop: ev.stopReason,
+          elapsedMs: Date.now() - startedAt,
+        });
+      yield ev;
+    }
   }
 }
 

@@ -23,44 +23,14 @@ export const createPageTool: ToolDefinitionWithHandler<
     "Create a new EMPTY page. **Prefer `build_page` when you already know the page's modules** — it creates the page AND places the full module list with content in one transaction (§11 bulk-first), instead of create_page + N× add_module. Three identifiers — `name` (internal editor label), `title` (HTML <title> tag), `slug` (URL path). " +
     "Slug must match `[a-z0-9][a-z0-9-]*` — for the homepage use `home` (NOT `/` or empty). For 'About Us' use `about`. " +
     "If the user only mentions one identifier (e.g. 'create About Us'), default `title` and `name` to that value and slugify for the URL. " +
-    "`templateId` is OPTIONAL: omit it to use the site default template (see `## Site defaults` for the slug, `## Templates → layouts` for UUIDs of non-default templates). " +
+    "`templateId` is OPTIONAL when site defaults define a default template (see `## Site defaults` / get_site_defaults) — then omitting it uses that default. When no default is configured, `templateId` is REQUIRED: pick a UUID from `## Templates → layouts` / list_templates, or call set_site_defaults once. With ZERO templates on the site, bootstrap first (create_layout → create_template → set_site_defaults). " +
     "v0.9.9 `status` policy — Drafts are LIVE-EDIT ONLY; Stage and Production ship only `status: 'published'` pages. " +
     "Set `status: 'published'` when the user is building the initial site (look at `## All pages on this site` — if it's empty or has zero `status=published` entries, the user is bootstrapping; ship the page live). " +
     "Set `status: 'draft'` when the user is adding a one-off page to an existing site (other published pages already exist) so they can review before shipping. " +
+    // 2026-07 — STATIC on purpose (prompt-cache): templateId semantics
+    // are described for every state above; live slugs stay in the
+    // volatile context blocks + list_templates.
     "The user can flip status anytime via the top-bar toggle in /edit; this default is the AI's best guess of intent.",
-  // v0.6.0 W1 — state-aware: `templateId` semantics mirror create_template.
-  // Omitting it works only when site_defaults.default_template_id is set,
-  // otherwise the op rejects. On a fresh install say so loudly so the AI
-  // bootstraps instead of repeatedly failing the optional-templateId path.
-  describe: (state) => {
-    const lines: string[] = [
-      "Create a new EMPTY page. Prefer `build_page` when you already know the page's modules — it creates the page AND places them with content in one transaction. Three identifiers — `name` (internal editor label), `title` (HTML <title> tag), `slug` (URL path).",
-      "Slug must match `[a-z0-9][a-z0-9-]*` — for the homepage use `home` (NOT `/` or empty). For 'About Us' use `about`.",
-      "If the user only mentions one identifier (e.g. 'create About Us'), default `title` and `name` to that value and slugify for the URL.",
-      "v0.9.9 `status` policy — Drafts are LIVE-EDIT ONLY; Stage and Production ship only published pages. " +
-        "Set `status: 'published'` when bootstrapping the site (zero published pages exist in `## All pages on this site`). " +
-        "Set `status: 'draft'` when adding one-off pages to a site that already has published content (let the user review first). " +
-        "The user can flip status via the top-bar toggle in /edit.",
-    ];
-    if (state.siteDefaults && state.templates.length > 0) {
-      lines.push(
-        `\`templateId\` is OPTIONAL: omit it to use the site default template "${state.siteDefaults.defaultTemplateSlug}"; ` +
-          `pass a non-default template UUID when needed (available slugs: ${state.templates.map((t) => t.slug).join(", ")}).`,
-      );
-    } else if (state.templates.length > 0) {
-      lines.push(
-        `\`templateId\` is REQUIRED on this site — site_defaults has no default_template configured. ` +
-          `Pick a UUID from \`## Templates → layouts\` (available slugs: ${state.templates.map((t) => t.slug).join(", ")}). ` +
-          `Or call set_site_defaults to make future create_page calls accept an omitted templateId.`,
-      );
-    } else {
-      lines.push(
-        "`templateId` will fail validation — there are NO templates on this site yet. " +
-          "Bootstrap first: create_layout, create_template referencing it, set_site_defaults; THEN create_page.",
-      );
-    }
-    return lines.join(" ");
-  },
   schema: createPageToolInput,
   inputSchema: {
     type: "object",

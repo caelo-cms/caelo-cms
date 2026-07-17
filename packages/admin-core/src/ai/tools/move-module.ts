@@ -11,7 +11,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { moveModuleToolInput } from "@caelo-cms/shared";
-import { blockNotFoundError, withBlockNameEnum } from "./_block-name-enum.js";
+import { blockNotFoundError } from "./_block-name-enum.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -53,7 +53,10 @@ export const moveModuleTool: ToolDefinitionWithHandler<
     "For changing order within the same block, use `reorder_module` instead.",
   schema: moveModuleToolInput,
   inputSchema: MOVE_MODULE_INPUT_SCHEMA,
-  describeSchema: (state) => withBlockNameEnum(MOVE_MODULE_INPUT_SCHEMA, state, "toBlockName"),
+  // 2026-07 — STATIC on purpose (prompt-cache): the per-turn blockName
+  // enum busted Anthropic's tools-prefix cache on every page switch.
+  // The valid set is in `# Current page`; a mismatch returns
+  // blockNotFoundError naming the choices.
   handler: async (ctx, input, toolCtx) => {
     const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get_with_modules", {
       pageId: input.pageId,

@@ -39,6 +39,30 @@ interface UploadBody {
    *  Promise to a rejection so the AI's tool result is a clean
    *  failure. Mutually exclusive with `base64`. */
   errorMessage?: string;
+  /** 2026-07 — capture geometry (canvas + page dimensions) so the
+   *  tool result can state crop-vs-full-page as a fact instead of
+   *  leaving it to vision judgment (run B4 selector-crop doubt). */
+  meta?: {
+    canvasWidth: number;
+    canvasHeight: number;
+    pageWidth: number;
+    pageHeight: number;
+  };
+}
+
+/** All four geometry fields present and sane, or the meta is dropped. */
+function sanitizeMeta(meta: UploadBody["meta"]): UploadBody["meta"] | undefined {
+  if (!meta) return undefined;
+  const vals = [meta.canvasWidth, meta.canvasHeight, meta.pageWidth, meta.pageHeight];
+  if (vals.some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 100_000)) {
+    return undefined;
+  }
+  return {
+    canvasWidth: Math.round(meta.canvasWidth),
+    canvasHeight: Math.round(meta.canvasHeight),
+    pageWidth: Math.round(meta.pageWidth),
+    pageHeight: Math.round(meta.pageHeight),
+  };
 }
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
@@ -89,9 +113,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     throw error(413, `payload too large: ${body.base64.length} chars`);
   }
 
+  const meta = sanitizeMeta(body.meta);
   const matched = deliverScreenshot(requestId, {
     base64: body.base64,
     mediaType,
+    ...(meta ? { meta } : {}),
   });
   if (!matched) {
     throw error(404, "no pending screenshot for this requestId");

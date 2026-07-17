@@ -22,7 +22,6 @@ import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
-import { buildToolDescribeState } from "../tools/describe-state.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
 import { resolveCompactionThresholdTokens } from "./compaction.js";
 import { buildPostCatalogueBlocks } from "./context/skills.js";
@@ -163,16 +162,20 @@ export async function* runChatTurn(
   });
   markPhase("contextBlocksMs");
 
-  // v0.6.0 W1 — assemble ToolDescribeState from the layouts/templates/
-  // site_defaults values fetched for the system-prompt blocks.
-  const toolDescribeState = buildToolDescribeState({
-    actor: { actorId: aiCtx.actorId, actorKind: aiCtx.actorKind },
-    layoutsValue: ctx.layoutsValue,
-    templatesValue: ctx.templatesValue,
-    siteDefaultsValue: ctx.siteDefaultsValue,
-    // v0.12.3 (issue #106) — feeds the per-page blockName enum.
-    activePage: ctx.activePageForState,
-  });
+  // Cold-start status rides ON the user message (in-memory only; never
+  // persisted) so the model sees "Theme: needs setup, Layout: needs
+  // setup" exactly while it's true and nothing once the foundation is
+  // complete. Appended AFTER skill matching so status text can't skew
+  // keyword engagement.
+  if (ctx.statusLine) {
+    for (let i = baseMessages.length - 1; i >= 0; i--) {
+      const m = baseMessages[i];
+      if (m && m.role === "user" && typeof m.content === "string") {
+        baseMessages[i] = { ...m, content: `${m.content}\n\n${ctx.statusLine}` };
+        break;
+      }
+    }
+  }
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion
   // ∪ issue #264 per-spawn allowlist. Run #10 D2 — `submit_result`
@@ -184,7 +187,6 @@ export async function* runChatTurn(
   );
   const filteredTools = buildToolCatalogue({
     tools,
-    toolDescribeState,
     allowedToolNames: ctx.allowedToolNames,
     engagedSkills: ctx.engagedSkills,
     excluded: effectiveExcluded,

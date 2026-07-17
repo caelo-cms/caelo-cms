@@ -14,9 +14,9 @@
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { execute } from "@caelo-cms/query-api";
 import type { ChatEngagement, ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
-import type { ToolDescribeStateActivePage } from "../tools/describe-state.js";
 import { buildCatalogBlocks } from "./context/catalog.js";
 import { buildDomainBlocks } from "./context/domains.js";
 import { buildForeignLocksBlock } from "./context/foreign-locks.js";
@@ -52,8 +52,6 @@ export interface PreCatalogueBlocks {
 
 export interface SystemContextResult {
   preBlocks: PreCatalogueBlocks;
-  /** Captured for the per-page blockName enum in buildToolDescribeState (issue #106). */
-  activePageForState: ToolDescribeStateActivePage | null;
   /** Raw op values fed to buildToolDescribeState. */
   layoutsValue: unknown;
   templatesValue: unknown;
@@ -61,6 +59,52 @@ export interface SystemContextResult {
   /** Skill engagement results consumed by the tool catalogue + post-catalogue blocks. */
   engagedSkills: ChatEngagement[];
   allowedToolNames: Set<string> | null;
+  /**
+   * Cold-start status appended to the user message (in-memory only,
+   * never persisted). Lists ONLY the base setup still missing ("Theme:
+   * needs setup, Layout: needs setup"), each entry naming the tool that
+   * fixes it; undefined once the site's foundation is complete, so
+   * steady-state turns carry zero status overhead. Kept from the 2026-07
+   * prompt-diet experiment: the data chunks won the A/B, but this line
+   * measurably stopped cold-start dithering (the AI fixes the named
+   * gaps without asking the operator).
+   */
+  statusLine: string | undefined;
+}
+
+/**
+ * Derive the cold-start status from state already loaded for
+ * buildToolDescribeState (+ one cheap themes.get_active read). Each
+ * entry names the tool that fixes it — the AI acts without asking.
+ * Exported for unit tests; production callers go through
+ * buildSystemContextBlocks.
+ */
+export function buildStatusLine(args: {
+  layoutsValue: unknown;
+  templatesValue: unknown;
+  siteDefaultsValue: unknown;
+  activeTheme: { origin?: string | null; description?: string | null } | null;
+}): string | undefined {
+  const missing: string[] = [];
+  const layouts = (args.layoutsValue as { layouts?: unknown[] } | null)?.layouts ?? [];
+  const templates = (args.templatesValue as { templates?: unknown[] } | null)?.templates ?? [];
+  const defaults =
+    (args.siteDefaultsValue as { defaults?: { siteName?: string | null } | null } | null)
+      ?.defaults ?? null;
+  if (layouts.length === 0) missing.push("Layout: needs setup (create_layout)");
+  if (templates.length === 0) missing.push("Template: needs setup (create_template)");
+  if (!defaults) missing.push("Site defaults: needs setup (set_site_defaults)");
+  else if (!defaults.siteName)
+    missing.push(
+      "Site identity: not captured (set_site_identity — do this FIRST, from the user's own words)",
+    );
+  if (!args.activeTheme || (args.activeTheme.origin ?? "seed") === "seed") {
+    missing.push(
+      "Theme: needs setup — active theme is a gray SEED; compose a full brand palette via set_theme_tokens + set_theme_meta BEFORE authoring visitor-facing pages",
+    );
+  }
+  if (missing.length === 0) return undefined;
+  return `[Site status — base setup still missing] ${missing.join(" | ")}`;
 }
 
 export async function buildSystemContextBlocks(deps: {
@@ -83,7 +127,7 @@ export async function buildSystemContextBlocks(deps: {
         ].join("\n")
       : undefined;
 
-  const { pageContextBlock, activePageForState } = await buildPageContext(
+  const { pageContextBlock } = await buildPageContext(
     registry,
     adapter,
     humanCtxWithBranch,
@@ -105,6 +149,25 @@ export async function buildSystemContextBlocks(deps: {
     userMessage: input.content,
     chipCount: input.chips.length,
     chatSessionId: input.chatSessionId,
+  });
+
+  // Cold-start status: one cheap active-theme read; everything else
+  // reuses the values already loaded for buildToolDescribeState.
+  const activeThemeR = await execute(
+    registry,
+    adapter,
+    humanCtxWithBranch,
+    "themes.get_active",
+    {},
+  );
+  const activeTheme = activeThemeR.ok
+    ? (activeThemeR.value as { theme: { origin?: string | null } | null }).theme
+    : null;
+  const statusLine = buildStatusLine({
+    layoutsValue: site.layoutsValue,
+    templatesValue: site.templatesValue,
+    siteDefaultsValue: site.siteDefaultsValue,
+    activeTheme,
   });
 
   return {
@@ -131,11 +194,11 @@ export async function buildSystemContextBlocks(deps: {
       domainsBlock: domains.domainsBlock,
       skillsBlock: skills.skillsBlock,
     },
-    activePageForState,
     layoutsValue: site.layoutsValue,
     templatesValue: site.templatesValue,
     siteDefaultsValue: site.siteDefaultsValue,
     engagedSkills: skills.engagedSkills,
     allowedToolNames: skills.allowedToolNames,
+    statusLine,
   };
 }

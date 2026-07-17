@@ -22,9 +22,11 @@ function submitCall(args: unknown): ProviderEvent[] {
 
 const VALID = {
   html: `<section><h1>{{hero_title}}</h1><p>{{hero_body}}</p></section>`,
+  // Content-preservation contract: defaults carry the original copy the
+  // placeholders replaced — a submit without ANY default is rejected.
   fields: [
-    { name: "hero_title", kind: "text", label: "Hero Title" },
-    { name: "hero_body", kind: "richtext", label: "Hero Body" },
+    { name: "hero_title", kind: "text", label: "Hero Title", default: "Welcome" },
+    { name: "hero_body", kind: "richtext", label: "Hero Body", default: "Body copy." },
   ],
   displayName: "Hero",
   kind: "hero",
@@ -72,6 +74,25 @@ describe("moduleize", () => {
     expect(records[0]?.attempts).toBe(2);
     expect(records[0]?.errors[0]).toContain("ghost");
     expect(records[0]?.inputTokens).toBe(200); // accumulated across both calls
+  });
+
+  it("rejects a submit whose fields carry NO defaults (content-preservation contract) and repairs", async () => {
+    // The extract-fields live run lost "Welcome to Caelo": the model
+    // parametrised the copy away without defaults. That submit is now a
+    // contract violation → retry, not a silent content loss.
+    const NO_DEFAULTS = {
+      ...VALID,
+      fields: VALID.fields.map(({ default: _d, ...rest }) => rest),
+    };
+    const records: ModuleizeRetryRecord[] = [];
+    const out = await moduleize({
+      provider: new MultiFixtureProvider([submitCall(NO_DEFAULTS), submitCall(VALID)]),
+      html: RAW_HTML,
+      onRetry: async (r) => void records.push(r),
+    });
+    expect(out.fields.some((f) => "default" in f && f.default !== undefined)).toBe(true);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.errors[0]).toContain("default");
   });
 
   it("throws loudly after exhausting repairs and fires onRetry with failed", async () => {

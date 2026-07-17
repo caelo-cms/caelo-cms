@@ -15,7 +15,12 @@ import type { AIProvider, ChatMessageInput, ProviderEvent } from "../provider.js
 import { isPromptTooLongError } from "./compaction.js";
 import { costCapUsd, microcents, resolveFirstEventTimeoutMs } from "./limits.js";
 import type { FilteredTool } from "./tool-catalogue.js";
-import type { AccumulatedToolCall, ClientEvent, StoppingDiagnostics } from "./types.js";
+import type {
+  AccumulatedServerToolCall,
+  AccumulatedToolCall,
+  ClientEvent,
+  StoppingDiagnostics,
+} from "./types.js";
 
 /** Running usage totals mutated in place across the turn's loop iterations. */
 export interface UsageAccumulator {
@@ -27,6 +32,8 @@ export interface UsageAccumulator {
 export interface StreamTurnResult {
   accumulatedText: string[];
   accumulatedToolCalls: AccumulatedToolCall[];
+  /** Provider-executed (Tool Search) calls — recorded, never dispatched. */
+  accumulatedServerToolCalls: AccumulatedServerToolCall[];
   accumulatedThinking: { thinking: string; signature: string }[];
   loopStop: "end_turn" | "tool_use" | "max_tokens" | "error" | "max_loops" | "session_gone";
   providerErr: boolean;
@@ -71,6 +78,7 @@ export async function* streamProviderTurn(args: {
 
   const accumulatedText: string[] = [];
   const accumulatedToolCalls: AccumulatedToolCall[] = [];
+  const accumulatedServerToolCalls: AccumulatedServerToolCall[] = [];
   // v0.2.54 — accumulate thinking blocks emitted on this turn for
   // persistence + round-trip on the next loop's provider call.
   const accumulatedThinking: { thinking: string; signature: string }[] = [];
@@ -173,6 +181,18 @@ export async function* streamProviderTurn(args: {
         yield { kind: "thinking-stop", thinking: ev.thinking, signature: ev.signature };
       } else if (ev.kind === "tool-call") {
         accumulatedToolCalls.push({ id: ev.id, name: ev.name, arguments: ev.arguments });
+      } else if (ev.kind === "server-tool-call") {
+        accumulatedServerToolCalls.push({
+          id: ev.id,
+          name: ev.name,
+          arguments: ev.arguments,
+          serverExecuted: true,
+        });
+      } else if (ev.kind === "server-tool-result") {
+        // Attach to its call; an orphan result (call not seen — cut
+        // stream) is dropped rather than persisted unpaired.
+        const call = accumulatedServerToolCalls.find((c) => c.id === ev.id);
+        if (call) call.result = ev.result;
       } else if (ev.kind === "usage") {
         usage.totalIn += ev.inputTokens;
         usage.totalOut += ev.outputTokens;
@@ -223,6 +243,7 @@ export async function* streamProviderTurn(args: {
   return {
     accumulatedText,
     accumulatedToolCalls,
+    accumulatedServerToolCalls,
     accumulatedThinking,
     loopStop,
     providerErr,

@@ -68,6 +68,23 @@ export interface ChatMessageInput {
    * otherwise. Empty array OR undefined = no thinking blocks.
    */
   readonly thinkingBlocks?: readonly ProviderThinkingBlock[];
+  /**
+   * Provider-executed (server) tool calls on a prior assistant turn —
+   * Anthropic Tool Search. Replayed as `server_tool_use` +
+   * `tool_search_tool_result` blocks (in order, BEFORE the client
+   * tool_use blocks) so discovered tools stay loaded across turns
+   * without re-searching. Only meaningful for role === "assistant".
+   */
+  readonly serverToolCalls?: readonly ProviderServerToolCall[];
+}
+
+/** See ChatMessageInput.serverToolCalls. */
+export interface ProviderServerToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: unknown;
+  /** Provider-computed result; absent when the stream ended before it arrived. */
+  readonly result?: unknown;
 }
 
 export type ContentPart = TextPart | ImagePart;
@@ -146,6 +163,15 @@ export interface GenerateInput {
 export type ProviderEvent =
   | { kind: "text-delta"; text: string }
   | { kind: "tool-call"; id: string; name: string; arguments: unknown }
+  /**
+   * Provider-executed (server) tool call — e.g. Anthropic Tool Search.
+   * The API already ran it inside the request; consumers must NOT
+   * dispatch it, only record it so the call/result blocks can be
+   * replayed unchanged on subsequent requests (tool-search docs:
+   * dropping them makes the model re-search every turn).
+   */
+  | { kind: "server-tool-call"; id: string; name: string; arguments: unknown }
+  | { kind: "server-tool-result"; id: string; name: string; result: unknown }
   | {
       kind: "usage";
       inputTokens: number;

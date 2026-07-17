@@ -88,13 +88,23 @@ describe("theme read tools", () => {
     expect(r.content.length).toBeGreaterThan(0);
   });
 
-  it("get_theme reports a missing theme, not a crash", async () => {
+  it("get_theme reports a missing theme AND inlines the available slugs (one-step recovery)", async () => {
     const r = await getThemeTool.handler(
       SYSTEM,
       { slug: "no-such-theme-xyz", as: "dtcg" },
       toolCtx(),
     );
     expect(r.ok).toBe(false);
+    // Run-B regression: the model guessed 'default'/'active' and needed a
+    // list_themes round-trip — the miss now carries the inventory inline.
+    expect(r.content).toContain("does not exist");
+    expect(r.content).toContain("site-default");
+  });
+
+  it("get_theme without slug falls back to the ACTIVE theme", async () => {
+    const r = await getThemeTool.handler(SYSTEM, { as: "summary" }, toolCtx());
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain(", active)");
   });
 
   it("export_theme emits a DTCG document", async () => {

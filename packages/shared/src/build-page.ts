@@ -96,10 +96,42 @@ export type BuildPageContent = z.infer<typeof buildPageContentSchema>;
  */
 export const buildPageModuleSchema = z
   .object({
-    /** Template block to place into — must exist on the page's template. */
-    blockName: slugSchema,
-    /** Place mode: an existing module from `## Modules`. */
-    moduleId: z.string().uuid().optional(),
+    /**
+     * Template block to place into — must exist on the page's template.
+     * OMIT for a DETACHED entry: the module + its content_instance are
+     * created but NOT placed on the page — used for nested-only modules
+     * that later entries embed via `{"$ref": "<ref>"}` in a
+     * module / module-list field value. A detached entry requires `ref`.
+     */
+    blockName: slugSchema.optional(),
+    /**
+     * Local handle other entries in the SAME call can reference: a
+     * module/module-list field value of `{"$ref": "<ref>"}` resolves to
+     * this entry's `{moduleId, contentInstanceId}`. Entries resolve in
+     * array order, so referenced entries must come FIRST.
+     */
+    ref: z
+      .string()
+      .regex(/^[a-z][a-z0-9_-]{0,31}$/, "ref must be a short lowercase handle")
+      .optional(),
+    /**
+     * Place mode: an existing module from `## Modules` (UUID), or a
+     * module minted EARLIER IN THIS CALL via `{"$ref": "<handle>"}` —
+     * the second-placement case (e.g. three feature cards reusing one
+     * card module). Live-edit run A showed the model writing
+     * `moduleId: "$feat1"` unprompted; the union makes that intent
+     * expressible instead of a validation dead-end.
+     */
+    moduleId: z
+      .union([
+        z
+          .string()
+          .uuid(
+            'moduleId must be a UUID from ## Modules — to re-place a module minted earlier in THIS call, pass {"$ref": "<its ref>"} instead',
+          ),
+        z.object({ $ref: z.string() }).strict(),
+      ])
+      .optional(),
     /** Mint mode: authoring surface, mirrors add_module_to_page. */
     displayName: z.string().min(1).max(128).optional(),
     description: z.string().max(1000).optional(),
@@ -115,6 +147,15 @@ export const buildPageModuleSchema = z
   })
   .strict()
   .superRefine((entry, ctx) => {
+    if (entry.blockName === undefined && entry.ref === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "An entry without `blockName` is a DETACHED (nested-only) module and requires `ref` " +
+          'so a later entry can embed it via {"$ref": "<ref>"} — otherwise it would be unreachable. ' +
+          "Pass `blockName` to place it on the page instead.",
+      });
+    }
     const authoringKeys = (
       [
         "displayName",
@@ -201,7 +242,23 @@ export const buildPageInputSchema = z
     page: buildPageTargetSchema,
     modules: z.array(buildPageModuleSchema).min(1).max(40),
   })
-  .strict();
+  .strict()
+  .superRefine((input, ctx) => {
+    // `ref` handles must be unique — a duplicate would silently shadow
+    // the earlier entry when a later {"$ref"} resolves.
+    const seen = new Set<string>();
+    for (const [i, entry] of input.modules.entries()) {
+      if (entry.ref === undefined) continue;
+      if (seen.has(entry.ref)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["modules", i, "ref"],
+          message: `duplicate ref "${entry.ref}" — each ref handle must be unique within the call`,
+        });
+      }
+      seen.add(entry.ref);
+    }
+  });
 export type BuildPageInput = z.infer<typeof buildPageInputSchema>;
 
 /** `pages.build_page` op output — one row per placed module, in input order. */

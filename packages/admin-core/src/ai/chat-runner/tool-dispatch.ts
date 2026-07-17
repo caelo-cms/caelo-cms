@@ -27,6 +27,49 @@ import type {
 } from "./types.js";
 
 /**
+ * e2e-only proposal auto-approve. Executes every pending proposal owned
+ * by THIS chat as the human ctx (simulating the Owner clicking Approve),
+ * so autonomous runs flow through propose→execute instead of stalling.
+ * Domain strings from `pending_proposals.list` match the execute-op
+ * prefixes 1:1 (`layouts` → `layouts.execute_proposal`). Best-effort:
+ * a failed execute is logged, not thrown — the chat turn continues.
+ * Returns a one-line summary of what was applied, or null if nothing.
+ * Guarded by CAELO_E2E_AUTO_APPROVE_PROPOSALS at the call site; NEVER
+ * runs in production.
+ */
+export async function autoApproveChatProposals(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  humanCtx: ExecutionContext,
+  chatSessionId: string,
+): Promise<string | null> {
+  const listed = await execute(registry, adapter, humanCtx, "pending_proposals.list", {});
+  if (!listed.ok) return null;
+  const rows = (
+    listed.value as {
+      items: { domain: string; proposalId: string; chatSessionId: string | null }[];
+    }
+  ).items.filter((p) => p.chatSessionId === chatSessionId);
+  if (rows.length === 0) return null;
+  const applied: string[] = [];
+  for (const row of rows) {
+    const r = await execute(registry, adapter, humanCtx, `${row.domain}.execute_proposal`, {
+      proposalId: row.proposalId,
+    });
+    if (r.ok) applied.push(`${row.domain}:${row.proposalId.slice(0, 8)}`);
+    else
+      console.error("[chat-runner] e2e auto-approve failed", {
+        domain: row.domain,
+        proposalId: row.proposalId,
+        error: r.error,
+      });
+  }
+  return applied.length > 0
+    ? `[e2e] auto-approved ${applied.length} proposal(s) as Owner: ${applied.join(", ")}.`
+    : null;
+}
+
+/**
  * One tool dispatch's outcome, reported back to the loop so the
  * repeated-identical-failure breaker can observe results without re-parsing
  * the mutated `messages` array. See `repeat-failure-guard.ts`.
@@ -278,6 +321,25 @@ export async function* dispatchToolCall(
       });
       const errMsg = settled.error instanceof Error ? settled.error.message : String(settled.error);
       result = { ok: false, content: `tool error: ${errMsg}` };
+    }
+    // e2e-only — auto-approve the proposal this propose_* just queued, as
+    // if the Owner clicked Approve, so autonomous runs exercise the full
+    // propose→execute path instead of stalling on a human gate that never
+    // comes (run-B5: the AI's correct layout-CSS fix sat unapproved). The
+    // gate itself is untouched; this only simulates the click, and ONLY
+    // when the explicit e2e flag is set. NEVER enable in production.
+    if (
+      result.ok &&
+      call.name.startsWith("propose_") &&
+      process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1"
+    ) {
+      const applied = await autoApproveChatProposals(
+        registry,
+        adapter,
+        humanCtx,
+        deps.chatSessionId,
+      );
+      if (applied) result = { ...result, content: `${result.content}\n${applied}` };
     }
     await execute(registry, adapter, humanCtx, "chat.cache_tool_result", {
       chatSessionId: deps.chatSessionId,

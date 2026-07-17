@@ -26,6 +26,15 @@ const layoutBlockShape = z.object({
   name: z.string().min(1).max(80),
   displayName: z.string().min(1).max(200),
   position: z.number().int().min(0).max(1000),
+  /**
+   * Chrome modules placed in this block (slugs, placement order).
+   * Live-edit run B2: the AI hunted for a "which modules sit on the
+   * layout" read (toolSearch: "get layout modules blocks list
+   * placements on layout") and none existed — list_layouts only named
+   * the blocks. Carried here so ONE read answers "is my footer already
+   * on the layout?".
+   */
+  moduleSlugs: z.array(z.string()).default([]),
 });
 
 const layoutRow = z.object({
@@ -71,10 +80,24 @@ async function loadBlocks(
     WHERE layout_id = ${layoutId}::uuid
     ORDER BY position ASC
   `)) as unknown as { name: string; display_name: string; position: number | string }[];
+  // Placed chrome modules per block — one query for the whole layout.
+  const placed = (await tx.execute(sql`
+    SELECT lm.block_name, m.slug
+    FROM layout_modules lm JOIN modules m ON m.id = lm.module_id
+    WHERE lm.layout_id = ${layoutId}::uuid AND m.deleted_at IS NULL
+    ORDER BY lm.block_name ASC, lm.position ASC
+  `)) as unknown as { block_name: string; slug: string }[];
+  const slugsByBlock = new Map<string, string[]>();
+  for (const p of placed) {
+    const arr = slugsByBlock.get(p.block_name) ?? [];
+    arr.push(p.slug);
+    slugsByBlock.set(p.block_name, arr);
+  }
   return rows.map((r) => ({
     name: r.name,
     displayName: r.display_name,
     position: typeof r.position === "string" ? Number.parseInt(r.position, 10) : r.position,
+    moduleSlugs: slugsByBlock.get(r.name) ?? [],
   }));
 }
 

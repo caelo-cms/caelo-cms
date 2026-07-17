@@ -327,6 +327,7 @@ export async function* runToolLoop(
     const {
       accumulatedText,
       accumulatedToolCalls,
+      accumulatedServerToolCalls,
       accumulatedThinking,
       loopStop,
       providerErr,
@@ -524,12 +525,20 @@ export async function* runToolLoop(
     // persist (empty + status='interrupted' is exempt at the boundary) so
     // the operator sees the "interrupted" marker where the reply died.
     const hasPersistablePayload =
-      assistantContent.trim().length > 0 || accumulatedToolCalls.length > 0 || aborted();
+      assistantContent.trim().length > 0 ||
+      accumulatedToolCalls.length > 0 ||
+      accumulatedServerToolCalls.length > 0 ||
+      aborted();
     if (hasPersistablePayload) {
+      // Server-tool (Tool Search) calls persist in the SAME tool_calls
+      // jsonb, tagged serverExecuted — buildProviderHistory splits them
+      // back out so future turns replay the search blocks unchanged
+      // (docs: dropping them makes the model re-search every turn).
+      const persistedToolCalls = [...accumulatedServerToolCalls, ...accumulatedToolCalls];
       const saved = await persistAssistantTurn(registry, adapter, humanCtx, {
         chatSessionId,
         content: assistantContent,
-        toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : null,
+        toolCalls: persistedToolCalls.length > 0 ? persistedToolCalls : null,
         // v0.2.54 — persist thinking blocks alongside the assistant turn.
         thinkingBlocks: accumulatedThinking.length > 0 ? accumulatedThinking : null,
         status: aborted() ? "interrupted" : "complete",
@@ -575,6 +584,11 @@ export async function* runToolLoop(
         role: "assistant",
         content: assistantContent,
         toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
+        // Tool Search round-trip: the discovered-tools context lives in
+        // these blocks; the next loop iteration must carry them.
+        ...(accumulatedServerToolCalls.length > 0
+          ? { serverToolCalls: accumulatedServerToolCalls }
+          : {}),
         // v0.2.54 — round-trip thinking blocks; Anthropic verifies the
         // signatures on the next provider call after tool_results.
         ...(accumulatedThinking.length > 0 ? { thinkingBlocks: accumulatedThinking } : {}),

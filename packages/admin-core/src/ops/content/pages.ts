@@ -1315,30 +1315,36 @@ export const setPageModulesOp = defineOperation({
     }
 
     // v0.12.0 — page_modules requires content_instance_id NOT NULL.
-    // Read the current state so we can preserve content bindings for
-    // placements that survive (same blockName, position, moduleId) and
-    // mint fresh unsynced content_instances for net-new placements.
-    const priorRows = (await tx.execute(sql`
-      SELECT block_name, position, module_id::text AS module_id,
-             content_instance_id::text AS content_instance_id, sync_mode
-      FROM page_modules WHERE page_id = ${input.pageId}::uuid
-    `)) as unknown as {
-      block_name: string;
-      position: number;
-      module_id: string;
-      content_instance_id: string;
-      sync_mode: "synced" | "unsynced";
-    }[];
-    const priorByKey = new Map<
+    // Read the current state so surviving placements KEEP their content
+    // bindings. Two hard-won rules (live-edit run B, module-ref-malformed
+    // → max_loops crash):
+    //  1. Priors come from the BRANCH-OVERLAID layout, not live
+    //     page_modules — a chat's placements live only in
+    //     page_layout_snapshots, so the live read returned NOTHING for
+    //     branched callers and every set_modules re-minted EVERY
+    //     instance (wiping all content the chat had authored).
+    //  2. Matching is a per-(block, module) FIFO QUEUE, not exact
+    //     position: removing/reordering an earlier placement shifts the
+    //     survivors' positions, and position-strict matching treated the
+    //     shifted survivor as "new" — minting it a fresh EMPTY instance
+    //     and orphaning its authored content (the nested-CTA `cta` value
+    //     vanished mid-turn exactly this way).
+    const priorLayout = await loadPageLayoutStateWithBranchOverlay(
+      tx,
+      input.pageId,
+      ctx.chatBranchId ?? null,
+    );
+    const priorQueues = new Map<
       string,
-      { moduleId: string; contentInstanceId: string; syncMode: "synced" | "unsynced" }
+      { contentInstanceId: string; syncMode: "synced" | "unsynced" }[]
     >();
-    for (const r of priorRows) {
-      priorByKey.set(`${r.block_name}#${r.position}`, {
-        moduleId: r.module_id,
-        contentInstanceId: r.content_instance_id,
-        syncMode: r.sync_mode,
-      });
+    for (const block of priorLayout.blocks) {
+      for (const p of block.placements ?? []) {
+        const key = `${block.blockName}#${p.moduleId}`;
+        const q = priorQueues.get(key) ?? [];
+        q.push({ contentInstanceId: p.contentInstanceId, syncMode: p.syncMode });
+        priorQueues.set(key, q);
+      }
     }
 
     // Resolve `(moduleId, contentInstanceId, syncMode)` for every new
@@ -1356,11 +1362,13 @@ export const setPageModulesOp = defineOperation({
     for (const block of input.blocks) {
       let position = 0;
       for (const moduleId of block.moduleIds) {
-        const prior = priorByKey.get(`${block.blockName}#${position}`);
+        // Consume the next surviving binding for this (block, module) —
+        // FIFO keeps repeated placements of the same module in their
+        // relative order while tolerating position shifts.
+        const prior = priorQueues.get(`${block.blockName}#${moduleId}`)?.shift();
         let contentInstanceId: string;
         let syncMode: "synced" | "unsynced";
-        if (prior && prior.moduleId === moduleId) {
-          // Same module survives at the same slot — preserve binding.
+        if (prior) {
           contentInstanceId = prior.contentInstanceId;
           syncMode = prior.syncMode;
         } else {

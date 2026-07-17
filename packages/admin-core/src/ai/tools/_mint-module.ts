@@ -49,6 +49,10 @@ export interface MintModuleOk {
   /** The kind actually stored (moduleize-chosen or caller hint) — for the
    *  design guard. */
   readonly kind: "chrome" | "hero" | "content" | "cta" | "utility" | undefined;
+  /** The fields actually stored (moduleize-inferred or caller-authored) —
+   *  callers echo the names back in the tool result so the main agent
+   *  knows the module's content shape without a follow-up read. */
+  readonly fields: readonly ModuleField[] | undefined;
 }
 export interface MintModuleErr {
   readonly ok: false;
@@ -71,8 +75,17 @@ export async function mintModuleFromHtml(
   let description = args.description;
   let note = "";
 
-  // Preferred path: moduleize turns raw html into a proper module.
-  if (toolCtx.provider) {
+  // moduleize turns RAW html (no declared fields) into a proper module.
+  // It is a FALLBACK for messy human-authored HTML, NOT the canonical AI
+  // path (CLAUDE.md §1A): when the AI already authored parametrised HTML
+  // plus an explicit `fields[]`, that IS the module — re-moduleizing it
+  // is a second AI round-trip that can only do harm. It renamed
+  // `{{label}}`'s field to `button_label` and dropped the `>` from the
+  // nested `{{>cta}}` marker (live-edit nested-CTA turn: ~20 recovery
+  // loops chasing both). So skip moduleize whenever explicit fields are
+  // supplied and trust the AI's html + fields verbatim.
+  const hasExplicitFields = (args.fieldsHint?.length ?? 0) > 0;
+  if (toolCtx.provider && !hasExplicitFields) {
     try {
       const mod = await moduleize({
         provider: toolCtx.provider,
@@ -139,5 +152,6 @@ export async function mintModuleFromHtml(
     note,
     css,
     kind,
+    fields,
   };
 }

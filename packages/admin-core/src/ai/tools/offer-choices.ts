@@ -55,8 +55,10 @@ export const offerChoicesTool: ToolDefinitionWithHandler<OfferChoicesInput> = {
   name: "offer_choices",
   description:
     "Present the operator a small multiple-choice question as CLICKABLE BUTTONS in the chat. " +
-    "Use this whenever you would otherwise write 'answer with A or B' — design fork, crawl scope, " +
-    "cluster confirmation, any pick-one moment with 2-4 options. " +
+    "ONLY for a genuine trade-off the operator must decide (design fork, crawl scope, destructive disposition) — " +
+    "NEVER for a step you can safely do yourself and mention afterwards. If the obvious path is clear " +
+    "(e.g. a requested footer links to pages that don't exist yet → CREATE those pages and say so), DO IT — " +
+    "asking would stall the request (CLAUDE.md §1A: the operator describes outcomes; implementation questions are yours). " +
     "END YOUR TURN right after calling it and WAIT for the click (it arrives as the operator's " +
     "next message, containing the option's key and label). " +
     "Do NOT use it for open questions (names, URLs, free text) or when an option list would " +
