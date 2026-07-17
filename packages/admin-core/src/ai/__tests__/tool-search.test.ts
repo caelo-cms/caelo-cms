@@ -369,6 +369,20 @@ describe("AnthropicProvider tool-search transform (W2)", () => {
     expect(resultEv?.id).toBe("srv1");
     expect(resultEv?.result).toEqual(searchResult);
 
+    // Option C foundation: the terminal `turn-messages` event carries the
+    // SDK's canonical assembly — the server_tool_use AND its paired
+    // tool_search_tool_result together — which is exactly what our
+    // fullStream reconstruction dropped (run-B6). Persisting + replaying
+    // THIS instead of the hand-rolled format is the fix.
+    const turnEv = events.find((e) => e.kind === "turn-messages") as
+      | { kind: "turn-messages"; messages: readonly unknown[] }
+      | undefined;
+    expect(turnEv).toBeDefined();
+    const flat = JSON.stringify(turnEv?.messages ?? []);
+    expect(flat).toContain("tool_search_tool_bm25");
+    expect(flat).toContain("tool_reference");
+    expect(flat).toContain("tool_7");
+
     // (2) Replay: run-B6 regression — a follow-up whose history carries a
     // server tool call must NOT put ANY server_tool_use block back on the
     // wire. streamText's fullStream doesn't surface the paired

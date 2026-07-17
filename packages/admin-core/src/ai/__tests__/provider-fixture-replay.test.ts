@@ -78,6 +78,11 @@ describe("AnthropicProvider — SDK-event translation", () => {
       // shape varies with the underlying SDK version so we don't
       // pin it here.
       expect.objectContaining({ kind: "done", stopReason: "end_turn" }),
+      // Option C (2026-07) — after `done`, the provider emits the SDK's
+      // canonical assistant messages for the turn (persisted + replayed
+      // as history). The chat-runner drains past `done` to the stream
+      // end, so a trailing event is captured, not missed.
+      expect.objectContaining({ kind: "turn-messages" }),
     ]);
     const done = events.find((e) => e.kind === "done");
     if (done && done.kind === "done") {

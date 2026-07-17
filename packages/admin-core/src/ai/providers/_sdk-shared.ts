@@ -452,4 +452,18 @@ export async function* runSDKStream(args: {
     ...(extraOptions ?? {}),
   });
   yield* translateSDKStream(result.fullStream);
+  // Option C (2026-07) — after the stream drains, emit the SDK's
+  // canonical assistant messages for this turn. The SDK assembles these
+  // with provider-executed tool blocks + reasoning signatures + tool
+  // pairing already correct; consumers persist + replay these instead of
+  // rebuilding history from the event stream (CLAUDE.md §12). Best-effort:
+  // if the response promise rejects (aborted turn, upstream error), skip
+  // the event — the turn already surfaced its error/done through the
+  // stream, and the caller falls back to its event-accumulated turn.
+  try {
+    const response = await result.response;
+    yield { kind: "turn-messages", messages: response.messages };
+  } catch {
+    /* no canonical messages for an aborted/errored turn */
+  }
 }
