@@ -29,6 +29,24 @@ export interface ToolDefinition {
    * round-trip. Providers without deferred loading ignore the flag.
    */
   readonly alwaysLoaded?: boolean;
+  /**
+   * Slice 1 (SDK approval gate, CLAUDE.md §11.A) — when set, this tool is
+   * SDK-executed and gated behind explicit human approval: the SDK emits a
+   * `tool-approval-request` (the turn PAUSES before `execute` runs), and the
+   * turn resumes only when a `tool-approval-response` is appended to history
+   * (the Owner's in-chat Approve). A gated tool MUST also supply `execute`
+   * (the SDK gates the execute call). Routine tools leave both unset and are
+   * dispatched by the chat-runner loop as client tools.
+   */
+  readonly approvalMode?: "user-approval";
+  /**
+   * SDK-executed handler for a gated tool. Supplied by the chat-runner,
+   * closing over the real dispatch pipeline + the resolved ExecutionContext,
+   * so the actual mutation runs through the Query API exactly as a
+   * client-dispatched tool would — only the invocation site (SDK vs our
+   * loop) differs. Only meaningful alongside `approvalMode`.
+   */
+  readonly execute?: (input: unknown) => Promise<unknown>;
 }
 
 export interface ChatMessageInput {
@@ -173,6 +191,22 @@ export type ProviderResponseMessage = unknown;
 export type ProviderEvent =
   | { kind: "text-delta"; text: string }
   | { kind: "tool-call"; id: string; name: string; arguments: unknown }
+  /**
+   * Slice 1 (SDK approval gate) — a gated tool (`ToolDefinition.approvalMode`)
+   * was called; the SDK PAUSED before running its `execute` and is waiting
+   * for a `tool-approval-response`. The chat-runner surfaces this to the
+   * operator (in-chat Approve/Reject) and stops the turn; the paused state
+   * is carried in `response.messages` (Option C), so resuming = appending the
+   * response and re-running. Never dispatched by our loop (the SDK owns the
+   * execute once approved).
+   */
+  | {
+      kind: "tool-approval-request";
+      approvalId: string;
+      toolCallId: string;
+      name: string;
+      arguments: unknown;
+    }
   /**
    * Provider-executed (server) tool call — e.g. Anthropic Tool Search.
    * The API already ran it inside the request; consumers must NOT

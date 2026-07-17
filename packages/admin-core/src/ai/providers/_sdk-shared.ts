@@ -250,6 +250,24 @@ export async function* translateSDKStream(
           }
           break;
         }
+        case "tool-approval-request": {
+          // Slice 1 (SDK approval gate) — a gated tool was called; the SDK
+          // paused before its execute. Carry the id + the pending call up so
+          // the chat-runner can surface the in-chat Approve/Reject and stop
+          // the turn (the paused state also rides response.messages/Option C).
+          const approvalId = (e.approvalId as string | undefined) ?? "";
+          const tc = e.toolCall as
+            | { toolName?: string; toolCallId?: string; input?: unknown }
+            | undefined;
+          yield {
+            kind: "tool-approval-request",
+            approvalId,
+            toolCallId: (tc?.toolCallId as string | undefined) ?? "",
+            name: tc?.toolName ?? "",
+            arguments: tc?.input,
+          };
+          break;
+        }
         case "finish-step": {
           // SDK 6 LanguageModelUsage shape: flat inputTokens/outputTokens
           // counters with cache info nested under inputTokenDetails.
@@ -396,11 +414,22 @@ function safeJsonParse(s: string): unknown {
  * so it still produces the AI-actionable error message on genuinely invalid
  * input.
  */
-export function buildSDKTools(
-  tools: GenerateInput["tools"],
-): Record<string, { description: string; inputSchema: ReturnType<typeof jsonSchema> }> {
-  const out: Record<string, { description: string; inputSchema: ReturnType<typeof jsonSchema> }> =
-    {};
+export function buildSDKTools(tools: GenerateInput["tools"]): Record<
+  string,
+  {
+    description: string;
+    inputSchema: ReturnType<typeof jsonSchema>;
+    execute?: (input: unknown) => Promise<unknown>;
+  }
+> {
+  const out: Record<
+    string,
+    {
+      description: string;
+      inputSchema: ReturnType<typeof jsonSchema>;
+      execute?: (input: unknown) => Promise<unknown>;
+    }
+  > = {};
   for (const t of tools) {
     const schema = t.inputSchema;
     out[t.name] = {
@@ -411,6 +440,10 @@ export function buildSDKTools(
           value: normalizeToolArgs(value, schema).args,
         }),
       }),
+      // Slice 1 — gated tools are SDK-executed so `toolApproval` can pause
+      // before the execute. Routine tools omit execute and come back as
+      // client tool-calls for our loop to dispatch.
+      ...(t.execute ? { execute: t.execute } : {}),
     };
   }
   return out;
@@ -454,6 +487,17 @@ export async function* runSDKStream(args: {
   const { model, input, systemAndMessages, extraOptions, toolsTransform } = args;
   const builtTools = buildSDKTools(input.tools) as Record<string, unknown>;
   const sdkTools = toolsTransform ? toolsTransform(builtTools) : builtTools;
+  // Slice 1 (SDK approval gate) — derive the toolApproval map from the tools
+  // that declared approvalMode. `experimental_toolApprovalSecret`
+  // cryptographically binds each approval request to this server so a forged
+  // tool-approval-response can't be replayed (defense in depth alongside our
+  // own Owner-scope check on resume). Only engaged when a gated tool is
+  // actually in the catalogue for this turn.
+  const toolApproval: Record<string, "user-approval"> = {};
+  for (const t of input.tools) {
+    if (t.approvalMode) toolApproval[t.name] = t.approvalMode;
+  }
+  const approvalSecret = process.env.CAELO_TOOL_APPROVAL_SECRET;
   const result = streamText({
     model,
     // AI SDK 7 made system-in-messages a hard error by default. Our Anthropic
@@ -467,6 +511,14 @@ export async function* runSDKStream(args: {
     messages: systemAndMessages.messages,
     ...(Object.keys(sdkTools).length > 0
       ? { tools: sdkTools as Parameters<typeof streamText>[0]["tools"] }
+      : {}),
+    ...(Object.keys(toolApproval).length > 0
+      ? {
+          toolApproval: toolApproval as Parameters<typeof streamText>[0]["toolApproval"],
+          ...(approvalSecret
+            ? ({ experimental_toolApprovalSecret: approvalSecret } as Record<string, unknown>)
+            : {}),
+        }
       : {}),
     maxOutputTokens: input.maxTokens ?? 32768,
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
