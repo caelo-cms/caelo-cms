@@ -555,6 +555,37 @@ export const renderPagePreviewOp = defineOperation({
             )})
               AND deleted_at IS NULL
           `)) as unknown as ModuleSourceRow[];
+          // Caller-branch module-CODE overlay for NESTED modules — the
+          // THIRD read path of the run-#8-R3 class (page modules and
+          // layout chrome are fixed above/below). A branched edit_module
+          // on a nested/detached module writes module_snapshots only;
+          // without this overlay the recursion rendered the STALE live
+          // code and the AI spiralled on "my edits don't propagate"
+          // (live-edit run A2: repeated color-mix removal never showed,
+          // straight into the max_loops cap).
+          if (chatBranchId && fetched.length > 0) {
+            const nestedBranchRows = (await tx.execute(sql`
+              SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
+              FROM module_snapshots ms
+              JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+              WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+                AND ms.module_id IN (${sql.join(
+                  fetched.map((f) => sql`${f.module_id}::uuid`),
+                  sql`, `,
+                )})
+              ORDER BY ms.module_id, ss.created_at DESC
+            `)) as unknown as { module_id: string; state: unknown }[];
+            for (const r of nestedBranchRows) {
+              const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+              const s = raw as Record<string, unknown>;
+              const target = fetched.find((f) => f.module_id === r.module_id);
+              if (!target || s.deletedAt) continue;
+              target.html = (s.html as string) ?? target.html;
+              target.css = (s.css as string) ?? target.css;
+              target.js = (s.js as string) ?? target.js;
+              if (Array.isArray(s.fields)) target.fields = s.fields as ModuleSourceRow["fields"];
+            }
+          }
           for (const f of fetched) {
             moduleByIdResource.set(f.module_id, {
               moduleId: f.module_id,
@@ -582,9 +613,36 @@ export const renderPagePreviewOp = defineOperation({
             )})
               AND deleted_at IS NULL
           `)) as unknown as { id: string; module_id: string; values: unknown }[];
+          // Caller-branch VALUES overlay for nested instances — same
+          // hole as the module-code overlay above: branched set_values
+          // on a nested instance landed in content_instance_snapshots
+          // only, so the recursion rendered stale live values.
+          const nestedValueOverlay = new Map<string, Record<string, unknown>>();
+          if (chatBranchId && fetched.length > 0) {
+            const rows = (await tx.execute(sql`
+              SELECT DISTINCT ON (cis.content_instance_id)
+                     cis.content_instance_id::text AS id, cis.state AS state
+              FROM content_instance_snapshots cis
+              JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
+              WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+                AND cis.content_instance_id IN (${sql.join(
+                  fetched.map((f) => sql`${f.id}::uuid`),
+                  sql`, `,
+                )})
+              ORDER BY cis.content_instance_id, ss.created_at DESC
+            `)) as unknown as { id: string; state: unknown }[];
+            for (const r of rows) {
+              const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+              const state = (raw ?? {}) as {
+                values?: Record<string, unknown>;
+                deletedAt?: string | null;
+              };
+              if (!state.deletedAt && state.values) nestedValueOverlay.set(r.id, state.values);
+            }
+          }
           for (const f of fetched) {
             const raw = typeof f.values === "string" ? JSON.parse(f.values) : f.values;
-            const v = (raw ?? {}) as Record<string, unknown>;
+            const v = nestedValueOverlay.get(f.id) ?? ((raw ?? {}) as Record<string, unknown>);
             instanceByIdResource.set(f.id, {
               id: f.id,
               moduleId: f.module_id,
@@ -792,6 +850,40 @@ export const renderPagePreviewOp = defineOperation({
       WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
       ORDER BY lm.block_name ASC, lm.position ASC
     `)) as unknown as ModuleSourceRow[];
+    // Caller-branch module-code overlay for LAYOUT (chrome) modules —
+    // same class as the run-#8-R3 page-module overlay above. A branched
+    // `edit_module` on a footer/header writes module_snapshots only; the
+    // live `modules` row stays published. Without this overlay the
+    // preview (and inspect_page_render / screenshot_page riding on it)
+    // kept rendering the STALE chrome, sending the AI into an
+    // "my edits don't land" re-edit loop (live-edit footer turn burned
+    // ~8 recovery rounds). Fields ride along because chrome renders from
+    // field DEFAULTS — a default edit must show up too.
+    if (chatBranchId && layoutModRows.length > 0) {
+      const layoutModuleIds = layoutModRows.map((r) => sql`${r.module_id}::uuid`);
+      const chromeBranchRows = (await tx.execute(sql`
+        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
+        FROM module_snapshots ms
+        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+        WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+          AND ms.module_id IN (${sql.join(layoutModuleIds, sql`, `)})
+        ORDER BY ms.module_id, ss.created_at DESC
+      `)) as unknown as { module_id: string; state: unknown }[];
+      const chromeOverlay = new Map<string, Record<string, unknown>>();
+      for (const r of chromeBranchRows) {
+        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+        chromeOverlay.set(r.module_id, raw as Record<string, unknown>);
+      }
+      for (const m of layoutModRows) {
+        const s = chromeOverlay.get(m.module_id);
+        if (!s || s.deletedAt) continue;
+        m.html = (s.html as string) ?? m.html;
+        m.css = (s.css as string) ?? m.css;
+        m.js = (s.js as string) ?? m.js;
+        m.display_name = (s.displayName as string) ?? m.display_name;
+        if (Array.isArray(s.fields)) m.fields = s.fields as ModuleSourceRow["fields"];
+      }
+    }
     const layoutGrouped = new Map<
       string,
       {

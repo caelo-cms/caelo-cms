@@ -36,8 +36,30 @@
  */
 export type ScreenshotMediaType = "image/png" | "image/jpeg";
 
+/**
+ * Capture geometry reported by the browser (2026-07, run B4 forensics).
+ * The images themselves are ephemeral — never persisted — so when the
+ * model doubted a selector crop ("seems to be returning the full page")
+ * nothing could confirm or refute it after the fact. The geometry makes
+ * every capture auditable from the tool-result text alone: a crop whose
+ * canvas equals the page dimensions IS a full-page shot, no vision
+ * judgment needed.
+ */
+export interface ScreenshotCaptureMeta {
+  canvasWidth: number;
+  canvasHeight: number;
+  pageWidth: number;
+  pageHeight: number;
+}
+
+export interface ScreenshotImage {
+  base64: string;
+  mediaType: ScreenshotMediaType;
+  meta?: ScreenshotCaptureMeta;
+}
+
 interface PendingCapture {
-  resolve: (image: { base64: string; mediaType: ScreenshotMediaType }) => void;
+  resolve: (image: ScreenshotImage) => void;
   reject: (reason: string) => void;
   /** When the entry expires + auto-rejects so the Map doesn't leak. */
   timeoutHandle: ReturnType<typeof setTimeout>;
@@ -55,7 +77,7 @@ const pending = new Map<string, PendingCapture>();
 export function awaitScreenshot(
   requestId: string,
   timeoutMs: number = 30_000,
-): Promise<{ base64: string; mediaType: ScreenshotMediaType }> {
+): Promise<ScreenshotImage> {
   return new Promise((resolve, reject) => {
     const timeoutHandle = setTimeout(() => {
       pending.delete(requestId);
@@ -73,10 +95,7 @@ export function awaitScreenshot(
  * was matched (so the endpoint can return 200), false if not (404 —
  * SSE landed on a different instance OR timed out already).
  */
-export function deliverScreenshot(
-  requestId: string,
-  image: { base64: string; mediaType: ScreenshotMediaType },
-): boolean {
+export function deliverScreenshot(requestId: string, image: ScreenshotImage): boolean {
   const entry = pending.get(requestId);
   if (!entry) return false;
   clearTimeout(entry.timeoutHandle);

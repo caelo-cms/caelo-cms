@@ -21,7 +21,6 @@ import type {
 import type { z } from "zod";
 
 import type { AIProvider } from "../provider.js";
-import type { ToolDescribeState } from "./describe-state.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 import { normalizeToolArgs } from "./normalize-args.js";
 
@@ -203,44 +202,23 @@ export interface ToolResult {
  * registration (see `generateInputSchema`), so the provider-facing schema
  * and the dispatch-time validation schema are one source of truth and can
  * no longer drift. A tool may still ship a hand-written `inputSchema` when
- * the generated shape isn't what the provider needs; the per-turn
- * `describeSchema` hook (issue #106) also returns this shape to narrow an
- * argument to a state-scoped enum at generation time.
+ * the generated shape isn't what the provider needs.
+ *
+ * 2026-07 — tool definitions are STATIC by design. The v0.6.0
+ * `describe(state)` / v0.12.3 `describeSchema(state)` hooks embedded live
+ * site state (layout slugs, the focused page's block names) into the
+ * per-turn tool definitions — and tools are part of Anthropic's
+ * prompt-cache prefix, so every page switch or structural write busted
+ * the whole cached prefix. Live state now reaches the model ONLY through
+ * the volatile context blocks (after the cache breakpoints), the read
+ * tools, and structured errors that name the valid choices.
  */
 export type ToolInputSchema = Record<string, unknown>;
 
 export interface ToolDefinitionWithHandler<I> {
   readonly name: string;
-  /** Static fallback description. Used when `describe()` is absent, when
-   * state-builder fails, or for telemetry / non-AI surfaces (catalogue
-   * page, tests). */
+  /** The tool's description — static; see the 2026-07 note above. */
   readonly description: string;
-  /** v0.6.0 W1 — optional state-aware description. When set AND a
-   * `ToolDescribeState` is passed to `catalogue()`, this callback's
-   * return value replaces the static description in the per-turn AI
-   * call. Lets tools surface live preconditions ("layoutId REQUIRED
-   * on fresh install", "block 'content' exists on this template")
-   * instead of stale general-purpose prose. The return string is
-   * sent to the model verbatim — keep it as concise as the static
-   * description. Throwing from `describe()` falls back to the static
-   * description silently. */
-  readonly describe?: (state: ToolDescribeState) => string;
-  /**
-   * v0.12.3 (issue #106) — optional state-aware `inputSchema` builder.
-   * When set AND a `ToolDescribeState` is passed to `catalogue()`, the
-   * returned JSON Schema REPLACES the static `inputSchema` for that
-   * per-turn provider call. This is the generation-time constraint lever:
-   * `add_module_to_page` / `move_module` use it to narrow `blockName` to
-   * an `enum` of the focused page's actual template blocks, so the model
-   * cannot emit a block name that doesn't exist (CLAUDE.md §1A — constrain
-   * at generation rather than guess-then-fail). The op-layer Validator
-   * still rejects an out-of-set block as defense-in-depth (enum adherence
-   * isn't guaranteed across providers).
-   *
-   * Throwing falls back to the static `inputSchema` silently (mirrors
-   * `describe`). Return the FULL schema object, not a patch.
-   */
-  readonly describeSchema?: (state: ToolDescribeState) => ToolInputSchema;
   /**
    * v0.6.0 W5 — SDK-6-inspired approval gate. When set and returns
    * `true` for the parsed args, the dispatcher emits a structured
@@ -510,50 +488,16 @@ export class ToolRegistry {
   }
 
   /**
-   * Provider-shaped tool catalogue for `GenerateInput.tools`.
-   *
-   * v0.6.0 W1 — when `state` is supplied, each tool's optional
-   * `describe(state)` callback is invoked and its return value replaces
-   * the static description. Tools without `describe()` use the static
-   * description (backward-compatible). If `describe()` throws, the
-   * static description is used and a console.error is emitted — never
-   * propagates to the AI call.
+   * Provider-shaped tool catalogue for `GenerateInput.tools`. STATIC by
+   * design (2026-07): byte-identical across turns so the Anthropic
+   * tools-prefix cache survives page switches and structural writes.
    */
-  catalogue(
-    state?: ToolDescribeState,
-  ): { name: string; description: string; inputSchema: ToolInputSchema }[] {
-    return [...this.#tools.values()].map((t) => {
-      let description = t.description;
-      if (state && t.describe) {
-        try {
-          description = t.describe(state);
-        } catch (err) {
-          console.error(
-            `[tool.describe] ${t.name} threw — falling back to static description`,
-            err,
-          );
-        }
-      }
-      // v0.12.3 (issue #106) — per-turn inputSchema. Lets a tool narrow
-      // an argument to a state-scoped enum (e.g. blockName) at generation
-      // time. Falls back to the static schema if absent or on throw.
-      let inputSchema = t.inputSchema;
-      if (state && t.describeSchema) {
-        try {
-          inputSchema = t.describeSchema(state);
-        } catch (err) {
-          console.error(
-            `[tool.describeSchema] ${t.name} threw — falling back to static inputSchema`,
-            err,
-          );
-        }
-      }
-      return {
-        name: t.name,
-        description,
-        inputSchema,
-      };
-    });
+  catalogue(): { name: string; description: string; inputSchema: ToolInputSchema }[] {
+    return [...this.#tools.values()].map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    }));
   }
 
   async dispatch(

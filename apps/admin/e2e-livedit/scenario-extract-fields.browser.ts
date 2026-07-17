@@ -38,6 +38,8 @@ interface ExtractedModuleSnapshot {
   slug: string | null;
   html: string | null;
   fields: { name: string; kind: string; default?: unknown }[];
+  /** Concatenated content_instances.values JSON for the module's instances. */
+  contentValuesText: string;
 }
 
 function snapshotWelcomeHeroModule(): ExtractedModuleSnapshot {
@@ -48,7 +50,7 @@ function snapshotWelcomeHeroModule(): ExtractedModuleSnapshot {
       `
         import { SQL } from "bun";
         const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-        let payload = JSON.stringify({ moduleId: null, slug: null, html: null, fields: [] });
+        let payload = JSON.stringify({ moduleId: null, slug: null, html: null, fields: [], contentValuesText: "" });
         await sql.begin(async (tx) => {
           // RLS gates module reads; flip actor_kind to 'system' for
           // the duration of the select (the rest of the e2e seeds
@@ -82,11 +84,21 @@ function snapshotWelcomeHeroModule(): ExtractedModuleSnapshot {
               }
             }
             const fields = Array.isArray(parsed) ? parsed : [];
+            // The module's content instances — with explicit AI-authored
+            // fields, the original copy may live in values (placement
+            // content) rather than fields[].default.
+            const ciRows = await tx\`
+              SELECT values::text AS values_text
+              FROM content_instances
+              WHERE module_id = \${r.id}::uuid AND deleted_at IS NULL
+            \`;
+            const contentValuesText = ciRows.map((c) => c.values_text).join("\\n");
             payload = JSON.stringify({
               moduleId: r.id,
               slug: r.slug,
               html: r.html,
               fields,
+              contentValuesText,
             });
           }
         });
@@ -129,8 +141,14 @@ test("AC #1: extractor produces {{title}} + {{ctaHref}} + {{ctaLabel}} for hardc
   expect(snap.html).not.toContain("Welcome to Caelo");
   expect(snap.html).not.toContain("Get started");
 
-  // Defaults should carry the original strings so the renderer can fall
-  // back to them on a placement that hasn't been customized.
+  // The original copy must survive parametrisation — either as field
+  // DEFAULTS (the extractor-fallback path bakes them there) or as the
+  // placement's CONTENT VALUES (the AI-authored explicit-fields path
+  // puts the copy in the content_instance). Both preserve the content;
+  // which one depends on whether the model authored fields[] itself.
   const defaults = snap.fields.map((f) => f.default).filter((d) => typeof d === "string");
-  expect(defaults).toEqual(expect.arrayContaining([expect.stringContaining("Welcome")]));
+  const copyPreserved =
+    defaults.some((d) => (d as string).includes("Welcome")) ||
+    snap.contentValuesText.includes("Welcome");
+  expect(copyPreserved).toBe(true);
 });

@@ -264,6 +264,31 @@ describe("pages.build_page — mid-batch abort (§11: partial failure impossible
     expect(names).not.toContain("I299 Abort Hero");
   });
 
+  it("a chrome block (header) routes to add_module target='layout' instead of a bare block list (run-B5 max_loops)", async () => {
+    // The template only has `content`; the model conflated the LAYOUT's
+    // header block (seen in list_layouts) with a page block. Without the
+    // routing hint it re-tried build_page until max_loops. The error now
+    // names the fix.
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug: `${PAGE_SLUG_ABORT}-chrome`, title: "I299 Chrome", templateId },
+      modules: [
+        {
+          blockName: "header",
+          displayName: "Site Header",
+          html: "<header>{{brand}}</header>",
+          fields: [{ name: "brand", kind: "text", label: "Brand", default: "Acme" }],
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    const msg = (r.error as { message?: string }).message ?? "";
+    expect(msg).toContain("LAYOUT chrome");
+    expect(msg).toContain("add_module");
+    expect(msg).toContain("target:'layout'");
+    expect(msg).toContain("list_layouts");
+  });
+
   it("bad field value on modules[1] content aborts, naming index AND field", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
       page: { slug: PAGE_SLUG_FIELD, title: "I299 Field", templateId },
@@ -407,5 +432,141 @@ describe("content_instances.create_many + page_module_content.set_many", () => {
     expect(
       (ci.value as { instance: { values: Record<string, unknown> } }).instance.values.txt,
     ).toBe("first");
+  });
+});
+
+describe("pages.build_page — detached entries + {$ref} nested composition (one call)", () => {
+  it("mints a detached Button, embeds it via {$ref} in the CTA's module field, all in one call", async () => {
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug: `i299-ref-${TS}`, title: "Ref Page", templateId },
+      modules: [
+        {
+          ref: "btn",
+          // no blockName → detached (nested-only)
+          displayName: "Ref Button",
+          description: "Nested-only CTA button.",
+          kind: "cta",
+          type: "button",
+          html: "<button>{{label}}</button>",
+          fields: [{ name: "label", kind: "text", label: "Label" }],
+          content: { source: "inline", values: { label: "Click me" } },
+        },
+        {
+          blockName: "content",
+          displayName: "Ref CTA Teaser",
+          description: "Teaser that embeds the button.",
+          kind: "cta",
+          html: "<section><h2>{{headline}}</h2>{{>cta}}</section>",
+          fields: [
+            { name: "headline", kind: "text", label: "Headline" },
+            { name: "cta", kind: "module", label: "CTA", allowedModuleTypes: ["button"] },
+          ],
+          content: {
+            source: "inline",
+            values: { headline: "Ready?", cta: { $ref: "btn" } },
+          },
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as {
+      placements: { moduleId: string; contentInstanceId: string }[];
+      detached: { ref: string; moduleId: string; contentInstanceId: string }[];
+    };
+    // ONE placement (the teaser); the button is detached, not placed.
+    expect(v.placements.length).toBe(1);
+    expect(v.detached.length).toBe(1);
+    expect(v.detached[0]?.ref).toBe("btn");
+
+    // The teaser's content_instance carries the RESOLVED nested ref —
+    // the button's real ids, not the {$ref} marker.
+    const teaserCiId = v.placements[0]?.contentInstanceId as string;
+    const ci = await execute(registry, adapter, systemCtx, "content_instances.get", {
+      id: teaserCiId,
+    });
+    if (!ci.ok) throw new Error("teaser ci get failed");
+    const cta = (ci.value as { instance: { values: { cta?: Record<string, unknown> } } }).instance
+      .values.cta;
+    expect(cta?.moduleId).toBe(v.detached[0]?.moduleId);
+    expect(cta?.contentInstanceId).toBe(v.detached[0]?.contentInstanceId);
+  });
+
+  it("a {$ref} pointing at a LATER (or unknown) entry fails loudly with the available handles", async () => {
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug: `i299-refbad-${TS}`, title: "Ref Bad", templateId },
+      modules: [
+        {
+          blockName: "content",
+          displayName: "Orphan Teaser",
+          description: "References a handle that doesn't exist yet.",
+          kind: "cta",
+          html: "<section>{{>cta}}</section>",
+          fields: [{ name: "cta", kind: "module", label: "CTA" }],
+          content: { source: "inline", values: { cta: { $ref: "nope" } } },
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    const msg = (r.error as { message?: string }).message ?? "";
+    expect(msg).toContain('"$ref"');
+    expect(msg).toContain("EARLIER");
+  });
+
+  it('moduleId {"$ref"} re-places a module minted earlier in the SAME call (run-A regression)', async () => {
+    // The live model wrote moduleId:"$feat1" to reuse one card module for
+    // three placements — now expressible as moduleId:{"$ref":"card"}.
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug: `i299-mref-${TS}`, title: "ModRef", templateId },
+      modules: [
+        {
+          ref: "card",
+          blockName: "content",
+          displayName: "Ref Card",
+          description: "Feature card used three times.",
+          kind: "content",
+          type: "feature-card",
+          html: "<div>{{txt}}</div>",
+          fields: [{ name: "txt", kind: "text", label: "Text" }],
+          content: { source: "inline", values: { txt: "one" } },
+        },
+        {
+          blockName: "content",
+          moduleId: { $ref: "card" },
+          content: { source: "inline", values: { txt: "two" } },
+        },
+        {
+          blockName: "content",
+          moduleId: { $ref: "card" },
+          content: { source: "inline", values: { txt: "three" } },
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as {
+      placements: { moduleId: string; contentInstanceId: string }[];
+    };
+    expect(v.placements.length).toBe(3);
+    // One module, three placements, three DISTINCT instances.
+    expect(new Set(v.placements.map((p) => p.moduleId)).size).toBe(1);
+    expect(new Set(v.placements.map((p) => p.contentInstanceId)).size).toBe(3);
+  });
+
+  it("a detached entry without ref is rejected at the schema boundary", async () => {
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug: `i299-refnob-${TS}`, title: "Ref NoB", templateId },
+      modules: [
+        {
+          displayName: "Floating",
+          description: "No blockName, no ref — unreachable.",
+          kind: "content",
+          html: "<div>{{txt}}</div>",
+          fields: [{ name: "txt", kind: "text", label: "Text" }],
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
   });
 });

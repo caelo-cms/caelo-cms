@@ -25,13 +25,9 @@ import {
 } from "./_module-fields-schema.js";
 import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
 import { bindCssToTheme } from "./_theme-binding.js";
-import type { ToolDefinitionWithHandler, ToolInputSchema } from "./dispatch.js";
+import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
-/**
- * Static JSON Schema for the provider. `describeSchema` (below) clones it
- * per-turn and pins the per-module `blockName` to an enum of the focused
- * page's real blocks when one is in context.
- */
+/** Static JSON Schema for the provider (static by design — prompt-cache). */
 const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
@@ -59,10 +55,33 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["blockName"],
         properties: {
-          blockName: { type: "string", minLength: 1, maxLength: 80 },
-          moduleId: { type: "string", format: "uuid" },
+          blockName: {
+            type: "string",
+            minLength: 1,
+            maxLength: 80,
+            description:
+              'Template block to place into. OMIT for a DETACHED nested-only module (requires `ref`; a later entry embeds it via {"$ref": …}).',
+          },
+          ref: {
+            type: "string",
+            pattern: "^[a-z][a-z0-9_-]{0,31}$",
+            description:
+              'Local handle: a LATER entry\'s module/module-list field value {"$ref": "<ref>"} resolves to this entry\'s {moduleId, contentInstanceId}. Referenced entries must come FIRST in the array.',
+          },
+          moduleId: {
+            description:
+              'EXISTING module UUID from ## Modules — or {"$ref": "<handle>"} to RE-PLACE a module minted earlier in THIS call (e.g. one card module, three placements; each entry still gets its own content).',
+            oneOf: [
+              { type: "string", format: "uuid" },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["$ref"],
+                properties: { $ref: { type: "string" } },
+              },
+            ],
+          },
           displayName: { type: "string", minLength: 1, maxLength: 128 },
           // issue #106 — shared decision-support metadata (description/
           // kind/type), spread from the single source of truth.
@@ -127,65 +146,17 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     "**Per module, two modes** (same contract as add_module): pass `moduleId` to place an EXISTING module from `## Modules` (reuse first — shared modules keep pages consistent), or `displayName` + `html` (+ required `description`, `kind`, explicit `fields[]`) to mint a new one. Field names are semantic snake_case (`hero_title`, `primary_cta_href`); repeats are LIST fields (`text-list`, `link-list`, `module-list`), never numbered scalars. " +
     "**Per module, `content` fills the placement**: `{source:'inline', values:{hero_title:'…'}}` for page-local content (the routine case); `{source:'shared', purpose:'…', values:{…}}` to mint a REUSABLE instance other pages can bind (synced by default); `{source:'existing', contentInstanceId}` to bind a row from `## Content Library`. Omit `content` for an empty private instance you fill later. " +
     "Typical call: `{page:{slug:'pricing', title:'Pricing'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`. " +
-    "For site-wide chrome (header/footer) use add_module (target='layout') — chrome is layout-owned and never rides in a page body.",
-  describe: (state) => {
-    const lines: string[] = [
-      "Build a WHOLE page in ONE call: page (new: `page.slug`+`page.title` — or existing: `page.pageId`) + the full ordered `modules[]` list with per-module content. One transaction, all-or-nothing. Prefer this over add_module / create_page / create_content_instance chains whenever a page needs >1 module (§11 bulk-first).",
-    ];
-    if (state.templates.length === 0) {
-      lines.push(
-        "NO templates exist on this site yet — bootstrap first via create_layout + create_template, then build_page.",
-      );
-    } else if (state.activePage && state.activePage.blockNames.length > 0) {
-      lines.push(
-        `For the focused page, each entry's \`blockName\` MUST be one of: ${state.activePage.blockNames
-          .map((b) => `\`${b}\``)
-          .join(", ")}. A block name is a template slot — NOT a module \`kind\`.`,
-      );
-    } else {
-      lines.push(
-        "Each entry's `blockName` must be a block on the page's template (see `# Current page` / the template's block list) — not a module `kind`.",
-      );
-    }
-    lines.push(
-      "Per module: `moduleId` places an existing module (reuse first), or `displayName`+`html`+`fields` mints one. `content` = {source:'inline', values} | {source:'shared', purpose, values} | {source:'existing', contentInstanceId}.",
-    );
-    return lines.join(" ");
-  },
+    "**Nested modules in the SAME call**: give the inner module `ref` and NO blockName (detached — minted + content-bound but not placed), then reference it from the outer module's `module`/`module-list` field value as `{\"$ref\": \"<ref>\"}` — the server resolves it to the real {moduleId, contentInstanceId}. Referenced entries come FIRST. Example: `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]` — the whole nested composition is ONE call, never an add_module → remove_module_from → create_content_instance chain. " +
+    "For site-wide chrome (header/footer) use add_module (target='layout') — chrome is layout-owned and never rides in a page body. " +
+    // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe/
+    // describeSchema hooks embedded the focused page's block names into
+    // the tool definition, busting Anthropic's tools-prefix cache on
+    // every page switch. The same facts live in the volatile `# Current
+    // page` block, and a blockName mismatch returns a structured error
+    // naming the valid set (recover-don't-punt).
+    "Each entry's `blockName` must be a block on the page's template — see `# Current page` (exhaustive list for the focused page); a mismatch error names the valid set. A block name is a template slot, NOT a module `kind`. With zero templates on the site, bootstrap first (create_layout → create_template).",
   schema: buildPageInputSchema,
   inputSchema: BUILD_PAGE_INPUT_SCHEMA,
-  describeSchema: (state) => {
-    // Pin the NESTED modules[].blockName to the focused page's real
-    // blocks (withBlockNameEnum only handles top-level args). Falls
-    // back to the static schema when no page is focused — an empty
-    // enum would wedge the model.
-    const blocks = state.activePage?.blockNames ?? [];
-    if (blocks.length === 0) return BUILD_PAGE_INPUT_SCHEMA as ToolInputSchema;
-    const props = BUILD_PAGE_INPUT_SCHEMA.properties as Record<string, unknown>;
-    const modules = props.modules as Record<string, unknown>;
-    const items = modules.items as Record<string, unknown>;
-    const itemProps = items.properties as Record<string, unknown>;
-    return {
-      ...BUILD_PAGE_INPUT_SCHEMA,
-      properties: {
-        ...props,
-        modules: {
-          ...modules,
-          items: {
-            ...items,
-            properties: {
-              ...itemProps,
-              blockName: {
-                type: "string",
-                enum: [...blocks],
-                description: `the template block to place into — one of: ${blocks.join(", ")}`,
-              },
-            },
-          },
-        },
-      },
-    };
-  },
   handler: async (ctx, input, toolCtx) => {
     // Same cold-start gate as create_page / add_module_to_page — no
     // module authoring against the seed-grayscale theme.
@@ -229,6 +200,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
         syncMode: "synced" | "unsynced";
         minted: boolean;
       }[];
+      detached: { ref: string; moduleId: string; contentInstanceId: string }[];
       extractedFieldsByIndex: Record<string, { name: string; kind: string }[]>;
     };
 
@@ -238,6 +210,11 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       (p, i) =>
         `modules[${i}] → ${p.blockName}#${p.position} module=${p.moduleId} content=${p.contentInstanceId} (${p.syncMode}${p.minted ? ", minted" : ", reused"})`,
     );
+    for (const d of value.detached) {
+      lines.push(
+        `ref='${d.ref}' → DETACHED (nested-only) module=${d.moduleId} content=${d.contentInstanceId}`,
+      );
+    }
 
     // Extractor-fallback hint — same steering as add_module_to_page.
     const extractedEntries = Object.entries(value.extractedFieldsByIndex);

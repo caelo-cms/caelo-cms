@@ -1,98 +1,75 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P7 — `find_media`. Search the media library by alt / filename /
- * mime. Returns matches with a pre-resolved URL the AI can drop
- * straight into an `<img src>` in module HTML via `edit_module`.
- *
- * run #10 D4 — the URL variant is picked from the variants that
- * ACTUALLY exist on each asset (pickAiImageVariant): a sub-800px
- * source never gets a webp-800 row, and advertising one anyway made
- * the AI write unresolvable refs that failed the staging build.
- *
- * The system prompt already carries the most-recent + most-used N
- * assets; this tool exists for the "I know what I want, search for
- * it" case where the asset isn't in that slice.
+ * P7 — `find_media` (2026-07: makeListReadTool — TOON output). The
+ * `url` column is pre-resolved via pickAiImageVariant against the
+ * variants that ACTUALLY exist (run #10 D4) — drop it straight into an
+ * <img src>; never rewrite the variant segment.
  */
 
-import { execute } from "@caelo-cms/query-api";
-import { buildMediaUrl, findMediaToolInput, pickAiImageVariant } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ExecutionContext } from "@caelo-cms/shared";
+import { buildMediaUrl, pickAiImageVariant } from "@caelo-cms/shared";
+import { z } from "zod";
+import { makeListReadTool } from "./_make-read-tool.js";
+import type { ToolContext } from "./dispatch.js";
 
-export const findMediaTool: ToolDefinitionWithHandler<
-  import("@caelo-cms/shared").FindMediaToolInput
-> = {
+const findMediaInput = z
+  .object({
+    mime: z
+      .enum([
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/avif",
+        "image/gif",
+        "image/svg+xml",
+        "application/pdf",
+        "video/mp4",
+      ])
+      .optional(),
+  })
+  .strict();
+
+interface MediaRow {
+  id: string;
+  mime: string;
+  alt: string;
+  width: number | null;
+  height: number | null;
+  originalName: string;
+  variants: { variant: string }[];
+}
+
+export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, MediaRow>({
   name: "find_media",
   description:
-    "Search the media library and return matches as { id, alt, mime, width, height, url }. " +
-    "Use when the user references an asset by description (e.g. 'the hero photo', 'the office image') " +
-    "and you can't find a match in the ## Media block of the system prompt. " +
-    "The returned URL always points at a variant that exists on the asset (best available WebP, " +
-    "or `orig` for SVG/PDF/video and very small images) — drop it straight into an <img src> in " +
-    "module HTML via `edit_module` and do NOT rewrite the variant segment to something else. " +
-    "If no match is found, ask the user to upload the asset via /content/media.",
-  schema: findMediaToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      query: { type: "string", maxLength: 256 },
-      mime: {
-        type: "string",
-        enum: [
-          "image/jpeg",
-          "image/png",
-          "image/webp",
-          "image/avif",
-          "image/gif",
-          "image/svg+xml",
-          "application/pdf",
-          "video/mp4",
-        ],
-      },
-      limit: { type: "integer", minimum: 1, maximum: 50, default: 15 },
+    "Search the media library (TOON rows: name, mime, dims, alt, url). `filter` matches alt/filename server-side; optional `mime`; `limit`/`offset`/`full` as usual. " +
+    "The `url` column always points at a variant that EXISTS on the asset — use it verbatim in <img src> via edit_module; do NOT rewrite the variant segment. " +
+    "Use when the user references an asset by description and it isn't in the ## Media block. If nothing matches, ask the user to upload via /content/media.",
+  opName: "media.list",
+  input: findMediaInput,
+  buildOpInput: (
+    input: { mime?: string; filter?: string; limit?: number; offset?: number; full?: boolean },
+    _ctx: ExecutionContext,
+    _toolCtx: ToolContext,
+  ) => ({
+    ...(input.filter !== undefined ? { query: input.filter } : {}),
+    ...(input.mime !== undefined ? { mime: input.mime } : {}),
+    sort: "most_used",
+    limit: input.full ? 50 : Math.min(input.limit ?? 15, 50),
+    offset: input.offset ?? 0,
+  }),
+  label: "media",
+  rows: (value) => (value as { assets: MediaRow[] }).assets,
+  columns: [
+    { key: "name", value: (a) => a.originalName },
+    { key: "mime", value: (a) => a.mime },
+    { key: "dims", value: (a) => (a.width && a.height ? `${a.width}x${a.height}` : "") },
+    { key: "alt", value: (a) => a.alt },
+    {
+      key: "url",
+      value: (a) => buildMediaUrl(a.id, pickAiImageVariant(a.variants.map((v) => v.variant))),
     },
-  },
-  handler: async (ctx, input, toolCtx) => {
-    const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "media.list", {
-      query: input.query,
-      mime: input.mime,
-      sort: "most_used",
-      limit: input.limit,
-      offset: 0,
-    });
-    if (!res.ok) {
-      return { ok: false, content: `media.list failed: ${describeError(res.error)}` };
-    }
-    const { assets } = res.value as {
-      assets: {
-        id: string;
-        mime: string;
-        alt: string;
-        width: number | null;
-        height: number | null;
-        originalName: string;
-        variants: { variant: string }[];
-      }[];
-    };
-    if (assets.length === 0) {
-      return {
-        ok: true,
-        content: `No media matched. Ask the user to upload via /content/media.`,
-      };
-    }
-    const lines = assets.map((a) => {
-      const variant = pickAiImageVariant(a.variants.map((v) => v.variant));
-      const dims = a.width && a.height ? `, ${a.width}x${a.height}` : "";
-      const alt = a.alt ? `, alt="${a.alt}"` : "";
-      return `- ${a.originalName} (${a.mime}${dims}${alt}) → ${buildMediaUrl(a.id, variant)}`;
-    });
-    return {
-      ok: true,
-      content: `Matches:\n${lines.join("\n")}`,
-      // v0.6.0 alpha.3 — structured payload for W3 retryWithArgs.
-      value: { assets },
-    };
-  },
-};
+  ],
+  emptyMessage: "No media matched. Ask the user to upload the asset via /content/media.",
+});

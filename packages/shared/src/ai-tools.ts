@@ -156,9 +156,47 @@ export const addModuleToolInput = z
     js: z.string().max(50_000).optional(),
     fields: z.array(moduleFieldSchema).max(64).optional(),
     bindThemeLiterals: z.boolean().optional(),
+    /**
+     * The placement's initial content, applied IN THE SAME CALL (2026-07
+     * — a freshly minted module must never land empty and wait for a
+     * second round-trip). ONE rule for every target: content goes in
+     * `values`. target='page': fills the placement's content_instance.
+     * target='template': every fanned-out placement gets these values.
+     * target='layout': chrome has no content_instance, so the handler
+     * stores the values as the minted module's `fields[].default` —
+     * which requires explicit `fields` (moduleize field names are
+     * unknowable up front) and is rejected for `moduleId` reuse (a
+     * shared module renders its stored defaults; edit_module changes
+     * them).
+     */
+    values: z.record(z.string(), z.unknown()).optional(),
   })
   .strict()
   .superRefine((input, ctx) => {
+    if (input.target === "layout" && input.values !== undefined) {
+      if (input.moduleId !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "Reusing a module on a layout renders the module's STORED field defaults — `values` has nothing to bind to. Drop `values` (the chrome shows the module as-is), or change the shared copy via edit_module.",
+        });
+      } else if (input.fields === undefined || input.fields.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "target='layout' with `values` needs explicit `fields` — chrome stores the values as field defaults, so the field names must be declared in this call (raw-HTML field inference can't know your value keys).",
+        });
+      } else {
+        const known = new Set(input.fields.map((f) => f.name));
+        const unknown = Object.keys(input.values).filter((k) => !known.has(k));
+        if (unknown.length > 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `\`values\` keys [${unknown.join(", ")}] match no declared field — declared: [${[...known].join(", ")}].`,
+          });
+        }
+      }
+    }
     const authoringKeys = (
       [
         "displayName",
@@ -189,6 +227,27 @@ export const addModuleToolInput = z
         message:
           "Pass either `moduleId` (place an existing module from ## Modules) " +
           "or `displayName` + `html` (mint a new module).",
+      });
+    }
+    // 2026-07 — a freshly minted module must carry its initial copy IN
+    // THIS call, via `values` on every target (`fields[].default` also
+    // satisfies it — that's where layout values land anyway). Without
+    // either, the placement rendered EMPTY until a second round-trip —
+    // the exact two-step build_page was created to kill. Only enforced
+    // when the caller authored explicit fields; the raw-HTML path goes
+    // through moduleize, which enforces defaults itself.
+    if (
+      input.fields !== undefined &&
+      input.fields.length > 0 &&
+      input.values === undefined &&
+      !input.fields.some((f) => "default" in f && f.default !== undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "A minted module needs its initial content IN THIS CALL: pass `values` " +
+          "({fieldName: value, …}) for this placement, or give the fields `default`s. " +
+          "Without either, the module renders empty placeholders until a second call.",
       });
     }
   });

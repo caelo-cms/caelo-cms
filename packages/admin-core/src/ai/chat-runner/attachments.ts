@@ -26,7 +26,12 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ChatAttachment, ExecutionContext } from "@caelo-cms/shared";
 import { getMediaStorage } from "../../media/storage.js";
-import type { ChatMessageInput, ContentPart, ImagePart } from "../provider.js";
+import type {
+  ChatMessageInput,
+  ContentPart,
+  ImagePart,
+  ProviderServerToolCall,
+} from "../provider.js";
 import { repairToolCallPairing } from "./history-repair.js";
 import type { AccumulatedToolCall } from "./types.js";
 
@@ -108,10 +113,23 @@ export async function buildProviderHistory(
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (!m) continue;
+    // Split the persisted tool_calls jsonb: serverExecuted-tagged rows
+    // are Tool Search calls the API ran itself — they replay as
+    // server_tool_use/tool_search_tool_result blocks (never dispatched,
+    // never paired with a tool-role result), so they must NOT enter
+    // `toolCalls` where the pairing repair would strip them as
+    // unanswered.
+    const rawCalls = Array.isArray(m.toolCalls) ? (m.toolCalls as Record<string, unknown>[]) : [];
+    const serverCalls = rawCalls.filter((c) => c?.serverExecuted === true);
+    const clientCalls = rawCalls.filter((c) => c?.serverExecuted !== true);
     const base: ChatMessageInput = {
       role: m.role,
       content: m.content,
-      toolCalls: Array.isArray(m.toolCalls) ? (m.toolCalls as AccumulatedToolCall[]) : undefined,
+      toolCalls:
+        clientCalls.length > 0 ? (clientCalls as unknown as AccumulatedToolCall[]) : undefined,
+      ...(serverCalls.length > 0
+        ? { serverToolCalls: serverCalls as unknown as ProviderServerToolCall[] }
+        : {}),
       toolCallId: m.toolCallId ?? undefined,
       // Defense-in-depth for already-poisoned sessions (see
       // streaming.ts): filter empty thinking blocks out of the replay —

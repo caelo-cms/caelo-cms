@@ -1,27 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * v0.11.4 (issue #76 follow-up) — AI tool: list_theme_history.
- *
- * Surfaces theme_snapshots as a readable changelog. The AI uses it to
- * answer "how has this theme evolved?" — e.g. before proposing a token
- * rewrite, scan recent edits to see whether an operator already made
- * the change a previous turn proposed.
- *
- * Returns one row per write (token edit, asset bind, meta edit,
- * activation flip, import). Each row carries the actor (who),
- * timestamp (when), op_kind (what), the description-at-that-time
- * (context), and the snapshot id (so the AI can correlate against
- * chat_branch_id if it wants to know which conversation made the
- * change).
+ * v0.11.2 — `list_theme_history` (2026-07: makeListReadTool — TOON
+ * output). The op caps at 100 entries; `full: true` requests that max.
  */
 
-import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { makeListReadTool } from "./_make-read-tool.js";
+import type { ToolContext } from "./dispatch.js";
 
-const listThemeHistoryToolInput = z
+const listThemeHistoryInput = z
   .object({
     themeSlug: z
       .string()
@@ -29,55 +18,48 @@ const listThemeHistoryToolInput = z
       .max(120)
       .regex(/^[a-z0-9][a-z0-9-]*$/)
       .optional(),
-    limit: z.number().int().min(1).max(100).default(20),
   })
   .strict();
-type ListThemeHistoryToolInput = z.infer<typeof listThemeHistoryToolInput>;
 
-interface HistoryEntry {
-  snapshotId: string;
+interface HistoryRow {
   createdAt: string;
   opKind: string;
-  actorKind: "human" | "ai" | "system" | "plugin";
+  actorKind: string;
   actorName: string;
   chatBranchId: string | null;
-  descriptionAtTime: string | null;
-  displayNameAtTime: string;
-  originAtTime: "seed" | "ai" | "operator" | null;
+  originAtTime: string | null;
   summary: string;
 }
 
-export const listThemeHistoryTool: ToolDefinitionWithHandler<ListThemeHistoryToolInput> = {
+export const listThemeHistoryTool = makeListReadTool<
+  z.infer<typeof listThemeHistoryInput>,
+  HistoryRow
+>({
   name: "list_theme_history",
   description:
-    "List recent edits to a theme — token changes, asset bindings, meta updates, activation " +
-    "flips. Each entry has who (actorKind + actorName), when (createdAt), what (opKind + " +
-    "summary), and the description-at-that-time so you can see how design intent has shifted. " +
-    "Use BEFORE proposing a rewrite — if the operator already adjusted the palette last " +
-    "session, your suggestion may already be done. Defaults to the active theme.",
-  schema: listThemeHistoryToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      themeSlug: { type: "string", minLength: 1, maxLength: 120 },
-      limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
-    },
-  },
-  handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.list_history", input);
-    if (!r.ok) {
-      return { ok: false, content: `themes.list_history failed: ${describeError(r.error)}` };
-    }
-    const { entries } = r.value as { entries: HistoryEntry[]; themeId: string };
-    if (entries.length === 0) {
-      return { ok: true, content: "No history yet — this theme hasn't been edited." };
-    }
-    const lines = entries.map((e) => {
-      const branch = e.chatBranchId ? " [branched]" : "";
-      const origin = e.originAtTime ? ` origin=${e.originAtTime}` : "";
-      return `- ${e.createdAt} · ${e.actorKind}(${e.actorName}) · ${e.opKind}${origin}${branch} — ${e.summary}`;
-    });
-    return { ok: true, content: lines.join("\n") };
-  },
-};
+    "List a theme's edit history (who changed what, when — TOON rows), newest first. Defaults to the ACTIVE theme; pass `themeSlug` for another. " +
+    "Standard list params: `filter`, `limit`/`offset`, `full: true` (op max 100 entries).",
+  opName: "themes.list_history",
+  input: listThemeHistoryInput,
+  buildOpInput: (
+    input: { themeSlug?: string; limit?: number; full?: boolean },
+    _ctx: ExecutionContext,
+    _toolCtx: ToolContext,
+  ) => ({
+    ...(input.themeSlug !== undefined ? { themeSlug: input.themeSlug } : {}),
+    // The op caps at 100; fetch generously so client-side filter/offset
+    // operate on the real tail, then let the factory paginate.
+    limit: input.full ? 100 : Math.min(input.limit ?? 20, 100),
+  }),
+  label: "theme_history",
+  rows: (value) => (value as { entries: HistoryRow[] }).entries,
+  columns: [
+    { key: "at", value: (e) => e.createdAt },
+    { key: "actor", value: (e) => `${e.actorKind}(${e.actorName})` },
+    { key: "op", value: (e) => e.opKind },
+    { key: "origin", value: (e) => e.originAtTime ?? "" },
+    { key: "branched", value: (e) => (e.chatBranchId ? "yes" : "") },
+    { key: "summary", value: (e) => e.summary },
+  ],
+  emptyMessage: "No history yet — this theme hasn't been edited.",
+});

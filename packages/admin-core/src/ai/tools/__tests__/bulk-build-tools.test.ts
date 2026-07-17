@@ -106,24 +106,3 @@ describe("§11 bulk-first steering wording", () => {
     expect(setPageModuleContentManyTool.description).toContain("build_page");
   });
 });
-
-describe("build_page describeSchema pins the nested blockName enum", () => {
-  it("pins modules[].blockName to the focused page's blocks", () => {
-    const state = {
-      activePage: { blockNames: ["header", "content", "footer"] },
-      templates: [{ slug: "t" }],
-    } as never;
-    const schema = buildPageTool.describeSchema!(state);
-    const props = schema.properties as Record<string, unknown>;
-    const modules = props.modules as Record<string, unknown>;
-    const items = modules.items as Record<string, unknown>;
-    const itemProps = items.properties as Record<string, unknown>;
-    const blockName = itemProps.blockName as { enum?: string[] };
-    expect(blockName.enum).toEqual(["header", "content", "footer"]);
-  });
-
-  it("falls back to the static schema when no page is focused", () => {
-    const schema = buildPageTool.describeSchema!({ activePage: undefined, templates: [] } as never);
-    expect(schema).toBe(buildPageTool.inputSchema);
-  });
-});

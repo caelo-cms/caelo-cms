@@ -103,6 +103,7 @@ const SYSTEM = [
   "You convert raw module HTML into a reusable Caelo module. Do ONE thing:",
   "1. Find every value a non-technical operator would want to edit (headings, body copy, button labels, hrefs, image srcs, list items) and replace it in the HTML with a `{{field_name}}` placeholder.",
   "2. Emit a `fields[]` entry for each placeholder with a SEMANTIC snake_case name that describes the VALUE (`hero_title`, `primary_cta_href`, `nav_items`), never the tag. Pick the right kind: text, richtext, url, image, number, boolean, link; repeating content is a LIST field (`text-list`, `link-list`, `module-list`) — never numbered scalars (label, label2, ...).",
+  "   EVERY field MUST carry `default` = the ORIGINAL value you replaced in the input HTML (the exact heading text, the exact href, ...). The raw copy must never be lost — placements without custom content render these defaults.",
   "3. Give the module a short displayName, a kind (chrome|hero|content|cta|utility), and a one-line description (what it is + when to use it).",
   "Every `{{field}}` in html MUST have a matching fields[] entry and vice-versa. Return the result by calling the `submit_module` tool — do not reply with prose.",
 ].join("\n");
@@ -170,6 +171,7 @@ function safeJson(s: string): unknown {
  */
 function validate(
   args: unknown,
+  inputHtml: string,
 ): { ok: true; value: ModuleizeResult } | { ok: false; error: string } {
   if (args === undefined) {
     return {
@@ -186,6 +188,29 @@ function validate(
   }
   const contract = validateTemplatizedModule(parsed.data.html, parsed.data.fields);
   if (!contract.ok) return { ok: false, error: contract.message };
+  // Content-preservation contract: when the input HTML carried visible
+  // copy and the model minted fields, at least one field must carry the
+  // original value as its `default`. Without this check the copy VANISHES
+  // (live-edit extract run: "Welcome to Caelo" was parametrised away with
+  // no default and no content value — the model sets defaults only
+  // sometimes, which is flaky-by-design; the retry makes it a contract).
+  const inputCopy = inputHtml
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (inputCopy.length > 0 && parsed.data.fields.length > 0) {
+    const hasAnyDefault = parsed.data.fields.some(
+      (f) => "default" in f && f.default !== undefined && f.default !== "",
+    );
+    if (!hasAnyDefault) {
+      return {
+        ok: false,
+        error:
+          "no field carries a `default` — the input HTML's original copy would be LOST. " +
+          "Set each field's `default` to the exact value you replaced (heading text, href, label, ...).",
+      };
+    }
+  }
   return { ok: true, value: parsed.data };
 }
 
@@ -219,7 +244,7 @@ export async function moduleize(args: ModuleizeArgs): Promise<ModuleizeResult> {
     if (providerError !== undefined) {
       throw new Error(`moduleize: provider error — ${providerError}`);
     }
-    const result = validate(toolArgs);
+    const result = validate(toolArgs, args.html);
     if (result.ok) {
       if (attempt > 1) {
         // A repair happened → persist telemetry (caller writes the row).

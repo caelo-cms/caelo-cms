@@ -1,74 +1,58 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * v0.12.0 — AI tool: list_content_instances. Browse the content
- * library. Returns each row's `placementCount` so the AI sees the
- * blast-radius of editing a shared instance without a per-row
- * `get_content_instance` round-trip.
- *
- * Typical AI flow when the operator says "edit the contact info on
- * every page that has it":
- *   1. list_content_instances({ search: "contact" }) — find the
- *      shared instance (placementCount > 1).
- *   2. set_content_instance_values({ id, values: {...} }) — single
- *      write propagates to every placement.
+ * v0.12.0 — `list_content_instances` (2026-07: makeListReadTool — TOON
+ * output, uniform filter/limit/offset/full). placementCount = blast
+ * radius; check it BEFORE set_content_instance_values.
  */
 
-import { execute } from "@caelo-cms/query-api";
-import { listContentInstancesToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { z } from "zod";
+import { makeListReadTool } from "./_make-read-tool.js";
 
-export const listContentInstancesTool: ToolDefinitionWithHandler<
-  import("@caelo-cms/shared").ListContentInstancesToolInput
-> = {
+const listContentInstancesInput = z
+  .object({
+    moduleId: z.string().uuid().optional(),
+    slug: z.string().min(1).max(64).optional(),
+    pageId: z.string().uuid().optional(),
+  })
+  .strict();
+
+export const listContentInstancesTool = makeListReadTool<
+  z.infer<typeof listContentInstancesInput>,
+  {
+    id: string;
+    moduleSlug: string;
+    slug: string | null;
+    displayName: string | null;
+    placementCount: number;
+  }
+>({
   name: "list_content_instances",
   description:
-    "List content_instances rows — the values that fill module placeholders on pages. " +
-    "Filter by module (`moduleId`), slug, free-text search across slug+displayName, or page (`pageId` returns instances used on a specific page). " +
-    "Each row carries `placementCount` (count of pages bound to it) so you can tell at a glance which instances are SHARED across pages — editing those propagates to every placement. " +
-    "Use this BEFORE set_content_instance_values to confirm blast radius.",
-  schema: listContentInstancesToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      moduleId: { type: "string", format: "uuid" },
-      slug: { type: "string", minLength: 1, maxLength: 64 },
-      search: { type: "string", minLength: 1, maxLength: 128 },
-      pageId: { type: "string", format: "uuid" },
-    },
-  },
-  handler: async (ctx, input, toolCtx) => {
-    const r = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      ctx,
-      "content_instances.list",
-      input,
-    );
-    if (!r.ok) {
-      return { ok: false, content: `content_instances.list failed: ${describeError(r.error)}` };
-    }
-    const { instances } = r.value as {
-      instances: {
-        id: string;
-        moduleSlug: string;
-        slug: string | null;
-        displayName: string | null;
-        placementCount: number;
-      }[];
-    };
-    if (instances.length === 0) {
-      return {
-        ok: true,
-        content: "No content_instances match. Call create_content_instance to mint one.",
-      };
-    }
-    const lines = instances.map(
-      (i) =>
-        `- ${i.id}  module=${i.moduleSlug}${i.slug ? ` slug=${i.slug}` : ""}${i.displayName ? ` "${i.displayName}"` : ""}  placements=${i.placementCount}`,
-    );
-    return { ok: true, content: `${instances.length} content_instance(s):\n${lines.join("\n")}` };
-  },
-};
+    "List content_instances — the values filling module placeholders (TOON rows: id, module, slug, displayName, placements). " +
+    "`placementCount` is the blast radius: >1 means SHARED, editing propagates to every bound page. Check BEFORE set_content_instance_values. " +
+    "Narrow by `moduleId` / `slug` / `pageId` (instances used on one page), plus the standard list params: `filter`, `limit`/`offset`, `full: true`.",
+  opName: "content_instances.list",
+  input: listContentInstancesInput,
+  label: "content_instances",
+  rows: (value) =>
+    (
+      value as {
+        instances: {
+          id: string;
+          moduleSlug: string;
+          slug: string | null;
+          displayName: string | null;
+          placementCount: number;
+        }[];
+      }
+    ).instances,
+  columns: [
+    { key: "id", value: (i) => i.id },
+    { key: "module", value: (i) => i.moduleSlug },
+    { key: "slug", value: (i) => i.slug ?? "" },
+    { key: "displayName", value: (i) => i.displayName ?? "" },
+    { key: "placements", value: (i) => i.placementCount },
+  ],
+  emptyMessage: "No content_instances match. Call create_content_instance to mint one.",
+});

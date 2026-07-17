@@ -28,47 +28,14 @@ export const createTemplateTool: ToolDefinitionWithHandler<
     "Create a new page-type template (a reusable HTML+CSS shell other pages bind to). " +
     "Use when the user wants a NEW page-type ('create a blog-post template', 'a landing-page layout'). " +
     "Do NOT use to create a one-off page — use `create_page` instead. " +
-    "`layoutId` is optional: omit it to bind to the site default layout (see `## Site defaults`); " +
-    "pass a UUID from `## Layouts on this site` when the user asks for a non-default chrome. " +
+    "`layoutId` is OPTIONAL when site defaults define a default layout (see `## Site defaults` / get_site_defaults) — then omitting it binds to that default. Without a configured default, `layoutId` is REQUIRED: pick a UUID from `## Layouts on this site` / list_layouts (omitting it fails with a structured 'no defaults' error, no silent fallback). With ZERO layouts on the site, call create_layout first. " +
     'CRITICAL — block syntax: render slots in `html` MUST be <caelo-slot name="X"></caelo-slot> tags, ' +
     "NOT HTML comments like <!-- block:X -->. The composer ignores comment-style markers and the page " +
     "renders empty. Define block rows separately via the templates editor or " +
     "propose_update_template's `blocks` field — every block name needs a matching <caelo-slot> in html.",
-  // v0.6.0 W1 — state-aware: `layoutId` semantics depend on whether
-  // site_defaults is configured. On a fresh install where defaults is
-  // empty, omitting layoutId yields a "no defaults" structured error
-  // instead of falling back silently; the AI should bootstrap via
-  // create_layout + set_site_defaults first OR pass an explicit
-  // layoutId on every call. The static description lies in that state.
-  describe: (state) => {
-    const lines: string[] = [
-      "Create a new page-type template (a reusable HTML+CSS shell other pages bind to).",
-      "Use when the user wants a NEW page-type ('create a blog-post template', 'a landing-page layout').",
-      "Do NOT use to create a one-off page — use `create_page` instead.",
-    ];
-    if (state.siteDefaults && state.layouts.length > 0) {
-      lines.push(
-        `\`layoutId\` is optional: omit it to bind to the site default layout "${state.siteDefaults.defaultLayoutSlug}"; ` +
-          `pass a UUID from \`## Layouts on this site\` when the user asks for a non-default chrome (available slugs: ${state.layouts.map((l) => l.slug).join(", ")}).`,
-      );
-    } else if (state.layouts.length > 0) {
-      lines.push(
-        `\`layoutId\` is REQUIRED on this site — site_defaults has no default_layout configured. ` +
-          `Pick a UUID from \`## Layouts on this site\` (available slugs: ${state.layouts.map((l) => l.slug).join(", ")}). ` +
-          `Or call set_site_defaults first so future templates can omit layoutId.`,
-      );
-    } else {
-      lines.push(
-        "`layoutId` will fail validation on this site — there are NO layouts yet. " +
-          "Call create_layout first to make a layout with header/content/footer blocks, then create_template referencing it, then set_site_defaults.",
-      );
-    }
-    lines.push(
-      'CRITICAL — block syntax: render slots in `html` MUST be <caelo-slot name="X"></caelo-slot> tags, ' +
-        "NOT HTML comments like <!-- block:X -->. The composer ignores comment-style markers and the page renders empty.",
-    );
-    return lines.join(" ");
-  },
+  // 2026-07 — STATIC on purpose (prompt-cache): all layoutId states are
+  // covered in the description above; live slugs stay in the volatile
+  // context blocks + list_layouts.
   schema: createTemplateToolInput,
   inputSchema: {
     type: "object",

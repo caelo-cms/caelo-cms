@@ -37,17 +37,7 @@ export const getStructuredSetTool: ToolDefinitionWithHandler<GetStructuredSetToo
     "Theme tokens are NOT a structured-set kind (v0.11.0+) — use `get_theme` / `set_theme_tokens` instead. " +
     "Returns null in the set field if no row exists for that kind+slug.",
   schema: getStructuredSetToolInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["kind", "slug"],
-    properties: {
-      kind: {
-        enum: ["nav-menu", "tags", "taxonomy", "link-list", "language-selector"],
-      },
-      slug: { type: "string", minLength: 1, maxLength: 120 },
-    },
-  },
+  inputSchema: z.toJSONSchema(getStructuredSetToolInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "structured_sets.get", input);
     if (!r.ok) {
@@ -59,9 +49,21 @@ export const getStructuredSetTool: ToolDefinitionWithHandler<GetStructuredSetToo
       }
     ).set;
     if (!set) {
+      // Miss → answer with the kind's inventory INLINE so the model
+      // corrects a slug typo in ONE step instead of a list round-trip.
+      const listR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "structured_sets.list", {
+        kind: input.kind,
+      });
+      const existing = listR.ok
+        ? (listR.value as { sets: { slug: string }[] }).sets.map((s) => s.slug)
+        : [];
+      const inventory =
+        existing.length > 0
+          ? ` Existing ${input.kind} sets: ${existing.join(", ")} — retry with one of these, or`
+          : " No sets of this kind exist yet —";
       return {
         ok: true,
-        content: `No set found for ${input.kind}/${input.slug} — call set_structured_set with the same kind+slug to create it.`,
+        content: `No set found for ${input.kind}/${input.slug}.${inventory} call set_structured_set with the same kind+slug to create it.`,
       };
     }
     return {

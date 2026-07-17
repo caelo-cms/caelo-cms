@@ -29,20 +29,7 @@ export const getPageLogTool: ToolDefinitionWithHandler<GetPageLogInput> = {
   description:
     "Read a page's durable work-history log BEFORE you change it — why it was edited, decisions taken, operator answers, open questions. Essential when you start fresh on a page (e.g. a subagent with no memory of the chat that first built it): it hands you the intent without re-reading a whole prior conversation. Returns newest-first; pass `limit` to widen (default 20). Empty is normal for a page nobody has logged yet. After your own meaningful change, record it with `log_page_edit`.",
   schema: getPageLogInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["pageId"],
-    properties: {
-      pageId: { type: "string", format: "uuid", description: "The page whose log you want." },
-      limit: {
-        type: "integer",
-        minimum: 1,
-        maximum: 100,
-        description: "Max entries, newest-first. Default 20.",
-      },
-    },
-  },
+  inputSchema: z.toJSONSchema(getPageLogInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "page_log.list", input);
     if (!r.ok) {

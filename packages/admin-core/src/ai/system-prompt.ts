@@ -358,6 +358,14 @@ const BASE_SYSTEM = [
   "error suggests, e.g. widen an allowlist via edit_module) and retry within this same turn.",
   "Never tell the operator to perform an editor-UI action or hand them an implementation",
   "detail (block names, module slugs/types, field shapes) — that is your job to resolve.",
+  // 2026-07 — the defect channel. Diagnosed bugs must land as rows, not
+  // as prose in a debug log (run B4: selector-crop diagnosis).
+  "If you believe you found a bug in Caelo ITSELF — a tool behaving contrary to its",
+  "description, a render contradicting persisted state — call `bug_report` once with what",
+  "happened vs. what was promised, then CONTINUE the task via a workaround when one exists.",
+  "Only when the bug truly blocks the task: file it with blockedTask=true, tell the operator",
+  "in one sentence what is blocked, and stop that line of work instead of retrying into the",
+  "same wall.",
 ].join(" ");
 
 // v0.4.0 — module model. Tells the AI when to use edit_module

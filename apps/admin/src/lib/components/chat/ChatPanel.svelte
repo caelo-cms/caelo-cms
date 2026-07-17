@@ -355,7 +355,7 @@
   // NOTE: none of these identifiers may START with "import" — knip's
   // svelte script scanner misreads line-leading `import…` declarations
   // as import statements and loses every symbol reference below them
-  // (html2canvas then reports as an unused dependency).
+  // (html2canvas-pro then reports as an unused dependency).
   interface ImportRunStatus {
     runId: string;
     status: string;
@@ -657,7 +657,11 @@
         }
         captureTarget = el as HTMLElement;
       }
-      const { default: html2canvas } = await import("html2canvas");
+      // html2canvas-pro: maintained fork with modern CSS color support
+      // (color-mix(), oklch, color()) — the original html2canvas parser
+      // threw "unsupported color function" on AI-authored module CSS and
+      // spiralled live-edit run A2 into its max_loops cap.
+      const { default: html2canvas } = await import("html2canvas-pro");
       const canvas = await html2canvas(captureTarget, {
         ...(req.selector
           ? {}
@@ -700,10 +704,19 @@
       }
       const base64 = btoa(binary);
 
+      // Capture geometry rides along so the tool result can state
+      // crop-vs-full-page as a FACT (run B4: the model doubted a
+      // selector crop and nothing could confirm it after the fact).
+      const meta = {
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
+        pageWidth: doc.body.scrollWidth,
+        pageHeight: doc.body.scrollHeight,
+      };
       const res = await fetch(`/content/chat/${session.id}/screenshot/${req.requestId}`, {
         method: "POST",
         headers: { "x-csrf-token": csrfToken, "content-type": "application/json" },
-        body: JSON.stringify({ base64, mediaType: "image/jpeg" }),
+        body: JSON.stringify({ base64, mediaType: "image/jpeg", meta }),
       });
       if (!res.ok) {
         // Best-effort: log + continue. The server-side awaitScreenshot

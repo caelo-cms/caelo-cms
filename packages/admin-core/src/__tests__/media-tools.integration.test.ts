@@ -92,7 +92,7 @@ afterAll(async () => {
 
 describe("find_media", () => {
   it("returns a match with a resolved URL when the query hits", async () => {
-    const r = await findMediaTool.handler(SYSTEM, { query: "mtcafe-hero" }, toolCtx());
+    const r = await findMediaTool.handler(SYSTEM, { filter: "mtcafe-hero" }, toolCtx());
     expect(r.ok).toBe(true);
     expect(r.content).toContain("mtcafe-hero.jpg");
     // The URL points at an existing variant, not a fabricated one.
@@ -100,7 +100,7 @@ describe("find_media", () => {
   });
 
   it("returns a clean no-match message (not an error) when nothing hits", async () => {
-    const r = await findMediaTool.handler(SYSTEM, { query: "no-such-asset-zzz-98765" }, toolCtx());
+    const r = await findMediaTool.handler(SYSTEM, { filter: "no-such-asset-zzz-98765" }, toolCtx());
     expect(r.ok).toBe(true);
     expect(r.content).toContain("No media matched");
   });

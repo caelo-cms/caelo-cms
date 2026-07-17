@@ -37,7 +37,6 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { isOrchestrationToolName, isReadOnlyToolName } from "../ai/chat-runner/tool-catalogue.js";
 import { runChatTurn } from "../ai/chat-runner.js";
 import type { AIProvider, GenerateInput, ProviderEvent, ProviderName } from "../ai/provider.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
@@ -153,32 +152,28 @@ async function captureToolsForTurn(skillKeyword: string): Promise<CapturedTool[]
 }
 
 describe("skill allowlist resolution (issue #106 / issue #301)", () => {
-  it("an op-notation allowlist TRANSLATES and applies — write tools drop, reads stay (run #15 regression)", async () => {
+  it("an op-notation allowlist TRANSLATES and PRELOADS — nothing drops (run #15 regression)", async () => {
     // The pre-0157 menu-auditor shape, seeded via raw SQL exactly like
-    // migration 0033 did. Before #301 these entries zero-matched and the
-    // allowlist was silently IGNORED — full catalogue, write tools
-    // included. Now they translate (structured_sets.list →
-    // list_structured_sets, pages.list → list_pages, redirects.list →
-    // find_redirects) and the reviewer skill's read-only intent holds.
+    // migration 0033 did. The entries still translate (structured_sets.list
+    // → list_structured_sets, pages.list → list_pages, redirects.list →
+    // find_redirects); post-Tool-Search they PRELOAD those tools rather
+    // than narrowing the catalogue. Every other tool stays reachable via
+    // search — a skill can no longer strand the model.
     await seedSkill(
       ZERO_SLUG,
       ["structured_sets.list", "pages.list", "redirects.list"],
       "zzbogusaudit",
     );
     const tools = await captureToolsForTurn("zzbogusaudit");
-    const names = tools.map((t) => t.name);
-    // The translated reads are present…
-    expect(names).toContain("list_structured_sets");
-    expect(names).toContain("list_pages");
-    expect(names).toContain("find_redirects");
-    // …and the write tools the run-#15 fallback used to leak are gone.
-    expect(names).not.toContain("add_module");
-    expect(names).not.toContain("edit_module");
-    expect(names).not.toContain("set_structured_set");
-    // Every survivor is read-only or an orchestration tool (run #8/#9 immunity).
-    for (const name of names) {
-      expect(isReadOnlyToolName(name) || isOrchestrationToolName(name)).toBe(true);
-    }
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    // The translated entries are present AND preloaded (alwaysLoaded).
+    expect(byName.get("list_structured_sets")?.alwaysLoaded).toBe(true);
+    expect(byName.get("find_redirects")?.alwaysLoaded).toBe(true);
+    expect(byName.has("list_pages")).toBe(true); // core, always loaded
+    // Writes are NOT dropped anymore — reachable via Tool Search.
+    expect(byName.has("add_module")).toBe(true);
+    expect(byName.has("edit_module")).toBe(true);
+    expect(byName.has("set_structured_set")).toBe(true);
   });
 
   it("an allowlist resolving to ZERO live tools keeps the full catalogue (defect, never zero tools)", async () => {
@@ -195,31 +190,21 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
     expect(tools.some((t) => t.name === "add_module")).toBe(true);
   });
 
-  it("a VALID partial allowlist still narrows WRITE tools surgically (reads always stay — run #8 R2b/R5)", async () => {
+  it("a VALID partial allowlist PRELOADS the named write; nothing else is removed (run #8 R2b/R5)", async () => {
     await seedSkill(VALID_SLUG, ["edit_module"], "zzscopededit");
     const tools = await captureToolsForTurn("zzscopededit");
-    const names = tools.map((t) => t.name);
-    // The allowlisted write tool is present…
-    expect(names).toContain("edit_module");
-    // …every OTHER write tool is narrowed away…
-    expect(names).not.toContain("add_module");
-    expect(names).not.toContain("create_page");
-    expect(names).not.toContain("set_page_module_content");
-    // …and every remaining tool is read-only by the naming convention
-    // (run #8 R2b/R5: skill allowlists never strip the AI's read surface)
-    // or an orchestration tool (run #9 R7: skill allowlists never strip
-    // the fan-out primitive from a main session either).
-    for (const name of names) {
-      if (name === "edit_module") continue;
-      expect(isReadOnlyToolName(name) || isOrchestrationToolName(name)).toBe(true);
-    }
-    // The read surface is genuinely still there, not vacuously empty.
-    expect(names).toContain("list_modules");
-    expect(names).toContain("inspect_page_render");
-    // Run #9 R7 — the orchestrator keeps its spawn tools under a
-    // co-engaged write allowlist (this is a MAIN session: no subagent
-    // exclusion, so both spawn tools must survive).
-    expect(names).toContain("spawn_subagent");
-    expect(names).toContain("spawn_subagents");
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    // The allowlisted write is preloaded (schema up front).
+    expect(byName.get("edit_module")?.alwaysLoaded).toBe(true);
+    // Every OTHER write is STILL present — reachable via Tool Search,
+    // just not preloaded. Skill allowlists no longer narrow.
+    expect(byName.has("add_module")).toBe(true);
+    expect(byName.has("create_page")).toBe(true);
+    expect(byName.has("set_page_module_content")).toBe(true);
+    // Reads + the orchestrator's spawn tools are obviously present too.
+    expect(byName.has("list_modules")).toBe(true);
+    expect(byName.has("inspect_page_render")).toBe(true);
+    expect(byName.has("spawn_subagent")).toBe(true);
+    expect(byName.has("spawn_subagents")).toBe(true);
   });
 });

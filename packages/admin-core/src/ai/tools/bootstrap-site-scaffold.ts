@@ -75,31 +75,11 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     "Stage 1+2 (layout exists): creates template + pins site_defaults directly (no human click). " +
     "Stage 3 (all three exist): no-op. " +
     "Use on a fresh install when `# Site defaults` says '(none configured yet)'. " +
-    "All inputs optional — sensible defaults yield a header/content/footer layout, a single-block `home` template, and pinned defaults.",
-  // v0.6.0 W1 — state-aware description matches the live stage so the
-  // AI sees exactly what this tool will do this turn (no proposal vs.
-  // direct create vs. no-op).
-  describe: (state) => {
-    if (state.layouts.length === 0) {
-      return (
-        "Composite bootstrap — STAGE 0. This call will queue a layouts.create proposal " +
-        "(header/content/footer blocks by default). The operator approves on the chat's proposal card (queue: /security/layouts/pending). " +
-        "After approval, call this tool AGAIN to continue with the template + site_defaults."
-      );
-    }
-    if (state.templates.length === 0) {
-      return (
-        `Composite bootstrap — STAGE 1. A layout exists (${state.layouts.map((l) => l.slug).join(", ")}); ` +
-        "this call will create a template directly (no approval needed) and pin site_defaults."
-      );
-    }
-    if (!state.siteDefaults) {
-      return `Composite bootstrap — STAGE 2. Layout (${state.layouts.map((l) => l.slug).join(", ")}) and template (${state.templates
-        .map((t) => t.slug)
-        .join(", ")}) exist; this call will pin site_defaults directly.`;
-    }
-    return "Bootstrap already complete — site_defaults is set, layout and template exist. Calling this tool is a no-op.";
-  },
+    "All inputs optional — sensible defaults yield a header/content/footer layout, a single-block `home` template, and pinned defaults. " +
+    // 2026-07 — STATIC on purpose (prompt-cache): the stage is auto-
+    // detected server-side and the RESULT names the stage that ran plus
+    // the next step, so the description doesn't need live state.
+    "The stage is detected automatically each call; the tool RESULT tells you which stage ran and what to do next (after a Stage-0 proposal is approved, call this tool AGAIN).",
   schema: bootstrapSiteScaffoldToolInput,
   inputSchema: {
     type: "object",

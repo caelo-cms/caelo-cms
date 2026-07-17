@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { OperationRegistry } from "@caelo-cms/query-api";
+import { createBugReportOp, listBugReportsOp } from "./ops/ai/bug-reports.js";
 import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
 import {
   executeAiProvidersProposalOp,
@@ -746,6 +747,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(appendPageLogOp);
   registry.register(listPageLogOp);
   registry.register(logModuleizeAttemptOp);
+  // 2026-07 — AI-filed bug reports (info source + per-run metric).
+  registry.register(createBugReportOp);
+  registry.register(listBugReportsOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
