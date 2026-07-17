@@ -78,7 +78,10 @@ function makeWireFetch(rawPath: string): typeof fetch {
           `${JSON.stringify({ dir: "request", stamp, body: JSON.parse(init.body) })}\n`,
         );
       } catch {
-        appendFileSync(rawPath, `${JSON.stringify({ dir: "request", stamp, rawBody: init.body })}\n`);
+        appendFileSync(
+          rawPath,
+          `${JSON.stringify({ dir: "request", stamp, rawBody: init.body })}\n`,
+        );
       }
     }
     const res = await fetch(input as RequestInfo, init);
@@ -119,7 +122,11 @@ function makeWireFetch(rawPath: string): typeof fetch {
           /* best-effort capture */
         }
       })();
-      return new Response(b, { status: res.status, statusText: res.statusText, headers: res.headers });
+      return new Response(b, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+      });
     }
     return res;
   }) as typeof fetch;
