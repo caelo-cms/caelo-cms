@@ -160,6 +160,16 @@ export interface GenerateInput {
     | "none";
 }
 
+/**
+ * Option C (2026-07) — an opaque handle to one SDK-assembled assistant/
+ * tool message (the SDK's `ModelMessage` shape). Kept `unknown` here so
+ * no provider-specific SDK type leaks past this boundary (see file
+ * header): the provider layer (`_sdk-shared.ts`) produces + consumes the
+ * concrete shape; the chat-runner only persists these blobs and hands
+ * them straight back on the next turn (`GenerateInput.priorTurnMessages`).
+ */
+export type ProviderResponseMessage = unknown;
+
 export type ProviderEvent =
   | { kind: "text-delta"; text: string }
   | { kind: "tool-call"; id: string; name: string; arguments: unknown }
@@ -172,6 +182,17 @@ export type ProviderEvent =
    */
   | { kind: "server-tool-call"; id: string; name: string; arguments: unknown }
   | { kind: "server-tool-result"; id: string; name: string; result: unknown }
+  /**
+   * Option C (2026-07) — the SDK's canonical assistant messages for this
+   * turn, emitted once at turn-end from `result.response.messages`. The
+   * SDK assembles these with provider-executed tool blocks
+   * (server_tool_use ↔ tool_search_tool_result), reasoning + signatures,
+   * and tool-call pairing already correct — the thing our fullStream
+   * reconstruction gets wrong (run-B6). `ProviderResponseMessage` is the
+   * SDK's ModelMessage shape (assistant | tool), replayable as-is on the
+   * next call; consumers persist these instead of rebuilding history from
+   * the event stream. See CLAUDE.md §12. */
+  | { kind: "turn-messages"; messages: readonly ProviderResponseMessage[] }
   | {
       kind: "usage";
       inputTokens: number;
