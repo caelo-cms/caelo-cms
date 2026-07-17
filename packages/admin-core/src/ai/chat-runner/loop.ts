@@ -329,6 +329,7 @@ export async function* runToolLoop(
       accumulatedToolCalls,
       accumulatedServerToolCalls,
       accumulatedThinking,
+      accumulatedTurnMessages,
       loopStop,
       providerErr,
       promptTooLongMessage,
@@ -541,6 +542,10 @@ export async function* runToolLoop(
         toolCalls: persistedToolCalls.length > 0 ? persistedToolCalls : null,
         // v0.2.54 — persist thinking blocks alongside the assistant turn.
         thinkingBlocks: accumulatedThinking.length > 0 ? accumulatedThinking : null,
+        // Option C — the SDK's canonical assembly for this turn; replay
+        // reads THIS verbatim (CLAUDE.md §12). toolCalls/thinkingBlocks
+        // above stay for the UI/history drawer + the empty-turn guard.
+        responseMessages: accumulatedTurnMessages.length > 0 ? accumulatedTurnMessages : null,
         status: aborted() ? "interrupted" : "complete",
       });
       if (saved.ok) {
@@ -578,21 +583,31 @@ export async function* runToolLoop(
     }
 
     // Update messages history for the potential next loop iteration.
+    // Option C (CLAUDE.md §12) — when the SDK resolved its canonical
+    // assembly for this turn, carry THAT back verbatim (via sdkMessages)
+    // rather than rebuilding the assistant message from our accumulated
+    // toolCalls/thinking. Same shape the cross-turn DB replay uses, so the
+    // intra-turn tool loop and the reloaded-session path stay identical.
+    // Fallback to the reconstruction only when no canonical assembly
+    // resolved (errored/aborted turn) — there the accumulators are all
+    // the history we have.
     messages = [
       ...messages,
-      {
-        role: "assistant",
-        content: assistantContent,
-        toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
-        // Tool Search round-trip: the discovered-tools context lives in
-        // these blocks; the next loop iteration must carry them.
-        ...(accumulatedServerToolCalls.length > 0
-          ? { serverToolCalls: accumulatedServerToolCalls }
-          : {}),
-        // v0.2.54 — round-trip thinking blocks; Anthropic verifies the
-        // signatures on the next provider call after tool_results.
-        ...(accumulatedThinking.length > 0 ? { thinkingBlocks: accumulatedThinking } : {}),
-      },
+      accumulatedTurnMessages.length > 0
+        ? { role: "assistant", content: assistantContent, sdkMessages: accumulatedTurnMessages }
+        : {
+            role: "assistant",
+            content: assistantContent,
+            toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
+            // Tool Search round-trip: the discovered-tools context lives in
+            // these blocks; the next loop iteration must carry them.
+            ...(accumulatedServerToolCalls.length > 0
+              ? { serverToolCalls: accumulatedServerToolCalls }
+              : {}),
+            // v0.2.54 — round-trip thinking blocks; Anthropic verifies the
+            // signatures on the next provider call after tool_results.
+            ...(accumulatedThinking.length > 0 ? { thinkingBlocks: accumulatedThinking } : {}),
+          },
     ];
 
     // v0.2.55 — Per-loop trace for postmortem.

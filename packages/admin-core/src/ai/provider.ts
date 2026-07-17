@@ -76,6 +76,18 @@ export interface ChatMessageInput {
    * without re-searching. Only meaningful for role === "assistant".
    */
   readonly serverToolCalls?: readonly ProviderServerToolCall[];
+  /**
+   * Option C (2026-07, CLAUDE.md §12) — the SDK-canonical ModelMessage
+   * assembly persisted for this assistant turn (`response.messages`). When
+   * present, the SDK-mapper splices these messages verbatim and IGNORES
+   * `content` / `toolCalls` / `thinkingBlocks` / `serverToolCalls` for this
+   * entry — the SDK already assembled reasoning signatures + provider-tool
+   * pairing correctly, and rebuilding that ourselves is what 400'd run-B6.
+   * One history row expands to N ModelMessages. Only set for assistant
+   * rows that carried `response_messages`; user/tool rows use the fields
+   * above.
+   */
+  readonly sdkMessages?: readonly ProviderResponseMessage[];
 }
 
 /** See ChatMessageInput.serverToolCalls. */

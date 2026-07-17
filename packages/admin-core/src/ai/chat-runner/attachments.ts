@@ -88,6 +88,13 @@ export interface HistoryMessage {
   toolCallId: string | null;
   thinkingBlocks: { thinking: string; signature: string }[] | null;
   attachments?: ChatAttachment[] | null;
+  /**
+   * Option C — the SDK-canonical ModelMessage assembly for an assistant
+   * turn (CLAUDE.md §12). When present, replay hands these straight back
+   * to the SDK (via ChatMessageInput.sdkMessages) instead of rebuilding
+   * from content/toolCalls/thinkingBlocks. Null on user/tool rows.
+   */
+  responseMessages?: unknown[] | null;
 }
 
 function attachmentMarker(atts: readonly ChatAttachment[]): string {
@@ -110,9 +117,26 @@ export async function buildProviderHistory(
     -1,
   );
   const out: ChatMessageInput[] = [];
+  // Option C — an assistant row that carries the SDK's canonical assembly
+  // replays it verbatim (passthrough). Track whether any row did so: the
+  // SDK already pairs tool_use ↔ tool_result and orders reasoning blocks
+  // correctly, so the OUR-format pairing repair below must NOT run over a
+  // passthrough history (it can't see the tool_use blocks nested inside the
+  // opaque sdkMessages and would strip the matching tool-role rows as
+  // orphans). Pre-1.0 hard cut: every new assistant row has these.
+  let sawSdkPassthrough = false;
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (!m) continue;
+    if (
+      m.role === "assistant" &&
+      Array.isArray(m.responseMessages) &&
+      m.responseMessages.length > 0
+    ) {
+      out.push({ role: "assistant", content: m.content, sdkMessages: m.responseMessages });
+      sawSdkPassthrough = true;
+      continue;
+    }
     // Split the persisted tool_calls jsonb: serverExecuted-tagged rows
     // are Tool Search calls the API ran itself — they replay as
     // server_tool_use/tool_search_tool_result blocks (never dispatched,
@@ -164,6 +188,12 @@ export async function buildProviderHistory(
       ...(parts.length > 0 ? { additionalContent: parts } : {}),
     });
   }
+  // Option C — the pairing repair operates on OUR reconstructed tool_use /
+  // tool_result shape. With an SDK-passthrough history the assistant turns
+  // are opaque ModelMessages, so the repair can't inspect their tool_use
+  // ids and would drop the paired tool-role rows as orphans. The SDK's
+  // assembly is already correctly paired, so skip the repair entirely.
+  if (sawSdkPassthrough) return out;
   // Run #10 D1 — tool_use/tool_result pairing repair. Heals sessions
   // already poisoned by orphan tool_results (the `approval-<uuid>` ack
   // class) or unanswered tool_uses, which otherwise 400 every future

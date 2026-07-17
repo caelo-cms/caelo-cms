@@ -34,7 +34,16 @@ import { normalizeToolArgs } from "../tools/normalize-args.js";
  * paths).
  */
 export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessage[] {
-  return messages.map((m): ModelMessage => {
+  return messages.flatMap((m): ModelMessage[] => {
+    // Option C (CLAUDE.md §12) — a replayed assistant turn carrying the
+    // SDK's own `response.messages` is spliced back verbatim. The SDK
+    // already assembled reasoning signatures + provider-tool pairing
+    // correctly; rebuilding that from content/toolCalls/thinkingBlocks is
+    // exactly what dropped the paired tool-search result and 400'd run-B6.
+    // One history row expands to N ModelMessages here.
+    if (m.sdkMessages && m.sdkMessages.length > 0) {
+      return m.sdkMessages as ModelMessage[];
+    }
     if (m.role === "user") {
       // v0.3.0 — multimodal user messages. When a prior tool result
       // delivered non-text content (e.g. screenshot_page returned a
@@ -59,9 +68,9 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
             });
           }
         }
-        return { role: "user", content: parts as ModelMessage["content"] } as ModelMessage;
+        return [{ role: "user", content: parts as ModelMessage["content"] } as ModelMessage];
       }
-      return { role: "user", content: m.content };
+      return [{ role: "user", content: m.content }];
     }
     if (m.role === "assistant") {
       const content: (
@@ -116,20 +125,22 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
           input: tc.arguments,
         });
       }
-      return { role: "assistant", content: content as ModelMessage["content"] } as ModelMessage;
+      return [{ role: "assistant", content: content as ModelMessage["content"] } as ModelMessage];
     }
     // role === "tool"
-    return {
-      role: "tool",
-      content: [
-        {
-          type: "tool-result",
-          toolCallId: m.toolCallId ?? "",
-          toolName: "",
-          output: { type: "text", value: m.content },
-        },
-      ],
-    };
+    return [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: m.toolCallId ?? "",
+            toolName: "",
+            output: { type: "text", value: m.content },
+          },
+        ],
+      },
+    ];
   });
 }
 
