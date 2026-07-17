@@ -133,6 +133,77 @@ describe("AnthropicProvider — SDK-event translation", () => {
     expect(done && done.kind === "done" && done.stopReason).toBe("tool_use");
   });
 
+  it("gated tool (approvalMode) → tool-approval-request event, execute NOT run (Slice 1)", async () => {
+    // The SDK pauses BEFORE a gated tool's execute and emits an approval
+    // request; the provider surfaces it as a tool-approval-request event.
+    // Spike-proven behavior, now locked at the provider boundary.
+    const mock = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: streamOf([
+          { type: "stream-start", warnings: [] },
+          {
+            type: "tool-call",
+            toolCallId: "c1",
+            toolName: "propose_update_layout",
+            input: JSON.stringify({ layoutId: "site-default", css: "body{}" }),
+          },
+          {
+            type: "finish",
+            finishReason: { unified: "tool-calls" },
+            usage: { inputTokens: { total: 10 }, outputTokens: { total: 3 } },
+          },
+        ]),
+      }),
+    });
+    const provider = providerWithMock(mock);
+    let executed = false;
+    const events: ProviderEvent[] = [];
+    for await (const e of provider.generate({
+      systemPrompt: "x",
+      messages: [{ role: "user", content: "make the header sticky" }],
+      tools: [
+        {
+          name: "propose_update_layout",
+          description: "update the site layout",
+          inputSchema: {
+            type: "object",
+            properties: { layoutId: { type: "string" }, css: { type: "string" } },
+            required: ["layoutId"],
+          },
+          approvalMode: "user-approval",
+          execute: async () => {
+            executed = true;
+            return "applied";
+          },
+        },
+      ],
+    })) {
+      events.push(e);
+    }
+    const approval = events.find((e) => e.kind === "tool-approval-request");
+    expect(approval).toBeTruthy();
+    if (approval && approval.kind === "tool-approval-request") {
+      expect(approval.name).toBe("propose_update_layout");
+      expect(approval.approvalId).toBeTruthy();
+      expect(approval.arguments).toEqual({ layoutId: "site-default", css: "body{}" });
+    }
+    // The SDK paused: execute must NOT have run.
+    expect(executed).toBe(false);
+    // Reconciliation contract for Slice 1b: the SDK emits BOTH a plain
+    // tool-call AND a tool-approval-request for the SAME toolCallId. The
+    // provider faithfully surfaces both; the chat-runner must NOT dispatch a
+    // tool-call whose id has a matching approval-request (the SDK owns that
+    // execute once approved) — it surfaces the approval and stops the turn.
+    const toolCall = events.find((e) => e.kind === "tool-call");
+    expect(toolCall).toBeTruthy();
+    if (toolCall?.kind === "tool-call" && approval?.kind === "tool-approval-request") {
+      expect(toolCall.id).toBe(approval.toolCallId);
+    }
+    // Option C still carries the paused assistant turn (tool-call +
+    // approval-request blocks) so resume can append the response.
+    expect(events.find((e) => e.kind === "turn-messages")).toBeTruthy();
+  });
+
   it("emits thinking-delta + thinking-stop with the signature for reasoning content", async () => {
     const SIGNATURE = "sig-test-anthropic-translator";
     const mock = new MockLanguageModelV3({
