@@ -1,5 +1,21 @@
 # The propose/execute pattern
 
+> **Update (Plan B, 2026-07): the operator now clicks Approve IN THE CHAT.**
+> The AI-facing gate is the Vercel AI SDK's native tool-approval (CLAUDE.md
+> §11.A + §12): a gated tool is marked `approvalMode:"user-approval"`, the SDK
+> pauses the turn on a `tool-approval-request`, the operator approves on an
+> inline card, and the turn resumes. **The propose/execute machinery described
+> below is unchanged and still authoritative — it is now the internal apply +
+> audit engine** a gated tool's `execute` chains after approval (propose →
+> execute_proposal), not an AI-facing choreography. The `<domain>_pending_actions`
+> tables + ops are NOT retired; the `/security/<domain>/pending` queue is
+> vestigial for the 25 uniform `makeProposeTool` domains (rows write+apply
+> atomically) but retained for the bespoke gated tools (`propose_skill`,
+> `propose_site_import`, `create_layout`, `tune_rate_limit`,
+> `site_memory_propose`) that keep their own flows. To gate a new uniform
+> domain, author it with `makeProposeTool` — the SDK approval wires up
+> automatically (see `ai/tools/gated-tools.ts` + `chat-runner/index.ts`).
+
 CLAUDE.md §11.A specifies this pattern: AI proposes a hard-to-revert
 operation, the operator clicks Approve. This document explains how
 it's wired across 13 domains in the Caelo codebase, and how to add a
