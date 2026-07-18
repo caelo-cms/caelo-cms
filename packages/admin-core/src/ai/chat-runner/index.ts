@@ -39,6 +39,7 @@ import {
   loadMemory,
   loadSession,
   markInterrupted,
+  persistApprovalResponse,
   persistUserMessage,
   recordAiCall,
 } from "./persistence.js";
@@ -96,8 +97,23 @@ export async function* runChatTurn(
     phaseStartedAt = Date.now();
   };
 
-  // 1. Persist the user message.
-  if (!(await persistUserMessage(registry, adapter, humanCtx, input))) {
+  // 1. Persist the turn's opening row. A resume turn (Plan B) records the
+  // Owner's in-chat approval decision as a tool-approval-response row instead
+  // of an operator message; the paused gated turn then resumes from history.
+  if (input.resumeApproval) {
+    const ok = await persistApprovalResponse(
+      registry,
+      adapter,
+      humanCtx,
+      input.chatSessionId,
+      input.resumeApproval,
+    );
+    if (!ok) {
+      yield { kind: "error", message: "failed to persist approval response" };
+      yield { kind: "done" };
+      return;
+    }
+  } else if (!(await persistUserMessage(registry, adapter, humanCtx, input))) {
     yield { kind: "error", message: "failed to persist user message" };
     yield { kind: "done" };
     return;
@@ -225,7 +241,7 @@ export async function* runChatTurn(
     aiCtx,
     filteredTools,
     excluded: options.excludedToolNames,
-    userMessage: input.content,
+    userMessage: input.content ?? "",
     skillsBlock: ctx.preBlocks.skillsBlock,
   });
 

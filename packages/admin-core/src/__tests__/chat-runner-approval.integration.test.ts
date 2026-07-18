@@ -186,4 +186,65 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
     expect(events.find((e) => e.kind === "tool-approval-request")).toBeTruthy();
     expect(provider.seenInputs.length).toBe(1);
   });
+
+  it("production resume: input.resumeApproval persists the response row, no user message", async () => {
+    const session = await execute(registry, adapter, HUMAN, "chat.create_session", {
+      title: "approval-test-resume",
+    });
+    if (!session.ok) throw new Error("session create failed");
+    const { chatSessionId } = session.value as { chatSessionId: string };
+
+    // A resume turn carries NO content — just the Owner's decision. The
+    // provider only needs to produce the continuation text.
+    class ResumeProvider implements AIProvider {
+      readonly name: ProviderName = "anthropic";
+      readonly model = "claude-test-1";
+      async *generate(): AsyncIterable<ProviderEvent> {
+        yield { kind: "text-delta", text: "Applied." };
+        yield { kind: "usage", inputTokens: 2, outputTokens: 1, cachedTokens: 0 };
+        yield { kind: "done", stopReason: "end_turn" };
+      }
+      async generateObject(): Promise<GenerateObjectResult> {
+        throw new Error("not used");
+      }
+    }
+
+    for await (const _ev of runChatTurn(
+      {
+        adapter,
+        registry,
+        provider: new ResumeProvider(),
+        tools: new ToolRegistry(),
+        aiCtx: AI,
+        humanCtx: HUMAN,
+      },
+      { chatSessionId, chips: [], resumeApproval: { approvalId: "ap-1", approved: true } },
+    )) {
+      /* drain */
+    }
+
+    const sql = new SQL(ADMIN_URL!);
+    let rows: { role: string; content: string; response_messages: unknown }[] = [];
+    try {
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        rows = (await tx`
+          SELECT role, content, response_messages FROM chat_messages
+          WHERE chat_session_id = ${chatSessionId}::uuid
+          ORDER BY created_at ASC
+        `) as unknown as { role: string; content: string; response_messages: unknown }[];
+      });
+    } finally {
+      await sql.end();
+    }
+    // No operator/user row for a resume turn.
+    expect(rows.some((r) => r.role === "user")).toBe(false);
+    // The approval-response tool row was persisted with the SDK ModelMessage
+    // in response_messages (replayed verbatim to resume the paused turn).
+    const toolRow = rows.find((r) => r.role === "tool");
+    expect(toolRow).toBeTruthy();
+    expect(JSON.stringify(toolRow?.response_messages)).toContain("tool-approval-response");
+    // The continuation was persisted.
+    expect(rows.some((r) => r.role === "assistant" && r.content.includes("Applied"))).toBe(true);
+  });
 });

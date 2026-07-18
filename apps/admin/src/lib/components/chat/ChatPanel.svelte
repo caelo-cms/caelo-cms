@@ -230,6 +230,22 @@
   let pendingProposals = $state<PendingProposal[]>([]);
   let pendingActioning = $state<Record<string, "approving" | "rejecting" | null>>({});
 
+  // Plan B (SDK approval gate) — gated tool calls the current turn paused on,
+  // awaiting the Owner's in-chat Approve/Reject. Populated from the
+  // `tool-approval-request` SSE event; cleared when the operator decides.
+  interface SdkApproval {
+    approvalId: string;
+    name: string;
+    preview: string;
+  }
+  let sdkApprovals = $state<SdkApproval[]>([]);
+
+  /** Approve/Reject a paused gated tool → resume (or deny) the turn. */
+  async function resolveSdkApproval(approvalId: string, approved: boolean): Promise<void> {
+    sdkApprovals = sdkApprovals.filter((a) => a.approvalId !== approvalId);
+    await sendMessage(undefined, { approvalId, approved });
+  }
+
   async function loadPendingProposals(): Promise<void> {
     try {
       const res = await fetch(`/content/chat/${session.id}/pending`, {
@@ -1101,54 +1117,74 @@
     };
   });
 
-  async function sendMessage(origin?: "system"): Promise<void> {
-    if ((composer.trim().length === 0 && pendingAttachments.length === 0) || streaming) return;
+  async function sendMessage(
+    origin?: "system",
+    // Plan B (SDK approval gate) — when set, this is NOT a composer send but a
+    // resume of a paused gated turn with the Owner's in-chat Approve/Reject.
+    // The optimistic user message + composer handling are skipped; the body
+    // carries `resumeApproval` instead of content.
+    resume?: { approvalId: string; approved: boolean },
+  ): Promise<void> {
+    if (streaming) return;
+    if (!resume && composer.trim().length === 0 && pendingAttachments.length === 0) return;
     // Attachment-only sends get a minimal text body (the op requires
     // non-empty content; the images carry the actual intent).
     const text = composer.trim().length > 0 ? composer : "(see attached image)";
     const sentChips = chips;
     const sentAttachments = pendingAttachments;
-    pendingAttachments = [];
-    composer = "";
     chatError = null;
     chatWarning = null;
     streamStalled = false;
     lastEventAtMs = Date.now();
-    // Pinned chips ride every send; transient chips clear after.
-    chips = chips.filter((c) => c.pinned);
     streaming = true;
     streamingText = "";
     streamingThinkingText = "";
-    currentActivity = "Sending…";
-    // Snap the composer back to one row after clearing it.
-    queueMicrotask(autoSizeComposer);
-    messages = [
-      ...messages,
-      {
-        id: `local-${Date.now()}`,
-        role: "user",
-        content: text,
-        // issue #29 — auto-injected nudges render as muted status notes,
-        // not "You:". Optimistically mark them so the operator never sees
-        // the message flash as their own before the reload confirms it.
-        ...(origin ? { origin } : {}),
-        ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
-      },
-    ];
+    currentActivity = resume ? "Applying…" : "Sending…";
+    if (!resume) {
+      pendingAttachments = [];
+      composer = "";
+      // Pinned chips ride every send; transient chips clear after.
+      chips = chips.filter((c) => c.pinned);
+      // Snap the composer back to one row after clearing it.
+      queueMicrotask(autoSizeComposer);
+      messages = [
+        ...messages,
+        {
+          id: `local-${Date.now()}`,
+          role: "user",
+          content: text,
+          // issue #29 — auto-injected nudges render as muted status notes,
+          // not "You:". Optimistically mark them so the operator never sees
+          // the message flash as their own before the reload confirms it.
+          ...(origin ? { origin } : {}),
+          ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
+        },
+      ];
+    }
     const res = await fetch(`/content/chat/${session.id}/stream`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
-      body: JSON.stringify({
-        content: text,
-        chips: sentChips,
-        // issue #29 — provenance so the persisted row + reload keep the
-        // system-origin status treatment durable across refresh.
-        ...(origin ? { origin } : {}),
-        ...(sentAttachments.length > 0
-          ? { attachments: sentAttachments.map((a) => ({ assetId: a.assetId, mime: a.mime, alt: a.alt })) }
-          : {}),
-        ...(activePageId ? { activePageId } : {}),
-      }),
+      body: JSON.stringify(
+        resume
+          ? { resumeApproval: resume }
+          : {
+              content: text,
+              chips: sentChips,
+              // issue #29 — provenance so the persisted row + reload keep the
+              // system-origin status treatment durable across refresh.
+              ...(origin ? { origin } : {}),
+              ...(sentAttachments.length > 0
+                ? {
+                    attachments: sentAttachments.map((a) => ({
+                      assetId: a.assetId,
+                      mime: a.mime,
+                      alt: a.alt,
+                    })),
+                  }
+                : {}),
+              ...(activePageId ? { activePageId } : {}),
+            },
+      ),
     });
     if (!res.body) {
       streaming = false;
@@ -1227,6 +1263,23 @@
               currentActivity = "Thinking…";
             } else if (ev["kind"] === "tool-start") {
               currentActivity = `Calling ${String(ev["name"] ?? "tool")}…`;
+            } else if (ev["kind"] === "tool-approval-request") {
+              // Plan B (SDK approval gate) — the turn paused on a gated tool.
+              // Surface an inline Approve/Reject card; the turn stays paused
+              // (server stopped at awaiting_approval) until the operator
+              // decides via resolveSdkApproval → resume.
+              const approvalId = String(ev["approvalId"] ?? "");
+              if (approvalId && !sdkApprovals.some((a) => a.approvalId === approvalId)) {
+                sdkApprovals = [
+                  ...sdkApprovals,
+                  {
+                    approvalId,
+                    name: String(ev["name"] ?? "action"),
+                    preview: String(ev["preview"] ?? ""),
+                  },
+                ];
+              }
+              currentActivity = "Waiting for your approval…";
             } else if (ev["kind"] === "tool-result") {
               const okFlag = ev["ok"] === true;
               const meta = toolCallMeta.get(String(ev["toolCallId"] ?? ""));
@@ -1841,6 +1894,42 @@
              reading the newest message — "missed it nearly"). Click
              Approve here instead of hunting the original tool-card.
              Drops out as soon as the row flips to applied/rejected. -->
+        <!-- Plan B (SDK approval gate) — inline Approve/Reject for a gated tool
+             the current turn paused on. The turn resumes (or the model reacts
+             to a denial) as soon as the operator decides. -->
+        {#if sdkApprovals.length > 0}
+          <div
+            class="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs"
+            data-testid="chat-approval-strip"
+          >
+            <div class="mb-1.5 flex items-center gap-2 text-amber-700 dark:text-amber-400">
+              <span class="font-semibold">⏳ Approve this change?</span>
+            </div>
+            <ul class="space-y-1.5">
+              {#each sdkApprovals as a (a.approvalId)}
+                <li class="rounded border bg-card p-2">
+                  <pre class="mb-2 whitespace-pre-wrap font-sans text-[11px]">{a.preview ||
+                      a.name}</pre>
+                  <div class="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      class={buttonVariants({ variant: "default", size: "sm" })}
+                      disabled={streaming}
+                      data-testid="chat-approval-approve"
+                      onclick={() => resolveSdkApproval(a.approvalId, true)}>Approve</button
+                    >
+                    <button
+                      type="button"
+                      class={buttonVariants({ variant: "outline", size: "sm" })}
+                      disabled={streaming}
+                      onclick={() => resolveSdkApproval(a.approvalId, false)}>Reject</button
+                    >
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
         {#if pendingProposals.length > 0}
           <div
             class="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs"

@@ -146,7 +146,7 @@ export async function buildSystemContextBlocks(deps: {
     input.chatSessionId,
   );
   const skills = await buildSkillsContext(registry, adapter, humanCtx, {
-    userMessage: input.content,
+    userMessage: input.content ?? "",
     chipCount: input.chips.length,
     chatSessionId: input.chatSessionId,
   });

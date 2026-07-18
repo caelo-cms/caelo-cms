@@ -128,12 +128,14 @@ export async function buildProviderHistory(
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (!m) continue;
-    if (
-      m.role === "assistant" &&
-      Array.isArray(m.responseMessages) &&
-      m.responseMessages.length > 0
-    ) {
-      out.push({ role: "assistant", content: m.content, sdkMessages: m.responseMessages });
+    // Any row carrying an SDK-canonical assembly replays it verbatim — an
+    // assistant turn's response.messages (Option C) OR a persisted
+    // tool-approval-response (Plan B production resume: the Owner's in-chat
+    // Approve is stored as a role='tool' row whose responseMessages hold the
+    // SDK tool-approval-response ModelMessage, replayed to resume the paused
+    // gated turn).
+    if (Array.isArray(m.responseMessages) && m.responseMessages.length > 0) {
+      out.push({ role: m.role, content: m.content, sdkMessages: m.responseMessages });
       sawSdkPassthrough = true;
       continue;
     }

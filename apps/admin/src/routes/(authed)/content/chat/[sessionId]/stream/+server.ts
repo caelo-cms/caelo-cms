@@ -41,24 +41,42 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   }
 
   const body = (await request.json()) as {
-    content: string;
+    content?: string;
     chips?: unknown[];
     activePageId?: string;
     attachments?: unknown;
     // issue #29 — 'system' marks an auto-injected nudge (crawl completion,
     // post-approval continuation) the operator did not type.
     origin?: unknown;
+    // Plan B (SDK approval gate) — resume a paused gated turn with the Owner's
+    // in-chat Approve/Reject instead of an operator message.
+    resumeApproval?: { approvalId?: unknown; approved?: unknown; reason?: unknown };
   };
   // issue #29 — Zod at the boundary; anything other than the literal
   // "system" (including absent) is treated as operator-authored.
   const origin = body.origin === "system" ? ("system" as const) : undefined;
+  // Plan B — validate a resume decision at the boundary (approvalId +
+  // boolean approved). Present ⇒ this is a resume, not an operator message.
+  const resumeApproval =
+    body.resumeApproval &&
+    typeof body.resumeApproval.approvalId === "string" &&
+    body.resumeApproval.approvalId.length > 0 &&
+    typeof body.resumeApproval.approved === "boolean"
+      ? {
+          approvalId: body.resumeApproval.approvalId,
+          approved: body.resumeApproval.approved,
+          ...(typeof body.resumeApproval.reason === "string"
+            ? { reason: body.resumeApproval.reason }
+            : {}),
+        }
+      : undefined;
   // issue #303 — empty/whitespace content must never reach
   // chat.append_message: a persisted empty row renders as a bare
   // "Status:" (system origin) or "You:" note with no body. ChatPanel
   // guards its composer, but this route is an open surface (auto-nudges,
   // future clients) — a producer with nothing to say must not post, so
   // reject here with the fix in the message instead of persisting junk.
-  if (typeof body.content !== "string" || body.content.trim().length === 0) {
+  if (!resumeApproval && (typeof body.content !== "string" || body.content.trim().length === 0)) {
     throw error(
       400,
       `chat message content must be a non-empty string (got ${
@@ -188,7 +206,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
           },
           {
             chatSessionId: params.sessionId,
-            content: body.content,
+            ...(typeof body.content === "string" && body.content.length > 0
+              ? { content: body.content }
+              : {}),
+            ...(resumeApproval ? { resumeApproval } : {}),
             chips: Array.isArray(body.chips)
               ? (body.chips as { moduleId: string; selector: string; label: string }[])
               : [],

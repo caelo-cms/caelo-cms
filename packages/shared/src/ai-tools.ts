@@ -387,7 +387,10 @@ export const CHAT_MAX_ATTACHMENTS = 4;
 export const chatSendMessageInput = z
   .object({
     chatSessionId: z.string().uuid(),
-    content: z.string().min(1).max(8000),
+    // Optional as of Plan B: a resume turn (see `resumeApproval`) carries no
+    // operator content — it re-runs the paused gated turn. A refine below
+    // requires exactly one of content / resumeApproval.
+    content: z.string().min(1).max(8000).optional(),
     /** Element-reference chips appended to the message. */
     chips: z
       .array(
@@ -418,8 +421,27 @@ export const chatSendMessageInput = z
      * /content/chat doesn't have a page context.
      */
     activePageId: z.string().uuid().optional(),
+    /**
+     * Plan B (SDK approval gate) — production resume of a paused gated turn.
+     * When set, this is NOT a new operator message: the runner appends the
+     * SDK tool-approval-response (the Owner's in-chat Approve/Reject) to the
+     * paused turn's history and re-runs so the SDK either executes the gated
+     * tool (approved) or lets the model react to the denial. `approvalId` is
+     * the SDK id surfaced on the tool-approval-request ClientEvent.
+     */
+    resumeApproval: z
+      .object({
+        approvalId: z.string().min(1).max(200),
+        approved: z.boolean(),
+        reason: z.string().max(2000).optional(),
+      })
+      .strict()
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine((d) => d.content !== undefined || d.resumeApproval !== undefined, {
+    message: "content or resumeApproval is required",
+  });
 
 export const chatRenameSessionInput = z
   .object({
