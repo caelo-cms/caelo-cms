@@ -41,6 +41,52 @@ function providerWithMock(mock: MockLanguageModelV3): AnthropicProvider {
   });
 }
 
+describe("AnthropicProvider — conversation cache breakpoint", () => {
+  it("tags the LAST message with anthropic cacheControl (rolling history cache)", async () => {
+    let captured: unknown;
+    const mock = new MockLanguageModelV3({
+      doStream: async (options: unknown) => {
+        captured = options;
+        return {
+          stream: streamOf([
+            { type: "stream-start", warnings: [] },
+            {
+              type: "finish",
+              finishReason: { unified: "stop" },
+              usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
+            },
+          ]),
+        };
+      },
+    });
+    const provider = providerWithMock(mock);
+    for await (const _ of provider.generate({
+      systemPrompt: "sys",
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "reply" },
+        { role: "user", content: "second" },
+      ],
+      tools: [],
+    })) {
+      /* drain */
+    }
+    const prompt = (captured as { prompt: { role: string }[] }).prompt;
+    const nonSystem = prompt.filter((m) => m.role !== "system");
+    const last = nonSystem[nonSystem.length - 1];
+    // The growing history must cache: the last message carries the ephemeral
+    // breakpoint (message-level → SDK lowers it onto the last content block).
+    expect(JSON.stringify(last)).toContain("cacheControl");
+    // Earlier messages must NOT each carry their own breakpoint (only ONE
+    // rolling breakpoint on the tail — the 4-breakpoint budget is shared with
+    // the system chunks).
+    const earlierTagged = nonSystem
+      .slice(0, -1)
+      .filter((m) => JSON.stringify(m).includes("cacheControl"));
+    expect(earlierTagged).toEqual([]);
+  });
+});
+
 describe("AnthropicProvider — SDK-event translation", () => {
   it("emits text-delta events for streamed text + usage + done", async () => {
     const mock = new MockLanguageModelV3({

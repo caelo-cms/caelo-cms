@@ -105,10 +105,11 @@ describe("resolveAnthropicToolSearchMode", () => {
 });
 
 describe("AnthropicProvider cache-breakpoint cap", () => {
-  it("tags at most 4 system chunks with cacheControl (Anthropic's hard limit)", async () => {
+  it("tags the last 3 system chunks + rolls 1 onto the tail (4-breakpoint budget)", async () => {
     const { mock, provider } = makeMockAndProvider({ toolSearch: "off" });
-    // 5 cacheable chunks — the tool-playbook chunk pushed the composer
-    // past the old exactly-4 shape; the provider must cap, not 400.
+    // 5 cacheable chunks. Of the 4 total breakpoints Anthropic allows, 3 go
+    // to system chunks and 1 is reserved for the rolling last-message
+    // breakpoint (conversation-history caching), so the provider must NOT 400.
     const chunks = ["base", "tool-playbook", "module-model", "staging", "memory"].map((label) => ({
       body: `[${label}]`,
       cacheable: true,
@@ -127,11 +128,17 @@ describe("AnthropicProvider cache-breakpoint cap", () => {
     }>;
     const sys = prompt.filter((m) => m.role === "system");
     expect(sys.length).toBe(5);
-    const tagged = sys.filter((m) => m.providerOptions?.anthropic?.cacheControl);
-    expect(tagged.length).toBe(4);
-    // The FIRST chunk is the untagged one — it still rides inside every
-    // later breakpoint's cached prefix.
+    const taggedSys = sys.filter((m) => m.providerOptions?.anthropic?.cacheControl);
+    // 3 system breakpoints now (one reserved for the rolling message tail).
+    expect(taggedSys.length).toBe(3);
+    // The first TWO chunks are untagged — they still ride inside every later
+    // breakpoint's cached prefix.
     expect(sys[0]?.providerOptions?.anthropic?.cacheControl).toBeUndefined();
+    expect(sys[1]?.providerOptions?.anthropic?.cacheControl).toBeUndefined();
+    // The rolling breakpoint lands on the last (user) message so the growing
+    // conversation history caches — total breakpoints = 3 system + 1 = 4.
+    const nonSys = prompt.filter((m) => m.role !== "system");
+    expect(JSON.stringify(nonSys[nonSys.length - 1])).toContain("cacheControl");
   });
 });
 

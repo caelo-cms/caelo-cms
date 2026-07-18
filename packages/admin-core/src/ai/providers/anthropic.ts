@@ -264,18 +264,54 @@ interface AnthropicProviderOptions {
 const MAX_CACHE_BREAKPOINTS = 4;
 
 /**
+ * One of the 4 breakpoints is reserved for a ROLLING breakpoint on the last
+ * conversation message (see `tagLastMessageForCache`), so the system prompt
+ * gets the remaining 3. Before this, all 4 sat on system chunks and the
+ * message history — which GROWS every turn and dominates long sessions — was
+ * re-read UNCACHED on every provider call (live A/B: uncached input climbed
+ * 11k→50k/turn). Caching the conversation prefix is the single biggest
+ * token-cost lever for multi-turn authoring.
+ */
+const SYSTEM_CACHE_BREAKPOINTS = MAX_CACHE_BREAKPOINTS - 1;
+
+/**
+ * Roll a cache breakpoint onto the LAST message so Anthropic caches the whole
+ * conversation prefix (system + tools + every prior turn); the next provider
+ * call reads it all from cache and pays full price only for the newest
+ * content. SDK-idiomatic: a MESSAGE-level `cacheControl` that the AI SDK
+ * translates to the message's last content block (dynamic-prompt-caching
+ * recipe). No-op for non-Anthropic providers, which ignore the key.
+ */
+function tagLastMessageForCache(messages: ModelMessage[]): ModelMessage[] {
+  if (messages.length === 0) return messages;
+  const last = messages[messages.length - 1] as ModelMessage & {
+    providerOptions?: Record<string, Record<string, unknown>>;
+  };
+  const existingAnthropic = last.providerOptions?.anthropic ?? {};
+  const tagged = {
+    ...last,
+    providerOptions: {
+      ...(last.providerOptions ?? {}),
+      anthropic: { ...existingAnthropic, cacheControl: { type: "ephemeral" } },
+    },
+  } as ModelMessage;
+  return [...messages.slice(0, -1), tagged];
+}
+
+/**
  * System prompt → SDK system shape. The SDK accepts a string OR
  * (via the messages array) `SystemModelMessage` entries with
  * per-part `providerOptions.anthropic.cacheControl` — that's how we
  * keep the cache prefix warm across turns when chips/skills change
- * at the tail (P5.2 #4 / v0.2.x).
+ * at the tail (P5.2 #4 / v0.2.x). The last conversation message also gets a
+ * rolling breakpoint so the growing history caches incrementally.
  */
 function buildSystemAndMessages(
   prompt: GenerateInput["systemPrompt"],
   cacheBreakpoints: GenerateInput["cacheBreakpoints"],
   inputMessages: readonly ChatMessageInput[],
 ): { system?: string; messages: ModelMessage[] } {
-  const userMessages = toSDKMessages(inputMessages);
+  const userMessages = tagLastMessageForCache(toSDKMessages(inputMessages));
   if (typeof prompt === "string") {
     if (cacheBreakpoints?.includes("system")) {
       const sysMsg: SystemModelMessage = {
@@ -287,11 +323,11 @@ function buildSystemAndMessages(
     }
     return { system: prompt, messages: userMessages };
   }
-  // Chunked prompt — each cacheable chunk gets its own
-  // SystemModelMessage with anthropic.cacheControl, capped at the
-  // API's breakpoint limit (see MAX_CACHE_BREAKPOINTS above).
+  // Chunked prompt — each cacheable chunk gets its own SystemModelMessage
+  // with anthropic.cacheControl, capped at SYSTEM_CACHE_BREAKPOINTS so the
+  // rolling message breakpoint fits inside the API's 4-breakpoint limit.
   const cacheableIndices = prompt.flatMap((c, i) => (c.cacheable ? [i] : []));
-  const tagged = new Set(cacheableIndices.slice(-MAX_CACHE_BREAKPOINTS));
+  const tagged = new Set(cacheableIndices.slice(-SYSTEM_CACHE_BREAKPOINTS));
   const sysMessages: SystemModelMessage[] = prompt.map((c, i) => ({
     role: "system",
     content: c.body,
