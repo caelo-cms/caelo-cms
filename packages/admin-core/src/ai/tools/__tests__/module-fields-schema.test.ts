@@ -13,7 +13,31 @@
 
 import { describe, expect, it } from "bun:test";
 import { MODULE_FIELD_KINDS } from "@caelo-cms/shared";
-import { MODULE_FIELDS_JSON_SCHEMA } from "../_module-fields-schema.js";
+import {
+  MODULE_FIELDS_JSON_SCHEMA,
+  MODULE_META_JSON_SCHEMA_PROPS,
+} from "../_module-fields-schema.js";
+
+/**
+ * Walk a JSON schema and collect the JSON-pointer path of every subschema
+ * that is an EMPTY object `{}` (accepts any JSON value). Anthropic's
+ * structured-output API (`output_config.format`, used by `generateObject`)
+ * rejects these with "Empty schema ({}) ... is not supported".
+ */
+function emptySubschemaPaths(node: unknown, path = "$"): string[] {
+  if (!node || typeof node !== "object") return [];
+  const obj = node as Record<string, unknown>;
+  const out: string[] = [];
+  // A schema node with zero keys is the forbidden empty `{}`. Skip arrays
+  // (they're value lists like `enum`, not schema nodes).
+  if (!Array.isArray(node) && Object.keys(obj).length === 0) out.push(path);
+  for (const [k, v] of Object.entries(obj)) {
+    out.push(...emptySubschemaPaths(v, `${path}.${k}`));
+    if (Array.isArray(v))
+      v.forEach((el, i) => out.push(...emptySubschemaPaths(el, `${path}.${k}[${i}]`)));
+  }
+  return out;
+}
 
 /** Narrow the `Record<string, unknown>` schema to the bits we assert on. */
 interface FieldsArraySchema {
@@ -60,5 +84,20 @@ describe("MODULE_FIELDS_JSON_SCHEMA — provider schema mirrors the Zod validato
     expect(amt.maxItems).toBe(32);
     // items pattern must be the slug regex (so a non-slug entry can't be generated).
     expect(amt.items.pattern).toBe("^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$");
+  });
+
+  it("contains NO empty {} subschema (SDK structured-output compatibility)", () => {
+    // Regression guard (2026-07 live e2e): moduleize moved to the SDK-native
+    // structured-output path (provider.generateObject → Anthropic
+    // output_config.format), which REJECTS an empty `{}` subschema. The
+    // field `default` shipped as `{}` (accept-any) and failed EVERY
+    // add_module-without-fields call. The old forced-tool path tolerated it;
+    // generateObject does not. Fail here at unit time — the moduleize unit
+    // tests mock the provider, so only this schema-shape check catches it.
+    const full = {
+      type: "object",
+      properties: { fields: MODULE_FIELDS_JSON_SCHEMA, ...MODULE_META_JSON_SCHEMA_PROPS },
+    };
+    expect(emptySubschemaPaths(full)).toEqual([]);
   });
 });

@@ -50,7 +50,25 @@ const MODULE_FIELD_ITEM_SCHEMA: Record<string, unknown> = {
     name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
     kind: { type: "string", enum: [...MODULE_FIELD_KINDS] },
     label: { type: "string", minLength: 1, maxLength: 128 },
-    default: {},
+    // A field's default is the ORIGINAL value the placeholder replaced; its
+    // JSON type varies by `kind` (string for text/url/label, number, boolean,
+    // array for *-list, object for link/module). This used to be `{}` (accept
+    // any) — fine when the schema shipped as a TOOL input (lenient), but the
+    // SDK-native structured-output path (`generateObject` → Anthropic
+    // `output_config.format`) REJECTS an empty `{}` subschema with
+    // "Empty schema ({}) ... is not supported" (found via the live e2e:
+    // add_module-without-fields → moduleize failed on every call). Spell the
+    // union out with concrete types so it stays permissive AND accepted.
+    default: {
+      anyOf: [
+        { type: "string" },
+        { type: "number" },
+        { type: "boolean" },
+        { type: "array", items: { type: "string" } },
+        { type: "array", items: { type: "object", additionalProperties: true } },
+        { type: "object", additionalProperties: true },
+      ],
+    },
     // issue #106 — `module`/`module-list` fields constrain nested refs to
     // modules whose stable `type` is in this allowlist. Mirror the Zod
     // bound `z.array(slugSchema).max(32)` exactly: a slug-shaped pattern
