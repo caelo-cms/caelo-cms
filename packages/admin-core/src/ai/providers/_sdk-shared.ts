@@ -589,6 +589,26 @@ export async function runSDKGenerateObject(args: {
       // is the repairable case — surface it as "no object" so the caller's
       // validate()+repair loop re-prompts, exactly as the old undefined
       // tool-args path did. Usage (if the SDK attached it) still counts.
+      //
+      // Log the ACTUAL reason so this is diagnosable — before, "no object"
+      // was opaque and we couldn't tell WHY generateObject came back empty.
+      // `cause` is the underlying JSON-parse / type-validation error; `text`
+      // is the raw model output; `finishReason` distinguishes a length
+      // cutoff / refusal from a genuine schema miss.
+      const err = e as {
+        cause?: unknown;
+        text?: string;
+        finishReason?: string;
+      };
+      console.error("[generateObject] NoObjectGenerated — model output did not parse to schema", {
+        model: modelId,
+        finishReason: err.finishReason ?? null,
+        cause: err.cause instanceof Error ? err.cause.message : String(err.cause ?? "unknown"),
+        rawTextHead: typeof err.text === "string" ? err.text.slice(0, 800) : null,
+        rawTextLen: typeof err.text === "string" ? err.text.length : 0,
+        inputTokens: e.usage?.inputTokens ?? 0,
+        outputTokens: e.usage?.outputTokens ?? 0,
+      });
       return {
         object: undefined,
         inputTokens: e.usage?.inputTokens ?? 0,
