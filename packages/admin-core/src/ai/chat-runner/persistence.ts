@@ -40,16 +40,55 @@ export interface LoadedSession {
 
 /** Compose the persisted user-message body, inlining chip references. */
 export function buildUserContent(input: ChatSendMessageInput): string {
+  // content is optional as of Plan B (resume turns carry none) but this helper
+  // is only reached on the operator-message path, where content is present.
+  const content = input.content ?? "";
   return input.chips.length > 0
     ? [
-        input.content,
+        content,
         "",
         "Element references attached to this message:",
         ...input.chips.map(
           (c) => `  - ${c.label} (module=${c.moduleId.slice(0, 8)}, selector=${c.selector})`,
         ),
       ].join("\n")
-    : input.content;
+    : content;
+}
+
+/**
+ * Plan B (SDK approval gate) — persist the Owner's in-chat Approve/Reject as a
+ * role='tool' row carrying the SDK tool-approval-response ModelMessage in
+ * `responseMessages`. On the resume turn, buildProviderHistory replays it
+ * verbatim (Option C passthrough) after the paused assistant turn, so the SDK
+ * either runs the gated tool (approved) or lets the model react to the denial.
+ */
+export async function persistApprovalResponse(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  humanCtx: ExecutionContext,
+  chatSessionId: string,
+  decision: { approvalId: string; approved: boolean; reason?: string },
+): Promise<boolean> {
+  const save = await execute(registry, adapter, humanCtx, "chat.append_message", {
+    chatSessionId,
+    role: "tool",
+    content: `[approval ${decision.approved ? "granted" : "denied"}]`,
+    responseMessages: [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-approval-response",
+            approvalId: decision.approvalId,
+            approved: decision.approved,
+            ...(decision.reason ? { reason: decision.reason } : {}),
+          },
+        ],
+      },
+    ],
+    source: "chat-runner approval response (persistApprovalResponse)",
+  });
+  return save.ok;
 }
 
 /** Persist the user's message + chips. Returns false if the append failed. */
