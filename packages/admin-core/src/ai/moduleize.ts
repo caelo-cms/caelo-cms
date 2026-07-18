@@ -85,7 +85,18 @@ const MODULEIZE_JSON_SCHEMA = {
     html: { type: "string", minLength: 1 },
     fields: MODULE_FIELDS_JSON_SCHEMA,
     displayName: { type: "string", minLength: 1, maxLength: 128 },
-    ...MODULE_META_JSON_SCHEMA_PROPS,
+    // ONLY the two META props moduleize actually parses (see
+    // moduleizeOutputSchema below) — `description` + `kind`. The full
+    // MODULE_META_JSON_SCHEMA_PROPS also carries `type` (the reusable-class
+    // slug the add_module TOOLS use), but moduleize neither explains it in
+    // SYSTEM nor reads it. Forcing an unexplained `type` into the output
+    // schema made the model improvise + fall into a repetition loop
+    // ("header-basic-nav-basic-…" forever) that blew the output budget →
+    // truncated JSON → NoObjectGenerated → 3× fail at temp 0. Dropping it
+    // aligns the request with what moduleize consumes (found via the
+    // generateObject failure log).
+    description: MODULE_META_JSON_SCHEMA_PROPS.description,
+    kind: MODULE_META_JSON_SCHEMA_PROPS.kind,
   },
 } as const;
 
@@ -121,6 +132,7 @@ async function runOnce(
   provider: AIProvider,
   systemPrompt: string,
   message: string,
+  temperature: number,
   abortSignal?: AbortSignal,
 ): Promise<{
   args: unknown | undefined;
@@ -135,7 +147,7 @@ async function runOnce(
       messages: [{ role: "user", content: message }],
       jsonSchema: MODULEIZE_JSON_SCHEMA as unknown as Record<string, unknown>,
       maxTokens: 8192,
-      temperature: 0,
+      temperature,
       ...(abortSignal ? { abortSignal } : {}),
     });
     // `object === undefined` is the SDK's NoObjectGeneratedError (the model
@@ -221,13 +233,18 @@ export async function moduleize(args: ModuleizeArgs): Promise<ModuleizeResult> {
   let message = userMessage(args);
 
   for (let attempt = 1; attempt <= maxRepairs + 1; attempt++) {
+    // First attempt is deterministic (temp 0 — best single-shot quality).
+    // Repairs raise the temperature so a temp-0 DEGENERATE output (e.g. a
+    // repetition loop that truncates the JSON) can't reproduce identically
+    // and lock the whole repair budget onto the same failure.
+    const temperature = attempt === 1 ? 0 : 0.4;
     const {
       args: toolArgs,
       inputTokens: it,
       outputTokens: ot,
       model: m,
       providerError,
-    } = await runOnce(args.provider, SYSTEM, message, args.abortSignal);
+    } = await runOnce(args.provider, SYSTEM, message, temperature, args.abortSignal);
     inputTokens += it;
     outputTokens += ot;
     model = m;
