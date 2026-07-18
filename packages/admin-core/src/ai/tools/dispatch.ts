@@ -254,6 +254,23 @@ export interface ToolDefinitionWithHandler<I> {
     input: I,
     ctx: ExecutionContext,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  /**
+   * Plan B (SDK approval gate, CLAUDE.md §11.A) — marks this tool
+   * SDK-executed + human-approval-gated. The chat-runner ships it to the
+   * provider with `approvalMode` + an `execute` closure, so the SDK PAUSES on
+   * a `tool-approval-request` before running it. The registry handler is NOT
+   * used for gated tools (the SDK owns the execute once approved).
+   */
+  readonly approvalMode?: "user-approval";
+  /**
+   * The propose/execute ops the gated `execute` chains after approval: it
+   * runs `proposeOp` (writes the pending row + computes the preview + records
+   * audit) then `executeOp` (applies the real mutation, Owner scope). Reusing
+   * the existing per-domain propose/execute machinery keeps the apply logic
+   * (incl. multi-op fan-outs like layout html+blocks) correct — the SDK gate
+   * just sits in front of it. Set by `makeProposeTool`.
+   */
+  readonly gated?: { readonly proposeOp: string; readonly executeOp: string };
   readonly schema: z.ZodType<I>;
   /**
    * JSON Schema for the provider. OPTIONAL as of issue #251 (WS5) — when
@@ -492,11 +509,22 @@ export class ToolRegistry {
    * design (2026-07): byte-identical across turns so the Anthropic
    * tools-prefix cache survives page switches and structural writes.
    */
-  catalogue(): { name: string; description: string; inputSchema: ToolInputSchema }[] {
+  catalogue(): {
+    name: string;
+    description: string;
+    inputSchema: ToolInputSchema;
+    approvalMode?: "user-approval";
+    gated?: { proposeOp: string; executeOp: string };
+  }[] {
     return [...this.#tools.values()].map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
+      // Plan B — carry the gate markers so the chat-runner can attach the
+      // SDK `execute` (propose+execute_proposal). Static per tool, so the
+      // catalogue stays byte-identical across turns (cache-safe).
+      ...(t.approvalMode ? { approvalMode: t.approvalMode } : {}),
+      ...(t.gated ? { gated: t.gated } : {}),
     }));
   }
 
