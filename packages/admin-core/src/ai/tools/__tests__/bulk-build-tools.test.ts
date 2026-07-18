@@ -25,7 +25,6 @@ import { addModuleTool } from "../add-module.js";
 import { buildPageTool } from "../build-page.js";
 import { createContentInstanceTool } from "../create-content-instance.js";
 import { createContentInstancesTool } from "../create-content-instances.js";
-import { createPageTool } from "../create-page.js";
 import { createDefaultToolRegistry } from "../index.js";
 import { setPageModuleContentTool } from "../set-page-module-content.js";
 import { setPageModuleContentManyTool } from "../set-page-module-content-many.js";
@@ -73,17 +72,13 @@ describe("build_page schema stays on the shared single sources (#106 discipline)
 
 describe("§11 bulk-first steering wording", () => {
   it("build_page tells the AI to prefer it over the singular chain", () => {
-    expect(buildPageTool.description).toContain("Prefer this over add_module");
+    expect(buildPageTool.description).toContain("Prefer it over add_module");
     expect(buildPageTool.description).toContain("ONE transaction");
   });
 
   it("add_module points multi-module work at build_page", () => {
     expect(addModuleTool.description).toContain("build_page");
     expect(addModuleTool.description).toContain("more than one module");
-  });
-
-  it("create_page points known-content builds at build_page", () => {
-    expect(createPageTool.description).toContain("build_page");
   });
 
   it("create_content_instance points multi-instance work at the plural tool", () => {

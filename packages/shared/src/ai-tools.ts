@@ -575,29 +575,6 @@ const slugInputSchema = z
   .max(120)
   .regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase letters/digits/hyphens, leading non-hyphen");
 
-export const createPageToolInput = z
-  .object({
-    name: z.string().min(1).max(256),
-    title: z.string().min(1).max(256),
-    slug: slugInputSchema,
-    locale: z.string().min(2).max(10).default("en"),
-    /**
-     * Optional. When omitted, the underlying `pages.create` op resolves
-     * to `site_defaults.default_template_id` (P6.7.6). The AI should pass
-     * a UUID from `## Site defaults` / `## Templates → layouts` only when
-     * the user asks for a non-default template.
-     */
-    templateId: z.string().uuid().optional(),
-    /**
-     * Optional. Omit it and `pages.create` publishes the FIRST page of a
-     * bootstrap site (0 live published pages) so the first Stage has
-     * something to serve, and drafts subsequent pages for review. Pass an
-     * explicit value only to override that. (Was `.default("draft")`.)
-     */
-    status: z.enum(["draft", "published"]).optional(),
-  })
-  .strict();
-
 /**
  * P18 AI-completeness — `create_template` AI tool input. Wraps
  * `templates.create` (widened to AI in this pass per CLAUDE.md §11
@@ -961,7 +938,6 @@ export type BulkOptimizeSeoToolInput = z.infer<typeof bulkOptimizeSeoToolInput>;
 
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
-export type CreatePageToolInput = z.infer<typeof createPageToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
 export type ComposeFromImportToolInput = z.infer<typeof composeFromImportToolInput>;
 export type MigrateImportMediaToolInput = z.infer<typeof migrateImportMediaToolInput>;

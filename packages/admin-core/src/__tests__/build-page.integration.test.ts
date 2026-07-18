@@ -223,6 +223,32 @@ describe("pages.build_page — happy path", () => {
   });
 });
 
+describe("pages.build_page — empty shell (consolidation: replaces create_page)", () => {
+  it("creates an empty page with modules:[] (no placements)", async () => {
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      // i299-…-TS slug so the suite's wipe() (FK-ordered) cleans it before it
+      // deletes the shared template.
+      page: { slug: `i299-empty-${TS}`, title: "Empty Shell", templateId },
+      modules: [],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as { pageId: string; createdPage: boolean; placements: unknown[] };
+    expect(v.createdPage).toBe(true);
+    expect(v.placements).toEqual([]);
+    // The page exists + every template block is empty — the old create_page
+    // niche (an intentionally empty shell).
+    const got = await execute(registry, adapter, systemCtx, "pages.get_with_modules", {
+      pageId: v.pageId,
+    });
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      const page = (got.value as { page: { blocks: { modules: unknown[] }[] } }).page;
+      expect(page.blocks.every((b) => b.modules.length === 0)).toBe(true);
+    }
+  });
+});
+
 describe("pages.build_page — mid-batch abort (§11: partial failure impossible)", () => {
   it("unknown block on modules[1] aborts and rolls back the page create", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.build_page", {

@@ -10,7 +10,7 @@
  *
  * Use when the user asks for a new page-type (e.g. "create a blog-post
  * template", "make a landing-page template"). Do NOT use to create a
- * single page — that's `create_page`. Templates are page-shape
+ * single page — that's `build_page`. Templates are page-shape
  * definitions; pages are instances bound to a template.
  */
 
@@ -27,7 +27,7 @@ export const createTemplateTool: ToolDefinitionWithHandler<
   description:
     "Create a new page-type template (a reusable HTML+CSS shell other pages bind to). " +
     "Use when the user wants a NEW page-type ('create a blog-post template', 'a landing-page layout'). " +
-    "Do NOT use to create a one-off page — use `create_page` instead. " +
+    "Do NOT use to create a one-off page — use `build_page` instead. " +
     "`layoutId` is OPTIONAL when site defaults define a default layout (see `## Site defaults` / get_site_defaults) — then omitting it binds to that default. Without a configured default, `layoutId` is REQUIRED: pick a UUID from `## Layouts on this site` / list_layouts (omitting it fails with a structured 'no defaults' error, no silent fallback). With ZERO layouts on the site, call create_layout first. " +
     'CRITICAL — block syntax: render slots in `html` MUST be <caelo-slot name="X"></caelo-slot> tags, ' +
     "NOT HTML comments like <!-- block:X -->. The composer ignores comment-style markers and the page " +

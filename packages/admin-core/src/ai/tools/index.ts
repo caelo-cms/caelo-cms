@@ -20,7 +20,6 @@ import { composeFromImportTool } from "./compose-from-import.js";
 import { createContentInstanceTool } from "./create-content-instance.js";
 import { createContentInstancesTool } from "./create-content-instances.js";
 import { createLayoutTool } from "./create-layout.js";
-import { createPageTool } from "./create-page.js";
 import { createTemplateTool } from "./create-template.js";
 import { deleteContentInstanceTool } from "./delete-content-instance.js";
 import { deleteStructuredSetTool } from "./delete-structured-set.js";
@@ -243,7 +242,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // module). Tier-1 plugins go live at next deploy; Tier-2 stubs reject
   // with a clear "execution runtime pending" message.
   registry.register(addPluginToPageTool);
-  registry.register(createPageTool);
   registry.register(createTemplateTool);
   registry.register(composeFromImportTool);
   // issue #249 (WS3) — post-compose media migration: stop hotlinking

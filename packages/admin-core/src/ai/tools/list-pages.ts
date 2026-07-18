@@ -49,5 +49,5 @@ export const listPagesTool = makeListReadTool<
     { key: "templateId", value: (p) => p.templateId },
   ],
   emptyMessage:
-    "No pages on this site yet. Call create_page (pass templateId from list_templates) to create one.",
+    "No pages on this site yet. Call build_page (pass page.templateId from list_templates; modules:[] for an empty shell) to create one.",
 });

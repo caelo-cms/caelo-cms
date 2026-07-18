@@ -199,7 +199,7 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
     // Every OTHER write is STILL present — reachable via Tool Search,
     // just not preloaded. Skill allowlists no longer narrow.
     expect(byName.has("add_module")).toBe(true);
-    expect(byName.has("create_page")).toBe(true);
+    expect(byName.has("build_page")).toBe(true);
     expect(byName.has("set_page_module_content")).toBe(true);
     // Reads + the orchestrator's spawn tools are obviously present too.
     expect(byName.has("list_modules")).toBe(true);

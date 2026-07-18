@@ -132,9 +132,9 @@ export async function buildSiteBlocks(
       }
     }
     // P18 — include each template's UUID so the AI can pass it as
-    // `templateId` to `create_page` / `repoint_page_template` without a
+    // `page.templateId` to `build_page` / `repoint_page_template` without a
     // separate `templates.list` round-trip. Same for the layout it
-    // binds to. (`create_page.templateId` is optional and resolves to
+    // binds to. (`build_page`'s `page.templateId` is optional and resolves to
     // site_defaults; this is for the "use a non-default template" path.)
     const templateLines = tpls.map(
       (t) =>
@@ -154,7 +154,7 @@ export async function buildSiteBlocks(
       // UUIDs ARE in the lines above; restating the action loop
       // here makes the model use them.
       templateLines.length > 0
-        ? `To create a page on a specific template, call create_page with templateId=<UUID from above>. To use the site default, omit templateId entirely. The lines above carry every UUID you need — do NOT ask the operator to paste it.`
+        ? `To create a page on a specific template, call build_page with page.templateId=<UUID from above> (modules:[] for an empty shell). To use the site default, omit templateId entirely. The lines above carry every UUID you need — do NOT ask the operator to paste it.`
         : // v0.5.10 — fresh-install bootstrap path. Pre-v0.5.10 this text
           // primed passive behavior ("ask the operator"). New text names
           // the exact tools and forbids the passive ask explicitly.
