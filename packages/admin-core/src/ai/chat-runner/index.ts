@@ -22,6 +22,7 @@ import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
+import { attachGatedExecute } from "../tools/gated-tools.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
 import { resolveCompactionThresholdTokens } from "./compaction.js";
 import { buildPostCatalogueBlocks } from "./context/skills.js";
@@ -44,7 +45,6 @@ import {
   recordAiCall,
 } from "./persistence.js";
 import type { UsageAccumulator } from "./streaming.js";
-import { attachGatedExecute } from "../tools/gated-tools.js";
 import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
