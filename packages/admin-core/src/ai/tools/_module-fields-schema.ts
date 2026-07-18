@@ -51,22 +51,46 @@ const MODULE_FIELD_ITEM_SCHEMA: Record<string, unknown> = {
     kind: { type: "string", enum: [...MODULE_FIELD_KINDS] },
     label: { type: "string", minLength: 1, maxLength: 128 },
     // A field's default is the ORIGINAL value the placeholder replaced; its
-    // JSON type varies by `kind` (string for text/url/label, number, boolean,
-    // array for *-list, object for link/module). This used to be `{}` (accept
-    // any) — fine when the schema shipped as a TOOL input (lenient), but the
-    // SDK-native structured-output path (`generateObject` → Anthropic
-    // `output_config.format`) REJECTS an empty `{}` subschema with
-    // "Empty schema ({}) ... is not supported" (found via the live e2e:
-    // add_module-without-fields → moduleize failed on every call). Spell the
-    // union out with concrete types so it stays permissive AND accepted.
+    // JSON shape varies by `kind`. This used to be `{}` (accept any) — fine as
+    // a TOOL input (lenient), but the SDK-native structured-output path
+    // (`generateObject` → Anthropic `output_config.format`) REJECTS an empty
+    // `{}` subschema, and a too-generic union let the model emit shapes the
+    // Zod validator (`moduleFieldSchema`) then rejects: for a `link-list` it
+    // produced `default:[{}]`, which Zod's strict `{label,href}[]` refused
+    // ("expected string, received undefined") AND which lost the real nav
+    // values. So each branch is CONCRETE — the object-array branch pins the
+    // link-list element shape to `{label,href}` so Anthropic's structure
+    // enforcement makes the model fill the actual link text + URL, not `[{}]`.
+    // The description states the per-kind shape (Anthropic reads it) so the
+    // JSON schema and the Zod validator can't diverge (issue #106 class).
     default: {
+      description:
+        "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: " +
+        "text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); " +
+        "text-list → an array of strings; " +
+        'link-list → an array of {label, href} objects with the REAL link text + URL, e.g. [{"label":"Home","href":"/"},{"label":"About","href":"/about"}]. ' +
+        "Omit for module / module-list.",
       anyOf: [
         { type: "string" },
         { type: "number" },
         { type: "boolean" },
         { type: "array", items: { type: "string" } },
-        { type: "array", items: { type: "object", additionalProperties: true } },
-        { type: "object", additionalProperties: true },
+        {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["label", "href"],
+            properties: { label: { type: "string" }, href: { type: "string" } },
+          },
+        },
+        // Singular `link` kind: a single {label, href} default.
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["label", "href"],
+          properties: { label: { type: "string" }, href: { type: "string" } },
+        },
       ],
     },
     // issue #106 — `module`/`module-list` fields constrain nested refs to
