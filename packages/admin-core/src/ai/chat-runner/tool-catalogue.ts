@@ -17,8 +17,15 @@ import { CORE_TOOL_NAMES } from "../tools/core-tools.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { resolveAllowlistEntries } from "./allowlist-mapping.js";
 
-/** A catalogue entry in provider-`tools` shape (== ToolDefinition). */
-export type FilteredTool = ToolDefinition;
+/**
+ * A catalogue entry in provider-`tools` shape. `gated` (Plan B) is an
+ * internal marker the chat-runner reads to attach the SDK `execute`
+ * (propose → execute_proposal); it rides alongside the provider fields and is
+ * ignored by the provider's SDK-tool builder.
+ */
+export type FilteredTool = ToolDefinition & {
+  gated?: { proposeOp: string; executeOp: string };
+};
 
 /**
  * Run #8 R2b/R5 — read-only tool classifier, by the repo's naming

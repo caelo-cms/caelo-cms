@@ -43,7 +43,7 @@ import {
   recordAiCall,
 } from "./persistence.js";
 import type { UsageAccumulator } from "./streaming.js";
-import { buildGatedFilteredTools, SUPERSEDED_PROPOSE_TOOLS } from "../tools/gated-tools.js";
+import { attachGatedExecute } from "../tools/gated-tools.js";
 import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
@@ -126,6 +126,15 @@ export async function* runChatTurn(
     chatBranchId,
     chatTaskId: input.chatSessionId,
   };
+  // AI calls all run with chatBranchId set so the snapshot lands tagged.
+  // (Defined here — before the tool catalogue — so gated tools can close
+  // their `propose` leg over it; the `execute_proposal` leg uses the Owner's
+  // live ctx below.)
+  const aiCtxWithBranch: ExecutionContext = {
+    ...aiCtx,
+    chatBranchId,
+    chatTaskId: input.chatSessionId,
+  };
 
   // v0.2.54 — Resolve extended-thinking config for THIS turn. Per-chat-session
   // toggle wins; budget falls back to a default under the 32k max_tokens floor.
@@ -194,19 +203,20 @@ export async function* runChatTurn(
     spawnAllowed: options.allowedToolNames,
     chatSessionId: input.chatSessionId,
   });
-  // Slice 1 (SDK approval gate) — fold in the SDK-executed gated tools and
-  // drop the `propose_*` tools they supersede, so the model has exactly ONE
-  // way to run a gated action (the approval-gated real op). `execute` closes
-  // over the OWNER's live ctx (humanCtx has no chatBranchId → live-commit),
-  // matching the old execute_proposal's live application. On a subagent turn
-  // the gated tools are omitted (a child never fronts an Owner approval).
+  // Plan B (SDK approval gate) — a gated catalogue tool is SDK-executed:
+  // attach its `execute`, which after the Owner's in-chat Approve chains the
+  // existing per-domain `propose` (AI ctx — writes the pending row + preview +
+  // audit) then `execute_proposal` (Owner live ctx — applies the real
+  // mutation, exactly as the old /security/pending Approve did). Reusing that
+  // machinery keeps every domain's apply logic correct with zero
+  // reimplementation. Subagent turns strip gated tools outright — a child
+  // never fronts an Owner approval.
   const isSubagentTurn = options.subagentResultCapture !== undefined;
-  const filteredTools = isSubagentTurn
-    ? catalogueTools
-    : [
-        ...catalogueTools.filter((t) => !SUPERSEDED_PROPOSE_TOOLS.has(t.name)),
-        ...buildGatedFilteredTools(registry, adapter, humanCtx),
-      ];
+  const filteredTools = catalogueTools.flatMap((t) => {
+    if (!t.gated) return [t];
+    if (isSubagentTurn) return [];
+    return [attachGatedExecute(t, registry, adapter, aiCtxWithBranch, humanCtx)];
+  });
 
   // Blocks that depend on the filtered catalogue (subagents / plugins).
   const postBlocks = await buildPostCatalogueBlocks({
@@ -225,13 +235,6 @@ export async function* runChatTurn(
     pluginsBlock: postBlocks.pluginsBlock,
     pluginContextBlock: postBlocks.pluginContextBlock,
   });
-
-  // AI calls all run with chatBranchId set so the snapshot lands tagged.
-  const aiCtxWithBranch: ExecutionContext = {
-    ...aiCtx,
-    chatBranchId,
-    chatTaskId: input.chatSessionId,
-  };
 
   const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };
 

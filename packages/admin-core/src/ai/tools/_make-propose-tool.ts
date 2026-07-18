@@ -42,25 +42,37 @@ export interface MakeProposeToolArgs<I> {
 }
 
 export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinitionWithHandler<I> {
+  // Plan B (SDK approval gate) — every propose op name is `<domain>.propose_*`,
+  // so its paired executor is `<domain>.execute_proposal`. The gated tool's
+  // execute (built by the chat-runner) chains propose → execute_proposal after
+  // the Owner's in-chat Approve, reusing the existing per-domain apply logic.
+  const domain = args.opName.split(".")[0] ?? "";
+  const executeOp = `${domain}.execute_proposal`;
   const description =
     `${args.when} ` +
-    `TWO-STEP: this only QUEUES the proposal; the operator approves it on the proposal card RIGHT IN THE CHAT (queue page: ${args.pendingQueuePath}). Point them at the card's Approve button, not at an admin page. ` +
-    `DO NOT claim the change is live. The tool returns proposalId + preview; tell the operator to approve at the queue.`;
+    `APPROVAL-GATED: calling this PAUSES for the operator's Approve/Reject right in the chat before anything changes. ` +
+    `Do not claim the change is live until it is approved.`;
   return {
     name: args.toolName,
     description,
     schema: args.schema,
     inputSchema: args.inputSchema,
+    // Marks the tool SDK-executed + gated; the chat-runner attaches the real
+    // execute (propose → execute_proposal). approvalMode makes the SDK pause.
+    approvalMode: "user-approval",
+    gated: { proposeOp: args.opName, executeOp },
+    // Fallback handler — NOT used on the gated (SDK-executed) path, kept so the
+    // registered tool stays a valid ToolDefinitionWithHandler. If ever reached
+    // (gate somehow bypassed), it proposes-only, never silently applies.
     handler: async (ctx, input, toolCtx) => {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, input);
       if (!r.ok) {
         return { ok: false, content: `${args.opName} failed: ${describeError(r.error)}` };
       }
       const v = r.value as { proposalId: string; preview: Record<string, unknown> };
-      const summary = args.summarize(input, v.preview);
       return {
         ok: true,
-        content: `Queued proposal ${v.proposalId}: ${summary}. Approve it on the proposal card in this chat (queue: ${args.pendingQueuePath}).`,
+        content: `Queued proposal ${v.proposalId}: ${args.summarize(input, v.preview)}.`,
       };
     },
   };
