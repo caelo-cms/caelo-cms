@@ -20,7 +20,7 @@
  * against the seed-grayscale theme.
  *
  * Scope: AI-callable module-creation tools (build_page,
- * add_module_to_page, add_module_to_layout, create_page). Human +
+ * add_module_to_page, add_module_to_layout). Human +
  * system callers are exempt — the gate fires only when
  * `ctx.actorKind === "ai"` because (1) human operators using the API
  * directly may legitimately want a blank install, and (2) system

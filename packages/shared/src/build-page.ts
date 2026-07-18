@@ -240,7 +240,11 @@ export type BuildPageTarget = z.infer<typeof buildPageTargetSchema>;
 export const buildPageInputSchema = z
   .object({
     page: buildPageTargetSchema,
-    modules: z.array(buildPageModuleSchema).min(1).max(40),
+    // min 0: build_page is the SINGLE page-creation tool. An empty modules
+    // array creates an intentionally empty page shell (the case that used to
+    // need the now-removed create_page); a populated array builds the whole
+    // page in one transaction (the common case).
+    modules: z.array(buildPageModuleSchema).max(40),
   })
   .strict()
   .superRefine((input, ctx) => {

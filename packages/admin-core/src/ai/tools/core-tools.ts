@@ -21,7 +21,6 @@
 export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // Build + page lifecycle
   "build_page",
-  "create_page",
   "duplicate_page",
   "update_pages_many",
   "delete_pages_many",

@@ -99,7 +99,7 @@ export async function buildPageContext(
         "  * `name`  — the editor's friendly label (page picker, breadcrumbs). Internal-only.",
         "  * `title` — the HTML <title> tag (browser tab, search-engine SERP). Public.",
         "  * `slug`  — the URL path component. Public, indexed, every link points at it.",
-        "- create_page(name, title, slug, templateId, ...) — make a new page.",
+        "- build_page({page:{name, title, slug, templateId, ...}, modules:[]}) — make a new page (empty shell; add modules in the same call for a full page).",
         "- update_pages_many({updates:[{pageId, …}]}) — the ONE tool for page metadata, for 1 page or many (single-item array for one page). Set exactly the identifier the user meant:",
         '  * `name` — internal label only. Use when the user says "rename" without mentioning URL or tab.',
         '  * `title` — HTML <title> only. Use when the user mentions "browser tab", "<title>", or "SERP".',

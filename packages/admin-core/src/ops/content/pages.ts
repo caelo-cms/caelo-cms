@@ -514,7 +514,7 @@ export const getPageWithModulesOp = defineOperation({
 
 export const createPageOp = defineOperation({
   name: "pages.create",
-  // P6.7.5 — AI calls this via the `create_page` tool. Validator + audit
+  // P6.7.5 — AI reaches this op via the `build_page` tool. Validator + audit
   // + snapshot all run in the same path as a human create.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
