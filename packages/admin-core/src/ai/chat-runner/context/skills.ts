@@ -1,218 +1,180 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Skills-engagement + post-catalogue system-prompt context blocks. Extracted
- * verbatim from the pre-split `chat-runner.ts` (P10A / P10.5 / P11 / P11.5).
+ * Skills context blocks for the chat-runner.
  *
- * `buildSkillsContext` resolves which active skills engage this turn (auto
- * matcher ∪ pinned defaults ∪ per-chat manual overrides) and the allowlist
- * narrowing; it runs BEFORE the tool catalogue is built. `buildPostCatalogueBlocks`
- * renders the subagents / plugins / plugin-promptContext blocks, which depend
- * on the already-filtered tool catalogue and so run AFTER it.
+ * Skills use PROGRESSIVE DISCLOSURE (the Anthropic Agent Skills / Claude Code
+ * shape). `buildSkillsContext` emits a compact, STATIC `## Skills` index —
+ * every active skill's `slug + description` — that lives in the cached system
+ * prefix. The model reads the index and, when a task matches a skill, calls the
+ * `load_skill` tool; that tool's RESULT (the full body) lands in the append-only
+ * message history and stays for the rest of the chat. So the dynamic skill
+ * bodies never enter the system prompt (which would bust the prompt cache on
+ * every engagement) — only the tiny static index does, and each body is
+ * injected exactly once, via history (CLAUDE.md §2).
  *
- * NOTE (CLAUDE.md §2 / plan R6): the `engaged_skills` read below uses a raw
- * `adapter.rawAdmin().begin(...)` SELECT. This is a PRE-EXISTING deviation
- * moved here verbatim — it is not introduced by this refactor and is not
- * fixed here (converting it to a named op is a separate follow-up).
+ * `buildSkillsContext` runs BEFORE the tool catalogue is built (it computes the
+ * tool-preload hints for skills already loaded this chat). `buildPostCatalogueBlocks`
+ * renders the subagents / plugins / plugin-promptContext blocks, which depend on
+ * the already-filtered catalogue and so run AFTER it.
  */
 
 import { pluginPromptContextRegistry } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import {
-  type CandidateSkill,
-  type ChatEngagement,
-  type ExecutionContext,
-  matchSkills,
-  resolveEngagements,
-  skillAutoEngagementHints,
-} from "@caelo-cms/shared";
-import { isReadOnlyToolName } from "../tool-catalogue.js";
+import type { ChatEngagement, ExecutionContext } from "@caelo-cms/shared";
+
+interface ActiveSkillRow {
+  id: string;
+  slug: string;
+  displayName: string;
+  description: string;
+  body: string;
+  allowlistedTools: string[];
+  /**
+   * Auto-engagement hints. No longer drive SELECTION (the model self-selects
+   * from descriptions), but they shape HOW prominently a skill is presented in
+   * the static index: `alwaysOn` skills get an "always applies" callout (load
+   * before the relevant work), `chipTrigger` skills a "when chips are attached"
+   * callout — so structural-trigger skills (brand voice, scoped edit) are
+   * impossible to miss even though their bodies still load on demand.
+   */
+  hints: { alwaysOn?: boolean; chipTrigger?: boolean };
+}
 
 export interface SkillsContext {
-  skillsBlock: string | undefined;
+  /**
+   * The STATIC `## Skills` index (one `slug: description` line per active
+   * skill). Goes in the cached system prefix — it changes only when the Owner
+   * activates/archives a skill, not per turn.
+   */
+  skillsIndexBlock: string | undefined;
+  /**
+   * Concatenated bodies of the skills already LOADED this chat. NOT put in the
+   * system prompt — used ONLY by the subagent-hint heuristic in
+   * `buildPostCatalogueBlocks` (a loaded reviewer skill's body mentions
+   * spawn_subagent). The bodies themselves live in the message history via the
+   * load_skill tool results.
+   */
+  loadedSkillsBodyText: string | undefined;
+  /**
+   * Tool-preload hints: the union of the allowlisted tools of skills already
+   * loaded this chat, so their tools stay loaded without a tool-search
+   * round-trip on later turns. Null when nothing is loaded.
+   */
   allowedToolNames: Set<string> | null;
+  /** Loaded skills (for the tool-catalogue diagnostic log line). */
   engagedSkills: ChatEngagement[];
 }
 
+/**
+ * Parse the slugs the model has already loaded this chat, from prior
+ * `load_skill` tool calls in the persisted history. Each successful load put
+ * the skill body into the message history (the tool result); this recovers the
+ * set so `buildSkillsContext` can keep those skills' tools preloaded and feed
+ * the subagent-hint heuristic. Defensive against jsonb-string args.
+ */
+export function extractLoadedSkillSlugs(messages: readonly { toolCalls?: unknown }[]): string[] {
+  const slugs = new Set<string>();
+  for (const m of messages) {
+    const calls = m.toolCalls;
+    if (!Array.isArray(calls)) continue;
+    for (const c of calls) {
+      if (!c || typeof c !== "object") continue;
+      if ((c as { name?: unknown }).name !== "load_skill") continue;
+      let argsRaw = (c as { arguments?: unknown }).arguments;
+      if (typeof argsRaw === "string") {
+        try {
+          argsRaw = JSON.parse(argsRaw);
+        } catch {
+          continue;
+        }
+      }
+      const slug =
+        argsRaw && typeof argsRaw === "object" ? (argsRaw as { slug?: unknown }).slug : undefined;
+      if (typeof slug === "string" && slug.length > 0) slugs.add(slug);
+    }
+  }
+  return [...slugs];
+}
+
+/**
+ * Build the static skills index + the preload hints for skills loaded so far.
+ *
+ * @param args.loadedSkillSlugs slugs the model already loaded this chat
+ *   (parsed from prior `load_skill` tool calls in the history). Drives the
+ *   tool preload + the subagent-hint body text.
+ */
 export async function buildSkillsContext(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   humanCtx: ExecutionContext,
-  args: { userMessage: string; chipCount: number; chatSessionId: string },
+  args: { loadedSkillSlugs: readonly string[] },
 ): Promise<SkillsContext> {
-  // P10A — load active skills + the user's pinned defaults + the
-  // chat's manual overrides; resolve the engaged set; compose a
-  // `## Engaged skills` system-prompt chunk + intersect tool
-  // catalogue against the union of engaged skills' allowlists.
-  let skillsBlock: string | undefined;
-  let allowedToolNames: Set<string> | null = null;
-  let engagedSkills: ChatEngagement[] = [];
+  const empty: SkillsContext = {
+    skillsIndexBlock: undefined,
+    loadedSkillsBodyText: undefined,
+    allowedToolNames: null,
+    engagedSkills: [],
+  };
   const skillsListResult = await execute(registry, adapter, humanCtx, "skills.list", {
     status: "active",
   });
-  if (skillsListResult.ok) {
-    const activeSkills = (
-      skillsListResult.value as {
-        skills: {
-          id: string;
-          slug: string;
-          displayName: string;
-          body: string;
-          allowlistedTools: string[];
-          hints: unknown;
-        }[];
-      }
-    ).skills;
-    const candidates: CandidateSkill[] = activeSkills.map((s) => {
-      const parsed = skillAutoEngagementHints.safeParse(s.hints);
-      return {
-        id: s.id,
-        slug: s.slug,
-        displayName: s.displayName,
-        hints: parsed.success ? parsed.data : { keywords: [], chipTrigger: false, alwaysOn: false },
-      };
-    });
-    const autoMatches = matchSkills({
-      userMessage: args.userMessage,
-      chipCount: args.chipCount,
-      skills: candidates,
-    });
-    const pinnedR = await execute(registry, adapter, humanCtx, "skills.list_pin_defaults", {});
-    const pinned = pinnedR.ok
-      ? (
-          pinnedR.value as {
-            pinDefaults: { skillId: string; slug: string; displayName: string }[];
-          }
-        ).pinDefaults
-      : [];
-    // Manual overrides + sticky auto-engagements on the chat session
-    // row. NULL or {} → no overrides yet.
-    const sessRows = (await adapter.rawAdmin().begin(async (tx) => {
-      await tx.unsafe(`SET LOCAL caelo.actor_kind = 'system'`);
-      return await tx`SELECT engaged_skills, auto_engaged_skills FROM chat_sessions
-        WHERE id = ${args.chatSessionId}::uuid LIMIT 1`;
-    })) as unknown as { engaged_skills: unknown; auto_engaged_skills: unknown }[];
-    const stored = sessRows[0]?.engaged_skills;
+  if (!skillsListResult.ok) return empty;
+  const activeSkills = (skillsListResult.value as { skills: ActiveSkillRow[] }).skills;
+  if (activeSkills.length === 0) return empty;
 
-    // 0125 — sticky engagement: the matcher scores ONLY the current
-    // message, so mid-flow answers ("B — Light refresh", "ja") carry
-    // no keywords and the skill that owns the flow would silently
-    // drop out between turns (live-hit 2026-07-12: site-migrate
-    // vanished for the scope turn and the AI queued a full crawl
-    // unasked). Skills that auto-engaged earlier in THIS chat
-    // re-engage — filtered against the currently ACTIVE set so a
-    // deactivated skill cannot zombie back, and still subject to
-    // manual disengagement via resolveEngagements.
-    const storedAuto = sessRows[0]?.auto_engaged_skills;
-    const activeById = new Map(candidates.map((c) => [c.id, c]));
-    const sticky = (Array.isArray(storedAuto) ? storedAuto : [])
-      .filter(
-        (e): e is { skillId: string } =>
-          typeof e === "object" &&
-          e !== null &&
-          typeof (e as { skillId?: unknown }).skillId === "string",
-      )
-      .filter((e) => activeById.has(e.skillId))
-      .filter((e) => !autoMatches.some((m) => m.skillId === e.skillId))
-      .map((e) => {
-        const c = activeById.get(e.skillId);
-        if (!c) throw new Error("unreachable: filtered above");
-        return {
-          skillId: c.id,
-          slug: c.slug,
-          displayName: c.displayName,
-          score: 1,
-          rationale: "engaged earlier in this chat",
-        };
-      });
-    // Cap: fresh matches keep their top-K; sticky re-engagements are
-    // bounded so a long chat cannot accumulate an unbounded skill set
-    // (review finding). 8 total is far above any legitimate flow.
-    const autoWithSticky = [...autoMatches, ...sticky].slice(0, 8);
-    const manualOverrides: Array<{
-      skillId: string;
-      slug: string;
-      displayName: string;
-      intent: "engage" | "disengage";
-    }> | null = Array.isArray(stored)
-      ? (stored as {
-          skillId: string;
-          slug: string;
-          displayName: string;
-          intent: "engage" | "disengage";
-        }[])
-      : null;
-    engagedSkills = resolveEngagements({
-      autoMatches: autoWithSticky,
-      manualOverrides,
-      pinnedSkills: pinned,
-    });
-
-    // Persist the auto-engaged set for the next turn's stickiness.
-    // Same raw-adapter deviation as the read above (see file NOTE).
-    // Archived/deleted sessions: the UPDATE simply matches zero rows —
-    // harmless, and the next read starts from an empty set.
-    const nextAuto = engagedSkills
-      .filter((e) => e.source === "auto")
-      .map((e) => ({ skillId: e.skillId, slug: e.slug, displayName: e.displayName }));
-    await adapter.rawAdmin().begin(async (tx) => {
-      await tx.unsafe(`SET LOCAL caelo.actor_kind = 'system'`);
-      await tx`UPDATE chat_sessions
-        SET auto_engaged_skills = (${JSON.stringify(nextAuto)}::text)::jsonb
-        WHERE id = ${args.chatSessionId}::uuid`;
-    });
-
-    if (engagedSkills.length > 0) {
-      // Concatenate skill bodies, tagged with the slug + source so the
-      // AI knows which guidance is which.
-      const bodyById = new Map(activeSkills.map((s) => [s.id, s.body]));
-      const lines = engagedSkills.map((e) => {
-        const body = bodyById.get(e.skillId) ?? "";
-        return `## Skill: ${e.slug} (${e.source}${e.rationale ? ` — ${e.rationale}` : ""})\n${body}`;
-      });
-      skillsBlock = ["# Engaged skills", ...lines].join("\n\n");
-
-      // Allowlist intersection: when ANY engaged skill defines an
-      // allowlist, the AI's tool catalogue narrows to the UNION of
-      // those allowlists. When none do, the full catalogue stays.
-      //
-      // v0.2.48 — alwaysOn-only engagements DO NOT contribute to the
-      // narrowing. An alwaysOn skill engages on every turn; if it
-      // declares a narrow allowlist (e.g. brand-voice-guard's
-      // [site_memory_propose]), every chat where no other skill
-      // engages would be restricted to that single tool — the AI
-      // ends up unable to do real work. alwaysOn allowlists are
-      // treated as advisory: the skill body still loads, but tool
-      // access stays wide.
-      //
-      // Detection: matchSkills sets `rationale = "always-on"` exactly
-      // when only the alwaysOn flag fired (no chip trigger, no
-      // keyword match). When other reasons fire, they're appended
-      // with "; " separators, so any rationale ≠ "always-on"
-      // indicates a real signal beyond the alwaysOn floor.
-      const allowlists = engagedSkills
-        .filter((e) => !(e.source === "auto" && e.rationale === "always-on"))
-        .map((e) => activeSkills.find((s) => s.id === e.skillId)?.allowlistedTools ?? [])
-        .filter((arr) => arr.length > 0)
-        // A read-only-ONLY allowlist (every tool is a list_/get_/inspect_/find_/…
-        // read) must NOT narrow the turn. Audit-role skills — menu-auditor,
-        // qa-check, legal-check, page-categorizer — auto-engage on keyword
-        // overlap with a BUILD request (e.g. "add a footer with navigation
-        // links" → menu-auditor via "navigation"/"links"), and their read-only
-        // allowlist would strip EVERY write tool from the main editor. It could
-        // then no longer author the footer directly and was forced to spawn
-        // subagents (which get the full catalogue) purely to perform the writes
-        // — the root of the layout-footer over-spawn flake. The skill's guidance
-        // body still loads; only the hard catalogue narrowing is treated as
-        // advisory here, same spirit as the alwaysOn exception above.
-        .filter((arr) => arr.some((t) => !isReadOnlyToolName(t)));
-      if (allowlists.length > 0) {
-        allowedToolNames = new Set(allowlists.flat());
-      }
-    }
+  // The index is the ONLY skill content in the system prompt (never a body).
+  // Sort by slug so the block is byte-stable across turns (a stable cached
+  // prefix); it changes only on Owner activation/archival, not per turn.
+  // Structural-trigger skills (alwaysOn / chipTrigger) get their own callout so
+  // the model reliably loads them at the right moment even though the guidance
+  // itself is fetched on demand via load_skill.
+  const sorted = [...activeSkills].sort((a, b) => a.slug.localeCompare(b.slug));
+  const line = (s: ActiveSkillRow): string => `- ${s.slug}: ${s.description}`;
+  const alwaysOn = sorted.filter((s) => s.hints.alwaysOn === true);
+  const chip = sorted.filter((s) => s.hints.alwaysOn !== true && s.hints.chipTrigger === true);
+  const regular = sorted.filter((s) => s.hints.alwaysOn !== true && s.hints.chipTrigger !== true);
+  const parts: string[] = [
+    "# Skills",
+    "Skills are packaged instructions for specific tasks. Load one with load_skill({slug}); its guidance enters this conversation and stays for the rest of the chat, so load each skill only once (do not reload one already loaded above).",
+  ];
+  if (alwaysOn.length > 0) {
+    parts.push(
+      "ALWAYS APPLIES — load these before the relevant work (e.g. before writing or editing ANY visitor-facing copy) and follow them:",
+      ...alwaysOn.map(line),
+    );
   }
-  return { skillsBlock, allowedToolNames, engagedSkills };
+  if (chip.length > 0) {
+    parts.push(
+      "When the current message has attached element references (chips), load first:",
+      ...chip.map(line),
+    );
+  }
+  if (regular.length > 0) {
+    parts.push("Load when a task matches:", ...regular.map(line));
+  }
+  const skillsIndexBlock = parts.join("\n");
+
+  const loadedSet = new Set(args.loadedSkillSlugs);
+  const loaded = activeSkills.filter((s) => loadedSet.has(s.slug));
+  const engagedSkills: ChatEngagement[] = loaded.map((s) => ({
+    skillId: s.id,
+    slug: s.slug,
+    displayName: s.displayName,
+    source: "auto",
+    rationale: "loaded",
+  }));
+  const preload = new Set<string>();
+  for (const s of loaded) for (const t of s.allowlistedTools) preload.add(t);
+  const loadedSkillsBodyText = loaded.length > 0 ? loaded.map((s) => s.body).join("\n\n") : undefined;
+
+  return {
+    skillsIndexBlock,
+    loadedSkillsBodyText,
+    allowedToolNames: preload.size > 0 ? preload : null,
+    engagedSkills,
+  };
 }
 
 export interface PostCatalogueBlocks {
@@ -234,15 +196,21 @@ export async function buildPostCatalogueBlocks(args: {
   filteredTools: { name: string }[];
   excluded: ReadonlySet<string> | undefined;
   userMessage: string;
-  skillsBlock: string | undefined;
+  /**
+   * Concatenated bodies of skills loaded this chat (from `SkillsContext`).
+   * Only used to decide whether to surface the subagents hint (a loaded
+   * reviewer skill's body mentions spawn_subagent) — never emitted verbatim.
+   */
+  loadedSkillsBodyText: string | undefined;
 }): Promise<PostCatalogueBlocks> {
-  const { registry, adapter, aiCtx, filteredTools, excluded, userMessage, skillsBlock } = args;
+  const { registry, adapter, aiCtx, filteredTools, excluded, userMessage, loadedSkillsBodyText } =
+    args;
 
   // P10.5 #5 — subagents hint chunk. Emitted when (a) spawn tools are
   // visible in this turn's catalogue (so we never tell the AI to use
   // a tool it can't see — subagents themselves don't get the hint
   // because their own catalogue strips spawn_subagent) AND (b) the
-  // user's message contains parallel-work cues OR an engaged skill
+  // user's message contains parallel-work cues OR a loaded skill
   // body mentions spawn_subagent. Pure text guidance; the AI decides
   // whether to act.
   let subagentsBlock: string | undefined;
@@ -265,7 +233,7 @@ export async function buildPostCatalogueBlocks(args: {
       "write an article",
     ];
     const matched = cuewords.some((w) => lowered.includes(w));
-    const skillMentionsSubagents = skillsBlock?.toLowerCase().includes("spawn_subagent");
+    const skillMentionsSubagents = loadedSkillsBodyText?.toLowerCase().includes("spawn_subagent");
     if (matched || skillMentionsSubagents) {
       subagentsBlock = [
         "# Subagents",

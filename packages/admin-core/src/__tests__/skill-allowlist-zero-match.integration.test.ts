@@ -127,12 +127,33 @@ afterAll(async () => {
   await adapter.close();
 });
 
-async function captureToolsForTurn(skillKeyword: string): Promise<CapturedTool[]> {
+/**
+ * Progressive disclosure: a skill's allowlist preloads its tools once the
+ * skill is LOADED — i.e. a `load_skill` tool call is in the chat history. We
+ * seed that call (and its result) directly, then capture the NEXT turn's tools:
+ * `extractLoadedSkillSlugs` recovers the loaded slug and buildSkillsContext
+ * feeds its allowlist to the catalogue as preload hints. (The resolution +
+ * preload logic under test is unchanged; only the driver moved from the
+ * retired keyword matcher to load_skill.)
+ */
+async function captureToolsForTurn(slug: string): Promise<CapturedTool[]> {
   const session = await execute(registry, adapter, HUMAN, "chat.create_session", {
-    title: `issue106-allow-${skillKeyword}`,
+    title: `issue106-allow-${slug}`,
   });
   if (!session.ok) throw new Error("session");
   const { chatSessionId } = session.value as { chatSessionId: string };
+  await execute(registry, adapter, HUMAN, "chat.append_message", {
+    chatSessionId,
+    role: "assistant",
+    content: "loading skill",
+    toolCalls: [{ id: "seed-load", name: "load_skill", arguments: { slug } }],
+  });
+  await execute(registry, adapter, HUMAN, "chat.append_message", {
+    chatSessionId,
+    role: "tool",
+    content: "loaded",
+    toolCallId: "seed-load",
+  });
   const provider = new CapturingProvider();
   for await (const _ev of runChatTurn(
     {
@@ -143,7 +164,7 @@ async function captureToolsForTurn(skillKeyword: string): Promise<CapturedTool[]
       aiCtx: AI,
       humanCtx: HUMAN,
     },
-    { chatSessionId, content: `please ${skillKeyword} this`, chips: [] },
+    { chatSessionId, content: "please continue", chips: [] },
   )) {
     // drain
   }
@@ -164,7 +185,7 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
       ["structured_sets.list", "pages.list", "redirects.list"],
       "zzbogusaudit",
     );
-    const tools = await captureToolsForTurn("zzbogusaudit");
+    const tools = await captureToolsForTurn(ZERO_SLUG);
     const byName = new Map(tools.map((t) => [t.name, t]));
     // The translated entries are present AND preloaded (alwaysLoaded).
     expect(byName.get("list_structured_sets")?.alwaysLoaded).toBe(true);
@@ -185,14 +206,14 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
     // the union resolve to >0 tools — narrowing the catalogue and
     // breaking the ZERO-live-tools premise this test exists to pin.
     await seedSkill(ZERO_SLUG, ["totally.bogus_op", "nope.not_a_tool"], "zzbogusnix");
-    const tools = await captureToolsForTurn("zzbogusnix");
+    const tools = await captureToolsForTurn(ZERO_SLUG);
     expect(tools.length).toBeGreaterThan(50); // full catalogue, not zero
     expect(tools.some((t) => t.name === "add_module")).toBe(true);
   });
 
   it("a VALID partial allowlist PRELOADS the named write; nothing else is removed (run #8 R2b/R5)", async () => {
     await seedSkill(VALID_SLUG, ["edit_module"], "zzscopededit");
-    const tools = await captureToolsForTurn("zzscopededit");
+    const tools = await captureToolsForTurn(VALID_SLUG);
     const byName = new Map(tools.map((t) => [t.name, t]));
     // The allowlisted write is preloaded (schema up front).
     expect(byName.get("edit_module")?.alwaysLoaded).toBe(true);

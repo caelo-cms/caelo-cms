@@ -53,6 +53,7 @@ import { listLayoutsTool } from "./list-layouts.js";
 import { listModulesTool } from "./list-modules.js";
 import { listPagesTool } from "./list-pages.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
+import { loadSkillTool } from "./load-skill.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
@@ -171,6 +172,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listLayoutsTool);
   registry.register(listTemplatesTool);
   registry.register(listPagesTool);
+  registry.register(loadSkillTool);
   // issue #159 — the `## Modules` block's full-catalog escape hatch.
   registry.register(listModulesTool);
   // 2026-07-12 — clickable multiple-choice questions in the chat.

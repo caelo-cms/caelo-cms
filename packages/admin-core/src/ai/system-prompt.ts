@@ -519,8 +519,11 @@ export interface VolatileContext {
   readonly aiProvidersBlock?: string;
   /** v0.2.38 — `## Domains` inventory (hostname + kind + TLS status). */
   readonly domainsBlock?: string;
-  /** P10A — engaged skills' bodies, tagged with slug + source. */
-  readonly skillsBlock?: string;
+  /** Static `## Skills` index (slug + description per active skill).
+   *  Progressive disclosure: this tiny list is cacheable (changes only on
+   *  Owner activation, not per turn); the skill BODIES load on demand via the
+   *  load_skill tool into the message history, never into the system prompt. */
+  readonly skillsIndexBlock?: string;
   /** P10.5 #5 — hint that spawn_subagent / spawn_subagents exist + when to use them. */
   readonly subagentsBlock?: string;
   /** P11 opt 4 — AI's own pending or rejected plugin submissions, so it
@@ -568,10 +571,17 @@ export function composeSystemPromptChunks(
   // cold call by ~22% with zero capability loss. (Warm calls were cached, so
   // this mainly buys back the first, un-cached call of each turn.)
 
-  // Volatile chunks go last so the cache prefix above stays byte-stable.
-  if (volatile.skillsBlock && volatile.skillsBlock.trim().length > 0) {
-    chunks.push({ body: volatile.skillsBlock, cacheable: false, label: "skills" });
+  // Skills index (progressive disclosure): the STATIC list of active skills'
+  // slug + description. Cacheable and placed in the prefix — it changes only
+  // on Owner activation, never per turn, so it never busts the cache. Skill
+  // BODIES are NOT here; the model pulls each one into the append-only message
+  // history on demand via the load_skill tool (CLAUDE.md §2 — dynamic content
+  // stays out of the cached system prompt).
+  if (volatile.skillsIndexBlock && volatile.skillsIndexBlock.trim().length > 0) {
+    chunks.push({ body: volatile.skillsIndexBlock, cacheable: true, label: "skills-index" });
   }
+
+  // Volatile chunks go last so the cache prefix above stays byte-stable.
   if (volatile.subagentsBlock && volatile.subagentsBlock.trim().length > 0) {
     chunks.push({ body: volatile.subagentsBlock, cacheable: false, label: "subagents" });
   }
