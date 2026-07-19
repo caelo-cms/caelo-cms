@@ -308,18 +308,37 @@ export function validateSubagentResultValue(
   value: unknown,
   shape: ExpectedReturnShape,
 ): ParseResult {
+  // Defense-in-depth for the structured shapes: a provider can
+  // double-encode the payload so `value` arrives as a JSON string even
+  // after the `submit_result` inputSchema fix (and the final-text
+  // fallback path never passes through normalize-args at all). The
+  // structured shapes want an object/array, so decode a JSON-looking
+  // string before parsing. `freeform` legitimately wants a bare string,
+  // so it is left untouched.
+  let coerced = value;
+  if (shape !== "freeform" && typeof coerced === "string") {
+    const trimmed = coerced.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        coerced = JSON.parse(trimmed);
+      } catch {
+        // leave as-is; the shape parse below reports the real mismatch
+      }
+    }
+  }
+
   // v0.2.67 — when the schema rejects, include the actual top-level
   // keys the subagent returned so the parent AI can tell whether the
   // subagent ignored the schema entirely (returned freeform text under
   // a different shape) vs. got close but mistyped a single field.
   const observedKeys =
-    typeof value === "object" && value !== null && !Array.isArray(value)
-      ? Object.keys(value as Record<string, unknown>)
+    typeof coerced === "object" && coerced !== null && !Array.isArray(coerced)
+      ? Object.keys(coerced as Record<string, unknown>)
       : [];
   const observedSummary =
     observedKeys.length > 0
       ? ` got keys: [${observedKeys.slice(0, 8).join(", ")}]`
-      : ` got: ${typeof value} (${Array.isArray(value) ? "array" : "scalar"})`;
+      : ` got: ${typeof coerced} (${Array.isArray(coerced) ? "array" : "scalar"})`;
   const issueSummary = (issues: readonly z.ZodIssue[]): string =>
     issues
       .slice(0, 3)
@@ -341,7 +360,7 @@ export function validateSubagentResultValue(
     return { ok: true, shape: "freeform", value: validated.data };
   }
   if (shape === "verdict") {
-    const validated = verdictReturnShape.safeParse(value);
+    const validated = verdictReturnShape.safeParse(coerced);
     if (!validated.success) {
       return {
         ok: false,
@@ -351,7 +370,7 @@ export function validateSubagentResultValue(
     return { ok: true, shape: "verdict", value: validated.data };
   }
   if (shape === "rebuild") {
-    const validated = rebuildReturnShape.safeParse(value);
+    const validated = rebuildReturnShape.safeParse(coerced);
     if (!validated.success) {
       return {
         ok: false,
@@ -361,7 +380,7 @@ export function validateSubagentResultValue(
     return { ok: true, shape: "rebuild", value: validated.data };
   }
   // tree
-  const validated = treeReturnShape.safeParse(value);
+  const validated = treeReturnShape.safeParse(coerced);
   if (!validated.success) {
     return {
       ok: false,

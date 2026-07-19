@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { parseSubagentResult, subagentSpec } from "./subagents.js";
+import {
+  parseSubagentResult,
+  subagentSpec,
+  validateSubagentResultValue,
+} from "./subagents.js";
 
 describe("subagentSpec", () => {
   it("accepts a minimal spec with role + task", () => {
@@ -26,6 +30,49 @@ describe("subagentSpec", () => {
 
   it("rejects unknown fields (.strict)", () => {
     expect(subagentSpec.safeParse({ role: "x", task: "y", randomField: "z" }).success).toBe(false);
+  });
+});
+
+describe("validateSubagentResultValue — double-encoded payload (submit_result bug)", () => {
+  // Bug: a provider double-encodes the verdict as a JSON STRING
+  // (`{"result":"{\"pass\":true,...}"}`); with `result` untyped in the
+  // submit_result inputSchema the encoding-repair layer couldn't decode
+  // it, so a well-formed verdict reached the validator as a string and
+  // was rejected as "string (scalar)". The validator now decodes a
+  // JSON-looking string for structured shapes as defense-in-depth.
+  it("verdict — accepts a JSON-string-encoded object", () => {
+    const encoded = JSON.stringify({ pass: true, issues: [], suggestions: ["add CTA"] });
+    const r = validateSubagentResultValue(encoded, "verdict");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.shape).toBe("verdict");
+    expect(r.value.pass).toBe(true);
+    expect(r.value.suggestions).toEqual(["add CTA"]);
+  });
+
+  it("verdict — still accepts a real object (unchanged path)", () => {
+    const r = validateSubagentResultValue({ pass: false, issues: ["x"] }, "verdict");
+    expect(r.ok).toBe(true);
+  });
+
+  it("rebuild — accepts a JSON-string-encoded object", () => {
+    const encoded = JSON.stringify({ pages: [{ slug: "/home", status: "rebuilt" }] });
+    const r = validateSubagentResultValue(encoded, "rebuild");
+    expect(r.ok).toBe(true);
+  });
+
+  it("verdict — a genuine non-JSON string still fails with the scalar hint", () => {
+    const r = validateSubagentResultValue("looks good to me", "verdict");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("scalar");
+  });
+
+  it("freeform — a bare prose string is NOT treated as JSON", () => {
+    const r = validateSubagentResultValue("plain prose", "freeform");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.text).toBe("plain prose");
   });
 });
 
