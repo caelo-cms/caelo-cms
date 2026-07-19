@@ -18,6 +18,7 @@
  * `../chat-runner.ts` is now a thin re-export shim onto this module.
  */
 
+import { execute } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
 import type { ChatMessageInput } from "../provider.js";
@@ -25,7 +26,8 @@ import { composeSystemPromptChunks } from "../system-prompt.js";
 import { attachGatedExecute } from "../tools/gated-tools.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
 import { resolveCompactionThresholdTokens } from "./compaction.js";
-import { buildPostCatalogueBlocks, extractLoadedSkillSlugs } from "./context/skills.js";
+import { lastNoteSignature, noteSignature } from "./context/page.js";
+import { extractLoadedSkillSlugs } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import { buildContextSplitEstimate } from "./context-split.js";
 import {
@@ -194,19 +196,31 @@ export async function* runChatTurn(
   });
   markPhase("contextBlocksMs");
 
-  // Cold-start status rides ON the user message (in-memory only; never
-  // persisted) so the model sees "Theme: needs setup, Layout: needs
-  // setup" exactly while it's true and nothing once the foundation is
-  // complete. Appended AFTER skill matching so status text can't skew
-  // keyword engagement.
-  if (ctx.statusLine) {
-    for (let i = baseMessages.length - 1; i >= 0; i--) {
-      const m = baseMessages[i];
-      if (m && m.role === "user" && typeof m.content === "string") {
-        baseMessages[i] = { ...m, content: `${m.content}\n\n${ctx.statusLine}` };
-        break;
-      }
-    }
+  // The cold-start status ("Theme: needs setup", …) and the current-page
+  // context ("where am I") ride on the MESSAGE FLOW, never the system prompt
+  // (operator's rule: nothing dynamic in the system prompt). Each is injected
+  // as an origin=system note on the FIRST turn and again only when it CHANGED
+  // since we last told the model (djb2 signature vs the last <!--marker:SIG-->
+  // in the history), persisted so it stays in the append-only history and the
+  // change-check survives across turns. All other live site state is fetched
+  // on-demand via the list_/get_ tools.
+  const injectNote = async (marker: string, seed: string, body: string): Promise<void> => {
+    const sig = noteSignature(seed);
+    if (lastNoteSignature(session.messages, marker) === sig) return;
+    const full = `${body}\n<!--${marker}:${sig}-->`;
+    await execute(registry, adapter, humanCtx, "chat.append_message", {
+      chatSessionId: input.chatSessionId,
+      role: "user",
+      origin: "system",
+      content: full,
+    });
+    baseMessages.push({ role: "user", content: full });
+  };
+  if (ctx.statusLine && ctx.statusLine.trim().length > 0) {
+    await injectNote("status", ctx.statusLine, ctx.statusLine);
+  }
+  if (ctx.pageContextBlock && ctx.pageContextBlock.trim().length > 0 && input.activePageId) {
+    await injectNote("pagectx", `${input.activePageId}\n${ctx.pageContextBlock}`, ctx.pageContextBlock);
   }
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion
@@ -240,22 +254,12 @@ export async function* runChatTurn(
     return [attachGatedExecute(t, registry, adapter, aiCtxWithBranch, humanCtx)];
   });
 
-  // Blocks that depend on the filtered catalogue (subagents / plugins).
-  const postBlocks = await buildPostCatalogueBlocks({
-    registry,
-    adapter,
-    aiCtx,
-    filteredTools,
-    excluded: options.excludedToolNames,
-    userMessage: input.content ?? "",
-    loadedSkillsBodyText: ctx.loadedSkillsBodyText,
-  });
-
+  // The system prompt is fully static now — the only passthrough is the static
+  // skills index. Subagent guidance is a static chunk; the old plugin /
+  // plugin-context blocks were dynamic and are dropped (the AI reaches plugin
+  // state on-demand via tools).
   const systemChunks = composeSystemPromptChunks(memory, {
-    ...ctx.preBlocks,
-    subagentsBlock: postBlocks.subagentsBlock,
-    pluginsBlock: postBlocks.pluginsBlock,
-    pluginContextBlock: postBlocks.pluginContextBlock,
+    skillsIndexBlock: ctx.preBlocks.skillsIndexBlock,
   });
 
   const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };

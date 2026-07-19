@@ -380,7 +380,6 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     expect(skills.engagedSkills.map((e) => e.slug)).toContain("manage-menu");
     // manage-menu's allowlist preloads the structured-set tools.
     expect(skills.allowedToolNames?.has("set_structured_set")).toBe(true);
-    expect(skills.loadedSkillsBodyText).toContain("nav-menu");
   });
 });
 

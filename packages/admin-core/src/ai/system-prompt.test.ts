@@ -19,6 +19,7 @@ describe("composeSystemPromptChunks", () => {
       "tool-playbook",
       "module-model",
       "staging",
+      "subagents",
       "memory",
     ]);
     for (const c of chunks) expect(c.cacheable).toBe(true);
@@ -42,31 +43,44 @@ describe("composeSystemPromptChunks", () => {
     expect(body).toContain("tool-search tool");
   });
 
-  it("appends chips as a non-cacheable trailing chunk", () => {
-    const chunks = composeSystemPromptChunks([], { chipsBlock: "chip A" });
-    expect(chunks.at(-1)?.label).toBe("chips");
-    expect(chunks.at(-1)?.cacheable).toBe(false);
+  it("is fully static — dynamic context never reaches the system prompt", () => {
+    // The operator's rule: nothing dynamic in the system prompt (so the whole
+    // prompt stays cached, never busted). Dynamic site state is fetched
+    // on-demand via tools; the current page rides on the user message. So even
+    // when every legacy volatile block is passed, NONE produce a chunk.
+    const withState = composeSystemPromptChunks([], {
+      chipsBlock: "chip A",
+      themeBlock: "theme X",
+      allPagesBlock: "pages",
+      pageContextBlock: "current page",
+      modulesBlock: "mods",
+      layoutsBlock: "layouts",
+      redirectsBlock: "redirects",
+      usersBlock: "users",
+    });
+    const bare = composeSystemPromptChunks([]);
+    expect(withState.map((c) => c.label)).toEqual(bare.map((c) => c.label));
+    // Everything in the system prompt is cacheable — nothing volatile remains.
+    expect(withState.every((c) => c.cacheable)).toBe(true);
   });
 
-  it("orders chips after the cacheable prefix so cache stays warm across turns", () => {
-    const a = composeSystemPromptChunks([{ slot: "tone", body: "x" }], { chipsBlock: "1" });
-    const b = composeSystemPromptChunks([{ slot: "tone", body: "x" }], { chipsBlock: "2" });
-    // The first 3 chunks (base/memory/skills-empty) are byte-identical
-    // between calls; only the trailing chips chunk differs.
-    expect(a.slice(0, -1)).toEqual(b.slice(0, -1));
-    expect(a.at(-1)?.body).not.toBe(b.at(-1)?.body);
+  it("includes the static skills index as a cacheable chunk", () => {
+    const chunks = composeSystemPromptChunks([], { skillsIndexBlock: "# Skills\n- x: y" });
+    const idx = chunks.find((c) => c.label === "skills-index");
+    expect(idx?.cacheable).toBe(true);
+    expect(idx?.body).toContain("# Skills");
   });
 
   it("skips empty slots", () => {
     const chunks = composeSystemPromptChunks([]);
-    // v0.4.0 — base + module-model are always present.
-    // v0.5.5 — staging joins them as a third permanent cacheable chunk.
-    // Tool Search default-on — tool-playbook joins as the fourth.
+    // The static core: base + tool-playbook + module-model + staging +
+    // subagents. All permanent + cacheable — the system prompt is fully static.
     expect(chunks.map((c) => c.label)).toEqual([
       "base",
       "tool-playbook",
       "module-model",
       "staging",
+      "subagents",
     ]);
   });
 

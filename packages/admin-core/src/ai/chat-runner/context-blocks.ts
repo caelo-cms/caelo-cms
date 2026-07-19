@@ -1,89 +1,55 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Assembles the pre-catalogue system-prompt context blocks by orchestrating
- * the per-area builders in `./context/*`. Extracted from the pre-split
- * `chat-runner.ts`; this is the "context-block injection" concern (the
- * formatters themselves live in the sibling `../system-prompt.ts`, which this
- * module calls but does not modify).
+ * Assembles the (now minimal) pre-catalogue context. The system prompt is 100%
+ * STATIC (operator's rule: nothing dynamic in the system prompt, so it stays
+ * cached and is never busted), so the only block it still contributes is the
+ * static `## Skills` index. Everything the AI once received as a volatile
+ * system-prompt block (pages, modules, theme, structured sets, content library,
+ * layouts, redirects, locales, users/roles, …) is gone — the AI fetches that
+ * state on-demand via the list_/get_ tools (results land in the append-only,
+ * cache-friendly message history).
  *
- * It does NOT call `composeSystemPromptChunks` or build the tool catalogue —
- * those run in `index.ts`, because the subagents / plugins / plugin-context
- * blocks depend on the already-filtered catalogue (see
- * `buildPostCatalogueBlocks`).
+ * Two things ride on the USER message instead (fresh at injection, never in the
+ * cached prefix): the current-page context and the cold-start status line —
+ * both injected on the first turn and again only when they change (see the
+ * chat-runner turn assembly).
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ChatEngagement, ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
-import { buildCatalogBlocks } from "./context/catalog.js";
-import { buildDomainBlocks } from "./context/domains.js";
-import { buildForeignLocksBlock } from "./context/foreign-locks.js";
-import { buildAllPagesBlock, buildPageContext } from "./context/page.js";
-import { buildSiteBlocks } from "./context/site.js";
+import { buildPageContext } from "./context/page.js";
 import { buildSkillsContext } from "./context/skills.js";
 
-/** The pre-catalogue blocks passed (alongside the post-catalogue blocks) to composeSystemPromptChunks. */
+/** The (static) blocks passed to composeSystemPromptChunks. */
 export interface PreCatalogueBlocks {
-  chipsBlock: string | undefined;
-  pageContextBlock: string | undefined;
-  allPagesBlock: string | undefined;
-  siteIdentityBlock: string | undefined;
-  designSystemBlock: string | undefined;
-  themeBlock: string | undefined;
-  structuredSetsBlock: string | undefined;
-  modulesBlock: string | undefined;
-  contentLibraryBlock: string | undefined;
-  layoutsBlock: string | undefined;
-  siteDefaultsBlock: string | undefined;
-  mediaBlock: string | undefined;
-  redirectsBlock: string | undefined;
-  localesBlock: string | undefined;
-  pendingProposalsBlock: string | undefined;
-  /** issue #262 — entities locked by OTHER chats (interim guard until #264 leases). */
-  foreignLocksBlock: string | undefined;
-  usersBlock: string | undefined;
-  rolesBlock: string | undefined;
-  aiProvidersBlock: string | undefined;
-  domainsBlock: string | undefined;
-  /** Static `## Skills` index (slug + description per active skill) — cached
-   *  in the system prefix; the bodies load on demand via the load_skill tool
-   *  into the message history (progressive disclosure). */
+  /** Static `## Skills` index (slug + description per active skill). */
   skillsIndexBlock: string | undefined;
 }
 
 export interface SystemContextResult {
   preBlocks: PreCatalogueBlocks;
-  /** Raw op values fed to buildToolDescribeState. */
-  layoutsValue: unknown;
-  templatesValue: unknown;
-  siteDefaultsValue: unknown;
-  /** Skills LOADED this chat, consumed by the tool catalogue (preload) + the
-   *  post-catalogue subagent-hint heuristic. */
+  /**
+   * Current-page context ("where am I"). Rides on the USER message (first turn
+   * + when the page changed), never the system prompt.
+   */
+  pageContextBlock: string | undefined;
+  /** Skills loaded this chat — feeds the tool-catalogue preload + diagnostics. */
   engagedSkills: ChatEngagement[];
   allowedToolNames: Set<string> | null;
-  /** Concatenated bodies of skills loaded this chat — fed to
-   *  buildPostCatalogueBlocks for the subagent-hint check only. */
-  loadedSkillsBodyText: string | undefined;
   /**
-   * Cold-start status appended to the user message (in-memory only,
-   * never persisted). Lists ONLY the base setup still missing ("Theme:
-   * needs setup, Layout: needs setup"), each entry naming the tool that
-   * fixes it; undefined once the site's foundation is complete, so
-   * steady-state turns carry zero status overhead. Kept from the 2026-07
-   * prompt-diet experiment: the data chunks won the A/B, but this line
-   * measurably stopped cold-start dithering (the AI fixes the named
-   * gaps without asking the operator).
+   * Cold-start status ("Theme: needs setup", …), each entry naming the tool
+   * that fixes it. Rides on the USER message (first + on change); undefined once
+   * the site's foundation is complete.
    */
   statusLine: string | undefined;
 }
 
 /**
- * Derive the cold-start status from state already loaded for
- * buildToolDescribeState (+ one cheap themes.get_active read). Each
- * entry names the tool that fixes it — the AI acts without asking.
- * Exported for unit tests; production callers go through
+ * Derive the cold-start status. Each entry names the tool that fixes it — the
+ * AI acts without asking. Exported for unit tests; production callers go through
  * buildSystemContextBlocks.
  */
 export function buildStatusLine(args: {
@@ -125,89 +91,43 @@ export async function buildSystemContextBlocks(deps: {
    *  tool calls in the history) — drives the skills tool preload. */
   loadedSkillSlugs: readonly string[];
 }): Promise<SystemContextResult> {
-  const { registry, adapter, humanCtx, humanCtxWithBranch, aiActorId, input } = deps;
+  const { registry, adapter, humanCtx, humanCtxWithBranch, input } = deps;
 
-  // P5.2 #4 — chips render as a volatile chunk so they don't bust the
-  // cache prefix (BASE + memory + tools).
-  const chipsBlock =
-    input.chips.length > 0
-      ? [
-          "# Element references in this turn",
-          ...input.chips.map((c) => `- ${c.label} (module=${c.moduleId}, selector=${c.selector})`),
-        ].join("\n")
-      : undefined;
-
+  // Current-page context (for the user message) + the static skills index.
   const { pageContextBlock } = await buildPageContext(
     registry,
     adapter,
     humanCtxWithBranch,
     input.activePageId,
   );
-  const allPagesBlock = await buildAllPagesBlock(registry, adapter, humanCtxWithBranch);
-  const catalog = await buildCatalogBlocks(registry, adapter, humanCtx, humanCtxWithBranch);
-  const site = await buildSiteBlocks(registry, adapter, humanCtxWithBranch);
-  const domains = await buildDomainBlocks(registry, adapter, humanCtx, aiActorId);
-  // issue #262 — foreign-lock visibility so the AI warns during planning
-  // instead of hitting Locked errors mid-run (run #7 regression class).
-  const foreignLocksBlock = await buildForeignLocksBlock(
-    registry,
-    adapter,
-    humanCtx,
-    input.chatSessionId,
-  );
   const skills = await buildSkillsContext(registry, adapter, humanCtx, {
     loadedSkillSlugs: deps.loadedSkillSlugs,
   });
 
-  // Cold-start status: one cheap active-theme read; everything else
-  // reuses the values already loaded for buildToolDescribeState.
-  const activeThemeR = await execute(
-    registry,
-    adapter,
-    humanCtxWithBranch,
-    "themes.get_active",
-    {},
-  );
-  const activeTheme = activeThemeR.ok
-    ? (activeThemeR.value as { theme: { origin?: string | null } | null }).theme
-    : null;
+  // Cold-start status: the ONLY site-state reads that remain, and only to name
+  // what base setup is still missing (cheap counts; the line is undefined — no
+  // reads matter — once the foundation exists). Fetched here rather than dumped
+  // as prompt blocks; the line itself rides on the user message.
+  const [layoutsR, templatesR, defaultsR, themeR] = await Promise.all([
+    execute(registry, adapter, humanCtxWithBranch, "layouts.list", { includeDeleted: false }),
+    execute(registry, adapter, humanCtxWithBranch, "templates.list", { includeDeleted: false }),
+    execute(registry, adapter, humanCtxWithBranch, "site_defaults.get", {}),
+    execute(registry, adapter, humanCtxWithBranch, "themes.get_active", {}),
+  ]);
   const statusLine = buildStatusLine({
-    layoutsValue: site.layoutsValue,
-    templatesValue: site.templatesValue,
-    siteDefaultsValue: site.siteDefaultsValue,
-    activeTheme,
+    layoutsValue: layoutsR.ok ? layoutsR.value : null,
+    templatesValue: templatesR.ok ? templatesR.value : null,
+    siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,
+    activeTheme: themeR.ok
+      ? (themeR.value as { theme: { origin?: string | null } | null }).theme
+      : null,
   });
 
   return {
-    preBlocks: {
-      chipsBlock,
-      pageContextBlock,
-      allPagesBlock,
-      siteIdentityBlock: site.siteIdentityBlock,
-      designSystemBlock: site.designSystemBlock,
-      themeBlock: catalog.themeBlock,
-      structuredSetsBlock: catalog.structuredSetsBlock,
-      modulesBlock: catalog.modulesBlock,
-      contentLibraryBlock: catalog.contentLibraryBlock,
-      layoutsBlock: site.layoutsBlock,
-      siteDefaultsBlock: site.siteDefaultsBlock,
-      mediaBlock: catalog.mediaBlock,
-      redirectsBlock: domains.redirectsBlock,
-      localesBlock: domains.localesBlock,
-      pendingProposalsBlock: domains.pendingProposalsBlock,
-      foreignLocksBlock,
-      usersBlock: domains.usersBlock,
-      rolesBlock: domains.rolesBlock,
-      aiProvidersBlock: domains.aiProvidersBlock,
-      domainsBlock: domains.domainsBlock,
-      skillsIndexBlock: skills.skillsIndexBlock,
-    },
-    layoutsValue: site.layoutsValue,
-    templatesValue: site.templatesValue,
-    siteDefaultsValue: site.siteDefaultsValue,
+    preBlocks: { skillsIndexBlock: skills.skillsIndexBlock },
+    pageContextBlock,
     engagedSkills: skills.engagedSkills,
     allowedToolNames: skills.allowedToolNames,
-    loadedSkillsBodyText: skills.loadedSkillsBodyText,
     statusLine,
   };
 }
