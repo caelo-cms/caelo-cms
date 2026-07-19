@@ -14,7 +14,9 @@ describe("subagentSpec", () => {
     // here (the old 50M µ¢) would make omission indistinguishable from
     // an explicit choice.
     expect(r.data.maxCostMicrocents).toBeUndefined();
-    expect(r.data.timeoutMs).toBe(60_000);
+    // Default 300s — build children (Genesis draft, migration rebuild) need
+    // minutes; the old 60s aborted them mid-work (0 drafts saved).
+    expect(r.data.timeoutMs).toBe(300_000);
   });
 
   it("rejects empty role + task", () => {

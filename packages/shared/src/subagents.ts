@@ -90,8 +90,19 @@ export const subagentSpec = z
      * would make "AI omitted it" indistinguishable from "AI chose $0.50".
      */
     maxCostMicrocents: z.number().int().nonnegative().optional(),
-    /** Per-spawn timeout; default 60s. */
-    timeoutMs: z.number().int().min(1000).max(600_000).default(60_000),
+    /**
+     * Per-spawn wall-clock timeout. Default 300s (5 min): the documented
+     * fan-out use cases are page BUILDS — a Genesis design draft (full page +
+     * image generation) and a migration per-type rebuild each legitimately run
+     * 2–4 min. The old 60s default aborted every build child mid-work (Genesis
+     * live-run 2026-07: all 3 draft children `timed_out` at ~60000ms, so the
+     * flow saved 0 drafts; the abort also skips the child's `ai_calls` write, so
+     * the roll-up read `$0.00` — the child WAS building, not idle). Quick
+     * reviewer children (qa/legal/menu/categorizer) finish well under this
+     * ceiling, so the higher default is harmless for them. The AI can still
+     * pass a smaller `timeoutMs` for a known-fast child.
+     */
+    timeoutMs: z.number().int().min(1000).max(600_000).default(300_000),
     /**
      * issue #306 — model tier for this child. Default `inherit` keeps
      * single-model behaviour byte-identical to pre-#306 (conservative
