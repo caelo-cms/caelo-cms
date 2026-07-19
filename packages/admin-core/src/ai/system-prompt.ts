@@ -491,8 +491,14 @@ export function composeSystemPromptChunks(
     { body: TOOL_PLAYBOOK_BLOCK, cacheable: true, label: "tool-playbook" },
     { body: MODULE_MODEL_BLOCK, cacheable: true, label: "module-model" },
     { body: STAGING_BLOCK, cacheable: true, label: "staging" },
-    { body: SUBAGENTS_BLOCK, cacheable: true, label: "subagents" },
   ];
+  // Static subagents guidance — suppressed when subagents are disabled (the
+  // CAELO_DISABLE_SUBAGENTS toggle also strips the spawn tools) so the model is
+  // never told about a capability it doesn't have. Env is process-static, so
+  // the prompt stays byte-stable within a run (cache-safe).
+  if (process.env.CAELO_DISABLE_SUBAGENTS !== "1") {
+    chunks.push({ body: SUBAGENTS_BLOCK, cacheable: true, label: "subagents" });
+  }
 
   const bySlot = new Map(memory.map((m) => [m.slot, m.body.trim()]));
   const memoryLines: string[] = [];

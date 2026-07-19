@@ -70,8 +70,18 @@ export function resolveExcludedToolNames(
   excluded: ReadonlySet<string> | undefined,
   hasResultCapture: boolean,
 ): ReadonlySet<string> | undefined {
-  if (hasResultCapture) return excluded;
-  return new Set([...(excluded ?? []), SUBAGENT_RESULT_TOOL_NAME]);
+  const extra: string[] = [];
+  // Operator / A/B toggle: with subagents disabled, strip the spawn tools from
+  // every turn's catalogue so the model does the work itself (single-agent).
+  // Paired with the static `## Subagents` prompt block being suppressed under
+  // the same env in composeSystemPromptChunks.
+  if (process.env.CAELO_DISABLE_SUBAGENTS === "1") {
+    extra.push("spawn_subagent", "spawn_subagents");
+  }
+  // Normal (non-child) turns never expose the subagent-only result tool.
+  if (!hasResultCapture) extra.push(SUBAGENT_RESULT_TOOL_NAME);
+  if (extra.length === 0) return excluded;
+  return new Set([...(excluded ?? []), ...extra]);
 }
 
 /**
