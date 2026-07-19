@@ -66,4 +66,9 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // AI that must tool-search for the reporting channel while confused
   // defeats the purpose (2026-07, run B4 selector-crop diagnosis).
   "bug_report",
+  // Progressive-disclosure skills entry point. The `## Skills` index lists
+  // every active skill; the model calls load_skill the moment a task matches
+  // one. Deferring it behind tool search would add a discovery round-trip in
+  // front of EVERY skill activation — the opposite of the point. Cheap schema.
+  "load_skill",
 ]);

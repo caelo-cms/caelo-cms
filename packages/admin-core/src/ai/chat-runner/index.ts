@@ -25,7 +25,7 @@ import { composeSystemPromptChunks } from "../system-prompt.js";
 import { attachGatedExecute } from "../tools/gated-tools.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
 import { resolveCompactionThresholdTokens } from "./compaction.js";
-import { buildPostCatalogueBlocks } from "./context/skills.js";
+import { buildPostCatalogueBlocks, extractLoadedSkillSlugs } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import { buildContextSplitEstimate } from "./context-split.js";
 import {
@@ -177,6 +177,11 @@ export async function* runChatTurn(
   );
   markPhase("buildProviderHistoryMs");
 
+  // Progressive-disclosure skills: recover which skills the model already
+  // loaded this chat (from prior load_skill tool calls in the history) so their
+  // tools stay preloaded and the subagent-hint heuristic sees their bodies.
+  const loadedSkillSlugs = extractLoadedSkillSlugs(session.messages);
+
   // Build all pre-catalogue system-prompt context blocks + skill engagement.
   const ctx = await buildSystemContextBlocks({
     registry,
@@ -185,6 +190,7 @@ export async function* runChatTurn(
     humanCtxWithBranch,
     aiActorId: aiCtx.actorId,
     input,
+    loadedSkillSlugs,
   });
   markPhase("contextBlocksMs");
 
@@ -242,7 +248,7 @@ export async function* runChatTurn(
     filteredTools,
     excluded: options.excludedToolNames,
     userMessage: input.content ?? "",
-    skillsBlock: ctx.preBlocks.skillsBlock,
+    loadedSkillsBodyText: ctx.loadedSkillsBodyText,
   });
 
   const systemChunks = composeSystemPromptChunks(memory, {

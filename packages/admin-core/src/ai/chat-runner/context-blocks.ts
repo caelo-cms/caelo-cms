@@ -47,7 +47,10 @@ export interface PreCatalogueBlocks {
   rolesBlock: string | undefined;
   aiProvidersBlock: string | undefined;
   domainsBlock: string | undefined;
-  skillsBlock: string | undefined;
+  /** Static `## Skills` index (slug + description per active skill) — cached
+   *  in the system prefix; the bodies load on demand via the load_skill tool
+   *  into the message history (progressive disclosure). */
+  skillsIndexBlock: string | undefined;
 }
 
 export interface SystemContextResult {
@@ -56,9 +59,13 @@ export interface SystemContextResult {
   layoutsValue: unknown;
   templatesValue: unknown;
   siteDefaultsValue: unknown;
-  /** Skill engagement results consumed by the tool catalogue + post-catalogue blocks. */
+  /** Skills LOADED this chat, consumed by the tool catalogue (preload) + the
+   *  post-catalogue subagent-hint heuristic. */
   engagedSkills: ChatEngagement[];
   allowedToolNames: Set<string> | null;
+  /** Concatenated bodies of skills loaded this chat — fed to
+   *  buildPostCatalogueBlocks for the subagent-hint check only. */
+  loadedSkillsBodyText: string | undefined;
   /**
    * Cold-start status appended to the user message (in-memory only,
    * never persisted). Lists ONLY the base setup still missing ("Theme:
@@ -114,6 +121,9 @@ export async function buildSystemContextBlocks(deps: {
   humanCtxWithBranch: ExecutionContext;
   aiActorId: string;
   input: ChatSendMessageInput;
+  /** Slugs the model already loaded this chat (parsed from prior load_skill
+   *  tool calls in the history) — drives the skills tool preload. */
+  loadedSkillSlugs: readonly string[];
 }): Promise<SystemContextResult> {
   const { registry, adapter, humanCtx, humanCtxWithBranch, aiActorId, input } = deps;
 
@@ -146,9 +156,7 @@ export async function buildSystemContextBlocks(deps: {
     input.chatSessionId,
   );
   const skills = await buildSkillsContext(registry, adapter, humanCtx, {
-    userMessage: input.content ?? "",
-    chipCount: input.chips.length,
-    chatSessionId: input.chatSessionId,
+    loadedSkillSlugs: deps.loadedSkillSlugs,
   });
 
   // Cold-start status: one cheap active-theme read; everything else
@@ -192,13 +200,14 @@ export async function buildSystemContextBlocks(deps: {
       rolesBlock: domains.rolesBlock,
       aiProvidersBlock: domains.aiProvidersBlock,
       domainsBlock: domains.domainsBlock,
-      skillsBlock: skills.skillsBlock,
+      skillsIndexBlock: skills.skillsIndexBlock,
     },
     layoutsValue: site.layoutsValue,
     templatesValue: site.templatesValue,
     siteDefaultsValue: site.siteDefaultsValue,
     engagedSkills: skills.engagedSkills,
     allowedToolNames: skills.allowedToolNames,
+    loadedSkillsBodyText: skills.loadedSkillsBodyText,
     statusLine,
   };
 }

@@ -13,6 +13,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import {
+  buildSkillsContext,
+  extractLoadedSkillSlugs,
+} from "../ai/chat-runner/context/skills.js";
+import type { ToolContext } from "../ai/tools/dispatch.js";
+import { liveToolNames } from "../ai/tools/live-tool-names.js";
+import { loadSkillTool } from "../ai/tools/load-skill.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -239,6 +246,141 @@ describe("seeded base skills", () => {
     // The rename must be complete — no dead tool names left in the allowlist.
     expect(tools).not.toContain("add_module_to_layout");
     expect(tools).not.toContain("compose_page_from_spec");
+  });
+});
+
+// 0168 / 0169 — a skill per authoring domain + workflow. Every LARGER task
+// the operator describes in outcomes ("build a card", "add a footer menu",
+// "write a meta description") gets a skill that hands the AI the right call
+// shape, so the design test of §1A holds: the AI can act without a human
+// round-trip.
+describe("authoring + workflow skills (0168 / 0169)", () => {
+  const CORE_DOMAIN = ["manage-module", "manage-menu"];
+  const WORKFLOW = [
+    "shared-content",
+    "manage-media",
+    "page-seo",
+    "manage-redirects",
+    "theme-branding",
+    "templates-layouts",
+    "import-page",
+  ];
+  const ALL_NEW = [...CORE_DOMAIN, ...WORKFLOW];
+
+  async function activeSkills(): Promise<
+    { slug: string; displayName: string; body: string; allowlistedTools: string[]; hints: unknown }[]
+  > {
+    const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+    if (!r.ok) throw new Error("skills.list failed");
+    return (
+      r.value as {
+        skills: {
+          id: string;
+          slug: string;
+          displayName: string;
+          body: string;
+          allowlistedTools: string[];
+          hints: unknown;
+        }[];
+      }
+    ).skills;
+  }
+
+  it("all new skills are seeded active", async () => {
+    const slugs = (await activeSkills()).map((s) => s.slug);
+    for (const slug of ALL_NEW) expect(slugs).toContain(slug);
+  });
+
+  // The #301 invariant: an allowlist entry that isn't a live tool name is a
+  // dead preload hint (logged as skill-allowlist-unresolved-entry) — it means
+  // the skill teaches a tool the AI can't call. Every entry must resolve.
+  it("every new skill's allowlist resolves to live tool names", async () => {
+    const live = liveToolNames();
+    const skills = await activeSkills();
+    for (const slug of ALL_NEW) {
+      const skill = skills.find((s) => s.slug === slug);
+      expect(skill).toBeDefined();
+      for (const tool of skill?.allowlistedTools ?? []) {
+        expect({ slug, tool, isLive: live.has(tool) }).toEqual({ slug, tool, isLive: true });
+      }
+    }
+  });
+
+  it("compose-page is now the page DOMAIN skill (create + edit)", async () => {
+    const compose = (await activeSkills()).find((s) => s.slug === "compose-page");
+    expect(compose).toBeDefined();
+    expect(compose?.displayName).toBe("Create & edit pages");
+    expect(compose?.body).toContain("EDITING an existing page");
+    const tools = compose?.allowlistedTools ?? [];
+    // Edit-path tools joined by 0168 (dedup-safe union kept the create tools).
+    for (const t of [
+      "set_page_module_content",
+      "set_pages_status_many",
+      "update_pages_many",
+      "remove_module_from",
+      "repoint_page_template",
+      "build_page",
+    ]) {
+      expect(tools).toContain(t);
+    }
+  });
+
+  // Progressive disclosure: the STATIC `## Skills` index lists every active
+  // skill's slug + description (the model's discovery surface) but never the
+  // bodies — those load on demand via load_skill into the message history.
+  it("the ## Skills index lists slug + description, not bodies", async () => {
+    const skills = await buildSkillsContext(registry, adapter, systemCtx, { loadedSkillSlugs: [] });
+    const idx = skills.skillsIndexBlock ?? "";
+    expect(idx).toContain("# Skills");
+    expect(idx).toContain("load_skill({slug})");
+    for (const slug of ALL_NEW) expect(idx).toContain(`- ${slug}:`);
+    // Structural-trigger skills get a prominent callout so the model loads them
+    // at the right moment (body still fetched on demand): brand-voice-guard is
+    // alwaysOn → the "ALWAYS APPLIES" section names it.
+    expect(idx).toContain("ALWAYS APPLIES");
+    expect(idx).toContain("brand-voice-guard");
+    // The full body must NOT be in the index (a distinctive manage-menu phrase).
+    expect(idx).not.toContain("UPSERT that REPLACES the whole items list");
+    // Nothing loaded yet → no preload, no engaged skills.
+    expect(skills.allowedToolNames).toBeNull();
+    expect(skills.engagedSkills.length).toBe(0);
+  });
+
+  // load_skill is the activation step: valid slug returns the full body; an
+  // unknown slug returns the list of valid slugs (AI-actionable error, §11).
+  it("load_skill returns the body for a valid slug and lists slugs for an unknown one", async () => {
+    const toolCtx = { registry, adapter } as unknown as ToolContext;
+    const ok = await loadSkillTool.handler(aiCtx, { slug: "manage-menu" }, toolCtx);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.content).toContain("manage-menu");
+      // The actual body, verbatim — this is what lands in history.
+      expect(ok.content).toContain("REPLACES the whole items list");
+      // The allowlisted tools are surfaced so the model knows what it can call.
+      expect(ok.content).toContain("set_structured_set");
+    }
+    const bad = await loadSkillTool.handler(aiCtx, { slug: "does-not-exist" }, toolCtx);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.content).toContain("manage-menu"); // names a valid slug
+  });
+
+  // Once loaded, a skill stays available: extractLoadedSkillSlugs recovers it
+  // from the history's load_skill tool call, and buildSkillsContext then
+  // preloads that skill's tools (no tool-search round-trip on later turns).
+  it("a loaded skill is recovered from history and its tools preloaded", async () => {
+    const history = [
+      { toolCalls: [{ id: "t1", name: "load_skill", arguments: { slug: "manage-menu" } }] },
+      { toolCalls: [{ id: "t2", name: "edit_module", arguments: { moduleId: "x" } }] },
+    ];
+    expect(extractLoadedSkillSlugs(history)).toEqual(["manage-menu"]);
+
+    const skills = await buildSkillsContext(registry, adapter, systemCtx, {
+      loadedSkillSlugs: ["manage-menu"],
+    });
+    expect(skills.engagedSkills.map((e) => e.slug)).toContain("manage-menu");
+    // manage-menu's allowlist preloads the structured-set tools.
+    expect(skills.allowedToolNames?.has("set_structured_set")).toBe(true);
+    expect(skills.loadedSkillsBodyText).toContain("nav-menu");
   });
 });
 

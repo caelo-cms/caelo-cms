@@ -18,7 +18,6 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { matchSkills } from "@caelo-cms/shared";
 import { SQL } from "bun";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -111,53 +110,5 @@ describe("site-migrate skill row (#188)", () => {
     expect(b).toContain("log_page_edit");
     expect(b).toContain("set_pages_status_many");
     expect(b).toContain("never claim a gated action was applied");
-  });
-});
-
-describe("site-migrate auto-engagement", () => {
-  const activeSkills = () => [
-    {
-      id: "00000000-0000-4000-8000-000000000188",
-      slug: "site-migrate",
-      displayName: "Site Migration",
-      hints: skill.auto_engagement_hints,
-    },
-    {
-      id: "00000000-0000-4000-8000-000000000163",
-      slug: "site-genesis",
-      displayName: "Site Genesis",
-      hints: {
-        keywords: ["new website", "from scratch", "design my site"],
-        chipTrigger: false,
-        alwaysOn: false,
-      },
-    },
-  ];
-
-  const engagedFor = (message: string): string[] =>
-    matchSkills({ skills: activeSkills(), userMessage: message, chipCount: 0 }).map((m) => m.slug);
-
-  it.each([
-    "Meine Website ist https://example.com, bitte übernehmen",
-    "please migrate my site to caelo",
-    "wir wollen mit unserer bestehenden website umziehen",
-    "can you import my existing website? it's at www.acme-tools.example",
-    "our site is at acme.de and we want to move it here",
-    // 0126 — the first-run chip's own message + natural phrasings.
-    "I have an existing website that I'd like to migrate to Caelo.",
-    "I already have a website",
-    "wir haben schon eine website und wollen zu caelo",
-  ])("engages for: %s", (message) => {
-    expect(engagedFor(message)).toContain("site-migrate");
-  });
-
-  it("does not engage on unrelated content edits", () => {
-    expect(engagedFor("make the hero headline bolder")).not.toContain("site-migrate");
-  });
-
-  it("from-scratch requests engage genesis, not migrate", () => {
-    const engaged = engagedFor("I want a brand new website designed from scratch");
-    expect(engaged).toContain("site-genesis");
-    expect(engaged).not.toContain("site-migrate");
   });
 });

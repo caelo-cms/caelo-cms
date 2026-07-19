@@ -125,6 +125,24 @@ export const siteMemoryProposeToolInput = z
   .strict();
 
 /**
+ * Progressive-disclosure skill loading. The `## Skills` system-prompt block
+ * lists each active skill's slug + description; when a task matches one, the
+ * model calls `load_skill({slug})` to pull the full instructions into the
+ * conversation (they persist as a tool result for the rest of the chat, so
+ * each skill loads at most once).
+ */
+export const loadSkillToolInput = z
+  .object({
+    slug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z0-9-]+$/, "lowercase letters/digits/hyphens"),
+  })
+  .strict();
+export type LoadSkillToolInput = z.infer<typeof loadSkillToolInput>;
+
+/**
  * The set of tools shipped in P5. Other phases extend by adding a new
  * entry; the dispatcher walks this map at registration time.
  */
