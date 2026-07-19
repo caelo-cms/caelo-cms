@@ -581,92 +581,14 @@ export function composeSystemPromptChunks(
     chunks.push({ body: volatile.skillsIndexBlock, cacheable: true, label: "skills-index" });
   }
 
-  // Volatile chunks go last so the cache prefix above stays byte-stable.
-  if (volatile.subagentsBlock && volatile.subagentsBlock.trim().length > 0) {
-    chunks.push({ body: volatile.subagentsBlock, cacheable: false, label: "subagents" });
-  }
-  if (volatile.pluginsBlock && volatile.pluginsBlock.trim().length > 0) {
-    chunks.push({ body: volatile.pluginsBlock, cacheable: false, label: "plugins" });
-  }
-  if (volatile.pluginContextBlock && volatile.pluginContextBlock.trim().length > 0) {
-    chunks.push({
-      body: volatile.pluginContextBlock,
-      cacheable: false,
-      label: "plugin-context",
-    });
-  }
-  // v0.11.4 (issue #76 follow-up) — site identity comes BEFORE theme
-  // so the AI reads brand intent before reading tokens. With both
-  // blocks visible, the AI can judge whether the theme matches the
-  // brand and evolve tokens if not.
-  if (volatile.siteIdentityBlock && volatile.siteIdentityBlock.trim().length > 0) {
-    chunks.push({ body: volatile.siteIdentityBlock, cacheable: false, label: "site-identity" });
-  }
-  if (volatile.themeBlock && volatile.themeBlock.trim().length > 0) {
-    chunks.push({ body: volatile.themeBlock, cacheable: false, label: "theme" });
-  }
-  if (volatile.designSystemBlock && volatile.designSystemBlock.trim().length > 0) {
-    chunks.push({ body: volatile.designSystemBlock, cacheable: false, label: "design-system" });
-  }
-  if (volatile.allPagesBlock && volatile.allPagesBlock.trim().length > 0) {
-    chunks.push({ body: volatile.allPagesBlock, cacheable: false, label: "all-pages" });
-  }
-  if (volatile.structuredSetsBlock && volatile.structuredSetsBlock.trim().length > 0) {
-    chunks.push({ body: volatile.structuredSetsBlock, cacheable: false, label: "structured-sets" });
-  }
-  if (volatile.modulesBlock && volatile.modulesBlock.trim().length > 0) {
-    chunks.push({ body: volatile.modulesBlock, cacheable: false, label: "modules" });
-  }
-  if (volatile.contentLibraryBlock && volatile.contentLibraryBlock.trim().length > 0) {
-    chunks.push({ body: volatile.contentLibraryBlock, cacheable: false, label: "content-library" });
-  }
-  if (volatile.layoutsBlock && volatile.layoutsBlock.trim().length > 0) {
-    chunks.push({ body: volatile.layoutsBlock, cacheable: false, label: "layouts" });
-  }
-  if (volatile.siteDefaultsBlock && volatile.siteDefaultsBlock.trim().length > 0) {
-    chunks.push({ body: volatile.siteDefaultsBlock, cacheable: false, label: "site-defaults" });
-  }
-  if (volatile.mediaBlock && volatile.mediaBlock.trim().length > 0) {
-    chunks.push({ body: volatile.mediaBlock, cacheable: false, label: "media" });
-  }
-  if (volatile.redirectsBlock && volatile.redirectsBlock.trim().length > 0) {
-    chunks.push({ body: volatile.redirectsBlock, cacheable: false, label: "redirects" });
-  }
-  if (volatile.localesBlock && volatile.localesBlock.trim().length > 0) {
-    chunks.push({ body: volatile.localesBlock, cacheable: false, label: "locales" });
-  }
-  if (volatile.pendingProposalsBlock && volatile.pendingProposalsBlock.trim().length > 0) {
-    chunks.push({
-      body: volatile.pendingProposalsBlock,
-      cacheable: false,
-      label: "pending_proposals",
-    });
-  }
-  if (volatile.foreignLocksBlock && volatile.foreignLocksBlock.trim().length > 0) {
-    chunks.push({
-      body: volatile.foreignLocksBlock,
-      cacheable: false,
-      label: "foreign_locks",
-    });
-  }
-  if (volatile.usersBlock && volatile.usersBlock.trim().length > 0) {
-    chunks.push({ body: volatile.usersBlock, cacheable: false, label: "users" });
-  }
-  if (volatile.rolesBlock && volatile.rolesBlock.trim().length > 0) {
-    chunks.push({ body: volatile.rolesBlock, cacheable: false, label: "roles" });
-  }
-  if (volatile.aiProvidersBlock && volatile.aiProvidersBlock.trim().length > 0) {
-    chunks.push({ body: volatile.aiProvidersBlock, cacheable: false, label: "ai_providers" });
-  }
-  if (volatile.domainsBlock && volatile.domainsBlock.trim().length > 0) {
-    chunks.push({ body: volatile.domainsBlock, cacheable: false, label: "domains" });
-  }
-  if (volatile.pageContextBlock && volatile.pageContextBlock.trim().length > 0) {
-    chunks.push({ body: volatile.pageContextBlock, cacheable: false, label: "page-context" });
-  }
-  if (volatile.chipsBlock && volatile.chipsBlock.trim().length > 0) {
-    chunks.push({ body: volatile.chipsBlock, cacheable: false, label: "chips" });
-  }
+  // NO volatile chunks. The system prompt is 100% static so the whole thing
+  // stays in the prompt cache and is never busted (the operator's rule: no
+  // dynamic content in the system prompt). Live site state is fetched
+  // on-demand via the list_*/get_* tools (results land in the append-only,
+  // cache-friendly message history); the current-page context rides on the
+  // USER message (first turn + whenever the page changed) — see the chat-runner
+  // turn assembly. `VolatileContext` is retained only for the static
+  // skills-index passthrough above.
 
   return chunks;
 }
