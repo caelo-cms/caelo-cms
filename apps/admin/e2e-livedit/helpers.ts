@@ -315,6 +315,16 @@ const DEFAULT_CONSOLE_ERROR_IGNORE: ReadonlyArray<{ pattern: RegExp; reason: str
     pattern: /TypeError: Failed to fetch/,
     reason: "fetch aborted by page navigation / test teardown",
   },
+  {
+    // Genesis draft previews render in a `sandbox`ed <iframe srcdoc> that
+    // deliberately omits `allow-scripts` (drafts are untrusted AI HTML).
+    // When a draft carries a <script>, the browser refuses to run it and
+    // logs this console.error — the sandbox doing exactly its job, which
+    // is a security guarantee we WANT, not a regression. It is not
+    // something a real operator can act on, so it must not fail the guard.
+    pattern: /Blocked script execution in .* the document'?s frame is sandboxed/,
+    reason: "genesis draft-preview sandbox blocks untrusted script (expected)",
+  },
 ];
 
 export interface BrowserConsoleErrorTracker {
