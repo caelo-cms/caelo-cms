@@ -459,82 +459,27 @@ const STAGING_BLOCK = [
   "**Anti-pattern: describing what you would do without calling tools.** If the user asks you to build, edit, or create something, your response MUST include the tool calls that do the work. Text saying 'I will do X' without an actual tool call is wrong — make X happen via the tools, then explain what you did.",
 ].join("\n");
 
+// P10.5 #5 — Subagents guidance. STATIC (operator's rule: nothing dynamic in
+// the system prompt): always present so the model knows the parallel-build
+// primitive exists. Subagent CHILDREN have the spawn tools stripped from their
+// catalogue, so for them this is inert.
+const SUBAGENTS_BLOCK = [
+  "## Subagents",
+  "Subagents BUILD in parallel — they are a throughput tool to get independent work done faster, NOT a way to think, reason, or review in parallel. Reach for them only when you have SEVERAL pieces of work that don't depend on each other (e.g. rebuild 5 page clusters during a migration, or build 3 unrelated modules at once). YOU do the planning: decompose the work into concrete, fully-specified build briefs, then dispatch them together via `spawn_subagents`.",
+  "Each child starts with a FRESH context and knows nothing about this chat, so every brief must carry what it needs to build its piece on its own: the exact structure, the content/copy, the ids, and the decisions you already made. The children build in parallel and return; you assemble the results.",
+  "`spawn_subagent` (single) is for ONE bounded, multi-step build task that deserves its own isolated context (e.g. rebuild one page cluster). `spawn_subagents` (plural) runs a batch of such tasks in parallel.",
+  "DO NOT spawn a subagent to do your own reasoning, to review your own work, or for anything you can finish in one or two tool calls. A single module, a footer/header/nav, one edit, a quick lookup → call the tool directly. A subagent for a single edit only adds latency and cost.",
+].join("\n");
+
 /**
- * Optional per-call volatile context: chips, ephemeral skill bodies,
- * the active /edit page's modules + blocks. Anything that changes
- * turn-to-turn goes here so the cache prefix stays stable.
+ * Static-only context passthrough. The system prompt carries NO dynamic
+ * content (operator's rule — the whole prompt stays cached and is never
+ * busted); live site state is fetched on-demand via the list_/get_ tools and
+ * the current page rides on the user message. The only field here is the
+ * static `## Skills` index (changes only on Owner activation, not per turn).
  */
 export interface VolatileContext {
-  readonly chipsBlock?: string;
-  readonly pageContextBlock?: string;
-  /** P6.7.5 — full site page list, so AI can pick real link targets. */
-  readonly allPagesBlock?: string;
-  /** P6.7.5 — current theme tokens (CSS variables). */
-  readonly themeBlock?: string;
-  /** issue #165 — `## Design system` rendered from the Design Manifest. */
-  readonly designSystemBlock?: string;
-  /**
-   * v0.11.4 (issue #76 follow-up) — operator-captured site name +
-   * purpose (from /onboarding ?/identity). Brand context the AI uses
-   * for every page it builds. Renders before `## Theme` so the AI
-   * reads brand intent before tokens.
-   */
-  readonly siteIdentityBlock?: string;
-  /** P6.7.5 — named structured-data sets the AI can edit (nav-menu, tags, etc.). */
-  readonly structuredSetsBlock?: string;
-  /** v0.12.0 — `## Modules` decision-support catalog (modules grouped
-   *  by kind, with description + placement usage + field summary per
-   *  module). Per CLAUDE.md §1A the AI picks modules by intent, not
-   *  slug — this block carries the context for that decision. */
-  readonly modulesBlock?: string;
-  /** v0.12.0 — `## Content Library` decision-support block (shared
-   *  content_instances with purpose + placementCount + sample pages).
-   *  Lets the AI decide reuse vs fork vs mint new without a tool
-   *  round-trip. */
-  readonly contentLibraryBlock?: string;
-  /** P6.7.6 — available layouts + their blocks (chrome shells). */
-  readonly layoutsBlock?: string;
-  /** P6.7.6 — site_defaults singleton + per-template layout binding. */
-  readonly siteDefaultsBlock?: string;
-  /** P7 — recent + most-used media so the AI can pick existing assets. */
-  readonly mediaBlock?: string;
-  /** P8 AI-first — recent redirects so the AI can plan + cite without round-trip. */
-  readonly redirectsBlock?: string;
-  /** P9 — locales registry + AI's own pending locale-change proposals. */
-  readonly localesBlock?: string;
-  /** v0.2.32 — cross-domain `## Pending proposals` block. Aggregates
-   *  every status='pending' row across the 15 *_pending tables so the
-   *  AI doesn't re-queue what the Owner is already reviewing. */
-  readonly pendingProposalsBlock?: string;
-  /** issue #262 — `## Locks held by other chats`. Entities locked by
-   *  OTHER chat sessions, so the AI flags collisions in its plan step
-   *  instead of hitting Locked errors mid-run. Interim guard until
-   *  task leases replace chat locks (epic #264). */
-  readonly foreignLocksBlock?: string;
-  /** v0.2.38 — `## Users` inventory (email + roleNames per row). */
-  readonly usersBlock?: string;
-  /** v0.2.38 — `## Roles` inventory (name + permission count + builtin). */
-  readonly rolesBlock?: string;
-  /** v0.2.38 — `## AI providers` inventory (active + has-key per row). */
-  readonly aiProvidersBlock?: string;
-  /** v0.2.38 — `## Domains` inventory (hostname + kind + TLS status). */
-  readonly domainsBlock?: string;
-  /** Static `## Skills` index (slug + description per active skill).
-   *  Progressive disclosure: this tiny list is cacheable (changes only on
-   *  Owner activation, not per turn); the skill BODIES load on demand via the
-   *  load_skill tool into the message history, never into the system prompt. */
   readonly skillsIndexBlock?: string;
-  /** P10.5 #5 — hint that spawn_subagent / spawn_subagents exist + when to use them. */
-  readonly subagentsBlock?: string;
-  /** P11 opt 4 — AI's own pending or rejected plugin submissions, so it
-   *  doesn't re-propose what's already in the queue and reads the
-   *  Owner's rejection reasons before resubmitting. */
-  readonly pluginsBlock?: string;
-  /** P11.5 audit fix #1 — Tier-1 plugin-emitted system-prompt blocks.
-   *  Plugins declare `promptContext: [{label, render}]` arrays; chat-runner
-   *  calls renderAll() per turn and folds non-empty results here. Disabled
-   *  plugins are skipped at the registry level. */
-  readonly pluginContextBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -546,6 +491,7 @@ export function composeSystemPromptChunks(
     { body: TOOL_PLAYBOOK_BLOCK, cacheable: true, label: "tool-playbook" },
     { body: MODULE_MODEL_BLOCK, cacheable: true, label: "module-model" },
     { body: STAGING_BLOCK, cacheable: true, label: "staging" },
+    { body: SUBAGENTS_BLOCK, cacheable: true, label: "subagents" },
   ];
 
   const bySlot = new Map(memory.map((m) => [m.slot, m.body.trim()]));
@@ -584,7 +530,7 @@ export function composeSystemPromptChunks(
   // NO volatile chunks. The system prompt is 100% static so the whole thing
   // stays in the prompt cache and is never busted (the operator's rule: no
   // dynamic content in the system prompt). Live site state is fetched
-  // on-demand via the list_*/get_* tools (results land in the append-only,
+  // on-demand via the list_/get_ tools (results land in the append-only,
   // cache-friendly message history); the current-page context rides on the
   // USER message (first turn + whenever the page changed) — see the chat-runner
   // turn assembly. `VolatileContext` is retained only for the static

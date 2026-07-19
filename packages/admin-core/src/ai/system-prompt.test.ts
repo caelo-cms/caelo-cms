@@ -19,6 +19,7 @@ describe("composeSystemPromptChunks", () => {
       "tool-playbook",
       "module-model",
       "staging",
+      "subagents",
       "memory",
     ]);
     for (const c of chunks) expect(c.cacheable).toBe(true);
@@ -72,14 +73,14 @@ describe("composeSystemPromptChunks", () => {
 
   it("skips empty slots", () => {
     const chunks = composeSystemPromptChunks([]);
-    // v0.4.0 — base + module-model are always present.
-    // v0.5.5 — staging joins them as a third permanent cacheable chunk.
-    // Tool Search default-on — tool-playbook joins as the fourth.
+    // The static core: base + tool-playbook + module-model + staging +
+    // subagents. All permanent + cacheable — the system prompt is fully static.
     expect(chunks.map((c) => c.label)).toEqual([
       "base",
       "tool-playbook",
       "module-model",
       "staging",
+      "subagents",
     ]);
   });
 
