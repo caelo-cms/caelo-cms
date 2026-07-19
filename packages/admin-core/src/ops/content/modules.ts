@@ -16,6 +16,7 @@ import {
   moduleFieldSchema,
   moduleUpdateSchema,
   ok,
+  stripCdataGuards,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -315,7 +316,11 @@ export const createModuleOp = defineOperation({
         });
       }
     }
-    const persistedHtml = candidateHtml;
+    // Unwrap any XHTML-style CDATA guards the model emitted around inline
+    // <style>/<script> — they survive the byte-preserving compose path and
+    // leak a stray `]]>` into chrome/layout slots. Runs unconditionally
+    // (the extractor is skipped on the canonical explicit-fields path).
+    const persistedHtml = stripCdataGuards(candidateHtml);
     const extractedMutable = extracted ? ([...extracted.fields] as ModuleField[]) : [];
     const persistedFields = candidateFields;
     // v0.9.0 — branch-scoped uniqueness. Same-branch slug clash
@@ -515,7 +520,9 @@ export const updateModuleOp = defineOperation({
       extractedSurfacedToCaller =
         input.fields && input.fields.length > 0 ? undefined : extractedMutable;
     }
-    const persistedHtml = extractedHtml;
+    // Unwrap XHTML-style CDATA guards (see modules.create) — guarded on
+    // `undefined` because an update may leave html untouched.
+    const persistedHtml = extractedHtml === undefined ? undefined : stripCdataGuards(extractedHtml);
     const persistedFields = extractedFields ?? input.fields;
 
     const branchId = ctx.chatBranchId ?? null;

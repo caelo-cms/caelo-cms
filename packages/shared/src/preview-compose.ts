@@ -33,6 +33,7 @@ import {
   extractInnerOfTopLevelContentSlot,
   listSlotNames,
 } from "./preview-scanner.js";
+import { stripCdataGuards } from "./strip-cdata.js";
 import { type LanguageSelectorOverride, renderLanguageSelector } from "./structured-sets.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
 import { renderThemeCss as renderThemeCssFromTokens } from "./theme-render.js";
@@ -436,7 +437,10 @@ function applyFieldSubstitution(
   contentValues: Readonly<Record<string, unknown>> | undefined,
   theme: ComposeTheme | undefined,
 ): string {
-  if (!fields && !contentValues && !theme) return html;
+  // The substitution engine (renderTemplate) already unwraps CDATA
+  // guards; cover the no-op early-return path so a chrome module with no
+  // fields/values/theme is cleaned too.
+  if (!fields && !contentValues && !theme) return stripCdataGuards(html);
   const engineFields: TemplateField[] = (fields ?? []).map((f) => ({
     name: f.name,
     kind: f.kind ?? "text",

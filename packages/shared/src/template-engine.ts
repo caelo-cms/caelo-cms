@@ -55,6 +55,7 @@
 
 import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
+import { stripCdataGuards } from "./strip-cdata.js";
 
 // Override Mustache's default HTML escape — module HTML substitutes
 // raw. The engine module is the only workspace importer of mustache,
@@ -227,8 +228,15 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     return key;
   };
 
+  // 0. Defensively unwrap XHTML-style CDATA guards the model sometimes
+  //    emits around inline <style>/<script> — they otherwise survive the
+  //    byte-preserving compose path and leak a stray `]]>` into the page.
+  //    Store-time normalization (modules.create/update) cleans new
+  //    modules; this covers any already-stored HTML + the deploy render.
+  const sourceHtml = stripCdataGuards(input.html);
+
   // 1. {{#name}}…{{/name}} sections.
-  let html = input.html.replace(SECTION_RE, (match, name: string, inner: string) =>
+  let html = sourceHtml.replace(SECTION_RE, (match, name: string, inner: string) =>
     renderSection(match, name, inner, fieldByName, cvs, partials, missing, mkSentinel),
   );
 

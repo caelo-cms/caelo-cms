@@ -27,7 +27,7 @@ const systemCtx: ExecutionContext = {
   requestId: "content-modules-test",
 };
 
-const SLUGS = ["p3-mod-hero", "p3-mod-card", "p3-mod-nav"] as const;
+const SLUGS = ["p3-mod-hero", "p3-mod-card", "p3-mod-nav", "p3-mod-cdata"] as const;
 
 async function wipe(url: string): Promise<void> {
   const sql = new SQL(url);
@@ -115,6 +115,50 @@ describe("modules CRUD", () => {
         (m) => m.slug === SLUGS[0],
       )?.deletedAt,
     ).not.toBeNull();
+  });
+
+  it("strips XHTML-style CDATA guards from module HTML at store time (chrome-slot leak regression)", async () => {
+    // The AI sometimes authors chrome/layout HTML with XHTML CDATA
+    // guards around inline <style>/<script>; they survive the
+    // byte-preserving compose path and leak a stray `]]>` into the
+    // rendered header/footer/nav. modules.create must normalize them.
+    const create = await execute(registry, adapter, systemCtx, "modules.create", {
+      slug: SLUGS[3],
+      displayName: "Chrome header",
+      html:
+        "<header><style><![CDATA[.h{color:red}]]></style>" +
+        "<script>//<![CDATA[\nboot();\n//]]>\n</script>Site</header>",
+      // Explicit fields → HTML stored verbatim (the canonical chrome
+      // path, and exactly where CDATA guards leaked). CDATA normalization
+      // must still run on this path (it's not gated on the extractor).
+      fields: [{ name: "site_name", kind: "text", label: "Site name" } as never],
+    });
+    expect(create.ok).toBe(true);
+    if (!create.ok) return;
+    const moduleId = (create.value as { moduleId: string }).moduleId;
+
+    const got = await execute(registry, adapter, systemCtx, "modules.get", { moduleId });
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    const html = (got.value as { module: { html: string } }).module.html;
+    expect(html).not.toContain("<![CDATA[");
+    expect(html).not.toContain("]]>");
+    // Content the guards wrapped is preserved.
+    expect(html).toContain(".h{color:red}");
+    expect(html).toContain("boot();");
+    expect(html).toContain("Site");
+
+    // An update with fresh CDATA-bearing HTML is normalized too.
+    const upd = await execute(registry, adapter, systemCtx, "modules.update", {
+      moduleId,
+      html: "<footer><![CDATA[]]>Footer]]></footer>",
+    });
+    expect(upd.ok).toBe(true);
+    const got2 = await execute(registry, adapter, systemCtx, "modules.get", { moduleId });
+    if (!got2.ok) return;
+    const html2 = (got2.value as { module: { html: string } }).module.html;
+    expect(html2).not.toContain("]]>");
+    expect(html2).toContain("Footer");
   });
 
   it("rejects duplicate slug", async () => {
