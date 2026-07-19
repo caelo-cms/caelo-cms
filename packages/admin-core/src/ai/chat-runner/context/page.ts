@@ -123,88 +123,32 @@ export async function buildPageContext(
 }
 
 /**
- * Signature for the current-page context, used to decide whether to re-tell the
- * model where it is. The current page rides on the message flow (NOT the system
- * prompt — the operator's rule: nothing dynamic in the system prompt), injected
- * on the first turn with an active page and again only when the page changed.
- * The signature = activePageId + a djb2 hash of the rendered block, so any edit
- * that changes the block (title, status, module list, …) re-triggers injection.
+ * djb2 signature (base36) of a note's seed. Used to decide whether to re-inject
+ * a message-flow note (current page, cold-start status). These notes ride on
+ * the message flow, NOT the system prompt (the operator's rule: nothing dynamic
+ * in the system prompt), injected on the first turn and again only when the
+ * seed changed — so any edit that changes the rendered block re-triggers it.
  */
-export function pageContextSignature(activePageId: string, block: string): string {
+export function noteSignature(seed: string): string {
   let h = 5381;
-  for (let i = 0; i < block.length; i++) h = ((h << 5) + h + block.charCodeAt(i)) | 0;
-  return `${activePageId}:${(h >>> 0).toString(36)}`;
+  for (let i = 0; i < seed.length; i++) h = ((h << 5) + h + seed.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
 }
 
 /**
- * The signature of the most recently injected page-context note in the history
- * (each note ends with a `<!--pagectx:SIG-->` marker), or null if none. Lets the
- * change-check survive across turns without extra per-chat state.
+ * The signature of the most recently injected note carrying `marker` in the
+ * history (each note ends with a `<!--marker:SIG-->` comment), or null if none.
+ * Lets the change-check survive across turns without extra per-chat state.
  */
-export function lastPageContextSignature(
+export function lastNoteSignature(
   messages: readonly { content: string }[],
+  marker: string,
 ): string | null {
+  const re = new RegExp(`<!--${marker}:([^>]+)-->`);
   for (let i = messages.length - 1; i >= 0; i--) {
     const c = messages[i]?.content;
-    const m = typeof c === "string" ? c.match(/<!--pagectx:([^>]+)-->/) : null;
+    const m = typeof c === "string" ? c.match(re) : null;
     if (m) return m[1] ?? null;
   }
   return null;
-}
-
-/**
- * P6.7.5 — All-pages volatile chunk. Groups pages by `kind` so the AI scans
- * intent-first. Skipped (returns undefined) when no pages exist.
- */
-export async function buildAllPagesBlock(
-  registry: OperationRegistry,
-  adapter: DatabaseAdapter,
-  humanCtxWithBranch: ExecutionContext,
-): Promise<string | undefined> {
-  const allPagesR = await execute(registry, adapter, humanCtxWithBranch, "pages.list", {});
-  if (!allPagesR.ok) return undefined;
-  const ps = (
-    allPagesR.value as {
-      pages: {
-        id: string;
-        slug: string;
-        locale: string;
-        name: string;
-        title: string;
-        status: string;
-        // v0.12.0 — joined from templates.kind so the AI groups pages
-        // by intent. Optional because pre-0096 templates have NULL.
-        kind?: "home" | "landing" | "product" | "blog" | "doc" | "content" | "utility";
-      }[];
-    }
-  ).pages;
-  if (ps.length === 0) return undefined;
-  // v0.12.0 — group pages by kind so the AI scans intent-first
-  // ("which product pages already exist?"). Pages without a kind
-  // (templates pre-0096) fall under `content`.
-  const KIND_ORDER = ["home", "landing", "product", "blog", "doc", "content", "utility"] as const;
-  const byKind = new Map<(typeof KIND_ORDER)[number], typeof ps>();
-  for (const k of KIND_ORDER) byKind.set(k, [] as unknown as typeof ps);
-  for (const p of ps) {
-    const k = (p.kind ?? "content") as (typeof KIND_ORDER)[number];
-    const bucket = byKind.get(k) as unknown as (typeof ps)[number][];
-    bucket.push(p);
-  }
-  const lines: string[] = [
-    "# All pages on this site",
-    "Pages grouped by `kind` (inherited from the template). Treat repetition within a group as a pattern — e.g. three modules on three `product` pages = a product-page convention you should follow, not a coincidence.",
-    "Use these (slug, locale) pairs as link targets — never invent a URL.",
-    "",
-  ];
-  for (const k of KIND_ORDER) {
-    const bucket = byKind.get(k) as unknown as (typeof ps)[number][];
-    if (bucket.length === 0) continue;
-    lines.push(`### kind=${k}`);
-    for (const p of bucket) {
-      lines.push(
-        `- id=${p.id} name="${p.name}" title="${p.title}" url=${p.locale === "en" ? `/${p.slug}` : `/${p.locale}/${p.slug}`} status=${p.status}`,
-      );
-    }
-  }
-  return lines.join("\n");
 }
