@@ -76,11 +76,17 @@ test.describe("e2e-livedit Genesis — divergent drafts + selection", () => {
   test("brief-rich prompt yields distinct drafts; operator selects one at /design/genesis", async ({
     page,
   }) => {
+    // Genesis fans out to THREE parallel draft-generation subagents (each a
+    // full homepage build incl. image generation) in one turn — legitimately
+    // the slowest flow. Give the turn + the test realistic budgets (the wire
+    // shows steady progress, no hang; the default 8-min/10-min budgets were the
+    // only thing failing it).
+    test.setTimeout(1_200_000);
     resetLiveditFixtures();
     await loginAsDevOwner(page);
 
     await page.goto("/edit");
-    await sendChatPromptAndWait(page, GENESIS_PROMPT);
+    await sendChatPromptAndWait(page, GENESIS_PROMPT, 900_000);
 
     // ── Drafts exist and genuinely diverge ─────────────────────────
     const drafts = snapshotDrafts();

@@ -232,7 +232,15 @@ export async function waitForChatTurnIdle(page: Page, timeoutMs = 480_000): Prom
  * Send a prompt into the chat composer and wait for the SSE turn to
  * complete (the `data-turn-state` flips streaming → idle).
  */
-export async function sendChatPromptAndWait(page: Page, prompt: string): Promise<void> {
+export async function sendChatPromptAndWait(
+  page: Page,
+  prompt: string,
+  // Turn-completion budget. Default 480s fits a homepage build + self-review.
+  // The heaviest flows (Genesis' 3 parallel draft subagents, a migration's
+  // per-type rebuild fan-out) legitimately run longer — they pass a larger
+  // budget. The timeout guards hangs, not slow-but-progressing turns.
+  timeoutMs = 480_000,
+): Promise<void> {
   // Wait for the composer to be ready first (rules out a still-streaming
   // prior turn from previous scenario state).
   await waitForChatTurnIdle(page);
@@ -246,7 +254,7 @@ export async function sendChatPromptAndWait(page: Page, prompt: string): Promise
     }),
     page.getByTestId("chat-send").click(),
   ]);
-  await waitForChatTurnIdle(page);
+  await waitForChatTurnIdle(page, timeoutMs);
 }
 
 /** Capture the URL of the most recent chat SSE stream this page initiated. */

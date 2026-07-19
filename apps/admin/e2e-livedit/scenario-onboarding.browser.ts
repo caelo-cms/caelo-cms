@@ -124,9 +124,19 @@ test.describe("e2e-livedit onboarding — welcome + migration routing", () => {
       ).toBe("proposed");
       expect(runs[0]?.estimate, "the proposal carries the #193 scope estimate").not.toBeNull();
 
-      // ── The transcript points at Approve instead of claiming ─────
-      const body = await page.locator("ul").first().innerText();
-      expect(body).toContain("/security/import/pending");
+      // ── The AI surfaces the crawl as a PROPOSAL for the Owner to approve,
+      // and must NOT claim it already crawled. Post the SDK-native approval
+      // gate, the proposal renders as an INLINE Approve/Reject card in the
+      // chat — the pre-gate "/security/import/pending" link is gone. (The DB
+      // assertions above already prove status='proposed'; this guards the
+      // transcript wording.)
+      const body = (await page.locator("body").innerText()).toLowerCase();
+      expect(body, "the AI offers the crawl for the Owner to approve").toMatch(
+        /approve|freigeb|genehmig|queued|angesto/,
+      );
+      expect(body, "the AI must NOT claim it already crawled").not.toMatch(
+        /crawl (abgeschlossen|complete|done|fertig)|habe .* gecrawlt/,
+      );
     } finally {
       site.stop();
     }
