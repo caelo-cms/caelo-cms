@@ -123,6 +123,36 @@ export async function buildPageContext(
 }
 
 /**
+ * Signature for the current-page context, used to decide whether to re-tell the
+ * model where it is. The current page rides on the message flow (NOT the system
+ * prompt — the operator's rule: nothing dynamic in the system prompt), injected
+ * on the first turn with an active page and again only when the page changed.
+ * The signature = activePageId + a djb2 hash of the rendered block, so any edit
+ * that changes the block (title, status, module list, …) re-triggers injection.
+ */
+export function pageContextSignature(activePageId: string, block: string): string {
+  let h = 5381;
+  for (let i = 0; i < block.length; i++) h = ((h << 5) + h + block.charCodeAt(i)) | 0;
+  return `${activePageId}:${(h >>> 0).toString(36)}`;
+}
+
+/**
+ * The signature of the most recently injected page-context note in the history
+ * (each note ends with a `<!--pagectx:SIG-->` marker), or null if none. Lets the
+ * change-check survive across turns without extra per-chat state.
+ */
+export function lastPageContextSignature(
+  messages: readonly { content: string }[],
+): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const c = messages[i]?.content;
+    const m = typeof c === "string" ? c.match(/<!--pagectx:([^>]+)-->/) : null;
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
+
+/**
  * P6.7.5 — All-pages volatile chunk. Groups pages by `kind` so the AI scans
  * intent-first. Skipped (returns undefined) when no pages exist.
  */

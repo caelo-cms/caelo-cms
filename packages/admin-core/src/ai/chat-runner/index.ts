@@ -18,6 +18,7 @@
  * `../chat-runner.ts` is now a thin re-export shim onto this module.
  */
 
+import { execute } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
 import type { ChatMessageInput } from "../provider.js";
@@ -25,6 +26,7 @@ import { composeSystemPromptChunks } from "../system-prompt.js";
 import { attachGatedExecute } from "../tools/gated-tools.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
 import { resolveCompactionThresholdTokens } from "./compaction.js";
+import { lastPageContextSignature, pageContextSignature } from "./context/page.js";
 import { buildPostCatalogueBlocks, extractLoadedSkillSlugs } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import { buildContextSplitEstimate } from "./context-split.js";
@@ -206,6 +208,28 @@ export async function* runChatTurn(
         baseMessages[i] = { ...m, content: `${m.content}\n\n${ctx.statusLine}` };
         break;
       }
+    }
+  }
+
+  // Current-page context ("where am I") rides on the MESSAGE FLOW, never the
+  // system prompt (operator's rule: nothing dynamic in the system prompt). We
+  // tell the model where it is on the first turn with an active page and again
+  // only when that page changed since we last told it — persisted as an
+  // origin=system note so it stays in the append-only history (fresh at
+  // injection, cache-friendly) and the change-check survives across turns. All
+  // other site state is fetched on-demand via the list_*/get_* tools.
+  const pageCtxBlock = ctx.preBlocks.pageContextBlock;
+  if (pageCtxBlock && pageCtxBlock.trim().length > 0 && input.activePageId) {
+    const sig = pageContextSignature(input.activePageId, pageCtxBlock);
+    if (lastPageContextSignature(session.messages) !== sig) {
+      const body = `${pageCtxBlock}\n<!--pagectx:${sig}-->`;
+      await execute(registry, adapter, humanCtx, "chat.append_message", {
+        chatSessionId: input.chatSessionId,
+        role: "user",
+        origin: "system",
+        content: body,
+      });
+      baseMessages.push({ role: "user", content: body });
     }
   }
 
