@@ -38,7 +38,7 @@
     "file-type": "^19",
     "html2canvas-pro": "2.2.4",
     "lucide-svelte": "^1.0.1",
-    "marked": "^14",
+    "marked": "^18",
     "mode-watcher": "^1.1.0",
     "svelte-dnd-action": "^0.9.70",
     "svelte-sonner": "^1.1.1",
