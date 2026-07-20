@@ -102,20 +102,33 @@ from a sample — without ever putting the whole HTML in context.
 
 ```
 query_page_html({
-  pageRef?,            // reuse an already-rendered page (preferred — no re-render)
-  url?,                // fallback: fetch+render on demand if no pageRef
+  pageRef?,            // reuse the already-fetched page (preferred — no re-fetch)
+  url?,                // fallback: fetch on demand if no pageRef
+  // exactly ONE mode:
   keyword?,            // text search → return the enclosing element + surrounding context
   cssSelector?,        // return matching elements' outerHTML
   xpath?,              // same, via xpath
+  describe?,           // natural language → a SMALL model (Haiku) extracts it (below)
   maxMatches?, contextChars?
-}) → { matches: [{ html, path }], truncated }
+}) → { matches: [{ html, path }], truncated }  // or the small model's extraction for `describe`
 ```
 
-- **`pageRef` is the primary input** (per the design decision below): the
-  page was already rendered by a prior `inspect_external_page`; querying
-  it must NOT re-render. `url` is the on-demand fallback.
-- Returns matching fragments **with surrounding context** (enclosing
-  element + N chars/siblings), capped by `maxMatches` / `contextChars`.
+Three query modes; the caller picks whichever fits:
+
+- **`keyword` / `cssSelector` / `xpath`** — deterministic. `pageRef` is the
+  primary input; querying must NOT re-fetch. Returns matching fragments
+  with surrounding context (enclosing element + N chars/siblings), capped
+  by `maxMatches` / `contextChars`. Selector modes run via the reused
+  Playwright page (`setContent` on the cached HTML).
+- **`describe`** (natural language) — when the caller can't name a
+  selector, it describes what it wants ("the pricing table", "the primary
+  nav structure", "every product card's title + price"). The tool runs a
+  **small model (Haiku) one-shot** over the cached page HTML and returns
+  only the extracted fragment(s)/answer. This REPLACES a separate
+  large-HTML subagent (§2.4): the big HTML is passed to the cheap model
+  inside the tool and never enters the main chat's context — same
+  context-isolation win, but one tool call instead of spawn orchestration,
+  and a Haiku-priced extraction instead of a full child turn.
 
 ### 2.3 `read_page_more` — Markdown pagination (new, small)
 
@@ -125,14 +138,15 @@ read_page_more({ pageRef, cursor }) → { text, cursor|null }
 
 Continues the Markdown from §2.1 without re-rendering — same `pageRef`.
 
-### 2.4 Subagent pattern for large-HTML extraction
+### 2.4 Large-HTML extraction — folded into `query_page_html`'s `describe` mode
 
-For "extract X from this big page" (a price table, the nav structure, a
-product grid), the AI spawns a subagent whose task carries the `pageRef`
-(or url). The child holds the full HTML in ITS context and returns only
-the distilled result → the parent chat stays lean. This is the same
-context-isolation subagents already provide; no new machinery, just
-guidance in the skills (§6) and `pageRef` passthrough.
+Superseded by §2.2's `describe` mode (user decision). Rather than spawn a
+full subagent for "extract X from this big page", `query_page_html`
+handles it internally: it runs a small model (Haiku) one-shot over the
+cached HTML and returns only the distilled result. The big HTML lives in
+the cheap model's one call, not the parent chat and not a spawned child.
+Cheaper (Haiku vs a full child turn) and simpler (one tool call, no spawn
+machinery), same context-isolation guarantee.
 
 ## 3. The page handle + render cache (load once, reuse everywhere)
 
