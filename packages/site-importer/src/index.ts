@@ -108,6 +108,7 @@ export {
   type PageTypeMap,
   type PageTypeSource,
 } from "./page-type-map.js";
+export { htmlToMarkdown } from "./html-to-markdown.js";
 export { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 export {
   assertPublicHttpUrl,
