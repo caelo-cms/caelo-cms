@@ -9,9 +9,11 @@
  * for `markup` + `screenshot` + `tokens` + `altTexts`). A single
  * heavyweight blob on every call is exactly what #278 removes.
  *
- * Facets (all boolean switches; default when none given: meta only —
- * every voluminous facet is opt-in):
+ * Facets (all boolean switches; default when none given: meta + markdown
+ * — the gist; every voluminous facet is opt-in):
  *   - meta       — title, description, canonical, lang + hreflang, h1–h3.
+ *   - markdown   — the page's readable text as Markdown (the gist). Cached
+ *                  under a pageRef; truncated with a cursor (read_page_more).
  *   - links      — outbound links (href, anchor text, rel, nav|footer|body).
  *                  OPT-IN (default off): 200+-link pages otherwise bloat
  *                  every call; enable it on the first/homepage inspect.
@@ -29,6 +31,7 @@ import {
   extractModulesFromHtml,
   extractOutboundLinks,
   extractPageMeta,
+  htmlToMarkdown,
   isExternalUrlBlockedError,
   type OutboundLink,
   type SafeFetchResponse,
@@ -37,11 +40,13 @@ import {
 import { z } from "zod";
 import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
 import { getExternalScreenshotter } from "./_external-screenshotter.js";
+import { putPageInspection, sliceMarkdown } from "./_page-inspection-cache.js";
 import type { ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
 const facets = z
   .object({
     links: z.boolean().optional(),
+    markdown: z.boolean().optional(),
     markup: z.boolean().optional(),
     screenshot: z.boolean().optional(),
     altTexts: z.boolean().optional(),
@@ -50,11 +55,14 @@ const facets = z
   })
   .strict();
 
-const input = z.object({ url: z.string().url(), facets: facets.optional() }).strict();
+const input = z
+  .object({ url: z.string().url(), facets: facets.optional() })
+  .strict();
 type Input = z.infer<typeof input>;
 
 interface ResolvedFacets {
   links: boolean;
+  markdown: boolean;
   markup: boolean;
   screenshot: boolean;
   altTexts: boolean;
@@ -76,11 +84,21 @@ interface ResolvedFacets {
 function resolveFacets(raw: Input["facets"]): ResolvedFacets {
   const any =
     raw !== undefined &&
-    (raw.links || raw.markup || raw.screenshot || raw.altTexts || raw.meta || raw.tokens);
+    (raw.links ||
+      raw.markdown ||
+      raw.markup ||
+      raw.screenshot ||
+      raw.altTexts ||
+      raw.meta ||
+      raw.tokens);
+  // Gist default (no facets named): meta + Markdown — "what's on the page,
+  // how is it laid out" in the smallest context. Everything voluminous
+  // (links, raw markup, screenshot, tokens) stays opt-in.
   if (!any)
     return {
-      links: false,
       meta: true,
+      markdown: true,
+      links: false,
       markup: false,
       screenshot: false,
       altTexts: false,
@@ -88,6 +106,7 @@ function resolveFacets(raw: Input["facets"]): ResolvedFacets {
     };
   return {
     links: raw?.links ?? false,
+    markdown: raw?.markdown ?? false,
     markup: raw?.markup ?? false,
     screenshot: raw?.screenshot ?? false,
     altTexts: raw?.altTexts ?? false,
@@ -179,14 +198,15 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
   name: "inspect_external_page",
   description:
     "Fetch ONE page of an EXTERNAL website (the operator's existing site, a reference site) and return ONLY the facets you ask for — keep discovery turns small, template-building turns rich. " +
-    "Pass `facets` (booleans; default when omitted = meta only — every voluminous facet is opt-in): " +
+    "Pass `facets` (booleans; default when omitted = meta + markdown — the gist; every voluminous facet is opt-in): " +
+    "`markdown` (the page's readable text as Markdown — use this to understand what a page is about + how it's laid out, NOT raw markup; truncated with a cursor, call read_page_more for the rest), " +
     "`meta` (title, description, canonical, lang+hreflang, h1–h3 outline), " +
     "`links` (outbound links with anchor text, rel, and nav|footer|body location — the raw material for the page-type map; OPT-IN, default off, since index/nav pages can carry 200+ links — enable it on the FIRST/homepage inspect for site-structure discovery, leave off for content inspects), " +
     "`altTexts` (img alt / aria-label inventory), " +
     "`markup` (cleaned page HTML modules for building a template from a sample), " +
     "`screenshot` (rendered viewport image on your next turn), " +
     "`tokens` (design fact base: CSS-derived color/font inventory + rendered computed-style tokens). " +
-    "Step 1 understand structure → `{links:true, meta:true}`. Step 3 build a template from a sample → `{markup:true, screenshot:true, tokens:true, altTexts:true}`. " +
+    "Step 1 understand a page → default (`{}` = meta + markdown) + `{links:true}` on the FIRST/homepage inspect for site structure. Step 3 build a template from a sample → `{markup:true, screenshot:true, tokens:true, altTexts:true}` (or query_page_html for a targeted section). " +
     "To turn a homepage's links into the site's page-type map, use `map_external_page_types` instead. " +
     "Do NOT use for whole-site work (no link-following) — use `propose_site_import`. Do NOT use on Caelo's own pages — use `inspect_page_render`. " +
     "Only public http(s) URLs work; private/internal addresses are refused by the SSRF guard.",
@@ -201,8 +221,13 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
         type: "object",
         additionalProperties: false,
         description:
-          "Which facets to pull. Omit for the minimal core (meta only). Each is a boolean switch; voluminous facets (links, markup, …) are opt-in.",
+          "Which facets to pull. Omit for the gist (meta + markdown). Each is a boolean switch; voluminous facets (links, markup, …) are opt-in.",
         properties: {
+          markdown: {
+            type: "boolean",
+            description:
+              "The page's readable text as Markdown (headings, paragraphs, links, lists) — the gist for understanding a page. Far smaller than `markup`. Truncated to one slice with a cursor; call read_page_more for the rest.",
+          },
           meta: {
             type: "boolean",
             description:
@@ -243,7 +268,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     }
     const f = resolveFacets(toolInput.facets);
     const allowedHosts = externalFetchAllowedHosts();
-    const needHtml = f.links || f.markup || f.altTexts || f.meta || f.tokens;
+    const needHtml = f.links || f.markdown || f.markup || f.altTexts || f.meta || f.tokens;
 
     let res: SafeFetchResponse | null = null;
     if (needHtml) {
@@ -298,6 +323,23 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
         `Hreflang alternates: ${hreflang}`,
         "Headings outline:",
         meta.headings.length > 0 ? meta.headings.join("\n") : "(no h1–h3 headings)",
+        "",
+      );
+    }
+
+    // The gist facet: readable page text as Markdown (far smaller than raw
+    // markup). Truncated to one slice with a cursor; call `read_page_more`
+    // with the pageRef + cursor for the rest.
+    let fullMarkdown: string | null = null;
+    if (f.markdown) {
+      fullMarkdown = htmlToMarkdown(html);
+      const { text, nextCursor } = sliceMarkdown(fullMarkdown, 0);
+      sections.push(
+        "## Page text (Markdown)",
+        text.length > 0 ? text : "(no readable text extracted)",
+        nextCursor !== null
+          ? `\n[truncated — ${fullMarkdown.length - text.length} more chars. Call read_page_more({ pageRef, cursor: ${nextCursor} }) for the rest.]`
+          : "",
         "",
       );
     }
@@ -393,6 +435,23 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
           await screenshotter.dispose().catch(() => undefined);
         }
       }
+    }
+
+    // Cache the fetched page under a handle so follow-ups reuse it without
+    // re-fetching: read_page_more (paginate the Markdown) and, later,
+    // query_page_html (run selectors). Only when we actually have HTML.
+    if (needHtml && html.length > 0) {
+      const pageRef = putPageInspection(toolCtx.chatSessionId ?? "no-session", {
+        url: finalUrl,
+        html,
+        markdown: fullMarkdown ?? htmlToMarkdown(html),
+      });
+      // Emit the handle high in the output so the model reaches for it.
+      sections.splice(
+        2,
+        0,
+        `Page handle: ${pageRef} — reuse with read_page_more({ pageRef, cursor }) / query_page_html({ pageRef, ... }); no re-fetch.`,
+      );
     }
 
     sections.push(

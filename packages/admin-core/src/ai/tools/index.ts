@@ -47,6 +47,7 @@ import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
 import { inspectGenesisDraftTool } from "./inspect-genesis-draft.js";
+import { readPageMoreTool } from "./read-page-more.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listLayoutsTool } from "./list-layouts.js";
@@ -190,6 +191,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #189 / #278 — single-page external-site sensing (facet-selectable
   // glance) + homepage-driven page-type mapping for the migration flow.
   registry.register(inspectExternalPageTool);
+  registry.register(readPageMoreTool);
   registry.register(screenshotExternalPageTool);
   registry.register(mapExternalPageTypesTool);
   // issue #194 cluster-review tools (list/assign page clusters) were retired

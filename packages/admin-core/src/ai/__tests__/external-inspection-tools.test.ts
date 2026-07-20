@@ -13,8 +13,10 @@ import type { Screenshot } from "@caelo-cms/site-importer";
 import { resetExternalFetchBudgetForTests } from "../tools/_external-fetch-budget.js";
 import { setExternalScreenshotterForTests } from "../tools/_external-screenshotter.js";
 import type { ToolContext } from "../tools/dispatch.js";
+import { clearPageInspectionCacheForTests } from "../tools/_page-inspection-cache.js";
 import { extractStylesheetHrefs, inspectExternalPageTool } from "../tools/inspect-external-page.js";
 import { mapExternalPageTypesTool } from "../tools/map-external-page-types.js";
+import { readPageMoreTool } from "../tools/read-page-more.js";
 import { screenshotExternalPageTool } from "../tools/screenshot-external-page.js";
 
 const FIXTURE_HTML = `<!doctype html><html lang="en"><head>
@@ -96,18 +98,43 @@ const emptyCtx = {
 };
 
 describe("inspect_external_page — facet selection", () => {
-  it("defaults to meta ONLY — links is opt-in (default off), no full blob", async () => {
+  it("gist default = meta + markdown + a pageRef; links/markup/etc stay off", async () => {
     const r = await inspectExternalPageTool.handler(emptyCtx, { url: `${base}/` }, toolCtx);
     expect(r.ok).toBe(true);
-    expect(r.content).toContain("Facets: meta");
+    expect(r.content).toContain("Facets: meta, markdown");
     expect(r.content).toContain("## Meta");
-    expect(r.content).toContain("Bergbäckerei Steinofen");
-    // links is OPT-IN now: a 200+-link page must not bloat every inspect,
-    // so the no-facets default does NOT pull the link inventory.
+    expect(r.content).toContain("## Page text (Markdown)");
+    // Markdown carries the readable structure (heading text, not raw tags).
+    expect(r.content).toContain("# Bergbäckerei Steinofen");
+    expect(r.content).not.toContain("<h1>");
+    // A reuse handle is surfaced.
+    expect(r.content).toMatch(/Page handle: pg_\w+/);
+    // links is OPT-IN now: a 200+-link page must not bloat every inspect.
     expect(r.content).not.toContain("## Outbound links");
     // …and definitely not markup / tokens / screenshot.
     expect(r.content).not.toContain("## Markup");
     expect(r.content).not.toContain("## Design fact base");
+  });
+
+  it("read_page_more reuses the pageRef to paginate — no re-fetch", async () => {
+    clearPageInspectionCacheForTests();
+    const first = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { markdown: true } },
+      toolCtx,
+    );
+    expect(first.ok).toBe(true);
+    const pageRef = /Page handle: (pg_\w+)/.exec(first.content ?? "")?.[1];
+    expect(pageRef).toBeDefined();
+    // Continue from an offset; the fixture is short so this returns the
+    // end-of-page marker but must NOT error and must NOT spend fetch budget.
+    const more = await readPageMoreTool.handler(emptyCtx, { pageRef: pageRef!, cursor: 0 }, toolCtx);
+    expect(more.ok).toBe(true);
+    expect(more.content).toContain("Page text (Markdown)");
+    // An unknown handle fails cleanly (points back at inspect_external_page).
+    const missing = await readPageMoreTool.handler(emptyCtx, { pageRef: "pg_nope" }, toolCtx);
+    expect(missing.ok).toBe(false);
+    expect(missing.content).toContain("inspect_external_page");
   });
 
   it("links facet is opt-in: {links:true} pulls the inventory", async () => {
