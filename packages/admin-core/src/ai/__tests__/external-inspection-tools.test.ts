@@ -299,15 +299,16 @@ describe("query_page_html", () => {
     expect(r.content).toContain('aria-label="Menü öffnen"');
   });
 
-  it("markup facet returns cleaned extractor modules", async () => {
+  it("there is NO markup facet — no ## Markup section; structure is query_page_html's job", async () => {
     const r = await inspectExternalPageTool.handler(
       emptyCtx,
-      { url: `${base}/`, facets: { markup: true } },
+      { url: `${base}/`, facets: { markdown: true, markup: true } as never },
       toolCtx,
     );
-    expect(r.content).toContain("## Markup (extracted modules)");
-    expect(r.content).toContain("[header]");
-    expect(r.content).toContain("[footer]");
+    expect(r.ok).toBe(true);
+    // The removed facet produces no raw-HTML dump; the gist Markdown is there.
+    expect(r.content).not.toContain("## Markup");
+    expect(r.content).toContain("## Page text (Markdown)");
   });
 
   it("screenshot facet attaches a rendered image via the shared screenshotter", async () => {

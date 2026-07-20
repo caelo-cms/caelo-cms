@@ -5,9 +5,16 @@
  * (SSRF-guarded, #191) and return ONLY the FACETS the current migration
  * step needs. The homepage-driven flow (issue #278) understands a site's
  * structure cheaply (a discovery turn asks for `links` + `meta` only),
- * then samples one page per type richly (a template-building turn asks
- * for `markup` + `screenshot` + `tokens` + `altTexts`). A single
- * heavyweight blob on every call is exactly what #278 removes.
+ * then samples one page per type richly (screenshot + tokens + altTexts,
+ * plus Markdown for the content). A single heavyweight blob on every call
+ * is exactly what #278 removes.
+ *
+ * There is NO raw-markup facet: understanding a page is `markdown` (its
+ * readable text), and pulling specific structure is `query_page_html`
+ * (bounded, by selector or a small-model `describe`). A full HTML dump was
+ * pure context bloat — a single rich one ran to ~380K tokens — and the
+ * migration flow authors fresh modules anyway, so the legacy markup is not
+ * worth carrying.
  *
  * Facets (all boolean switches; default when none given: meta + markdown
  * — the gist; every voluminous facet is opt-in):
@@ -18,7 +25,6 @@
  *                  OPT-IN (default off): 200+-link pages otherwise bloat
  *                  every call; enable it on the first/homepage inspect.
  *   - altTexts   — img alt / aria-label inventory.
- *   - markup     — cleaned page HTML (extractor modules) for templating.
  *   - screenshot — rendered viewport image (attached to the next turn).
  *   - tokens     — design fact base: static CSS-derived inventory + the
  *                  WS1 computed-style sampler (when Playwright is present).
@@ -28,7 +34,6 @@ import { formatGenesisInventory, inventoryGenesisDraft } from "@caelo-cms/shared
 import {
   deriveDesignTokens,
   extractAltTexts,
-  extractModulesFromHtml,
   extractOutboundLinks,
   extractPageMeta,
   htmlToMarkdown,
@@ -47,7 +52,6 @@ const facets = z
   .object({
     links: z.boolean().optional(),
     markdown: z.boolean().optional(),
-    markup: z.boolean().optional(),
     screenshot: z.boolean().optional(),
     altTexts: z.boolean().optional(),
     meta: z.boolean().optional(),
@@ -63,7 +67,6 @@ type Input = z.infer<typeof input>;
 interface ResolvedFacets {
   links: boolean;
   markdown: boolean;
-  markup: boolean;
   screenshot: boolean;
   altTexts: boolean;
   meta: boolean;
@@ -84,22 +87,17 @@ interface ResolvedFacets {
 function resolveFacets(raw: Input["facets"]): ResolvedFacets {
   const any =
     raw !== undefined &&
-    (raw.links ||
-      raw.markdown ||
-      raw.markup ||
-      raw.screenshot ||
-      raw.altTexts ||
-      raw.meta ||
-      raw.tokens);
+    (raw.links || raw.markdown || raw.screenshot || raw.altTexts || raw.meta || raw.tokens);
   // Gist default (no facets named): meta + Markdown — "what's on the page,
   // how is it laid out" in the smallest context. Everything voluminous
-  // (links, raw markup, screenshot, tokens) stays opt-in.
+  // (links, screenshot, tokens) stays opt-in. There is no raw-markup facet
+  // any more: read the page as Markdown, and pull specific structure with
+  // `query_page_html` (bounded) — a full HTML dump was pure context bloat.
   if (!any)
     return {
       meta: true,
       markdown: true,
       links: false,
-      markup: false,
       screenshot: false,
       altTexts: false,
       tokens: false,
@@ -107,7 +105,6 @@ function resolveFacets(raw: Input["facets"]): ResolvedFacets {
   return {
     links: raw?.links ?? false,
     markdown: raw?.markdown ?? false,
-    markup: raw?.markup ?? false,
     screenshot: raw?.screenshot ?? false,
     altTexts: raw?.altTexts ?? false,
     meta: raw?.meta ?? false,
@@ -117,7 +114,6 @@ function resolveFacets(raw: Input["facets"]): ResolvedFacets {
 
 const MAX_STYLESHEETS = 3;
 const STYLESHEET_BYTE_CAP = 512 * 1024;
-const MARKUP_MODULE_CAP = 20_000;
 const LINKS_PER_LOCATION = 60;
 
 /** Linear scan for same-host `<link rel=stylesheet href>` URLs (capped),
@@ -199,14 +195,14 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
   description:
     "Fetch ONE page of an EXTERNAL website (the operator's existing site, a reference site) and return ONLY the facets you ask for — keep discovery turns small, template-building turns rich. " +
     "Pass `facets` (booleans; default when omitted = meta + markdown — the gist; every voluminous facet is opt-in): " +
-    "`markdown` (the page's readable text as Markdown — use this to understand what a page is about + how it's laid out, NOT raw markup; truncated with a cursor, call read_page_more for the rest), " +
+    "`markdown` (the page's readable text as Markdown — use this to understand what a page is about + how it's laid out; truncated with a cursor, call read_page_more for the rest), " +
     "`meta` (title, description, canonical, lang+hreflang, h1–h3 outline), " +
     "`links` (outbound links with anchor text, rel, and nav|footer|body location — the raw material for the page-type map; OPT-IN, default off, since index/nav pages can carry 200+ links — enable it on the FIRST/homepage inspect for site-structure discovery, leave off for content inspects), " +
     "`altTexts` (img alt / aria-label inventory), " +
-    "`markup` (cleaned page HTML modules for building a template from a sample), " +
     "`screenshot` (rendered viewport image on your next turn), " +
     "`tokens` (design fact base: CSS-derived color/font inventory + rendered computed-style tokens). " +
-    "Step 1 understand a page → default (`{}` = meta + markdown) + `{links:true}` on the FIRST/homepage inspect for site structure. Step 3 build a template from a sample → `{markup:true, screenshot:true, tokens:true, altTexts:true}` (or query_page_html for a targeted section). " +
+    "There is NO raw-HTML/markup facet: for specific structure use `query_page_html` (by selector or a natural-language `describe`), which is bounded — never dump a whole page's HTML into the chat. " +
+    "Step 1 understand a page → default (`{}` = meta + markdown) + `{links:true}` on the FIRST/homepage inspect for site structure. Step 3 build a template from a sample → `{screenshot:true, tokens:true, altTexts:true}` for the visual + design + images, markdown for the content, and `query_page_html` for any specific section. " +
     "To turn a homepage's links into the site's page-type map, use `map_external_page_types` instead. " +
     "Do NOT use for whole-site work (no link-following) — use `propose_site_import`. Do NOT use on Caelo's own pages — use `inspect_page_render`. " +
     "Only public http(s) URLs work; private/internal addresses are refused by the SSRF guard.",
@@ -221,12 +217,12 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
         type: "object",
         additionalProperties: false,
         description:
-          "Which facets to pull. Omit for the gist (meta + markdown). Each is a boolean switch; voluminous facets (links, markup, …) are opt-in.",
+          "Which facets to pull. Omit for the gist (meta + markdown). Each is a boolean switch; voluminous facets (links, screenshot, tokens) are opt-in.",
         properties: {
           markdown: {
             type: "boolean",
             description:
-              "The page's readable text as Markdown (headings, paragraphs, links, lists) — the gist for understanding a page. Far smaller than `markup`. Truncated to one slice with a cursor; call read_page_more for the rest.",
+              "The page's readable text as Markdown (headings, paragraphs, links, lists) — the gist for understanding a page. For specific structure use query_page_html, not a raw-HTML dump. Truncated to one slice with a cursor; call read_page_more for the rest.",
           },
           meta: {
             type: "boolean",
@@ -239,11 +235,6 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
               "OPT-IN (default off). Outbound links: {href (absolute), text (anchor text), rel, location: nav|footer|body}. Enable on the first/homepage inspect for site-structure discovery; index/nav pages can carry 200+ links, so leave it off for content inspects.",
           },
           altTexts: { type: "boolean", description: "img alt / aria-label inventory." },
-          markup: {
-            type: "boolean",
-            description:
-              "Cleaned page HTML (extractor modules) for building a template from a sample.",
-          },
           screenshot: {
             type: "boolean",
             description: "Rendered viewport image, attached to your next turn (needs Playwright).",
@@ -268,7 +259,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     }
     const f = resolveFacets(toolInput.facets);
     const allowedHosts = externalFetchAllowedHosts();
-    const needHtml = f.links || f.markdown || f.markup || f.altTexts || f.meta || f.tokens;
+    const needHtml = f.links || f.markdown || f.altTexts || f.meta || f.tokens;
 
     let res: SafeFetchResponse | null = null;
     if (needHtml) {
@@ -358,23 +349,6 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
       sections.push(
         "## Alt-text inventory",
         lines.length > 0 ? lines.join("\n") : "(no img alt / aria-label attributes found)",
-        "",
-      );
-    }
-
-    if (f.markup) {
-      const { modules, commentsStripped } = extractModulesFromHtml(html);
-      const blocks = modules.map((m) => {
-        const body =
-          m.html.length > MARKUP_MODULE_CAP
-            ? `${m.html.slice(0, MARKUP_MODULE_CAP)}\n<!-- …truncated (${m.html.length - MARKUP_MODULE_CAP} more chars) -->`
-            : m.html;
-        return `### ${m.displayName} [${m.blockName}]\n${body}`;
-      });
-      sections.push(
-        "## Markup (extracted modules)",
-        blocks.length > 0 ? blocks.join("\n\n") : "(no extractable modules)",
-        commentsStripped > 0 ? `(stripped ${commentsStripped} comment-thread subtree(s))` : "",
         "",
       );
     }
