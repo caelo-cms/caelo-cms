@@ -45,7 +45,11 @@ context-heavy. The fix separates two needs one tool conflates today:
 Purpose: *what is this page about, how is it laid out, how does it look* —
 in the smallest context that answers those.
 
-Returns:
+**Facets are dynamic and opt-in — the default is the minimal gist.** The
+AI names only what it needs; voluminous facets stay OFF unless switched
+on. This is the general principle, not a per-facet special case.
+
+Default facet set (no `facets` named):
 
 - **Full-page screenshot** (the visual "how does it look"). One capture
   per page.
@@ -53,11 +57,24 @@ Returns:
   content; an HTML→Markdown pass (Turndown) drops tags/attributes/
   scripts/styles → typically 5–10× smaller than the current `markup`
   facet. Truncated to a token budget, with a **cursor** for "the rest".
-- **meta + links** as today.
+- **meta** (title, description, canonical, og). Cheap.
 
-Removed from the default: the heavy cleaned-HTML `markup` facet. (Keep a
-`rawHtml` facet only if a caller explicitly needs it — but the intended
-path for structure is §2.2.)
+Opt-in facets (OFF by default, `facets: { … : true }` to enable):
+
+- **`links`** — the page's link inventory. **Changed from today's
+  default-on to default-OFF.** Rationale: a nav/footer/blog-index page can
+  carry **200+ links**, which dumps a large list into context on *every*
+  inspect — but the full inventory is usually needed only ONCE (the first
+  / homepage inspect, to discover site structure), not on each subsequent
+  page. The AI switches `links: true` when it actually wants the inventory
+  (site-structure discovery) and leaves it off for content inspects. A
+  future refinement: cap/paginate the link list (like the Markdown
+  cursor) when it is enabled and huge.
+- **`altTexts`**, **`tokens`** (computed-style design tokens — needs the
+  render), and any **`rawHtml`** escape-hatch: all opt-in. The intended
+  path for *structure* is `query_page_html` (§2.2), not a raw-HTML facet.
+
+Removed from the default: the heavy cleaned-HTML `markup` facet.
 
 **Returns a `pageRef` (page handle).** The render is captured ONCE and
 cached (§3); `pageRef` lets follow-up tools reuse it without re-fetching
@@ -157,7 +174,9 @@ in-memory. Default recommendation: in-memory, session-scoped, LRU-capped
 ## 6. Skill updates (the flows that use these tools)
 
 - `site-migrate` / onboarding: Step 1 "understand" → `inspect_external_page`
-  (screenshot + Markdown), propose the crawl, STOP. Step 3 "build a
+  (screenshot + Markdown). Enable `links: true` on the FIRST / homepage
+  inspect to discover site structure; leave links OFF for the following
+  content inspects. Then propose the crawl and STOP. Step 3 "build a
   template from a sample" → `query_page_html` (targeted) or a subagent for
   big pages. Make explicit: do NOT pull raw HTML into the main chat for
   understanding.
