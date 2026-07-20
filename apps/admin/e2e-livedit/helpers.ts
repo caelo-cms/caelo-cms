@@ -86,6 +86,25 @@ export function resetLiveditFixtures(): void {
       // re-seed after this reset.
       await tx\`DELETE FROM layout_modules\`;
       await tx\`DELETE FROM modules\`;
+      // Templates + import state persist across scenarios if not wiped. A
+      // migrate/compose scenario running AFTER template-creating scenarios
+      // (genesis, homepage) fed compose_from_import the LEFTOVER templates,
+      // ballooning the migrate turn's context past the model's 1M window
+      // (a failed call → dangling tool calls → 0 pages). Wipe them, but
+      // PRESERVE the migration-seeded default template + layout that
+      // site_defaults references (0023). Order: children before parents;
+      // pages + chat_sessions (the other template referrers) are already
+      // wiped above.
+      await tx\`DELETE FROM import_run_events\`;
+      await tx\`DELETE FROM import_pages\`;
+      await tx\`DELETE FROM import_runs\`;
+      // NOT IN (subquery) inline — preserve the migration-seeded default
+      // template that site_defaults references (0023); wipe the rest.
+      const keep = "SELECT default_template_id FROM site_defaults WHERE default_template_id IS NOT NULL";
+      await tx.unsafe(\`DELETE FROM template_snapshots WHERE template_id NOT IN (\${keep})\`);
+      await tx.unsafe(\`DELETE FROM template_pending_actions WHERE template_id NOT IN (\${keep})\`);
+      await tx.unsafe(\`DELETE FROM template_blocks WHERE template_id NOT IN (\${keep})\`);
+      await tx.unsafe(\`DELETE FROM templates WHERE id NOT IN (\${keep})\`);
       // Login bucket gets consumed by every loginAsDevOwner() call;
       // global-setup only clears it once at suite start, so after 5+
       // tests the rate limiter starts rejecting and loginAsDevOwner's
