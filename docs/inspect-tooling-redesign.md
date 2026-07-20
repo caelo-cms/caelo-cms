@@ -2,10 +2,13 @@
 
 # External-page inspection redesign — gist-first + on-demand HTML query
 
-Status: **Phase 1 IMPLEMENTED** (links default-off, capped screenshot
-wait, `htmlToMarkdown`, gist `markdown` facet + `pageRef` render cache +
-`read_page_more`). Phases 2–3 (query_page_html, browser reuse, subagent
-passthrough) + the skill-guidance migration are pending. Owner: TBD.
+Status: **Phase 1 + Phase 2 (keyword + describe) IMPLEMENTED.** Done:
+links default-off, capped screenshot wait, `htmlToMarkdown`, gist
+`markdown` facet + `pageRef` render cache + `read_page_more`, and
+`query_page_html` (keyword + describe/small-model modes). Pending:
+`query_page_html` css/xpath selector modes (need the shared Playwright
+page-reuse), browser reuse (one Chromium per session), and the
+skill-guidance migration. Owner: TBD.
 
 Implementation note for Phase 2: Phase 1 caches the *fetched* (static)
 HTML under `pageRef` (the gist path never renders). `query_page_html`
@@ -213,10 +216,12 @@ in-memory. Default recommendation: in-memory, session-scoped, LRU-capped
    links default-off, capped screenshot settle wait. Removes the context
    bloat + most latency. (Browser reuse + the skills' Step-1 migration
    still to land — see below.)
-2. **`query_page_html`** (pageRef-first; url fallback) with keyword / css /
-   xpath via the reused Playwright page. Update Step-3 guidance.
-3. **Subagent-for-large-HTML** guidance + `pageRef` passthrough into spawn
-   specs.
+2. **PARTLY DONE — `query_page_html`** (pageRef-first; url fallback):
+   keyword + describe (small-model) modes landed. css/xpath selector modes
+   pending (need the reused Playwright page). Step-3 guidance still to
+   migrate.
+3. **DONE (folded in) — large-HTML extraction** is `query_page_html`'s
+   `describe` mode (small model), not a separate subagent.
 4. **Browser reuse** (one Chromium per session, idle-close) + the
    **skill-guidance migration**: migrate/onboarding/import Step-1 → gist
    default + `links:true` only on the first inspect + `read_page_more`;
