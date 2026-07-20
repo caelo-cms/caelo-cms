@@ -668,63 +668,23 @@ export async function* runToolLoop(
       break;
     }
 
-    // Slice 1 (SDK approval gate) — the model called one or more gated tools;
-    // the SDK PAUSED before their execute and surfaced tool-approval-requests.
-    // Surface each as an in-chat Approve/Reject card and STOP the turn: the
-    // paused assistant turn (tool-call + approval-request blocks) is already
-    // persisted via Option C responseMessages, so approving = appending a
-    // tool-approval-response and re-running. We do NOT dispatch the gated
-    // tool-calls (the SDK owns their execute once approved) and, to keep the
-    // paused pairing clean, do NOT dispatch the rest of the turn's calls
-    // either — the whole turn resumes together after the decision.
-    if (accumulatedApprovalRequests.length > 0) {
-      for (const req of accumulatedApprovalRequests) {
-        yield {
-          kind: "tool-approval-request",
-          approvalId: req.approvalId,
-          toolCallId: req.toolCallId,
-          name: req.name,
-          arguments: req.arguments,
-          preview: buildApprovalPreview(req.name, req.arguments),
-        };
-      }
-      // Autonomous / e2e runs: no human is on the stream to click Approve, so
-      // auto-grant each pending approval — append the SDK tool-approval-response
-      // (verbatim ModelMessage via the Option C passthrough) and CONTINUE the
-      // loop. The next provider call resumes the paused turn: the SDK runs the
-      // gated tool's execute (Owner ctx) and the model continues. Production
-      // leaves the turn paused (below) for the Owner's in-chat decision.
-      if (process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1") {
-        for (const req of accumulatedApprovalRequests) {
-          messages.push({
-            role: "tool",
-            content: "",
-            sdkMessages: [
-              {
-                role: "tool",
-                content: [
-                  { type: "tool-approval-response", approvalId: req.approvalId, approved: true },
-                ],
-              },
-            ],
-          });
-        }
-        console.error("[chat-runner] auto-approved (e2e)", {
-          chatSessionId,
-          approvals: accumulatedApprovalRequests.map((r) => r.name),
-        });
-        continue;
-      }
-      // Production — pause the turn awaiting the Owner's in-chat Approve/Reject.
-      // The paused assistant turn (tool-call + approval-request) is persisted
-      // via Option C responseMessages, so resume = append the response + re-run.
-      console.error("[chat-runner] awaiting-approval", {
-        chatSessionId,
-        approvals: accumulatedApprovalRequests.map((r) => ({ name: r.name, id: r.approvalId })),
-      });
-      stopReason = "awaiting_approval";
-      break;
-    }
+    // Slice 1 (SDK approval gate) — the model may have called one or more
+    // SDK-needsApproval tools (propose_create_theme, propose_update_layout,
+    // …); the SDK PAUSED before their execute and surfaced
+    // tool-approval-requests. Those gated calls are handled AFTER dispatch
+    // below (the SDK owns their execute once approved).
+    //
+    // CRITICAL PAIRING FIX — a turn can co-emit a NON-gated call alongside
+    // the gated one. The model batches a needsApproval `propose_create_theme`
+    // with a DB-propose `propose_site_import` (which returns its own result
+    // immediately) in a single turn — adaptive thinking makes this batching
+    // common. Pre-fix, the approval branch short-circuited (continue/break)
+    // BEFORE dispatch, so the non-gated call's tool_use was left with neither
+    // a tool_result nor a tool-approval-response → the SDK 400s on the next
+    // provider call ("Tool result is missing for tool call …") and the turn
+    // (and its DB-propose) silently fails. So: dispatch every NON-gated call
+    // now; skip only the SDK-gated ones (matched by tool-call id).
+    const gatedCallIds = new Set(accumulatedApprovalRequests.map((r) => r.toolCallId));
 
     // Dispatch each tool call sequentially and append a tool result.
     // P5.2 #3 — dedupe by (chat_session_id, tool_call_id).
@@ -751,6 +711,10 @@ export async function* runToolLoop(
     const turnOutcomes: ToolCallOutcome[] = [];
     for (const call of accumulatedToolCalls) {
       if (aborted()) break;
+      // SDK-gated calls are executed by the SDK on approval (handled after
+      // this loop); dispatching them here would double-run them. Non-gated
+      // co-emitted calls fall through and get their tool_result paired.
+      if (gatedCallIds.has(call.id)) continue;
       // Breaker: an identical (tool + args) call already failed identically
       // twice this turn. Don't re-run it — reply with a synthetic failed
       // result so the tool_use/tool_result pairing stays complete (Anthropic
@@ -822,6 +786,58 @@ export async function* runToolLoop(
           { role: "user", content: repeatedFailureNudge(outcome.name, count) },
         ];
       }
+    }
+
+    // SDK approval gate (handled AFTER dispatch so co-emitted non-gated
+    // calls are already paired above). Surface each gated call as an in-chat
+    // Approve/Reject card; the paused assistant turn (tool-call +
+    // approval-request blocks) is persisted via Option C responseMessages, so
+    // approving = appending a tool-approval-response and re-running.
+    if (accumulatedApprovalRequests.length > 0) {
+      for (const req of accumulatedApprovalRequests) {
+        yield {
+          kind: "tool-approval-request",
+          approvalId: req.approvalId,
+          toolCallId: req.toolCallId,
+          name: req.name,
+          arguments: req.arguments,
+          preview: buildApprovalPreview(req.name, req.arguments),
+        };
+      }
+      // Autonomous / e2e runs: no human is on the stream to click Approve, so
+      // auto-grant each pending approval — append the SDK tool-approval-response
+      // (verbatim ModelMessage via the Option C passthrough) and CONTINUE the
+      // loop. The next provider call resumes the paused turn: the SDK runs the
+      // gated tool's execute (Owner ctx) and the model continues. Production
+      // leaves the turn paused (below) for the Owner's in-chat decision.
+      if (process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1") {
+        for (const req of accumulatedApprovalRequests) {
+          messages.push({
+            role: "tool",
+            content: "",
+            sdkMessages: [
+              {
+                role: "tool",
+                content: [
+                  { type: "tool-approval-response", approvalId: req.approvalId, approved: true },
+                ],
+              },
+            ],
+          });
+        }
+        console.error("[chat-runner] auto-approved (e2e)", {
+          chatSessionId,
+          approvals: accumulatedApprovalRequests.map((r) => r.name),
+        });
+        continue;
+      }
+      // Production — pause the turn awaiting the Owner's in-chat Approve/Reject.
+      console.error("[chat-runner] awaiting-approval", {
+        chatSessionId,
+        approvals: accumulatedApprovalRequests.map((r) => ({ name: r.name, id: r.approvalId })),
+      });
+      stopReason = "awaiting_approval";
+      break;
     }
 
     // Only loop again when the model actually signalled it wants to keep
