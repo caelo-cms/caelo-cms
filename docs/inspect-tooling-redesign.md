@@ -10,11 +10,12 @@ migration), live-validated on scenario-onboarding (8.1m timeout-fail →
 describe-small-model), shared-Chromium reuse (idle-close), and the
 site-migrate / import-page skill guidance (gist-first + crawl-first).
 
-Remaining (optional polish): query_page_html currently queries the cached
-*fetched* (static) HTML via `setContent`; it could prefer the rendered
-`page.content()` when a screenshot/tokens render already happened for
-that `pageRef` (JS-applied DOM). Left as a follow-up — the static DOM
-covers structure queries.
+Rendered-DOM preference: DONE. When an inspect renders the page
+(screenshot/tokens), the screenshotter also captures `page.content()`
+(the JS-applied DOM) and the pageRef cache stores it as `renderedHtml`;
+`query_page_html` prefers `renderedHtml ?? html`, so selectors run against
+the real DOM when one was rendered and fall back to the static fetch
+otherwise. No known remaining work.
 
 ## 1. Why
 

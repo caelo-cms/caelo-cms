@@ -390,6 +390,9 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     // One render pass covers both the screenshot + the computed-style
     // tokens so a rich template-building turn renders the page ONCE.
     let image: ToolResult["image"];
+    // Captured during the render (page.content()) so the pageRef cache can
+    // hold the JS-applied DOM for query_page_html's selectors.
+    let renderedHtml: string | undefined;
     if (f.screenshot || f.tokens) {
       const screenshotter = await getExternalScreenshotter({ allowedHosts });
       if (!screenshotter) {
@@ -409,7 +412,9 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
             external: true,
             fullPage: false,
             sampleStyles: f.tokens,
+            captureHtml: true,
           });
+          renderedHtml = shot.renderedHtml;
           if (f.tokens && shot.styleSamples) {
             sections.push(
               "## Computed-style design tokens (rendered)",
@@ -445,6 +450,9 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
         url: finalUrl,
         html,
         markdown: fullMarkdown ?? htmlToMarkdown(html),
+        // Present only when this inspect rendered the page — query_page_html
+        // then queries the JS-applied DOM, not the static fetch.
+        ...(renderedHtml !== undefined ? { renderedHtml } : {}),
       });
       // Emit the handle high in the output so the model reaches for it.
       sections.splice(

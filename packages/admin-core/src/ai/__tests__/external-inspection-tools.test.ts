@@ -218,6 +218,36 @@ describe("query_page_html", () => {
     expect(queriedWith).toMatchObject({ cssSelector: "nav a" });
   });
 
+  it("query prefers the RENDERED DOM when a screenshot render populated the pageRef", async () => {
+    // The render returns HTML carrying a marker that is NOT in the static
+    // fetched fixture — proving query_page_html uses renderedHtml.
+    setExternalScreenshotterForTests(async () => ({
+      capture: async () => ({
+        bytes: new Uint8Array([1]),
+        width: 1280,
+        height: 800,
+        renderedHtml: "<html><body><div id='jsonly'>RENDERED-ONLY-MARKER</div></body></html>",
+      }),
+      query: async () => [],
+      dispose: async () => undefined,
+    }));
+    clearPageInspectionCacheForTests();
+    const first = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { screenshot: true, markdown: true } },
+      toolCtx,
+    );
+    const pageRef = /Page handle: (pg_\w+)/.exec(first.content ?? "")?.[1];
+    expect(pageRef).toBeDefined();
+    const r = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, keyword: "RENDERED-ONLY-MARKER" },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain("RENDERED-ONLY-MARKER");
+  });
+
   it("links facet is opt-in: {links:true} pulls the inventory", async () => {
     const r = await inspectExternalPageTool.handler(
       emptyCtx,

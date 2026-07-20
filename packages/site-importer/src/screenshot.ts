@@ -49,6 +49,11 @@ export interface Screenshot {
    *  render session, present only when `sampleStyles: true` was
    *  requested. Feed into `deriveDesignTokens`. */
   readonly styleSamples?: readonly ElementStyleSample[];
+  /** The RENDERED HTML (`page.content()`, JS-applied DOM) captured in the
+   *  same render session — present only when `captureHtml: true`. Lets the
+   *  pageRef cache hold the rendered DOM so query_page_html's selectors run
+   *  against it instead of the static fetched HTML. */
+  readonly renderedHtml?: string;
 }
 
 export interface Screenshotter {
@@ -78,6 +83,9 @@ export interface Screenshotter {
        *  caller): screenshot and tokens come from one render session,
        *  and a page that rendered will evaluate a style read. */
       sampleStyles?: boolean;
+      /** Also return `page.content()` (the rendered JS-applied HTML) in the
+       *  same render session, as `renderedHtml`. */
+      captureHtml?: boolean;
     },
   ): Promise<Screenshot>;
   /**
@@ -198,11 +206,17 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             COLLECT_STYLE_SAMPLES_SCRIPT,
           )) as ElementStyleSample[];
         }
+        // Rendered (JS-applied) HTML from the same session — so a later
+        // query_page_html runs its selectors against the real DOM.
+        const renderedHtml: string | undefined = opts?.captureHtml
+          ? ((await page.content()) as string)
+          : undefined;
         return {
           bytes: new Uint8Array(png),
           width: opts?.width ?? 1280,
           height: opts?.height ?? 800,
           ...(styleSamples ? { styleSamples } : {}),
+          ...(renderedHtml !== undefined ? { renderedHtml } : {}),
         };
       } finally {
         await ctx.close();

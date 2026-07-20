@@ -16,8 +16,13 @@
 /** A cached inspection: enough to paginate Markdown + query the HTML. */
 export interface PageInspection {
   readonly url: string;
+  /** The fetched (static) HTML — always present. */
   readonly html: string;
   readonly markdown: string;
+  /** The RENDERED (JS-applied) HTML, present when a screenshot/tokens
+   *  render happened for this page. query_page_html prefers it over the
+   *  static `html` so selectors run against the real DOM. */
+  readonly renderedHtml?: string;
 }
 
 const CACHE_CAP = 32;

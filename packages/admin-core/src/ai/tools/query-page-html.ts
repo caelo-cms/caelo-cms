@@ -92,7 +92,11 @@ async function resolveHtml(
 ): Promise<{ ok: true; url: string; html: string } | { ok: false; content: string }> {
   if (toolInput.pageRef) {
     const cached = getPageInspection(toolInput.pageRef);
-    if (cached) return { ok: true, url: cached.url, html: cached.html };
+    if (cached) {
+      // Prefer the rendered (JS-applied) DOM when a screenshot/tokens
+      // render populated it; fall back to the static fetched HTML.
+      return { ok: true, url: cached.url, html: cached.renderedHtml ?? cached.html };
+    }
     if (!toolInput.url) {
       return {
         ok: false,
