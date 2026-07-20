@@ -2,8 +2,18 @@
 
 # External-page inspection redesign — gist-first + on-demand HTML query
 
-Status: **PLAN / not yet implemented.** Owner: TBD. Tracked-as: (open an
-issue and link it here).
+Status: **Phase 1 IMPLEMENTED** (links default-off, capped screenshot
+wait, `htmlToMarkdown`, gist `markdown` facet + `pageRef` render cache +
+`read_page_more`). Phases 2–3 (query_page_html, browser reuse, subagent
+passthrough) + the skill-guidance migration are pending. Owner: TBD.
+
+Implementation note for Phase 2: Phase 1 caches the *fetched* (static)
+HTML under `pageRef` (the gist path never renders). `query_page_html`
+should prefer the rendered `page.content()` when a screenshot/tokens
+render already happened for that `pageRef`, and otherwise query the
+cached static HTML (via Playwright `setContent`, per the selector-engine
+decision) — re-rendering only when the caller explicitly needs the
+JS-applied DOM and no cached render exists.
 
 ## 1. Why
 
@@ -184,14 +194,20 @@ in-memory. Default recommendation: in-memory, session-scoped, LRU-capped
 
 ## 7. Phases
 
-1. **Gist-first `inspect_external_page` + render cache + browser reuse +
-   lighter wait.** Screenshot + Markdown (+ `read_page_more` cursor),
-   returns `pageRef`. This alone removes the context bloat and most of the
-   latency. Update the skills' Step-1 guidance.
+1. **DONE — Gist-first `inspect_external_page` + render cache + lighter
+   wait.** `markdown` facet (+ `read_page_more` cursor), `pageRef` cache,
+   links default-off, capped screenshot settle wait. Removes the context
+   bloat + most latency. (Browser reuse + the skills' Step-1 migration
+   still to land — see below.)
 2. **`query_page_html`** (pageRef-first; url fallback) with keyword / css /
    xpath via the reused Playwright page. Update Step-3 guidance.
 3. **Subagent-for-large-HTML** guidance + `pageRef` passthrough into spawn
    specs.
+4. **Browser reuse** (one Chromium per session, idle-close) + the
+   **skill-guidance migration**: migrate/onboarding/import Step-1 → gist
+   default + `links:true` only on the first inspect + `read_page_more`;
+   Step-3 → `query_page_html`; add the new tools to those skills'
+   allowlists (preload hints).
 
 ## 8. Verification
 
