@@ -16,6 +16,7 @@ import type { ToolContext } from "../tools/dispatch.js";
 import { clearPageInspectionCacheForTests } from "../tools/_page-inspection-cache.js";
 import { extractStylesheetHrefs, inspectExternalPageTool } from "../tools/inspect-external-page.js";
 import { mapExternalPageTypesTool } from "../tools/map-external-page-types.js";
+import { keywordWindows, queryPageHtmlTool } from "../tools/query-page-html.js";
 import { readPageMoreTool } from "../tools/read-page-more.js";
 import { screenshotExternalPageTool } from "../tools/screenshot-external-page.js";
 
@@ -135,6 +136,58 @@ describe("inspect_external_page — facet selection", () => {
     const missing = await readPageMoreTool.handler(emptyCtx, { pageRef: "pg_nope" }, toolCtx);
     expect(missing.ok).toBe(false);
     expect(missing.content).toContain("inspect_external_page");
+  });
+});
+
+describe("query_page_html", () => {
+  it("keywordWindows returns tag-snapped windows around each hit", () => {
+    const html = "<div><p>alpha</p></div><section><span>beta beta</span></section>";
+    const w = keywordWindows(html, "beta", 5, 20);
+    expect(w.length).toBe(2);
+    // Windows are snapped to tag boundaries — no bare mid-tag cut.
+    expect(w[0]).toContain("beta");
+    expect(w[0]?.startsWith("<")).toBe(true);
+  });
+
+  it("keyword mode reuses a pageRef (no re-fetch) and returns HTML windows", async () => {
+    clearPageInspectionCacheForTests();
+    const first = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { markdown: true } },
+      toolCtx,
+    );
+    const pageRef = /Page handle: (pg_\w+)/.exec(first.content ?? "")?.[1];
+    expect(pageRef).toBeDefined();
+    const r = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, keyword: "Öffnungszeiten" },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain("Öffnungszeiten");
+    expect(r.content).toContain("match");
+  });
+
+  it("requires exactly one mode (keyword XOR describe)", async () => {
+    const none = await queryPageHtmlTool.handler(emptyCtx, { url: `${base}/` }, toolCtx);
+    expect(none.ok).toBe(false);
+    expect(none.content).toContain("EXACTLY ONE");
+    const both = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { url: `${base}/`, keyword: "x", describe: "y" },
+      toolCtx,
+    );
+    expect(both.ok).toBe(false);
+  });
+
+  it("an evicted pageRef with no url fails cleanly", async () => {
+    const r = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: "pg_gone", keyword: "x" },
+      toolCtx,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.content).toContain("re-run inspect_external_page");
   });
 
   it("links facet is opt-in: {links:true} pulls the inventory", async () => {

@@ -47,6 +47,7 @@ import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
 import { inspectGenesisDraftTool } from "./inspect-genesis-draft.js";
+import { queryPageHtmlTool } from "./query-page-html.js";
 import { readPageMoreTool } from "./read-page-more.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
@@ -192,6 +193,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // glance) + homepage-driven page-type mapping for the migration flow.
   registry.register(inspectExternalPageTool);
   registry.register(readPageMoreTool);
+  registry.register(queryPageHtmlTool);
   registry.register(screenshotExternalPageTool);
   registry.register(mapExternalPageTypesTool);
   // issue #194 cluster-review tools (list/assign page clusters) were retired
