@@ -2,21 +2,19 @@
 
 # External-page inspection redesign — gist-first + on-demand HTML query
 
-Status: **Phase 1 + Phase 2 (keyword + describe) IMPLEMENTED.** Done:
-links default-off, capped screenshot wait, `htmlToMarkdown`, gist
-`markdown` facet + `pageRef` render cache + `read_page_more`, and
-`query_page_html` (keyword + describe/small-model modes). Pending:
-`query_page_html` css/xpath selector modes (need the shared Playwright
-page-reuse), browser reuse (one Chromium per session), and the
-skill-guidance migration. Owner: TBD.
+Status: **FULLY IMPLEMENTED** (Phase 1 + Phase 2 + browser reuse + skill
+migration), live-validated on scenario-onboarding (8.1m timeout-fail →
+82s pass). Done: links default-off, capped screenshot wait,
+`htmlToMarkdown`, gist `markdown` facet + `pageRef` render cache +
+`read_page_more`, `query_page_html` (keyword / cssSelector / xpath /
+describe-small-model), shared-Chromium reuse (idle-close), and the
+site-migrate / import-page skill guidance (gist-first + crawl-first).
 
-Implementation note for Phase 2: Phase 1 caches the *fetched* (static)
-HTML under `pageRef` (the gist path never renders). `query_page_html`
-should prefer the rendered `page.content()` when a screenshot/tokens
-render already happened for that `pageRef`, and otherwise query the
-cached static HTML (via Playwright `setContent`, per the selector-engine
-decision) — re-rendering only when the caller explicitly needs the
-JS-applied DOM and no cached render exists.
+Remaining (optional polish): query_page_html currently queries the cached
+*fetched* (static) HTML via `setContent`; it could prefer the rendered
+`page.content()` when a screenshot/tokens render already happened for
+that `pageRef` (JS-applied DOM). Left as a follow-up — the static DOM
+covers structure queries.
 
 ## 1. Why
 
@@ -216,17 +214,15 @@ in-memory. Default recommendation: in-memory, session-scoped, LRU-capped
    links default-off, capped screenshot settle wait. Removes the context
    bloat + most latency. (Browser reuse + the skills' Step-1 migration
    still to land — see below.)
-2. **PARTLY DONE — `query_page_html`** (pageRef-first; url fallback):
-   keyword + describe (small-model) modes landed. css/xpath selector modes
-   pending (need the reused Playwright page). Step-3 guidance still to
-   migrate.
+2. **DONE — `query_page_html`** (pageRef-first; url fallback): keyword,
+   cssSelector, xpath, and describe (small-model) modes all landed.
 3. **DONE (folded in) — large-HTML extraction** is `query_page_html`'s
    `describe` mode (small model), not a separate subagent.
-4. **Browser reuse** (one Chromium per session, idle-close) + the
+4. **DONE — Browser reuse** (one Chromium per session, idle-close) + the
    **skill-guidance migration**: migrate/onboarding/import Step-1 → gist
    default + `links:true` only on the first inspect + `read_page_more`;
-   Step-3 → `query_page_html`; add the new tools to those skills'
-   allowlists (preload hints).
+   Step-3 → `query_page_html`; crawl-first guard; new tools preloaded in
+   import-page's allowlist.
 
 ## 8. Verification
 
