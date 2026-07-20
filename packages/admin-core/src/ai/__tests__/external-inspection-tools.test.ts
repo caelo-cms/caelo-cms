@@ -190,6 +190,34 @@ describe("query_page_html", () => {
     expect(r.content).toContain("re-run inspect_external_page");
   });
 
+  it("css/xpath mode runs a selector via the shared screenshotter (setContent)", async () => {
+    let queriedWith: unknown;
+    setExternalScreenshotterForTests(async () => ({
+      capture: async () => ({ bytes: new Uint8Array([1]), width: 1280, height: 800 }),
+      query: async (_html, opts) => {
+        queriedWith = opts;
+        return ['<a href="/en/pricing">Preise</a>'];
+      },
+      dispose: async () => undefined,
+    }));
+    clearPageInspectionCacheForTests();
+    const first = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { markdown: true } },
+      toolCtx,
+    );
+    const pageRef = /Page handle: (pg_\w+)/.exec(first.content ?? "")?.[1];
+    const r = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, cssSelector: "nav a" },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain('<a href="/en/pricing">Preise</a>');
+    expect(r.content).toContain("nav a");
+    expect(queriedWith).toMatchObject({ cssSelector: "nav a" });
+  });
+
   it("links facet is opt-in: {links:true} pulls the inventory", async () => {
     const r = await inspectExternalPageTool.handler(
       emptyCtx,
@@ -264,6 +292,7 @@ describe("query_page_html", () => {
         capturedOpts = opts;
         return fakeShot;
       },
+      query: async () => [],
       dispose: async () => undefined,
     }));
     const r = await inspectExternalPageTool.handler(
@@ -287,6 +316,7 @@ describe("query_page_html", () => {
           ? { styleSamples: [{ role: "body" as const, styles: { color: "rgb(28, 25, 23)" } }] }
           : {}),
       }),
+      query: async () => [],
       dispose: async () => undefined,
     }));
     const r = await inspectExternalPageTool.handler(
@@ -393,6 +423,7 @@ describe("screenshot_external_page (shared screenshotter seam)", () => {
         capturedOpts = opts;
         return fakeShot;
       },
+      query: async () => [],
       dispose: async () => undefined,
     }));
     const r = await screenshotExternalPageTool.handler(

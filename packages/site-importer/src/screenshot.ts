@@ -80,6 +80,16 @@ export interface Screenshotter {
       sampleStyles?: boolean;
     },
   ): Promise<Screenshot>;
+  /**
+   * Run a css/xpath selector against an HTML STRING (via `setContent` — no
+   * navigation, no re-fetch) and return the matching elements' outerHTML,
+   * capped by `maxMatches`. Powers `query_page_html`'s selector modes over
+   * a cached page. All subresource requests are blocked (structure only).
+   */
+  query(
+    html: string,
+    opts: { cssSelector?: string; xpath?: string; maxMatches?: number },
+  ): Promise<string[]>;
   dispose(): Promise<void>;
 }
 
@@ -194,6 +204,33 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           height: opts?.height ?? 800,
           ...(styleSamples ? { styleSamples } : {}),
         };
+      } finally {
+        await ctx.close();
+      }
+    },
+    async query(html, opts) {
+      const ctx = await browser.newContext();
+      try {
+        // Structure only — block every subresource (SSRF + speed). The
+        // document itself is set directly, so there is no navigation.
+        await ctx.route("**/*", (route: PlaywrightRoute) => route.abort());
+        const page = await ctx.newPage();
+        await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 10_000 });
+        const selector = opts.cssSelector
+          ? opts.cssSelector
+          : opts.xpath
+            ? `xpath=${opts.xpath}`
+            : null;
+        if (selector === null) return [];
+        const loc = page.locator(selector);
+        const max = Math.min(await loc.count(), opts.maxMatches ?? 10);
+        const out: string[] = [];
+        for (let i = 0; i < max; i += 1) {
+          // biome-ignore lint/suspicious/noExplicitAny: DOM element in the page context
+          const h = (await loc.nth(i).evaluate((el: any) => el.outerHTML)) as string;
+          out.push(h);
+        }
+        return out;
       } finally {
         await ctx.close();
       }

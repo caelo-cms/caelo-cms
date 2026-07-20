@@ -5,22 +5,24 @@
  * putting the whole HTML in the main chat's context
  * (docs/inspect-tooling-redesign.md §2.2).
  *
- * Two modes (exactly one per call):
- *   - `keyword`  — deterministic text search; returns the HTML window(s)
- *                  around each match (snapped to tag boundaries).
- *   - `describe` — natural language ("the pricing table", "each product
- *                  card's title + price"). A SMALL model (Haiku) reads the
- *                  cached HTML one-shot and returns only the extraction.
- *                  This replaces a separate large-HTML subagent: the big
- *                  HTML lives in the cheap model's single call, not the
- *                  parent chat.
+ * Four modes (exactly one per call):
+ *   - `keyword`     — deterministic text search; returns the HTML window(s)
+ *                     around each match (snapped to tag boundaries).
+ *   - `cssSelector` /
+ *     `xpath`       — return matching elements' outerHTML, via the reused
+ *                     Playwright page (setContent on the cached HTML — no
+ *                     re-fetch). Needs Playwright; falls back with a clear
+ *                     message when absent.
+ *   - `describe`    — natural language ("the pricing table", "each product
+ *                     card's title + price"). A SMALL model (Haiku) reads the
+ *                     cached HTML one-shot and returns only the extraction.
+ *                     This replaces a separate large-HTML subagent: the big
+ *                     HTML lives in the cheap model's single call, not the
+ *                     parent chat.
  *
  * `pageRef` (from a prior inspect_external_page) is the primary input —
  * the cached page is reused with NO re-fetch. `url` is the fallback:
  * fetch on demand (spends the external-fetch budget) and cache it.
- *
- * (css/xpath selector modes land with the shared Playwright-page reuse in
- * the next increment; keyword + describe cover the common cases meanwhile.)
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -28,6 +30,7 @@ import { isExternalUrlBlockedError, safeExternalFetch } from "@caelo-cms/site-im
 import { z } from "zod";
 import { getActiveProviderForModel } from "../provider-resolver.js";
 import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
+import { getExternalScreenshotter } from "./_external-screenshotter.js";
 import {
   getPageInspection,
   putPageInspection,
@@ -46,6 +49,8 @@ const input = z
     pageRef: z.string().min(1).optional(),
     url: z.string().url().optional(),
     keyword: z.string().min(1).optional(),
+    cssSelector: z.string().min(1).optional(),
+    xpath: z.string().min(1).optional(),
     describe: z.string().min(1).optional(),
     maxMatches: z.number().int().positive().max(20).optional(),
     contextChars: z.number().int().positive().max(4000).optional(),
@@ -145,7 +150,7 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
   name: "query_page_html",
   description:
     "Pull a SPECIFIC part of an external page's HTML — without loading the whole page into context. Reuses a `pageRef` from a prior inspect_external_page (no re-fetch); pass `url` only if you have no handle. " +
-    "Pick ONE mode: `keyword` (exact text — returns the HTML around each hit), or `describe` (natural language like \"the pricing table\" or \"each product card's title + price\" — a small fast model reads the full HTML and returns just that, so the big HTML never enters your context). " +
+    "Pick ONE mode: `keyword` (exact text — HTML around each hit), `cssSelector` / `xpath` (return matching elements' outerHTML), or `describe` (natural language like \"the pricing table\" or \"each product card's title + price\" — a small fast model reads the full HTML and returns just that, so the big HTML never enters your context). " +
     "Use this instead of inspect_external_page's `markup` facet when you need one section, not the whole page.",
   schema: input,
   inputSchema: {
@@ -158,6 +163,8 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
       },
       url: { type: "string", description: "Absolute public URL — fallback when you have no pageRef." },
       keyword: { type: "string", description: "Exact text to locate; returns the HTML window(s) around each hit." },
+      cssSelector: { type: "string", description: "CSS selector; returns matching elements' outerHTML (needs Playwright)." },
+      xpath: { type: "string", description: "XPath expression; returns matching elements' outerHTML (needs Playwright)." },
       describe: {
         type: "string",
         description:
@@ -168,16 +175,59 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
     },
   },
   handler: async (_ctx, toolInput, toolCtx) => {
-    const modes = [toolInput.keyword, toolInput.describe].filter((m) => m !== undefined);
+    const modes = [
+      toolInput.keyword,
+      toolInput.cssSelector,
+      toolInput.xpath,
+      toolInput.describe,
+    ].filter((m) => m !== undefined);
     if (modes.length !== 1) {
       return {
         ok: false,
-        content: "query_page_html needs EXACTLY ONE of `keyword` or `describe`.",
+        content:
+          "query_page_html needs EXACTLY ONE of `keyword`, `cssSelector`, `xpath`, or `describe`.",
       };
     }
     const sessionId = toolCtx.chatSessionId ?? "no-session";
     const page = await resolveHtml(toolInput, sessionId);
     if (!page.ok) return page;
+
+    if (toolInput.cssSelector !== undefined || toolInput.xpath !== undefined) {
+      const screenshotter = await getExternalScreenshotter({
+        allowedHosts: externalFetchAllowedHosts(),
+      });
+      if (!screenshotter) {
+        return {
+          ok: false,
+          content:
+            "query_page_html(css/xpath) needs Playwright/Chromium, which is not installed in this runtime. Use `keyword` or `describe` instead.",
+        };
+      }
+      let matches: string[];
+      try {
+        matches = await screenshotter.query(page.html, {
+          ...(toolInput.cssSelector !== undefined ? { cssSelector: toolInput.cssSelector } : {}),
+          ...(toolInput.xpath !== undefined ? { xpath: toolInput.xpath } : {}),
+          maxMatches: toolInput.maxMatches ?? DEFAULT_MAX_MATCHES,
+        });
+      } catch (e) {
+        return {
+          ok: false,
+          content: `query_page_html selector failed: ${e instanceof Error ? e.message : String(e)}`,
+        };
+      } finally {
+        await screenshotter.dispose().catch(() => undefined);
+      }
+      const sel = toolInput.cssSelector ?? `xpath=${toolInput.xpath}`;
+      if (matches.length === 0) {
+        return { ok: true, content: `query_page_html: no elements match \`${sel}\` on ${page.url}.` };
+      }
+      const blocks = matches.map((m, i) => `### Match ${i + 1}\n\`\`\`html\n${m}\n\`\`\``);
+      return {
+        ok: true,
+        content: `## query_page_html — \`${sel}\` on ${page.url} (${matches.length} match(es))\n${blocks.join("\n\n")}`,
+      };
+    }
 
     if (toolInput.keyword !== undefined) {
       const windows = keywordWindows(
