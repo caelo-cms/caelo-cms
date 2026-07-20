@@ -96,22 +96,33 @@ const emptyCtx = {
 };
 
 describe("inspect_external_page — facet selection", () => {
-  it("defaults to the minimal core (meta + links), NOT the full blob", async () => {
+  it("defaults to meta ONLY — links is opt-in (default off), no full blob", async () => {
     const r = await inspectExternalPageTool.handler(emptyCtx, { url: `${base}/` }, toolCtx);
     expect(r.ok).toBe(true);
-    expect(r.content).toContain("Facets: links, meta");
+    expect(r.content).toContain("Facets: meta");
     expect(r.content).toContain("## Meta");
     expect(r.content).toContain("Bergbäckerei Steinofen");
+    // links is OPT-IN now: a 200+-link page must not bloat every inspect,
+    // so the no-facets default does NOT pull the link inventory.
+    expect(r.content).not.toContain("## Outbound links");
+    // …and definitely not markup / tokens / screenshot.
+    expect(r.content).not.toContain("## Markup");
+    expect(r.content).not.toContain("## Design fact base");
+  });
+
+  it("links facet is opt-in: {links:true} pulls the inventory", async () => {
+    const r = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { links: true } },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
     expect(r.content).toContain("## Outbound links");
-    // Nav links carry anchor text + location.
     expect(r.content).toContain("Preise");
     // Fragment links dropped; cross-host links KEPT (the links facet is
     // general — the page-type classifier is what filters off-site).
     expect(r.content).not.toContain("#top");
     expect(r.content).toContain("https://instagram.com/x");
-    // Minimal core does NOT pull markup / tokens / screenshot.
-    expect(r.content).not.toContain("## Markup");
-    expect(r.content).not.toContain("## Design fact base");
   });
 
   it("meta facet exposes canonical, lang, hreflang, and the h1–h3 outline", async () => {

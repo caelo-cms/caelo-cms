@@ -171,7 +171,13 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       }
       const page = await ctx.newPage();
       try {
-        await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });
+        // `domcontentloaded` is fast + reliable; then a SHORT best-effort
+        // wait for the network to settle so late imagery is captured —
+        // capped so we never pay the old 30s `networkidle` timeout, which
+        // routinely fired because the SSRF route-guard aborts blocked
+        // subresources and `networkidle` then never settles.
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
+        await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
         const png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
         // issue #247 — sample AFTER the screenshot so the pixels are
         // captured even if the evaluate throws mid-flight; the throw

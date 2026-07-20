@@ -9,9 +9,12 @@
  * for `markup` + `screenshot` + `tokens` + `altTexts`). A single
  * heavyweight blob on every call is exactly what #278 removes.
  *
- * Facets (all boolean switches; default when none given: meta + links):
+ * Facets (all boolean switches; default when none given: meta only —
+ * every voluminous facet is opt-in):
  *   - meta       — title, description, canonical, lang + hreflang, h1–h3.
  *   - links      — outbound links (href, anchor text, rel, nav|footer|body).
+ *                  OPT-IN (default off): 200+-link pages otherwise bloat
+ *                  every call; enable it on the first/homepage inspect.
  *   - altTexts   — img alt / aria-label inventory.
  *   - markup     — cleaned page HTML (extractor modules) for templating.
  *   - screenshot — rendered viewport image (attached to the next turn).
@@ -59,14 +62,24 @@ interface ResolvedFacets {
   tokens: boolean;
 }
 
-/** Minimal core when the caller names no facets: meta + links (§278). */
+/**
+ * Minimal core when the caller names no facets: `meta` only.
+ *
+ * `links` is opt-in (default OFF). A nav / footer / blog-index page can
+ * carry 200+ links, which bloats the context on EVERY inspect — but the
+ * full inventory is usually needed only once (the first / homepage
+ * inspect, for site-structure discovery). The skill guidance switches
+ * `links: true` on that first inspect and leaves it off for the rest, so
+ * flipping the no-facets default costs the discovery flow nothing (it
+ * passes `links: true` explicitly).
+ */
 function resolveFacets(raw: Input["facets"]): ResolvedFacets {
   const any =
     raw !== undefined &&
     (raw.links || raw.markup || raw.screenshot || raw.altTexts || raw.meta || raw.tokens);
   if (!any)
     return {
-      links: true,
+      links: false,
       meta: true,
       markup: false,
       screenshot: false,
@@ -166,9 +179,9 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
   name: "inspect_external_page",
   description:
     "Fetch ONE page of an EXTERNAL website (the operator's existing site, a reference site) and return ONLY the facets you ask for — keep discovery turns small, template-building turns rich. " +
-    "Pass `facets` (booleans; default when omitted = meta+links): " +
+    "Pass `facets` (booleans; default when omitted = meta only — every voluminous facet is opt-in): " +
     "`meta` (title, description, canonical, lang+hreflang, h1–h3 outline), " +
-    "`links` (outbound links with anchor text, rel, and nav|footer|body location — the raw material for the page-type map), " +
+    "`links` (outbound links with anchor text, rel, and nav|footer|body location — the raw material for the page-type map; OPT-IN, default off, since index/nav pages can carry 200+ links — enable it on the FIRST/homepage inspect for site-structure discovery, leave off for content inspects), " +
     "`altTexts` (img alt / aria-label inventory), " +
     "`markup` (cleaned page HTML modules for building a template from a sample), " +
     "`screenshot` (rendered viewport image on your next turn), " +
@@ -188,7 +201,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
         type: "object",
         additionalProperties: false,
         description:
-          "Which facets to pull. Omit for the minimal core (meta + links). Each is a boolean switch.",
+          "Which facets to pull. Omit for the minimal core (meta only). Each is a boolean switch; voluminous facets (links, markup, …) are opt-in.",
         properties: {
           meta: {
             type: "boolean",
@@ -198,7 +211,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
           links: {
             type: "boolean",
             description:
-              "Outbound links: {href (absolute), text (anchor text), rel, location: nav|footer|body}.",
+              "OPT-IN (default off). Outbound links: {href (absolute), text (anchor text), rel, location: nav|footer|body}. Enable on the first/homepage inspect for site-structure discovery; index/nav pages can carry 200+ links, so leave it off for content inspects.",
           },
           altTexts: { type: "boolean", description: "img alt / aria-label inventory." },
           markup: {
