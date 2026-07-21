@@ -491,7 +491,6 @@ export function composeSystemPromptChunks(
     { body: TOOL_PLAYBOOK_BLOCK, cacheable: true, label: "tool-playbook" },
     { body: MODULE_MODEL_BLOCK, cacheable: true, label: "module-model" },
     { body: STAGING_BLOCK, cacheable: true, label: "staging" },
-    { body: SUBAGENTS_BLOCK, cacheable: true, label: "subagents" },
   ];
   // Static subagents guidance — suppressed when subagents are disabled (the
   // CAELO_DISABLE_SUBAGENTS toggle also strips the spawn tools) so the model is
