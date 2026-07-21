@@ -222,10 +222,24 @@ export function htmlToMarkdown(html: string): string {
  * Intentionally does NOT collapse runs of spaces: inline text is already
  * whitespace-collapsed at emit time, while list indentation and <pre>
  * content depend on their spaces surviving.
+ *
+ * Trailing-whitespace stripping is a per-line linear pass, NOT a `/[ \t]+\n/`
+ * regex: that pattern's greedy `[ \t]+` rescans every start position on a long
+ * space/tab run with no following newline, which is O(n^2) on adversarial input
+ * (CodeQL js/polynomial-redos). The char-code loop below is O(n).
  */
 function normalizeMarkdown(md: string): string {
-  return md
-    .replace(/[ \t]+\n/g, "\n")
+  const lines = md.split("\n").map((line) => {
+    let end = line.length;
+    while (end > 0) {
+      const code = line.charCodeAt(end - 1);
+      if (code !== 0x20 && code !== 0x09) break; // space, tab
+      end -= 1;
+    }
+    return end === line.length ? line : line.slice(0, end);
+  });
+  return lines
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
