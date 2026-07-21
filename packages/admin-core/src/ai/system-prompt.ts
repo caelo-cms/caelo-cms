@@ -581,8 +581,8 @@ export function formatSiteIdentityBlock(
     designBrief?: import("@caelo-cms/shared").DesignBrief | null;
   } | null,
 ): string | null {
-  const hasName = identity && identity.siteName && identity.siteName.trim().length > 0;
-  const hasPurpose = identity && identity.sitePurpose && identity.sitePurpose.trim().length > 0;
+  const hasName = identity?.siteName && identity.siteName.trim().length > 0;
+  const hasPurpose = identity?.sitePurpose && identity.sitePurpose.trim().length > 0;
 
   if (!hasName && !hasPurpose) {
     // Cold-start path: no identity captured yet. Tell the AI what to

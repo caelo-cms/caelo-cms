@@ -321,7 +321,8 @@ function tagConversationForCache(messages: ModelMessage[]): ModelMessage[] {
   if (messages.length === 0) return messages;
   const out = [...messages];
   const lastIdx = out.length - 1;
-  const last = out[lastIdx]!;
+  const last = out[lastIdx];
+  if (!last) return messages;
   if (Array.isArray(last.content) && last.content.length > 0) {
     const parts = [...last.content];
     const lp = parts.length - 1;

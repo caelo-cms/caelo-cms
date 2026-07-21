@@ -284,7 +284,9 @@ export function recentTailCount(
   let sum = 0;
   let count = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
-    const t = estimateMessageTokens(messages[i]!);
+    const msg = messages[i];
+    if (msg === undefined) continue;
+    const t = estimateMessageTokens(msg);
     // Always admit the newest message; stop once the NEXT would overflow.
     if (count > 0 && sum + t > recentTokenBudget) break;
     sum += t;
@@ -400,7 +402,7 @@ export function compactHistory(
   // Stage 1 — truncate old tool results, oldest first, until under target.
   for (let i = 0; i < firstProtectedIdx && estimate > opts.targetTokens; i++) {
     const m = out[i];
-    if (!m || m.role !== "tool") continue;
+    if (m?.role !== "tool") continue;
     const removed = m.content.length - opts.toolResultHeadChars;
     // Skip results at/near the head size — including previously
     // truncated ones, unless this pass uses a materially smaller head

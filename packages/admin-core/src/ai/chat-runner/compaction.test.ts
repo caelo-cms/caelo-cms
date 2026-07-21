@@ -55,7 +55,7 @@ function toolResult(toolCallId: string, content: string): ChatMessageInput {
 function assertPairingIntact(messages: readonly ChatMessageInput[]): void {
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
-    if (!m || m.role !== "tool") continue;
+    if (m?.role !== "tool") continue;
     const owner = messages
       .slice(0, i)
       .some(
