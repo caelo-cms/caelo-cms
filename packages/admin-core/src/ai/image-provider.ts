@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { generateText } from "ai";
+
 /**
  * P16 — Image generation provider abstraction.
  *
@@ -95,44 +98,46 @@ export class OpenAiImageProvider implements ImageProvider {
 }
 
 /**
- * Gemini Imagen adapter. Uses Vertex AI's
- * `imagegeneration:predict` endpoint via the public Generative
- * Language API surface (no Vertex SDK).
+ * Google "Nano Banana" image adapter via the Vercel AI SDK's MULTIMODAL
+ * `generateText` path (`gemini-2.5-flash-image`, `gemini-3-pro-image`).
+ * These models return the image inline in `result.files`, not as a
+ * hosted URL — so we hand it back as a `data:` URL and the generate_image
+ * tool's existing download → sharp pipeline → media.upload flow is
+ * unchanged (`fetch()` reads `data:` URLs). AI-SDK-native (not a raw
+ * fetch), so it stays vendor-neutral behind the same provider abstraction
+ * as the chat models — no Vercel AI Gateway coupling.
+ *
+ * Key resolution mirrors the chat: an explicit config apiKey when present,
+ * else the SDK reads `GOOGLE_GENERATIVE_AI_API_KEY` from env (the fallback
+ * the e2e seed's dummy-encrypted config relies on).
  */
-export class GeminiImageProvider implements ImageProvider {
+export class GeminiSdkImageProvider implements ImageProvider {
   readonly name = "google" as const;
   readonly model: string;
-  readonly #baseUrl: string;
-  constructor(opts: { model: string; baseUrl?: string }) {
+  constructor(opts: { model: string }) {
     this.model = opts.model;
-    this.#baseUrl = opts.baseUrl ?? "https://generativelanguage.googleapis.com";
   }
 
   async generate(opts: ImageRequest): Promise<ImageResponse> {
     const start = Date.now();
-    const fetchImpl = opts.fetchImpl ?? fetch;
-    const res = await fetchImpl(
-      `${this.#baseUrl}/v1beta/models/${opts.model || this.model}:generateImages?key=${encodeURIComponent(opts.apiKey)}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          prompt: { text: opts.prompt },
-          imageGenerationConfig: { sampleCount: 1 },
-        }),
-        signal: opts.abortSignal,
-      },
-    );
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`gemini image ${res.status}: ${detail.slice(0, 500)}`);
+    const hasKey = typeof opts.apiKey === "string" && opts.apiKey.length >= 8;
+    const provider = createGoogleGenerativeAI(hasKey ? { apiKey: opts.apiKey } : {});
+    const result = await generateText({
+      model: provider(opts.model || this.model),
+      prompt: opts.prompt,
+      ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+    });
+    const img = result.files.find((f) => f.mediaType.startsWith("image/"));
+    if (!img) {
+      throw new Error(
+        `gemini image: no image in result.files (model '${opts.model || this.model}' may not be image-capable)`,
+      );
     }
-    const data = (await res.json()) as {
-      generatedImages?: Array<{ image?: { imageUri?: string } }>;
+    return {
+      imageUrl: `data:${img.mediaType};base64,${img.base64}`,
+      revisedPrompt: null,
+      durationMs: Date.now() - start,
     };
-    const url = data.generatedImages?.[0]?.image?.imageUri;
-    if (!url) throw new Error("gemini image: missing imageUri in response");
-    return { imageUrl: url, revisedPrompt: null, durationMs: Date.now() - start };
   }
 }
 
@@ -150,7 +155,7 @@ export function makeImageProvider(opts: {
     case "openai":
       return new OpenAiImageProvider({ model: opts.model, baseUrl: opts.baseUrl });
     case "google":
-      return new GeminiImageProvider({ model: opts.model, baseUrl: opts.baseUrl });
+      return new GeminiSdkImageProvider({ model: opts.model });
   }
 }
 

@@ -94,33 +94,41 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
           }>;
         }
       ).providers;
-      // Prefer is_primary; fall back to is_active when no primary set.
+      // Pick the IMAGE-capable provider, not the primary chat provider —
+      // Anthropic (the usual primary) can't generate images, so image gen
+      // needs a separate active openai/google provider that has an
+      // imageModel set. Prefer is_primary among those, else the first.
+      const imageCapable = providers.filter(
+        (p) =>
+          p.isActive &&
+          (p.name === "openai" || p.name === "google") &&
+          typeof (p.config as { imageModel?: string }).imageModel === "string" &&
+          ((p.config as { imageModel?: string }).imageModel ?? "").length > 0,
+      );
       const primary =
-        providers.find((p) => (p.config as { isPrimary?: boolean }).isPrimary && p.isActive) ??
-        providers.find((p) => p.isActive);
+        imageCapable.find((p) => (p.config as { isPrimary?: boolean }).isPrimary) ??
+        imageCapable[0];
       if (!primary) {
-        return { ok: false, content: "generate_image: no active AI provider configured" };
-      }
-      const cfg = primary.config as { imageModel?: string; apiKey?: string; baseUrl?: string };
-      if (!cfg.imageModel) {
         return {
           ok: false,
-          content: `generate_image: provider '${primary.displayName}' has no imageModel configured. Owner sets one at /security/ai/providers.`,
+          content:
+            "generate_image: no image-capable provider configured — needs an active OpenAI or Google provider with an imageModel set. Owner sets one at /security/ai/providers.",
         };
       }
-      if (primary.name !== "openai" && primary.name !== "google") {
-        return {
-          ok: false,
-          content: `generate_image: provider kind '${primary.name}' does not support image generation`,
-        };
-      }
-      if (!cfg.apiKey || typeof cfg.apiKey !== "string" || cfg.apiKey.length < 8) {
+      const cfg = primary.config as { imageModel: string; apiKey?: string; baseUrl?: string };
+      // The filter guarantees openai|google; narrow for the typed union.
+      const kind = primary.name as "openai" | "google";
+      // openai is a raw-fetch adapter and NEEDS an explicit key. google
+      // goes through the AI SDK, which resolves the key from the config OR
+      // GOOGLE_GENERATIVE_AI_API_KEY in env — so an empty config key is
+      // fine there (same env fallback the chat provider uses).
+      if (kind === "openai" && (typeof cfg.apiKey !== "string" || cfg.apiKey.length < 8)) {
         return { ok: false, content: "generate_image: provider apiKey missing or too short" };
       }
-      provider = makeImageProvider({ kind: primary.name, model: cfg.imageModel, baseUrl: cfg.baseUrl });
-      providerName = primary.name;
+      provider = makeImageProvider({ kind, model: cfg.imageModel, baseUrl: cfg.baseUrl });
+      providerName = kind;
       imageModel = cfg.imageModel;
-      apiKey = cfg.apiKey;
+      apiKey = typeof cfg.apiKey === "string" ? cfg.apiKey : "";
     }
 
     // 2. Dispatch.
@@ -198,7 +206,14 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
       }
       const v = upload.value as { assetId: string };
       assetId = v.assetId;
-      mediaUrl = `/_caelo/media/${assetId}`;
+      // The media route is /_caelo/media/<id>/<variant> — a bare
+      // /_caelo/media/<id> 404s. Prefer the webp display variant, fall
+      // back to the always-present original, so the <img src> the AI
+      // references actually resolves.
+      const displayVariant = pipeline.variants.some((pv) => pv.variant === "webp-400")
+        ? "webp-400"
+        : "orig";
+      mediaUrl = `/_caelo/media/${assetId}/${displayVariant}`;
     } catch (e) {
       return { ok: false, content: `generate_image: persist failed: ${(e as Error).message}` };
     }

@@ -132,6 +132,28 @@ export const SETUP_SCRIPT = `
         api_key_set_at = EXCLUDED.api_key_set_at
     \`;
 
+    // An image-capable Google provider so generate_image has a target
+    // (Anthropic — the chat primary — can't do images). The key resolves
+    // via GOOGLE_GENERATIVE_AI_API_KEY in env (the same env fallback the
+    // chat uses over the dummy-encrypted config), so the encrypted triplet
+    // stays dummy. imageModel = Nano Banana (gemini-2.5-flash-image).
+    await tx\`
+      INSERT INTO ai_providers (name, display_name, is_active, config,
+                                api_key_encrypted, api_key_iv, api_key_kek_fp,
+                                api_key_set_at)
+      VALUES ('google', 'Google (e2e image seed)', true,
+              '{"imageModel":"gemini-2.5-flash-image"}'::jsonb,
+              decode('00', 'hex'), decode('00', 'hex'), 'e2e-seed',
+              now())
+      ON CONFLICT (name) DO UPDATE SET
+        is_active = EXCLUDED.is_active,
+        config = EXCLUDED.config,
+        api_key_encrypted = EXCLUDED.api_key_encrypted,
+        api_key_iv = EXCLUDED.api_key_iv,
+        api_key_kek_fp = EXCLUDED.api_key_kek_fp,
+        api_key_set_at = EXCLUDED.api_key_set_at
+    \`;
+
     // v0.11.4 (issue #76 follow-up) — NO post-onboarding state seeded
     // here. Caelo is chat-first per CLAUDE.md §1A: the AI captures site
     // identity (\`set_site_identity\`) and evolves the theme (\`set_theme_tokens\`)
