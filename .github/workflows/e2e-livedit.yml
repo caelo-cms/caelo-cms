@@ -29,24 +29,17 @@ name: E2E Live Edit (real AI)
 # the operator; it became meaningful once #297 fixed the missing
 # ai_pricing row that had been zeroing cost_estimate_microcents.
 
-# TEMPORARILY OFF FOR PULL REQUESTS (operator direction).
-#
-# The `pull_request` trigger is removed, NOT the suite. Why: the suite has been
-# red on main since 3d887147 (#315) — `scenario-extract-fields` fails because
-# minted module fields carry no `default`. That is a real regression, but until
-# it is fixed the job contributes no signal to a PR (it is red no matter what
-# the PR changes) while costing a live-API run per push and training everyone to
-# merge through a red check. A check that is always red is a check nobody reads.
-#
-# Still runs: on push to main (so the regression stays visible and the cost
-# metric keeps recording), and on demand via workflow_dispatch — use that to
-# validate an AI-path change on a branch before merging.
-#
-# Restore the `pull_request:` trigger once #315's regression is fixed and the
-# suite is green on main. It is the only thing that catches the classes the
-# mock-AI suite cannot (empty AI turns, orphan locks, schema drift, missing
-# primers) — see CLAUDE.md §6 and docs/internal/e2e-livedit.md.
+# Runs on every PR to main (the real-AI regression gate — issue #47), on push to
+# main, and on demand via workflow_dispatch. The `pull_request` trigger was
+# temporarily removed in #325 while the #315 `scenario-extract-fields` regression
+# kept the suite red; it is restored here per operator direction. This suite is
+# the only thing that catches the regression classes the mock-AI suite cannot —
+# empty AI turns, orphan locks, schema drift, missing primers — see CLAUDE.md §6
+# and docs/internal/e2e-livedit.md. Required status check "Real-AI live-edit
+# scenario" (ruleset main-protection) is satisfied by this job's result.
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
