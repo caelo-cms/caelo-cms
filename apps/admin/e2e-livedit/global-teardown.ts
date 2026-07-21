@@ -69,19 +69,29 @@ function writeMetricsArtifact(): void {
     "e2e-livedit token & cache metrics",
     "=".repeat(78),
     "",
-    "scenario        | loops | input   | read    | hit% | write   | fresh%  | output",
-    "-".repeat(78),
+    "scenario        | loops | input   | read    | hit% | fresh%  | output  | img | cost$",
+    "-".repeat(90),
   ];
   if (rows.length === 0) {
     lines.push("(no scenario recorded a named summary — see per-session detail below)");
   }
+  let totalCost = 0;
   for (const r of rows) {
     const n = (key: string): number => (typeof r[key] === "number" ? (r[key] as number) : Number.NaN);
+    totalCost += Number.isFinite(n("costTotalUsd")) ? n("costTotalUsd") : 0;
     lines.push(
       `${String(r.scenario ?? "?").padEnd(15)} | ${String(n("loops")).padStart(5)} | ` +
         `${k(n("inputTokens")).padStart(7)} | ${k(n("cacheRead")).padStart(7)} | ` +
-        `${String(n("cacheHitPct")).padStart(4)} | ${k(n("cacheWrite")).padStart(7)} | ` +
-        `${String(n("freshPct")).padStart(6)}% | ${k(n("output")).padStart(6)}`,
+        `${String(n("cacheHitPct")).padStart(4)} | ${String(n("freshPct")).padStart(6)}% | ` +
+        `${k(n("output")).padStart(7)} | ${String(n("imageCalls")).padStart(3)} | ` +
+        `$${(Number.isFinite(n("costTotalUsd")) ? n("costTotalUsd") : 0).toFixed(3)}`,
+    );
+  }
+  if (rows.length > 0) {
+    lines.push("-".repeat(90));
+    lines.push(
+      `${"TOTAL".padEnd(15)} | ${" ".repeat(5)} | ${" ".repeat(7)} | ${" ".repeat(7)} | ` +
+        `${" ".repeat(4)} | ${" ".repeat(6)}  | ${" ".repeat(7)} | ${" ".repeat(3)} | $${totalCost.toFixed(3)} (est; authoritative: CI ai_calls)`,
     );
   }
 

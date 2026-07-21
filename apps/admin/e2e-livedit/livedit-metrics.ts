@@ -209,6 +209,43 @@ export function aggregate(loops: LoopRow[], tools: ToolRow[]): ScenarioMetrics {
 // ---------------------------------------------------------------------------
 
 const k = (n: number): string => (Number.isFinite(n) ? `${(n / 1000).toFixed(1)}k` : "?");
+const usd = (n: number): string => `$${n.toFixed(3)}`;
+
+/**
+ * Rough $ rates for a per-scenario cost ESTIMATE. The authoritative total
+ * is the `ai_calls` aggregation the CI already emits (`e2e-livedit-cost`);
+ * this is a readable per-scenario breakdown alongside the tokens.
+ * Token rates: Claude Sonnet-5 intro ($/1M). Image: Nano Banana
+ * (gemini-2.5-flash-image) $/image. Update if the livedit model changes.
+ */
+export const RATES = {
+  freshInPerM: 2,
+  cacheReadPerM: 0.2,
+  cacheWritePerM: 2.5,
+  outPerM: 10,
+  imagePerCall: 0.039,
+};
+
+export interface CostBreakdown {
+  chat: number;
+  image: number;
+  total: number;
+  imageCalls: number;
+}
+
+/** Estimated USD cost for a scenario: chat tokens + image-generation calls. */
+export function estimateCostUsd(m: ScenarioMetrics): CostBreakdown {
+  const T = m.totals;
+  const chat =
+    (T.freshIn * RATES.freshInPerM +
+      T.cacheRead * RATES.cacheReadPerM +
+      T.cacheWrite * RATES.cacheWritePerM +
+      T.out * RATES.outPerM) /
+    1e6;
+  const imageCalls = m.perTool.find((u) => u.name === "generate_image")?.calls ?? 0;
+  const image = imageCalls * RATES.imagePerCall;
+  return { chat, image, total: chat + image, imageCalls };
+}
 
 /** Human-readable per-turn/loop table + per-tool breakdown for one scenario. */
 export function formatReport(title: string, m: ScenarioMetrics): string {
@@ -232,10 +269,13 @@ export function formatReport(title: string, m: ScenarioMetrics): string {
     );
   }
   const T = m.totals;
+  const c = estimateCostUsd(m);
   out.push(
     `\nTOTALS: turns=${m.turns.length} loops=${T.loops} in=${k(T.inCall)} ` +
       `read=${k(T.cacheRead)} (${m.cacheHitPct}%) write=${k(T.cacheWrite)} ` +
       `fresh=${k(T.freshIn)} (${m.freshPct}%) out=${k(T.out)}`,
+    `COST (est): chat=${usd(c.chat)} + image=${usd(c.image)} (${c.imageCalls} img) = ${usd(c.total)}` +
+      `  [authoritative total: CI ai_calls aggregation]`,
   );
   if (m.perTool.length > 0) {
     out.push("\ntokens per tool (result bodies added to context):");
@@ -415,6 +455,7 @@ export const SCENARIO_METRICS_JSONL = resolve(ADMIN_LOG_DIR, "scenario-metrics.j
 export function recordScenarioMetrics(scenarioKey: string, m: ScenarioMetrics): ThresholdViolation[] {
   // eslint-disable-next-line no-console -- surfaced in the e2e/admin log on purpose.
   console.log(`\n[livedit-metrics]\n${formatReport(scenarioKey, m)}\n`);
+  const cost = estimateCostUsd(m);
   const summary = {
     scenario: scenarioKey,
     loops: m.totals.loops,
@@ -426,6 +467,10 @@ export function recordScenarioMetrics(scenarioKey: string, m: ScenarioMetrics): 
     output: m.totals.out,
     cacheHitPct: m.cacheHitPct,
     freshPct: m.freshPct,
+    imageCalls: cost.imageCalls,
+    costChatUsd: Number(cost.chat.toFixed(4)),
+    costImageUsd: Number(cost.image.toFixed(4)),
+    costTotalUsd: Number(cost.total.toFixed(4)),
     perTool: m.perTool,
   };
   try {
