@@ -19,7 +19,7 @@ import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { runMediaPipeline } from "../../media/pipeline.js";
 import { getMediaStorage, getMediaStorageProvider } from "../../media/storage.js";
-import { makeImageProvider } from "../image-provider.js";
+import { FakeImageProvider, isFakeImageEnabled, makeImageProvider } from "../image-provider.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -66,59 +66,72 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    // 1. Find the primary image-capable provider.
-    const provs = await execute(toolCtx.registry, toolCtx.adapter, ctx, "ai_providers.list", {});
-    if (!provs.ok) {
-      return { ok: false, content: `generate_image: ${describeError(provs.error)}` };
-    }
-    const providers = (
-      provs.value as {
-        providers: Array<{
-          name: "anthropic" | "openai" | "google" | "local-openai-compat";
-          displayName: string;
-          config: Record<string, unknown>;
-          isActive: boolean;
-        }>;
+    // 1. Resolve the image provider. In e2e (isFakeImageEnabled) a
+    // deterministic placeholder provider stands in for the real image API
+    // — no config, no key, no cost — so the generate_image → media →
+    // page-reference wiring runs in the default suite. Never in production.
+    let provider: import("../image-provider.js").ImageProvider;
+    let providerName: "openai" | "google";
+    let imageModel: string;
+    let apiKey: string;
+    if (isFakeImageEnabled()) {
+      provider = new FakeImageProvider();
+      providerName = "openai";
+      imageModel = "fake-image";
+      apiKey = "fake-image-key";
+    } else {
+      const provs = await execute(toolCtx.registry, toolCtx.adapter, ctx, "ai_providers.list", {});
+      if (!provs.ok) {
+        return { ok: false, content: `generate_image: ${describeError(provs.error)}` };
       }
-    ).providers;
-    // Prefer is_primary; fall back to is_active when no primary set.
-    const primary =
-      providers.find((p) => (p.config as { isPrimary?: boolean }).isPrimary && p.isActive) ??
-      providers.find((p) => p.isActive);
-    if (!primary) {
-      return { ok: false, content: "generate_image: no active AI provider configured" };
-    }
-    const cfg = primary.config as { imageModel?: string; apiKey?: string; baseUrl?: string };
-    if (!cfg.imageModel) {
-      return {
-        ok: false,
-        content: `generate_image: provider '${primary.displayName}' has no imageModel configured. Owner sets one at /security/ai/providers.`,
-      };
-    }
-    if (primary.name !== "openai" && primary.name !== "google") {
-      return {
-        ok: false,
-        content: `generate_image: provider kind '${primary.name}' does not support image generation`,
-      };
-    }
-    if (!cfg.apiKey || typeof cfg.apiKey !== "string" || cfg.apiKey.length < 8) {
-      return { ok: false, content: "generate_image: provider apiKey missing or too short" };
+      const providers = (
+        provs.value as {
+          providers: Array<{
+            name: "anthropic" | "openai" | "google" | "local-openai-compat";
+            displayName: string;
+            config: Record<string, unknown>;
+            isActive: boolean;
+          }>;
+        }
+      ).providers;
+      // Prefer is_primary; fall back to is_active when no primary set.
+      const primary =
+        providers.find((p) => (p.config as { isPrimary?: boolean }).isPrimary && p.isActive) ??
+        providers.find((p) => p.isActive);
+      if (!primary) {
+        return { ok: false, content: "generate_image: no active AI provider configured" };
+      }
+      const cfg = primary.config as { imageModel?: string; apiKey?: string; baseUrl?: string };
+      if (!cfg.imageModel) {
+        return {
+          ok: false,
+          content: `generate_image: provider '${primary.displayName}' has no imageModel configured. Owner sets one at /security/ai/providers.`,
+        };
+      }
+      if (primary.name !== "openai" && primary.name !== "google") {
+        return {
+          ok: false,
+          content: `generate_image: provider kind '${primary.name}' does not support image generation`,
+        };
+      }
+      if (!cfg.apiKey || typeof cfg.apiKey !== "string" || cfg.apiKey.length < 8) {
+        return { ok: false, content: "generate_image: provider apiKey missing or too short" };
+      }
+      provider = makeImageProvider({ kind: primary.name, model: cfg.imageModel, baseUrl: cfg.baseUrl });
+      providerName = primary.name;
+      imageModel = cfg.imageModel;
+      apiKey = cfg.apiKey;
     }
 
     // 2. Dispatch.
-    const provider = makeImageProvider({
-      kind: primary.name,
-      model: cfg.imageModel,
-      baseUrl: cfg.baseUrl,
-    });
     let result: Awaited<ReturnType<typeof provider.generate>>;
     try {
       result = await provider.generate({
         prompt: input.prompt,
-        model: cfg.imageModel,
+        model: imageModel,
         size: input.size,
         quality: input.quality,
-        apiKey: cfg.apiKey,
+        apiKey,
       });
     } catch (e) {
       return { ok: false, content: `generate_image dispatch failed: ${(e as Error).message}` };
@@ -149,7 +162,16 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
       for (const v of pipeline.variants) {
         await storage.put(v.storageKey, v.body, v.contentType);
       }
-      const upload = await execute(toolCtx.registry, toolCtx.adapter, ctx, "media.upload", {
+      // media.upload is human+system by design (no DIRECT AI media writes).
+      // generate_image is a SANCTIONED, system-mediated persist of an image
+      // the AI asked for, so elevate to a system actor for this write —
+      // same pattern as verify-import-fidelity's system-context ops.
+      const upload = await execute(
+        toolCtx.registry,
+        toolCtx.adapter,
+        { ...ctx, actorKind: "system" },
+        "media.upload",
+        {
         sha256: sha,
         originalName: `ai-generated-${Date.now()}.png`,
         mime: "image/png",
@@ -185,8 +207,8 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
     // cost dashboard surfaces it. Pricing read from ai_pricing table by
     // recordAiCall (P16 PR2).
     await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.record_ai_call", {
-      provider: primary.name,
-      model: cfg.imageModel,
+      provider: providerName,
+      model: imageModel,
       operationType: "image",
       inputTokens: 0,
       outputTokens: 0,

@@ -153,3 +153,36 @@ export function makeImageProvider(opts: {
       return new GeminiImageProvider({ model: opts.model, baseUrl: opts.baseUrl });
   }
 }
+
+/**
+ * A valid 16×16 PNG (solid blue) as base64 — produced by sharp, so the
+ * media pipeline's sharp decode round-trips cleanly. A hand-rolled 1×1
+ * tripped `libpng read error` in vips.
+ */
+const FAKE_PNG_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAGUlEQVQokWOIqjhBEmIY1VAxGkpRwzVpAACJzZoQPNqOjQAAAABJRU5ErkJggg==";
+
+/**
+ * Test-only image provider. Returns a deterministic 1×1 PNG as a `data:`
+ * URL — no HTTP call, no API key, no cost — so e2e can exercise the
+ * `generate_image` → media-pipeline → page-reference wiring end to end.
+ * `fetch()` handles `data:` URLs, so the download step in the tool is
+ * unchanged. Selected only via {@link isFakeImageEnabled}.
+ */
+export class FakeImageProvider implements ImageProvider {
+  readonly name = "openai" as const;
+  readonly model = "fake-image";
+  async generate(_opts: ImageRequest): Promise<ImageResponse> {
+    return { imageUrl: FAKE_PNG_DATA_URL, revisedPrompt: null, durationMs: 0 };
+  }
+}
+
+/**
+ * True when the test-only fake image provider is enabled. Same stance as
+ * the AI test-registry (`isTestRegistryEnabled`): honoured ONLY outside
+ * production, so a deployed instance can never be coerced into the fake
+ * image path. Enabled with `CAELO_FAKE_IMAGE_PROVIDER=1` in the e2e env.
+ */
+export function isFakeImageEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.CAELO_FAKE_IMAGE_PROVIDER === "1" && env.NODE_ENV !== "production";
+}
