@@ -71,9 +71,11 @@ describe("site-migrate skill row (#188)", () => {
     expect(b).toContain("4. FAN OUT PER PAGE TYPE");
     expect(b).toContain("5. NOT EVERYTHING");
     expect(b).toContain("6. FINISH");
-    // Step 1 discovery tool + facet-scoped cheap inspect.
+    // Step 1 discovery tool + facet-scoped cheap inspect. Migration 0172
+    // reworded the homepage inspect to lead with the Markdown GIST:
+    // facets:{markdown:true, meta:true, links:true}.
     expect(b).toContain("map_external_page_types");
-    expect(b).toContain("links:true, meta:true");
+    expect(b).toContain("markdown:true, meta:true, links:true");
     // Step 3 early checkpoint — visual self-analysis then operator confirm.
     expect(b).toContain("verify_import_page_fidelity");
     expect(b).toContain("So sieht deine Startseite aus — passt die Richtung?");

@@ -224,21 +224,34 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
     }
 
     const sql = new SQL(ADMIN_URL!);
-    let rows: { role: string; content: string; response_messages: unknown }[] = [];
+    let rows: {
+      role: string;
+      origin: string | null;
+      content: string;
+      response_messages: unknown;
+    }[] = [];
     try {
       await sql.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
         rows = (await tx`
-          SELECT role, content, response_messages FROM chat_messages
+          SELECT role, origin, content, response_messages FROM chat_messages
           WHERE chat_session_id = ${chatSessionId}::uuid
           ORDER BY created_at ASC
-        `) as unknown as { role: string; content: string; response_messages: unknown }[];
+        `) as unknown as {
+          role: string;
+          origin: string | null;
+          content: string;
+          response_messages: unknown;
+        }[];
       });
     } finally {
       await sql.end();
     }
-    // No operator/user row for a resume turn.
-    expect(rows.some((r) => r.role === "user")).toBe(false);
+    // No OPERATOR row for a resume turn. The cold-start "[Site status …]" note
+    // the runner injects on a session's first turn rides the message flow as a
+    // role='user', origin='system' row (deliberate — see index.ts injectNote);
+    // it is NOT an operator message, so scope the assertion to origin!='system'.
+    expect(rows.some((r) => r.role === "user" && r.origin !== "system")).toBe(false);
     // The approval-response tool row was persisted with the SDK ModelMessage
     // in response_messages (replayed verbatim to resume the paused turn).
     const toolRow = rows.find((r) => r.role === "tool");

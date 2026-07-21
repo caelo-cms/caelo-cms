@@ -160,7 +160,10 @@ describe("chat-runner passive-turn recovery (issue #106)", () => {
     expect(toolResult?.ok).toBe(true);
 
     // The synthetic nudge is in-memory only — it must NOT be persisted as a
-    // visible user turn in chat history.
+    // visible user turn in chat history. Scope to OPERATOR turns: the runner
+    // also injects a cold-start "[Site status …]" note on a session's first
+    // turn as a role='user', origin='system' row (deliberate — see index.ts
+    // injectNote), which is not an operator message and must not count here.
     const sql = new SQL(ADMIN_URL!);
     let userMsgs: string[] = [];
     try {
@@ -168,7 +171,9 @@ describe("chat-runner passive-turn recovery (issue #106)", () => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
         const rows = (await tx`
           SELECT content FROM chat_messages
-          WHERE chat_session_id = ${chatSessionId}::uuid AND role = 'user'
+          WHERE chat_session_id = ${chatSessionId}::uuid
+            AND role = 'user'
+            AND origin IS DISTINCT FROM 'system'
           ORDER BY created_at ASC
         `) as unknown as { content: string }[];
         userMsgs = rows.map((r) => r.content);

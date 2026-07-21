@@ -213,7 +213,15 @@ describe("chat-runner extended thinking (v0.2.54)", () => {
     });
     if (!session.ok) throw new Error("session create failed");
     const { chatSessionId } = session.value as { chatSessionId: string };
-    // Toggle stays at default false.
+    // Extended thinking now defaults ON for main chats (migration 0171 —
+    // "thinking on by default for main chats, off for subagents"), so a fresh
+    // session inherits enabled=true. Turn it OFF explicitly to exercise the
+    // toggle-off path this test asserts (no `thinking` on the provider input).
+    const off = await execute(registry, adapter, HUMAN, "chat.set_extended_thinking", {
+      chatSessionId,
+      enabled: false,
+    });
+    if (!off.ok) throw new Error("toggle-off failed");
 
     const tools = new ToolRegistry();
     /**
