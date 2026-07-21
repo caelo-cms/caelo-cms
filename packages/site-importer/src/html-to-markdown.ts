@@ -241,10 +241,13 @@ function mdUrl(url: string): string {
 
 /**
  * Escape the Markdown link/image-text delimiters `[` and `]` so an alt text
- * or link label containing them can't terminate the construct early.
+ * or link label containing them can't terminate the construct early. The
+ * backslash itself is escaped too (it leads the escape sequence), so a literal
+ * `\` in the input can't combine with the following char — otherwise the
+ * escaping is incomplete (CodeQL js/incomplete-sanitization).
  */
 function mdText(text: string): string {
-  return text.replace(/[[\]]/g, "\\$&");
+  return text.replace(/[\\[\]]/g, "\\$&");
 }
 
 /**
