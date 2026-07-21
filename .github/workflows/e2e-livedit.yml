@@ -204,6 +204,10 @@ jobs:
       - name: Run e2e-livedit (Scenario 1)
         env:
           ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
+          # Optional: enables scenario-image-gen (real Nano Banana image
+          # generation). Absent ⇒ that scenario skips itself. Add the secret
+          # in repo Settings → Secrets and variables → Actions to enable it.
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
         run: bun run e2e-livedit
 
       # Capture the REAL AI cost of this run from `ai_calls` (operator ask
