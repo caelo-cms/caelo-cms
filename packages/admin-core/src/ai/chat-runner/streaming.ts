@@ -28,6 +28,8 @@ export interface UsageAccumulator {
   totalIn: number;
   totalOut: number;
   totalCached: number;
+  /** Cumulative Anthropic cache WRITE tokens (cache_creation) this turn. */
+  totalCacheCreation?: number;
 }
 
 export interface StreamTurnResult {
@@ -231,6 +233,7 @@ export async function* streamProviderTurn(args: {
         usage.totalIn += ev.inputTokens;
         usage.totalOut += ev.outputTokens;
         usage.totalCached += ev.cachedTokens;
+        usage.totalCacheCreation = (usage.totalCacheCreation ?? 0) + (ev.cacheCreationTokens ?? 0);
         // P10.5 #3 — soft cost cap. spawn_subagent passes the spec's
         // maxCostMicrocents through; runner aborts before the next
         // provider call instead of letting the budget overrun.

@@ -313,6 +313,12 @@ export const renderPagePreviewOp = defineOperation({
           js: string;
           displayName: string;
           slug: string;
+          // A branch edit_module can ADD/RENAME fields (e.g. a new link-list).
+          // The overlay MUST carry the branch schema or the render context uses
+          // the stale live `modules.fields`, and a `{{#field}}` section over the
+          // new field renders as literal `{{#field}}` text (field-not-declared).
+          // The layout + nested overlays already carry fields; this one didn't.
+          fields?: unknown;
           deleted: boolean;
         }
       >();
@@ -324,6 +330,7 @@ export const renderPagePreviewOp = defineOperation({
           js?: string;
           displayName?: string;
           slug?: string;
+          fields?: unknown;
           deletedAt?: string | null;
         };
         overlayByModule.set(r.module_id, {
@@ -332,6 +339,7 @@ export const renderPagePreviewOp = defineOperation({
           js: s.js ?? "",
           displayName: s.displayName ?? "",
           slug: s.slug ?? "",
+          fields: s.fields,
           deleted: !!s.deletedAt,
         });
       }
@@ -355,6 +363,7 @@ export const renderPagePreviewOp = defineOperation({
             js?: string;
             displayName?: string;
             slug?: string;
+            fields?: unknown;
             deletedAt?: string | null;
           };
           overlayByModule.set(r.module_id, {
@@ -363,6 +372,7 @@ export const renderPagePreviewOp = defineOperation({
             js: s.js ?? "",
             displayName: s.displayName ?? "",
             slug: s.slug ?? "",
+            fields: s.fields,
             deleted: !!s.deletedAt,
           });
         }
@@ -378,6 +388,9 @@ export const renderPagePreviewOp = defineOperation({
         m.js = overlay.js;
         m.display_name = overlay.displayName;
         m.slug = overlay.slug;
+        // Carry the branch schema so a section over a branch-added list field
+        // renders (guarded: a snapshot without fields keeps the live value).
+        if (Array.isArray(overlay.fields)) m.fields = overlay.fields as typeof m.fields;
       }
     }
 

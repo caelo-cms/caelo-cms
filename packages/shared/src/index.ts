@@ -39,6 +39,7 @@ export * from "./safe-keys.js";
 export * from "./seo.js";
 export * from "./skills.js";
 export * from "./snapshots.js";
+export * from "./strip-cdata.js";
 export * from "./structured-sets.js";
 export * from "./subagents.js";
 export * from "./template-engine.js";

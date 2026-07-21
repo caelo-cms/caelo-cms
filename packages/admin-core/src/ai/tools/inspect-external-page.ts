@@ -5,15 +5,26 @@
  * (SSRF-guarded, #191) and return ONLY the FACETS the current migration
  * step needs. The homepage-driven flow (issue #278) understands a site's
  * structure cheaply (a discovery turn asks for `links` + `meta` only),
- * then samples one page per type richly (a template-building turn asks
- * for `markup` + `screenshot` + `tokens` + `altTexts`). A single
- * heavyweight blob on every call is exactly what #278 removes.
+ * then samples one page per type richly (screenshot + tokens + altTexts,
+ * plus Markdown for the content). A single heavyweight blob on every call
+ * is exactly what #278 removes.
  *
- * Facets (all boolean switches; default when none given: meta + links):
+ * There is NO raw-markup facet: understanding a page is `markdown` (its
+ * readable text), and pulling specific structure is `query_page_html`
+ * (bounded, by selector or a small-model `describe`). A full HTML dump was
+ * pure context bloat — a single rich one ran to ~380K tokens — and the
+ * migration flow authors fresh modules anyway, so the legacy markup is not
+ * worth carrying.
+ *
+ * Facets (all boolean switches; default when none given: meta + markdown
+ * — the gist; every voluminous facet is opt-in):
  *   - meta       — title, description, canonical, lang + hreflang, h1–h3.
+ *   - markdown   — the page's readable text as Markdown (the gist). Cached
+ *                  under a pageRef; truncated with a cursor (read_page_more).
  *   - links      — outbound links (href, anchor text, rel, nav|footer|body).
+ *                  OPT-IN (default off): 200+-link pages otherwise bloat
+ *                  every call; enable it on the first/homepage inspect.
  *   - altTexts   — img alt / aria-label inventory.
- *   - markup     — cleaned page HTML (extractor modules) for templating.
  *   - screenshot — rendered viewport image (attached to the next turn).
  *   - tokens     — design fact base: static CSS-derived inventory + the
  *                  WS1 computed-style sampler (when Playwright is present).
@@ -23,9 +34,9 @@ import { formatGenesisInventory, inventoryGenesisDraft } from "@caelo-cms/shared
 import {
   deriveDesignTokens,
   extractAltTexts,
-  extractModulesFromHtml,
   extractOutboundLinks,
   extractPageMeta,
+  htmlToMarkdown,
   isExternalUrlBlockedError,
   type OutboundLink,
   type SafeFetchResponse,
@@ -34,12 +45,13 @@ import {
 import { z } from "zod";
 import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
 import { getExternalScreenshotter } from "./_external-screenshotter.js";
+import { putPageInspection, sliceMarkdown } from "./_page-inspection-cache.js";
 import type { ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
 const facets = z
   .object({
     links: z.boolean().optional(),
-    markup: z.boolean().optional(),
+    markdown: z.boolean().optional(),
     screenshot: z.boolean().optional(),
     altTexts: z.boolean().optional(),
     meta: z.boolean().optional(),
@@ -52,30 +64,45 @@ type Input = z.infer<typeof input>;
 
 interface ResolvedFacets {
   links: boolean;
-  markup: boolean;
+  markdown: boolean;
   screenshot: boolean;
   altTexts: boolean;
   meta: boolean;
   tokens: boolean;
 }
 
-/** Minimal core when the caller names no facets: meta + links (§278). */
+/**
+ * Minimal gist when the caller names no facets: `meta` + `markdown`.
+ *
+ * `links` is opt-in (default OFF). A nav / footer / blog-index page can
+ * carry 200+ links, which bloats the context on EVERY inspect — but the
+ * full inventory is usually needed only once (the first / homepage
+ * inspect, for site-structure discovery). The skill guidance switches
+ * `links: true` on that first inspect and leaves it off for the rest, so
+ * flipping the no-facets default costs the discovery flow nothing (it
+ * passes `links: true` explicitly).
+ */
 function resolveFacets(raw: Input["facets"]): ResolvedFacets {
   const any =
     raw !== undefined &&
-    (raw.links || raw.markup || raw.screenshot || raw.altTexts || raw.meta || raw.tokens);
+    (raw.links || raw.markdown || raw.screenshot || raw.altTexts || raw.meta || raw.tokens);
+  // Gist default (no facets named): meta + Markdown — "what's on the page,
+  // how is it laid out" in the smallest context. Everything voluminous
+  // (links, screenshot, tokens) stays opt-in. There is no raw-markup facet
+  // any more: read the page as Markdown, and pull specific structure with
+  // `query_page_html` (bounded) — a full HTML dump was pure context bloat.
   if (!any)
     return {
-      links: true,
       meta: true,
-      markup: false,
+      markdown: true,
+      links: false,
       screenshot: false,
       altTexts: false,
       tokens: false,
     };
   return {
     links: raw?.links ?? false,
-    markup: raw?.markup ?? false,
+    markdown: raw?.markdown ?? false,
     screenshot: raw?.screenshot ?? false,
     altTexts: raw?.altTexts ?? false,
     meta: raw?.meta ?? false,
@@ -85,7 +112,6 @@ function resolveFacets(raw: Input["facets"]): ResolvedFacets {
 
 const MAX_STYLESHEETS = 3;
 const STYLESHEET_BYTE_CAP = 512 * 1024;
-const MARKUP_MODULE_CAP = 20_000;
 const LINKS_PER_LOCATION = 60;
 
 /** Linear scan for same-host `<link rel=stylesheet href>` URLs (capped),
@@ -166,14 +192,15 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
   name: "inspect_external_page",
   description:
     "Fetch ONE page of an EXTERNAL website (the operator's existing site, a reference site) and return ONLY the facets you ask for — keep discovery turns small, template-building turns rich. " +
-    "Pass `facets` (booleans; default when omitted = meta+links): " +
+    "Pass `facets` (booleans; default when omitted = meta + markdown — the gist; every voluminous facet is opt-in): " +
+    "`markdown` (the page's readable text as Markdown — use this to understand what a page is about + how it's laid out; truncated with a cursor, call read_page_more for the rest), " +
     "`meta` (title, description, canonical, lang+hreflang, h1–h3 outline), " +
-    "`links` (outbound links with anchor text, rel, and nav|footer|body location — the raw material for the page-type map), " +
+    "`links` (outbound links with anchor text, rel, and nav|footer|body location — the raw material for the page-type map; OPT-IN, default off, since index/nav pages can carry 200+ links — enable it on the FIRST/homepage inspect for site-structure discovery, leave off for content inspects), " +
     "`altTexts` (img alt / aria-label inventory), " +
-    "`markup` (cleaned page HTML modules for building a template from a sample), " +
     "`screenshot` (rendered viewport image on your next turn), " +
     "`tokens` (design fact base: CSS-derived color/font inventory + rendered computed-style tokens). " +
-    "Step 1 understand structure → `{links:true, meta:true}`. Step 3 build a template from a sample → `{markup:true, screenshot:true, tokens:true, altTexts:true}`. " +
+    "There is NO raw-HTML/markup facet: for specific structure use `query_page_html` (by selector or a natural-language `describe`), which is bounded — never dump a whole page's HTML into the chat. " +
+    "Step 1 understand a page → default (`{}` = meta + markdown) + `{links:true}` on the FIRST/homepage inspect for site structure. Step 3 build a template from a sample → `{screenshot:true, tokens:true, altTexts:true}` for the visual + design + images, markdown for the content, and `query_page_html` for any specific section. " +
     "To turn a homepage's links into the site's page-type map, use `map_external_page_types` instead. " +
     "Do NOT use for whole-site work (no link-following) — use `propose_site_import`. Do NOT use on Caelo's own pages — use `inspect_page_render`. " +
     "Only public http(s) URLs work; private/internal addresses are refused by the SSRF guard.",
@@ -188,8 +215,13 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
         type: "object",
         additionalProperties: false,
         description:
-          "Which facets to pull. Omit for the minimal core (meta + links). Each is a boolean switch.",
+          "Which facets to pull. Omit for the gist (meta + markdown). Each is a boolean switch; voluminous facets (links, screenshot, tokens) are opt-in.",
         properties: {
+          markdown: {
+            type: "boolean",
+            description:
+              "The page's readable text as Markdown (headings, paragraphs, links, lists) — the gist for understanding a page. For specific structure use query_page_html, not a raw-HTML dump. Truncated to one slice with a cursor; call read_page_more for the rest.",
+          },
           meta: {
             type: "boolean",
             description:
@@ -198,14 +230,9 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
           links: {
             type: "boolean",
             description:
-              "Outbound links: {href (absolute), text (anchor text), rel, location: nav|footer|body}.",
+              "OPT-IN (default off). Outbound links: {href (absolute), text (anchor text), rel, location: nav|footer|body}. Enable on the first/homepage inspect for site-structure discovery; index/nav pages can carry 200+ links, so leave it off for content inspects.",
           },
           altTexts: { type: "boolean", description: "img alt / aria-label inventory." },
-          markup: {
-            type: "boolean",
-            description:
-              "Cleaned page HTML (extractor modules) for building a template from a sample.",
-          },
           screenshot: {
             type: "boolean",
             description: "Rendered viewport image, attached to your next turn (needs Playwright).",
@@ -230,7 +257,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     }
     const f = resolveFacets(toolInput.facets);
     const allowedHosts = externalFetchAllowedHosts();
-    const needHtml = f.links || f.markup || f.altTexts || f.meta || f.tokens;
+    const needHtml = f.links || f.markdown || f.altTexts || f.meta || f.tokens;
 
     let res: SafeFetchResponse | null = null;
     if (needHtml) {
@@ -289,6 +316,23 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
       );
     }
 
+    // The gist facet: readable page text as Markdown (far smaller than raw
+    // markup). Truncated to one slice with a cursor; call `read_page_more`
+    // with the pageRef + cursor for the rest.
+    let fullMarkdown: string | null = null;
+    if (f.markdown) {
+      fullMarkdown = htmlToMarkdown(html);
+      const { text, nextCursor } = sliceMarkdown(fullMarkdown, 0);
+      sections.push(
+        "## Page text (Markdown)",
+        text.length > 0 ? text : "(no readable text extracted)",
+        nextCursor !== null
+          ? `\n[truncated — ${fullMarkdown.length - text.length} more chars. Call read_page_more({ pageRef, cursor: ${nextCursor} }) for the rest.]`
+          : "",
+        "",
+      );
+    }
+
     if (f.links) {
       sections.push("## Outbound links", formatLinks(extractOutboundLinks(html, finalUrl)), "");
     }
@@ -307,23 +351,6 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
       );
     }
 
-    if (f.markup) {
-      const { modules, commentsStripped } = extractModulesFromHtml(html);
-      const blocks = modules.map((m) => {
-        const body =
-          m.html.length > MARKUP_MODULE_CAP
-            ? `${m.html.slice(0, MARKUP_MODULE_CAP)}\n<!-- …truncated (${m.html.length - MARKUP_MODULE_CAP} more chars) -->`
-            : m.html;
-        return `### ${m.displayName} [${m.blockName}]\n${body}`;
-      });
-      sections.push(
-        "## Markup (extracted modules)",
-        blocks.length > 0 ? blocks.join("\n\n") : "(no extractable modules)",
-        commentsStripped > 0 ? `(stripped ${commentsStripped} comment-thread subtree(s))` : "",
-        "",
-      );
-    }
-
     if (f.tokens) {
       sections.push(
         "## Design fact base (static, CSS-derived)",
@@ -335,6 +362,9 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     // One render pass covers both the screenshot + the computed-style
     // tokens so a rich template-building turn renders the page ONCE.
     let image: ToolResult["image"];
+    // Captured during the render (page.content()) so the pageRef cache can
+    // hold the JS-applied DOM for query_page_html's selectors.
+    let renderedHtml: string | undefined;
     if (f.screenshot || f.tokens) {
       const screenshotter = await getExternalScreenshotter({ allowedHosts });
       if (!screenshotter) {
@@ -354,7 +384,9 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
             external: true,
             fullPage: false,
             sampleStyles: f.tokens,
+            captureHtml: true,
           });
+          renderedHtml = shot.renderedHtml;
           if (f.tokens && shot.styleSamples) {
             sections.push(
               "## Computed-style design tokens (rendered)",
@@ -380,6 +412,26 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
           await screenshotter.dispose().catch(() => undefined);
         }
       }
+    }
+
+    // Cache the fetched page under a handle so follow-ups reuse it without
+    // re-fetching: read_page_more (paginate the Markdown) and, later,
+    // query_page_html (run selectors). Only when we actually have HTML.
+    if (needHtml && html.length > 0) {
+      const pageRef = putPageInspection(toolCtx.chatSessionId ?? "no-session", {
+        url: finalUrl,
+        html,
+        markdown: fullMarkdown ?? htmlToMarkdown(html),
+        // Present only when this inspect rendered the page — query_page_html
+        // then queries the JS-applied DOM, not the static fetch.
+        ...(renderedHtml !== undefined ? { renderedHtml } : {}),
+      });
+      // Emit the handle high in the output so the model reaches for it.
+      sections.splice(
+        2,
+        0,
+        `Page handle: ${pageRef} — reuse with read_page_more({ pageRef, cursor }) / query_page_html({ pageRef, ... }); no re-fetch.`,
+      );
     }
 
     sections.push(

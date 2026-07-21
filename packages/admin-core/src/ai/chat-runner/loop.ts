@@ -24,11 +24,15 @@ import {
   fetchBudgetGate,
 } from "./budget-gate.js";
 import {
+  COMPACTION_RECENT_TOKENS_DEFAULT,
+  COMPACTION_TARGET_TOKENS_DEFAULT,
   compactHistory,
   estimateHistoryTokens,
+  estimateTextTokens,
   KEEP_RECENT_MESSAGES,
   parsePromptTooLongLimit,
   RETRY_TOOL_RESULT_HEAD_CHARS,
+  recentTailCount,
   TOOL_RESULT_HEAD_CHARS,
 } from "./compaction.js";
 import { costCapUsd, microcents } from "./limits.js";
@@ -73,9 +77,27 @@ export interface ToolLoopArgs {
   /**
    * issue #261 — history-size ceiling (estimated tokens) above which
    * the loop compacts before calling the provider. Threaded from
-   * `resolveCompactionThresholdTokens()` in index.ts.
+   * `resolveCompactionThresholdTokens()` in index.ts. Default fires near
+   * ~800K real input tokens (late, once per long stretch).
    */
   compactionThresholdTokens: number;
+  /**
+   * Estimate-space landing target once the ceiling fires. Absent ⇒
+   * {@link COMPACTION_TARGET_TOKENS_DEFAULT} (~200K real). Separate from
+   * the trigger so compaction drops HARD instead of merely back to the
+   * trigger (the old cache-thrashing behaviour).
+   */
+  compactionTargetTokens?: number;
+  /**
+   * Estimate-space recent-tail budget kept verbatim through a compaction.
+   * Absent ⇒ {@link COMPACTION_RECENT_TOKENS_DEFAULT} (~100K real).
+   */
+  compactionRecentTokens?: number;
+  /**
+   * issue #300 — enable the proactive per-loop tool-result compaction.
+   * Default false: it rewrites cached prefix on nearly every loop.
+   */
+  proactiveCompaction?: boolean;
   /**
    * Run #10 D5 — first-event watchdog window override (tests). Absent
    * ⇒ streaming.ts resolves the env-tunable default (180s).
@@ -238,17 +260,19 @@ export async function* runToolLoop(
       }
     }
 
-    // issue #300 — proactive tool-result compaction. Successful results
-    // dispatched >= 3 loops ago in THIS turn shrink to a one-line
-    // summary before each provider call, so late loops stop paying for
-    // every early loop's full HTML dumps (run #15: loop 24 at ~556K vs
-    // loop 0 at ~103K input tokens). Runs BEFORE the #261 pre-flight
-    // estimate so the ceiling check sees the already-shrunk history —
-    // the two passes compose; they share the truncation-marker format
-    // and skip each other's output. In-memory only: the persisted
-    // transcript keeps full result bodies (tool-dispatch.ts persists
-    // at dispatch time, before this ever runs).
-    if (toolResultOrigins.size > 0) {
+    // issue #300 — proactive tool-result compaction. GATED OFF by default
+    // (resolveProactiveCompaction): shrinking OLD results before nearly
+    // every provider call rewrites the cached message prefix continuously,
+    // and the retuned single-shot ceiling below (fire ~800K real, drop to
+    // ~200K) now bounds within-turn growth with ONE cache-invalidating
+    // rewrite instead of one per loop. Kept behind the flag for runs that
+    // are latency-bound within a single long turn. When enabled: successful
+    // results dispatched >= 3 loops ago in THIS turn shrink to a one-line
+    // summary, they compose with the #261 ceiling (shared truncation-marker
+    // format, skip each other's output), and it is in-memory only — the
+    // persisted transcript keeps full bodies (tool-dispatch.ts persists at
+    // dispatch time, before this ever runs).
+    if (args.proactiveCompaction === true && toolResultOrigins.size > 0) {
       const proactive = compactOldToolResults(messages, {
         currentLoop: loop,
         origins: toolResultOrigins,
@@ -309,9 +333,15 @@ export async function* runToolLoop(
     // untouched.
     const preflightEstimate = estimateHistoryTokens(messages);
     if (preflightEstimate > args.compactionThresholdTokens) {
+      // Trigger (~800K real) and target (~200K real) are SEPARATE: fire
+      // late, drop hard. Keep the recent ~100K real verbatim as a token
+      // budget (not a message count) so the tail the model is actively
+      // working in survives while the older prefix collapses to a digest.
+      const recentBudget = args.compactionRecentTokens ?? COMPACTION_RECENT_TOKENS_DEFAULT;
+      const keepRecentMessages = recentTailCount(messages, recentBudget);
       const compacted = compactHistory(messages, {
-        targetTokens: args.compactionThresholdTokens,
-        keepRecentMessages: KEEP_RECENT_MESSAGES,
+        targetTokens: args.compactionTargetTokens ?? COMPACTION_TARGET_TOKENS_DEFAULT,
+        keepRecentMessages,
         toolResultHeadChars: TOOL_RESULT_HEAD_CHARS,
       });
       messages = compacted.messages;
@@ -320,10 +350,26 @@ export async function* runToolLoop(
         loop,
         estimatedTokensBefore: compacted.estimatedTokensBefore,
         estimatedTokensAfter: compacted.estimatedTokensAfter,
+        keepRecentMessages,
         toolResultsTruncated: compacted.toolResultsTruncated,
         summarizedMessages: compacted.summarizedMessages,
       });
     }
+
+    // Per-loop cost attribution: args.usage is CUMULATIVE across the
+    // turn, so snapshot it here and diff after the call to recover THIS
+    // call's real input / cached-read / output. Combined with the
+    // post-compaction prefix estimate below, this is what makes the
+    // per-loop cached-vs-uncached postmortem possible from admin.log.
+    const usageBeforeCall = {
+      in: args.usage.totalIn,
+      cached: args.usage.totalCached,
+      creation: args.usage.totalCacheCreation ?? 0,
+      out: args.usage.totalOut,
+    };
+    // What we are actually about to send (post-compaction), in estimate
+    // space — lets the postmortem see the prefix shrink at a compaction.
+    const sentPrefixEstimate = estimateHistoryTokens(messages);
 
     const {
       accumulatedText,
@@ -612,16 +658,47 @@ export async function* runToolLoop(
           },
     ];
 
-    // v0.2.55 — Per-loop trace for postmortem.
+    // This call's real usage = cumulative-after minus the snapshot taken
+    // before the provider call. Anthropic splits input three ways:
+    //   inThisCall = cacheRead (0.1×) + cacheWrite (1.25×) + freshIn (1.0×)
+    // cacheRead is served from an existing cache entry; cacheWrite is
+    // prefix being cached NOW; freshIn is genuinely new post-breakpoint
+    // content. Splitting all three makes a lookback-miss (read collapses
+    // to the system prefix) distinguishable from a big write.
+    const inThisCall = args.usage.totalIn - usageBeforeCall.in;
+    const cacheReadThisCall = args.usage.totalCached - usageBeforeCall.cached;
+    const cacheWriteThisCall = (args.usage.totalCacheCreation ?? 0) - usageBeforeCall.creation;
+    const freshInThisCall = inThisCall - cacheReadThisCall - cacheWriteThisCall;
+    const outThisCall = args.usage.totalOut - usageBeforeCall.out;
+
+    // v0.2.55 — Per-loop trace for postmortem. Full read/write/fresh split
+    // + the sent prefix estimate make the token flow auditable loop-by-loop
+    // (issue #261 compaction + cache-breakpoint verification).
     console.error("[chat-runner] loop", {
       chatSessionId,
       loop,
       loopStop,
       toolCalls: accumulatedToolCalls.length,
       toolNames: accumulatedToolCalls.map((c) => c.name),
+      // Provider-executed Tool Search (tool_search_tool_bm25) round-trips
+      // this call — the Anthropic-specific mechanism that injects
+      // discovered tool defs server-side, invisible to estimateHistoryTokens.
+      // Correlate with cacheRead dips to test the tool-search-churn theory.
+      serverToolCalls: accumulatedServerToolCalls.length,
+      serverToolNames: accumulatedServerToolCalls.map((c) => c.name),
       textChars: accumulatedText.join("").length,
       thinkingBlocks: accumulatedThinking.length,
+      // This call (the auditable per-loop numbers):
+      inThisCall,
+      cacheRead: cacheReadThisCall,
+      cacheWrite: cacheWriteThisCall,
+      freshIn: freshInThisCall,
+      cacheHitPct: inThisCall > 0 ? Math.round((cacheReadThisCall / inThisCall) * 100) : 0,
+      outThisCall,
+      sentPrefixEstimate,
+      // Turn cumulative (unchanged meaning):
       tokensIn: args.usage.totalIn,
+      tokensCached: args.usage.totalCached,
       tokensOut: args.usage.totalOut,
     });
 
@@ -668,63 +745,23 @@ export async function* runToolLoop(
       break;
     }
 
-    // Slice 1 (SDK approval gate) — the model called one or more gated tools;
-    // the SDK PAUSED before their execute and surfaced tool-approval-requests.
-    // Surface each as an in-chat Approve/Reject card and STOP the turn: the
-    // paused assistant turn (tool-call + approval-request blocks) is already
-    // persisted via Option C responseMessages, so approving = appending a
-    // tool-approval-response and re-running. We do NOT dispatch the gated
-    // tool-calls (the SDK owns their execute once approved) and, to keep the
-    // paused pairing clean, do NOT dispatch the rest of the turn's calls
-    // either — the whole turn resumes together after the decision.
-    if (accumulatedApprovalRequests.length > 0) {
-      for (const req of accumulatedApprovalRequests) {
-        yield {
-          kind: "tool-approval-request",
-          approvalId: req.approvalId,
-          toolCallId: req.toolCallId,
-          name: req.name,
-          arguments: req.arguments,
-          preview: buildApprovalPreview(req.name, req.arguments),
-        };
-      }
-      // Autonomous / e2e runs: no human is on the stream to click Approve, so
-      // auto-grant each pending approval — append the SDK tool-approval-response
-      // (verbatim ModelMessage via the Option C passthrough) and CONTINUE the
-      // loop. The next provider call resumes the paused turn: the SDK runs the
-      // gated tool's execute (Owner ctx) and the model continues. Production
-      // leaves the turn paused (below) for the Owner's in-chat decision.
-      if (process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1") {
-        for (const req of accumulatedApprovalRequests) {
-          messages.push({
-            role: "tool",
-            content: "",
-            sdkMessages: [
-              {
-                role: "tool",
-                content: [
-                  { type: "tool-approval-response", approvalId: req.approvalId, approved: true },
-                ],
-              },
-            ],
-          });
-        }
-        console.error("[chat-runner] auto-approved (e2e)", {
-          chatSessionId,
-          approvals: accumulatedApprovalRequests.map((r) => r.name),
-        });
-        continue;
-      }
-      // Production — pause the turn awaiting the Owner's in-chat Approve/Reject.
-      // The paused assistant turn (tool-call + approval-request) is persisted
-      // via Option C responseMessages, so resume = append the response + re-run.
-      console.error("[chat-runner] awaiting-approval", {
-        chatSessionId,
-        approvals: accumulatedApprovalRequests.map((r) => ({ name: r.name, id: r.approvalId })),
-      });
-      stopReason = "awaiting_approval";
-      break;
-    }
+    // Slice 1 (SDK approval gate) — the model may have called one or more
+    // SDK-needsApproval tools (propose_create_theme, propose_update_layout,
+    // …); the SDK PAUSED before their execute and surfaced
+    // tool-approval-requests. Those gated calls are handled AFTER dispatch
+    // below (the SDK owns their execute once approved).
+    //
+    // CRITICAL PAIRING FIX — a turn can co-emit a NON-gated call alongside
+    // the gated one. The model batches a needsApproval `propose_create_theme`
+    // with a DB-propose `propose_site_import` (which returns its own result
+    // immediately) in a single turn — adaptive thinking makes this batching
+    // common. Pre-fix, the approval branch short-circuited (continue/break)
+    // BEFORE dispatch, so the non-gated call's tool_use was left with neither
+    // a tool_result nor a tool-approval-response → the SDK 400s on the next
+    // provider call ("Tool result is missing for tool call …") and the turn
+    // (and its DB-propose) silently fails. So: dispatch every NON-gated call
+    // now; skip only the SDK-gated ones (matched by tool-call id).
+    const gatedCallIds = new Set(accumulatedApprovalRequests.map((r) => r.toolCallId));
 
     // Dispatch each tool call sequentially and append a tool result.
     // P5.2 #3 — dedupe by (chat_session_id, tool_call_id).
@@ -751,6 +788,10 @@ export async function* runToolLoop(
     const turnOutcomes: ToolCallOutcome[] = [];
     for (const call of accumulatedToolCalls) {
       if (aborted()) break;
+      // SDK-gated calls are executed by the SDK on approval (handled after
+      // this loop); dispatching them here would double-run them. Non-gated
+      // co-emitted calls fall through and get their tool_result paired.
+      if (gatedCallIds.has(call.id)) continue;
       // Breaker: an identical (tool + args) call already failed identically
       // twice this turn. Don't re-run it — reply with a synthetic failed
       // result so the tool_use/tool_result pairing stays complete (Anthropic
@@ -804,6 +845,23 @@ export async function* runToolLoop(
       toolResultOrigins.set(outcome.toolCallId, { loop, ok: outcome.ok });
     }
 
+    // Per-tool token trace: the estimated size of every tool RESULT this
+    // loop appended to the context. Tool results (theme JSON, template
+    // lists, screenshots, rendered HTML) are the bulk of prefix growth and
+    // never appear in the output counter — this is what makes the e2e
+    // "tokens per tool" breakdown + cost attribution possible.
+    if (turnOutcomes.length > 0) {
+      console.error("[chat-runner] tool-tokens", {
+        chatSessionId,
+        loop,
+        results: turnOutcomes.map((o) => ({
+          name: o.name,
+          ok: o.ok,
+          tokens: estimateTextTokens(o.content),
+        })),
+      });
+    }
+
     // Breaker bookkeeping: count exact (tool + args + error) repeats. On the
     // recording that first crosses the threshold, inject ONE corrective nudge
     // (an in-memory user turn the operator never sees) so the model changes
@@ -822,6 +880,58 @@ export async function* runToolLoop(
           { role: "user", content: repeatedFailureNudge(outcome.name, count) },
         ];
       }
+    }
+
+    // SDK approval gate (handled AFTER dispatch so co-emitted non-gated
+    // calls are already paired above). Surface each gated call as an in-chat
+    // Approve/Reject card; the paused assistant turn (tool-call +
+    // approval-request blocks) is persisted via Option C responseMessages, so
+    // approving = appending a tool-approval-response and re-running.
+    if (accumulatedApprovalRequests.length > 0) {
+      for (const req of accumulatedApprovalRequests) {
+        yield {
+          kind: "tool-approval-request",
+          approvalId: req.approvalId,
+          toolCallId: req.toolCallId,
+          name: req.name,
+          arguments: req.arguments,
+          preview: buildApprovalPreview(req.name, req.arguments),
+        };
+      }
+      // Autonomous / e2e runs: no human is on the stream to click Approve, so
+      // auto-grant each pending approval — append the SDK tool-approval-response
+      // (verbatim ModelMessage via the Option C passthrough) and CONTINUE the
+      // loop. The next provider call resumes the paused turn: the SDK runs the
+      // gated tool's execute (Owner ctx) and the model continues. Production
+      // leaves the turn paused (below) for the Owner's in-chat decision.
+      if (process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1") {
+        for (const req of accumulatedApprovalRequests) {
+          messages.push({
+            role: "tool",
+            content: "",
+            sdkMessages: [
+              {
+                role: "tool",
+                content: [
+                  { type: "tool-approval-response", approvalId: req.approvalId, approved: true },
+                ],
+              },
+            ],
+          });
+        }
+        console.error("[chat-runner] auto-approved (e2e)", {
+          chatSessionId,
+          approvals: accumulatedApprovalRequests.map((r) => r.name),
+        });
+        continue;
+      }
+      // Production — pause the turn awaiting the Owner's in-chat Approve/Reject.
+      console.error("[chat-runner] awaiting-approval", {
+        chatSessionId,
+        approvals: accumulatedApprovalRequests.map((r) => ({ name: r.name, id: r.approvalId })),
+      });
+      stopReason = "awaiting_approval";
+      break;
     }
 
     // Only loop again when the model actually signalled it wants to keep

@@ -76,7 +76,7 @@ describe("robots.txt parsing (#192)", () => {
 
 describe("sitemap discovery (#192)", () => {
   it("extractLocValues is linear and capped", () => {
-    const xml = "<urlset>" + "<url><loc>https://a.example/x</loc></url>".repeat(10) + "</urlset>";
+    const xml = `<urlset>${"<url><loc>https://a.example/x</loc></url>".repeat(10)}</urlset>`;
     expect(extractLocValues(xml, 3)).toHaveLength(3);
   });
 

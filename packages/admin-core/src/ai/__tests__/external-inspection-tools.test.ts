@@ -12,9 +12,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { Screenshot } from "@caelo-cms/site-importer";
 import { resetExternalFetchBudgetForTests } from "../tools/_external-fetch-budget.js";
 import { setExternalScreenshotterForTests } from "../tools/_external-screenshotter.js";
+import { clearPageInspectionCacheForTests } from "../tools/_page-inspection-cache.js";
 import type { ToolContext } from "../tools/dispatch.js";
 import { extractStylesheetHrefs, inspectExternalPageTool } from "../tools/inspect-external-page.js";
 import { mapExternalPageTypesTool } from "../tools/map-external-page-types.js";
+import { keywordWindows, queryPageHtmlTool } from "../tools/query-page-html.js";
+import { readPageMoreTool } from "../tools/read-page-more.js";
 import { screenshotExternalPageTool } from "../tools/screenshot-external-page.js";
 
 const FIXTURE_HTML = `<!doctype html><html lang="en"><head>
@@ -96,22 +99,172 @@ const emptyCtx = {
 };
 
 describe("inspect_external_page — facet selection", () => {
-  it("defaults to the minimal core (meta + links), NOT the full blob", async () => {
+  it("gist default = meta + markdown + a pageRef; links/markup/etc stay off", async () => {
     const r = await inspectExternalPageTool.handler(emptyCtx, { url: `${base}/` }, toolCtx);
     expect(r.ok).toBe(true);
-    expect(r.content).toContain("Facets: links, meta");
+    expect(r.content).toContain("Facets: meta, markdown");
     expect(r.content).toContain("## Meta");
-    expect(r.content).toContain("Bergbäckerei Steinofen");
+    expect(r.content).toContain("## Page text (Markdown)");
+    // Markdown carries the readable structure (heading text, not raw tags).
+    expect(r.content).toContain("# Bergbäckerei Steinofen");
+    expect(r.content).not.toContain("<h1>");
+    // A reuse handle is surfaced.
+    expect(r.content).toMatch(/Page handle: pg_\w+/);
+    // links is OPT-IN now: a 200+-link page must not bloat every inspect.
+    expect(r.content).not.toContain("## Outbound links");
+    // …and definitely not markup / tokens / screenshot.
+    expect(r.content).not.toContain("## Markup");
+    expect(r.content).not.toContain("## Design fact base");
+  });
+
+  it("read_page_more reuses the pageRef to paginate — no re-fetch", async () => {
+    clearPageInspectionCacheForTests();
+    const first = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { markdown: true } },
+      toolCtx,
+    );
+    expect(first.ok).toBe(true);
+    const pageRef = /Page handle: (pg_\w+)/.exec(first.content ?? "")?.[1];
+    expect(pageRef).toBeDefined();
+    // Continue from an offset; the fixture is short so this returns the
+    // end-of-page marker but must NOT error and must NOT spend fetch budget.
+    const more = await readPageMoreTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, cursor: 0 },
+      toolCtx,
+    );
+    expect(more.ok).toBe(true);
+    expect(more.content).toContain("Page text (Markdown)");
+    // An unknown handle fails cleanly (points back at inspect_external_page).
+    const missing = await readPageMoreTool.handler(emptyCtx, { pageRef: "pg_nope" }, toolCtx);
+    expect(missing.ok).toBe(false);
+    expect(missing.content).toContain("inspect_external_page");
+  });
+});
+
+describe("query_page_html", () => {
+  it("keywordWindows returns tag-snapped windows around each hit", () => {
+    const html = "<div><p>alpha</p></div><section><span>beta beta</span></section>";
+    const w = keywordWindows(html, "beta", 5, 20);
+    expect(w.length).toBe(2);
+    // Windows are snapped to tag boundaries — no bare mid-tag cut.
+    expect(w[0]).toContain("beta");
+    expect(w[0]?.startsWith("<")).toBe(true);
+  });
+
+  it("keyword mode reuses a pageRef (no re-fetch) and returns HTML windows", async () => {
+    clearPageInspectionCacheForTests();
+    const first = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { markdown: true } },
+      toolCtx,
+    );
+    const pageRef = /Page handle: (pg_\w+)/.exec(first.content ?? "")?.[1];
+    expect(pageRef).toBeDefined();
+    const r = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, keyword: "Öffnungszeiten" },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain("Öffnungszeiten");
+    expect(r.content).toContain("match");
+  });
+
+  it("requires exactly one mode (keyword XOR describe)", async () => {
+    const none = await queryPageHtmlTool.handler(emptyCtx, { url: `${base}/` }, toolCtx);
+    expect(none.ok).toBe(false);
+    expect(none.content).toContain("EXACTLY ONE");
+    const both = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { url: `${base}/`, keyword: "x", describe: "y" },
+      toolCtx,
+    );
+    expect(both.ok).toBe(false);
+  });
+
+  it("an evicted pageRef with no url fails cleanly", async () => {
+    const r = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: "pg_gone", keyword: "x" },
+      toolCtx,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.content).toContain("re-run inspect_external_page");
+  });
+
+  it("css/xpath mode runs a selector via the shared screenshotter (setContent)", async () => {
+    let queriedWith: unknown;
+    setExternalScreenshotterForTests(async () => ({
+      capture: async () => ({ bytes: new Uint8Array([1]), width: 1280, height: 800 }),
+      query: async (_html, opts) => {
+        queriedWith = opts;
+        return ['<a href="/en/pricing">Preise</a>'];
+      },
+      dispose: async () => undefined,
+    }));
+    clearPageInspectionCacheForTests();
+    const first = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { markdown: true } },
+      toolCtx,
+    );
+    const pageRef = /Page handle: (pg_\w+)/.exec(first.content ?? "")?.[1];
+    const r = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, cssSelector: "nav a" },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain('<a href="/en/pricing">Preise</a>');
+    expect(r.content).toContain("nav a");
+    expect(queriedWith).toMatchObject({ cssSelector: "nav a" });
+  });
+
+  it("query prefers the RENDERED DOM when a screenshot render populated the pageRef", async () => {
+    // The render returns HTML carrying a marker that is NOT in the static
+    // fetched fixture — proving query_page_html uses renderedHtml.
+    setExternalScreenshotterForTests(async () => ({
+      capture: async () => ({
+        bytes: new Uint8Array([1]),
+        width: 1280,
+        height: 800,
+        renderedHtml: "<html><body><div id='jsonly'>RENDERED-ONLY-MARKER</div></body></html>",
+      }),
+      query: async () => [],
+      dispose: async () => undefined,
+    }));
+    clearPageInspectionCacheForTests();
+    const first = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { screenshot: true, markdown: true } },
+      toolCtx,
+    );
+    const pageRef = /Page handle: (pg_\w+)/.exec(first.content ?? "")?.[1];
+    expect(pageRef).toBeDefined();
+    const r = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, keyword: "RENDERED-ONLY-MARKER" },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain("RENDERED-ONLY-MARKER");
+  });
+
+  it("links facet is opt-in: {links:true} pulls the inventory", async () => {
+    const r = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { links: true } },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
     expect(r.content).toContain("## Outbound links");
-    // Nav links carry anchor text + location.
     expect(r.content).toContain("Preise");
     // Fragment links dropped; cross-host links KEPT (the links facet is
     // general — the page-type classifier is what filters off-site).
     expect(r.content).not.toContain("#top");
     expect(r.content).toContain("https://instagram.com/x");
-    // Minimal core does NOT pull markup / tokens / screenshot.
-    expect(r.content).not.toContain("## Markup");
-    expect(r.content).not.toContain("## Design fact base");
   });
 
   it("meta facet exposes canonical, lang, hreflang, and the h1–h3 outline", async () => {
@@ -150,15 +303,16 @@ describe("inspect_external_page — facet selection", () => {
     expect(r.content).toContain('aria-label="Menü öffnen"');
   });
 
-  it("markup facet returns cleaned extractor modules", async () => {
+  it("there is NO markup facet — no ## Markup section; structure is query_page_html's job", async () => {
     const r = await inspectExternalPageTool.handler(
       emptyCtx,
-      { url: `${base}/`, facets: { markup: true } },
+      { url: `${base}/`, facets: { markdown: true, markup: true } as never },
       toolCtx,
     );
-    expect(r.content).toContain("## Markup (extracted modules)");
-    expect(r.content).toContain("[header]");
-    expect(r.content).toContain("[footer]");
+    expect(r.ok).toBe(true);
+    // The removed facet produces no raw-HTML dump; the gist Markdown is there.
+    expect(r.content).not.toContain("## Markup");
+    expect(r.content).toContain("## Page text (Markdown)");
   });
 
   it("screenshot facet attaches a rendered image via the shared screenshotter", async () => {
@@ -173,6 +327,7 @@ describe("inspect_external_page — facet selection", () => {
         capturedOpts = opts;
         return fakeShot;
       },
+      query: async () => [],
       dispose: async () => undefined,
     }));
     const r = await inspectExternalPageTool.handler(
@@ -196,6 +351,7 @@ describe("inspect_external_page — facet selection", () => {
           ? { styleSamples: [{ role: "body" as const, styles: { color: "rgb(28, 25, 23)" } }] }
           : {}),
       }),
+      query: async () => [],
       dispose: async () => undefined,
     }));
     const r = await inspectExternalPageTool.handler(
@@ -302,6 +458,7 @@ describe("screenshot_external_page (shared screenshotter seam)", () => {
         capturedOpts = opts;
         return fakeShot;
       },
+      query: async () => [],
       dispose: async () => undefined,
     }));
     const r = await screenshotExternalPageTool.handler(

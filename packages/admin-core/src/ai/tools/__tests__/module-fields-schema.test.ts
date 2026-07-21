@@ -34,7 +34,9 @@ function emptySubschemaPaths(node: unknown, path = "$"): string[] {
   for (const [k, v] of Object.entries(obj)) {
     out.push(...emptySubschemaPaths(v, `${path}.${k}`));
     if (Array.isArray(v))
-      v.forEach((el, i) => out.push(...emptySubschemaPaths(el, `${path}.${k}[${i}]`)));
+      v.forEach((el, i) => {
+        out.push(...emptySubschemaPaths(el, `${path}.${k}[${i}]`));
+      });
   }
   return out;
 }

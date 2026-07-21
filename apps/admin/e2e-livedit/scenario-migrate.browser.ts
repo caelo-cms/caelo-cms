@@ -96,6 +96,11 @@ test.describe("e2e-livedit migration — keep-design end to end", () => {
   );
 
   test("crawl → approve → per-type build with redirects and findings", async ({ page }) => {
+    // The heaviest flow: crawl (external-page rendering) + a per-type rebuild
+    // that fans out to subagents (each rebuilding a page cluster). The turns
+    // progress steadily (no hang); they just outrun the default 8-min/10-min
+    // budgets. Give them realistic room.
+    test.setTimeout(1_500_000);
     resetToUntouchedInstall();
     const site = await startMigrateFixtureSite();
     try {
@@ -133,6 +138,7 @@ test.describe("e2e-livedit migration — keep-design end to end", () => {
       await sendChatPromptAndWait(
         page,
         "Der Crawl ist freigegeben und fertig. Bitte baut die Seite jetzt wie besprochen fertig — Seitentypen bestätigen wir so, wie ihr sie gruppiert habt.",
+        900_000, // per-type rebuild fan-out — the heavy turn
       );
 
       // Some builds take a second confirmation turn; nudge once if no
@@ -144,6 +150,7 @@ test.describe("e2e-livedit migration — keep-design end to end", () => {
         await sendChatPromptAndWait(
           page,
           "Ja, die Gruppierung passt — bitte alle Seiten jetzt bauen.",
+          900_000, // build fan-out
         );
       }
 

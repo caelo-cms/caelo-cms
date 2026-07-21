@@ -137,6 +137,8 @@ async function runLoop(args: {
   failingDispatches?: ReadonlySet<number>;
   initialMessages?: ChatMessageInput[];
   compactionThresholdTokens?: number;
+  compactionTargetTokens?: number;
+  compactionRecentTokens?: number;
 }): Promise<{ events: ClientEvent[]; result: ToolLoopResult }> {
   const ctx: ExecutionContext = { actorId: "op-1", actorKind: "human", requestId: "req-1" };
   const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };
@@ -166,6 +168,15 @@ async function runLoop(args: {
     filteredTools: [],
     initialMessages: args.initialMessages ?? [{ role: "user", content: "migrate all pages" }],
     compactionThresholdTokens: args.compactionThresholdTokens ?? 600_000,
+    ...(args.compactionTargetTokens !== undefined
+      ? { compactionTargetTokens: args.compactionTargetTokens }
+      : {}),
+    ...(args.compactionRecentTokens !== undefined
+      ? { compactionRecentTokens: args.compactionRecentTokens }
+      : {}),
+    // This suite exercises the proactive pass itself, so opt it in
+    // explicitly — it is OFF by default in production now (cache thrash).
+    proactiveCompaction: true,
     maxLoops: 10,
     maxOutputTokens: 4096,
     temperature: undefined,
@@ -283,8 +294,12 @@ describe("runToolLoop — proactive tool-result compaction (issue #300)", () => 
       fixture,
       // ~10K-token ceiling: the 40KB pre-turn dump alone crosses it, so
       // the #261 pre-flight fires while the proactive pass handles the
-      // current turn's results.
+      // current turn's results. Target + recent scaled to these tiny
+      // fixtures: a 3K recent budget can't fit the 10K dump, so it stays
+      // outside the protected tail and Stage-1 truncates it.
       compactionThresholdTokens: 10_000,
+      compactionTargetTokens: 3_000,
+      compactionRecentTokens: 3_000,
       initialMessages: [
         { role: "user", content: "rebuild" },
         {

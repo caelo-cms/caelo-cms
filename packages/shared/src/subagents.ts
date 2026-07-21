@@ -90,8 +90,19 @@ export const subagentSpec = z
      * would make "AI omitted it" indistinguishable from "AI chose $0.50".
      */
     maxCostMicrocents: z.number().int().nonnegative().optional(),
-    /** Per-spawn timeout; default 60s. */
-    timeoutMs: z.number().int().min(1000).max(600_000).default(60_000),
+    /**
+     * Per-spawn wall-clock timeout. Default 300s (5 min): the documented
+     * fan-out use cases are page BUILDS — a Genesis design draft (full page +
+     * image generation) and a migration per-type rebuild each legitimately run
+     * 2–4 min. The old 60s default aborted every build child mid-work (Genesis
+     * live-run 2026-07: all 3 draft children `timed_out` at ~60000ms, so the
+     * flow saved 0 drafts; the abort also skips the child's `ai_calls` write, so
+     * the roll-up read `$0.00` — the child WAS building, not idle). Quick
+     * reviewer children (qa/legal/menu/categorizer) finish well under this
+     * ceiling, so the higher default is harmless for them. The AI can still
+     * pass a smaller `timeoutMs` for a known-fast child.
+     */
+    timeoutMs: z.number().int().min(1000).max(600_000).default(300_000),
     /**
      * issue #306 — model tier for this child. Default `inherit` keeps
      * single-model behaviour byte-identical to pre-#306 (conservative
@@ -297,18 +308,37 @@ export function validateSubagentResultValue(
   value: unknown,
   shape: ExpectedReturnShape,
 ): ParseResult {
+  // Defense-in-depth for the structured shapes: a provider can
+  // double-encode the payload so `value` arrives as a JSON string even
+  // after the `submit_result` inputSchema fix (and the final-text
+  // fallback path never passes through normalize-args at all). The
+  // structured shapes want an object/array, so decode a JSON-looking
+  // string before parsing. `freeform` legitimately wants a bare string,
+  // so it is left untouched.
+  let coerced = value;
+  if (shape !== "freeform" && typeof coerced === "string") {
+    const trimmed = coerced.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        coerced = JSON.parse(trimmed);
+      } catch {
+        // leave as-is; the shape parse below reports the real mismatch
+      }
+    }
+  }
+
   // v0.2.67 — when the schema rejects, include the actual top-level
   // keys the subagent returned so the parent AI can tell whether the
   // subagent ignored the schema entirely (returned freeform text under
   // a different shape) vs. got close but mistyped a single field.
   const observedKeys =
-    typeof value === "object" && value !== null && !Array.isArray(value)
-      ? Object.keys(value as Record<string, unknown>)
+    typeof coerced === "object" && coerced !== null && !Array.isArray(coerced)
+      ? Object.keys(coerced as Record<string, unknown>)
       : [];
   const observedSummary =
     observedKeys.length > 0
       ? ` got keys: [${observedKeys.slice(0, 8).join(", ")}]`
-      : ` got: ${typeof value} (${Array.isArray(value) ? "array" : "scalar"})`;
+      : ` got: ${typeof coerced} (${Array.isArray(coerced) ? "array" : "scalar"})`;
   const issueSummary = (issues: readonly z.ZodIssue[]): string =>
     issues
       .slice(0, 3)
@@ -330,7 +360,7 @@ export function validateSubagentResultValue(
     return { ok: true, shape: "freeform", value: validated.data };
   }
   if (shape === "verdict") {
-    const validated = verdictReturnShape.safeParse(value);
+    const validated = verdictReturnShape.safeParse(coerced);
     if (!validated.success) {
       return {
         ok: false,
@@ -340,7 +370,7 @@ export function validateSubagentResultValue(
     return { ok: true, shape: "verdict", value: validated.data };
   }
   if (shape === "rebuild") {
-    const validated = rebuildReturnShape.safeParse(value);
+    const validated = rebuildReturnShape.safeParse(coerced);
     if (!validated.success) {
       return {
         ok: false,
@@ -350,7 +380,7 @@ export function validateSubagentResultValue(
     return { ok: true, shape: "rebuild", value: validated.data };
   }
   // tree
-  const validated = treeReturnShape.safeParse(value);
+  const validated = treeReturnShape.safeParse(coerced);
   if (!validated.success) {
     return {
       ok: false,

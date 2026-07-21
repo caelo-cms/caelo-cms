@@ -133,7 +133,7 @@ export const proposeCreateThemeOp = defineOperation({
     // verbatim without the ramp, no warning. Now we look at the raw
     // value BEFORE extractPrimaryColorSeed's typeof narrowing and
     // throw an AI-actionable error per CLAUDE.md §11.
-    const rawPrimaryColor = (input.overrides ?? {})["primaryColor"];
+    const rawPrimaryColor = input.overrides?.primaryColor;
     if (rawPrimaryColor !== undefined && typeof rawPrimaryColor !== "string") {
       return err({
         kind: "HandlerError",

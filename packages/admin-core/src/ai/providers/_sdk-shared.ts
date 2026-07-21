@@ -163,10 +163,16 @@ export function toSDKMessages(messages: readonly ChatMessageInput[]): ModelMessa
 export async function* translateSDKStream(
   source: AsyncIterable<unknown>,
 ): AsyncIterable<ProviderEvent> {
-  let usage: { inputTokens: number; outputTokens: number; cachedTokens: number } = {
+  let usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    cacheCreationTokens: number;
+  } = {
     inputTokens: 0,
     outputTokens: 0,
     cachedTokens: 0,
+    cacheCreationTokens: 0,
   };
   // Reasoning text accumulates across deltas; emit at reasoning-end.
   const reasoningById = new Map<string, string>();
@@ -278,7 +284,7 @@ export async function* translateSDKStream(
                 inputTokens?: number;
                 outputTokens?: number;
                 cachedInputTokens?: number;
-                inputTokenDetails?: { cacheReadTokens?: number };
+                inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
               }
             | undefined;
           if (u) {
@@ -287,6 +293,8 @@ export async function* translateSDKStream(
               outputTokens: u.outputTokens ?? usage.outputTokens,
               cachedTokens:
                 u.inputTokenDetails?.cacheReadTokens ?? u.cachedInputTokens ?? usage.cachedTokens,
+              cacheCreationTokens:
+                u.inputTokenDetails?.cacheWriteTokens ?? usage.cacheCreationTokens,
             };
           }
           break;
@@ -297,15 +305,22 @@ export async function* translateSDKStream(
                 inputTokens?: number;
                 outputTokens?: number;
                 cachedInputTokens?: number;
-                inputTokenDetails?: { cacheReadTokens?: number };
+                inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
               }
             | undefined;
+          // The cache WRITE count lives on the flat usage as
+          // `inputTokenDetails.cacheWriteTokens` (@ai-sdk/anthropic 4.x,
+          // present on both finish-step `usage` and finish `totalUsage`).
+          // providerMetadata is undefined on the finish event, so do NOT
+          // rely on it here.
           if (tu) {
             usage = {
               inputTokens: tu.inputTokens ?? usage.inputTokens,
               outputTokens: tu.outputTokens ?? usage.outputTokens,
               cachedTokens:
                 tu.inputTokenDetails?.cacheReadTokens ?? tu.cachedInputTokens ?? usage.cachedTokens,
+              cacheCreationTokens:
+                tu.inputTokenDetails?.cacheWriteTokens ?? usage.cacheCreationTokens,
             };
           }
           yield { kind: "usage", ...usage };

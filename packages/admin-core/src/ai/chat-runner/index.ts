@@ -25,7 +25,12 @@ import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
 import { attachGatedExecute } from "../tools/gated-tools.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
-import { resolveCompactionThresholdTokens } from "./compaction.js";
+import {
+  resolveCompactionRecentTokens,
+  resolveCompactionTargetTokens,
+  resolveCompactionThresholdTokens,
+  resolveProactiveCompaction,
+} from "./compaction.js";
 import { lastNoteSignature, noteSignature } from "./context/page.js";
 import { extractLoadedSkillSlugs } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
@@ -155,8 +160,18 @@ export async function* runChatTurn(
   };
 
   // v0.2.54 — Resolve extended-thinking config for THIS turn. Per-chat-session
-  // toggle wins; budget falls back to a default under the 32k max_tokens floor.
-  const thinkingEnabled = session.session.extendedThinkingEnabled;
+  // toggle wins for the MAIN chat; budget falls back to a default under the
+  // 32k max_tokens floor.
+  //
+  // Subagents NEVER think, regardless of the session default. The thinking
+  // A/B showed subagent turns are where thinking's cost + latency concentrate
+  // with no correctness upside — the 3 parallel genesis draft children each
+  // reasoned ~3x deeper (18-24k output tokens/draft, 174-215s each) and
+  // doubled the scenario wall-clock. The parent plans with thinking; the
+  // workers execute without it. (subagentResultCapture is present iff this
+  // turn is a spawned child — see isSubagentTurn below.)
+  const thinkingEnabled =
+    session.session.extendedThinkingEnabled && options.subagentResultCapture === undefined;
   const thinkingBudget = thinkingEnabled
     ? (session.session.extendedThinkingBudgetTokens ?? 10000)
     : null;
@@ -220,7 +235,11 @@ export async function* runChatTurn(
     await injectNote("status", ctx.statusLine, ctx.statusLine);
   }
   if (ctx.pageContextBlock && ctx.pageContextBlock.trim().length > 0 && input.activePageId) {
-    await injectNote("pagectx", `${input.activePageId}\n${ctx.pageContextBlock}`, ctx.pageContextBlock);
+    await injectNote(
+      "pagectx",
+      `${input.activePageId}\n${ctx.pageContextBlock}`,
+      ctx.pageContextBlock,
+    );
   }
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion
@@ -262,7 +281,12 @@ export async function* runChatTurn(
     skillsIndexBlock: ctx.preBlocks.skillsIndexBlock,
   });
 
-  const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };
+  const usage: UsageAccumulator = {
+    totalIn: 0,
+    totalOut: 0,
+    totalCached: 0,
+    totalCacheCreation: 0,
+  };
 
   markPhase("catalogueAndPromptMs");
   // Run #10 D5 — the pre-provider timing breadcrumb. If a first token
@@ -304,8 +328,13 @@ export async function* runChatTurn(
     systemChunks,
     filteredTools,
     initialMessages: baseMessages,
-    // issue #261 — compaction trigger; env-tunable, ~600k by default.
+    // issue #261 — compaction trigger; env-tunable, fires ~800K real by
+    // default. Trigger, target (~200K real) and recent-tail budget (~100K
+    // real) are separate so compaction fires late and drops hard.
     compactionThresholdTokens: resolveCompactionThresholdTokens(),
+    compactionTargetTokens: resolveCompactionTargetTokens(),
+    compactionRecentTokens: resolveCompactionRecentTokens(),
+    proactiveCompaction: resolveProactiveCompaction(),
     maxLoops,
     // Run #8 R1 — model-aware default: adaptive-thinking models share the
     // output budget with thinking and need >=32k headroom (see limits.ts).

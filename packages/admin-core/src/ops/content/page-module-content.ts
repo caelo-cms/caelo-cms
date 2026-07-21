@@ -286,7 +286,8 @@ export const setPageModuleContentManyOp = defineOperation({
   handler: async (ctx, input, tx) => {
     let updated = 0;
     for (let i = 0; i < input.items.length; i += 1) {
-      const item = input.items[i]!;
+      const item = input.items[i];
+      if (item === undefined) continue;
       const r = await setPageModuleContentOp.handler(ctx, item, tx);
       if (!r.ok) {
         const inner = r.error as { message?: string };

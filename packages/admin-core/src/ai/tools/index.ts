@@ -53,10 +53,10 @@ import { listLayoutsTool } from "./list-layouts.js";
 import { listModulesTool } from "./list-modules.js";
 import { listPagesTool } from "./list-pages.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
-import { loadSkillTool } from "./load-skill.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
+import { loadSkillTool } from "./load-skill.js";
 import { logPageEditTool } from "./log-page-edit.js";
 import { mapExternalPageTypesTool } from "./map-external-page-types.js";
 import { migrateMediaTool } from "./migrate-media.js";
@@ -99,6 +99,8 @@ import {
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
+import { queryPageHtmlTool } from "./query-page-html.js";
+import { readPageMoreTool } from "./read-page-more.js";
 import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromTool } from "./remove-module-from.js";
@@ -190,6 +192,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #189 / #278 — single-page external-site sensing (facet-selectable
   // glance) + homepage-driven page-type mapping for the migration flow.
   registry.register(inspectExternalPageTool);
+  registry.register(readPageMoreTool);
+  registry.register(queryPageHtmlTool);
   registry.register(screenshotExternalPageTool);
   registry.register(mapExternalPageTypesTool);
   // issue #194 cluster-review tools (list/assign page clusters) were retired

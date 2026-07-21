@@ -161,6 +161,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     // Same cold-start gate as add_module_to_page — no
     // module authoring against the seed-grayscale theme.
     const gate = await checkColdStartGate(ctx, toolCtx, "build_page");
+    // biome-ignore lint/style/noNonNullAssertion: gateResult is always set when gate.blocked is true
     if (gate.blocked) return gate.gateResult!;
 
     // issue #164 slice 2 — opt-in mechanical token binding, applied at

@@ -97,6 +97,11 @@ export default async function globalSetup(): Promise<void> {
   // Truncate the log between runs so the diag-grep helper only sees
   // the current run's output.
   writeFileSync(ADMIN_LOG_PATH, "");
+  // Reset the per-scenario metrics ledger + stale report artifacts so a
+  // crashed teardown can never leave a previous run's numbers behind.
+  writeFileSync(resolve(ADMIN_LOG_DIR, "scenario-metrics.jsonl"), "");
+  writeFileSync(resolve(ADMIN_LOG_DIR, "metrics-report.txt"), "");
+  writeFileSync(resolve(ADMIN_LOG_DIR, "metrics.json"), "[]");
   const logFd = openSync(ADMIN_LOG_PATH, "a");
 
   const adminEnv: NodeJS.ProcessEnv = {

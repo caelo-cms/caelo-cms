@@ -86,6 +86,25 @@ export function resetLiveditFixtures(): void {
       // re-seed after this reset.
       await tx\`DELETE FROM layout_modules\`;
       await tx\`DELETE FROM modules\`;
+      // Templates + import state persist across scenarios if not wiped. A
+      // migrate/compose scenario running AFTER template-creating scenarios
+      // (genesis, homepage) fed compose_from_import the LEFTOVER templates,
+      // ballooning the migrate turn's context past the model's 1M window
+      // (a failed call → dangling tool calls → 0 pages). Wipe them, but
+      // PRESERVE the migration-seeded default template + layout that
+      // site_defaults references (0023). Order: children before parents;
+      // pages + chat_sessions (the other template referrers) are already
+      // wiped above.
+      await tx\`DELETE FROM import_run_events\`;
+      await tx\`DELETE FROM import_pages\`;
+      await tx\`DELETE FROM import_runs\`;
+      // NOT IN (subquery) inline — preserve the migration-seeded default
+      // template that site_defaults references (0023); wipe the rest.
+      const keep = "SELECT default_template_id FROM site_defaults WHERE default_template_id IS NOT NULL";
+      await tx.unsafe(\`DELETE FROM template_snapshots WHERE template_id NOT IN (\${keep})\`);
+      await tx.unsafe(\`DELETE FROM template_pending_actions WHERE template_id NOT IN (\${keep})\`);
+      await tx.unsafe(\`DELETE FROM template_blocks WHERE template_id NOT IN (\${keep})\`);
+      await tx.unsafe(\`DELETE FROM templates WHERE id NOT IN (\${keep})\`);
       // Login bucket gets consumed by every loginAsDevOwner() call;
       // global-setup only clears it once at suite start, so after 5+
       // tests the rate limiter starts rejecting and loginAsDevOwner's
@@ -232,7 +251,15 @@ export async function waitForChatTurnIdle(page: Page, timeoutMs = 480_000): Prom
  * Send a prompt into the chat composer and wait for the SSE turn to
  * complete (the `data-turn-state` flips streaming → idle).
  */
-export async function sendChatPromptAndWait(page: Page, prompt: string): Promise<void> {
+export async function sendChatPromptAndWait(
+  page: Page,
+  prompt: string,
+  // Turn-completion budget. Default 480s fits a homepage build + self-review.
+  // The heaviest flows (Genesis' 3 parallel draft subagents, a migration's
+  // per-type rebuild fan-out) legitimately run longer — they pass a larger
+  // budget. The timeout guards hangs, not slow-but-progressing turns.
+  timeoutMs = 480_000,
+): Promise<void> {
   // Wait for the composer to be ready first (rules out a still-streaming
   // prior turn from previous scenario state).
   await waitForChatTurnIdle(page);
@@ -246,7 +273,7 @@ export async function sendChatPromptAndWait(page: Page, prompt: string): Promise
     }),
     page.getByTestId("chat-send").click(),
   ]);
-  await waitForChatTurnIdle(page);
+  await waitForChatTurnIdle(page, timeoutMs);
 }
 
 /** Capture the URL of the most recent chat SSE stream this page initiated. */
@@ -306,6 +333,16 @@ const DEFAULT_CONSOLE_ERROR_IGNORE: ReadonlyArray<{ pattern: RegExp; reason: str
     // before unloading. Not actionable — no bug surface beneath it.
     pattern: /TypeError: Failed to fetch/,
     reason: "fetch aborted by page navigation / test teardown",
+  },
+  {
+    // Genesis draft previews render in a `sandbox`ed <iframe srcdoc> that
+    // deliberately omits `allow-scripts` (drafts are untrusted AI HTML).
+    // When a draft carries a <script>, the browser refuses to run it and
+    // logs this console.error — the sandbox doing exactly its job, which
+    // is a security guarantee we WANT, not a regression. It is not
+    // something a real operator can act on, so it must not fail the guard.
+    pattern: /Blocked script execution in .* the document'?s frame is sandboxed/,
+    reason: "genesis draft-preview sandbox blocks untrusted script (expected)",
   },
 ];
 

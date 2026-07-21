@@ -89,7 +89,7 @@ export async function verifySignedCookie(args: {
     if (ageSec > args.maxAgeSeconds || ageSec < -60) return null;
   }
   const sigBytes = hexToBytes(sigHex);
-  if (!sigBytes || sigBytes.length !== 32) return null;
+  if (sigBytes?.length !== 32) return null;
   const key = await importHmacKey(args.secret);
   const payload = `${value}.${issuedAt}`;
   const ok = await crypto.subtle.verify(

@@ -33,7 +33,7 @@ describe("computeBlockDiff", () => {
     const ops = computeBlockDiff([source], [variant]);
     expect(ops.length).toBe(1);
     const [op] = ops;
-    if (!op || op.kind !== "changed") throw new Error("expected changed");
+    if (op?.kind !== "changed") throw new Error("expected changed");
     expect(op.before.html).toBe("<h1>Willkommen</h1>");
     expect(op.after.html).toBe("<h1>Welcome — updated</h1>");
   });

@@ -49,6 +49,15 @@ export const submitResultTool: ToolDefinitionWithHandler<SubmitResultToolInput> 
     required: ["result"],
     properties: {
       result: {
+        // Polymorphic: an object for verdict/tree/rebuild shapes, a bare
+        // string for freeform. Declaring the object/array types is what
+        // lets the #251 encoding-repair layer (normalize-args) JSON-decode
+        // a provider that double-encodes the payload as a string
+        // (`{"result":"{\"pass\":true,...}"}`) BEFORE it hits shape
+        // validation — otherwise a verdict arrives as a raw string and is
+        // rejected as "string (scalar)". A genuine freeform prose string
+        // (not starting with `{`/`[`) is left untouched by the repair.
+        type: ["object", "array", "string"],
         description:
           "The final result payload, matching the return-shape contract given in the task brief.",
       },

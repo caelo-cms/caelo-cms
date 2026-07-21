@@ -172,7 +172,7 @@ function expandIpv6Groups(ip: string): number[] | null {
 
 function isPublicIpv6(ip: string): boolean {
   const g = expandIpv6Groups(ip);
-  if (!g || g.length !== 8) return false;
+  if (g?.length !== 8) return false;
   const g0 = g[0] ?? 0;
   const g1 = g[1] ?? 0;
   const allZeroHead = g.slice(0, 5).every((x) => x === 0);

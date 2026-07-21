@@ -2,6 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { page } from "$app/state";
   import {
+    Bug,
     FileText,
     Image as ImageIcon,
     Layers,
@@ -75,6 +76,12 @@
         label: "Deployments",
         icon: Rocket,
         show: has("ops.view"),
+      },
+      {
+        href: "/security/bugs",
+        label: "Detected bugs",
+        icon: Bug,
+        show: has("settings.read"),
       },
       { href: "/security", label: "Security", icon: ShieldCheck, show: has("settings.read") },
     ].filter((i) => i.show),

@@ -76,6 +76,7 @@ export {
   type ModuleExtraction,
   stripCommentThreads,
 } from "./extractor.js";
+export { htmlToMarkdown } from "./html-to-markdown.js";
 export {
   type ProposedModuleBlock,
   rebuiltHeaderHasLogoRef,

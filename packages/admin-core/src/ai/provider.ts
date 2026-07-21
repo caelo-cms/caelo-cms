@@ -232,6 +232,14 @@ export type ProviderEvent =
       inputTokens: number;
       outputTokens: number;
       cachedTokens: number;
+      /**
+       * Anthropic `cache_creation_input_tokens` — prefix tokens WRITTEN to
+       * the prompt cache on this call (billed 1.25×/2×). Separate from
+       * `cachedTokens` (the 0.1× read). Optional: non-Anthropic adapters
+       * and mock providers omit it. Lets the per-loop trace split
+       * read / write / new so cache-breakpoint behaviour is auditable.
+       */
+      cacheCreationTokens?: number;
     }
   | {
       kind: "done";

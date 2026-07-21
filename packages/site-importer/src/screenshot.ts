@@ -49,6 +49,11 @@ export interface Screenshot {
    *  render session, present only when `sampleStyles: true` was
    *  requested. Feed into `deriveDesignTokens`. */
   readonly styleSamples?: readonly ElementStyleSample[];
+  /** The RENDERED HTML (`page.content()`, JS-applied DOM) captured in the
+   *  same render session — present only when `captureHtml: true`. Lets the
+   *  pageRef cache hold the rendered DOM so query_page_html's selectors run
+   *  against it instead of the static fetched HTML. */
+  readonly renderedHtml?: string;
 }
 
 export interface Screenshotter {
@@ -78,8 +83,21 @@ export interface Screenshotter {
        *  caller): screenshot and tokens come from one render session,
        *  and a page that rendered will evaluate a style read. */
       sampleStyles?: boolean;
+      /** Also return `page.content()` (the rendered JS-applied HTML) in the
+       *  same render session, as `renderedHtml`. */
+      captureHtml?: boolean;
     },
   ): Promise<Screenshot>;
+  /**
+   * Run a css/xpath selector against an HTML STRING (via `setContent` — no
+   * navigation, no re-fetch) and return the matching elements' outerHTML,
+   * capped by `maxMatches`. Powers `query_page_html`'s selector modes over
+   * a cached page. All subresource requests are blocked (structure only).
+   */
+  query(
+    html: string,
+    opts: { cssSelector?: string; xpath?: string; maxMatches?: number },
+  ): Promise<string[]>;
   dispose(): Promise<void>;
 }
 
@@ -171,7 +189,13 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       }
       const page = await ctx.newPage();
       try {
-        await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });
+        // `domcontentloaded` is fast + reliable; then a SHORT best-effort
+        // wait for the network to settle so late imagery is captured —
+        // capped so we never pay the old 30s `networkidle` timeout, which
+        // routinely fired because the SSRF route-guard aborts blocked
+        // subresources and `networkidle` then never settles.
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
+        await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
         const png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
         // issue #247 — sample AFTER the screenshot so the pixels are
         // captured even if the evaluate throws mid-flight; the throw
@@ -182,12 +206,45 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             COLLECT_STYLE_SAMPLES_SCRIPT,
           )) as ElementStyleSample[];
         }
+        // Rendered (JS-applied) HTML from the same session — so a later
+        // query_page_html runs its selectors against the real DOM.
+        const renderedHtml: string | undefined = opts?.captureHtml
+          ? ((await page.content()) as string)
+          : undefined;
         return {
           bytes: new Uint8Array(png),
           width: opts?.width ?? 1280,
           height: opts?.height ?? 800,
           ...(styleSamples ? { styleSamples } : {}),
+          ...(renderedHtml !== undefined ? { renderedHtml } : {}),
         };
+      } finally {
+        await ctx.close();
+      }
+    },
+    async query(html, opts) {
+      const ctx = await browser.newContext();
+      try {
+        // Structure only — block every subresource (SSRF + speed). The
+        // document itself is set directly, so there is no navigation.
+        await ctx.route("**/*", (route: PlaywrightRoute) => route.abort());
+        const page = await ctx.newPage();
+        await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 10_000 });
+        const selector = opts.cssSelector
+          ? opts.cssSelector
+          : opts.xpath
+            ? `xpath=${opts.xpath}`
+            : null;
+        if (selector === null) return [];
+        const loc = page.locator(selector);
+        const max = Math.min(await loc.count(), opts.maxMatches ?? 10);
+        const out: string[] = [];
+        for (let i = 0; i < max; i += 1) {
+          // biome-ignore lint/suspicious/noExplicitAny: DOM element in the page context
+          const h = (await loc.nth(i).evaluate((el: any) => el.outerHTML)) as string;
+          out.push(h);
+        }
+        return out;
       } finally {
         await ctx.close();
       }

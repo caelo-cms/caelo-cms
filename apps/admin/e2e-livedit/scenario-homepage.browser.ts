@@ -21,6 +21,7 @@
 
 import { spawnSync } from "node:child_process";
 import { expect, test } from "./fixtures.js";
+import { ADMIN_LOG_PATH } from "./global-setup.js";
 import {
   assertNoChatRunnerDiagWarnings,
   assertNoOrphanLocks,
@@ -33,6 +34,7 @@ import {
   sendChatPromptAndWait,
   verifyPublishedPageWithVision,
 } from "./helpers.js";
+import { logOffset, metricsSince, recordScenarioMetrics } from "./livedit-metrics.js";
 
 // issue #112 — the prompt states design intent the way a real operator
 // would ("nicely designed", "fitting color scheme", "nice header
@@ -308,6 +310,10 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // creates from any pre-existing seed pages.
     const startTimestamp = new Date().toISOString();
 
+    // Token/cache metrics: mark the admin.log offset so we attribute only
+    // THIS scenario's provider calls (workers:1 ⇒ sequential, no interleave).
+    const metricsOffset = logOffset(ADMIN_LOG_PATH);
+
     const tracker = attachChatSessionTracker(page);
 
     // ── Step 1: Login (AC #4) ──────────────────────────────────────
@@ -557,5 +563,15 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // Final regression-guard sweep.
     assertNoOrphanLocks(chatSessionId);
     assertNoChatRunnerDiagWarnings();
+
+    // Token/cache metrics gate: print the per-turn/loop + per-tool report,
+    // write the PR artifact, and fail if caching or token behaviour
+    // regressed past the homepage thresholds (see THRESHOLDS.homepage).
+    const metrics = metricsSince(ADMIN_LOG_PATH, metricsOffset);
+    const violations = recordScenarioMetrics("homepage", metrics);
+    expect(
+      violations,
+      `homepage token/cache thresholds violated:\n${violations.map((x) => `  - ${x.message}`).join("\n")}`,
+    ).toEqual([]);
   });
 });

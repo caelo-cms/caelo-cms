@@ -54,7 +54,7 @@ export const loadSkillTool: ToolDefinitionWithHandler<
     });
     if (!got.ok) return { ok: false, content: `skills.get failed: ${describeError(got.error)}` };
     const skill = (got.value as { skill: SkillRow | null }).skill;
-    if (!skill || skill.status !== "active") {
+    if (skill?.status !== "active") {
       // Name the active slugs so the model retries with a real one.
       const list = await execute(toolCtx.registry, toolCtx.adapter, ctx, "skills.list", {
         status: "active",

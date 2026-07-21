@@ -35,7 +35,7 @@ async function wipe(): Promise<void> {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM layout_blocks WHERE layout_id IN (SELECT id FROM layouts WHERE slug = ${SLUG})`;
-      await tx`DELETE FROM layout_pending_actions WHERE payload::text LIKE ${"%" + SLUG + "%"}`;
+      await tx`DELETE FROM layout_pending_actions WHERE payload::text LIKE ${`%${SLUG}%`}`;
       await tx`DELETE FROM layouts WHERE slug = ${SLUG}`;
     });
   } finally {

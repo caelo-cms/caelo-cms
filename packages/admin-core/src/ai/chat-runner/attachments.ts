@@ -160,7 +160,7 @@ export async function buildProviderHistory(
       // Defense-in-depth for already-poisoned sessions (see
       // streaming.ts): filter empty thinking blocks out of the replay —
       // the API rejects them with a 400 and the chat can never recover.
-      ...(m.thinkingBlocks && m.thinkingBlocks.some((t) => t.thinking.length > 0)
+      ...(m.thinkingBlocks?.some((t) => t.thinking.length > 0)
         ? { thinkingBlocks: m.thinkingBlocks.filter((t) => t.thinking.length > 0) }
         : {}),
     };

@@ -34,7 +34,18 @@ The suite needs:
    real tokens on every run.
 3. **Migrations applied.** `bun run db:migrate` if you haven't run
    the regular dev path yet.
-4. **Running from a git worktree?** The `caddy-staging` /
+4. **The Playwright chromium build installed for THIS checkout.** The
+   migration scenarios drive the site-importer, which screenshots the
+   external site with Playwright's chromium. A fresh checkout / worktree
+   often has a Playwright version whose pinned chromium build isn't in
+   the shared `~/Library/Caches/ms-playwright` cache yet, so screenshots
+   silently skip with a `[site-importer] Playwright chromium launch
+   failed` warning. Install the repo-pinned build from the checkout you
+   run the suite in:
+   `bun node_modules/playwright/cli.js install chromium`
+   (use the repo-pinned CLI, not `bunx playwright install` — bunx may
+   fetch a mismatched registry version).
+5. **Running from a git worktree?** The `caddy-staging` /
    `caddy-production` containers bind-mount `./apps/admin/output/*`
    relative to the checkout that started `docker compose`. If you run
    the suite from a *different* worktree, its Stage writes to that

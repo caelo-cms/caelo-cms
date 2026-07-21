@@ -55,14 +55,63 @@ const CHARS_PER_TOKEN = 4;
 const IMAGE_PART_TOKENS = 1600;
 
 /**
- * Default compaction trigger, ~60% of the 1M-token window run #7 died
- * at. Leaves generous headroom for the system prompt + tool catalogue
- * (not counted by the history estimator) and for estimator error.
- * Env-tunable via CAELO_CHAT_COMPACTION_THRESHOLD_TOKENS.
+ * chars/4 overcounts real provider input tokens by ~1.66× (measured
+ * across e2e-livedit runs: a history the estimator scores at ~1.33M
+ * corresponds to ~800K real Anthropic input tokens). Compaction reasons
+ * in REAL tokens — the thing that actually fills the 1M window — but
+ * operates on the chars/4 estimate, so every real-token budget below is
+ * scaled by this ratio before it meets the estimator.
  */
-export const COMPACTION_THRESHOLD_TOKENS_DEFAULT = 600_000;
+export const ESTIMATE_OVERCOUNT_RATIO = 1.66;
 
-/** Messages at the tail that compaction must never modify or drop. */
+/** Convert a real-token budget into the chars/4 estimate space compaction runs in. */
+function realToEstimate(realTokens: number): number {
+  return Math.round(realTokens * ESTIMATE_OVERCOUNT_RATIO);
+}
+
+/**
+ * Compaction fires once the estimated prefix crosses ~800K REAL input
+ * tokens — deliberately late, near the 1M window. The old default (600K
+ * estimate ≈ 360K real) fired early AND only compacted down to itself, so
+ * it re-fired every few loops and rewrote the cached prefix each time.
+ * Firing late and dropping HARD (see the target below) trades that for a
+ * single cache-invalidating rewrite per long stretch. Env-tunable (in
+ * estimate space) via CAELO_CHAT_COMPACTION_THRESHOLD_TOKENS.
+ */
+export const COMPACTION_TRIGGER_REAL_TOKENS = 800_000;
+export const COMPACTION_THRESHOLD_TOKENS_DEFAULT = realToEstimate(COMPACTION_TRIGGER_REAL_TOKENS);
+
+/**
+ * When compaction fires it lands the history at ~200K REAL tokens: the
+ * recent tail (see below) kept verbatim, everything older crushed to a
+ * digest + truncated heads. Far below the previous "compact down to the
+ * trigger" behaviour, so the next compaction is hundreds of K of headroom
+ * away — few rewrites, long cache-hit runs in between.
+ * Env-tunable via CAELO_CHAT_COMPACTION_TARGET_TOKENS.
+ */
+export const COMPACTION_TARGET_REAL_TOKENS = 200_000;
+export const COMPACTION_TARGET_TOKENS_DEFAULT = realToEstimate(COMPACTION_TARGET_REAL_TOKENS);
+
+/**
+ * The recent tail kept verbatim through a compaction: ~100K REAL tokens.
+ * A token budget, not a fixed message count — a 10-message tail can be 5K
+ * or 400K tokens depending on how many tool dumps it holds, and the
+ * operator's mental model is "keep the last ~100K of conversation", not
+ * "keep the last 10 messages". {@link recentTailCount} resolves this to a
+ * message count against the live history.
+ * Env-tunable via CAELO_CHAT_COMPACTION_RECENT_TOKENS.
+ */
+export const COMPACTION_RECENT_REAL_TOKENS = 100_000;
+export const COMPACTION_RECENT_TOKENS_DEFAULT = realToEstimate(COMPACTION_RECENT_REAL_TOKENS);
+
+/**
+ * Floor for the recent-tail window: even if the last message alone
+ * exceeds the recent-token budget, keep at least this many so the latest
+ * user+assistant exchange and its tool pair survive verbatim.
+ */
+export const MIN_RECENT_MESSAGES = 4;
+
+/** Messages at the tail that the prompt-too-long retry pass must never modify or drop. */
 export const KEEP_RECENT_MESSAGES = 10;
 
 /** Head kept when truncating a tool result in the routine pass. */
@@ -129,6 +178,61 @@ export function resolveCompactionThresholdTokens(
   return parsed;
 }
 
+/** Shared parse+validate for the positive-integer token-count env knobs below. */
+function resolvePositiveIntEnv(envName: string, raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `${envName} is set to ${JSON.stringify(raw)} — expected a positive integer token count`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Estimate-space landing target for a fired compaction, honouring
+ * CAELO_CHAT_COMPACTION_TARGET_TOKENS. See {@link COMPACTION_TARGET_TOKENS_DEFAULT}.
+ */
+export function resolveCompactionTargetTokens(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return resolvePositiveIntEnv(
+    "CAELO_CHAT_COMPACTION_TARGET_TOKENS",
+    env.CAELO_CHAT_COMPACTION_TARGET_TOKENS,
+    COMPACTION_TARGET_TOKENS_DEFAULT,
+  );
+}
+
+/**
+ * Estimate-space recent-tail budget kept verbatim through a compaction,
+ * honouring CAELO_CHAT_COMPACTION_RECENT_TOKENS. See {@link COMPACTION_RECENT_TOKENS_DEFAULT}.
+ */
+export function resolveCompactionRecentTokens(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return resolvePositiveIntEnv(
+    "CAELO_CHAT_COMPACTION_RECENT_TOKENS",
+    env.CAELO_CHAT_COMPACTION_RECENT_TOKENS,
+    COMPACTION_RECENT_TOKENS_DEFAULT,
+  );
+}
+
+/**
+ * Whether the issue #300 proactive per-loop tool-result compaction is
+ * enabled. Default OFF: it rewrites OLD tool results (deep in the cached
+ * prefix) on nearly every loop, so it invalidates the message cache
+ * continuously — the exact cost the single-shot ceiling compaction was
+ * retuned to avoid. Opt back in with CAELO_CHAT_PROACTIVE_COMPACTION=1
+ * for a run that is latency-bound within one turn rather than cache-bound.
+ */
+export function resolveProactiveCompaction(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.CAELO_CHAT_PROACTIVE_COMPACTION;
+  return raw === "1" || raw === "true";
+}
+
 /** Rough token estimate for a plain string — chars/4 (issue #300 telemetry shares this heuristic). */
 export function estimateTextTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
@@ -157,6 +261,34 @@ export function estimateHistoryTokens(messages: readonly ChatMessageInput[]): nu
   let total = 0;
   for (const m of messages) total += estimateMessageTokens(m);
   return total;
+}
+
+/**
+ * How many tail messages fit within `recentTokenBudget` (estimate space)
+ * — the "keep verbatim" window for a compaction, expressed as a token
+ * budget rather than a fixed message count. Walks from the newest message
+ * backwards, stopping before the running total would exceed the budget,
+ * so a single oversized older message (a fresh 400K HTML dump) falls
+ * OUTSIDE the protected tail and is eligible for truncation. Always keeps
+ * at least {@link MIN_RECENT_MESSAGES} (pairing safety) and never more
+ * than the history length.
+ */
+export function recentTailCount(
+  messages: readonly ChatMessageInput[],
+  recentTokenBudget: number,
+): number {
+  let sum = 0;
+  let count = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg === undefined) continue;
+    const t = estimateMessageTokens(msg);
+    // Always admit the newest message; stop once the NEXT would overflow.
+    if (count > 0 && sum + t > recentTokenBudget) break;
+    sum += t;
+    count++;
+  }
+  return Math.min(messages.length, Math.max(MIN_RECENT_MESSAGES, count));
 }
 
 export interface CompactionOptions {
@@ -266,7 +398,7 @@ export function compactHistory(
   // Stage 1 — truncate old tool results, oldest first, until under target.
   for (let i = 0; i < firstProtectedIdx && estimate > opts.targetTokens; i++) {
     const m = out[i];
-    if (!m || m.role !== "tool") continue;
+    if (m?.role !== "tool") continue;
     const removed = m.content.length - opts.toolResultHeadChars;
     // Skip results at/near the head size — including previously
     // truncated ones, unless this pass uses a materially smaller head

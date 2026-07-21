@@ -59,6 +59,7 @@ function collectTsFiles(dir: string, out: string[]): void {
 }
 
 describe("jsonb write encoding (issue #68 regression guard)", () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal double-encoding form we are asserting against
   it("no source file writes jsonb via the double-encoding `${expr}::jsonb` form", () => {
     // Only `src/` dirs of each package hold shippable source.
     const roots: string[] = [];

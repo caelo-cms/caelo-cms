@@ -56,6 +56,10 @@ export default defineConfig({
       // when invoked through `bun run build/index.js`; we override here
       // so Playwright specs can register fixtures.
       NODE_ENV: "development",
+      // image-generation.browser.ts — the fake image provider stands in for
+      // the real image API (no key, no cost). Test-only, same non-production
+      // gate as the AI test-registry above.
+      CAELO_FAKE_IMAGE_PROVIDER: "1",
     },
   },
 });

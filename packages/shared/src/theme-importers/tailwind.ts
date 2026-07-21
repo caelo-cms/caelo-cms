@@ -172,7 +172,7 @@ function mapEntriesToDtcg(entries: readonly CssVarEntry[]): ThemeDocument {
     if (isUnsafeKey(category) || isUnsafeKey(leafName)) continue;
 
     if (!out[category]) out[category] = {};
-    const group = out[category]!;
+    const group = out[category] ?? {};
     if (extraSubField !== null) {
       // Typography composite: merge into the existing leaf's $value.
       const existing = group[leafName];
