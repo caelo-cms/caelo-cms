@@ -284,7 +284,9 @@ export function formatReport(title: string, m: ScenarioMetrics): string {
     out.push("\ntokens per tool (result bodies added to context):");
     out.push("  tool                              | calls | tokens");
     for (const u of m.perTool) {
-      out.push(`  ${u.name.padEnd(33)} | ${String(u.calls).padStart(5)} | ${k(u.tokens).padStart(7)}`);
+      out.push(
+        `  ${u.name.padEnd(33)} | ${String(u.calls).padStart(5)} | ${k(u.tokens).padStart(7)}`,
+      );
     }
   }
   return out.join("\n");
@@ -326,10 +328,7 @@ export interface ThresholdViolation {
 }
 
 /** Check a scenario's metrics against its thresholds. Empty ⇒ all passed. */
-export function checkThresholds(
-  m: ScenarioMetrics,
-  th: ScenarioThresholds,
-): ThresholdViolation[] {
+export function checkThresholds(m: ScenarioMetrics, th: ScenarioThresholds): ThresholdViolation[] {
   const v: ThresholdViolation[] = [];
   const buildTurn = m.turns[0];
   if (th.minBuildTurnCacheHitPct !== undefined && buildTurn) {
@@ -456,7 +455,10 @@ export const SCENARIO_METRICS_JSONL = resolve(ADMIN_LOG_DIR, "scenario-metrics.j
  * and return any threshold violations. The scenario asserts the returned
  * array is empty, so a caching/token regression fails that scenario's e2e.
  */
-export function recordScenarioMetrics(scenarioKey: string, m: ScenarioMetrics): ThresholdViolation[] {
+export function recordScenarioMetrics(
+  scenarioKey: string,
+  m: ScenarioMetrics,
+): ThresholdViolation[] {
   // eslint-disable-next-line no-console -- surfaced in the e2e/admin log on purpose.
   console.log(`\n[livedit-metrics]\n${formatReport(scenarioKey, m)}\n`);
   const cost = estimateCostUsd(m);

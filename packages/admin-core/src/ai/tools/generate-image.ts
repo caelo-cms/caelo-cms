@@ -180,24 +180,25 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
         { ...ctx, actorKind: "system" },
         "media.upload",
         {
-        sha256: sha,
-        originalName: `ai-generated-${Date.now()}.png`,
-        mime: "image/png",
-        sizeBytes: bytes.byteLength,
-        width: pipeline.width,
-        height: pipeline.height,
-        alt: (input.altText ?? input.prompt).slice(0, 2048),
-        storageKey: pipeline.variants[0]?.storageKey ?? `${sha}/orig`,
-        storageProvider: getMediaStorageProvider(),
-        variants: pipeline.variants.map((v) => ({
-          variant: v.variant,
-          format: v.format,
-          width: v.width,
-          height: v.height,
-          sizeBytes: v.sizeBytes,
-          storageKey: v.storageKey,
-        })),
-      });
+          sha256: sha,
+          originalName: `ai-generated-${Date.now()}.png`,
+          mime: "image/png",
+          sizeBytes: bytes.byteLength,
+          width: pipeline.width,
+          height: pipeline.height,
+          alt: (input.altText ?? input.prompt).slice(0, 2048),
+          storageKey: pipeline.variants[0]?.storageKey ?? `${sha}/orig`,
+          storageProvider: getMediaStorageProvider(),
+          variants: pipeline.variants.map((v) => ({
+            variant: v.variant,
+            format: v.format,
+            width: v.width,
+            height: v.height,
+            sizeBytes: v.sizeBytes,
+            storageKey: v.storageKey,
+          })),
+        },
+      );
       if (!upload.ok) {
         return {
           ok: false,

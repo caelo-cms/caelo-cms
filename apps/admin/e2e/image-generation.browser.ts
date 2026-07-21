@@ -94,7 +94,10 @@ test("AI generate_image persists a media asset via the fake image provider", asy
       { kind: "done", stopReason: "tool_use" },
     ],
     [
-      { kind: "text-delta", text: "I generated the hero image and saved it to your media library." },
+      {
+        kind: "text-delta",
+        text: "I generated the hero image and saved it to your media library.",
+      },
       { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
       { kind: "done", stopReason: "end_turn" },
     ],
@@ -110,9 +113,9 @@ test("AI generate_image persists a media asset via the fake image provider", asy
   await page.goto("/edit");
   await page.locator("textarea").fill("generate a hero image for the homepage");
   await page.getByRole("button", { name: /^send$/i }).click();
-  await expect(
-    page.getByText("saved it to your media library").first(),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("saved it to your media library").first()).toBeVisible({
+    timeout: 30_000,
+  });
 
   // The generate_image tool ran during turn 1: a new media asset must have
   // landed (fake PNG → download → sharp pipeline → media.upload). Poll to

@@ -24,15 +24,15 @@ import {
   fetchBudgetGate,
 } from "./budget-gate.js";
 import {
-  compactHistory,
   COMPACTION_RECENT_TOKENS_DEFAULT,
   COMPACTION_TARGET_TOKENS_DEFAULT,
+  compactHistory,
   estimateHistoryTokens,
   estimateTextTokens,
   KEEP_RECENT_MESSAGES,
   parsePromptTooLongLimit,
-  recentTailCount,
   RETRY_TOOL_RESULT_HEAD_CHARS,
+  recentTailCount,
   TOOL_RESULT_HEAD_CHARS,
 } from "./compaction.js";
 import { costCapUsd, microcents } from "./limits.js";

@@ -59,9 +59,7 @@ const facets = z
   })
   .strict();
 
-const input = z
-  .object({ url: z.string().url(), facets: facets.optional() })
-  .strict();
+const input = z.object({ url: z.string().url(), facets: facets.optional() }).strict();
 type Input = z.infer<typeof input>;
 
 interface ResolvedFacets {

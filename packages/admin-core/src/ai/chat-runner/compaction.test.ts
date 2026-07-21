@@ -148,7 +148,9 @@ describe("resolveCompactionThresholdTokens", () => {
     // The whole point of the retune: trigger and target are separate, and
     // the trigger sits well above the target so one compaction buys a long
     // cache-hit runway before the next one.
-    expect(COMPACTION_THRESHOLD_TOKENS_DEFAULT).toBeGreaterThan(COMPACTION_TARGET_TOKENS_DEFAULT * 3);
+    expect(COMPACTION_THRESHOLD_TOKENS_DEFAULT).toBeGreaterThan(
+      COMPACTION_TARGET_TOKENS_DEFAULT * 3,
+    );
     expect(COMPACTION_TARGET_TOKENS_DEFAULT).toBeGreaterThan(COMPACTION_RECENT_TOKENS_DEFAULT);
   });
 });

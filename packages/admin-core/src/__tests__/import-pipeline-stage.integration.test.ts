@@ -61,13 +61,13 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx`DELETE FROM redirects WHERE to_path LIKE ${"/" + PREFIX + "%"}`;
-      await tx`DELETE FROM pages WHERE slug LIKE ${PREFIX + "%"}`;
+      await tx`DELETE FROM redirects WHERE to_path LIKE ${`/${PREFIX}%`}`;
+      await tx`DELETE FROM pages WHERE slug LIKE ${`${PREFIX}%`}`;
       // issue #253 — compose binds imported chrome into the shared
       // layout; unbind before deleting the modules themselves.
       await tx`DELETE FROM layout_modules WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${"imported-%"})`;
       await tx`DELETE FROM modules WHERE slug LIKE ${"imported-%"} AND slug NOT IN (SELECT m.slug FROM modules m JOIN page_modules pm ON pm.module_id = m.id)`;
-      await tx`DELETE FROM templates WHERE slug LIKE ${PREFIX + "%"}`;
+      await tx`DELETE FROM templates WHERE slug LIKE ${`${PREFIX}%`}`;
       await tx`DELETE FROM import_runs WHERE source_url = ${"https://svfx-harness.searchviu.example"}`;
       await tx`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = ${ACTOR_EMAIL})`;
       await tx`DELETE FROM users WHERE email = ${ACTOR_EMAIL}`;

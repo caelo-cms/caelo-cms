@@ -22,7 +22,6 @@
 import { spawnSync } from "node:child_process";
 import { expect, test } from "./fixtures.js";
 import { ADMIN_LOG_PATH } from "./global-setup.js";
-import { logOffset, metricsSince, recordScenarioMetrics } from "./livedit-metrics.js";
 import {
   assertNoChatRunnerDiagWarnings,
   assertNoOrphanLocks,
@@ -35,6 +34,7 @@ import {
   sendChatPromptAndWait,
   verifyPublishedPageWithVision,
 } from "./helpers.js";
+import { logOffset, metricsSince, recordScenarioMetrics } from "./livedit-metrics.js";
 
 // issue #112 — the prompt states design intent the way a real operator
 // would ("nicely designed", "fitting color scheme", "nice header

@@ -105,7 +105,7 @@ export const checkGenesisParityTool: ToolDefinitionWithHandler<ParityInput> = {
       input.draftId !== undefined
         ? drafts.find((d) => d.id === input.draftId)
         : drafts.find((d) => d.status === "selected");
-    if (!draft || !draft.html) {
+    if (!draft?.html) {
       return {
         ok: false,
         content:

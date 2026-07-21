@@ -40,7 +40,7 @@ export function wcagContrast(fg: string, bg: string): number {
  * exactly 7.0 as "AAA", etc.
  */
 export function wcagBadge(ratio: number): WcagGrade {
-  if (!isFinite(ratio) || ratio < 3.0) return "Fail";
+  if (!Number.isFinite(ratio) || ratio < 3.0) return "Fail";
   if (ratio < 4.5) return "AA Large";
   if (ratio < 7.0) return "AA";
   return "AAA";

@@ -235,7 +235,11 @@ export async function* runChatTurn(
     await injectNote("status", ctx.statusLine, ctx.statusLine);
   }
   if (ctx.pageContextBlock && ctx.pageContextBlock.trim().length > 0 && input.activePageId) {
-    await injectNote("pagectx", `${input.activePageId}\n${ctx.pageContextBlock}`, ctx.pageContextBlock);
+    await injectNote(
+      "pagectx",
+      `${input.activePageId}\n${ctx.pageContextBlock}`,
+      ctx.pageContextBlock,
+    );
   }
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion
@@ -277,7 +281,12 @@ export async function* runChatTurn(
     skillsIndexBlock: ctx.preBlocks.skillsIndexBlock,
   });
 
-  const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0, totalCacheCreation: 0 };
+  const usage: UsageAccumulator = {
+    totalIn: 0,
+    totalOut: 0,
+    totalCached: 0,
+    totalCacheCreation: 0,
+  };
 
   markPhase("catalogueAndPromptMs");
   // Run #10 D5 — the pre-provider timing breadcrumb. If a first token

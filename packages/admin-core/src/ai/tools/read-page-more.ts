@@ -9,12 +9,12 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import {
   getPageInspection,
   MARKDOWN_SLICE_CHARS,
   sliceMarkdown,
 } from "./_page-inspection-cache.js";
+import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const readPageMoreInput = z
   .object({
@@ -42,7 +42,8 @@ export const readPageMoreTool: ToolDefinitionWithHandler<ReadPageMoreInput> = {
       cursor: {
         type: "integer",
         minimum: 0,
-        description: "Char offset to continue from (the value in the previous slice's truncation note). Omit to start at 0.",
+        description:
+          "Char offset to continue from (the value in the previous slice's truncation note). Omit to start at 0.",
       },
     },
   },

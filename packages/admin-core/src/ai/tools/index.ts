@@ -47,18 +47,16 @@ import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
 import { inspectGenesisDraftTool } from "./inspect-genesis-draft.js";
-import { queryPageHtmlTool } from "./query-page-html.js";
-import { readPageMoreTool } from "./read-page-more.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listLayoutsTool } from "./list-layouts.js";
 import { listModulesTool } from "./list-modules.js";
 import { listPagesTool } from "./list-pages.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
-import { loadSkillTool } from "./load-skill.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
+import { loadSkillTool } from "./load-skill.js";
 import { logPageEditTool } from "./log-page-edit.js";
 import { mapExternalPageTypesTool } from "./map-external-page-types.js";
 import { migrateMediaTool } from "./migrate-media.js";
@@ -101,6 +99,8 @@ import {
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
+import { queryPageHtmlTool } from "./query-page-html.js";
+import { readPageMoreTool } from "./read-page-more.js";
 import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromTool } from "./remove-module-from.js";

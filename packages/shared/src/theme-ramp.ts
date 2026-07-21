@@ -108,10 +108,10 @@ export function deriveOklchPrimaryRamp(seedColor: string): RampResult {
   const oklch = seed.to("oklch");
   const coords = oklch.coords as [number, number, number]; // [L, C, H]
   const seedL = coords[0];
-  const chroma = isFinite(coords[1]) ? coords[1] : 0;
+  const chroma = Number.isFinite(coords[1]) ? coords[1] : 0;
   // Achromatic colors (#888, white, black) have NaN hue — preserve 0
   // so the OKLCh string parses; chroma is 0 anyway.
-  const hue = isFinite(coords[2]) ? coords[2] : 0;
+  const hue = Number.isFinite(coords[2]) ? coords[2] : 0;
 
   const tokens: RampResult["tokens"] = {};
   const derivedPaths: string[] = [];

@@ -113,7 +113,7 @@ describe("AI SDK spike — thinking-block signature round-trip (v0.2.71 prefligh
 
     const reasoningPart = content.find((c) => c.type === "reasoning");
     expect(reasoningPart).toBeDefined();
-    if (!reasoningPart || reasoningPart.type !== "reasoning") throw new Error("no reasoning part");
+    if (reasoningPart?.type !== "reasoning") throw new Error("no reasoning part");
 
     expect(reasoningPart.text).toBe(THINKING_TEXT);
     // The signature lives under providerMetadata.anthropic.signature

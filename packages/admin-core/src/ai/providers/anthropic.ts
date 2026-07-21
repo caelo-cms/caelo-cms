@@ -326,8 +326,9 @@ function tagConversationForCache(messages: ModelMessage[]): ModelMessage[] {
   if (Array.isArray(last.content) && last.content.length > 0) {
     const parts = [...last.content];
     const lp = parts.length - 1;
-    parts[lp] = withCacheControl(parts[lp] as { providerOptions?: Record<string, unknown> }) as
-      (typeof parts)[number];
+    parts[lp] = withCacheControl(
+      parts[lp] as { providerOptions?: Record<string, unknown> },
+    ) as (typeof parts)[number];
     out[lastIdx] = { ...last, content: parts } as ModelMessage;
   } else {
     // String content (a plain user text message) — no parts to tag, so the
@@ -509,7 +510,9 @@ export class AnthropicProvider implements AIProvider {
           // implausibly, no core tool exists (then the system breakpoint
           // still caches the tools via its prefix).
           if (lastCoreName) {
-            const def = built[lastCoreName] as { providerOptions?: Record<string, unknown> } | undefined;
+            const def = built[lastCoreName] as
+              | { providerOptions?: Record<string, unknown> }
+              | undefined;
             if (def && typeof def === "object") {
               const existing = def.providerOptions;
               def.providerOptions = {

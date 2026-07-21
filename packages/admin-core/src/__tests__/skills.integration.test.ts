@@ -13,10 +13,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import {
-  buildSkillsContext,
-  extractLoadedSkillSlugs,
-} from "../ai/chat-runner/context/skills.js";
+import { buildSkillsContext, extractLoadedSkillSlugs } from "../ai/chat-runner/context/skills.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { liveToolNames } from "../ai/tools/live-tool-names.js";
 import { loadSkillTool } from "../ai/tools/load-skill.js";
@@ -268,7 +265,13 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
   const ALL_NEW = [...CORE_DOMAIN, ...WORKFLOW];
 
   async function activeSkills(): Promise<
-    { slug: string; displayName: string; body: string; allowlistedTools: string[]; hints: unknown }[]
+    {
+      slug: string;
+      displayName: string;
+      body: string;
+      allowlistedTools: string[];
+      hints: unknown;
+    }[]
   > {
     const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
     if (!r.ok) throw new Error("skills.list failed");

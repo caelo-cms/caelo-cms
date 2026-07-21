@@ -12,8 +12,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { Screenshot } from "@caelo-cms/site-importer";
 import { resetExternalFetchBudgetForTests } from "../tools/_external-fetch-budget.js";
 import { setExternalScreenshotterForTests } from "../tools/_external-screenshotter.js";
-import type { ToolContext } from "../tools/dispatch.js";
 import { clearPageInspectionCacheForTests } from "../tools/_page-inspection-cache.js";
+import type { ToolContext } from "../tools/dispatch.js";
 import { extractStylesheetHrefs, inspectExternalPageTool } from "../tools/inspect-external-page.js";
 import { mapExternalPageTypesTool } from "../tools/map-external-page-types.js";
 import { keywordWindows, queryPageHtmlTool } from "../tools/query-page-html.js";
@@ -129,7 +129,11 @@ describe("inspect_external_page — facet selection", () => {
     expect(pageRef).toBeDefined();
     // Continue from an offset; the fixture is short so this returns the
     // end-of-page marker but must NOT error and must NOT spend fetch budget.
-    const more = await readPageMoreTool.handler(emptyCtx, { pageRef: pageRef!, cursor: 0 }, toolCtx);
+    const more = await readPageMoreTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, cursor: 0 },
+      toolCtx,
+    );
     expect(more.ok).toBe(true);
     expect(more.content).toContain("Page text (Markdown)");
     // An unknown handle fails cleanly (points back at inspect_external_page).

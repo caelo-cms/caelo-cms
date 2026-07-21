@@ -35,6 +35,7 @@ class ObjectFixtureProvider implements AIProvider {
   constructor(private readonly outcomes: readonly ObjectOutcome[]) {}
 
   // eslint-disable-next-line require-yield
+  // biome-ignore lint/correctness/useYield: intentional throw-only stub (moduleize must call generateObject)
   async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
     throw new Error("moduleize should call generateObject, not generate");
   }

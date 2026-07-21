@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import {
-  parseSubagentResult,
-  subagentSpec,
-  validateSubagentResultValue,
-} from "./subagents.js";
+import { parseSubagentResult, subagentSpec, validateSubagentResultValue } from "./subagents.js";
 
 describe("subagentSpec", () => {
   it("accepts a minimal spec with role + task", () => {

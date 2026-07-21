@@ -121,8 +121,8 @@ function parsePlaywrightReport(json: string): {
           };
           if (!Array.isArray(test.results) || test.results.length === 0) continue;
           // Last attempt is the authoritative outcome.
-          const last = test.results[test.results.length - 1]!;
-          const status = last.status ?? "unknown";
+          const last = test.results.at(-1);
+          const status = last?.status ?? "unknown";
           results.push({
             title: spec.title,
             ok: status === "passed",

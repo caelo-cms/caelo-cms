@@ -690,7 +690,8 @@ export const createContentInstancesManyOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const contentInstanceIds: string[] = [];
     for (let i = 0; i < input.instances.length; i += 1) {
-      const item = input.instances[i]!;
+      const item = input.instances[i];
+      if (item === undefined) continue;
       const r = await createContentInstanceOp.handler(ctx, item, tx);
       if (!r.ok) {
         const inner = r.error as { message?: string };

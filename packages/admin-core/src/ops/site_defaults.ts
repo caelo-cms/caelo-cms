@@ -256,6 +256,7 @@ export const setSiteIdentityOp = defineOperation({
     // Stitch clauses with literal `, ` separators. Drizzle's sql.join
     // helper isn't exported on this version; the manual loop is fine
     // since `setClauses` content is parameterized.
+    // biome-ignore lint/style/noNonNullAssertion: setClauses is non-empty by construction at this point
     let setExpr = setClauses[0]!;
     for (let i = 1; i < setClauses.length; i++) {
       setExpr = sql`${setExpr}, ${setClauses[i]}`;

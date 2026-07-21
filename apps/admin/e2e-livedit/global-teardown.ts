@@ -57,7 +57,8 @@ function writeMetricsArtifact(): void {
   if (existsSync(ADMIN_LOG)) {
     const sessions = metricsBySession(readFileSync(ADMIN_LOG, "utf8"));
     sessionCount = sessions.length;
-    for (const s of sessions) detail.push(formatReport(`session ${s.session.slice(0, 8)}`, s.metrics));
+    for (const s of sessions)
+      detail.push(formatReport(`session ${s.session.slice(0, 8)}`, s.metrics));
   }
 
   // Nothing ran (no named scenario recorded AND no chat sessions in the log).
@@ -77,7 +78,8 @@ function writeMetricsArtifact(): void {
   }
   let totalCost = 0;
   for (const r of rows) {
-    const n = (key: string): number => (typeof r[key] === "number" ? (r[key] as number) : Number.NaN);
+    const n = (key: string): number =>
+      typeof r[key] === "number" ? (r[key] as number) : Number.NaN;
     totalCost += Number.isFinite(n("costTotalUsd")) ? n("costTotalUsd") : 0;
     lines.push(
       `${String(r.scenario ?? "?").padEnd(15)} | ${String(n("loops")).padStart(5)} | ` +
@@ -95,9 +97,14 @@ function writeMetricsArtifact(): void {
     );
   }
 
-  const report = [...lines, "", "=".repeat(78), "PER-SESSION DETAIL", "=".repeat(78), ...detail].join(
-    "\n",
-  );
+  const report = [
+    ...lines,
+    "",
+    "=".repeat(78),
+    "PER-SESSION DETAIL",
+    "=".repeat(78),
+    ...detail,
+  ].join("\n");
   writeFileSync(METRICS_REPORT_TXT, `${report}\n`);
   // eslint-disable-next-line no-console -- teardown summary for CI logs.
   console.log(`\n${lines.join("\n")}\n\n[metrics] wrote ${METRICS_JSON} + ${METRICS_REPORT_TXT}`);

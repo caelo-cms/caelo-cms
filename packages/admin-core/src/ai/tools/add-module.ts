@@ -271,6 +271,7 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     }
 
     const gate = await checkColdStartGate(ctx, toolCtx, "add_module");
+    // biome-ignore lint/style/noNonNullAssertion: gateResult is always set when gate.blocked is true
     if (gate.blocked) return gate.gateResult!;
 
     const resolved = await resolveModule(ctx, toolCtx, input);

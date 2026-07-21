@@ -31,10 +31,7 @@ import { z } from "zod";
 import { getActiveProviderForModel } from "../provider-resolver.js";
 import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
 import { getExternalScreenshotter } from "./_external-screenshotter.js";
-import {
-  getPageInspection,
-  putPageInspection,
-} from "./_page-inspection-cache.js";
+import { getPageInspection, putPageInspection } from "./_page-inspection-cache.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** The cheap extraction model for `describe`. Anthropic Haiku 4.5. */
@@ -119,7 +116,10 @@ async function resolveHtml(
   try {
     const res = await safeExternalFetch(toolInput.url, { allowedHosts, maxBytes: 2 * 1024 * 1024 });
     if (!res.ok) {
-      return { ok: false, content: `query_page_html: ${toolInput.url} answered HTTP ${res.status}.` };
+      return {
+        ok: false,
+        content: `query_page_html: ${toolInput.url} answered HTTP ${res.status}.`,
+      };
     }
     if (!res.contentType.includes("text/html")) {
       return { ok: false, content: `query_page_html: ${toolInput.url} is not an HTML page.` };
@@ -141,7 +141,10 @@ const DESCRIBE_SCHEMA = {
   additionalProperties: false,
   required: ["found", "result"],
   properties: {
-    found: { type: "boolean", description: "Whether the requested content is present on the page." },
+    found: {
+      type: "boolean",
+      description: "Whether the requested content is present on the page.",
+    },
     result: {
       type: "string",
       description:
@@ -154,7 +157,7 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
   name: "query_page_html",
   description:
     "Pull a SPECIFIC part of an external page's HTML — without loading the whole page into context. Reuses a `pageRef` from a prior inspect_external_page (no re-fetch); pass `url` only if you have no handle. " +
-    "Pick ONE mode: `keyword` (exact text — HTML around each hit), `cssSelector` / `xpath` (return matching elements' outerHTML), or `describe` (natural language like \"the pricing table\" or \"each product card's title + price\" — a small fast model reads the full HTML and returns just that, so the big HTML never enters your context). " +
+    'Pick ONE mode: `keyword` (exact text — HTML around each hit), `cssSelector` / `xpath` (return matching elements\' outerHTML), or `describe` (natural language like "the pricing table" or "each product card\'s title + price" — a small fast model reads the full HTML and returns just that, so the big HTML never enters your context). ' +
     "Use this instead of inspect_external_page's `markup` facet when you need one section, not the whole page.",
   schema: input,
   inputSchema: {
@@ -165,17 +168,39 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
         type: "string",
         description: "Handle from a prior inspect_external_page (preferred — no re-fetch).",
       },
-      url: { type: "string", description: "Absolute public URL — fallback when you have no pageRef." },
-      keyword: { type: "string", description: "Exact text to locate; returns the HTML window(s) around each hit." },
-      cssSelector: { type: "string", description: "CSS selector; returns matching elements' outerHTML (needs Playwright)." },
-      xpath: { type: "string", description: "XPath expression; returns matching elements' outerHTML (needs Playwright)." },
+      url: {
+        type: "string",
+        description: "Absolute public URL — fallback when you have no pageRef.",
+      },
+      keyword: {
+        type: "string",
+        description: "Exact text to locate; returns the HTML window(s) around each hit.",
+      },
+      cssSelector: {
+        type: "string",
+        description: "CSS selector; returns matching elements' outerHTML (needs Playwright).",
+      },
+      xpath: {
+        type: "string",
+        description: "XPath expression; returns matching elements' outerHTML (needs Playwright).",
+      },
       describe: {
         type: "string",
         description:
           "Natural-language description of what you need (e.g. 'the main nav structure', 'the pricing table'). A small model extracts it from the full HTML and returns only that.",
       },
-      maxMatches: { type: "integer", minimum: 1, maximum: 20, description: "keyword mode: max windows (default 5)." },
-      contextChars: { type: "integer", minimum: 1, maximum: 4000, description: "keyword mode: chars around each hit (default 800)." },
+      maxMatches: {
+        type: "integer",
+        minimum: 1,
+        maximum: 20,
+        description: "keyword mode: max windows (default 5).",
+      },
+      contextChars: {
+        type: "integer",
+        minimum: 1,
+        maximum: 4000,
+        description: "keyword mode: chars around each hit (default 800).",
+      },
     },
   },
   handler: async (_ctx, toolInput, toolCtx) => {
@@ -224,7 +249,10 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
       }
       const sel = toolInput.cssSelector ?? `xpath=${toolInput.xpath}`;
       if (matches.length === 0) {
-        return { ok: true, content: `query_page_html: no elements match \`${sel}\` on ${page.url}.` };
+        return {
+          ok: true,
+          content: `query_page_html: no elements match \`${sel}\` on ${page.url}.`,
+        };
       }
       const blocks = matches.map((m, i) => `### Match ${i + 1}\n\`\`\`html\n${m}\n\`\`\``);
       return {
@@ -241,7 +269,10 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
         toolInput.contextChars ?? DEFAULT_CONTEXT_CHARS,
       );
       if (windows.length === 0) {
-        return { ok: true, content: `query_page_html: "${toolInput.keyword}" not found on ${page.url}.` };
+        return {
+          ok: true,
+          content: `query_page_html: "${toolInput.keyword}" not found on ${page.url}.`,
+        };
       }
       const blocks = windows.map((w, i) => `### Match ${i + 1}\n\`\`\`html\n${w}\n\`\`\``);
       return {
@@ -289,7 +320,7 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
     }
 
     const obj = result.object as { found: boolean; result: string } | undefined;
-    if (!obj || !obj.found || obj.result.trim().length === 0) {
+    if (!obj?.found || obj.result.trim().length === 0) {
       return {
         ok: true,
         content: `query_page_html(describe): the extraction model did not find "${toolInput.describe}" on ${page.url}.`,

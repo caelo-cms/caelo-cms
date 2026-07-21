@@ -179,11 +179,7 @@ export function resolveCompactionThresholdTokens(
 }
 
 /** Shared parse+validate for the positive-integer token-count env knobs below. */
-function resolvePositiveIntEnv(
-  envName: string,
-  raw: string | undefined,
-  fallback: number,
-): number {
+function resolvePositiveIntEnv(envName: string, raw: string | undefined, fallback: number): number {
   if (raw === undefined || raw === "") return fallback;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {

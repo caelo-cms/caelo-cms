@@ -79,7 +79,7 @@ function hasAnyDollarValue(node: unknown): boolean {
  * assets through `set_theme_asset`, not through an exported JSON file.
  */
 export function exportDtcg(theme: Pick<Theme, "tokens">): string {
-  return JSON.stringify(sortDeep(theme.tokens), null, 2) + "\n";
+  return `${JSON.stringify(sortDeep(theme.tokens), null, 2)}\n`;
 }
 
 function sortDeep(value: unknown): unknown {
