@@ -65,11 +65,14 @@ function str(block: string, key: string): string {
 function blocksFor(lines: string[], marker: string): string[] {
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if (!lines[i]!.includes(marker)) continue;
-    const buf = [lines[i]!];
+    const line = lines[i];
+    if (line === undefined || !line.includes(marker)) continue;
+    const buf = [line];
     for (let j = i + 1; j < lines.length && j < i + 60; j++) {
-      buf.push(lines[j]!);
-      if (lines[j]!.trimEnd() === "}") break;
+      const l = lines[j];
+      if (l === undefined) break;
+      buf.push(l);
+      if (l.trimEnd() === "}") break;
     }
     out.push(buf.join("\n"));
   }
@@ -102,9 +105,8 @@ export function parseChatLog(text: string): { loops: LoopRow[]; tools: ToolRow[]
     const results: ToolResult[] = [];
     // results: [ { name: "x", ok: true, tokens: N }, ... ]
     const re = /name:\s*"([^"]*)",\s*ok:\s*(true|false),\s*tokens:\s*(\d+)/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(b)) !== null) {
-      results.push({ name: m[1]!, ok: m[2] === "true", tokens: Number(m[3]) });
+    for (let m = re.exec(b); m !== null; m = re.exec(b)) {
+      results.push({ name: m[1] ?? "", ok: m[2] === "true", tokens: Number(m[3]) });
     }
     return { session, loop, results };
   });
@@ -177,7 +179,8 @@ export function aggregate(loops: LoopRow[], tools: ToolRow[]): ScenarioMetrics {
       turns.push({ turnNo: turns.length + 1, session: r.session, rows: [], totals: zero() });
     }
     prevLoop = r.loop;
-    const cur = turns[turns.length - 1]!;
+    const cur = turns[turns.length - 1];
+    if (!cur) continue;
     cur.rows.push(r);
     add(cur.totals, r);
   }
@@ -328,8 +331,9 @@ export function checkThresholds(
   th: ScenarioThresholds,
 ): ThresholdViolation[] {
   const v: ThresholdViolation[] = [];
-  if (th.minBuildTurnCacheHitPct !== undefined && m.turns.length > 0) {
-    const t0 = m.turns[0]!.totals;
+  const buildTurn = m.turns[0];
+  if (th.minBuildTurnCacheHitPct !== undefined && buildTurn) {
+    const t0 = buildTurn.totals;
     const hit = t0.inCall > 0 ? Math.round((t0.cacheRead / t0.inCall) * 100) : 100;
     if (hit < th.minBuildTurnCacheHitPct) {
       v.push({
@@ -430,7 +434,7 @@ export function metricsBySession(logText: string): { session: string; metrics: S
   for (const r of loops) bucket(r.session).loops.push(r);
   for (const t of tools) bucket(t.session).tools.push(t);
   return order.map((session) => {
-    const g = grouped.get(session)!;
+    const g = grouped.get(session) ?? { loops: [], tools: [] };
     return { session, metrics: aggregate(g.loops, g.tools) };
   });
 }
