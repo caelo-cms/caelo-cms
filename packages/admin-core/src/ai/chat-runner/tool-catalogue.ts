@@ -44,12 +44,6 @@ export type FilteredTool = ToolDefinition & {
  * (`spawnAllowed`) and `excluded` remain HARD filters — a parent that
  * narrows a review subagent to three read tools still gets exactly those.
  */
-const READ_ONLY_TOOL_NAME = /^(list_|get_|inspect_|find_|screenshot_|check_)/;
-
-/** True when the tool is read-only by naming convention (list_/get_/inspect_/find_/screenshot_/check_). */
-export function isReadOnlyToolName(name: string): boolean {
-  return READ_ONLY_TOOL_NAME.test(name);
-}
 
 /**
  * Run #10 D2 — the subagent structured-result tool. Registered in the
