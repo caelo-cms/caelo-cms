@@ -12,6 +12,12 @@
 
   let expanded = $state<Record<string, boolean>>({});
   const toggle = (id: string) => (expanded[id] = !expanded[id]);
+  const onRowKey = (id: string) => (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle(id);
+    }
+  };
 
   const severityClass = (s: string): string =>
     s === "blocking"
@@ -19,6 +25,13 @@
       : s === "degraded"
         ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
         : "bg-muted text-muted-foreground";
+
+  // A fenced code block's fence must be LONGER than any backtick run it
+  // contains (CommonMark), else evidence with a ``` snippet breaks the export.
+  function fenceFor(s: string): string {
+    const longestRun = Math.max(0, ...[...s.matchAll(/`+/g)].map((m) => m[0].length));
+    return "`".repeat(Math.max(3, longestRun + 1));
+  }
 
   function toMarkdown(rs: BugReport[]): string {
     const head = `# Caelo — AI-detected bugs (${rs.length})\n\n_Exported ${new Date().toISOString()}_\n`;
@@ -33,7 +46,9 @@
           (r.chatSessionId ? `- **Chat session:** ${r.chatSessionId}\n` : "") +
           `\n**What happened**\n\n${r.whatHappened}\n\n` +
           `**Expected**\n\n${r.expected}\n` +
-          (r.evidence ? `\n**Evidence**\n\n\`\`\`\n${r.evidence}\n\`\`\`\n` : ""),
+          (r.evidence
+            ? `\n**Evidence**\n\n${fenceFor(r.evidence)}\n${r.evidence}\n${fenceFor(r.evidence)}\n`
+            : ""),
       )
       .join("");
     return head + body;
@@ -102,8 +117,12 @@
         <tbody>
           {#each reports as r (r.id)}
             <tr
-              class="cursor-pointer border-b last:border-0 hover:bg-muted/30"
+              class="cursor-pointer border-b last:border-0 hover:bg-muted/30 focus-visible:bg-muted/40 focus-visible:outline-none"
+              role="button"
+              tabindex="0"
+              aria-expanded={!!expanded[r.id]}
               onclick={() => toggle(r.id)}
+              onkeydown={onRowKey(r.id)}
             >
               <td class="px-4 py-2 font-medium">{r.title}</td>
               <td class="px-4 py-2">

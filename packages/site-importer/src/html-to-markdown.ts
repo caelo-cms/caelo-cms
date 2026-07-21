@@ -10,7 +10,8 @@
  * jsdom/linkedom/turndown added to the tree. It handles the tags that
  * carry meaning for understanding — headings, paragraphs, links, lists,
  * images (alt), emphasis, code, blockquote, rules — and drops the rest
- * (script/style/svg/etc. subtrees, all attributes).
+ * (script/style/svg/etc. subtrees, and every attribute except the link/image
+ * href/src/alt that Markdown links and image context depend on).
  *
  * Deliberately NOT handled richly: tables (rows become lines), deeply
  * nested inline formatting edge cases. Good enough for "understand the
@@ -104,8 +105,10 @@ export function htmlToMarkdown(html: string): string {
             emit("\n\n---\n\n");
             return;
           case "a":
+            // Only open a Markdown link when there's a destination — a bare
+            // <a> (no href) would otherwise close as a broken `[text]()`.
             currentHref = (attribs.href ?? "").trim();
-            emit("[");
+            if (currentHref) emit("[");
             return;
           case "strong":
           case "b":
@@ -128,7 +131,7 @@ export function htmlToMarkdown(html: string): string {
           case "img": {
             const alt = (attribs.alt ?? "").trim();
             const src = (attribs.src ?? "").trim();
-            if (alt || src) emit(`![${alt}](${src})`);
+            if (alt || src) emit(`![${mdText(alt)}](${mdUrl(src)})`);
             return;
           }
           case "ul":
@@ -163,7 +166,15 @@ export function htmlToMarkdown(html: string): string {
         // Collapse runs of whitespace to a single space — the block-break
         // emits above carry the real structure.
         const collapsed = text.replace(/\s+/g, " ");
-        if (collapsed.length > 0) emit(collapsed);
+        if (collapsed.length === 0) return;
+        // A whitespace-only node collapses to a lone " "; keep it only as a
+        // real inline separator (between two non-space tokens). Dropping it
+        // after a block break / at line start avoids stray leading spaces.
+        if (collapsed === " ") {
+          const prev = parts[parts.length - 1];
+          if (prev === undefined || /\s$/.test(prev)) return;
+        }
+        emit(collapsed);
       },
       onclosetag(name) {
         const tag = name.toLowerCase();
@@ -179,7 +190,7 @@ export function htmlToMarkdown(html: string): string {
         }
         switch (tag) {
           case "a":
-            emit(`](${currentHref})`);
+            if (currentHref) emit(`](${mdUrl(currentHref)})`);
             currentHref = "";
             return;
           case "strong":
@@ -215,6 +226,25 @@ export function htmlToMarkdown(html: string): string {
   parser.end();
 
   return normalizeMarkdown(parts.join(""));
+}
+
+/**
+ * Make a URL safe as a Markdown link/image destination. Parens, whitespace
+ * and angle brackets break the bare `(...)` form, so wrap those in the
+ * angle-bracket destination form (and percent-encode a literal `>` that would
+ * otherwise close it early). Clean URLs pass through untouched.
+ */
+function mdUrl(url: string): string {
+  if (!/[\s()<>]/.test(url)) return url;
+  return `<${url.replace(/>/g, "%3E")}>`;
+}
+
+/**
+ * Escape the Markdown link/image-text delimiters `[` and `]` so an alt text
+ * or link label containing them can't terminate the construct early.
+ */
+function mdText(text: string): string {
+  return text.replace(/[[\]]/g, "\\$&");
 }
 
 /**

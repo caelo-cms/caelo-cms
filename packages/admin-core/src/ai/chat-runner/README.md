@@ -22,7 +22,7 @@ directory, so every existing import path keeps resolving.
 | `context-blocks.ts` | `buildSystemContextBlocks`: orchestrates the `context/*` builders into the pre-catalogue block set + skill-engagement results. |
 | `context/page.ts` | Current-page + all-pages blocks. |
 | `context/catalog.ts` | Theme, structured sets, modules (+ usage signal), content library, media blocks. |
-| `context/site.ts` | Layouts, site defaults, site identity blocks (+ raw values for `buildToolDescribeState`). |
+| `context/site.ts` | Layouts, site defaults, site identity blocks. |
 | `context/domains.ts` | Redirects, locales, pending proposals, users, roles, AI providers, domains blocks. |
 | `context/skills.ts` | Skill engagement + allowlist resolution; the post-catalogue blocks (subagents, plugin submissions, plugin promptContext). |
 | `compaction.ts` | issue-#261 pure history compaction: size estimator (chars/4 heuristic), two-stage compactor (truncate old tool results, then digest the oldest span), prompt-too-long error detection. `loop.ts` compacts pre-flight over a threshold and retries ONCE on a live provider context-overflow rejection. |
@@ -35,7 +35,7 @@ directory, so every existing import path keeps resolving.
 
 1. `persistUserMessage` → `loadMemory` + `loadSession` (`persistence.ts`).
 2. `buildSystemContextBlocks` → pre-catalogue blocks + skill engagement (`context-blocks.ts` → `context/*`).
-3. `buildToolDescribeState` (sibling `../tools/`) → `buildToolCatalogue` (`tool-catalogue.ts`).
+3. `buildToolCatalogue` (`tool-catalogue.ts`). Tool definitions are STATIC (#335 — no per-turn describe-state embedding, so Anthropic's `tools` prefix stays prompt-cacheable).
 4. `buildPostCatalogueBlocks` (`context/skills.ts`) — depends on the filtered catalogue.
 5. `composeSystemPromptChunks` (sibling `../system-prompt.ts`).
 6. `runToolLoop` (`loop.ts`): `streamProviderTurn` → `persistAssistantTurn` → passive-turn nudge → `dispatchToolCall` per call, repeating while `stop_reason=tool_use`.

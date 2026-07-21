@@ -26,7 +26,11 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { isExternalUrlBlockedError, safeExternalFetch } from "@caelo-cms/site-importer";
+import {
+  htmlToMarkdown,
+  isExternalUrlBlockedError,
+  safeExternalFetch,
+} from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { getActiveProviderForModel } from "../provider-resolver.js";
 import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
@@ -124,8 +128,16 @@ async function resolveHtml(
     if (!res.contentType.includes("text/html")) {
       return { ok: false, content: `query_page_html: ${toolInput.url} is not an HTML page.` };
     }
-    // Cache so a follow-up query/read reuses it.
-    putPageInspection(sessionId, { url: res.finalUrl, html: res.bodyText, markdown: "" });
+    // Cache so a follow-up query/read reuses it. Compute the Markdown gist
+    // (the same htmlToMarkdown converter inspect_external_page uses) rather
+    // than caching "": pageRef is deterministic per (session, url), so an empty
+    // markdown here would CLOBBER a prior inspect_external_page's paginable
+    // markdown for the same page and strand a later read_page_more on nothing.
+    putPageInspection(sessionId, {
+      url: res.finalUrl,
+      html: res.bodyText,
+      markdown: htmlToMarkdown(res.bodyText),
+    });
     return { ok: true, url: res.finalUrl, html: res.bodyText };
   } catch (e) {
     if (isExternalUrlBlockedError(e)) return { ok: false, content: e.message };

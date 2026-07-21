@@ -72,7 +72,7 @@ interface ResolvedFacets {
 }
 
 /**
- * Minimal core when the caller names no facets: `meta` only.
+ * Minimal gist when the caller names no facets: `meta` + `markdown`.
  *
  * `links` is opt-in (default OFF). A nav / footer / blog-index page can
  * carry 200+ links, which bloats the context on EVERY inspect — but the

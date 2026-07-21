@@ -168,7 +168,7 @@ const FAKE_PNG_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAGUlEQVQokWOIqjhBEmIY1VAxGkpRwzVpAACJzZoQPNqOjQAAAABJRU5ErkJggg==";
 
 /**
- * Test-only image provider. Returns a deterministic 1×1 PNG as a `data:`
+ * Test-only image provider. Returns a deterministic 16×16 PNG as a `data:`
  * URL — no HTTP call, no API key, no cost — so e2e can exercise the
  * `generate_image` → media-pipeline → page-reference wiring end to end.
  * `fetch()` handles `data:` URLs, so the download step in the tool is

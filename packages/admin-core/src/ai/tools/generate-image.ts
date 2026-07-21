@@ -16,6 +16,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { buildMediaUrl, pickAiImageVariant } from "@caelo-cms/shared";
 import { z } from "zod";
 import { runMediaPipeline } from "../../media/pipeline.js";
 import { getMediaStorage, getMediaStorageProvider } from "../../media/storage.js";
@@ -208,13 +209,14 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
       const v = upload.value as { assetId: string };
       assetId = v.assetId;
       // The media route is /_caelo/media/<id>/<variant> — a bare
-      // /_caelo/media/<id> 404s. Prefer the webp display variant, fall
-      // back to the always-present original, so the <img src> the AI
-      // references actually resolves.
-      const displayVariant = pipeline.variants.some((pv) => pv.variant === "webp-400")
-        ? "webp-400"
-        : "orig";
-      mediaUrl = `/_caelo/media/${assetId}/${displayVariant}`;
+      // /_caelo/media/<id> 404s. Use the shared AI-variant policy (the same
+      // one find_media applies): prefer webp-800, else the best available
+      // webp, else the always-present original — so the <img src> the AI
+      // references both resolves AND is a sensible display size.
+      mediaUrl = buildMediaUrl(
+        assetId,
+        pickAiImageVariant(pipeline.variants.map((pv) => pv.variant)),
+      );
     } catch (e) {
       return { ok: false, content: `generate_image: persist failed: ${(e as Error).message}` };
     }

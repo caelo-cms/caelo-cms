@@ -67,7 +67,17 @@ function reuseWrapper(inner: Screenshotter): Screenshotter {
   };
 }
 
-/** Build (or reuse) a screenshotter, or null when Playwright is unavailable. */
+/**
+ * Build (or reuse) a screenshotter, or null when Playwright is unavailable.
+ *
+ * REUSE + allowedHosts: the shared instance closes over the FIRST caller's
+ * `allowedHosts` and later callers reuse it as-is. That is safe ONLY because
+ * every caller passes the same process-global allowlist (`externalFetchAllowedHosts()`)
+ * — the SSRF guard is identical for all of them, so a stale closure can't widen
+ * it. If a caller ever needs a per-request allowedHosts, this reuse must key the
+ * cache on the host set (or rebuild) — otherwise the guard would silently apply
+ * the wrong allowlist.
+ */
 export async function getExternalScreenshotter(opts: {
   allowedHosts: readonly string[];
 }): Promise<Screenshotter | null> {

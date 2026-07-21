@@ -63,12 +63,12 @@ on. This is the general principle, not a per-facet special case.
 
 Default facet set (no `facets` named):
 
-- **Full-page screenshot** (the visual "how does it look"). One capture
-  per page.
-- **Page text as Markdown**, not raw HTML. Readability extracts the main
-  content; an HTML→Markdown pass (Turndown) drops tags/attributes/
-  scripts/styles → typically 5–10× smaller than the current `markup`
-  facet. Truncated to a token budget, with a **cursor** for "the rest".
+- **Page text as Markdown**, not raw HTML. A focused HTML→Markdown pass
+  (the in-repo `htmlToMarkdown`, built on the existing `htmlparser2` — no
+  Readability/Turndown/jsdom added to the tree) keeps the readable text +
+  light structure and drops scripts/styles/most attributes → typically
+  5–10× smaller than a raw `markup` dump. Truncated to a token budget,
+  with a **cursor** (`read_page_more`) for "the rest".
 - **meta** (title, description, canonical, og). Cheap.
 
 Opt-in facets (OFF by default, `facets: { … : true }` to enable):
@@ -82,8 +82,9 @@ Opt-in facets (OFF by default, `facets: { … : true }` to enable):
   (site-structure discovery) and leaves it off for content inspects. A
   future refinement: cap/paginate the link list (like the Markdown
   cursor) when it is enabled and huge.
-- **`altTexts`**, **`tokens`** (computed-style design tokens — needs the
-  render), and any **`rawHtml`** escape-hatch: all opt-in. The intended
+- **`screenshot`** (the full-page visual — needs the Playwright render),
+  **`altTexts`**, **`tokens`** (computed-style design tokens — also needs
+  the render), and any **`rawHtml`** escape-hatch: all opt-in. The intended
   path for *structure* is `query_page_html` (§2.2), not a raw-HTML facet.
 
 Removed from the default: the heavy cleaned-HTML `markup` facet.
