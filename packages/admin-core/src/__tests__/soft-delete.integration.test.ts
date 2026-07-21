@@ -75,7 +75,7 @@ describe("soft-delete users", () => {
   it("creates → logs in → deletes (soft) → cannot log in → row hidden by default but visible with includeDeleted", async () => {
     const create = await execute(registry, adapter, systemCtx, "users.create", {
       email: TEST_EMAIL,
-      password: "soft-delete password",
+      password: "quartz-willow-85",
       displayName: "Soft Target",
       roleNames: ["editor"],
     });
@@ -86,7 +86,7 @@ describe("soft-delete users", () => {
     // Initial login works → produces an auth.login audit row.
     const initialLogin = await execute(registry, adapter, systemCtx, "auth.login", {
       email: TEST_EMAIL,
-      password: "soft-delete password",
+      password: "quartz-willow-85",
     });
     expect(initialLogin.ok).toBe(true);
 
@@ -125,7 +125,7 @@ describe("soft-delete users", () => {
     // Login is denied even with the right password.
     const post = await execute(registry, adapter, systemCtx, "auth.login", {
       email: TEST_EMAIL,
-      password: "soft-delete password",
+      password: "quartz-willow-85",
     });
     expect(post.ok).toBe(false);
   });

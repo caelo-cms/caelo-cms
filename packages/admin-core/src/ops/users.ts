@@ -5,7 +5,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../audit.js";
-import { hashPassword } from "../password.js";
+import { hashPassword, validatePasswordStrength, verifyPassword } from "../password.js";
 
 export const createFirstOwnerOp = defineOperation({
   name: "users.create_first_owner",
@@ -36,6 +36,26 @@ export const createFirstOwnerOp = defineOperation({
         kind: "HandlerError",
         operation: "users.create_first_owner",
         message: "setup already complete",
+      });
+    }
+
+    const strength = validatePasswordStrength(input.password, {
+      email: input.email,
+      displayName: input.displayName,
+    });
+    if (!strength.ok) {
+      await recordAudit(tx, {
+        actorId: SYSTEM_ACTOR_ID,
+        requestId: ctx.requestId,
+        operation: "users.create_first_owner",
+        input,
+        succeeded: false,
+        resultSummary: "weak-password",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "users.create_first_owner",
+        message: strength.reason,
       });
     }
 
@@ -205,6 +225,14 @@ export const createUserOp = defineOperation({
       });
     }
 
+    const strength = validatePasswordStrength(input.password, {
+      email: input.email,
+      displayName: input.displayName,
+    });
+    if (!strength.ok) {
+      return err({ kind: "HandlerError", operation: "users.create", message: strength.reason });
+    }
+
     const passwordHash = await hashPassword(input.password);
     const actorRows = (await tx.execute(sql`
       INSERT INTO actors (kind, display_name)
@@ -332,6 +360,166 @@ export const deleteUserOp = defineOperation({
       succeeded: true,
       entityId: input.userId,
       resultSummary: "soft-deleted",
+    });
+    return ok({});
+  },
+});
+
+/**
+ * Self-service password change: the signed-in actor updates their OWN password.
+ * Runs as the human actor — `users`/`sessions` are self-or-system under RLS, so
+ * an actor mutating its own row needs no elevation. Verifies the current
+ * password, enforces the strength policy on the new one, and (given the current
+ * session token) revokes the actor's OTHER sessions so the change logs out
+ * other devices while keeping this one alive.
+ */
+export const changePasswordOp = defineOperation({
+  name: "users.change_password",
+  // Why human-only: an actor changes their OWN credential; AI/system never do.
+  actorScope: ["human"],
+  database: "cms_admin",
+  input: z.object({
+    currentPassword: z.string().min(1).max(256),
+    newPassword: z.string().min(1).max(256),
+    /**
+     * The caller's current session token — kept alive while every OTHER
+     * session for this user is revoked. Omit to leave sessions untouched.
+     */
+    keepSessionToken: z.string().optional(),
+  }),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT u.email AS email, u.password_hash AS password_hash, a.display_name AS display_name
+      FROM users u JOIN actors a ON a.id = u.id
+      WHERE u.id = ${ctx.actorId}::uuid AND u.deleted_at IS NULL
+      LIMIT 1
+    `)) as unknown as { email: string; password_hash: string; display_name: string }[];
+    const user = rows[0];
+    if (!user) {
+      return err({
+        kind: "HandlerError",
+        operation: "users.change_password",
+        message: "user not found",
+      });
+    }
+
+    const currentOk = await verifyPassword(input.currentPassword, user.password_hash);
+    if (!currentOk) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "users.change_password",
+        input,
+        succeeded: false,
+        entityId: ctx.actorId,
+        resultSummary: "wrong-current-password",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "users.change_password",
+        message: "Current password is incorrect.",
+      });
+    }
+
+    const strength = validatePasswordStrength(input.newPassword, {
+      email: user.email,
+      displayName: user.display_name,
+    });
+    if (!strength.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "users.change_password",
+        message: strength.reason,
+      });
+    }
+
+    const newHash = await hashPassword(input.newPassword);
+    await tx.execute(
+      sql`UPDATE users SET password_hash = ${newHash} WHERE id = ${ctx.actorId}::uuid`,
+    );
+    if (input.keepSessionToken) {
+      await tx.execute(
+        sql`DELETE FROM sessions WHERE user_id = ${ctx.actorId}::uuid AND token != ${input.keepSessionToken}`,
+      );
+    }
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "users.change_password",
+      input,
+      succeeded: true,
+      entityId: ctx.actorId,
+      resultSummary: "password-changed",
+    });
+    return ok({});
+  },
+});
+
+/**
+ * Owner-initiated reset of ANOTHER user's password — the recovery path that
+ * needs no email (a teammate locked out on an install with no mail transport).
+ * Gated at the route by `users.manage` and executed in an ELEVATED context
+ * (system kind, owner id preserved for the audit trail): `users`/`sessions` are
+ * self-or-system under RLS, so a bare human owner cannot mutate a different
+ * user's rows — the elevation is what clears RLS, exactly as
+ * `create_first_owner` runs as system.
+ */
+export const adminSetPasswordOp = defineOperation({
+  name: "users.admin_set_password",
+  // The route elevates to a system kind after a `users.manage` permission
+  // check, so the cross-user write clears RLS. A bare human actor is blocked.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({
+    userId: z.string().uuid(),
+    newPassword: z.string().min(1).max(256),
+  }),
+  output: z.object({}),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT u.email AS email, a.display_name AS display_name
+      FROM users u JOIN actors a ON a.id = u.id
+      WHERE u.id = ${input.userId}::uuid AND u.deleted_at IS NULL
+      LIMIT 1
+    `)) as unknown as { email: string; display_name: string }[];
+    const target = rows[0];
+    if (!target) {
+      return err({
+        kind: "HandlerError",
+        operation: "users.admin_set_password",
+        message: "user not found",
+      });
+    }
+
+    const strength = validatePasswordStrength(input.newPassword, {
+      email: target.email,
+      displayName: target.display_name,
+    });
+    if (!strength.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "users.admin_set_password",
+        message: strength.reason,
+      });
+    }
+
+    const newHash = await hashPassword(input.newPassword);
+    await tx.execute(
+      sql`UPDATE users SET password_hash = ${newHash} WHERE id = ${input.userId}::uuid`,
+    );
+    // Force the target to re-authenticate with the new password everywhere.
+    await tx.execute(sql`DELETE FROM sessions WHERE user_id = ${input.userId}::uuid`);
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "users.admin_set_password",
+      input,
+      succeeded: true,
+      entityId: input.userId,
+      resultSummary: "admin-reset",
     });
     return ok({});
   },

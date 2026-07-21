@@ -2,6 +2,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { error, fail, redirect } from "@sveltejs/kit";
+import { opErrorMessage } from "$lib/server/op-error.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -56,8 +57,8 @@ export const actions: Actions = {
     if (!email || !password || !displayName) {
       return fail(400, { email, displayName, error: "All fields are required." });
     }
-    if (password.length < 8) {
-      return fail(400, { email, displayName, error: "Password must be at least 8 characters." });
+    if (password.length < 10) {
+      return fail(400, { email, displayName, error: "Password must be at least 10 characters." });
     }
 
     // Re-check the gate inside the action — load happens at GET time.
@@ -100,10 +101,14 @@ export const actions: Actions = {
       displayName,
     });
     if (!result.ok) {
+      // Surfaces the password-strength reason, or "setup already complete".
       return fail(400, {
         email,
         displayName,
-        error: "Setup failed — an owner account already exists. Sign in at /login instead.",
+        error: opErrorMessage(
+          result.error,
+          "Setup failed — an owner account may already exist. Sign in at /login instead.",
+        ),
       });
     }
     throw redirect(303, "/login");

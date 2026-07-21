@@ -38,6 +38,10 @@ export { describeError } from "./ai/tools/_describe-error.js";
 export * from "./ai/tools/index.js";
 export * from "./audit.js";
 export * from "./csrf.js";
+export {
+  type DeliverResetEmailArgs,
+  deliverPasswordResetEmail,
+} from "./email/password-reset.js";
 // P12 review pass — email transport factory (consumed by hooks.server.ts).
 export { buildEmailTransport, type EmailConfigRow } from "./email/transport.js";
 export * from "./media/pipeline.js";

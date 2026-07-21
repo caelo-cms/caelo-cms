@@ -56,7 +56,7 @@ beforeAll(async () => {
   };
   const created = await execute(registry, adapter, bootstrapCtx, "users.create", {
     email: ACTOR_EMAIL,
-    password: "import-inbox-pass",
+    password: "willow-quartz-31",
     displayName: "Import Inbox Actor",
     roleNames: [],
   });

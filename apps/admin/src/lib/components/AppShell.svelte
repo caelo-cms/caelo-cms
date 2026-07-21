@@ -17,6 +17,7 @@
     Sailboat,
     ShieldCheck,
     Sun,
+    UserCog,
     Wand2,
   } from "lucide-svelte";
   import { CAELO_VERSION } from "@caelo-cms/shared";
@@ -84,6 +85,8 @@
         show: has("settings.read"),
       },
       { href: "/security", label: "Security", icon: ShieldCheck, show: has("settings.read") },
+      // Personal account (change your own password) — every signed-in user.
+      { href: "/account", label: "Account", icon: UserCog, show: true },
     ].filter((i) => i.show),
   );
 

@@ -5,8 +5,15 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../audit.js";
-import { verifyPassword } from "../password.js";
-import { generateCsrfToken, generateSessionToken, SESSION_TTL_MS } from "../tokens.js";
+import { hashPassword, validatePasswordStrength, verifyPassword } from "../password.js";
+import {
+  generateCsrfToken,
+  generateResetToken,
+  generateSessionToken,
+  hashResetToken,
+  RESET_TOKEN_TTL_MS,
+  SESSION_TTL_MS,
+} from "../tokens.js";
 
 export const loginOp = defineOperation({
   name: "auth.login",
@@ -175,5 +182,151 @@ export const resolveSessionOp = defineOperation({
             ? row.onboarded_at.toISOString()
             : String(row.onboarded_at),
     });
+  },
+});
+
+/**
+ * Step 1 of self-service reset: issue a one-hour, single-use reset token for the
+ * account with this email and hand the RAW token back to the caller (the route)
+ * to email as a `/reset?token=…` link. Unauthenticated, so it runs as system
+ * (the system bypass is what lets it read the user + write the token row).
+ *
+ * No account enumeration: `delivery` is null when no account matches, and the
+ * route shows the SAME "if that address exists, we sent a link" message either
+ * way. We store only the SHA-256 of the token (see `password_reset_tokens`).
+ */
+export const requestPasswordResetOp = defineOperation({
+  name: "auth.request_password_reset",
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ email: z.string().email().max(254) }),
+  output: z.object({
+    delivery: z
+      .object({ email: z.string(), token: z.string(), displayName: z.string() })
+      .nullable(),
+  }),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT u.id::text AS id, a.display_name AS display_name
+      FROM users u JOIN actors a ON a.id = u.id
+      WHERE u.email = ${input.email} AND u.deleted_at IS NULL
+      LIMIT 1
+    `)) as unknown as { id: string; display_name: string }[];
+    const user = rows[0];
+
+    await recordAudit(tx, {
+      actorId: SYSTEM_ACTOR_ID,
+      requestId: ctx.requestId,
+      operation: "auth.request_password_reset",
+      input,
+      succeeded: true,
+      // Never leak whether the address matched an account.
+      resultSummary: user ? "issued" : "no-account",
+    });
+
+    if (!user) return ok({ delivery: null });
+
+    const rawToken = generateResetToken();
+    const tokenHash = hashResetToken(rawToken);
+    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+    await tx.execute(sql`
+      INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+      VALUES (${user.id}::uuid, ${tokenHash}, ${expiresAt.toISOString()})
+    `);
+
+    return ok({
+      delivery: { email: input.email, token: rawToken, displayName: user.display_name },
+    });
+  },
+});
+
+/**
+ * Step 2 of self-service reset: redeem a token and set the new password. The
+ * presented token IS the proof of identity, so this runs unauthenticated (as
+ * system). The token must be unused + unexpired; on success it is burned along
+ * with every other outstanding token for the user, and ALL of the user's
+ * sessions are revoked (the account may have been compromised).
+ */
+export const resetPasswordOp = defineOperation({
+  name: "auth.reset_password",
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({
+    token: z.string().min(1).max(512),
+    newPassword: z.string().min(1).max(256),
+  }),
+  output: z.object({ email: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const tokenHash = hashResetToken(input.token);
+    const rows = (await tx.execute(sql`
+      SELECT t.id::text AS token_id, u.id::text AS user_id, u.email AS email,
+             a.display_name AS display_name
+      FROM password_reset_tokens t
+      JOIN users u ON u.id = t.user_id
+      JOIN actors a ON a.id = u.id
+      WHERE t.token_hash = ${tokenHash}
+        AND t.used_at IS NULL
+        AND t.expires_at > now()
+        AND u.deleted_at IS NULL
+      LIMIT 1
+    `)) as unknown as {
+      token_id: string;
+      user_id: string;
+      email: string;
+      display_name: string;
+    }[];
+    const row = rows[0];
+    if (!row) {
+      await recordAudit(tx, {
+        actorId: SYSTEM_ACTOR_ID,
+        requestId: ctx.requestId,
+        operation: "auth.reset_password",
+        input,
+        succeeded: false,
+        resultSummary: "invalid-or-expired-token",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "auth.reset_password",
+        message: "This reset link is invalid or has expired. Request a new one.",
+      });
+    }
+
+    const strength = validatePasswordStrength(input.newPassword, {
+      email: row.email,
+      displayName: row.display_name,
+    });
+    if (!strength.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "auth.reset_password",
+        message: strength.reason,
+      });
+    }
+
+    const newHash = await hashPassword(input.newPassword);
+    await tx.execute(
+      sql`UPDATE users SET password_hash = ${newHash} WHERE id = ${row.user_id}::uuid`,
+    );
+    // One-shot: burn this token AND supersede every other outstanding one.
+    await tx.execute(
+      sql`UPDATE password_reset_tokens SET used_at = now() WHERE id = ${row.token_id}::uuid`,
+    );
+    await tx.execute(
+      sql`DELETE FROM password_reset_tokens WHERE user_id = ${row.user_id}::uuid AND used_at IS NULL`,
+    );
+    // A reset invalidates every existing session for the account.
+    await tx.execute(sql`DELETE FROM sessions WHERE user_id = ${row.user_id}::uuid`);
+
+    await recordAudit(tx, {
+      actorId: row.user_id,
+      requestId: ctx.requestId,
+      operation: "auth.reset_password",
+      input,
+      succeeded: true,
+      entityId: row.user_id,
+      resultSummary: "password-reset",
+    });
+    return ok({ email: row.email });
   },
 });

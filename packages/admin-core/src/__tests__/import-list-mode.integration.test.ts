@@ -80,7 +80,7 @@ beforeAll(async () => {
   };
   const created = await execute(registry, adapter, bootstrapCtx, "users.create", {
     email: ACTOR_EMAIL,
-    password: "import-list-mode-pass",
+    password: "lantern-willow-67",
     displayName: "Import List Mode Actor",
     roleNames: [],
   });

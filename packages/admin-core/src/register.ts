@@ -10,7 +10,13 @@ import {
   proposeAiProvidersSetOp,
   rejectAiProvidersProposalOp,
 } from "./ops/ai_providers_pending.js";
-import { loginOp, logoutOp, resolveSessionOp } from "./ops/auth.js";
+import {
+  loginOp,
+  logoutOp,
+  requestPasswordResetOp,
+  resetPasswordOp,
+  resolveSessionOp,
+} from "./ops/auth.js";
 import { cancelProposalOp } from "./ops/cancel_proposal.js";
 import { listForeignLocksOp } from "./ops/chat/foreign-locks.js";
 import {
@@ -451,6 +457,8 @@ import {
 } from "./ops/user_pending.js";
 import { getUserPreferenceOp, setUserPreferenceOp } from "./ops/user_preferences.js";
 import {
+  adminSetPasswordOp,
+  changePasswordOp,
   createFirstOwnerOp,
   createUserOp,
   deleteUserOp,
@@ -473,6 +481,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createUserOp);
   registry.register(setUserRolesOp);
   registry.register(deleteUserOp);
+  registry.register(changePasswordOp);
+  registry.register(adminSetPasswordOp);
   // v0.2.21 — users propose/execute pairs. AI proposes via
   // users.propose_*; Owner approves at /security/users/pending which
   // calls users.execute_proposal (human-only) → runs the underlying
@@ -487,6 +497,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(loginOp);
   registry.register(logoutOp);
   registry.register(resolveSessionOp);
+  registry.register(requestPasswordResetOp);
+  registry.register(resetPasswordOp);
   registry.register(listRolesOp);
   registry.register(createRoleOp);
   registry.register(deleteRoleOp);

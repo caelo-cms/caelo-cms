@@ -6,7 +6,7 @@ import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, url }) => {
   // The chat IS the product (CLAUDE.md §1A / epic #186): anyone who can
   // edit lands in /edit, not on the admin dashboard — operators should
   // never NEED the admin area. Users without content.write (ops-only
@@ -22,7 +22,8 @@ export const load: PageServerLoad = async ({ locals }) => {
   // 2026-07-12, masked exactly this op's actor-scope rejection).
   if (!setup.ok) throw error(500, `users.is_setup_complete failed: ${setup.error.kind}`);
   if (!(setup.value as { complete: boolean }).complete) throw redirect(303, "/setup");
-  return {};
+  // `?reset=1` arrives from a completed password reset — show a confirmation.
+  return { resetDone: url.searchParams.get("reset") === "1" };
 };
 
 export const actions: Actions = {
