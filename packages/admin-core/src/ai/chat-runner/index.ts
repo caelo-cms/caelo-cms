@@ -25,7 +25,12 @@ import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
 import { attachGatedExecute } from "../tools/gated-tools.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
-import { resolveCompactionThresholdTokens } from "./compaction.js";
+import {
+  resolveCompactionRecentTokens,
+  resolveCompactionTargetTokens,
+  resolveCompactionThresholdTokens,
+  resolveProactiveCompaction,
+} from "./compaction.js";
 import { lastNoteSignature, noteSignature } from "./context/page.js";
 import { extractLoadedSkillSlugs } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
@@ -272,7 +277,7 @@ export async function* runChatTurn(
     skillsIndexBlock: ctx.preBlocks.skillsIndexBlock,
   });
 
-  const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };
+  const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0, totalCacheCreation: 0 };
 
   markPhase("catalogueAndPromptMs");
   // Run #10 D5 — the pre-provider timing breadcrumb. If a first token
@@ -314,8 +319,13 @@ export async function* runChatTurn(
     systemChunks,
     filteredTools,
     initialMessages: baseMessages,
-    // issue #261 — compaction trigger; env-tunable, ~600k by default.
+    // issue #261 — compaction trigger; env-tunable, fires ~800K real by
+    // default. Trigger, target (~200K real) and recent-tail budget (~100K
+    // real) are separate so compaction fires late and drops hard.
     compactionThresholdTokens: resolveCompactionThresholdTokens(),
+    compactionTargetTokens: resolveCompactionTargetTokens(),
+    compactionRecentTokens: resolveCompactionRecentTokens(),
+    proactiveCompaction: resolveProactiveCompaction(),
     maxLoops,
     // Run #8 R1 — model-aware default: adaptive-thinking models share the
     // output budget with thinking and need >=32k headroom (see limits.ts).

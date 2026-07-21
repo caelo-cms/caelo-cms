@@ -12,13 +12,19 @@ import { describe, expect, it } from "bun:test";
 import type { ChatMessageInput } from "../provider.js";
 import {
   buildSpanDigest,
+  COMPACTION_RECENT_TOKENS_DEFAULT,
+  COMPACTION_TARGET_TOKENS_DEFAULT,
   COMPACTION_THRESHOLD_TOKENS_DEFAULT,
   compactHistory,
   estimateHistoryTokens,
   estimateMessageTokens,
   isPromptTooLongError,
   KEEP_RECENT_MESSAGES,
+  MIN_RECENT_MESSAGES,
   parsePromptTooLongLimit,
+  recentTailCount,
+  resolveCompactionRecentTokens,
+  resolveCompactionTargetTokens,
   resolveCompactionThresholdTokens,
 } from "./compaction.js";
 
@@ -136,6 +142,98 @@ describe("resolveCompactionThresholdTokens", () => {
     expect(() =>
       resolveCompactionThresholdTokens({ CAELO_CHAT_COMPACTION_THRESHOLD_TOKENS: "-5" }),
     ).toThrow(/positive integer/);
+  });
+
+  it("trigger fires far above the landing target (fire late, drop hard)", () => {
+    // The whole point of the retune: trigger and target are separate, and
+    // the trigger sits well above the target so one compaction buys a long
+    // cache-hit runway before the next one.
+    expect(COMPACTION_THRESHOLD_TOKENS_DEFAULT).toBeGreaterThan(COMPACTION_TARGET_TOKENS_DEFAULT * 3);
+    expect(COMPACTION_TARGET_TOKENS_DEFAULT).toBeGreaterThan(COMPACTION_RECENT_TOKENS_DEFAULT);
+  });
+});
+
+describe("resolveCompactionTargetTokens / resolveCompactionRecentTokens", () => {
+  it("default, override, and loud failure mirror the threshold resolver", () => {
+    expect(resolveCompactionTargetTokens({})).toBe(COMPACTION_TARGET_TOKENS_DEFAULT);
+    expect(resolveCompactionTargetTokens({ CAELO_CHAT_COMPACTION_TARGET_TOKENS: "123000" })).toBe(
+      123_000,
+    );
+    expect(() =>
+      resolveCompactionTargetTokens({ CAELO_CHAT_COMPACTION_TARGET_TOKENS: "nope" }),
+    ).toThrow(/positive integer/);
+
+    expect(resolveCompactionRecentTokens({})).toBe(COMPACTION_RECENT_TOKENS_DEFAULT);
+    expect(resolveCompactionRecentTokens({ CAELO_CHAT_COMPACTION_RECENT_TOKENS: "80000" })).toBe(
+      80_000,
+    );
+    expect(() =>
+      resolveCompactionRecentTokens({ CAELO_CHAT_COMPACTION_RECENT_TOKENS: "-1" }),
+    ).toThrow(/positive integer/);
+  });
+});
+
+describe("recentTailCount", () => {
+  it("returns a token-bounded tail, not a fixed message count", () => {
+    // 20 small messages (~2 tokens each); a 10-token budget admits ~5.
+    const msgs = Array.from({ length: 20 }, (_, i) => user(`m${i}`));
+    const n = recentTailCount(msgs, 10);
+    expect(n).toBeGreaterThanOrEqual(MIN_RECENT_MESSAGES);
+    expect(n).toBeLessThan(msgs.length);
+  });
+
+  it("keeps at least MIN_RECENT_MESSAGES even when the last message alone busts the budget", () => {
+    const msgs = [user("a"), user("b"), user("c"), user("d"), toolResult("t", "X".repeat(8000))];
+    expect(recentTailCount(msgs, 5)).toBe(MIN_RECENT_MESSAGES);
+  });
+
+  it("never exceeds the history length", () => {
+    const msgs = [user("a"), user("b")];
+    expect(recentTailCount(msgs, 1_000_000)).toBe(2);
+  });
+
+  it("pushes a fresh oversized dump OUT of the protected tail", () => {
+    // A huge result near the front must fall outside a small recent
+    // budget, so the ceiling pass is free to truncate it. Tail is long
+    // enough (10 small messages) that the pairing floor does not bind.
+    const dump = toolResult("t-old", "H".repeat(400_000));
+    const tail = Array.from({ length: 10 }, (_, i) => user(`step ${i}`));
+    const msgs = [user("start"), assistant("read", ["t-old"]), dump, ...tail];
+    const keep = recentTailCount(msgs, 2_000);
+    const firstProtectedIdx = msgs.length - keep;
+    expect(firstProtectedIdx).toBeGreaterThan(2); // index 2 = the dump, now eligible
+  });
+});
+
+describe("compactHistory — aggressive default landing (fire late, drop hard)", () => {
+  it("collapses a ~800K-real history to well under the ~200K-real target, recent tail verbatim", () => {
+    // Build a long history: 40 old tool dumps (~10K est tokens each) plus
+    // a short recent tail the model is actively working in.
+    const msgs: ChatMessageInput[] = [];
+    for (let i = 0; i < 60; i++) {
+      msgs.push(assistant(`step ${i}`, [`t-${i}`]));
+      msgs.push(toolResult(`t-${i}`, `dump ${i}\n${"<div>x</div>".repeat(8000)}`));
+    }
+    const recentPrompt = "please continue with the pricing page and keep the header";
+    msgs.push(user(recentPrompt));
+    msgs.push(assistant("on it"));
+
+    const before = estimateHistoryTokens(msgs);
+    expect(before).toBeGreaterThan(COMPACTION_THRESHOLD_TOKENS_DEFAULT);
+
+    const keepRecent = recentTailCount(msgs, COMPACTION_RECENT_TOKENS_DEFAULT);
+    const r = compactHistory(msgs, {
+      targetTokens: COMPACTION_TARGET_TOKENS_DEFAULT,
+      keepRecentMessages: keepRecent,
+      toolResultHeadChars: 500,
+    });
+
+    // Landed at or below the target, a big drop from the trigger.
+    expect(r.estimatedTokensAfter).toBeLessThanOrEqual(COMPACTION_TARGET_TOKENS_DEFAULT);
+    expect(r.estimatedTokensAfter).toBeLessThan(before / 2);
+    // The recent operator turn survived verbatim.
+    expect(r.messages.some((m) => m.content.includes(recentPrompt))).toBe(true);
+    assertPairingIntact(r.messages);
   });
 });
 

@@ -264,38 +264,78 @@ interface AnthropicProviderOptions {
 const MAX_CACHE_BREAKPOINTS = 4;
 
 /**
- * One of the 4 breakpoints is reserved for a ROLLING breakpoint on the last
- * conversation message (see `tagLastMessageForCache`), so the system prompt
- * gets the remaining 3. Before this, all 4 sat on system chunks and the
- * message history — which GROWS every turn and dominates long sessions — was
- * re-read UNCACHED on every provider call (live A/B: uncached input climbed
- * 11k→50k/turn). Caching the conversation prefix is the single biggest
- * token-cost lever for multi-turn authoring.
+ * The 4-breakpoint budget, split per Anthropic's documented tool-search +
+ * caching pattern (docs: "Tool use with prompt caching"):
+ *   - 1 TOOL breakpoint on the last non-deferred tool (see the tools
+ *     transform) — caches the tool-definitions prefix as its own entry, so
+ *     it survives changes to the system tail. `defer_loading` tools cannot
+ *     carry `cache_control` (400), so it MUST land on a non-deferred tool.
+ *   - 2 SYSTEM breakpoints on the last cacheable system chunks — keeps the
+ *     stable head cached even when skills/chips at the system tail change
+ *     across turns.
+ *   - 1 CONVERSATION breakpoint rolling on the last message — caches the
+ *     growing message history so each call pays full price only for the
+ *     newest content.
+ * Discovered (deferred) tools load as `tool_reference` blocks in the
+ * MESSAGES, leaving the tools/system prefix untouched — so tool search
+ * does not invalidate these caches (verified at the wire level).
  */
-const SYSTEM_CACHE_BREAKPOINTS = MAX_CACHE_BREAKPOINTS - 1;
+const TOOL_CACHE_BREAKPOINTS = 1;
+const CONVERSATION_CACHE_BREAKPOINTS = 1;
+const SYSTEM_CACHE_BREAKPOINTS =
+  MAX_CACHE_BREAKPOINTS - TOOL_CACHE_BREAKPOINTS - CONVERSATION_CACHE_BREAKPOINTS;
+
+/** Ephemeral cache_control provider option, merged onto existing keys. */
+function withCacheControl<T extends { providerOptions?: Record<string, unknown> }>(o: T): T {
+  const existing = o.providerOptions;
+  return {
+    ...o,
+    providerOptions: {
+      ...(existing ?? {}),
+      anthropic: {
+        ...((existing?.anthropic as Record<string, unknown> | undefined) ?? {}),
+        cacheControl: { type: "ephemeral" },
+      },
+    },
+  };
+}
 
 /**
- * Roll a cache breakpoint onto the LAST message so Anthropic caches the whole
- * conversation prefix (system + tools + every prior turn); the next provider
- * call reads it all from cache and pays full price only for the newest
- * content. SDK-idiomatic: a MESSAGE-level `cacheControl` that the AI SDK
- * translates to the message's last content block (dynamic-prompt-caching
- * recipe). No-op for non-Anthropic providers, which ignore the key.
+ * Roll a cache breakpoint onto the LAST message so Anthropic caches the
+ * whole conversation prefix (tools + system + every prior turn); the next
+ * provider call reads it from cache and pays full price only for the
+ * newest content.
+ *
+ * The breakpoint goes on the last CONTENT PART, not the message. The AI
+ * SDK's Anthropic conversion checks a part's own `cacheControl`
+ * UNCONDITIONALLY but only applies a MESSAGE-level `cacheControl` to the
+ * part when it is `isLastPart` — and empirically that message-level
+ * fallback is dropped when the last message ends in multiple `tool_result`
+ * parts (parallel tool calls). Since our loops fan out tool calls
+ * constantly, a message-level breakpoint silently vanished on those turns,
+ * so the growing conversation went UNCACHED and every following call
+ * re-read only the tools+system prefix (wire-verified). Part-level is
+ * reliable regardless of block count. No-op for non-Anthropic providers.
  */
-function tagLastMessageForCache(messages: ModelMessage[]): ModelMessage[] {
+function tagConversationForCache(messages: ModelMessage[]): ModelMessage[] {
   if (messages.length === 0) return messages;
-  const last = messages[messages.length - 1] as ModelMessage & {
-    providerOptions?: Record<string, Record<string, unknown>>;
-  };
-  const existingAnthropic = last.providerOptions?.anthropic ?? {};
-  const tagged = {
-    ...last,
-    providerOptions: {
-      ...(last.providerOptions ?? {}),
-      anthropic: { ...existingAnthropic, cacheControl: { type: "ephemeral" } },
-    },
-  } as ModelMessage;
-  return [...messages.slice(0, -1), tagged];
+  const out = [...messages];
+  const lastIdx = out.length - 1;
+  const last = out[lastIdx]!;
+  if (Array.isArray(last.content) && last.content.length > 0) {
+    const parts = [...last.content];
+    const lp = parts.length - 1;
+    parts[lp] = withCacheControl(parts[lp] as { providerOptions?: Record<string, unknown> }) as
+      (typeof parts)[number];
+    out[lastIdx] = { ...last, content: parts } as ModelMessage;
+  } else {
+    // String content (a plain user text message) — no parts to tag, so the
+    // message-level breakpoint is correct and reliable here.
+    out[lastIdx] = withCacheControl(
+      last as ModelMessage & { providerOptions?: Record<string, unknown> },
+    ) as ModelMessage;
+  }
+  return out;
 }
 
 /**
@@ -311,7 +351,7 @@ function buildSystemAndMessages(
   cacheBreakpoints: GenerateInput["cacheBreakpoints"],
   inputMessages: readonly ChatMessageInput[],
 ): { system?: string; messages: ModelMessage[] } {
-  const userMessages = tagLastMessageForCache(toSDKMessages(inputMessages));
+  const userMessages = tagConversationForCache(toSDKMessages(inputMessages));
   if (typeof prompt === "string") {
     if (cacheBreakpoints?.includes("system")) {
       const sysMsg: SystemModelMessage = {
@@ -441,8 +481,14 @@ export class AnthropicProvider implements AIProvider {
           // Mark every non-core caelo tool as deferred so its
           // description does NOT ship in the first request body —
           // Claude calls the search tool to discover it.
+          let lastCoreName: string | undefined;
           for (const [name, def] of Object.entries(built)) {
-            if (alwaysLoadedNames.has(name)) continue;
+            if (alwaysLoadedNames.has(name)) {
+              // Non-deferred (core) tool — track the last one so the tool
+              // cache breakpoint lands on it below.
+              lastCoreName = name;
+              continue;
+            }
             if (def && typeof def === "object") {
               const existing = (def as { providerOptions?: Record<string, unknown> })
                 .providerOptions;
@@ -451,6 +497,25 @@ export class AnthropicProvider implements AIProvider {
                 anthropic: {
                   ...((existing?.anthropic as Record<string, unknown> | undefined) ?? {}),
                   deferLoading: true,
+                },
+              };
+            }
+          }
+          // TOOL cache breakpoint (Anthropic docs: "put the cache breakpoint
+          // on a non-deferred tool"). On the LAST core tool so the whole
+          // core-tool prefix caches as its own entry — surviving system-tail
+          // changes, and never on a deferred tool (400). Skipped only if,
+          // implausibly, no core tool exists (then the system breakpoint
+          // still caches the tools via its prefix).
+          if (lastCoreName) {
+            const def = built[lastCoreName] as { providerOptions?: Record<string, unknown> } | undefined;
+            if (def && typeof def === "object") {
+              const existing = def.providerOptions;
+              def.providerOptions = {
+                ...(existing ?? {}),
+                anthropic: {
+                  ...((existing?.anthropic as Record<string, unknown> | undefined) ?? {}),
+                  cacheControl: { type: "ephemeral" },
                 },
               };
             }

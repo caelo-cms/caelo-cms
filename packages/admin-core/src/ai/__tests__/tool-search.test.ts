@@ -105,11 +105,12 @@ describe("resolveAnthropicToolSearchMode", () => {
 });
 
 describe("AnthropicProvider cache-breakpoint cap", () => {
-  it("tags the last 3 system chunks + rolls 1 onto the tail (4-breakpoint budget)", async () => {
+  it("tags the last 2 system chunks + rolls 1 onto the tail (4-breakpoint budget)", async () => {
     const { mock, provider } = makeMockAndProvider({ toolSearch: "off" });
-    // 5 cacheable chunks. Of the 4 total breakpoints Anthropic allows, 3 go
-    // to system chunks and 1 is reserved for the rolling last-message
-    // breakpoint (conversation-history caching), so the provider must NOT 400.
+    // 5 cacheable chunks. Of the 4 total breakpoints Anthropic allows, 2 go
+    // to system chunks, 1 is reserved for the last non-deferred TOOL
+    // breakpoint (added by the tool-search transform), and 1 for the rolling
+    // last-message breakpoint — so the provider must NOT 400.
     const chunks = ["base", "tool-playbook", "module-model", "staging", "memory"].map((label) => ({
       body: `[${label}]`,
       cacheable: true,
@@ -129,14 +130,16 @@ describe("AnthropicProvider cache-breakpoint cap", () => {
     const sys = prompt.filter((m) => m.role === "system");
     expect(sys.length).toBe(5);
     const taggedSys = sys.filter((m) => m.providerOptions?.anthropic?.cacheControl);
-    // 3 system breakpoints now (one reserved for the rolling message tail).
-    expect(taggedSys.length).toBe(3);
-    // The first TWO chunks are untagged — they still ride inside every later
+    // 2 system breakpoints (one reserved for the tool breakpoint, one for the
+    // rolling message tail).
+    expect(taggedSys.length).toBe(2);
+    // The first THREE chunks are untagged — they still ride inside every later
     // breakpoint's cached prefix.
     expect(sys[0]?.providerOptions?.anthropic?.cacheControl).toBeUndefined();
     expect(sys[1]?.providerOptions?.anthropic?.cacheControl).toBeUndefined();
+    expect(sys[2]?.providerOptions?.anthropic?.cacheControl).toBeUndefined();
     // The rolling breakpoint lands on the last (user) message so the growing
-    // conversation history caches — total breakpoints = 3 system + 1 = 4.
+    // conversation history caches. String content ⇒ message-level cacheControl.
     const nonSys = prompt.filter((m) => m.role !== "system");
     expect(JSON.stringify(nonSys[nonSys.length - 1])).toContain("cacheControl");
   });

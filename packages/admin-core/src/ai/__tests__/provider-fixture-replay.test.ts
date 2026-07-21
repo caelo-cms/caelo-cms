@@ -117,7 +117,7 @@ describe("AnthropicProvider — SDK-event translation", () => {
     expect(events).toEqual([
       { kind: "text-delta", text: "Hello" },
       { kind: "text-delta", text: " world" },
-      { kind: "usage", inputTokens: 50, outputTokens: 12, cachedTokens: 0 },
+      { kind: "usage", inputTokens: 50, outputTokens: 12, cachedTokens: 0, cacheCreationTokens: 0 },
       // v0.10.17 — `done` now carries optional `stoppingDiagnostics`
       // (provider stop_reason + SDK warnings) for the empty-response
       // root-cause hunt. Existence is asserted separately below; the

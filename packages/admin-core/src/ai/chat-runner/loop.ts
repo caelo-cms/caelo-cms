@@ -25,9 +25,13 @@ import {
 } from "./budget-gate.js";
 import {
   compactHistory,
+  COMPACTION_RECENT_TOKENS_DEFAULT,
+  COMPACTION_TARGET_TOKENS_DEFAULT,
   estimateHistoryTokens,
+  estimateTextTokens,
   KEEP_RECENT_MESSAGES,
   parsePromptTooLongLimit,
+  recentTailCount,
   RETRY_TOOL_RESULT_HEAD_CHARS,
   TOOL_RESULT_HEAD_CHARS,
 } from "./compaction.js";
@@ -73,9 +77,27 @@ export interface ToolLoopArgs {
   /**
    * issue #261 — history-size ceiling (estimated tokens) above which
    * the loop compacts before calling the provider. Threaded from
-   * `resolveCompactionThresholdTokens()` in index.ts.
+   * `resolveCompactionThresholdTokens()` in index.ts. Default fires near
+   * ~800K real input tokens (late, once per long stretch).
    */
   compactionThresholdTokens: number;
+  /**
+   * Estimate-space landing target once the ceiling fires. Absent ⇒
+   * {@link COMPACTION_TARGET_TOKENS_DEFAULT} (~200K real). Separate from
+   * the trigger so compaction drops HARD instead of merely back to the
+   * trigger (the old cache-thrashing behaviour).
+   */
+  compactionTargetTokens?: number;
+  /**
+   * Estimate-space recent-tail budget kept verbatim through a compaction.
+   * Absent ⇒ {@link COMPACTION_RECENT_TOKENS_DEFAULT} (~100K real).
+   */
+  compactionRecentTokens?: number;
+  /**
+   * issue #300 — enable the proactive per-loop tool-result compaction.
+   * Default false: it rewrites cached prefix on nearly every loop.
+   */
+  proactiveCompaction?: boolean;
   /**
    * Run #10 D5 — first-event watchdog window override (tests). Absent
    * ⇒ streaming.ts resolves the env-tunable default (180s).
@@ -238,17 +260,19 @@ export async function* runToolLoop(
       }
     }
 
-    // issue #300 — proactive tool-result compaction. Successful results
-    // dispatched >= 3 loops ago in THIS turn shrink to a one-line
-    // summary before each provider call, so late loops stop paying for
-    // every early loop's full HTML dumps (run #15: loop 24 at ~556K vs
-    // loop 0 at ~103K input tokens). Runs BEFORE the #261 pre-flight
-    // estimate so the ceiling check sees the already-shrunk history —
-    // the two passes compose; they share the truncation-marker format
-    // and skip each other's output. In-memory only: the persisted
-    // transcript keeps full result bodies (tool-dispatch.ts persists
-    // at dispatch time, before this ever runs).
-    if (toolResultOrigins.size > 0) {
+    // issue #300 — proactive tool-result compaction. GATED OFF by default
+    // (resolveProactiveCompaction): shrinking OLD results before nearly
+    // every provider call rewrites the cached message prefix continuously,
+    // and the retuned single-shot ceiling below (fire ~800K real, drop to
+    // ~200K) now bounds within-turn growth with ONE cache-invalidating
+    // rewrite instead of one per loop. Kept behind the flag for runs that
+    // are latency-bound within a single long turn. When enabled: successful
+    // results dispatched >= 3 loops ago in THIS turn shrink to a one-line
+    // summary, they compose with the #261 ceiling (shared truncation-marker
+    // format, skip each other's output), and it is in-memory only — the
+    // persisted transcript keeps full bodies (tool-dispatch.ts persists at
+    // dispatch time, before this ever runs).
+    if (args.proactiveCompaction === true && toolResultOrigins.size > 0) {
       const proactive = compactOldToolResults(messages, {
         currentLoop: loop,
         origins: toolResultOrigins,
@@ -309,9 +333,15 @@ export async function* runToolLoop(
     // untouched.
     const preflightEstimate = estimateHistoryTokens(messages);
     if (preflightEstimate > args.compactionThresholdTokens) {
+      // Trigger (~800K real) and target (~200K real) are SEPARATE: fire
+      // late, drop hard. Keep the recent ~100K real verbatim as a token
+      // budget (not a message count) so the tail the model is actively
+      // working in survives while the older prefix collapses to a digest.
+      const recentBudget = args.compactionRecentTokens ?? COMPACTION_RECENT_TOKENS_DEFAULT;
+      const keepRecentMessages = recentTailCount(messages, recentBudget);
       const compacted = compactHistory(messages, {
-        targetTokens: args.compactionThresholdTokens,
-        keepRecentMessages: KEEP_RECENT_MESSAGES,
+        targetTokens: args.compactionTargetTokens ?? COMPACTION_TARGET_TOKENS_DEFAULT,
+        keepRecentMessages,
         toolResultHeadChars: TOOL_RESULT_HEAD_CHARS,
       });
       messages = compacted.messages;
@@ -320,10 +350,26 @@ export async function* runToolLoop(
         loop,
         estimatedTokensBefore: compacted.estimatedTokensBefore,
         estimatedTokensAfter: compacted.estimatedTokensAfter,
+        keepRecentMessages,
         toolResultsTruncated: compacted.toolResultsTruncated,
         summarizedMessages: compacted.summarizedMessages,
       });
     }
+
+    // Per-loop cost attribution: args.usage is CUMULATIVE across the
+    // turn, so snapshot it here and diff after the call to recover THIS
+    // call's real input / cached-read / output. Combined with the
+    // post-compaction prefix estimate below, this is what makes the
+    // per-loop cached-vs-uncached postmortem possible from admin.log.
+    const usageBeforeCall = {
+      in: args.usage.totalIn,
+      cached: args.usage.totalCached,
+      creation: args.usage.totalCacheCreation ?? 0,
+      out: args.usage.totalOut,
+    };
+    // What we are actually about to send (post-compaction), in estimate
+    // space — lets the postmortem see the prefix shrink at a compaction.
+    const sentPrefixEstimate = estimateHistoryTokens(messages);
 
     const {
       accumulatedText,
@@ -612,16 +658,47 @@ export async function* runToolLoop(
           },
     ];
 
-    // v0.2.55 — Per-loop trace for postmortem.
+    // This call's real usage = cumulative-after minus the snapshot taken
+    // before the provider call. Anthropic splits input three ways:
+    //   inThisCall = cacheRead (0.1×) + cacheWrite (1.25×) + freshIn (1.0×)
+    // cacheRead is served from an existing cache entry; cacheWrite is
+    // prefix being cached NOW; freshIn is genuinely new post-breakpoint
+    // content. Splitting all three makes a lookback-miss (read collapses
+    // to the system prefix) distinguishable from a big write.
+    const inThisCall = args.usage.totalIn - usageBeforeCall.in;
+    const cacheReadThisCall = args.usage.totalCached - usageBeforeCall.cached;
+    const cacheWriteThisCall = (args.usage.totalCacheCreation ?? 0) - usageBeforeCall.creation;
+    const freshInThisCall = inThisCall - cacheReadThisCall - cacheWriteThisCall;
+    const outThisCall = args.usage.totalOut - usageBeforeCall.out;
+
+    // v0.2.55 — Per-loop trace for postmortem. Full read/write/fresh split
+    // + the sent prefix estimate make the token flow auditable loop-by-loop
+    // (issue #261 compaction + cache-breakpoint verification).
     console.error("[chat-runner] loop", {
       chatSessionId,
       loop,
       loopStop,
       toolCalls: accumulatedToolCalls.length,
       toolNames: accumulatedToolCalls.map((c) => c.name),
+      // Provider-executed Tool Search (tool_search_tool_bm25) round-trips
+      // this call — the Anthropic-specific mechanism that injects
+      // discovered tool defs server-side, invisible to estimateHistoryTokens.
+      // Correlate with cacheRead dips to test the tool-search-churn theory.
+      serverToolCalls: accumulatedServerToolCalls.length,
+      serverToolNames: accumulatedServerToolCalls.map((c) => c.name),
       textChars: accumulatedText.join("").length,
       thinkingBlocks: accumulatedThinking.length,
+      // This call (the auditable per-loop numbers):
+      inThisCall,
+      cacheRead: cacheReadThisCall,
+      cacheWrite: cacheWriteThisCall,
+      freshIn: freshInThisCall,
+      cacheHitPct: inThisCall > 0 ? Math.round((cacheReadThisCall / inThisCall) * 100) : 0,
+      outThisCall,
+      sentPrefixEstimate,
+      // Turn cumulative (unchanged meaning):
       tokensIn: args.usage.totalIn,
+      tokensCached: args.usage.totalCached,
       tokensOut: args.usage.totalOut,
     });
 
@@ -766,6 +843,23 @@ export async function* runToolLoop(
     // proactive compaction pass at the top of later iterations.
     for (const outcome of turnOutcomes) {
       toolResultOrigins.set(outcome.toolCallId, { loop, ok: outcome.ok });
+    }
+
+    // Per-tool token trace: the estimated size of every tool RESULT this
+    // loop appended to the context. Tool results (theme JSON, template
+    // lists, screenshots, rendered HTML) are the bulk of prefix growth and
+    // never appear in the output counter — this is what makes the e2e
+    // "tokens per tool" breakdown + cost attribution possible.
+    if (turnOutcomes.length > 0) {
+      console.error("[chat-runner] tool-tokens", {
+        chatSessionId,
+        loop,
+        results: turnOutcomes.map((o) => ({
+          name: o.name,
+          ok: o.ok,
+          tokens: estimateTextTokens(o.content),
+        })),
+      });
     }
 
     // Breaker bookkeeping: count exact (tool + args + error) repeats. On the
