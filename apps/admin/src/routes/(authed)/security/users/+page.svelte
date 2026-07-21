@@ -24,6 +24,9 @@
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {/if}
+  {#if form?.ok}
+    <Alert><AlertDescription>Saved.</AlertDescription></Alert>
+  {/if}
 
   <Card>
     <CardHeader>
@@ -67,6 +70,24 @@
                 </form>
               {/if}
             </div>
+            <form method="post" action="?/resetPassword" class="mt-2 flex flex-wrap items-end gap-2">
+              <input type="hidden" name="_csrf" value={data.csrfToken} />
+              <input type="hidden" name="userId" value={user.id} />
+              <div class="space-y-1">
+                <Label for={`pw-${user.id}`} class="text-xs">Set new password</Label>
+                <Input
+                  id={`pw-${user.id}`}
+                  name="newPassword"
+                  type="password"
+                  autocomplete="new-password"
+                  required
+                  minlength={10}
+                  class="h-8 w-56"
+                  placeholder="min 10 chars"
+                />
+              </div>
+              <Button type="submit" size="sm" variant="outline">Reset password</Button>
+            </form>
           </li>
         {/each}
       </ul>
@@ -91,8 +112,8 @@
           </div>
         </div>
         <div class="space-y-2">
-          <Label for="password">Password (min 8 chars)</Label>
-          <Input id="password" name="password" type="password" autocomplete="new-password" required minlength={8} />
+          <Label for="password">Password (min 10 chars)</Label>
+          <Input id="password" name="password" type="password" autocomplete="new-password" required minlength={10} />
         </div>
         <fieldset class="rounded-md border p-3">
           <legend class="px-1 text-sm font-medium">Roles</legend>

@@ -14,7 +14,7 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import { bindZodForm } from "$lib/forms/zod-bind.svelte.js";
 
-  let { form } = $props();
+  let { data, form } = $props();
 
   // P6.6 closing pass — client-side mirror of the login shape. The
   // canonical "invalid credentials" failure still surfaces server-
@@ -28,6 +28,11 @@
     <CardDescription>Caelo admin</CardDescription>
   </CardHeader>
   <CardContent class="space-y-4">
+    {#if data?.resetDone}
+      <Alert>
+        <AlertDescription>Your password was reset. Sign in with your new password.</AlertDescription>
+      </Alert>
+    {/if}
     {#if form?.error}
       <Alert variant="destructive">
         <AlertDescription>{form.error}</AlertDescription>
@@ -75,5 +80,8 @@
            each input give live feedback; the button never blocks. -->
       <Button type="submit" class="w-full">Sign in</Button>
     </form>
+    <a href="/forgot" class="block text-center text-sm text-muted-foreground hover:underline">
+      Forgot your password?
+    </a>
   </CardContent>
 </Card>

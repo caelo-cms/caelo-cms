@@ -32,8 +32,8 @@ const systemCtx: ExecutionContext = {
 const TRANSLATOR_EMAIL = "enforcement-translator@example.com";
 const REVIEWER_EMAIL = "enforcement-reviewer@example.com";
 const TRANSLATOR_ROLE = "translator_enforcement_test";
-const TRANSLATOR_PASSWORD = "translator pass word";
-const REVIEWER_PASSWORD = "reviewer pass word";
+const TRANSLATOR_PASSWORD = "meadow-lantern-96";
+const REVIEWER_PASSWORD = "canyon-willow-19";
 
 async function wipe(url: string): Promise<void> {
   const sql = new SQL(url);

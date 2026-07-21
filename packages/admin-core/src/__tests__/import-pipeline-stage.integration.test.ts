@@ -92,7 +92,7 @@ beforeAll(async () => {
   };
   const user = await execute(registry, adapter, bootstrapCtx, "users.create", {
     email: ACTOR_EMAIL,
-    password: "pipeline-harness-pass",
+    password: "meadow-canyon-58",
     displayName: "Pipeline Harness",
     roleNames: [],
   });

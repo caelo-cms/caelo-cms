@@ -73,7 +73,7 @@ describe("audit_events invariant", () => {
   it("auth.login success writes a succeeded=true audit row", async () => {
     await execute(registry, adapter, systemCtx, "users.create", {
       email: TEST_EMAIL,
-      password: "audit test password",
+      password: "vaulted-lantern-77",
       displayName: "Audit Test User",
       roleNames: ["editor"],
     });
@@ -81,7 +81,7 @@ describe("audit_events invariant", () => {
     const before = await countAuditRows(ADMIN_URL, "auth.login", true);
     const login = await execute(registry, adapter, systemCtx, "auth.login", {
       email: TEST_EMAIL,
-      password: "audit test password",
+      password: "vaulted-lantern-77",
     });
     expect(login.ok).toBe(true);
     const after = await countAuditRows(ADMIN_URL, "auth.login", true);
@@ -105,7 +105,7 @@ describe("audit_events invariant", () => {
     await wipe(ADMIN_URL);
     const create = await execute(registry, adapter, systemCtx, "users.create", {
       email: TEST_EMAIL,
-      password: "another audit password",
+      password: "meadow-quartz-88",
       displayName: "Again",
       roleNames: [],
     });

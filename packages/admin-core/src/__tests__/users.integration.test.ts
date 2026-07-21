@@ -72,7 +72,7 @@ describe("users.is_setup_complete actor scope", () => {
     // can produce. The actor must exist, so create one first.
     const create = await execute(registry, adapter, systemCtx, "users.create", {
       email: EMAILS[2],
-      password: "setup-probe-pass",
+      password: "willow-lantern-42",
       displayName: "Setup Probe",
       roleNames: [],
     });
@@ -93,7 +93,7 @@ describe("users CRUD", () => {
   it("creates a user and lists them back with the assigned roles", async () => {
     const create = await execute(registry, adapter, systemCtx, "users.create", {
       email: EMAILS[0],
-      password: "editor-pass-word",
+      password: "canyon-quartz-51",
       displayName: "Editor User",
       roleNames: ["editor"],
     });
@@ -115,7 +115,7 @@ describe("users CRUD", () => {
   it("rejects duplicate emails", async () => {
     const dup = await execute(registry, adapter, systemCtx, "users.create", {
       email: EMAILS[0],
-      password: "dup-pass-word",
+      password: "meadow-willow-63",
       displayName: "Dup User",
       roleNames: [],
     });
@@ -147,7 +147,7 @@ describe("users CRUD", () => {
   it("deletes a non-first-owner user", async () => {
     await execute(registry, adapter, systemCtx, "users.create", {
       email: EMAILS[1],
-      password: "mod-pass-word",
+      password: "lantern-canyon-74",
       displayName: "Moderator",
       roleNames: ["reviewer"],
     });
