@@ -99,14 +99,14 @@
         {/if}
       </div>
       <div class="space-y-2">
-        <Label for="password">Password (min 8 chars)</Label>
+        <Label for="password">Password</Label>
         <Input
           id="password"
           name="password"
           type="password"
           autocomplete="new-password"
           required
-          minlength={8}
+          minlength={10}
           aria-invalid={setupForm.errors.password ? "true" : undefined}
           aria-describedby={setupForm.errors.password ? "password-err" : undefined}
           oninput={(e) =>
@@ -114,6 +114,10 @@
         />
         {#if setupForm.errors.password}
           <p id="password-err" class="text-xs text-destructive">{setupForm.errors.password}</p>
+        {:else}
+          <p class="text-xs text-muted-foreground">
+            At least 10 characters. Not a common password or your name/email.
+          </p>
         {/if}
       </div>
       <!-- Submit stays enabled — see comment in login form. The

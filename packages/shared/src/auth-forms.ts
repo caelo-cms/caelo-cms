@@ -18,7 +18,10 @@ export const setupFormSchema = z
   .object({
     displayName: z.string().min(1, "required").max(128),
     email: z.string().email("must be a valid email").max(254),
-    password: z.string().min(8, "min 8 characters").max(256),
+    // Client-side floor mirrors the server strength policy's length rule
+    // (validatePasswordStrength / MIN_PASSWORD_LENGTH); the server also checks
+    // common-list, sequences and personal-info and returns the real reason.
+    password: z.string().min(10, "at least 10 characters").max(256),
   })
   .strict();
 
