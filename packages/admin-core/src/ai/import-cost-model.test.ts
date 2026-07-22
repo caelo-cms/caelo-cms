@@ -36,6 +36,7 @@ import {
   estimateImportTokens,
   HISTORY_GROWTH_TOKENS_PER_CALL,
   IMPORT_CALLS_PER_PAGE,
+  IMPORT_CALLS_PER_PAGE_WITH_BULK_BUILD,
   IMPORT_FLOW_OVERHEAD_CALLS,
   type ImportModelRates,
   inferCallCountFromTokens,
@@ -82,15 +83,19 @@ function expectWithin2x(predicted: number, real: number): void {
 }
 
 describe("estimateImportCallCount (#298)", () => {
-  it("14 pages at today's calls/page reproduces run #15's 107 calls", () => {
-    // 14×7 + 9 = 107 — the constants were calibrated on exactly this run.
-    expect(estimateImportCallCount(14)).toBe(107);
+  it("14 pages on the LEGACY singular-op path reproduces run #15's 107 calls", () => {
+    // Run #15 predates #299's bulk build_page path, so reproduce it with the
+    // legacy 7-calls/page constant: 14×7 + 9 = 107.
+    expect(estimateImportCallCount(14, { callsPerPage: IMPORT_CALLS_PER_PAGE })).toBe(107);
     expect(14 * IMPORT_CALLS_PER_PAGE + IMPORT_FLOW_OVERHEAD_CALLS).toBe(107);
   });
 
-  it("zero pages means zero calls, and the #299 bulk constant shrinks the count", () => {
+  it("today's DEFAULT is the bulk build_page path (3 calls/page)", () => {
     expect(estimateImportCallCount(0)).toBe(0);
-    expect(estimateImportCallCount(14, { callsPerPage: 3 })).toBe(14 * 3 + 9);
+    // Default now uses the bulk constant — 14×3 + 9 = 51, not the legacy 107.
+    expect(estimateImportCallCount(14)).toBe(
+      14 * IMPORT_CALLS_PER_PAGE_WITH_BULK_BUILD + IMPORT_FLOW_OVERHEAD_CALLS,
+    );
   });
 });
 
@@ -118,8 +123,10 @@ describe("token model backtest — runs #13/#14/#15 (#298 acceptance)", () => {
 });
 
 describe("full pipeline backtest — run #15 from its page count (#298 acceptance)", () => {
-  it("14 pages price to a band within 2x of the $19-$92 reconstruction", () => {
-    const est = estimateImportAiCost(14, SONNET);
+  it("14 pages on the LEGACY path price to a band within 2x of the $19-$92 reconstruction", () => {
+    // Run #15 ran the pre-#299 singular-op path, so backtest it with the legacy
+    // 7-calls/page constant (the model still reproduces real telemetry).
+    const est = estimateImportAiCost(14, SONNET, { callsPerPage: IMPORT_CALLS_PER_PAGE });
     expect(est.calls).toBe(107);
     // High (no cache) vs the $92.38 no-cache reconstruction.
     expectWithin2x(est.aiCostUsd.high, REAL.run15.noCache);
@@ -132,11 +139,15 @@ describe("full pipeline backtest — run #15 from its page count (#298 acceptanc
     expectWithin2x(priceImportTokens(t, SONNET, 0.9).lowUsd, REAL.run15.cached90);
   });
 
-  it("no longer prices a 14-page migration like the old $/page heuristic", () => {
-    // Old estimator: 14 × $0.02–$0.10 = $0.28–$1.40 (15–65× under).
-    const est = estimateImportAiCost(14, SONNET);
-    expect(est.aiCostUsd.low).toBeGreaterThan(1.4 * 10);
-    expect(est.aiCostUsd.high).toBeGreaterThan(REAL.run15.noCache / 2);
+  it("today's bulk-build DEFAULT prices a 14-page migration well below the legacy path", () => {
+    const bulk = estimateImportAiCost(14, SONNET);
+    const legacy = estimateImportAiCost(14, SONNET, { callsPerPage: IMPORT_CALLS_PER_PAGE });
+    // Bulk build (3 calls/page) is materially cheaper than the old 7-call chain.
+    expect(bulk.aiCostUsd.high).toBeLessThan(legacy.aiCostUsd.high);
+    // …but still an order of magnitude above the discredited $/page heuristic
+    // (14 × $0.02–$0.10 = $0.28–$1.40, which was 15–65× under the real bill).
+    expect(bulk.aiCostUsd.low).toBeGreaterThan(1.4 * 5);
+    expect(bulk.aiCostUsd.high).toBeGreaterThan(1.4 * 5);
   });
 });
 

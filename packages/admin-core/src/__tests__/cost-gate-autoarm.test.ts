@@ -35,9 +35,10 @@ describe("deriveCeilingFromEstimate (band → auto-armed ceiling)", () => {
       aiCostUsd: { low: 0.28, high: 1.4 },
     });
     if (!d.ok) throw new Error(`expected ok, got: ${d.reason}`);
-    // Run #15's shown band: $0.28–$1.40 → ceiling $4.20 at factor 3.
-    expect(ESTIMATE_CEILING_SAFETY_FACTOR).toBe(3);
-    expect(d.ceilingMicrocents).toBe(Math.round(1.4 * 3 * MICROCENTS_PER_MAJOR_UNIT));
+    // Ceiling = the estimate high (factor 1 — the ceiling IS the approved
+    // maximum, not a multiple of it). $1.40 band high → $1.40 ceiling.
+    expect(ESTIMATE_CEILING_SAFETY_FACTOR).toBe(1);
+    expect(d.ceilingMicrocents).toBe(Math.round(1.4 * 1 * MICROCENTS_PER_MAJOR_UNIT));
     expect(d.currency).toBe("USD");
     expect(d.estimateHighUsd).toBe(1.4);
   });
@@ -71,10 +72,10 @@ describe("deriveCeilingFromEstimate (band → auto-armed ceiling)", () => {
   });
 
   it("keeps a tiny-but-representable band armable", () => {
-    // high = 1e-8 USD → ×3 = 3µ¢: small, silly, but storable and honest.
+    // high = 1e-8 USD → 1µ¢ at factor 1: small, silly, but storable and honest.
     const d = deriveCeilingFromEstimate({ aiCostUsd: { low: 0, high: 1e-8 } });
     if (!d.ok) throw new Error(`expected ok, got: ${d.reason}`);
-    expect(d.ceilingMicrocents).toBe(3);
+    expect(d.ceilingMicrocents).toBe(1);
   });
 });
 

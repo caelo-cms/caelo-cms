@@ -28,19 +28,21 @@
  */
 
 /**
- * API calls (chat-runner loops) per rebuilt page on TODAY's singular-op
- * build path. Run #15 main session: 36× add_module_to_page + 29×
- * set_page_module_content + 9× create_content_instance + 8× create_page +
- * 8× edit_module + review/fidelity round-trips ≈ 98 build calls for 14
- * pages ⇒ 7 calls/page.
+ * LEGACY (pre-#299) calls/page on the singular-op build path. Run #15 main
+ * session: 36× add_module_to_page + 29× set_page_module_content + 9×
+ * create_content_instance + 8× create_page + 8× edit_module + review/fidelity
+ * round-trips ≈ 98 build calls for 14 pages ⇒ 7 calls/page. Kept for reference
+ * and historical calibration; NO LONGER the default (see below).
  */
 export const IMPORT_CALLS_PER_PAGE = 7;
 
 /**
- * Expected calls/page once issue #299's bulk build ops (`build_page`,
- * `_many` variants) land: one build_page call + content fill + one
- * review/fidelity round-trip ≈ 3. NOT the default — switch the default to
- * this constant when #299 merges and a replay confirms the ratio.
+ * Calls/page on TODAY's build path. Issue #299's bulk ops shipped — the
+ * site-migrate skill now assembles each page with ONE `build_page` call
+ * (+ content fill + one review/fidelity round-trip ≈ 3), not the 5–7 chained
+ * create/add/set calls run #15 measured. This is the DEFAULT (`resolve()`
+ * below): the old 7-calls/page figure roughly doubled the estimate for the
+ * current path.
  */
 export const IMPORT_CALLS_PER_PAGE_WITH_BULK_BUILD = 3;
 
@@ -143,7 +145,7 @@ interface ResolvedParams {
 
 function resolve(params?: ImportCostModelParams): ResolvedParams {
   return {
-    callsPerPage: params?.callsPerPage ?? IMPORT_CALLS_PER_PAGE,
+    callsPerPage: params?.callsPerPage ?? IMPORT_CALLS_PER_PAGE_WITH_BULK_BUILD,
     flowOverheadCalls: params?.flowOverheadCalls ?? IMPORT_FLOW_OVERHEAD_CALLS,
     base: params?.baseContextTokensPerCall ?? BASE_CONTEXT_TOKENS_PER_CALL,
     slope: params?.historyGrowthTokensPerCall ?? HISTORY_GROWTH_TOKENS_PER_CALL,
