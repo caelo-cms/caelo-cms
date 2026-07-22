@@ -29,6 +29,9 @@ const createBugReportInput = z
     evidence: z.string().max(8000).nullable().optional(),
     severity: z.enum(["blocking", "degraded", "cosmetic"]).default("degraded"),
     blockedTask: z.boolean().default(false),
+    // 'ai' = the model filed it via the bug_report tool; 'auto' = the
+    // chat-runner auto-captured a failed tool result. Default 'ai'.
+    source: z.enum(["ai", "auto"]).default("ai"),
   })
   .strict();
 
@@ -39,10 +42,25 @@ export const createBugReportOp = defineOperation({
   input: createBugReportInput,
   output: z.object({ id: z.string() }),
   handler: async (ctx, input, tx) => {
+    // Auto-captured reports dedupe within a session: the same tool failing with
+    // the same message would otherwise file one row per retry. AI-filed reports
+    // rely on the model's "report once per defect" contract instead.
+    if (input.source === "auto" && input.chatSessionId) {
+      const dup = (await tx.execute(sql`
+        SELECT id::text AS id FROM ai_bug_reports
+        WHERE source = 'auto'
+          AND chat_session_id = ${input.chatSessionId}::uuid
+          AND suspected_tool IS NOT DISTINCT FROM ${input.suspectedTool ?? null}
+          AND what_happened = ${input.whatHappened}
+          AND status IN ('new', 'triaged')
+        LIMIT 1
+      `)) as unknown as Array<{ id: string }>;
+      if (dup[0]) return ok({ id: dup[0].id });
+    }
     const rows = (await tx.execute(sql`
       INSERT INTO ai_bug_reports
         (chat_session_id, actor_id, title, what_happened, expected,
-         suspected_tool, evidence, severity, blocked_task)
+         suspected_tool, evidence, severity, blocked_task, source)
       VALUES (
         ${input.chatSessionId ?? null}::uuid,
         ${ctx.actorId}::uuid,
@@ -52,7 +70,8 @@ export const createBugReportOp = defineOperation({
         ${input.suspectedTool ?? null},
         ${input.evidence ?? null},
         ${input.severity},
-        ${input.blockedTask}
+        ${input.blockedTask},
+        ${input.source}
       )
       RETURNING id::text AS id
     `)) as unknown as Array<{ id: string }>;
@@ -80,6 +99,8 @@ const bugReportRow = z.object({
   severity: z.string(),
   blockedTask: z.boolean(),
   status: z.string(),
+  /** 'ai' (model-filed via bug_report) or 'auto' (chat-runner auto-captured). */
+  source: z.string(),
 });
 
 export const listBugReportsOp = defineOperation({
@@ -102,6 +123,7 @@ export const listBugReportsOp = defineOperation({
              severity,
              blocked_task AS "blockedTask",
              status,
+             source,
              count(*) OVER ()::int AS total
       FROM ai_bug_reports
       ${where}

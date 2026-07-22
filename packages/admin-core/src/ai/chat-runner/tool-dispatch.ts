@@ -350,6 +350,24 @@ export async function* dispatchToolCall(
     });
   }
 
+  // Auto-capture EVERY failed tool result into ai_bug_reports (source 'auto'),
+  // deduped per session by the op, so a genuine defect is never lost just
+  // because the model didn't file it via bug_report. This runs AFTER
+  // auto-recovery, so only a FINAL failure records. Best-effort — a failure to
+  // record must never break the tool flow — and we skip the bug_report tool
+  // itself so a broken bug channel can't recurse into filing about itself.
+  if (!result.ok && call.name !== "bug_report") {
+    await execute(registry, adapter, aiCtxWithBranch, "ai_bug_reports.create", {
+      chatSessionId: deps.chatSessionId,
+      title: `Tool ${call.name} returned an error`.slice(0, 200),
+      whatHappened: result.content.slice(0, 4000),
+      expected: "The tool call should succeed, or fail with a recoverable non-error result.",
+      suspectedTool: call.name,
+      severity: "degraded",
+      source: "auto",
+    }).catch(() => undefined);
+  }
+
   outcomes?.push({
     toolCallId: call.id,
     name: call.name,

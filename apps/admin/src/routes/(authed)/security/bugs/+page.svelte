@@ -40,6 +40,7 @@
         (r, i) =>
           `\n## ${i + 1}. ${r.title}\n\n` +
           `- **Severity:** ${r.severity}${r.blockedTask ? " (blocked the task)" : ""}\n` +
+          `- **Source:** ${r.source === "auto" ? "auto-captured" : "AI-filed"}\n` +
           `- **Status:** ${r.status}\n` +
           `- **When:** ${r.createdAt}\n` +
           (r.suspectedTool ? `- **Suspected tool:** \`${r.suspectedTool}\`\n` : "") +
@@ -108,6 +109,7 @@
         <thead class="border-b bg-muted/40 text-left text-xs uppercase text-muted-foreground">
           <tr>
             <th class="px-4 py-2 font-medium">Title</th>
+            <th class="px-4 py-2 font-medium">Source</th>
             <th class="px-4 py-2 font-medium">Severity</th>
             <th class="px-4 py-2 font-medium">Status</th>
             <th class="px-4 py-2 font-medium">Suspected tool</th>
@@ -126,6 +128,21 @@
             >
               <td class="px-4 py-2 font-medium">{r.title}</td>
               <td class="px-4 py-2">
+                <span
+                  class={cn(
+                    "rounded px-1.5 py-0.5 text-xs font-medium",
+                    r.source === "auto"
+                      ? "bg-muted text-muted-foreground"
+                      : "bg-primary/10 text-primary",
+                  )}
+                  title={r.source === "auto"
+                    ? "Auto-captured from a failed tool result"
+                    : "Filed by the AI via the bug_report tool"}
+                >
+                  {r.source === "auto" ? "auto" : "ai"}
+                </span>
+              </td>
+              <td class="px-4 py-2">
                 <span class={cn("rounded px-1.5 py-0.5 text-xs font-medium", severityClass(r.severity))}>
                   {r.severity}
                 </span>
@@ -138,7 +155,7 @@
             </tr>
             {#if expanded[r.id]}
               <tr class="border-b bg-muted/20 last:border-0">
-                <td colspan="5" class="space-y-3 px-4 py-3 text-sm">
+                <td colspan="6" class="space-y-3 px-4 py-3 text-sm">
                   <div>
                     <div class="text-xs font-semibold uppercase text-muted-foreground">What happened</div>
                     <p class="mt-0.5 whitespace-pre-wrap">{r.whatHappened}</p>
