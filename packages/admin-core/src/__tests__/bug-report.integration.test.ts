@@ -107,4 +107,49 @@ describe("bug_report tool + ai_bug_reports ops", () => {
     expect(mine[1]?.blockedTask).toBe(false);
     expect(mine.every((x) => x.status === "new")).toBe(true);
   });
+
+  it("stamps source 'ai' by default and 'auto' when set, surfaced by list", async () => {
+    const a = await execute(registry, adapter, SYSTEM, "ai_bug_reports.create", {
+      title: "BRT source default",
+      whatHappened: "x",
+      expected: "y",
+    });
+    const b = await execute(registry, adapter, SYSTEM, "ai_bug_reports.create", {
+      title: "BRT source auto",
+      whatHappened: "x",
+      expected: "y",
+      source: "auto",
+    });
+    expect(a.ok && b.ok).toBe(true);
+    const listed = await execute(registry, adapter, SYSTEM, "ai_bug_reports.list", { limit: 200 });
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const rows = (listed.value as { reports: { title: string; source: string }[] }).reports;
+    expect(rows.find((r) => r.title === "BRT source default")?.source).toBe("ai");
+    expect(rows.find((r) => r.title === "BRT source auto")?.source).toBe("auto");
+  });
+
+  it("auto-captured reports dedupe within a session by (tool, message)", async () => {
+    const sess = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      title: "BRT dedup session",
+    });
+    if (!sess.ok) throw new Error(JSON.stringify(sess.error));
+    const chatSessionId = (sess.value as { chatSessionId: string }).chatSessionId;
+    const mk = (whatHappened: string) =>
+      execute(registry, adapter, SYSTEM, "ai_bug_reports.create", {
+        title: "BRT auto dedup",
+        whatHappened,
+        expected: "ok",
+        suspectedTool: "get_import_page_screenshot",
+        severity: "degraded",
+        source: "auto",
+        chatSessionId,
+      });
+    const first = await mk("import page not found");
+    const again = await mk("import page not found"); // identical → deduped
+    const other = await mk("a different failure"); // distinct → new row
+    if (!first.ok || !again.ok || !other.ok) throw new Error("create failed");
+    const id1 = (first.value as { id: string }).id;
+    expect((again.value as { id: string }).id).toBe(id1); // deduped
+    expect((other.value as { id: string }).id).not.toBe(id1); // distinct failure
+  });
 });

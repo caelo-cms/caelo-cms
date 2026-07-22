@@ -24,6 +24,8 @@ export interface BugReport {
   severity: string;
   blockedTask: boolean;
   status: string;
+  /** 'ai' = model-filed via bug_report; 'auto' = chat-runner auto-captured. */
+  source: string;
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
