@@ -311,8 +311,8 @@ describe("issue #297 — auto-armed ceiling + live gate state", () => {
     expect(appr.ok).toBe(true);
     if (!appr.ok) return;
     const v = appr.value as ArmedApproval;
-    // Run #15's shown band ($0.28–$1.40) → $4.20 ceiling at factor 3.
-    expect(v.ceilingMicrocents).toBe(4.2 * USD);
+    // Band high $1.40 → $1.40 ceiling at factor 1 (ceiling = approved max).
+    expect(v.ceilingMicrocents).toBe(1.4 * USD);
     expect(v.ceilingCurrency).toBe("USD");
     expect(v.ceilingSource).toBe("estimate");
 
@@ -321,7 +321,7 @@ describe("issue #297 — auto-armed ceiling + live gate state", () => {
     });
     expect(cost.ok).toBe(true);
     if (!cost.ok) return;
-    expect((cost.value as { ceilingMicrocents: number | null }).ceilingMicrocents).toBe(4.2 * USD);
+    expect((cost.value as { ceilingMicrocents: number | null }).ceilingMicrocents).toBe(1.4 * USD);
   });
 
   it("failed estimate: budget-less approval is rejected; an explicit budget arms", async () => {
@@ -389,7 +389,7 @@ describe("issue #297 — auto-armed ceiling + live gate state", () => {
     expect(g).not.toBeNull();
     if (!g) return;
     expect(g.runId).toBe(armedRunId);
-    expect(g.ceilingMicrocents).toBe(4.2 * USD);
+    expect(g.ceilingMicrocents).toBe(1.4 * USD);
     expect(g.spentMicrocents).toBe(100_000);
     expect(g.callCount).toBe(2);
     expect(g.unpricedCallCount).toBe(1);
@@ -453,7 +453,7 @@ describe("issue #297 — auto-armed ceiling + live gate state", () => {
         runId: armedRunId,
         kind,
         spentMicrocents: 5 * USD,
-        ceilingMicrocents: 4.2 * USD,
+        ceilingMicrocents: 1.4 * USD,
         message: `issue297 ${kind} fixture`,
       });
 

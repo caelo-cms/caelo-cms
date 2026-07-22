@@ -48,16 +48,17 @@ export function roundsToZeroMicrocents(major: number): boolean {
 }
 
 /**
- * issue #297 — safety factor between the estimate the operator approved and
- * the ceiling the approval arms. The estimator is a band, not a promise
- * (run #15 was 15–65× off before #298's recalibration), so the ceiling
- * leaves headroom above `aiCostUsd.high` — but bounded headroom: the whole
- * point of #297 is that "$1.40 estimate, $600 real" can never happen again.
- * 3× keeps honest estimator noise from tripping the gate mid-run while
- * still capping the worst case at the same order of magnitude the operator
- * said yes to.
+ * issue #297 — factor between the estimate the operator approved and the
+ * ceiling the approval arms. Operator direction (2026-07): the ceiling is the
+ * approved MAXIMUM, not a multiple of it — a 26-page migration must never arm a
+ * €700 gate off a ~$80 estimate. `aiCostUsd.high` already assumes ZERO prompt
+ * caching (the worst-case bound; real runs cache 40–95% of the prefix), so the
+ * high band is itself a conservative cap — arming the ceiling AT it (factor 1)
+ * still leaves real spend comfortably underneath in the normal case, and if a
+ * run genuinely reaches the estimated worst case it PAUSES and asks rather than
+ * silently spending a multiple of what the operator agreed to.
  */
-export const ESTIMATE_CEILING_SAFETY_FACTOR = 3;
+export const ESTIMATE_CEILING_SAFETY_FACTOR = 1;
 
 /**
  * issue #297 — the ceiling `imports.execute_proposal` arms from a stored

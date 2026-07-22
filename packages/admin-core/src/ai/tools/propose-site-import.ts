@@ -100,11 +100,15 @@ export function describeEstimate(est: CrawlScopeEstimate): string {
       ? ` (models ≈${e.estimatedCalls} AI calls; low assumes prompt-cache discounts, high none)`
       : "";
   // issue #297 — the shown number IS the contract: approving arms the cost
-  // gate at high × safety factor. Said here so both the chat message and
-  // the ProposeCard carry the ceiling the operator is agreeing to.
+  // gate at the estimate's high bound (safety factor 1). Said here so both the
+  // chat message and the ProposeCard carry the ceiling the operator agrees to.
   const derived = deriveCeilingFromEstimate(e);
+  const factorNote =
+    ESTIMATE_CEILING_SAFETY_FACTOR === 1
+      ? "the estimate's high bound"
+      : `${ESTIMATE_CEILING_SAFETY_FACTOR}× the estimate high`;
   const ceilingNote = derived.ok
-    ? ` Approving arms a cost ceiling of ${formatMicrocentsAsMoney(derived.ceilingMicrocents, "USD")} automatically (${ESTIMATE_CEILING_SAFETY_FACTOR}× the estimate high); the run pauses and asks if real spend reaches it.`
+    ? ` Approving arms a cost ceiling of ${formatMicrocentsAsMoney(derived.ceilingMicrocents, "USD")} automatically (${factorNote}); the run pauses and asks if real spend reaches it.`
     : "";
   return `Scope: ${basis}; crawl ≈ ${e.crawlMinutes} min; AI rebuild ≈ $${e.aiCostUsd.low}–$${e.aiCostUsd.high}${modelNote}.${ceilingNote}`;
 }
