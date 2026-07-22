@@ -908,20 +908,43 @@ export const getImportPageScreenshotKeysOp = defineOperation({
     stagedScreenshotObjectKey: z.string().nullable(),
   }),
   handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
+    // Resolve the staging `import_pages.id` OR the composed CMS page id
+    // (`accepted_page_id`) — the same dual-id ergonomics the fidelity +
+    // inventory tools use, so the AI can pass whichever id it is holding.
+    let rows = (await tx.execute(sql`
       SELECT source_url, screenshot_object_key, staged_screenshot_object_key
-      FROM import_pages WHERE id = ${input.importPageId}::uuid LIMIT 1
+      FROM import_pages
+      WHERE id = ${input.importPageId}::uuid
+         OR accepted_page_id = ${input.importPageId}::uuid
+      ORDER BY (id = ${input.importPageId}::uuid) DESC
+      LIMIT 1
     `)) as unknown as Array<{
       source_url: string;
       screenshot_object_key: string | null;
       staged_screenshot_object_key: string | null;
     }>;
+    // Direct-build fallback (issue #278): a #278-built page has no
+    // `accepted_page_id` linkage, so match the built page's slug against the
+    // crawled source's `proposed_slug`. Without this, get_import_page_screenshot
+    // fails with "import page not found" for every page a migration built
+    // directly — exactly the mismatch that surfaced in the chat.
+    if (!rows[0]) {
+      rows = (await tx.execute(sql`
+        SELECT ip.source_url, ip.screenshot_object_key, ip.staged_screenshot_object_key
+        FROM pages p
+        JOIN import_pages ip ON ip.proposed_slug = p.slug
+        WHERE p.id = ${input.importPageId}::uuid AND p.deleted_at IS NULL
+        ORDER BY ip.created_at DESC
+        LIMIT 1
+      `)) as unknown as typeof rows;
+    }
     const r = rows[0];
     if (!r) {
       return err({
         kind: "HandlerError",
         operation: "imports.get_page_screenshot_keys",
-        message: "import page not found — list the run with imports.get for valid page ids",
+        message:
+          "import page not found — importPageId accepts the staging import_pages.id, the composed CMS page id, OR (for a directly-built #278 page) a built page whose slug matches a crawled source page; list the run with imports.get to see the source pages and slugs",
       });
     }
     return ok({

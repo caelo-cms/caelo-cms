@@ -62,6 +62,18 @@ import ChoiceCard from "./ChoiceCard.svelte";
       name === "update_modules_many",
   );
   const isFind = $derived(name === "find_media" || name === "find_redirects");
+  // Tools conventionally prefix their own error content with "<name> failed:".
+  // The failure header below already renders "{name} failed:", so strip a
+  // redundant leading copy of THIS tool's own prefix to avoid the doubled
+  // "get_import_page_screenshot failed: get_import_page_screenshot failed: …".
+  // A different op-name prefix (e.g. "imports.get_… failed:") is left intact —
+  // that is useful which-op context, not a duplicate of the header.
+  const failBody = $derived.by(() => {
+    const prefix = `${name} failed:`;
+    return content.toLowerCase().startsWith(prefix.toLowerCase())
+      ? content.slice(prefix.length).trimStart()
+      : content;
+  });
 </script>
 
 {#if !ok}
@@ -72,7 +84,7 @@ import ChoiceCard from "./ChoiceCard.svelte";
     data-testid="tool-card-error"
   >
     <strong>{name} failed:</strong>
-    <span class="ml-1">{content}</span>
+    <span class="ml-1">{failBody}</span>
   </div>
 {:else if isPropose}
   <ProposeCard {name} {content} {args} {csrfToken} {onApproved} />
