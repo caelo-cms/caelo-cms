@@ -76,9 +76,18 @@ describe("site-migrate skill row (#188)", () => {
     // facets:{markdown:true, meta:true, links:true}.
     expect(b).toContain("map_external_page_types");
     expect(b).toContain("markdown:true, meta:true, links:true");
-    // Step 3 early checkpoint — visual self-analysis then operator confirm.
+    // Step 1 DESIGN DIRECTION (migration 0176) — the operator picks the design
+    // intent (1:1 / refresh / optimize) BEFORE the crawl, via offer_choices.
+    expect(b).toContain("DESIGN DIRECTION");
+    expect(b).toContain("1:1 BEIBEHALTEN");
+    expect(b).toContain("AUFFRISCHEN");
+    expect(b).toContain("OPTIMIERTER VORSCHLAG");
+    // The rebuild contract keys its improve-vs-preserve stance off that choice.
+    expect(b).toContain("FOLLOW THE CHOSEN DIRECTION");
+    // Step 3 early checkpoint — visual self-analysis then operator confirm on
+    // the RESULT (0176 reworded it to reference the chosen style).
     expect(b).toContain("verify_import_page_fidelity");
-    expect(b).toContain("So sieht deine Startseite aus — passt die Richtung?");
+    expect(b).toContain("passt die Richtung?");
     expect(b).toContain("offer_choices");
     // Step 4 fan-out — boilerplate dedup, inventory proof, disjoint subagents.
     expect(b).toContain("detect_import_boilerplate");
@@ -90,7 +99,8 @@ describe("site-migrate skill row (#188)", () => {
     expect(b).toContain("THE REBUILD CONTRACT");
     expect(b).toContain("REPLACE IN ONE STEP");
     expect(b).toContain("CONTENT COMPLETENESS");
-    expect(b).toContain("IMPROVE BY DEFAULT");
+    // 0176 renamed the improve rule to FOLLOW THE CHOSEN DIRECTION (asserted
+    // above) — it keys off the step-1 design choice instead of a silent default.
     expect(b).toContain("CHROME IS LAYOUT-OWNED");
     // No "build all at once?" prompt, no blind upfront crawl.
     expect(b).toContain("build them all at once?");
