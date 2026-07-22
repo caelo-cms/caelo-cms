@@ -11,7 +11,7 @@
    * to /content/chat/[sessionId]/stream stays untouched.
    */
 
-  import { ArrowDown, Lock, Unlock } from "lucide-svelte";
+  import { ArrowDown, Lock, Square, Unlock } from "lucide-svelte";
   import { onMount, tick } from "svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -125,6 +125,10 @@
     return () => window.removeEventListener("caelo:focus-chat", focus);
   });
   let streaming = $state(false);
+  // Aborts the in-flight chat stream when the operator hits Stop. The server
+  // sees the same abort via `request.signal`, stops the runner, and marks the
+  // turn interrupted. Null when no stream is running.
+  let streamAbort = $state<AbortController | null>(null);
 
   // v0.2.45 — autoscroll + jump-to-latest button.
   // followBottom: when true (default), each new message / streaming-text
@@ -1117,6 +1121,15 @@
     };
   });
 
+  /**
+   * Stop the AI's current action, whatever it is. Aborts the streaming fetch;
+   * the server-side runner stops at its next abort check and persists the
+   * in-flight assistant turn as interrupted. Safe to call when idle (no-op).
+   */
+  function stopStreaming(): void {
+    streamAbort?.abort();
+  }
+
   async function sendMessage(
     origin?: "system",
     // Plan B (SDK approval gate) — when set, this is NOT a composer send but a
@@ -1161,33 +1174,51 @@
         },
       ];
     }
-    const res = await fetch(`/content/chat/${session.id}/stream`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
-      body: JSON.stringify(
-        resume
-          ? { resumeApproval: resume }
-          : {
-              content: text,
-              chips: sentChips,
-              // issue #29 — provenance so the persisted row + reload keep the
-              // system-origin status treatment durable across refresh.
-              ...(origin ? { origin } : {}),
-              ...(sentAttachments.length > 0
-                ? {
-                    attachments: sentAttachments.map((a) => ({
-                      assetId: a.assetId,
-                      mime: a.mime,
-                      alt: a.alt,
-                    })),
-                  }
-                : {}),
-              ...(activePageId ? { activePageId } : {}),
-            },
-      ),
-    });
+    const ac = new AbortController();
+    streamAbort = ac;
+    let res: Response;
+    try {
+      res = await fetch(`/content/chat/${session.id}/stream`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
+        signal: ac.signal,
+        body: JSON.stringify(
+          resume
+            ? { resumeApproval: resume }
+            : {
+                content: text,
+                chips: sentChips,
+                // issue #29 — provenance so the persisted row + reload keep the
+                // system-origin status treatment durable across refresh.
+                ...(origin ? { origin } : {}),
+                ...(sentAttachments.length > 0
+                  ? {
+                      attachments: sentAttachments.map((a) => ({
+                        assetId: a.assetId,
+                        mime: a.mime,
+                        alt: a.alt,
+                      })),
+                    }
+                  : {}),
+                ...(activePageId ? { activePageId } : {}),
+              },
+        ),
+      });
+    } catch (e) {
+      // A user-initiated Stop aborts the fetch before the body opens — clean up
+      // quietly. Anything else is a real network failure worth surfacing.
+      streaming = false;
+      streamAbort = null;
+      currentActivity = null;
+      if (!(ac.signal.aborted || (e instanceof Error && e.name === "AbortError"))) {
+        chatError = `Chat request failed: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      return;
+    }
     if (!res.body) {
       streaming = false;
+      streamAbort = null;
+      currentActivity = null;
       // v0.2.45 — surface a clear error instead of silently dropping the
       // optimistic user message. The fetch reached the server but no body
       // came back; usually means the route returned a non-stream error.
@@ -1198,7 +1229,18 @@
     const decoder = new TextDecoder();
     let buf = "";
     while (true) {
-      const { value, done } = await reader.read();
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        chunk = await reader.read();
+      } catch (e) {
+        // Stop button aborted the stream mid-flight — exit gracefully. The
+        // server sees the same abort via request.signal, stops the runner and
+        // persists the in-flight turn as interrupted; the partial text we have
+        // is flushed into the transcript by the guard below.
+        if (ac.signal.aborted || (e instanceof Error && e.name === "AbortError")) break;
+        throw e;
+      }
+      const { value, done } = chunk;
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       let nl = buf.indexOf("\n");
@@ -1507,6 +1549,8 @@
       streamingText = "";
     }
     streaming = false;
+    streamAbort = null;
+    currentActivity = null;
   }
 
   function lineDiff(before: string, after: string): { kind: "ctx" | "del" | "add"; text: string }[] {
@@ -2175,14 +2219,27 @@
                 {debug ? "🐞 Debug ON" : "🐞 Debug"}
               </Button>
             {/if}
-            <Button
-              type="submit"
-              size="sm"
-              disabled={streaming || composer.trim().length === 0}
-              data-testid="chat-send"
-            >
-              {streaming ? "…" : "Send"}
-            </Button>
+            {#if streaming}
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                onclick={stopStreaming}
+                data-testid="chat-stop"
+                title="Stop the AI's current action"
+              >
+                <Square class="mr-1.5 size-3.5 fill-current" /> Stop
+              </Button>
+            {:else}
+              <Button
+                type="submit"
+                size="sm"
+                disabled={composer.trim().length === 0}
+                data-testid="chat-send"
+              >
+                Send
+              </Button>
+            {/if}
           </div>
         </form>
       </CardContent>
