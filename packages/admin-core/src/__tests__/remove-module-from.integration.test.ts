@@ -13,6 +13,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { ToolContext } from "../ai/tools/dispatch.js";
+import { moveModuleTool } from "../ai/tools/move-module.js";
 import { removeModuleFromTool } from "../ai/tools/remove-module-from.js";
 import { registerAdminOps } from "../register.js";
 
@@ -129,6 +130,29 @@ beforeAll(async () => {
 afterAll(async () => {
   await wipe();
   await adapter.close();
+});
+
+describe("move_module — same-block move reorders in place (detected-bug)", () => {
+  it("moving a module to its CURRENT block repositions it instead of erroring", async () => {
+    const a = await makeModule(`${PFX}-mv-a`);
+    const b = await makeModule(`${PFX}-mv-b`);
+    const pageId = await makePage(`${PFX}-mv-page`);
+    await execute(registry, adapter, SYSTEM, "pages.set_modules", {
+      pageId,
+      blocks: [{ blockName: "content", moduleIds: [a, b] }],
+    });
+    // order is [a, b]; move `a` to the bottom of the SAME "content" block.
+    // Previously this dead-ended with "already in block … use reorder_module";
+    // now it performs the reorder in place (§11 — no forced round-trip).
+    const res = await moveModuleTool.handler(
+      SYSTEM,
+      { pageId, moduleId: a, toBlockName: "content", position: "bottom" } as never,
+      toolCtx(),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.content).toContain("reordered");
+    expect(await pageContentModuleIds(pageId)).toEqual([b, a]);
+  });
 });
 
 describe("remove_module_from — target='page'", () => {

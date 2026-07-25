@@ -48,9 +48,9 @@ export const moveModuleTool: ToolDefinitionWithHandler<
 > = {
   name: "move_module",
   description:
-    "Move a module from its current block to a different block on the same page. " +
+    "Move a module to a block on the same page, at a position. " +
     "Use when the user says 'move the hero into the header' or 'put this banner above the footer'. " +
-    "For changing order within the same block, use `reorder_module` instead.",
+    "If `toBlockName` is the module's CURRENT block this performs an in-place reorder (same effect as reorder_module), so you don't need a separate call.",
   schema: moveModuleToolInput,
   inputSchema: MOVE_MODULE_INPUT_SCHEMA,
   // 2026-07 — STATIC on purpose (prompt-cache): the per-turn blockName
@@ -78,12 +78,11 @@ export const moveModuleTool: ToolDefinitionWithHandler<
         content: `module ${input.moduleId} is not on page ${input.pageId}`,
       };
     }
-    if (fromBlock === input.toBlockName) {
-      return {
-        ok: false,
-        content: `module is already in block "${input.toBlockName}" — use reorder_module to change its position within the block`,
-      };
-    }
+    // A move whose target block IS the current block is just a reorder — do it
+    // in place instead of bouncing the AI to reorder_module (§11: no forced
+    // round-trip). The block mapping below removes-then-reinserts so this is a
+    // clean reposition, not a duplicate.
+    const sameBlock = fromBlock === input.toBlockName;
     // v0.12.3 (issue #106) — pages.get_with_modules returns ALL template
     // blocks (incl. empty ones), so a toBlockName absent from this list is
     // genuinely not a slot on the page's template. Fail loud + AI-actionable
@@ -99,23 +98,26 @@ export const moveModuleTool: ToolDefinitionWithHandler<
       });
     }
     const blocks = detail.blocks.map((b) => {
-      if (b.blockName === fromBlock) {
-        return {
-          blockName: b.blockName,
-          moduleIds: b.modules.map((m) => m.moduleId).filter((id) => id !== input.moduleId),
-        };
-      }
       if (b.blockName === input.toBlockName) {
-        const ids = b.modules.map((m) => m.moduleId);
+        // Insert at the requested position. For a same-block move, first drop
+        // the module from its current slot so the reinsert is a reposition,
+        // not a duplicate (when the blocks differ it isn't here anyway).
+        const base = b.modules.map((m) => m.moduleId).filter((id) => id !== input.moduleId);
         const insertIdx =
           input.position === "top"
             ? 0
             : input.position === "bottom"
-              ? ids.length
-              : Math.min(input.position, ids.length);
+              ? base.length
+              : Math.min(input.position, base.length);
         return {
           blockName: b.blockName,
-          moduleIds: [...ids.slice(0, insertIdx), input.moduleId, ...ids.slice(insertIdx)],
+          moduleIds: [...base.slice(0, insertIdx), input.moduleId, ...base.slice(insertIdx)],
+        };
+      }
+      if (b.blockName === fromBlock) {
+        return {
+          blockName: b.blockName,
+          moduleIds: b.modules.map((m) => m.moduleId).filter((id) => id !== input.moduleId),
         };
       }
       return {
@@ -132,7 +134,9 @@ export const moveModuleTool: ToolDefinitionWithHandler<
     }
     return {
       ok: true,
-      content: `moved module ${input.moduleId} from "${fromBlock}" to "${input.toBlockName}"`,
+      content: sameBlock
+        ? `reordered module ${input.moduleId} within block "${input.toBlockName}" to position ${input.position}`
+        : `moved module ${input.moduleId} from "${fromBlock}" to "${input.toBlockName}"`,
     };
   },
 };
