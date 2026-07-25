@@ -162,12 +162,21 @@ export const PUBLIC_PRESERVE: ReadonlySet<string> = new Set([
  *     (`logo_media_id` etc.) are ON DELETE SET NULL; CASCADE truncated
  *     `themes` and left installs with no active theme (empty themes UI,
  *     cold-start gate firing on every mock-AI spec).
+ *   - `pages` (#0184): `locales.home_page_id` is ON DELETE SET NULL;
+ *     CASCADE-truncating `pages` would empty the `locales` seed (the `en`
+ *     row), so every integration test that seeds a page/module then failed
+ *     at setup. `pages`' only outbound FK targets `templates` (a PRESERVE
+ *     table), so protecting it opens no new hole (invariant test #112).
  *
  * These DELETEs run AFTER the truncate so plain NO ACTION references
  * from churn tables (e.g. `pages_seo.og_image_asset_id`) are already
  * gone and can't block the DELETE.
  */
-export const DELETE_NOT_TRUNCATE: ReadonlySet<string> = new Set(["plugins", "media_assets"]);
+export const DELETE_NOT_TRUNCATE: ReadonlySet<string> = new Set([
+  "plugins",
+  "media_assets",
+  "pages",
+]);
 
 async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promise<void> {
   // The reset runs one `.begin()` (a single connection) plus a table
