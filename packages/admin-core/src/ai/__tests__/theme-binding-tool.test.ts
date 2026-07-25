@@ -77,7 +77,11 @@ describe("bindThemeLiterals (issue #164 slice 2)", () => {
     expect(opInputs[0]?.css).toBe(".cta{background:#4f46e5}");
   });
 
-  it("place mode rejects the flag at the boundary (mode exclusivity)", () => {
+  it("place mode TOLERATES the flag at the boundary (placement-only, handler surfaces the ignored-authoring info)", () => {
+    // §1A/§11 — a valid placement must never fail over an extra authoring
+    // field. moduleId + bindThemeLiterals passes the schema; bindThemeLiterals
+    // is an authoring concern that placement does not apply, so the tool
+    // handler (not the schema) reports it as ignored.
     const r = addModuleToolInput.safeParse({
       target: "page",
       targetRef: "11111111-1111-4111-8111-111111111101",
@@ -86,6 +90,6 @@ describe("bindThemeLiterals (issue #164 slice 2)", () => {
       moduleId: "11111111-1111-4111-8111-111111111102",
       bindThemeLiterals: true,
     });
-    expect(r.success).toBe(false);
+    expect(r.success).toBe(true);
   });
 });

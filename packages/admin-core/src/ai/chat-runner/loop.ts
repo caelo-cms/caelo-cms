@@ -233,12 +233,11 @@ export async function* runToolLoop(
         ceilingMicrocents: budgetGate.ceilingMicrocents,
         message: notice,
       });
-      // Log a short session PREFIX, never the full id: a chat-session id is a
-      // resource handle, not a credential, but logging it whole trips CodeQL's
-      // clear-text-logging heuristic (name contains "session"). 8 hex chars is
-      // plenty to correlate a server log line to a session.
+      // Correlate via runId + loop, never the chat-session id: a session id is
+      // a resource handle (not a credential), but any form of it in a log —
+      // even truncated — trips CodeQL's clear-text-logging taint on the
+      // "session" name. runId already identifies the run for a server log line.
       console.error("[chat-runner] budget-gate tripped", {
-        chat: `${chatSessionId.slice(0, 8)}…`,
         loop,
         runId: budgetGate.runId,
         liveSpentMicrocents,
@@ -1087,9 +1086,9 @@ export async function* runToolLoop(
       const notice =
         `Stopped — I called \`${singleToolName}\` ${consecutiveSameTool} times in a row without ` +
         `making progress. Reply "continue" to let me keep going, or tell me what to change.`;
-      // Short session prefix, not the full id — see the budget-gate log above.
+      // No chat-session id in the log — see the budget-gate log above.
       console.error("[chat-runner] same-tool runaway", {
-        chat: `${chatSessionId.slice(0, 8)}…`,
+        loop,
         toolName: singleToolName,
         consecutiveSameTool,
       });
