@@ -82,6 +82,10 @@ export interface ChatMessage {
   toolCallId?: string | null;
   /** Raw provider tool_calls on assistant rows ({id, name, …}[]). */
   toolCalls?: unknown;
+  /** 'complete' | 'interrupted' (chat_messages.status). The transcript
+   *  suppresses the bare empty prose bubble a tool-only turn would otherwise
+   *  render, and shows an "interrupted" marker where a reply died. */
+  status?: "complete" | "interrupted";
   /**
    * issue #190 — operator-attached images on user messages. Rendered
    * as thumbnails in the transcript (served from /_caelo/media); the

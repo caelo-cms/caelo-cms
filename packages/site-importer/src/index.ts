@@ -109,6 +109,12 @@ export {
   type PageTypeMap,
   type PageTypeSource,
 } from "./page-type-map.js";
+export {
+  fetchRenderedHtml,
+  type RenderedFetchErr,
+  type RenderedFetchOk,
+  type RenderedFetchResult,
+} from "./rendered-fetch.js";
 export { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 export {
   assertPublicHttpUrl,
@@ -123,25 +129,11 @@ export {
   safeExternalFetchBinary,
 } from "./safe-fetch.js";
 export {
-  computePixelDiff,
-  computeStructuralDiff,
   createPlaywrightScreenshotter,
+  type RenderedHtml,
   type Screenshot,
   type Screenshotter,
 } from "./screenshot.js";
-export {
-  computeDiffStatus,
-  computeFidelityStatus,
-  type DiffResult,
-  type DiffStatus,
-  FIDELITY_PASS_MAX,
-  FIDELITY_WARN_MAX,
-  type PageBand,
-  STRUCTURAL_DIFF_COLS,
-  STRUCTURAL_DIFF_ROWS,
-  type StructuralDiff,
-  structuralDiffFraction,
-} from "./screenshot-diff.js";
 export {
   discoverSitemapUrls,
   extractLocValues,

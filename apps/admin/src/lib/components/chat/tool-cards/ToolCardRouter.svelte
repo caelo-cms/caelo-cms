@@ -19,9 +19,11 @@
   import StreamingMarkdown from "../StreamingMarkdown.svelte";
   import BulkOpCard from "./BulkOpCard.svelte";
 import ChoiceCard from "./ChoiceCard.svelte";
+  import EditContentCard from "./EditContentCard.svelte";
   import EditModuleCard from "./EditModuleCard.svelte";
   import FindResultsCard from "./FindResultsCard.svelte";
   import ProposeCard from "./ProposeCard.svelte";
+  import ScreenshotCard from "./ScreenshotCard.svelte";
 
   interface Props {
     name: string;
@@ -39,8 +41,24 @@ import ChoiceCard from "./ChoiceCard.svelte";
     onApproved?: (info: { proposalId: string; kind: string }) => void;
     /** offer_choices → the clicked option posts back as the operator's message. */
     onChoose?: (answer: string) => void;
+    /**
+     * Part 2 — live screenshot bytes for the image-returning tools. Present
+     * only for the session that captured it (never persisted); ScreenshotCard
+     * renders the preview when set and falls back to text-only when absent.
+     */
+    image?: { base64: string; mediaType: string };
   }
-  let { name, content, ok, args = {}, csrfToken, onApproved, onChoose }: Props = $props();
+  let { name, content, ok, args = {}, csrfToken, onApproved, onChoose, image }: Props = $props();
+
+  // Part 2 — the page-capture tools all return an image on their
+  // tool-result; route them to ScreenshotCard so the operator can verify
+  // the capture. The card handles both the has-image and text-only cases.
+  const isScreenshot = $derived(
+    name === "screenshot_page" ||
+      name === "screenshot_external_page" ||
+      name === "get_import_page_screenshot" ||
+      name === "inspect_external_page",
+  );
 
   // Domain-prefix bucketing for the propose tools (25 of them across
   // 13 domains; one card handles all).
@@ -92,6 +110,13 @@ import ChoiceCard from "./ChoiceCard.svelte";
   <ChoiceCard {content} {onChoose} />
 {:else if name === "edit_module"}
   <EditModuleCard {content} {args} />
+{:else if name === "edit_content"}
+  <!-- Non-gated (module) edit_content renders the minimal old→new diff.
+       A gated template edit returns a "Queued proposal …" string and takes
+       the isPropose branch above instead. -->
+  <EditContentCard {content} {args} />
+{:else if isScreenshot}
+  <ScreenshotCard {name} {content} {image} />
 {:else if isBulk}
   <BulkOpCard {name} {content} />
 {:else if isFind}

@@ -32,7 +32,9 @@ import {
   type ComposeTheme,
   composePageWithLayout,
   fontUnresolvableMarker,
+  isHomeSlug,
   type ModuleFieldKind,
+  pageIsLocaleHome,
   resolveLocaleUrl,
   type ThemeDocument,
   trimSlashes,
@@ -213,9 +215,13 @@ export function pageOutputPath(
   slug: string,
   locale?: PageLocaleConfig,
   pageUrlStyle: "directory" | "no-extension" = "directory",
+  // 0184 — explicit homepage designation (`locales.home_page_id`). When
+  // true the page emits at the locale root (`index.html`) regardless of
+  // its slug, so what's SERVED at `/` matches the canonical + hreflang.
+  isHomePage?: boolean,
 ): string {
   const trimmed = trimSlashes(slug);
-  const isHome = trimmed === "" || trimmed === "home" || trimmed === "index";
+  const isHome = isHomePage === true || isHomeSlug(trimmed);
   // Home page stays at `index.html` regardless of style — the bucket
   // root must serve something for `/`, and browsers + GCS expect
   // index.html there. The home page's own canonical link points at
@@ -425,11 +431,12 @@ export async function generateSite(args: {
   // index.html. Throws loudly (no-fallbacks) if a page references a
   // locale that isn't in the registry.
   const localeRows = (await tx.execute(sql`
-    SELECT code, url_strategy, url_host FROM locales
+    SELECT code, url_strategy, url_host, home_page_id::text AS home_page_id FROM locales
   `)) as unknown as {
     code: string;
     url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
     url_host: string | null;
+    home_page_id: string | null;
   }[];
   const localeByCode = new Map<string, PageLocaleConfig>(
     localeRows.map((r) => [
@@ -437,10 +444,20 @@ export async function generateSite(args: {
       { code: r.code, urlStrategy: r.url_strategy, urlHost: r.url_host },
     ]),
   );
+  // 0184 — locale code → its designated homepage id. Drives the emitted
+  // output path (below), the language-selector hrefs, and — via
+  // seo-pass — canonical + hreflang, so all four agree on which page is
+  // the locale root.
+  const homePageByLocale = new Map(localeRows.map((r) => [r.code, r.home_page_id]));
 
   // issue #302 — fail loudly when no page will land at the bucket root.
   const plannedPaths = pageRows.map((p) =>
-    pageOutputPath(p.slug, localeByCode.get(p.locale), target.pageUrlStyle),
+    pageOutputPath(
+      p.slug,
+      localeByCode.get(p.locale),
+      target.pageUrlStyle,
+      pageIsLocaleHome(p.page_id, p.slug, homePageByLocale.get(p.locale)),
+    ),
   );
   const rootEligibleSlugs = pageRows
     .filter((p) => {
@@ -616,13 +633,16 @@ export async function generateSite(args: {
   const slugStatusFilter =
     target.env === "dev" ? sql.raw("") : sql.raw(" AND status = 'published'");
   const slugLocaleRows = (await tx.execute(sql`
-    SELECT slug, locale FROM pages
+    SELECT id::text AS id, slug, locale FROM pages
     WHERE deleted_at IS NULL ${slugStatusFilter}
-  `)) as unknown as { slug: string; locale: string }[];
-  const localesBySlug = new Map<string, string[]>();
+  `)) as unknown as { id: string; slug: string; locale: string }[];
+  // Slug → each variant's (locale, pageId). The pageId lets the
+  // language-selector resolve each sibling's home status from its OWN
+  // locale's designation (0184).
+  const localesBySlug = new Map<string, { locale: string; pageId: string }[]>();
   for (const r of slugLocaleRows) {
     const arr = localesBySlug.get(r.slug) ?? [];
-    arr.push(r.locale);
+    arr.push({ locale: r.locale, pageId: r.id });
     localesBySlug.set(r.slug, arr);
   }
 
@@ -690,7 +710,7 @@ export async function generateSite(args: {
     // only published variant.
     const pageLocaleSiblings = localesBySlug.get(page.slug) ?? [];
     const availableLocales = pageLocaleSiblings
-      .map((code) => {
+      .map(({ locale: code, pageId: siblingId }) => {
         const cfg = localeByCode.get(code);
         if (!cfg) return null;
         try {
@@ -707,6 +727,8 @@ export async function generateSite(args: {
               },
               page.slug,
               seoSettings.siteBaseUrl,
+              "directory",
+              pageIsLocaleHome(siblingId, page.slug, homePageByLocale.get(code)),
             ),
             isCurrent: code === page.locale,
           };
@@ -751,7 +773,12 @@ export async function generateSite(args: {
       pageSlug: page.slug,
       pageLocale: page.locale,
       pageTitle: page.title,
-      relPath: pageOutputPath(page.slug, pageLocaleCfg, target.pageUrlStyle),
+      relPath: pageOutputPath(
+        page.slug,
+        pageLocaleCfg,
+        target.pageUrlStyle,
+        pageIsLocaleHome(page.page_id, page.slug, homePageByLocale.get(page.locale)),
+      ),
     });
     // P13 — record per-page bake target for the plugin render pass.
     bakeTargets.set(`${page.slug}:${page.locale}`, {
@@ -787,9 +814,11 @@ export async function generateSite(args: {
 
   // P7 — media pass. Mutates each composedPages[i].html in place to
   // swap /_caelo/media/... URLs for /_assets/...; copies variant bytes
-  // into <buildDir>/_assets/<asset-id>/<variant>.<ext>; emits the CDN
-  // manifest (always, even when CDN copy is off — manifest is empty
-  // then). No-op when the build references no media at all.
+  // into the slug-based `_assets/` layout (`_assets/<slug>.<ext>` for orig,
+  // `_assets/<slug>/<variant>.<ext>` for named variants; legacy id refs keep
+  // `_assets/<id>/<variant>.<ext>`); emits the CDN manifest (always, even
+  // when CDN copy is off — manifest is empty then). No-op when the build
+  // references no media at all.
   // issue #150 — copy the resolved woff2 files into the build so the
   // @font-face URLs injected by the composer resolve on the deployed
   // site. Resolution happened before the compose loop (the CSS is part
@@ -944,7 +973,12 @@ export async function generateSite(args: {
     pages: pageRows.map((p) => ({
       slug: p.slug,
       locale: p.locale,
-      outputPath: pageOutputPath(p.slug, localeByCode.get(p.locale), target.pageUrlStyle),
+      outputPath: pageOutputPath(
+        p.slug,
+        localeByCode.get(p.locale),
+        target.pageUrlStyle,
+        pageIsLocaleHome(p.page_id, p.slug, homePageByLocale.get(p.locale)),
+      ),
     })),
     variants: variantEntries,
   };

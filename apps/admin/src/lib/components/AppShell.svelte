@@ -32,12 +32,15 @@
     permissions: string[];
     csrfToken: string;
     userEmail?: string | null;
+    /** Live "AI spend — last 7 days" readout for the top bar; null hides it. */
+    aiSpend7d?: { display: string; costMicrocents: number; days: number } | null;
     children?: import("svelte").Snippet;
   }
   let {
     permissions,
     csrfToken,
     userEmail = null,
+    aiSpend7d = null,
     children,
   }: Props = $props();
 
@@ -189,6 +192,11 @@
         {/if}
       </nav>
       <div class="ml-auto flex items-center gap-2">
+        {#if aiSpend7d}
+          <span class="text-xs text-muted-foreground" title="AI spend, last 7 days">
+            AI · {aiSpend7d.display} / 7d
+          </span>
+        {/if}
         <NotificationBell />
         <Button variant="ghost" size="icon" aria-label="Toggle theme" onclick={toggleMode}>
           {#if isDark}

@@ -26,11 +26,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import {
-  htmlToMarkdown,
-  isExternalUrlBlockedError,
-  safeExternalFetch,
-} from "@caelo-cms/site-importer";
+import { fetchRenderedHtml, htmlToMarkdown } from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { getActiveProviderForModel } from "../provider-resolver.js";
 import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
@@ -40,8 +36,11 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** The cheap extraction model for `describe`. Anthropic Haiku 4.5. */
 const SMALL_MODEL = "claude-haiku-4-5";
-/** HTML handed to the small model is capped so it fits comfortably. */
-const DESCRIBE_HTML_CAP = 150_000;
+/** HTML handed to the small model is capped so it fits comfortably. Sized
+ *  above a typical rendered page (a real WordPress page runs ~270 KB) so we
+ *  don't truncate away the content the caller is asking about; Haiku's
+ *  context absorbs it easily. */
+const DESCRIBE_HTML_CAP = 500_000;
 const DEFAULT_MAX_MATCHES = 5;
 const DEFAULT_CONTEXT_CHARS = 800;
 
@@ -117,35 +116,33 @@ async function resolveHtml(
     };
   }
   const allowedHosts = externalFetchAllowedHosts();
-  try {
-    const res = await safeExternalFetch(toolInput.url, { allowedHosts, maxBytes: 2 * 1024 * 1024 });
-    if (!res.ok) {
-      return {
-        ok: false,
-        content: `query_page_html: ${toolInput.url} answered HTTP ${res.status}.`,
-      };
-    }
-    if (!res.contentType.includes("text/html")) {
-      return { ok: false, content: `query_page_html: ${toolInput.url} is not an HTML page.` };
-    }
-    // Cache so a follow-up query/read reuses it. Compute the Markdown gist
-    // (the same htmlToMarkdown converter inspect_external_page uses) rather
-    // than caching "": pageRef is deterministic per (session, url), so an empty
-    // markdown here would CLOBBER a prior inspect_external_page's paginable
-    // markdown for the same page and strand a later read_page_more on nothing.
-    putPageInspection(sessionId, {
-      url: res.finalUrl,
-      html: res.bodyText,
-      markdown: htmlToMarkdown(res.bodyText),
-    });
-    return { ok: true, url: res.finalUrl, html: res.bodyText };
-  } catch (e) {
-    if (isExternalUrlBlockedError(e)) return { ok: false, content: e.message };
+  // Render-first: run the page's JS so a selector/keyword/describe query sees
+  // the DOM the browser actually built (a JS-set src, a JS-built nav) — not
+  // the pre-JS source. Falls back to a static fetch with a loud note.
+  const screenshotter = await getExternalScreenshotter({ allowedHosts });
+  const rf = await fetchRenderedHtml(toolInput.url, {
+    screenshotter,
+    allowedHosts,
+    maxBytes: 2 * 1024 * 1024,
+  });
+  if (!rf.ok) {
     return {
       ok: false,
-      content: `query_page_html could not fetch ${toolInput.url}: ${e instanceof Error ? e.message : String(e)}`,
+      content: rf.blocked ? rf.message : `query_page_html: ${toolInput.url} — ${rf.message}.`,
     };
   }
+  // Cache so a follow-up query/read reuses it — including the rendered DOM
+  // (as `renderedHtml`) so selector modes run against the JS-applied DOM.
+  // Compute the Markdown gist rather than caching "": pageRef is deterministic
+  // per (session, url), so an empty markdown would CLOBBER a prior
+  // inspect_external_page's paginable markdown and strand read_page_more.
+  putPageInspection(sessionId, {
+    url: rf.finalUrl,
+    html: rf.html,
+    markdown: htmlToMarkdown(rf.html),
+    ...(rf.rendered ? { renderedHtml: rf.html } : {}),
+  });
+  return { ok: true, url: rf.finalUrl, html: rf.html };
 }
 
 const DESCRIBE_SCHEMA = {

@@ -253,6 +253,10 @@ const sessionMessagesRow = z.object({
   thinkingBlocks: z.array(z.object({ thinking: z.string(), signature: z.string() })).nullable(),
   /** issue #190 — operator-attached images on user messages. */
   attachments: z.array(chatAttachmentSchema).nullable(),
+  /** 'complete' | 'interrupted' (0015). Lets the transcript suppress a bare
+   *  empty prose bubble for a tool-only turn and show an "interrupted" marker
+   *  where a reply died instead of a blank "AI:" row. */
+  status: z.enum(["complete", "interrupted"]),
 });
 
 export const getChatSessionOp = defineOperation({
@@ -307,7 +311,7 @@ export const getChatSessionOp = defineOperation({
     const msgs = (await tx.execute(sql`
       SELECT id::text AS id, role, content, origin, tool_calls, tool_call_id,
              tokens_in, tokens_out, created_at, thinking_blocks, attachments,
-             response_messages
+             response_messages, status
       FROM chat_messages
       WHERE chat_session_id = ${input.chatSessionId}::uuid
       ORDER BY created_at ASC
@@ -324,6 +328,7 @@ export const getChatSessionOp = defineOperation({
       thinking_blocks: unknown;
       attachments: unknown;
       response_messages: unknown;
+      status: "complete" | "interrupted";
     }[];
     const iso = (v: string | Date | null): string | null => {
       if (v === null) return null;
@@ -385,6 +390,7 @@ export const getChatSessionOp = defineOperation({
             Array.isArray(parsedResponseMessages) && parsedResponseMessages.length > 0
               ? (parsedResponseMessages as unknown[])
               : null,
+          status: m.status,
         };
       }),
     });

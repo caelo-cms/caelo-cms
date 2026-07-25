@@ -18,6 +18,7 @@ import {
   pageSetModulesSchema,
   pageUpdateSchema,
   slugSchema,
+  trimSlashes,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -66,6 +67,13 @@ const pageRowSchema = z.object({
 });
 
 const pageWithModulesSchema = pageRowSchema.extend({
+  /**
+   * 0184 — true when this page is its locale's designated
+   * `home_page_id` (the site root, served at `/`). Surfaced so the
+   * current-page context can tell the AI the designation explicitly
+   * instead of it guessing from the slug.
+   */
+  isHomePage: z.boolean(),
   blocks: z.array(
     z.object({
       blockName: z.string(),
@@ -503,14 +511,68 @@ export const getPageWithModulesOp = defineOperation({
         if (pageState.title) pageRow.title = pageState.title;
       }
     }
+    // 0184 — is this page its locale's designated homepage (site root)?
+    const homeRows = (await tx.execute(sql`
+      SELECT 1 AS is_home FROM locales
+      WHERE code = ${pageRow.locale} AND home_page_id = ${input.pageId}::uuid
+      LIMIT 1
+    `)) as unknown as { is_home: number }[];
+    const isHomePage = homeRows.length > 0;
     return ok({
       page: {
         ...rowToPage(pageRow),
+        isHomePage,
         blocks: orderedBlocks,
       },
     });
   },
 });
+
+/**
+ * A page's slug is "root-equivalent" (serves at the locale root `/`) when
+ * it is the magic sentinel (""/`home`/`index`) — the back-compat path — OR
+ * when it is the locale's explicitly designated `home_page_id` (0184). The
+ * duplicate-URL backstop treats every root-equivalent page as occupying
+ * the same `/`, so a locale can only ever have ONE homepage.
+ */
+function isRootSlug(slug: string): boolean {
+  const s = trimSlashes(slug);
+  return s === "" || s === "home" || s === "index";
+}
+
+/**
+ * The set of candidate page ids that are soft-deleted ON THE CURRENT CHAT
+ * BRANCH. A branched `pages.delete` never touches the live row — it emits a
+ * `page_snapshots` row with `state.deletedAt` set (v0.5.3) — so a live-row
+ * scan alone would treat a page the chat just deleted as still occupying
+ * its slug/URL. This overlay lets the create-time uniqueness check ignore
+ * pages the caller reclaimed on its own branch (2b).
+ */
+async function branchDeletedPageIds(
+  tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
+  chatBranchId: string,
+  candidateIds: readonly string[],
+): Promise<Set<string>> {
+  const deleted = new Set<string>();
+  if (candidateIds.length === 0) return deleted;
+  const overlay = (await tx.execute(sql`
+    SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
+      FROM page_snapshots ps
+      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+     WHERE ss.chat_branch_id = ${chatBranchId}::uuid
+       AND ps.page_id = ANY(${sql.raw(
+         `ARRAY[${candidateIds.map((id) => `'${id}'::uuid`).join(",")}]`,
+       )})
+     ORDER BY ps.page_id, ss.created_at DESC
+  `)) as unknown as { page_id: string; state: unknown }[];
+  for (const row of overlay) {
+    const s = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as {
+      deletedAt?: string | null;
+    };
+    if (s.deletedAt) deleted.add(row.page_id);
+  }
+  return deleted;
+}
 
 export const createPageOp = defineOperation({
   name: "pages.create",
@@ -593,29 +655,62 @@ export const createPageOp = defineOperation({
         },
       });
     }
-    // v0.9.0 — same-branch slug uniqueness only.
+    // v0.9.0 + 1b/2b — same-branch public-URL uniqueness with
+    // root-equivalence + branch-delete awareness. This subsumes the old
+    // exact-slug check AND adds the structural "two homepages" guard: a
+    // magic slug (""/`home`/`index`) and the locale's designated
+    // `home_page_id` ALL resolve to `/`, so a second page that also
+    // resolves to `/` is rejected with a pointer at the existing one
+    // (1b). Branches keep their own slug namespace (migration 0089), so
+    // the check is scoped to the caller's branch namespace; a page the
+    // caller soft-deleted on its OWN branch no longer occupies its
+    // slug/URL, so the slug can be reclaimed (2b).
     const pageDupNamespace = ctx.chatBranchId ?? "00000000-0000-0000-0000-000000000000";
-    const dup = (await tx.execute(sql`
-      SELECT 1 FROM pages
-      WHERE slug = ${input.slug}
-        AND locale = ${input.locale}
+    const homeRows = (await tx.execute(sql`
+      SELECT home_page_id::text AS home_page_id FROM locales WHERE code = ${input.locale} LIMIT 1
+    `)) as unknown as { home_page_id: string | null }[];
+    const homePageId = homeRows[0]?.home_page_id ?? null;
+    const candidates = (await tx.execute(sql`
+      SELECT id::text AS id, slug FROM pages
+      WHERE locale = ${input.locale}
         AND deleted_at IS NULL
         AND COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid) = ${pageDupNamespace}::uuid
-      LIMIT 1
-    `)) as unknown as { exists: number }[];
-    if (dup.length > 0) {
+    `)) as unknown as { id: string; slug: string }[];
+    const branchDeleted = ctx.chatBranchId
+      ? await branchDeletedPageIds(
+          tx,
+          ctx.chatBranchId,
+          candidates.map((c) => c.id),
+        )
+      : new Set<string>();
+    // A NEW page can only be root-equivalent via a magic slug — it has no
+    // row yet, so it can't be a locale's home_page_id.
+    const newIsRoot = isRootSlug(input.slug);
+    const newSlugKey = trimSlashes(input.slug);
+    const conflict = candidates.find((c) => {
+      if (branchDeleted.has(c.id)) return false;
+      const candIsRoot = isRootSlug(c.slug) || (homePageId !== null && c.id === homePageId);
+      if (newIsRoot && candIsRoot) return true;
+      return trimSlashes(c.slug) === newSlugKey;
+    });
+    if (conflict) {
+      const conflictIsRoot =
+        isRootSlug(conflict.slug) || (homePageId !== null && conflict.id === homePageId);
+      const bothRoot = newIsRoot && conflictIsRoot;
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
         operation: "pages.create",
         input,
         succeeded: false,
-        resultSummary: "slug-locale-conflict",
+        resultSummary: bothRoot ? "root-url-conflict" : "slug-locale-conflict",
       });
       return err({
         kind: "HandlerError",
         operation: "pages.create",
-        message: "page already exists for this (slug, locale)",
+        message: bothRoot
+          ? `the site root (/) for locale ${input.locale} is already served by page ${conflict.id} (slug="${conflict.slug}") — a locale has exactly ONE homepage. Edit that page instead (build_page with its pageId), or give this page a non-root slug.`
+          : `page already exists at (slug="${input.slug}", locale=${input.locale}) — it is page ${conflict.id}. Edit it (build_page with its pageId) instead of creating a duplicate.`,
       });
     }
     // v0.5.19 — pages.create writes LIVE unconditionally (reverts the
@@ -917,14 +1012,25 @@ export const updatePageOp = defineOperation({
     if (input.slug !== undefined) {
       // Slug uniqueness still checked against live, even when branched:
       // a chat shouldn't claim a slug another live page already owns.
-      const dup = (await tx.execute(sql`
-        SELECT 1 FROM pages
+      // 2b — but a page THIS chat soft-deleted on its own branch (a
+      // branched delete leaves the live row intact, marking the deletion
+      // only in a page_snapshots overlay) no longer occupies its slug, so
+      // the caller may reclaim it.
+      const dupRows = (await tx.execute(sql`
+        SELECT id::text AS id FROM pages
         WHERE slug = ${input.slug}
           AND id <> ${input.pageId}::uuid
           AND deleted_at IS NULL
-        LIMIT 1
-      `)) as unknown as { exists: number }[];
-      if (dup.length > 0) {
+      `)) as unknown as { id: string }[];
+      const branchDeleted = ctx.chatBranchId
+        ? await branchDeletedPageIds(
+            tx,
+            ctx.chatBranchId,
+            dupRows.map((r) => r.id),
+          )
+        : new Set<string>();
+      const occupant = dupRows.find((r) => !branchDeleted.has(r.id));
+      if (occupant) {
         return err({
           kind: "HandlerError",
           operation: "pages.update",
@@ -1543,7 +1649,8 @@ export const deletePageOp = defineOperation({
     let state: import("../../snapshots/state.js").PageState | null;
     if (branched) {
       const prev = (await tx.execute(sql`
-        SELECT slug, locale, title, template_id::text AS template_id, status, version
+        SELECT slug, locale, title, template_id::text AS template_id, status, version,
+               chat_branch_id::text AS chat_branch_id
         FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
       `)) as unknown as {
         slug: string;
@@ -1552,6 +1659,7 @@ export const deletePageOp = defineOperation({
         template_id: string;
         status: "draft" | "published";
         version: number | string;
+        chat_branch_id: string | null;
       }[];
       const p = prev[0];
       state = p
@@ -1566,6 +1674,19 @@ export const deletePageOp = defineOperation({
             deletedAt: new Date().toISOString(),
           }
         : null;
+      // 2b — a page CREATED on THIS branch (its live row is branch-owned:
+      // invisible to other chats + to static-gen) frees its slug/URL
+      // immediately by soft-deleting the live row too. Without this the
+      // (slug, locale, branch) partial UNIQUE INDEX
+      // (`pages_slug_locale_branch_uidx`, migration 0089) — which only
+      // ignores rows WHERE deleted_at IS NULL — keeps counting the still-
+      // live row, so the same chat can't reclaim the slug it just deleted.
+      // A MAIN page (chat_branch_id NULL) deleted on a branch is left
+      // untouched on purpose: that delete stays branch-scoped until
+      // publish, where merge propagates state.deletedAt to the live row.
+      if (p && p.chat_branch_id !== null && p.chat_branch_id === ctx.chatBranchId) {
+        await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${input.pageId}::uuid`);
+      }
     } else {
       await tx.execute(sql`UPDATE pages SET deleted_at = now() WHERE id = ${input.pageId}::uuid`);
       state = await loadPageState(tx, input.pageId);
@@ -1784,11 +1905,26 @@ export const duplicatePageOp = defineOperation({
       WHERE pm.page_id = ${newPageId}::uuid
     `)) as unknown as { html: string }[];
     if (clonedModules.length > 0) {
-      const seen = new Set<string>();
+      // `extractMediaRefs` yields slug refs (current embeds) + legacy UUID
+      // id refs; resolve the slugs to ids (one batched query) so the
+      // usage bump below operates purely on asset ids.
+      const ids = new Set<string>();
+      const slugs = new Set<string>();
       for (const r of clonedModules) {
-        for (const ref of extractMediaRefs(r.html)) seen.add(ref.assetId);
+        for (const ref of extractMediaRefs(r.html)) {
+          if (ref.isSlug) slugs.add(ref.ref);
+          else ids.add(ref.ref);
+        }
       }
-      for (const assetId of seen) {
+      if (slugs.size > 0) {
+        const slugFrags = [...slugs].map((s) => sql`${s}`);
+        const slugRows = (await tx.execute(sql`
+          SELECT id::text AS id FROM media_assets
+          WHERE slug IN (${sql.join(slugFrags, sql`, `)}) AND deleted_at IS NULL
+        `)) as unknown as { id: string }[];
+        for (const row of slugRows) ids.add(row.id);
+      }
+      for (const assetId of ids) {
         await tx.execute(sql`
           UPDATE media_assets
           SET usage_count = usage_count + 1, last_used_at = now()

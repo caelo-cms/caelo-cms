@@ -30,6 +30,44 @@
 
 import type { ChatMessageInput } from "../provider.js";
 
+/**
+ * A passthrough row (Option C) carries the SDK's opaque ModelMessage assembly
+ * in `sdkMessages`; its tool_use/tool_result pairs live nested inside and are
+ * correct by construction. `buildProviderHistory` pushes these as
+ * `{ role, content, sdkMessages }` with no top-level `toolCalls`/`toolCallId`.
+ */
+function isPassthroughRow(m: ChatMessageInput): boolean {
+  return Array.isArray(m.sdkMessages) && m.sdkMessages.length > 0;
+}
+
+/**
+ * Harvest the tool_use / tool_result ids nested inside a passthrough row's
+ * opaque SDK assembly so the pairing inventory sees them too. Without this, a
+ * reconstruction tool_result answering a passthrough tool_use (the NORMAL
+ * Option-C shape: passthrough assistant emits the tool_use, the result is a
+ * separate reconstruction tool-role row) would look like an orphan and be
+ * wrongly dropped. Defensive: `ProviderResponseMessage` is `unknown`, so we
+ * only read the SDK's documented `{ content: [{ type, toolCallId }] }` shape.
+ */
+function harvestSdkPairIds(
+  sdkMessages: readonly unknown[],
+  toolUseIds: Set<string>,
+  toolResultIds: Set<string>,
+): void {
+  for (const msg of sdkMessages) {
+    if (msg === null || typeof msg !== "object") continue;
+    const content = (msg as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (part === null || typeof part !== "object") continue;
+      const p = part as { type?: unknown; toolCallId?: unknown };
+      if (typeof p.toolCallId !== "string") continue;
+      if (p.type === "tool-call") toolUseIds.add(p.toolCallId);
+      else if (p.type === "tool-result") toolResultIds.add(p.toolCallId);
+    }
+  }
+}
+
 /** What the repair changed — callers log a breadcrumb when any list is non-empty. */
 export interface HistoryRepairResult {
   messages: ChatMessageInput[];
@@ -49,6 +87,16 @@ export interface HistoryRepairResult {
  * calls after stripping are dropped entirely — an assistant turn that is
  * empty OR carries only orphaned thinking blocks is itself a
  * provider-side rejection.
+ *
+ * Passthrough (Option-C `sdkMessages`) rows are treated as opaque,
+ * already-paired units: their nested ids feed the inventory so a
+ * reconstruction row can pair ACROSS a passthrough row (the normal shape:
+ * passthrough assistant tool_use ↔ reconstruction tool-role result), but the
+ * passthrough rows themselves are replayed verbatim, never stripped. This is
+ * what lets the repair run over a mixed history — the interrupt hole where an
+ * aborted turn persisted a `tool_use` with no `tool_result` while earlier
+ * turns carried passthrough rows (which previously forced the whole repair to
+ * be skipped, so the orphan survived into the replay and 400'd).
  */
 export function repairToolCallPairing(messages: readonly ChatMessageInput[]): HistoryRepairResult {
   // Pass 1 — global id inventory. Results virtually always follow their
@@ -57,7 +105,11 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
   const toolUseIds = new Set<string>();
   const toolResultIds = new Set<string>();
   for (const m of messages) {
-    if (m.role === "assistant") {
+    // Passthrough rows are opaque + SDK-paired: harvest their nested ids into
+    // the inventory (so cross-row pairs survive) but never strip/modify them.
+    if (isPassthroughRow(m)) {
+      harvestSdkPairIds(m.sdkMessages ?? [], toolUseIds, toolResultIds);
+    } else if (m.role === "assistant") {
       for (const tc of m.toolCalls ?? []) toolUseIds.add(tc.id);
     } else if (m.role === "tool" && m.toolCallId) {
       toolResultIds.add(m.toolCallId);
@@ -71,6 +123,11 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
   const emittedResultIds = new Set<string>();
 
   for (const m of messages) {
+    // Passthrough rows replay verbatim — opaque + already correctly paired.
+    if (isPassthroughRow(m)) {
+      out.push(m);
+      continue;
+    }
     if (m.role === "tool") {
       const id = m.toolCallId ?? "";
       if (id.length === 0 || !toolUseIds.has(id) || emittedResultIds.has(id)) {

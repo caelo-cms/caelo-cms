@@ -43,6 +43,7 @@ import {
 } from "./passive-turn.js";
 import { persistAssistantTurn } from "./persistence.js";
 import { compactOldToolResults, type ToolResultOrigin } from "./proactive-compaction.js";
+import { fileTurnFatalProviderReport } from "./provider-error-report.js";
 import {
   blockedCallResult,
   RepeatedFailureTracker,
@@ -52,6 +53,34 @@ import { streamProviderTurn, type UsageAccumulator } from "./streaming.js";
 import type { FilteredTool } from "./tool-catalogue.js";
 import { dispatchToolCall, type ToolCallOutcome } from "./tool-dispatch.js";
 import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn, StopReason } from "./types.js";
+
+/**
+ * Consecutive-same-tool runaway threshold. When the model calls the SAME
+ * single tool on this many loop iterations in a row (no varied work in
+ * between), the loop stops and names the stuck tool.
+ *
+ * Root-cause / history: the loop used to hard-stop after a FLAT 25 total
+ * iterations ("Paused at the tool-loop limit — reply continue"), which
+ * silently paused legitimate long-but-productive work — a migration that
+ * builds a homepage, retries, and moves on hits 25 varied iterations and
+ * strands the operator on a "continue" prompt. The flat count conflated
+ * "doing a lot of DIFFERENT work" (fine, bounded by the budget gate) with
+ * "stuck repeating ONE tool" (the actual failure we want to catch). This
+ * const is the real runaway signal; overall cost is bounded by the existing
+ * live budget gate (budget-gate.ts), and {@link ABSOLUTE_LOOP_CEILING} is a
+ * high backstop against a true infinite loop when no budget ceiling is armed.
+ */
+export const SAME_TOOL_RUNAWAY_LIMIT = 10;
+
+/**
+ * Absolute safety ceiling on total loop iterations — a backstop against a
+ * true infinite loop when no budget ceiling is armed and the same-tool guard
+ * never trips (e.g. an endless stream of VARIED tool calls). Deliberately
+ * high: varied, productive work should run freely until the model stops or
+ * the budget gate pauses it; this only catches pathological non-termination.
+ * The default of `runChatTurn`'s `maxToolLoops` (index.ts) resolves to this.
+ */
+export const ABSOLUTE_LOOP_CEILING = 200;
 
 export interface ToolLoopResult {
   stopReason: StopReason;
@@ -127,6 +156,14 @@ export async function* runToolLoop(
   // v0.3.20 — track the most recent loopStop so we can detect the
   // cap-exhaustion case (for-loop ran to completion without breaking).
   let lastLoopStop: StopReason | null = null;
+  // Same-tool runaway guard state. `lastToolName` is the single tool name the
+  // PREVIOUS tool-emitting iteration used (null when that iteration emitted a
+  // mixed/varied set or no tools); `consecutiveSameTool` counts how many
+  // iterations in a row have repeated that single name. Reaching
+  // SAME_TOOL_RUNAWAY_LIMIT stops the turn — see the update + check after
+  // dispatch below.
+  let lastToolName: string | null = null;
+  let consecutiveSameTool = 0;
   // issue #106 — one-shot guard for the passive-turn nudge.
   let passiveNudged = false;
   // issue #261 — one-shot guard for the prompt-too-long compact+retry.
@@ -162,102 +199,114 @@ export async function* runToolLoop(
   // cooperative child.
   let capWrapUpNudged = false;
 
-  for (let loop = 0; loop < args.maxLoops; loop++) {
-    if (aborted()) break;
-
-    // issue #297 — live cost gate, BEFORE the next provider call so the
-    // in-flight call always finishes and its tool results are persisted.
-    // Loop 0 always resolves (one cheap read per turn for ordinary chats);
-    // later iterations re-read only while a gate is active, folding in
-    // spend recorded by subagent children mid-turn. The current turn's own
-    // provider calls are not yet in ai_calls, so their accumulator estimate
-    // is added on top (see budget-gate.ts for the pricing approximation).
-    if (loop === 0 || budgetGate !== null) {
-      budgetGate = await fetchBudgetGate(registry, adapter, humanCtx, chatSessionId);
+  // issue #297 (+ overshoot follow-up) — enforce the live cost gate against
+  // the already-fetched `budgetGate` plus the current turn's accumulated
+  // spend. Emits the clean pause (ledger event + chat notice) and returns
+  // `true` when the ceiling was crossed, so the caller breaks the loop; emits
+  // the one-shot 80% warning otherwise and returns `false`. Factored out of
+  // the top-of-loop check precisely so the SAME enforcement can also run AFTER
+  // a provider call + tool dispatch (see the two call sites) — a single loop's
+  // provider call can jump spend well past the ceiling, and checking only
+  // before the NEXT call let the run keep working up to ~1.5×.
+  async function* enforceBudgetGate(loop: number): AsyncGenerator<ClientEvent, boolean> {
+    if (budgetGate === null) return false;
+    const currentTurnMicrocents = microcents(
+      costCapUsd(
+        args.usage.totalIn,
+        args.usage.totalCached,
+        args.usage.totalOut,
+        args.inputCost,
+        args.outputCost,
+      ),
+    );
+    const { level, liveSpentMicrocents } = evaluateGateLevel(budgetGate, currentTurnMicrocents);
+    if (level === "trip") {
+      const notice = budgetTripText(budgetGate, liveSpentMicrocents);
+      // Ledger claim — first tripping session writes the import_run_events
+      // row; the pause message below is emitted regardless, once per halted
+      // turn, so a "continue" without a raised ceiling can never silently
+      // resume spending.
+      await execute(registry, adapter, humanCtx, "imports.record_budget_gate_event", {
+        runId: budgetGate.runId,
+        kind: "tripped",
+        spentMicrocents: liveSpentMicrocents,
+        ceilingMicrocents: budgetGate.ceilingMicrocents,
+        message: notice,
+      });
+      console.error("[chat-runner] budget-gate tripped", {
+        chatSessionId,
+        loop,
+        runId: budgetGate.runId,
+        liveSpentMicrocents,
+        ceilingMicrocents: budgetGate.ceilingMicrocents,
+      });
+      yield { kind: "text-delta", text: notice };
+      const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+        chatSessionId,
+        role: "assistant",
+        content: notice,
+        status: "complete",
+      });
+      if (noticeSave.ok) {
+        lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+        yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
+      }
+      // The caller sets `stopReason = "cost_ceiling"` on a true return — kept
+      // in the outer body so TS's control-flow analysis sees the assignment
+      // (a nested-function assignment wouldn't narrow the outer variable).
+      return true;
     }
-    if (budgetGate !== null) {
-      const currentTurnMicrocents = microcents(
-        costCapUsd(
-          args.usage.totalIn,
-          args.usage.totalCached,
-          args.usage.totalOut,
-          args.inputCost,
-          args.outputCost,
-        ),
-      );
-      const { level, liveSpentMicrocents } = evaluateGateLevel(budgetGate, currentTurnMicrocents);
-      if (level === "trip") {
-        const notice = budgetTripText(budgetGate, liveSpentMicrocents);
-        // Ledger claim — first tripping session writes the import_run_events
-        // row; the pause message below is emitted regardless, once per
-        // halted turn, so a "continue" without a raised ceiling can never
-        // silently resume spending.
-        await execute(registry, adapter, humanCtx, "imports.record_budget_gate_event", {
-          runId: budgetGate.runId,
-          kind: "tripped",
-          spentMicrocents: liveSpentMicrocents,
-          ceilingMicrocents: budgetGate.ceilingMicrocents,
-          message: notice,
-        });
-        console.error("[chat-runner] budget-gate tripped", {
+    if (level === "warn" && !budgetGate.warningEmitted) {
+      const notice = budgetWarningText(budgetGate, liveSpentMicrocents);
+      const claim = await execute(registry, adapter, humanCtx, "imports.record_budget_gate_event", {
+        runId: budgetGate.runId,
+        kind: "warning",
+        spentMicrocents: liveSpentMicrocents,
+        ceilingMicrocents: budgetGate.ceilingMicrocents,
+        message: notice,
+      });
+      // Local flip either way — losing the claim means another session
+      // (parallel subagent) already emitted the warning.
+      budgetGate = { ...budgetGate, warningEmitted: true };
+      if (claim.ok && (claim.value as { claimed: boolean }).claimed) {
+        console.error("[chat-runner] budget-gate warning", {
           chatSessionId,
           loop,
           runId: budgetGate.runId,
           liveSpentMicrocents,
           ceilingMicrocents: budgetGate.ceilingMicrocents,
         });
-        yield { kind: "text-delta", text: notice };
-        const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+        // issue #29 shape — a system-origin status note: muted in the
+        // transcript for the operator, a user turn for the model so it
+        // economizes the rest of the run.
+        await execute(registry, adapter, humanCtx, "chat.append_message", {
           chatSessionId,
-          role: "assistant",
+          role: "user",
+          origin: "system",
           content: notice,
-          status: "complete",
         });
-        if (noticeSave.ok) {
-          lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
-          yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
-        }
-        stopReason = "cost_ceiling";
-        break;
+        messages = [...messages, { role: "user", content: notice }];
       }
-      if (level === "warn" && !budgetGate.warningEmitted) {
-        const notice = budgetWarningText(budgetGate, liveSpentMicrocents);
-        const claim = await execute(
-          registry,
-          adapter,
-          humanCtx,
-          "imports.record_budget_gate_event",
-          {
-            runId: budgetGate.runId,
-            kind: "warning",
-            spentMicrocents: liveSpentMicrocents,
-            ceilingMicrocents: budgetGate.ceilingMicrocents,
-            message: notice,
-          },
-        );
-        // Local flip either way — losing the claim means another session
-        // (parallel subagent) already emitted the warning.
-        budgetGate = { ...budgetGate, warningEmitted: true };
-        if (claim.ok && (claim.value as { claimed: boolean }).claimed) {
-          console.error("[chat-runner] budget-gate warning", {
-            chatSessionId,
-            loop,
-            runId: budgetGate.runId,
-            liveSpentMicrocents,
-            ceilingMicrocents: budgetGate.ceilingMicrocents,
-          });
-          // issue #29 shape — a system-origin status note: muted in the
-          // transcript for the operator, a user turn for the model so it
-          // economizes the rest of the run.
-          await execute(registry, adapter, humanCtx, "chat.append_message", {
-            chatSessionId,
-            role: "user",
-            origin: "system",
-            content: notice,
-          });
-          messages = [...messages, { role: "user", content: notice }];
-        }
-      }
+    }
+    return false;
+  }
+
+  for (let loop = 0; loop < args.maxLoops; loop++) {
+    if (aborted()) break;
+
+    // issue #297 — live cost gate, BEFORE the next provider call so the run
+    // never STARTS a fresh call already over budget. Loop 0 always resolves
+    // (one cheap read per turn for ordinary chats); later iterations re-read
+    // only while a gate is active, folding in spend recorded by subagent
+    // children mid-turn. The current turn's own provider calls are not yet in
+    // ai_calls, so their accumulator estimate is added on top (see
+    // budget-gate.ts for the pricing approximation).
+    if (loop === 0 || budgetGate !== null) {
+      budgetGate = await fetchBudgetGate(registry, adapter, humanCtx, chatSessionId);
+    }
+    if (yield* enforceBudgetGate(loop)) {
+      stopReason = "cost_ceiling";
+      break;
     }
 
     // issue #300 — proactive tool-result compaction. GATED OFF by default
@@ -381,6 +430,7 @@ export async function* runToolLoop(
       loopStop,
       providerErr,
       promptTooLongMessage,
+      providerErrorMessage,
       firstEventTimedOut,
       stoppingDiagnostics,
     } = yield* streamProviderTurn({
@@ -432,6 +482,16 @@ export async function* runToolLoop(
           yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
         }
         yield { kind: "error", message: notice };
+        // Theme A — a turn-fatal provider condition the operator must be able
+        // to review after the fact, not just a transient SSE banner.
+        await fileTurnFatalProviderReport({
+          registry,
+          adapter,
+          ctx: args.aiCtxWithBranch,
+          chatSessionId,
+          providerMessage: notice,
+          messages,
+        });
         succeeded = false;
         stopReason = "error";
         break;
@@ -499,6 +559,21 @@ export async function* runToolLoop(
         }
         yield { kind: "error", message: notice };
       }
+      // Theme A — file the turn-fatal provider error (the generic 400 class,
+      // incl. tool_use/tool_result pairing rejections, and the unrecovered
+      // context-overflow) so it lands on /security/bugs with the offending
+      // replayed history, not just a transient banner.
+      await fileTurnFatalProviderReport({
+        registry,
+        adapter,
+        ctx: args.aiCtxWithBranch,
+        chatSessionId,
+        providerMessage:
+          providerErrorMessage ??
+          promptTooLongMessage ??
+          "The AI provider rejected or failed the request.",
+        messages,
+      });
       succeeded = false;
       stopReason = "error";
       break;
@@ -559,6 +634,16 @@ export async function* runToolLoop(
         yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
       }
       yield { kind: "error", message: notice };
+      // Theme A — surface the unrecovered empty-at-output-cap turn on the bug
+      // channel too (it died on the provider call before any content).
+      await fileTurnFatalProviderReport({
+        registry,
+        adapter,
+        ctx: args.aiCtxWithBranch,
+        chatSessionId,
+        providerMessage: notice,
+        messages,
+      });
       stopReason = "error";
       succeeded = false;
       break;
@@ -583,7 +668,17 @@ export async function* runToolLoop(
       // jsonb, tagged serverExecuted — buildProviderHistory splits them
       // back out so future turns replay the search blocks unchanged
       // (docs: dropping them makes the model re-search every turn).
-      const persistedToolCalls = [...accumulatedServerToolCalls, ...accumulatedToolCalls];
+      //
+      // Theme B belt-and-braces — on an aborted turn the client tool calls
+      // were emitted but dispatch is skipped (see the `if (aborted()) break`
+      // below), so their `tool_result` rows are NEVER written. Persisting the
+      // unpaired `tool_use` poisons the replay (Anthropic 400s on the next
+      // send). Drop them here; the SDK-paired server-tool calls are
+      // self-contained and safe to keep. (The replay-side pairing repair also
+      // heals this, but not writing the orphan is cheaper than repairing it.)
+      const persistedToolCalls = aborted()
+        ? [...accumulatedServerToolCalls]
+        : [...accumulatedServerToolCalls, ...accumulatedToolCalls];
       const saved = await persistAssistantTurn(registry, adapter, humanCtx, {
         chatSessionId,
         content: assistantContent,
@@ -934,6 +1029,79 @@ export async function* runToolLoop(
       break;
     }
 
+    // issue #297 OVERSHOOT fix — re-enforce the gate AFTER this iteration's
+    // provider call + tool dispatch, not only before the NEXT call. Reached
+    // only when the turn is pairing-complete (every tool_use above got its
+    // tool_result; the approval branch already broke/continued), so pausing
+    // here can't strand a dangling tool_use. Re-fetch first so spend recorded
+    // by any subagent dispatched this iteration folds into the DB roll-up,
+    // then enforce against the updated current-turn accumulator too. WHY here
+    // and not only at the top of the next loop: a single loop's provider call
+    // (e.g. two build_page calls of ~29 modules each) can jump spend far past
+    // the ceiling in one shot; the top-only check let the run keep looping —
+    // and, when a per-page driver ends the turn here, deferred the pause to a
+    // whole new turn — so spend ran to ~1.5×. Enforcing here trips the pause
+    // the moment spend crosses 100%, within the same turn. A call already
+    // generating can't be interrupted mid-response, so spend can still edge
+    // modestly past the ceiling (surfaced honestly in the pause message), but
+    // the run no longer starts fresh work past it.
+    if (budgetGate !== null) {
+      budgetGate = await fetchBudgetGate(registry, adapter, humanCtx, chatSessionId);
+      if (yield* enforceBudgetGate(loop)) {
+        stopReason = "cost_ceiling";
+        break;
+      }
+    }
+
+    // Same-tool runaway guard. Reached only after this iteration dispatched
+    // its tool calls (so every tool_use has its paired tool_result persisted —
+    // breaking here can't strand a dangling pair). We're past the zero-tool
+    // branch above, so `accumulatedToolCalls` is non-empty here.
+    //
+    // A single repeated tool name across many iterations is the real
+    // runaway signal (a stuck retry loop); VARIED work is legitimate and is
+    // bounded by the budget gate + the absolute ceiling instead. So: if every
+    // call this iteration shares ONE name, extend/start that name's streak;
+    // any other shape — a mixed/varied set — resets the streak (varied work
+    // is not a runaway).
+    const firstToolName = accumulatedToolCalls[0]?.name;
+    const singleToolName =
+      firstToolName !== undefined && accumulatedToolCalls.every((c) => c.name === firstToolName)
+        ? firstToolName
+        : null;
+    if (singleToolName !== null && singleToolName === lastToolName) {
+      consecutiveSameTool++;
+    } else {
+      consecutiveSameTool = singleToolName !== null ? 1 : 0;
+      lastToolName = singleToolName;
+    }
+    if (singleToolName !== null && consecutiveSameTool >= SAME_TOOL_RUNAWAY_LIMIT) {
+      stopReason = "same_tool_runaway";
+      // User-actionable, never a dead end: name what happened AND invite the
+      // operator to react — "continue" resumes the turn (the AI keeps trying)
+      // exactly like the budget/ceiling pauses, or they can redirect.
+      const notice =
+        `Stopped — I called \`${singleToolName}\` ${consecutiveSameTool} times in a row without ` +
+        `making progress. Reply "continue" to let me keep going, or tell me what to change.`;
+      console.error("[chat-runner] same-tool runaway", {
+        chatSessionId,
+        toolName: singleToolName,
+        consecutiveSameTool,
+      });
+      yield { kind: "text-delta", text: notice };
+      const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+        chatSessionId,
+        role: "assistant",
+        content: notice,
+        status: "complete",
+      });
+      if (noticeSave.ok) {
+        lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+        yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
+      }
+      break;
+    }
+
     // Only loop again when the model actually signalled it wants to keep
     // going with a `tool_use` stop. Any other stop_reason ends the turn now
     // that the pairing is complete — the tool results ARE persisted, and the
@@ -944,9 +1112,13 @@ export async function* runToolLoop(
     }
   }
 
-  // v0.3.20 — cap-exhaustion notice. If the for-loop ran to completion AND
-  // the last iteration ended with the AI still wanting to call more tools,
-  // we hit `maxLoops`. Surface a clear user-visible message.
+  // Absolute-ceiling backstop notice. If the for-loop ran to completion AND
+  // the last iteration ended with the AI still wanting to call more tools, we
+  // hit `maxLoops` — which now defaults to ABSOLUTE_LOOP_CEILING (200), a high
+  // backstop against a true infinite loop rather than the old flat-25 primary
+  // cap. Overall cost is bounded by the live budget gate and runaway retries
+  // by the same-tool guard above; reaching this ceiling means neither tripped
+  // and the model still wants to continue, so surface a clear message.
   // Run #8 live-edit CI — also require `succeeded`: a provider error that
   // breaks the loop mid-run leaves lastLoopStop at the PREVIOUS
   // iteration's "tool_use"; pre-fix, this block then mislabelled the
@@ -958,17 +1130,22 @@ export async function* runToolLoop(
   // Slice 1 — an approval pause also leaves lastLoopStop at "tool_use" (the
   // model wanted the gated tool); the awaiting-approval stop already
   // explains the resume, so don't stack the loop-limit notice on top.
+  // Same-tool runaway — that stop also leaves lastLoopStop at "tool_use" and
+  // already emitted its own naming message, so don't stack this one either.
   if (
     lastLoopStop === "tool_use" &&
     !aborted() &&
     succeeded &&
     stopReason !== "cost_ceiling" &&
-    stopReason !== "awaiting_approval"
+    stopReason !== "awaiting_approval" &&
+    stopReason !== "same_tool_runaway"
   ) {
     stopReason = "max_loops";
+    // User-actionable, same contract as the runaway/budget pauses: "continue"
+    // resumes the turn, or the operator redirects.
     const notice =
       `Paused at the tool-loop limit (${args.maxLoops} iterations). The build was still in progress — ` +
-      `reply "continue" to resume.`;
+      `reply "continue" to resume, or tell me what to change.`;
     console.error("[chat-runner] max_loops cap hit", { chatSessionId, maxLoops: args.maxLoops });
     yield { kind: "text-delta", text: notice };
     const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {

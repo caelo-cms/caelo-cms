@@ -17,7 +17,20 @@ import type { ToolRegistry } from "../tools/index.js";
 export type ClientEvent =
   | { kind: "text-delta"; text: string }
   | { kind: "tool-start"; toolCallId: string; name: string; arguments: unknown }
-  | { kind: "tool-result"; toolCallId: string; ok: boolean; content: string }
+  /**
+   * `image` (Part 2) — when an image-returning tool (screenshot_page,
+   * screenshot_external_page, get_import_page_screenshot, inspect_external_page)
+   * captured a screenshot, the base64 bytes ride along so ChatPanel can render
+   * a live preview in the tool card. LIVE for the session only — never
+   * persisted, so it's absent on a reloaded history.
+   */
+  | {
+      kind: "tool-result";
+      toolCallId: string;
+      ok: boolean;
+      content: string;
+      image?: { base64: string; mediaType: string };
+    }
   | { kind: "tool-result-cached"; toolCallId: string }
   /**
    * Slice 1 (SDK approval gate) — a gated tool call is paused awaiting the
@@ -131,7 +144,7 @@ export interface ChatRunnerOptions {
    * issue #264 — run this turn on ANOTHER chat's preview branch
    * instead of the session's own. spawn_subagent passes the parent
    * chat's branch so the subagent's reads see the orchestrator's
-   * branched work (e.g. pages compose_from_import created on the
+   * branched work (e.g. pages the orchestrator built on the
    * parent branch) and its writes/snapshots land on the branch the
    * operator will preview, publish, and undo. Without this, a
    * write-capable subagent works on an invisible branch nobody ever
@@ -249,7 +262,14 @@ export type StopReason =
   // paused awaiting the Owner's in-chat Approve/Reject. Clean + resumable
   // (`succeeded` stays true): approving appends a tool-approval-response and
   // re-runs the turn.
-  | "awaiting_approval";
+  | "awaiting_approval"
+  // Same-tool runaway guard — the model called the SAME single tool on
+  // SAME_TOOL_RUNAWAY_LIMIT consecutive loop iterations without varying its
+  // work, which reads as a stuck retry loop rather than progress. The turn
+  // stops with a message naming the tool (see loop.ts). Distinct from
+  // `max_loops` (the absolute-ceiling backstop) so the epilogue doesn't stack
+  // the generic "tool-loop limit" notice on top of the runaway message.
+  | "same_tool_runaway";
 
 /**
  * Result shape of a single tool dispatch. Mirrors the subset of

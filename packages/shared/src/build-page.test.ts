@@ -72,7 +72,10 @@ describe("buildPageInputSchema — page target modes", () => {
 });
 
 describe("buildPageInputSchema — module entry modes name the failing index", () => {
-  it("rejects a mixed entry (moduleId + authoring keys) with the array index in the path", () => {
+  it("TOLERATES a moduleId entry carrying authoring keys (incl. structural) — placement-only, handler surfaces the ignored-authoring info", () => {
+    // §1A/§11 — a placement that CAN succeed must never fail over an extra
+    // field. moduleId + html + displayName is a valid placement; the handler
+    // (not the schema) reports which carried fields were not applied.
     const r = buildPageInputSchema.safeParse({
       page: { slug: "pricing", title: "Pricing" },
       modules: [
@@ -80,16 +83,15 @@ describe("buildPageInputSchema — module entry modes name the failing index", (
         { blockName: "content", moduleId: UUID2, html: "<p>x</p>", displayName: "Dup" },
       ],
     });
-    expect(r.success).toBe(false);
-    if (r.success) return;
-    const issue = r.error.issues.find((i) => i.message.includes("moduleId places an EXISTING"));
-    expect(issue).toBeDefined();
-    // The failing element's index rides in the Zod path → the dispatcher
-    // error names modules[1], not just "invalid input".
-    expect(issue!.path[0]).toBe("modules");
-    expect(issue!.path[1]).toBe(1);
-    expect(issue!.message).toContain("html");
-    expect(issue!.message).toContain("displayName");
+    expect(r.success).toBe(true);
+  });
+
+  it("TOLERATES a moduleId entry carrying only metadata (displayName) — the handler ignores it", () => {
+    const r = buildPageInputSchema.safeParse({
+      page: { slug: "pricing", title: "Pricing" },
+      modules: [{ blockName: "content", moduleId: UUID2, displayName: "Site Header" }],
+    });
+    expect(r.success).toBe(true);
   });
 
   it("rejects an entry with neither moduleId nor displayName+html, at its index", () => {

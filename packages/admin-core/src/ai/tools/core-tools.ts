@@ -28,6 +28,13 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // Module placement + structure
   "add_module",
   "edit_module",
+  // Surgical read/edit over module + template bodies (Claude-Code-style).
+  // Hot path of the everyday edit loop — read a body, string-replace it —
+  // so they stay loaded rather than behind a tool-search round-trip.
+  // grep_content is the long-tail "find it across the catalog" case and
+  // stays deferred.
+  "read_content",
+  "edit_content",
   "remove_module_from",
   "move_module",
   "reorder_module",

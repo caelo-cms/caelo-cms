@@ -18,6 +18,7 @@ import {
   budgetWarningText,
   evaluateGateLevel,
 } from "../ai/chat-runner/budget-gate.js";
+import { type PricingCandidate, pickPricingRow } from "../ai/pricing-cache.js";
 import {
   deriveCeilingFromEstimate,
   ESTIMATE_CEILING_SAFETY_FACTOR,
@@ -104,11 +105,12 @@ describe("evaluateBudgetGate (80% warn / 100% trip)", () => {
 });
 
 describe("computeAiCallCostMicrocents (run #14 $0.00 regression)", () => {
-  // claude-sonnet-5 rates from migration 0155: µ¢ per 1K tokens.
+  // claude-sonnet-5 STANDARD rates: µ¢ per 1K tokens (cache-write = 1.25x in).
   const sonnet5 = {
     inputMicrocents: 300_000,
     outputMicrocents: 1_500_000,
     cachedMicrocents: 30_000,
+    cacheCreationMicrocents: 375_000,
   };
 
   it("prices a text call: billed input + cache reads + output", () => {
@@ -116,6 +118,7 @@ describe("computeAiCallCostMicrocents (run #14 $0.00 regression)", () => {
       operationType: "text",
       inputTokens: 110_000,
       cachedTokens: 100_000,
+      cacheCreationTokens: 0,
       outputTokens: 2_000,
       imageCount: 0,
     });
@@ -128,11 +131,56 @@ describe("computeAiCallCostMicrocents (run #14 $0.00 regression)", () => {
     expect(r.unpriced).toBe(false);
   });
 
+  it("prices cache WRITES at the cache-creation rate, subtracted from billed input", () => {
+    // SDK `inputTokens` is the grand total: 110K = 8K fresh + 100K cache-read
+    // + 2K cache-write. Fresh bills at input rate, cache-read at cache rate,
+    // cache-write at the cache-creation rate — no lane double-billed.
+    const r = computeAiCallCostMicrocents(sonnet5, {
+      operationType: "text",
+      inputTokens: 110_000,
+      cachedTokens: 100_000,
+      cacheCreationTokens: 2_000,
+      outputTokens: 500,
+      imageCount: 0,
+    });
+    expect(r.costMicrocents).toBe(
+      Math.round(
+        (8_000 * 300_000) / 1000 +
+          (100_000 * 30_000) / 1000 +
+          (2_000 * 375_000) / 1000 +
+          (500 * 1_500_000) / 1000,
+      ),
+    );
+    expect(r.unpriced).toBe(false);
+  });
+
+  it("defaults the cache-write rate to 1.25x input when the row omits it", () => {
+    const r = computeAiCallCostMicrocents(
+      {
+        inputMicrocents: 300_000,
+        outputMicrocents: null,
+        cachedMicrocents: null,
+        cacheCreationMicrocents: null,
+      },
+      {
+        operationType: "text",
+        inputTokens: 5_000,
+        cachedTokens: 0,
+        cacheCreationTokens: 1_000,
+        outputTokens: 0,
+        imageCount: 0,
+      },
+    );
+    // 4K fresh @300000 + 1K cache-write @ (300000 * 1.25 = 375000).
+    expect(r.costMicrocents).toBe(Math.round((4_000 * 300_000) / 1000 + (1_000 * 375_000) / 1000));
+  });
+
   it("run #14 shape: pricing miss + real tokens → cost 0 but FLAGGED unpriced", () => {
     const r = computeAiCallCostMicrocents(null, {
       operationType: "text",
       inputTokens: 110_000,
       cachedTokens: 0,
+      cacheCreationTokens: 0,
       outputTokens: 1_500,
       imageCount: 0,
     });
@@ -145,6 +193,7 @@ describe("computeAiCallCostMicrocents (run #14 $0.00 regression)", () => {
       operationType: "text",
       inputTokens: 0,
       cachedTokens: 0,
+      cacheCreationTokens: 0,
       outputTokens: 0,
       imageCount: 0,
     });
@@ -153,11 +202,17 @@ describe("computeAiCallCostMicrocents (run #14 $0.00 regression)", () => {
 
   it("cached tokens bill at the input rate when the row has no cache rate", () => {
     const r = computeAiCallCostMicrocents(
-      { inputMicrocents: 300_000, outputMicrocents: 1_500_000, cachedMicrocents: null },
+      {
+        inputMicrocents: 300_000,
+        outputMicrocents: 1_500_000,
+        cachedMicrocents: null,
+        cacheCreationMicrocents: null,
+      },
       {
         operationType: "text",
         inputTokens: 2_000,
         cachedTokens: 1_000,
+        cacheCreationTokens: 0,
         outputTokens: 0,
         imageCount: 0,
       },
@@ -167,11 +222,98 @@ describe("computeAiCallCostMicrocents (run #14 $0.00 regression)", () => {
 
   it("prices image calls per image", () => {
     const r = computeAiCallCostMicrocents(
-      { inputMicrocents: 4_000_000, outputMicrocents: null, cachedMicrocents: null },
-      { operationType: "image", inputTokens: 0, cachedTokens: 0, outputTokens: 0, imageCount: 3 },
+      {
+        inputMicrocents: 4_000_000,
+        outputMicrocents: null,
+        cachedMicrocents: null,
+        cacheCreationMicrocents: null,
+      },
+      {
+        operationType: "image",
+        inputTokens: 0,
+        cachedTokens: 0,
+        cacheCreationTokens: 0,
+        outputTokens: 0,
+        imageCount: 3,
+      },
     );
     expect(r.costMicrocents).toBe(12_000_000);
     expect(r.unpriced).toBe(false);
+  });
+});
+
+describe("pickPricingRow (validity-dated Sonnet-5 intro vs standard)", () => {
+  const ms = (iso: string) => Date.parse(iso);
+  // The three ai_pricing rows migration 0186 leaves for claude-sonnet-5:
+  //   - undated back-compat row (from 0155),
+  //   - intro window (through 2026-08-31),
+  //   - standard window (from 2026-09-01).
+  const undated: PricingCandidate = {
+    model: "claude-sonnet-5",
+    inputMicrocents: 300_000,
+    outputMicrocents: 1_500_000,
+    cachedMicrocents: 30_000,
+    cacheCreationMicrocents: 375_000,
+    effectiveFromMs: ms("2026-06-01T00:00:00Z"),
+    validFromMs: null,
+    validToMs: null,
+  };
+  const intro: PricingCandidate = {
+    model: "claude-sonnet-5",
+    inputMicrocents: 200_000,
+    outputMicrocents: 1_000_000,
+    cachedMicrocents: 20_000,
+    cacheCreationMicrocents: 250_000,
+    effectiveFromMs: ms("2026-07-01T00:00:00Z"),
+    validFromMs: null,
+    validToMs: ms("2026-08-31T23:59:59Z"),
+  };
+  const standard: PricingCandidate = {
+    model: "claude-sonnet-5",
+    inputMicrocents: 300_000,
+    outputMicrocents: 1_500_000,
+    cachedMicrocents: 30_000,
+    cacheCreationMicrocents: 375_000,
+    effectiveFromMs: ms("2026-09-01T00:00:00Z"),
+    validFromMs: ms("2026-09-01T00:00:00Z"),
+    validToMs: null,
+  };
+  const rows = [undated, intro, standard];
+
+  it("picks the intro row during the intro window (dated beats undated)", () => {
+    const r = pickPricingRow(rows, "claude-sonnet-5", ms("2026-07-23T12:00:00Z"));
+    expect(r?.inputMicrocents).toBe(200_000);
+    expect(r?.cacheCreationMicrocents).toBe(250_000);
+  });
+
+  it("picks the standard row after the intro window closes", () => {
+    const r = pickPricingRow(rows, "claude-sonnet-5", ms("2026-09-15T00:00:00Z"));
+    // intro is excluded (valid_to passed); standard's later valid_from beats
+    // the undated back-compat row.
+    expect(r?.inputMicrocents).toBe(300_000);
+    expect(r?.cacheCreationMicrocents).toBe(375_000);
+  });
+
+  it("falls back to the undated row when only it is dated-eligible", () => {
+    // A call time before the standard window opens but after intro closes is
+    // impossible for these seeds (intro valid_to = standard valid_from - 1s),
+    // so prove the undated fallback with a row set that has no dated match.
+    const r = pickPricingRow([undated], "claude-sonnet-5", ms("2027-01-01T00:00:00Z"));
+    expect(r?.inputMicrocents).toBe(300_000);
+  });
+
+  it("returns null when no row's effective_from has passed yet", () => {
+    expect(pickPricingRow([standard], "claude-sonnet-5", ms("2026-01-01T00:00:00Z"))).toBeNull();
+  });
+
+  it("prefers an exact-model row over the wildcard fallback", () => {
+    const wildcard: PricingCandidate = {
+      ...undated,
+      model: "*",
+      inputMicrocents: 999_000,
+    };
+    const r = pickPricingRow([wildcard, intro], "claude-sonnet-5", ms("2026-07-23T00:00:00Z"));
+    expect(r?.inputMicrocents).toBe(200_000);
   });
 });
 

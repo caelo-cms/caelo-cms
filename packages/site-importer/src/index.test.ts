@@ -3,7 +3,6 @@
 import { describe, expect, it } from "bun:test";
 import { crawlSite } from "./crawler.js";
 import { extractModulesFromHtml, extractThemeTokens, extractTitle } from "./extractor.js";
-import { computeDiffStatus } from "./screenshot-diff.js";
 
 describe("extractor", () => {
   it("extracts <title>", () => {
@@ -84,21 +83,5 @@ describe("crawler", () => {
       }),
     });
     expect(result.pages.length).toBe(1);
-  });
-});
-
-describe("screenshot-diff classifier", () => {
-  it("buckets 0.02 → pass", () => {
-    expect(computeDiffStatus(0.02).status).toBe("pass");
-  });
-  it("buckets 0.10 → warn", () => {
-    expect(computeDiffStatus(0.1).status).toBe("warn");
-  });
-  it("buckets 0.30 → fail", () => {
-    expect(computeDiffStatus(0.3).status).toBe("fail");
-  });
-  it("guards against bad inputs", () => {
-    expect(computeDiffStatus(-1).status).toBe("fail");
-    expect(computeDiffStatus(Number.NaN).status).toBe("fail");
   });
 });

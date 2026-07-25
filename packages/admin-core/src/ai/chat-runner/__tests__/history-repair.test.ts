@@ -279,3 +279,120 @@ describe("buildProviderHistory runs the repair (poisoned-session replay)", () =>
     expect(out.map((m) => m.role)).toEqual(["user", "user"]);
   });
 });
+
+/**
+ * Passthrough-aware repair (the messages.18 interrupt 400). The live failure:
+ * an aborted turn persisted a `tool_use` with no `tool_result`, but earlier
+ * turns carried Option-C passthrough rows, so the repair was globally skipped
+ * and the orphan survived into the replay → 400. The repair now runs over the
+ * mixed history: it harvests the passthrough rows' nested ids (so a normal
+ * Option-C pair — passthrough tool_use ↔ reconstruction tool-role result —
+ * is NOT mistaken for an orphan) while still stripping the true orphan.
+ */
+describe("repairToolCallPairing — passthrough-aware (messages.18 interrupt 400)", () => {
+  const passthroughAssistant: ChatMessageInput = {
+    role: "assistant",
+    content: "",
+    sdkMessages: [
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "toolu_ok", toolName: "list_pages", input: {} }],
+      },
+    ],
+  };
+  // The reconstruction tool-role result answering the passthrough tool_use.
+  const reconResult: ChatMessageInput = {
+    role: "tool",
+    content: "3 pages",
+    toolCallId: "toolu_ok",
+  };
+
+  it("keeps a normal Option-C pair (passthrough tool_use ↔ reconstruction result) intact", () => {
+    const input: ChatMessageInput[] = [
+      { role: "user", content: "list them" },
+      passthroughAssistant,
+      reconResult,
+    ];
+    const r = repairToolCallPairing(input);
+    expect(r.droppedToolResultIds).toEqual([]);
+    expect(r.strippedToolCallIds).toEqual([]);
+    expect(r.droppedEmptyAssistantMessages).toBe(0);
+    expect(r.messages).toEqual(input);
+  });
+
+  it("strips the interrupted orphan tool_use while leaving the passthrough pair untouched", () => {
+    const interruptedOrphan: ChatMessageInput = {
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "toolu_orphan", name: "inspect_external_page", arguments: {} }],
+    };
+    const input: ChatMessageInput[] = [
+      { role: "user", content: "go" },
+      passthroughAssistant,
+      reconResult,
+      interruptedOrphan, // no tool_result follows → the messages.18 orphan
+    ];
+    const r = repairToolCallPairing(input);
+    expect(r.strippedToolCallIds).toEqual(["toolu_orphan"]);
+    expect(r.droppedEmptyAssistantMessages).toBe(1);
+    expect(r.droppedToolResultIds).toEqual([]);
+    // Passthrough row + its reconstruction result survive; only the orphan turn is gone.
+    expect(r.messages).toEqual([input[0], passthroughAssistant, reconResult]);
+  });
+
+  it("replays a poisoned mixed session cleanly (buildProviderHistory)", async () => {
+    const noopLoader = async (): Promise<{ failed: string }> => ({ failed: "not used" });
+    const persisted: HistoryMessage[] = [
+      {
+        role: "user",
+        content: "list them",
+        toolCalls: null,
+        toolCallId: null,
+        thinkingBlocks: null,
+      },
+      // A normal Option-C assistant turn: the tool_use lives inside the SDK
+      // assembly (responseMessages), NOT in top-level toolCalls.
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: null,
+        toolCallId: null,
+        thinkingBlocks: null,
+        responseMessages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "tool-call", toolCallId: "toolu_ok", toolName: "list_pages", input: {} },
+            ],
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "3 pages",
+        toolCalls: null,
+        toolCallId: "toolu_ok",
+        thinkingBlocks: null,
+      },
+      // The interrupted orphan: aborted after emitting tool_use, dispatch skipped.
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "toolu_orphan", name: "inspect_external_page", arguments: {} }],
+        toolCallId: null,
+        thinkingBlocks: null,
+      },
+      { role: "user", content: "retry", toolCalls: null, toolCallId: null, thinkingBlocks: null },
+    ];
+    const out = await buildProviderHistory(persisted, noopLoader);
+    // The orphan tool_use is gone — no unpaired tool_use reaches the provider.
+    expect(
+      out.some((m) => m.toolCalls?.some((tc) => (tc as { id: string }).id === "toolu_orphan")),
+    ).toBe(false);
+    // The passthrough turn + its paired result survive (NOT dropped as orphans).
+    expect(out.some((m) => Array.isArray((m as { sdkMessages?: unknown[] }).sdkMessages))).toBe(
+      true,
+    );
+    expect(out.some((m) => m.role === "tool" && m.toolCallId === "toolu_ok")).toBe(true);
+  });
+});

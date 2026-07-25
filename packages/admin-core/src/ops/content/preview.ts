@@ -23,11 +23,13 @@ import {
   composePageWithLayout,
   enrichResponsiveImages,
   err,
+  extractMediaRefs,
   fontUnresolvableMarker,
   injectSeoIntoHead,
   listThemeCssVarNames,
   type ModuleFieldKind,
   ok,
+  pageIsLocaleHome,
   renderSeoHead,
   resolveCanonicalUrl,
   resolveLocaleUrl,
@@ -938,21 +940,25 @@ export const renderPagePreviewOp = defineOperation({
     `)) as unknown as { site_base_url: string }[];
     const earlySiteBaseUrl = earlySettingsRows[0]?.site_base_url ?? "http://localhost:8082";
     const langSiblings = (await tx.execute(sql`
-      SELECT locale FROM pages
+      SELECT id::text AS id, locale FROM pages
       WHERE slug = ${pageRow.slug}
         AND deleted_at IS NULL
         AND status = 'published'
-    `)) as unknown as { locale: string }[];
+    `)) as unknown as { id: string; locale: string }[];
+    // 0184 — home_page_id per locale so a sibling designated as its
+    // locale's homepage on a non-magic slug resolves to the root, same
+    // as the canonical + hreflang passes below.
     const langLocaleRows = (await tx.execute(sql`
-      SELECT code, url_strategy, url_host FROM locales
+      SELECT code, url_strategy, url_host, home_page_id::text AS home_page_id FROM locales
     `)) as unknown as {
       code: string;
       url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
       url_host: string | null;
+      home_page_id: string | null;
     }[];
     const langLocaleByCode = new Map(langLocaleRows.map((l) => [l.code, l]));
     const availableLocales = langSiblings
-      .map(({ locale }) => {
+      .map(({ id: siblingId, locale }) => {
         const cfg = langLocaleByCode.get(locale);
         if (!cfg) return null;
         try {
@@ -969,6 +975,8 @@ export const renderPagePreviewOp = defineOperation({
               },
               pageRow.slug,
               earlySiteBaseUrl,
+              "directory",
+              pageIsLocaleHome(siblingId, pageRow.slug, cfg.home_page_id),
             ),
             isCurrent: locale === pageRow.locale,
           };
@@ -1047,28 +1055,50 @@ export const renderPagePreviewOp = defineOperation({
     // pass applies, with URLs kept on the admin's media route. Without
     // this, the operator (and the #155 self-review loop) tunes visuals
     // against markup that differs from what visitors get.
-    const previewAssetIds = [
-      ...new Set(
-        [...html.matchAll(/\/_caelo\/media\/([0-9a-f-]{36})\//g)].map((m) => m[1] as string),
-      ),
-    ];
-    if (previewAssetIds.length > 0) {
-      const idFrags = previewAssetIds.map((id) => sql`${id}::uuid`);
-      const variantRows = (await tx.execute(sql`
-        SELECT asset_id::text AS asset_id, variant, format
-        FROM media_variants
-        WHERE asset_id IN (${sql.join(idFrags, sql`, `)})
-      `)) as unknown as { asset_id: string; variant: string; format: string }[];
-      const variantsByAsset = new Map<string, { variant: string; format: string }[]>();
-      for (const r of variantRows) {
-        const list = variantsByAsset.get(r.asset_id) ?? [];
-        list.push({ variant: r.variant, format: r.format });
-        variantsByAsset.set(r.asset_id, list);
+    // Refs in the HTML are slugs (current embeds) or legacy UUID ids.
+    // Resolve the slugs to asset ids, load every referenced asset's
+    // variants, then key the enrichment map by the SAME ref that appears
+    // in the HTML (slug for current, id for legacy) — the shape
+    // enrichResponsiveImages + the static generator's media pass expect.
+    const previewRefs = extractMediaRefs(html);
+    if (previewRefs.length > 0) {
+      const slugRefs = new Set<string>();
+      const legacyIdRefs = new Set<string>();
+      for (const r of previewRefs) {
+        if (r.isSlug) slugRefs.add(r.ref);
+        else legacyIdRefs.add(r.ref);
       }
-      html = enrichResponsiveImages(html, variantsByAsset, {
-        rewriteSrc: false,
-        urlFor: (assetId, variant) => `/_caelo/media/${assetId}/${variant}`,
-      });
+      const slugToId = new Map<string, string>();
+      if (slugRefs.size > 0) {
+        const slugFrags = [...slugRefs].map((s) => sql`${s}`);
+        const slugRows = (await tx.execute(sql`
+          SELECT id::text AS id, slug FROM media_assets
+          WHERE slug IN (${sql.join(slugFrags, sql`, `)}) AND deleted_at IS NULL
+        `)) as unknown as { id: string; slug: string }[];
+        for (const r of slugRows) slugToId.set(r.slug, r.id);
+      }
+      const assetIds = [...new Set([...legacyIdRefs, ...slugToId.values()])];
+      if (assetIds.length > 0) {
+        const idFrags = assetIds.map((id) => sql`${id}::uuid`);
+        const variantRows = (await tx.execute(sql`
+          SELECT asset_id::text AS asset_id, variant, format
+          FROM media_variants
+          WHERE asset_id IN (${sql.join(idFrags, sql`, `)})
+        `)) as unknown as { asset_id: string; variant: string; format: string }[];
+        const variantsById = new Map<string, { variant: string; format: string }[]>();
+        for (const r of variantRows) {
+          const list = variantsById.get(r.asset_id) ?? [];
+          list.push({ variant: r.variant, format: r.format });
+          variantsById.set(r.asset_id, list);
+        }
+        const variantsByRef = new Map<string, { variant: string; format: string }[]>();
+        for (const [slug, id] of slugToId) variantsByRef.set(slug, variantsById.get(id) ?? []);
+        for (const id of legacyIdRefs) variantsByRef.set(id, variantsById.get(id) ?? []);
+        html = enrichResponsiveImages(html, variantsByRef, {
+          rewriteSrc: false,
+          urlFor: (ref, variant) => buildMediaUrl(ref, variant),
+        });
+      }
     }
     const seoRows = (await tx.execute(sql`
       SELECT meta_description, og_image_asset_id::text AS og_image_asset_id,
@@ -1103,35 +1133,37 @@ export const renderPagePreviewOp = defineOperation({
     let ogImageUrl: string | null = null;
     if (seoRow?.og_image_asset_id) {
       const variants = (await tx.execute(sql`
-        SELECT variant, format FROM media_variants
-        WHERE asset_id = ${seoRow.og_image_asset_id}::uuid
+        SELECT mv.variant AS variant, mv.format AS format, ma.slug AS slug
+        FROM media_variants mv
+        JOIN media_assets ma ON ma.id = mv.asset_id AND ma.deleted_at IS NULL
+        WHERE mv.asset_id = ${seoRow.og_image_asset_id}::uuid
         ORDER BY
-          CASE variant
+          CASE mv.variant
             WHEN 'webp-1200' THEN 0 WHEN 'webp-1600' THEN 1
             WHEN 'webp-800'  THEN 2 WHEN 'orig'      THEN 3 ELSE 4
           END
         LIMIT 1
-      `)) as unknown as { variant: string; format: string }[];
+      `)) as unknown as { variant: string; format: string; slug: string }[];
       const v = variants[0];
       if (v) {
-        const ext = v.format === "jpeg" ? "jpg" : v.format;
-        // Preview keeps the /_caelo/media URL form so the admin
-        // resolver serves the bytes; the static generator rewrites
-        // to /_assets at deploy.
-        ogImageUrl = `/_caelo/media/${seoRow.og_image_asset_id}/${v.variant}`;
-        void ext;
+        // Preview keeps the /_caelo/media URL form (built from the slug) so
+        // the admin resolver serves the bytes; the static generator
+        // rewrites to /_assets at deploy.
+        ogImageUrl = buildMediaUrl(v.slug, v.variant);
       }
     }
     // P9 — preview matches the static generator: explicit hreflang
     // overrides win, otherwise auto-compute from sibling-locale pages
     // for the same slug. Locale registry drives URL strategy.
     const localeRows = (await tx.execute(sql`
-      SELECT code, url_strategy, url_host, is_default FROM locales
+      SELECT code, url_strategy, url_host, is_default, home_page_id::text AS home_page_id
+      FROM locales
     `)) as unknown as {
       code: string;
       url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
       url_host: string | null;
       is_default: boolean;
+      home_page_id: string | null;
     }[];
     const localeByCode = new Map(
       localeRows.map((r) => [
@@ -1141,6 +1173,7 @@ export const renderPagePreviewOp = defineOperation({
           urlStrategy: r.url_strategy,
           urlHost: r.url_host,
           isDefault: r.is_default,
+          homePageId: r.home_page_id,
         },
       ]),
     );
@@ -1156,11 +1189,11 @@ export const renderPagePreviewOp = defineOperation({
       // Preview mirrors the static generator: only published variants
       // count toward hreflang per CMS_REQUIREMENTS §7.3.
       const siblings = (await tx.execute(sql`
-        SELECT locale FROM pages
+        SELECT id::text AS id, locale FROM pages
         WHERE slug = ${pageRow.slug}
           AND deleted_at IS NULL
           AND status = 'published'
-      `)) as unknown as { locale: string }[];
+      `)) as unknown as { id: string; locale: string }[];
       hreflang = [];
       for (const s of siblings) {
         const cfg = localeByCode.get(s.locale);
@@ -1178,6 +1211,10 @@ export const renderPagePreviewOp = defineOperation({
               },
               pageRow.slug,
               siteBaseUrl,
+              "directory",
+              // 0184 — each sibling's home status comes from its OWN
+              // locale's home_page_id + its own page id.
+              pageIsLocaleHome(s.id, pageRow.slug, cfg.homePageId),
             ),
           });
         } catch {
@@ -1185,12 +1222,17 @@ export const renderPagePreviewOp = defineOperation({
         }
       }
     }
+    const canonicalLocaleCfg = localeByCode.get(pageRow.locale);
     const canonical = resolveCanonicalUrl({
       siteBaseUrl,
       pageSlug: pageRow.slug,
       pageLocale: pageRow.locale,
       override: seoRow?.canonical_url ?? null,
-      localeConfig: localeByCode.get(pageRow.locale),
+      localeConfig: canonicalLocaleCfg,
+      // 0184 — this page is the locale root when it's the designated
+      // home_page_id (or carries a magic slug). input.pageId is this
+      // page's own id.
+      isHomePage: pageIsLocaleHome(input.pageId, pageRow.slug, canonicalLocaleCfg?.homePageId),
     });
     const headBlock = renderSeoHead({
       title: pageRow.title,
@@ -1255,22 +1297,34 @@ async function loadActiveThemeForCompose(
 ): Promise<ComposeTheme | undefined> {
   const rows = (await tx.execute(sql`
     SELECT
-      id::text                     AS id,
-      tokens                       AS tokens,
-      logo_media_id::text          AS logo_media_id,
-      logo_dark_media_id::text     AS logo_dark_media_id,
-      favicon_media_id::text       AS favicon_media_id,
-      social_share_media_id::text  AS social_share_media_id
-    FROM themes
-    WHERE is_active = true
+      t.id::text                     AS id,
+      t.tokens                       AS tokens,
+      t.logo_media_id::text          AS logo_media_id,
+      la.slug                        AS logo_slug,
+      t.logo_dark_media_id::text     AS logo_dark_media_id,
+      lda.slug                       AS logo_dark_slug,
+      t.favicon_media_id::text       AS favicon_media_id,
+      fa.slug                        AS favicon_slug,
+      t.social_share_media_id::text  AS social_share_media_id,
+      ssa.slug                       AS social_share_slug
+    FROM themes t
+    LEFT JOIN media_assets la  ON la.id  = t.logo_media_id         AND la.deleted_at  IS NULL
+    LEFT JOIN media_assets lda ON lda.id = t.logo_dark_media_id    AND lda.deleted_at IS NULL
+    LEFT JOIN media_assets fa  ON fa.id  = t.favicon_media_id      AND fa.deleted_at  IS NULL
+    LEFT JOIN media_assets ssa ON ssa.id = t.social_share_media_id AND ssa.deleted_at IS NULL
+    WHERE t.is_active = true
     LIMIT 1
   `)) as unknown as Array<{
     id: string;
     tokens: unknown;
     logo_media_id: string | null;
+    logo_slug: string | null;
     logo_dark_media_id: string | null;
+    logo_dark_slug: string | null;
     favicon_media_id: string | null;
+    favicon_slug: string | null;
     social_share_media_id: string | null;
+    social_share_slug: string | null;
   }>;
   const row = rows[0];
   if (!row) return undefined;
@@ -1301,15 +1355,20 @@ async function loadActiveThemeForCompose(
     }
   }
 
-  const asset = (id: string | null): { mediaId: string; url: string } | null =>
-    id === null ? null : { mediaId: id, url: buildMediaUrl(id, "orig") };
+  // URL is built from the SLUG (public form); the id stays the mediaId.
+  // A null slug means the bound asset was deleted — drop the binding.
+  const asset = (
+    id: string | null,
+    slug: string | null,
+  ): { mediaId: string; url: string } | null =>
+    id === null || slug === null ? null : { mediaId: id, url: buildMediaUrl(slug, "orig") };
   return {
     tokens,
     assets: {
-      logo: asset(row.logo_media_id),
-      logoDark: asset(row.logo_dark_media_id),
-      favicon: asset(row.favicon_media_id),
-      socialShare: asset(row.social_share_media_id),
+      logo: asset(row.logo_media_id, row.logo_slug),
+      logoDark: asset(row.logo_dark_media_id, row.logo_dark_slug),
+      favicon: asset(row.favicon_media_id, row.favicon_slug),
+      socialShare: asset(row.social_share_media_id, row.social_share_slug),
     },
   };
 }

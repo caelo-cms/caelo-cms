@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { collapseStatusNotes, statusNoteKey } from "./status-notes.js";
+import {
+  collapseStatusNotes,
+  contextNoteLabel,
+  isContextNote,
+  noteMarkerKind,
+  statusNoteKey,
+  stripNoteMarker,
+} from "./status-notes.js";
 import type { ChatMessage } from "./types.js";
 
 let seq = 0;
@@ -72,5 +79,37 @@ describe("collapseStatusNotes (issue #303)", () => {
     const a = msg({ role: "user", content: "same text" });
     const b = msg({ role: "user", content: "same text" });
     expect(collapseStatusNotes([a, b])).toEqual([a, b]);
+  });
+});
+
+describe("context-note helpers (collapse AI-context plumbing in the transcript)", () => {
+  const pagectx =
+    '# Current page\nPage: home (locale=en, status=draft, id=abc)\n<div class="elementor-11">…</div>\n<!--pagectx:1a2b3c-->';
+  const statusLine = "Theme: needs setup — call themes.get to inspect.\n<!--status:9z8y-->";
+  const nudge = "Approved: crawl proposal 3f9a12bc — the crawler starts within ~10s.";
+
+  it("recognises the marker-bearing current-page + status-line notes as context notes", () => {
+    expect(noteMarkerKind(pagectx)).toBe("pagectx");
+    expect(noteMarkerKind(statusLine)).toBe("status");
+    expect(isContextNote(pagectx)).toBe(true);
+    expect(isContextNote(statusLine)).toBe(true);
+  });
+
+  it("does NOT treat marker-less operator-relevant nudges as context notes", () => {
+    expect(noteMarkerKind(nudge)).toBeNull();
+    expect(isContextNote(nudge)).toBe(false);
+  });
+
+  it("strips the trailing injected marker so it never shows to the operator", () => {
+    expect(stripNoteMarker(pagectx)).not.toContain("<!--pagectx:");
+    expect(stripNoteMarker(pagectx).endsWith("</div>")).toBe(true);
+    expect(stripNoteMarker(statusLine)).toBe("Theme: needs setup — call themes.get to inspect.");
+    // A nudge without a marker is returned unchanged (aside from trailing ws).
+    expect(stripNoteMarker(nudge)).toBe(nudge);
+  });
+
+  it("labels the collapsed summary by note kind", () => {
+    expect(contextNoteLabel(pagectx)).toBe("Page context");
+    expect(contextNoteLabel(statusLine)).toBe("Site status");
   });
 });

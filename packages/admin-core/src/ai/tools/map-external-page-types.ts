@@ -20,12 +20,13 @@ import {
   classifyPageTypes,
   discoverSitemapUrls,
   extractOutboundLinks,
-  isExternalUrlBlockedError,
+  fetchRenderedHtml,
   safeExternalFetch,
   type TextFetcher,
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
+import { getExternalScreenshotter } from "./_external-screenshotter.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const input = z
@@ -81,30 +82,25 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
     }
     const allowedHosts = externalFetchAllowedHosts();
 
-    let res: Awaited<ReturnType<typeof safeExternalFetch>>;
-    try {
-      res = await safeExternalFetch(toolInput.url, { allowedHosts, maxBytes: 2 * 1024 * 1024 });
-    } catch (e) {
-      if (isExternalUrlBlockedError(e)) return { ok: false, content: e.message };
+    // Render-first: a site's primary nav/footer is often JS-built, so the
+    // page-type map must read the rendered DOM, not the pre-JS source. Falls
+    // back to a static fetch (with a note) when Chromium is unavailable.
+    const screenshotter = await getExternalScreenshotter({ allowedHosts });
+    const rf = await fetchRenderedHtml(toolInput.url, {
+      screenshotter,
+      allowedHosts,
+      maxBytes: 2 * 1024 * 1024,
+    });
+    if (!rf.ok) {
       return {
         ok: false,
-        content: `map_external_page_types could not fetch ${toolInput.url}: ${e instanceof Error ? e.message : String(e)}. Verify the address with the operator.`,
-      };
-    }
-    if (!res.ok) {
-      return {
-        ok: false,
-        content: `map_external_page_types: ${toolInput.url} answered HTTP ${res.status}. Verify the address with the operator.`,
-      };
-    }
-    if (!res.contentType.includes("text/html")) {
-      return {
-        ok: false,
-        content: `map_external_page_types: ${toolInput.url} is ${res.contentType || "an unknown content type"}, not an HTML page.`,
+        content: rf.blocked
+          ? rf.message
+          : `map_external_page_types: ${toolInput.url} — ${rf.message}. Verify the address with the operator.`,
       };
     }
 
-    const links = extractOutboundLinks(res.bodyText, res.finalUrl);
+    const links = extractOutboundLinks(rf.html, rf.finalUrl);
 
     let sitemapUrls: string[] = [];
     let sitemapNote = "sitemap not sampled";
@@ -120,7 +116,7 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
       };
       try {
         const discovery = await discoverSitemapUrls({
-          origin: new URL(res.finalUrl).origin,
+          origin: new URL(rf.finalUrl).origin,
           fetcher,
           maxUrls: sampleSize,
         });
@@ -134,17 +130,17 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
       }
     }
 
-    const map = classifyPageTypes({ siteUrl: res.finalUrl, links, sitemapUrls });
+    const map = classifyPageTypes({ siteUrl: rf.finalUrl, links, sitemapUrls });
 
     if (map.types.length === 0) {
       return {
         ok: true,
-        content: `# Page-type map — ${res.finalUrl}\n\nNo page types found in the homepage nav/footer or sitemap sample (${sitemapNote}). The homepage may render its nav via JavaScript — try \`inspect_external_page\` with \`{screenshot:true, markup:true}\` to see the structure, or ask the operator which sections the site has.`,
+        content: `# Page-type map — ${rf.finalUrl}\n\nNo page types found in the homepage nav/footer or sitemap sample (${sitemapNote}). The nav is now read from the RENDERED DOM, so if it's still empty the menu may only build on interaction (a hamburger that expands on click) or the site keys navigation off something other than links — inspect the homepage (\`{screenshot:true}\`) or ask the operator which sections the site has.`,
       };
     }
 
     const lines: string[] = [
-      `# Page-type map — ${res.finalUrl}`,
+      `# Page-type map — ${rf.finalUrl}`,
       map.activeLocale ? `Active locale: /${map.activeLocale}` : "No locale prefix on this URL.",
       `Sitemap: ${sitemapNote}.`,
       "",
@@ -167,7 +163,7 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
     }
     lines.push(
       "",
-      "Next: sample each type's URL with `inspect_external_page` ({markup, screenshot, tokens, altTexts}) and build its template.",
+      "Next: sample each type's URL with `inspect_external_page` ({screenshot, tokens, altTexts, images}) and build its template.",
       `(${budget.remaining} external fetches left in this session's budget.)`,
     );
 

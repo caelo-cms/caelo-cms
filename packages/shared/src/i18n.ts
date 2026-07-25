@@ -8,9 +8,10 @@
  *     content. Drives `pages.content_hash` + the translation_status
  *     recompute path.
  *
- *   resolveLocaleUrl(locale, slug, defaultLocaleCode, siteBaseUrl) —
+ *   resolveLocaleUrl(locale, slug, siteBaseUrl, pageUrlStyle?, isHomePage?) —
  *     builds the public URL for a (locale, slug) tuple given the
- *     locale's url_strategy + url_host. Used by:
+ *     locale's url_strategy + url_host. `isHomePage` forces the locale
+ *     root (0184 explicit designation). Used by:
  *       - hreflang emitter
  *       - sitemap.xml emitter (when extended for i18n)
  *       - language-selector module
@@ -63,6 +64,36 @@ export interface LocaleConfig {
 }
 
 /**
+ * The "magic slug" sentinel test: a page whose slug is empty, `home`,
+ * or `index` is the locale root by convention even without an explicit
+ * `locales.home_page_id` designation. Leading/trailing slashes are
+ * ignored so `/home/` reads the same as `home`.
+ */
+export function isHomeSlug(slug: string): boolean {
+  const s = trimSlashes(slug);
+  return s === "" || s === "home" || s === "index";
+}
+
+/**
+ * The single home-decision predicate every URL/output-path site must
+ * use so canonical, hreflang, redirects, and the emitted file agree
+ * (0184 explicit-homepage feature). A page is the locale root when it
+ * IS the locale's designated `home_page_id` OR carries a magic slug.
+ *
+ * @param pageId            The page being resolved.
+ * @param slug              That page's slug.
+ * @param localeHomePageId  `locales.home_page_id` for the page's locale
+ *                          (null/undefined when no page is designated).
+ */
+export function pageIsLocaleHome(
+  pageId: string,
+  slug: string,
+  localeHomePageId: string | null | undefined,
+): boolean {
+  return (localeHomePageId != null && pageId === localeHomePageId) || isHomeSlug(slug);
+}
+
+/**
  * Build a public-facing URL for a (locale, slug) tuple. Pure function —
  * no DB access — so the static generator can call it for every page
  * without round-trips.
@@ -71,6 +102,14 @@ export interface LocaleConfig {
  * @param slug         Path component (e.g. "about", "blog/post-1"). No leading slash.
  * @param siteBaseUrl  Default base URL when the strategy is `none` or
  *                     `subdirectory` (e.g. "https://example.com").
+ * @param pageUrlStyle Page emission style (see below).
+ * @param isHomePage   Explicit homepage designation (0184 —
+ *                     `locales.home_page_id`). When true this page IS the
+ *                     locale root and resolves to `<base>/` regardless of
+ *                     its own slug. The explicit flag WINS over the slug
+ *                     sentinel below; the sentinel stays as a back-compat
+ *                     fallback for callers that can't cheaply surface the
+ *                     designation.
  * @returns Absolute URL, including scheme + host.
  */
 export function resolveLocaleUrl(
@@ -83,9 +122,14 @@ export function resolveLocaleUrl(
   // actually serves when pages are emitted as bare slugs. Home
   // page is always `<base>/` regardless of style.
   pageUrlStyle: "directory" | "no-extension" = "directory",
+  isHomePage?: boolean,
 ): string {
   const stripped = trimSlashes(slug);
-  const isHome = stripped === "" || stripped === "home" || stripped === "index";
+  // 0184 — the explicit designation wins; the slug sentinel
+  // (""/`home`/`index`) survives as a back-compat fallback so a page the
+  // AI never ran set_home_page on still resolves to the root. Shared
+  // `isHomeSlug` keeps this test identical across every home-decision site.
+  const isHome = isHomePage === true || isHomeSlug(stripped);
   // tail: the path component appended after `<base>/` or `<base>/<locale>/`.
   // 'directory' style: trailing slash for non-home so the URL points at
   // the directory the bucket serves index.html from.

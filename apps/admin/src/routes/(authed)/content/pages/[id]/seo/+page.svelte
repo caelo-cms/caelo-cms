@@ -9,6 +9,7 @@
    * pre-seeded prompt; same for Re-optimize.
    */
 
+  import { buildMediaUrl } from "@caelo-cms/shared";
   import MediaPicker from "$lib/components/MediaPicker.svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -48,12 +49,16 @@
   };
 
   let pickerOpen = $state(false);
+  // Persisted value is the asset id (pages_seo stores the id ref); the
+  // preview URL is slug-based and display-only.
   let ogImageAssetId = $state(seo.ogImageAssetId ?? "");
+  let ogImagePreviewUrl = $state(
+    data.ogImageSlug ? buildMediaUrl(data.ogImageSlug, "webp-400") : "",
+  );
 
-  function onOgPick(m: { url: string; alt: string }): void {
-    // Picker URL is /_caelo/media/<id>/<variant> — extract the id.
-    const m1 = m.url.match(/\/_caelo\/media\/([0-9a-f-]{36})\//);
-    if (m1) ogImageAssetId = m1[1] as string;
+  function onOgPick(m: { url: string; alt: string; mediaId: string }): void {
+    ogImageAssetId = m.mediaId;
+    ogImagePreviewUrl = m.url;
     void m.alt;
   }
 </script>
@@ -106,12 +111,20 @@
           <div class="flex items-center gap-3">
             {#if ogImageAssetId}
               <img
-                src={`/_caelo/media/${ogImageAssetId}/webp-400`}
+                src={ogImagePreviewUrl}
                 alt="OG"
                 class="h-16 w-28 rounded border border-border object-cover"
               />
               <code class="font-mono text-xs text-muted-foreground">{ogImageAssetId}</code>
-              <Button type="button" size="sm" variant="ghost" onclick={() => (ogImageAssetId = "")}>Clear</Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onclick={() => {
+                  ogImageAssetId = "";
+                  ogImagePreviewUrl = "";
+                }}>Clear</Button
+              >
             {:else}
               <p class="text-sm text-muted-foreground">No OG image selected.</p>
             {/if}

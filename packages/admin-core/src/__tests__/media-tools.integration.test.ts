@@ -34,6 +34,7 @@ const SYSTEM: ExecutionContext = {
 const PFX = "cafe1234";
 const SHA = `${PFX}${"a".repeat(64 - PFX.length)}`;
 let assetId: string;
+let slug: string;
 const toolCtx = () => ({ adapter, registry }) as ToolContext;
 
 async function wipe(): Promise<void> {
@@ -83,6 +84,7 @@ beforeAll(async () => {
   });
   if (!up.ok) throw new Error("seed upload");
   assetId = (up.value as { assetId: string }).assetId;
+  slug = (up.value as { slug: string }).slug;
 });
 
 afterAll(async () => {
@@ -95,8 +97,10 @@ describe("find_media", () => {
     const r = await findMediaTool.handler(SYSTEM, { filter: "mtcafe-hero" }, toolCtx());
     expect(r.ok).toBe(true);
     expect(r.content).toContain("mtcafe-hero.jpg");
-    // The URL points at an existing variant, not a fabricated one.
-    expect(r.content).toContain(assetId);
+    // The URL is the slug form (public), pointing at an existing variant
+    // (webp-800), not a fabricated one — and never the internal uuid id.
+    expect(r.content).toContain(`/_caelo/media/${slug}/webp-800`);
+    expect(r.content).not.toContain(assetId);
   });
 
   it("returns a clean no-match message (not an error) when nothing hits", async () => {

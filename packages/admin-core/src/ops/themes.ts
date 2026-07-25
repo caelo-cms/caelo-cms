@@ -109,9 +109,13 @@ interface ThemeDbRow {
   is_active: boolean;
   tokens: unknown;
   logo_media_id: string | null;
+  logo_slug: string | null;
   logo_dark_media_id: string | null;
+  logo_dark_slug: string | null;
   favicon_media_id: string | null;
+  favicon_slug: string | null;
   social_share_media_id: string | null;
+  social_share_slug: string | null;
   created_at: string | Date;
   updated_at: string | Date;
 }
@@ -121,8 +125,15 @@ function dbRowToTheme(r: ThemeDbRow): Theme {
     typeof r.tokens === "string"
       ? (JSON.parse(r.tokens) as ThemeDocument)
       : (r.tokens as ThemeDocument);
-  const asset = (id: string | null): { mediaId: string; url: string } | null =>
-    id === null ? null : { mediaId: id, url: buildMediaUrl(id, "orig") };
+  // URL is built from the media asset's SLUG (public form); the id stays
+  // the mediaId. A null slug means the bound asset was deleted — drop it.
+  const asset = (
+    id: string | null,
+    assetSlug: string | null,
+  ): { mediaId: string; url: string } | null =>
+    id === null || assetSlug === null
+      ? null
+      : { mediaId: id, url: buildMediaUrl(assetSlug, "orig") };
   return {
     id: r.id,
     slug: r.slug,
@@ -132,10 +143,10 @@ function dbRowToTheme(r: ThemeDbRow): Theme {
     isActive: r.is_active,
     tokens: tokensJson,
     assets: {
-      logo: asset(r.logo_media_id),
-      logoDark: asset(r.logo_dark_media_id),
-      favicon: asset(r.favicon_media_id),
-      socialShare: asset(r.social_share_media_id),
+      logo: asset(r.logo_media_id, r.logo_slug),
+      logoDark: asset(r.logo_dark_media_id, r.logo_dark_slug),
+      favicon: asset(r.favicon_media_id, r.favicon_slug),
+      socialShare: asset(r.social_share_media_id, r.social_share_slug),
     },
     createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
     updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
@@ -152,9 +163,13 @@ const SELECT_THEME_COLUMNS = sql`
     is_active                       AS is_active,
     tokens                          AS tokens,
     logo_media_id::text             AS logo_media_id,
+    (SELECT slug FROM media_assets WHERE id = themes.logo_media_id AND deleted_at IS NULL)         AS logo_slug,
     logo_dark_media_id::text        AS logo_dark_media_id,
+    (SELECT slug FROM media_assets WHERE id = themes.logo_dark_media_id AND deleted_at IS NULL)    AS logo_dark_slug,
     favicon_media_id::text          AS favicon_media_id,
+    (SELECT slug FROM media_assets WHERE id = themes.favicon_media_id AND deleted_at IS NULL)      AS favicon_slug,
     social_share_media_id::text     AS social_share_media_id,
+    (SELECT slug FROM media_assets WHERE id = themes.social_share_media_id AND deleted_at IS NULL) AS social_share_slug,
     created_at                      AS created_at,
     updated_at                      AS updated_at
   FROM themes

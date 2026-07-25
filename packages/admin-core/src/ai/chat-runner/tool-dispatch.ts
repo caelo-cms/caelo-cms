@@ -186,6 +186,9 @@ export async function* dispatchToolCall(
           registry,
           chatSessionId: deps.chatSessionId,
           chatBranchId: deps.chatBranchId,
+          // Thread this call's id so a tool emitting `request-screenshot` can
+          // tag it — ChatPanel then stores its own captured bytes by toolCallId.
+          toolCallId: call.id,
           // Run #10 D2 — present only on subagent child turns; makes
           // the submit_result tool deliver its validated payload to
           // the waiting spawn handler.
@@ -357,12 +360,25 @@ export async function* dispatchToolCall(
   // record must never break the tool flow — and we skip the bug_report tool
   // itself so a broken bug channel can't recurse into filing about itself.
   if (!result.ok && call.name !== "bug_report") {
+    // Capture the tool INPUT alongside the failure so the detected-bug row is
+    // REPRODUCIBLE — the exact arguments that triggered the error. Serialized
+    // into `evidence` (already surfaced in the bugs UI + markdown export) and
+    // truncated under the op's 8000-char cap. Best-effort JSON — a
+    // non-serializable arg must never break the capture.
+    let toolInputEvidence: string | undefined;
+    try {
+      toolInputEvidence =
+        `Tool input (${call.name}):\n${JSON.stringify(call.arguments, null, 2)}`.slice(0, 7900);
+    } catch {
+      toolInputEvidence = undefined;
+    }
     await execute(registry, adapter, aiCtxWithBranch, "ai_bug_reports.create", {
       chatSessionId: deps.chatSessionId,
       title: `Tool ${call.name} returned an error`.slice(0, 200),
       whatHappened: result.content.slice(0, 4000),
       expected: "The tool call should succeed, or fail with a recoverable non-error result.",
       suspectedTool: call.name,
+      evidence: toolInputEvidence,
       severity: "degraded",
       source: "auto",
     }).catch(() => undefined);
@@ -381,6 +397,11 @@ export async function* dispatchToolCall(
     toolCallId: call.id,
     ok: result.ok,
     content: result.content,
+    // Part 2 — forward the captured screenshot to the client so the tool
+    // card can render a live preview. The SSE endpoint JSON.stringifies the
+    // whole event (full passthrough), so no endpoint change is needed. This
+    // is the operator's copy; the AI's copy is deferred below into messages.
+    ...(result.image ? { image: result.image } : {}),
   };
   await execute(registry, adapter, humanCtx, "chat.append_message", {
     chatSessionId: deps.chatSessionId,

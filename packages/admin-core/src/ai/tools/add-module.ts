@@ -78,6 +78,46 @@ interface ResolvedModule {
   /** The module's stored fields — echoed in every result so the main
    *  agent knows the content shape without a follow-up modules.get. */
   fields: readonly ModuleField[] | undefined;
+  /**
+   * §2 — reuse (`moduleId`) is placement-only, but the schema TOLERATES a
+   * call that also carried authoring fields (§1A/§11 — a placement that can
+   * succeed must not fail over an extra field). Any such field whose value
+   * DIFFERS from the module's stored one is NOT applied here; naming it in the
+   * result keeps the dropped change from being silent. Empty on mint.
+   */
+  ignoredAuthoring: string[];
+}
+
+/**
+ * Which authoring fields on a `moduleId` reuse call differ from the module's
+ * stored values (so were not applied). Structural fields (html/css/js/fields)
+ * are always listed when present — build_page/add_module place, they don't
+ * re-author a shared module.
+ */
+function ignoredAuthoringFields(
+  input: AddModuleToolInput,
+  stored: {
+    displayName: string;
+    description: string | null;
+    kind: string | null;
+    type: string | null;
+  },
+): string[] {
+  const ignored: string[] = [];
+  if (input.displayName !== undefined && input.displayName !== stored.displayName)
+    ignored.push(`displayName='${input.displayName}' (module keeps '${stored.displayName}')`);
+  if (input.description !== undefined && input.description !== (stored.description ?? undefined))
+    ignored.push("description");
+  if (input.kind !== undefined && input.kind !== (stored.kind ?? undefined))
+    ignored.push(`kind='${input.kind}' (module keeps '${stored.kind ?? "(none)"}')`);
+  if (input.type !== undefined && input.type !== (stored.type ?? undefined))
+    ignored.push(`type='${input.type}' (module keeps '${stored.type ?? "(none)"}')`);
+  if (input.html !== undefined) ignored.push("html (structural)");
+  if (input.css !== undefined) ignored.push("css (structural)");
+  if (input.js !== undefined) ignored.push("js (structural)");
+  if (input.fields !== undefined) ignored.push("fields (structural)");
+  if (input.bindThemeLiterals !== undefined) ignored.push("bindThemeLiterals");
+  return ignored;
 }
 
 /** ` Fields: title(text), cta_href(link).` — appended to every ok result. */
@@ -148,7 +188,17 @@ async function resolveModule(
       };
     }
     const mod = (
-      got.value as { module: { id: string; slug: string; fields?: readonly ModuleField[] } }
+      got.value as {
+        module: {
+          id: string;
+          slug: string;
+          displayName: string;
+          description: string | null;
+          kind: string | null;
+          type: string | null;
+          fields?: readonly ModuleField[];
+        };
+      }
     ).module;
     return {
       ok: true,
@@ -160,6 +210,12 @@ async function resolveModule(
         kind: input.kind,
         reused: true,
         fields: mod.fields,
+        ignoredAuthoring: ignoredAuthoringFields(input, {
+          displayName: mod.displayName,
+          description: mod.description,
+          kind: mod.kind,
+          type: mod.type,
+        }),
       },
     };
   }
@@ -192,6 +248,7 @@ async function resolveModule(
       kind: minted.kind,
       reused: false,
       fields: minted.fields,
+      ignoredAuthoring: [],
     },
   };
 }
@@ -202,7 +259,7 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     "Add ONE module to a page, a layout (site-wide chrome on every page), or a template (fans out to every page of that page-type). " +
     "**Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. " +
     "`target` = 'page' | 'layout' | 'template'. `targetRef` is the slug OR uuid of that page/layout/template (both resolve). " +
-    "Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `## Modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` and the authoring fields are mutually exclusive. " +
+    "Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `## Modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call edit_module. " +
     "**The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. " +
     "`blockName` must be a real block on the target; the handler returns the available block set if it isn't. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `"0"`).',
@@ -278,9 +335,16 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     if (!resolved.ok) return { ok: false, content: resolved.content };
     const mod = resolved.module;
     // CSS/design-guard suffixes only apply to freshly authored CSS.
-    const suffix = mod.reused
+    const cssSuffix = mod.reused
       ? ""
       : `${await cssVarWarningSuffix(ctx, toolCtx, mod.css)}${await designGuardSuffix(ctx, toolCtx, { css: mod.css, displayName: input.displayName, kind: mod.kind, type: input.type })}`;
+    // §2 — reuse ignored some authoring fields the call also carried; say so
+    // loudly so an intended change never vanishes silently.
+    const ignoredNote =
+      mod.ignoredAuthoring.length > 0
+        ? ` ℹ️ placed by moduleId (placement-only) — NOT applied: ${mod.ignoredAuthoring.join(", ")}. To change that shared module, use edit_module.`
+        : "";
+    const suffix = `${cssSuffix}${ignoredNote}`;
     const label = mod.reused ? "existing module" : "module";
 
     if (input.target === "page") return placeOnPage(ctx, toolCtx, input, mod, suffix, label);

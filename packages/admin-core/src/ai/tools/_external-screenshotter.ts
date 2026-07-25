@@ -57,6 +57,10 @@ function reuseWrapper(inner: Screenshotter): Screenshotter {
       scheduleIdleClose();
       return inner.capture(url, opts);
     },
+    renderHtml: (url, opts) => {
+      scheduleIdleClose();
+      return inner.renderHtml(url, opts);
+    },
     query: (html, opts) => {
       scheduleIdleClose();
       return inner.query(html, opts);

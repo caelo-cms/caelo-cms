@@ -3,10 +3,13 @@
 /**
  * v0.2.69 — `inspect_page_render` AI tool.
  *
- * Returns the fully composed HTML of a page + every CSS layer
- * separately (layout / template / theme / modules). The AI uses this
- * BEFORE proposing CSS or layout fixes, so it can see the actual
- * cascade the visitor's browser would apply instead of guessing.
+ * Returns a SLIM SUMMARY by default — the module list (moduleId, slug,
+ * byte sizes), the layout/template/theme sizes, and slot status. The full
+ * composed HTML and each CSS layer (layout / template / theme / one module)
+ * are pulled ON DEMAND via `target` / `search`, so the ~50-200KB dump is
+ * opt-in. The AI reaches for `screenshot_page` first for the visual
+ * impression, and drills into a layer here only when it needs the actual
+ * rule behind a CSS/layout issue instead of guessing.
  *
  * Closes the gap that surfaced in today's homepage build: operator
  * asked the AI to remove white padding around header/footer; the AI
@@ -19,9 +22,8 @@
  * No new infrastructure: wraps the existing `pages.render_preview`
  * op (which already returns the composed HTML) and pulls
  * layout/template/theme/modules from their respective ops so the AI
- * sees each CSS layer in isolation. ~50-200KB JSON payload per call;
- * fine for a single tool call but the description tells the AI not
- * to loop on the same page within one turn.
+ * sees each CSS layer in isolation. The slim default keeps the payload
+ * small; a `target` pulls only the one part's bodies.
  *
  * Phase 2 (v0.3.0+): once the Vercel AI SDK migration lands and the
  * provider abstraction supports multimodal, a sibling
@@ -39,6 +41,18 @@ const inspectInput = z
   .object({
     pageId: z.string().uuid(),
     chatBranchId: z.string().uuid().optional(),
+    /**
+     * What to return. Omit for a SLIM SUMMARY (structure + byte sizes, no
+     * bodies). Pass `"composed"` | `"layout"` | `"template"` | `"theme"`, or a
+     * `moduleId` from the summary, to get that ONE part's full HTML+CSS.
+     */
+    target: z.string().max(200).optional(),
+    /**
+     * Substring to grep in the composed HTML — returns only the matching
+     * slices (± context) instead of the whole document. Implies the composed
+     * HTML; combine with `target:"composed"` or use alone.
+     */
+    search: z.string().max(200).optional(),
   })
   .strict();
 
@@ -47,11 +61,10 @@ export type InspectPageRenderInput = z.infer<typeof inspectInput>;
 export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderInput> = {
   name: "inspect_page_render",
   description:
-    "Render the page and return the FULL composed HTML + every CSS layer separately (layout / template / theme / each module's CSS). " +
-    "USE THIS BEFORE proposing CSS or layout fixes — it's the only way to see the actual cascade the visitor's browser would apply. " +
-    "When the operator reports a visual issue ('white padding', 'header is too tall', 'colors are wrong'), call this FIRST so you can find the precise rule causing it instead of guessing. " +
-    "By default this renders THIS chat's branch preview (your pending edits included) — the state you are actually working on. Pass `chatBranchId` only to inspect a DIFFERENT branch, or omit-and-run outside a chat to see the published version. " +
-    "Returns ~50-200KB of structured JSON. Fine for one tool call per debugging task; don't loop on the same page within one turn.",
+    "Inspect a rendered page's HTML/CSS cascade. By DEFAULT returns a SLIM SUMMARY — the module list (moduleId, slug, kind, byte sizes), the layout/template/theme sizes, and slot status — NOT the full markup. " +
+    "For the VISUAL impression prefer `screenshot_page` (usually more telling than raw HTML). Reach for THIS when you need the actual rule behind a layout/CSS issue the screenshot can't explain. " +
+    'Then drill in with `target`: `"composed"` (final HTML the browser parses) | `"layout"` | `"template"` | `"theme"` (that layer\'s html+css / tokens) | a `moduleId` from the summary (that module\'s html+css). Pass `search` to grep the composed HTML for just the slices you need — cheaper than pulling the whole document. ' +
+    "By default this renders THIS chat's branch preview (your pending edits included). Pass `chatBranchId` only to inspect a DIFFERENT branch, or omit-and-run outside a chat to see the published version.",
   schema: inspectInput,
   inputSchema: {
     type: "object",
@@ -64,6 +77,16 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
         format: "uuid",
         description:
           "Optional override. Defaults to the current chat's branch, so you normally omit it. Set it only to inspect another branch's staged edits.",
+      },
+      target: {
+        type: "string",
+        description:
+          'Omit for the slim summary. Else "composed" | "layout" | "template" | "theme", or a moduleId from the summary, to get that one part\'s full HTML+CSS.',
+      },
+      search: {
+        type: "string",
+        description:
+          "Substring to grep in the composed HTML — returns only the matching slices with context instead of the whole document.",
       },
     },
   },
@@ -189,22 +212,71 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
     // 5. Build the structured response. The AI reads each layer
     //    separately to apply the cascade in its head: layout (ground)
     //    → template (override) → modules → theme (CSS-var injection).
-    const result = {
-      page: {
-        id: page.id,
-        slug: page.slug,
-        locale: page.locale,
-        title: page.title,
-      },
-      composedHtml: rendered.html,
+    // Flatten modules to one list (with moduleId + block) so the summary can
+    // expose byte sizes and the `target:<moduleId>` path can pull one body.
+    const modules = page.blocks.flatMap((b) =>
+      b.modules.map((m) => ({
+        moduleId: m.moduleId,
+        slug: m.slug,
+        displayName: m.displayName,
+        blockName: b.blockName,
+        html: m.html,
+        css: m.css,
+        js: m.js,
+      })),
+    );
+
+    const target = input.target?.trim();
+    const search = input.search?.trim();
+    const themeTokenCount = Object.keys(themeTokens).length;
+
+    // ── Targeted retrieval — return ONE part's full bodies, not the dump. ──
+    if (target === "composed" || (search && !target)) {
+      const html = search ? sliceMatches(rendered.html, search) : rendered.html;
+      return okJson({
+        target: "composed",
+        ...(search ? { search } : {}),
+        composedHtml: html,
+        composedHtmlBytes: rendered.html.length,
+      });
+    }
+    if (target === "layout") {
+      return okJson({ target: "layout", layout });
+    }
+    if (target === "template") {
+      return okJson({ target: "template", template });
+    }
+    if (target === "theme") {
+      return okJson({
+        target: "theme",
+        theme: { tokens: themeTokens, tokenCount: themeTokenCount },
+      });
+    }
+    if (target) {
+      // Anything else is treated as a moduleId.
+      const mod = modules.find((m) => m.moduleId === target);
+      if (!mod) {
+        return {
+          ok: false,
+          content:
+            `No module "${target}" on this page. Call inspect_page_render with NO target for the module list ` +
+            `(each entry's moduleId), or target: "composed" | "layout" | "template" | "theme".`,
+        };
+      }
+      return okJson({ target: "module", module: mod });
+    }
+
+    // ── Default — the SLIM SUMMARY (structure + sizes, no bodies). ──
+    const summary = {
+      page: { id: page.id, slug: page.slug, locale: page.locale, title: page.title },
       composedHtmlBytes: rendered.html.length,
       layout: layout
         ? {
             id: layout.id,
             slug: layout.slug,
             displayName: layout.displayName,
-            html: layout.html,
-            css: layout.css,
+            htmlBytes: layout.html.length,
+            cssBytes: layout.css.length,
           }
         : null,
       template: template
@@ -212,35 +284,55 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
             id: template.id,
             slug: template.slug,
             displayName: template.displayName,
-            html: template.html,
-            css: template.css,
+            htmlBytes: template.html.length,
+            cssBytes: template.css.length,
           }
         : null,
-      theme: { tokens: themeTokens, tokenCount: Object.keys(themeTokens).length },
-      modulesByBlock: page.blocks.map((b) => ({
-        blockName: b.blockName,
-        modules: b.modules.map((m) => ({
-          slug: m.slug,
-          displayName: m.displayName,
-          html: m.html,
-          css: m.css,
-          // js excluded from the inspect surface — visual debug
-          // doesn't typically need behaviour scripts and including
-          // them blows up the JSON size.
-        })),
+      theme: { tokenCount: themeTokenCount },
+      modules: modules.map((m) => ({
+        moduleId: m.moduleId,
+        slug: m.slug,
+        displayName: m.displayName,
+        block: m.blockName,
+        htmlBytes: m.html.length,
+        cssBytes: m.css.length,
       })),
-      slots: {
-        replaced: rendered.replacedSlots,
-        missing: rendered.missingSlots,
-      },
+      slots: { replaced: rendered.replacedSlots, missing: rendered.missingSlots },
+      hint:
+        "SUMMARY only. For the visual impression call `screenshot_page`. For full bodies call inspect_page_render " +
+        'again with target: "composed" | "layout" | "template" | "theme" | "<moduleId>", or pass `search` to grep the composed HTML.',
     };
-
-    return {
-      ok: true,
-      content: JSON.stringify(result, null, 2),
-    };
+    return okJson(summary);
   },
 };
+
+/** Serialize a value as the tool's pretty-printed JSON result. */
+function okJson(value: unknown): { ok: true; content: string } {
+  return { ok: true, content: JSON.stringify(value, null, 2) };
+}
+
+/**
+ * Return only the slices of `html` around each occurrence of `search`
+ * (case-insensitive, ± `window` chars, capped) — the grep mode that lets the
+ * AI pull the one region it cares about instead of the whole composed HTML.
+ */
+function sliceMatches(html: string, search: string, window = 400, maxSlices = 20): string {
+  const hay = html.toLowerCase();
+  const needle = search.toLowerCase();
+  const slices: string[] = [];
+  let from = 0;
+  while (slices.length < maxSlices) {
+    const idx = hay.indexOf(needle, from);
+    if (idx === -1) break;
+    slices.push(
+      html.slice(Math.max(0, idx - window), Math.min(html.length, idx + needle.length + window)),
+    );
+    from = idx + needle.length + window;
+  }
+  return slices.length > 0
+    ? slices.join("\n\n…\n\n")
+    : `(no occurrence of "${search}" in the composed HTML)`;
+}
 
 /**
  * v0.11.0 (#45) — flatten the active theme's DTCG tokens jsonb into a

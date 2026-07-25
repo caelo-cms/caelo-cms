@@ -24,7 +24,12 @@ export interface AiCallCostInput {
   operationType: "text" | "image";
   inputTokens: number;
   outputTokens: number;
+  /** Cache-READ tokens (`cache_read_input_tokens`), billed at the cheap
+   *  `cachedMicrocents` rate. */
   cachedTokens: number;
+  /** Cache-WRITE tokens (`cache_creation_input_tokens`), billed at
+   *  `cacheCreationMicrocents` (~1.25x the input rate). */
+  cacheCreationTokens: number;
   imageCount: number;
 }
 
@@ -38,8 +43,19 @@ export interface AiCallCost {
 
 /**
  * Map a pricing row (or a lookup miss, `null`) onto a call's token/image
- * counts. Cached input tokens bill at the cache-read rate when the row has
- * one, else at the input rate (matching pre-#297 behaviour).
+ * counts. Three input lanes bill at three rates: fresh input at
+ * `inputMicrocents`, cache-READ at `cachedMicrocents` (else input rate), and
+ * cache-WRITE at `cacheCreationMicrocents` (else 1.25x the input rate, the
+ * Anthropic cache-write premium).
+ *
+ * Double-count decision: the Vercel AI SDK's flat `usage.inputTokens` is the
+ * GRAND total of all three input lanes — see `asLanguageModelUsage`
+ * (`ai/dist/index.js`: `inputTokens = usage.inputTokens.total`) fed by the
+ * Anthropic adapter (`@ai-sdk/anthropic`: `total = input(fresh) +
+ * cacheCreation + cacheRead`). So the fresh remainder billed at the full
+ * input rate is `inputTokens - cachedTokens - cacheCreationTokens`; failing
+ * to subtract cacheCreationTokens would bill cache writes twice (once at the
+ * input rate inside `billedInput`, once at the cache-write rate).
  */
 export function computeAiCallCostMicrocents(
   pricing: PricingRow | null,
@@ -55,11 +71,13 @@ export function computeAiCallCostMicrocents(
   }
   const inRate = pricing.inputMicrocents;
   const outRate = pricing.outputMicrocents ?? 0;
-  const cacheRate = pricing.cachedMicrocents ?? inRate;
-  const billedInput = Math.max(0, call.inputTokens - call.cachedTokens);
+  const cacheReadRate = pricing.cachedMicrocents ?? inRate;
+  const cacheCreationRate = pricing.cacheCreationMicrocents ?? inRate * 1.25;
+  const billedInput = Math.max(0, call.inputTokens - call.cachedTokens - call.cacheCreationTokens);
   const costMicrocents = Math.round(
     (billedInput * inRate) / 1000 +
-      (call.cachedTokens * cacheRate) / 1000 +
+      (call.cachedTokens * cacheReadRate) / 1000 +
+      (call.cacheCreationTokens * cacheCreationRate) / 1000 +
       (call.outputTokens * outRate) / 1000,
   );
   return { costMicrocents, unpriced: false };

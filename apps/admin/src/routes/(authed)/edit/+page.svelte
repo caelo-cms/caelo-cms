@@ -315,6 +315,20 @@
       data-testid="edit-url"
     >{urlText}</code>
 
+    <!-- AI spend, last 7 days. /edit is chrome-less (no AppShell), so the
+         spend readout that lives in the AppShell top bar is repeated here —
+         this is where the operator actually works (migration/chat). The
+         `ml-auto` right-aligns the whole trailing cluster; the publish group's
+         own ml-auto below then no-ops when this is present, and still handles
+         alignment when spend is absent (op error → null). -->
+    {#if data.aiSpend7d}
+      <span
+        class="ml-auto text-xs text-muted-foreground"
+        title="AI spend, last 7 days"
+        data-testid="edit-ai-spend"
+      >AI · {data.aiSpend7d.display} / 7d</span>
+    {/if}
+
     <!-- v0.8.0 — Stage / Promote split-button lives in the toolbar
          (per-page surface, per-chat semantics under the hood). The
          (N) badge counts entities on the active chat's branch; the ▾

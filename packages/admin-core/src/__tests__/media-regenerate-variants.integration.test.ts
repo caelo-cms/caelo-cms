@@ -65,7 +65,7 @@ async function seedOrigOnlyAsset(args: {
   sha: string;
   width: number;
   height: number;
-}): Promise<string> {
+}): Promise<{ assetId: string; slug: string }> {
   const storage = new LocalVolumeAdapter(storageRoot);
   const bytes = new Uint8Array(
     await sharp({
@@ -105,7 +105,7 @@ async function seedOrigOnlyAsset(args: {
   });
   expect(r.ok).toBe(true);
   if (!r.ok) throw new Error("seed upload failed");
-  return (r.value as { assetId: string }).assetId;
+  return r.value as { assetId: string; slug: string };
 }
 
 beforeAll(async () => {
@@ -133,7 +133,7 @@ type RegenResult = {
 
 describe("media.regenerate_variants (run #10 D4)", () => {
   it("mints the missing satisfiable WebP variants and skips unsatisfiable breakpoints", async () => {
-    const assetId = await seedOrigOnlyAsset({ sha: SHA_WIDE, width: 600, height: 300 });
+    const { assetId, slug } = await seedOrigOnlyAsset({ sha: SHA_WIDE, width: 600, height: 300 });
 
     const r = await execute(registry, adapter, systemCtx, "media.regenerate_variants", {
       assetIds: [assetId],
@@ -146,7 +146,8 @@ describe("media.regenerate_variants (run #10 D4)", () => {
     // 600px source: webp-400 is satisfiable, webp-800 is NOT (no upscaling).
     expect(result.status).toBe("regenerated");
     expect(result.addedVariants).toEqual(["webp-400"]);
-    expect(result.bestUrl).toBe(`/_caelo/media/${assetId}/webp-400`);
+    // bestUrl is built from the slug (public form), not the internal id.
+    expect(result.bestUrl).toBe(`/_caelo/media/${slug}/webp-400`);
 
     const get = await execute(registry, adapter, systemCtx, "media.get", { assetId });
     expect(get.ok).toBe(true);
@@ -180,7 +181,7 @@ describe("media.regenerate_variants (run #10 D4)", () => {
   });
 
   it("explains sub-400px sources with an /orig pointer instead of looping", async () => {
-    const assetId = await seedOrigOnlyAsset({ sha: SHA_TINY, width: 180, height: 90 });
+    const { assetId, slug } = await seedOrigOnlyAsset({ sha: SHA_TINY, width: 180, height: 90 });
 
     const r = await execute(registry, adapter, systemCtx, "media.regenerate_variants", {
       assetIds: [assetId],
@@ -191,14 +192,15 @@ describe("media.regenerate_variants (run #10 D4)", () => {
     expect(result.status).toBe("skipped");
     expect(result.addedVariants).toEqual([]);
     expect(result.reason).toContain("/orig");
-    expect(result.bestUrl).toBe(`/_caelo/media/${assetId}/orig`);
+    // orig is the flat slug form now (`/_caelo/media/<slug>`), not `…/orig`.
+    expect(result.bestUrl).toBe(`/_caelo/media/${slug}`);
   });
 
   it("allMissing sweep finds gap assets without explicit ids", async () => {
     // SHA_TINY's asset is complete-by-design (nothing satisfiable), the
     // SHA_WIDE asset was already fixed — seed a fresh gap to detect.
     const shaGap = `${TEST_PREFIX}${"c".repeat(56)}`;
-    const assetId = await seedOrigOnlyAsset({ sha: shaGap, width: 1000, height: 500 });
+    const { assetId } = await seedOrigOnlyAsset({ sha: shaGap, width: 1000, height: 500 });
 
     const r = await execute(registry, adapter, systemCtx, "media.regenerate_variants", {
       allMissing: true,

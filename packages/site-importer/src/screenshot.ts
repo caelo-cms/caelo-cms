@@ -4,9 +4,9 @@
  * P14 polish — Playwright-driven screenshot capture for the importer.
  *
  * Used by the orchestrator's importerTick to take a "ground truth"
- * screenshot of each crawled URL, then a "rendered" screenshot of the
- * staged Caelo page, then feed both PNG buffers into a pixel-diff to
- * populate `import_pages.diff_status` + `diff_pct`.
+ * screenshot of each crawled URL and sample its computed styles in the
+ * same render session, persisting the pixels + design tokens as the
+ * live-inspect payload the theme proposal consumes.
  *
  * Playwright is intentionally NOT a hard dependency of @caelo-cms/site-importer
  * — it ships in the admin app's devDeps already (apps/admin/package.json)
@@ -25,12 +25,6 @@ import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import { COLLECT_STYLE_SAMPLES_SCRIPT, type ElementStyleSample } from "./design-tokens.js";
 import { assertPublicHttpUrl, isPublicIpAddress } from "./safe-fetch.js";
-import {
-  STRUCTURAL_DIFF_COLS,
-  STRUCTURAL_DIFF_ROWS,
-  type StructuralDiff,
-  structuralDiffFraction,
-} from "./screenshot-diff.js";
 
 /** Minimal Playwright route surface — typed locally so the package
  * doesn't need @types/playwright (Playwright stays a dynamic import). */
@@ -45,6 +39,9 @@ export interface Screenshot {
   readonly bytes: Uint8Array;
   readonly width: number;
   readonly height: number;
+  /** The URL after redirects (`page.url()`), so callers report where they
+   *  actually landed. */
+  readonly finalUrl?: string;
   /** issue #247 — raw computed-style samples collected in the SAME
    *  render session, present only when `sampleStyles: true` was
    *  requested. Feed into `deriveDesignTokens`. */
@@ -54,6 +51,25 @@ export interface Screenshot {
    *  pageRef cache hold the rendered DOM so query_page_html's selectors run
    *  against it instead of the static fetched HTML. */
   readonly renderedHtml?: string;
+}
+
+/**
+ * Result of `renderHtml` — the JS-applied DOM of a page, without the pixel
+ * cost of a screenshot. The "rendered-first" primitive uses this so every
+ * content extractor (markdown, links, asset discovery, describe) sees what
+ * the browser actually built, not the pre-JS source.
+ */
+export interface RenderedHtml {
+  /** URL after redirects (`page.url()`). */
+  readonly finalUrl: string;
+  /** `page.content()` after `domcontentloaded` + a short network settle. */
+  readonly html: string;
+  /** `Content-Type` from the navigation response, so callers can gate
+   *  non-HTML (a PDF/image renders in a viewer, not usable HTML). Undefined
+   *  when the response exposed no headers. */
+  readonly contentType?: string;
+  /** Computed-style samples from the same render, when `sampleStyles: true`. */
+  readonly styleSamples?: readonly ElementStyleSample[];
 }
 
 export interface Screenshotter {
@@ -88,6 +104,16 @@ export interface Screenshotter {
       captureHtml?: boolean;
     },
   ): Promise<Screenshot>;
+  /**
+   * Render `url` (real `page.goto`, JS runs) and return its post-JS DOM
+   * WITHOUT taking a screenshot — the cheap half of `capture` for the
+   * "rendered-first" HTML primitive. SSRF-guarded like `capture` when
+   * `external: true`.
+   */
+  renderHtml(
+    url: string,
+    opts?: { width?: number; height?: number; external?: boolean; sampleStyles?: boolean },
+  ): Promise<RenderedHtml>;
   /**
    * Run a css/xpath selector against an HTML STRING (via `setContent` — no
    * navigation, no re-fetch) and return the matching elements' outerHTML,
@@ -146,81 +172,136 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     return null;
   }
   const allowedHosts = guardOpts?.allowedHosts ?? [];
+
+  /**
+   * Open an SSRF-guarded context + page, navigate (domcontentloaded + a short
+   * network settle), hand the page to `fn`, and always close the context.
+   * `capture` and `renderHtml` share it so the route guard + goto policy live
+   * in ONE place. `external:true` applies the per-request guard (issue #191).
+   */
+  async function withGuardedPage<T>(
+    url: string,
+    opts: { external?: boolean; width?: number; height?: number },
+    // biome-ignore lint/suspicious/noExplicitAny: Playwright page + response handles (dynamic import, no @types)
+    fn: (page: any, gotoResponse: any) => Promise<T>,
+  ): Promise<T> {
+    if (opts.external) {
+      // Static pre-check: scheme/port/IP-literal blocks fire before a
+      // browser context is even opened.
+      assertPublicHttpUrl(url, { allowedHosts });
+    }
+    const ctx = await browser.newContext({
+      viewport: { width: opts.width ?? 1280, height: opts.height ?? 800 },
+    });
+    if (opts.external) {
+      // Guard every request the page makes (navigation + subresources).
+      // Hostnames are resolved at route time; the browser resolves again to
+      // connect, so a rebinding race is narrowed rather than eliminated — the
+      // primary target (direct navigation or an <img>/fetch to a metadata/
+      // loopback address) is fully blocked. The socket-level guarantee lives
+      // in safe-fetch.ts.
+      await ctx.route("**/*", async (route: PlaywrightRoute) => {
+        const requestUrl = route.request().url();
+        try {
+          const u = assertPublicHttpUrl(requestUrl, { allowedHosts });
+          const bareHost = u.hostname.startsWith("[") ? u.hostname.slice(1, -1) : u.hostname;
+          if (isIP(bareHost) === 0 && !allowedHosts.includes(bareHost.toLowerCase())) {
+            const addresses = await new Promise<Array<{ address: string }>>((resolve, reject) => {
+              dnsLookup(bareHost, { all: true }, (err, addrs) => {
+                if (err) reject(err);
+                else resolve(addrs as Array<{ address: string }>);
+              });
+            });
+            if (addresses.some((a) => !isPublicIpAddress(a.address))) {
+              await route.abort("blockedbyclient");
+              return;
+            }
+          }
+          await route.continue();
+        } catch {
+          await route.abort("blockedbyclient");
+        }
+      });
+    }
+    const page = await ctx.newPage();
+    try {
+      // `domcontentloaded` is fast + reliable; then a SHORT best-effort wait
+      // for the network to settle so late imagery / JS-applied DOM is present
+      // — capped so we never pay the old 30s `networkidle` timeout, which
+      // routinely fired because the SSRF route-guard aborts blocked
+      // subresources and `networkidle` then never settles.
+      const gotoResponse = await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: 15_000,
+      });
+      await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
+      return await fn(page, gotoResponse);
+    } finally {
+      await ctx.close();
+    }
+  }
+
   return {
     async capture(url, opts) {
-      if (opts?.external) {
-        // Static pre-check: scheme/port/IP-literal blocks fire before a
-        // browser context is even opened.
-        assertPublicHttpUrl(url, { allowedHosts });
-      }
-      const ctx = await browser.newContext({
-        viewport: { width: opts?.width ?? 1280, height: opts?.height ?? 800 },
-      });
-      if (opts?.external) {
-        // Guard every request the page makes (navigation + subresources).
-        // Hostnames are resolved at route time; the browser resolves
-        // again to connect, so a rebinding race is narrowed rather than
-        // eliminated here — the primary target (direct navigation or an
-        // <img>/fetch to a metadata/loopback address) is fully blocked.
-        // The socket-level guarantee lives in safe-fetch.ts for HTML
-        // fetching; screenshots are pixels-only exposure.
-        await ctx.route("**/*", async (route: PlaywrightRoute) => {
-          const requestUrl = route.request().url();
-          try {
-            const u = assertPublicHttpUrl(requestUrl, { allowedHosts });
-            const bareHost = u.hostname.startsWith("[") ? u.hostname.slice(1, -1) : u.hostname;
-            if (isIP(bareHost) === 0 && !allowedHosts.includes(bareHost.toLowerCase())) {
-              const addresses = await new Promise<Array<{ address: string }>>((resolve, reject) => {
-                dnsLookup(bareHost, { all: true }, (err, addrs) => {
-                  if (err) reject(err);
-                  else resolve(addrs as Array<{ address: string }>);
-                });
-              });
-              if (addresses.some((a) => !isPublicIpAddress(a.address))) {
-                await route.abort("blockedbyclient");
-                return;
-              }
-            }
-            await route.continue();
-          } catch {
-            await route.abort("blockedbyclient");
+      return withGuardedPage(
+        url,
+        { external: opts?.external, width: opts?.width, height: opts?.height },
+        async (page) => {
+          const png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
+          // issue #247 — sample AFTER the screenshot so the pixels are
+          // captured even if the evaluate throws mid-flight; the throw still
+          // fails this capture attempt (loud, retried upstream).
+          let styleSamples: ElementStyleSample[] | undefined;
+          if (opts?.sampleStyles) {
+            styleSamples = (await page.evaluate(
+              COLLECT_STYLE_SAMPLES_SCRIPT,
+            )) as ElementStyleSample[];
           }
-        });
-      }
-      const page = await ctx.newPage();
-      try {
-        // `domcontentloaded` is fast + reliable; then a SHORT best-effort
-        // wait for the network to settle so late imagery is captured —
-        // capped so we never pay the old 30s `networkidle` timeout, which
-        // routinely fired because the SSRF route-guard aborts blocked
-        // subresources and `networkidle` then never settles.
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
-        await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
-        const png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
-        // issue #247 — sample AFTER the screenshot so the pixels are
-        // captured even if the evaluate throws mid-flight; the throw
-        // still fails this capture attempt (loud, retried upstream).
-        let styleSamples: ElementStyleSample[] | undefined;
-        if (opts?.sampleStyles) {
-          styleSamples = (await page.evaluate(
-            COLLECT_STYLE_SAMPLES_SCRIPT,
-          )) as ElementStyleSample[];
-        }
-        // Rendered (JS-applied) HTML from the same session — so a later
-        // query_page_html runs its selectors against the real DOM.
-        const renderedHtml: string | undefined = opts?.captureHtml
-          ? ((await page.content()) as string)
-          : undefined;
-        return {
-          bytes: new Uint8Array(png),
-          width: opts?.width ?? 1280,
-          height: opts?.height ?? 800,
-          ...(styleSamples ? { styleSamples } : {}),
-          ...(renderedHtml !== undefined ? { renderedHtml } : {}),
-        };
-      } finally {
-        await ctx.close();
-      }
+          // Rendered (JS-applied) HTML from the same session — so a later
+          // query_page_html runs its selectors against the real DOM.
+          const renderedHtml: string | undefined = opts?.captureHtml
+            ? ((await page.content()) as string)
+            : undefined;
+          return {
+            bytes: new Uint8Array(png),
+            width: opts?.width ?? 1280,
+            height: opts?.height ?? 800,
+            finalUrl: page.url() as string,
+            ...(styleSamples ? { styleSamples } : {}),
+            ...(renderedHtml !== undefined ? { renderedHtml } : {}),
+          };
+        },
+      );
+    },
+    async renderHtml(url, opts) {
+      return withGuardedPage(
+        url,
+        { external: opts?.external, width: opts?.width, height: opts?.height },
+        async (page, gotoResponse) => {
+          let styleSamples: ElementStyleSample[] | undefined;
+          if (opts?.sampleStyles) {
+            styleSamples = (await page.evaluate(
+              COLLECT_STYLE_SAMPLES_SCRIPT,
+            )) as ElementStyleSample[];
+          }
+          const html = (await page.content()) as string;
+          // Content-type from the navigation response so callers can gate
+          // non-HTML (a PDF/image renders in a viewer, not usable HTML).
+          let contentType: string | undefined;
+          try {
+            const headers = (await gotoResponse?.headers?.()) as Record<string, string> | undefined;
+            contentType = headers?.["content-type"];
+          } catch {
+            contentType = undefined;
+          }
+          return {
+            finalUrl: page.url() as string,
+            html,
+            ...(contentType !== undefined ? { contentType } : {}),
+            ...(styleSamples ? { styleSamples } : {}),
+          };
+        },
+      );
     },
     async query(html, opts) {
       const ctx = await browser.newContext();
@@ -253,116 +334,4 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       await browser.close();
     },
   };
-}
-
-/**
- * Pure-byte pixel-diff. Returns the fraction of differing pixels in
- * [0, 1] over the size-matched intersection. For mismatched sizes the
- * fraction is computed over the smaller of the two; the size delta is
- * also penalised so wildly different layouts read as "fail".
- *
- * Note: this is a coarse RGB exact-match comparator, not a perceptual
- * diff. It catches "the imported page is mostly empty" / "the wrong
- * template applied"; it doesn't catch font-rendering differences. v1
- * ships this; a real perceptual-diff (e.g. pixelmatch) lands when
- * telemetry shows the false-positive rate is too high.
- */
-export async function computePixelDiff(a: Screenshot, b: Screenshot): Promise<number> {
-  // Decode both PNGs via Bun's image API. We only count differing
-  // pixel bytes after a stride-aligned compare, which is good enough
-  // to distinguish "completely different layouts" from "near-identical
-  // renders".
-  const aRgba = await decodePngToRgba(a.bytes);
-  const bRgba = await decodePngToRgba(b.bytes);
-
-  // Penalise size mismatches: if widths or heights differ by more than
-  // 10%, treat as "fail" outright.
-  const wRatio = Math.min(a.width, b.width) / Math.max(a.width, b.width);
-  const hRatio = Math.min(a.height, b.height) / Math.max(a.height, b.height);
-  if (wRatio < 0.9 || hRatio < 0.9) return 1;
-
-  const len = Math.min(aRgba.length, bRgba.length);
-  if (len === 0) return 1;
-  let differing = 0;
-  // Each pixel is 4 bytes (RGBA); count differing pixels not bytes so
-  // the fraction is in pixel units.
-  for (let i = 0; i < len; i += 4) {
-    if (aRgba[i] !== bRgba[i] || aRgba[i + 1] !== bRgba[i + 1] || aRgba[i + 2] !== bRgba[i + 2]) {
-      differing += 1;
-    }
-  }
-  const totalPx = Math.floor(len / 4);
-  return totalPx === 0 ? 1 : differing / totalPx;
-}
-
-/**
- * Lightweight PNG → RGBA decoder. Tries Bun's native sharp-equivalent
- * first; falls back to returning the raw PNG bytes (which makes diff
- * meaningless but doesn't crash). The orchestrator catches and
- * skips-with-NULL when this fails, so callers don't need to special-case.
- */
-async function decodePngToRgba(png: Uint8Array): Promise<Uint8Array> {
-  // sharp is in admin-core's deps for media optimization; reach for it
-  // here too rather than adding a second image lib.
-  try {
-    // biome-ignore lint/suspicious/noExplicitAny: opt-in dynamic import
-    const sharpMod: any = await import("sharp" as string);
-    const sharp = sharpMod.default ?? sharpMod;
-    const buf = await sharp(png).raw().ensureAlpha().toBuffer();
-    return new Uint8Array(buf);
-  } catch {
-    return png;
-  }
-}
-
-/**
- * issue #250 (WS4) — coarse structural diff between two PNG byte buffers.
- * Downscales both to a fixed `cols*rows` RGB grid (flattening any alpha over
- * white so a transparent rebuild vs an opaque source doesn't read as a full
- * diff), then delegates to the pure `structuralDiffFraction`. Aspect-ratio
- * differences are intentionally normalized away by the resize: two "full
- * homepage" screenshots of different heights still compare band-for-band,
- * which is exactly the structure the fidelity gate measures.
- *
- * Unlike `computePixelDiff`, sharp is REQUIRED here (not optional): a decode
- * failure throws so the caller reports the page UNVERIFIED rather than
- * fake-passing on undecoded bytes (CLAUDE.md §2). sharp already ships in the
- * admin app's dependency tree (media optimization), which is the only
- * runtime that computes import fidelity.
- */
-export async function computeStructuralDiff(
-  sourcePng: Uint8Array,
-  rebuiltPng: Uint8Array,
-  opts?: { cols?: number; rows?: number },
-): Promise<StructuralDiff> {
-  const cols = opts?.cols ?? STRUCTURAL_DIFF_COLS;
-  const rows = opts?.rows ?? STRUCTURAL_DIFF_ROWS;
-  const [gridA, gridB] = await Promise.all([
-    downscaleToRgbGrid(sourcePng, cols, rows),
-    downscaleToRgbGrid(rebuiltPng, cols, rows),
-  ]);
-  return structuralDiffFraction(gridA, gridB, cols, rows);
-}
-
-/**
- * Resize a PNG to an exact `cols*rows` grid of flattened RGB bytes. `fit:
- * "fill"` forces the target dimensions (aspect ratio normalized away by
- * design); `flatten` composites over white before `removeAlpha` so the
- * output is deterministic 3-byte RGB the pure differ expects.
- */
-async function downscaleToRgbGrid(
-  png: Uint8Array,
-  cols: number,
-  rows: number,
-): Promise<Uint8Array> {
-  // biome-ignore lint/suspicious/noExplicitAny: opt-in dynamic import
-  const sharpMod: any = await import("sharp" as string);
-  const sharp = sharpMod.default ?? sharpMod;
-  const buf = await sharp(png)
-    .resize(cols, rows, { fit: "fill" })
-    .flatten({ background: "#ffffff" })
-    .removeAlpha()
-    .raw()
-    .toBuffer();
-  return new Uint8Array(buf);
 }

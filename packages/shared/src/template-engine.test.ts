@@ -325,15 +325,45 @@ describe("renderTemplate — whitespace tolerance in markers", () => {
 });
 
 describe("renderTemplate — failure-marker parity", () => {
-  it("kind-mismatch on {{#name}} against a primitive field", () => {
+  // A NON-list field used as a `{{#name}}…{{/name}}` section is a Mustache
+  // CONDITIONAL, not a kind-mismatch — the old behaviour silently DROPPED
+  // real scalar content (headings, body copy, an image, a nested module).
+  it("renders a {{#scalar}} block when the text field has a value", () => {
     const r = renderTemplate({
-      html: "<p>{{#title}}x{{/title}}</p>",
+      html: "<h1>{{#title}}{{title}}{{/title}}</h1>",
       fields: [{ name: "title", kind: "text" }],
+      contentValues: { title: "Willkommen" },
+    });
+    expect(r.html).toBe("<h1>Willkommen</h1>");
+    expect(r.missingSlots.some((s) => s.includes("kind-mismatch"))).toBe(false);
+  });
+
+  it("supports {{.}} inside a scalar conditional", () => {
+    const r = renderTemplate({
+      html: "<h2>{{#title}}{{.}}{{/title}}</h2>",
+      fields: [{ name: "title", kind: "text" }],
+      contentValues: { title: "Hallo" },
+    });
+    expect(r.html).toBe("<h2>Hallo</h2>");
+  });
+
+  it("drops a {{#scalar}} block only when the field is empty (conditional, not missing)", () => {
+    const r = renderTemplate({
+      html: "<p>{{#subtitle}}<span>{{subtitle}}</span>{{/subtitle}}</p>",
+      fields: [{ name: "subtitle", kind: "text" }],
       contentValues: {},
     });
-    const expected = "kind-mismatch:title expected=module-list|text-list|link-list actual=text";
-    expect(r.html).toBe(`<p><!-- caelo:missing reason=${expected} --></p>`);
-    expect(r.missingSlots).toContain(expected);
+    expect(r.html).toBe("<p></p>");
+    expect(r.missingSlots).toEqual([]);
+  });
+
+  it("wraps a scalar image field in a {{#image}} conditional", () => {
+    const r = renderTemplate({
+      html: '{{#photo}}<img src="{{photo}}" alt="rep">{{/photo}}',
+      fields: [{ name: "photo", kind: "image" }],
+      contentValues: { photo: "/_caelo/media/rep-photo" },
+    });
+    expect(r.html).toBe('<img src="/_caelo/media/rep-photo" alt="rep">');
   });
 
   it("kind-mismatch on {{>name}} against a list field", () => {

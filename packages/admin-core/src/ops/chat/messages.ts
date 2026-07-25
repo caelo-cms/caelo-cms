@@ -46,7 +46,9 @@ export const appendChatMessageOp = defineOperation({
         .nullable()
         .optional(),
       // Option C (2026-07) — the SDK's canonical ModelMessage assembly for
-      // this assistant turn (`result.response.messages`), stored verbatim.
+      // this assistant turn (`result.responseMessages` — includes a pre-loop
+      // tool-approval resolution's leading tool_result, which `response.messages`
+      // drops), stored verbatim.
       // Replay hands these straight back to the SDK, so tool pairing +
       // reasoning signatures + provider-executed tool blocks stay correct
       // without any reconstruction (CLAUDE.md §12). Opaque jsonb — the shape
@@ -263,6 +265,10 @@ export const recordAiCallOp = defineOperation({
       inputTokens: z.number().int().nonnegative(),
       outputTokens: z.number().int().nonnegative(),
       cachedTokens: z.number().int().nonnegative().default(0),
+      /** Cache-WRITE tokens (`cache_creation_input_tokens`) — billed at the
+       *  cache-creation rate (~1.25x input). Defaults 0 so callers without
+       *  cache-write data (image ops, mock providers) need not set it. */
+      cacheCreationTokens: z.number().int().nonnegative().default(0),
       costEstimateMicrocents: z.number().int().nonnegative().default(0),
       durationMs: z.number().int().nonnegative().default(0),
       succeeded: z.boolean().default(true),
@@ -299,6 +305,7 @@ export const recordAiCallOp = defineOperation({
         inputTokens: input.inputTokens,
         outputTokens: input.outputTokens,
         cachedTokens: input.cachedTokens,
+        cacheCreationTokens: input.cacheCreationTokens,
         imageCount: input.imageCount,
       });
       costMicrocents = mapped.costMicrocents;
@@ -320,7 +327,7 @@ export const recordAiCallOp = defineOperation({
     const rows = (await tx.execute(sql`
       INSERT INTO ai_calls (
         chat_session_id, actor_id, provider, model,
-        input_tokens, output_tokens, cached_tokens,
+        input_tokens, output_tokens, cached_tokens, cache_creation_tokens,
         cost_estimate_microcents, duration_ms, succeeded,
         parent_chat_session_id, parent_ai_call_id,
         plugin_id, operation_type, image_count, request_id
@@ -332,6 +339,7 @@ export const recordAiCallOp = defineOperation({
         ${input.inputTokens},
         ${input.outputTokens},
         ${input.cachedTokens},
+        ${input.cacheCreationTokens},
         ${costMicrocents}::bigint,
         ${input.durationMs},
         ${input.succeeded},

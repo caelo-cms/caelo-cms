@@ -233,6 +233,7 @@ export async function recordAiCall(
     inputTokens: number;
     outputTokens: number;
     cachedTokens: number;
+    cacheCreationTokens: number;
     durationMs: number;
     succeeded: boolean;
     parentChatSessionId: string | null | undefined;

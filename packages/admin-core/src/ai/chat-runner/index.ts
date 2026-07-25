@@ -41,7 +41,7 @@ import {
   finalUsdCost,
   resolveMaxOutputTokensDefault,
 } from "./limits.js";
-import { runToolLoop } from "./loop.js";
+import { ABSOLUTE_LOOP_CEILING, runToolLoop } from "./loop.js";
 import { resolveModelCostPerMTok } from "./model-cost.js";
 import {
   loadMemory,
@@ -77,10 +77,15 @@ export async function* runChatTurn(
     options.inputCostPerMTok ?? modelRates?.inputCostPerMTok ?? DEFAULT_INPUT_COST_PER_M;
   const outputCost =
     options.outputCostPerMTok ?? modelRates?.outputCostPerMTok ?? DEFAULT_OUTPUT_COST_PER_M;
-  // v0.3.20 — raised from 5 to 25. Multi-section authoring sessions
-  // routinely need >5 tool-use round-trips; see the cap-exhaustion notice
-  // in loop.ts for the visible-signal half of the fix.
-  const maxLoops = options.maxToolLoops ?? 25;
+  // The tool-loop bound shifted from a flat 25-iteration cap to a same-tool
+  // runaway guard + the live budget gate (loop.ts). A legitimate migration
+  // (homepage build + retries + follow-on work) routinely runs well past 25
+  // VARIED iterations, and the old flat cap paused it silently on a "reply
+  // continue" prompt. Now: varied work runs freely until the model stops, the
+  // budget gate trips, or the same-tool guard trips; `maxLoops` is only the
+  // high absolute-ceiling backstop against a true infinite loop. Callers
+  // (subagents/tests) may still override via `maxToolLoops`.
+  const maxLoops = options.maxToolLoops ?? ABSOLUTE_LOOP_CEILING;
   const startedAt = Date.now();
   const aborted = (): boolean => abortSignal?.aborted === true;
   // v0.2.57 — entry breadcrumb on console.error so Bun + SvelteKit's stdout
@@ -231,15 +236,24 @@ export async function* runChatTurn(
     });
     baseMessages.push({ role: "user", content: full });
   };
-  if (ctx.statusLine && ctx.statusLine.trim().length > 0) {
-    await injectNote("status", ctx.statusLine, ctx.statusLine);
-  }
-  if (ctx.pageContextBlock && ctx.pageContextBlock.trim().length > 0 && input.activePageId) {
-    await injectNote(
-      "pagectx",
-      `${input.activePageId}\n${ctx.pageContextBlock}`,
-      ctx.pageContextBlock,
-    );
+  // NEVER inject a trailing note on an approval RESUME turn. The AI SDK's
+  // `collectToolApprovals` only executes an approved gated tool when the LAST
+  // message is the tool-approval-response (`messages.at(-1).role === "tool"`);
+  // a trailing status/page-context user note would strand the gated tool_use
+  // UNEXECUTED — the SDK produces no tool_result, and the next provider call
+  // 400s ("tool_use without tool_result"). The notes are signature-gated, so
+  // they simply re-inject on the next real user turn instead.
+  if (!input.resumeApproval) {
+    if (ctx.statusLine && ctx.statusLine.trim().length > 0) {
+      await injectNote("status", ctx.statusLine, ctx.statusLine);
+    }
+    if (ctx.pageContextBlock && ctx.pageContextBlock.trim().length > 0 && input.activePageId) {
+      await injectNote(
+        "pagectx",
+        `${input.activePageId}\n${ctx.pageContextBlock}`,
+        ctx.pageContextBlock,
+      );
+    }
   }
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion
@@ -368,6 +382,7 @@ export async function* runChatTurn(
     inputTokens: usage.totalIn,
     outputTokens: usage.totalOut,
     cachedTokens: usage.totalCached,
+    cacheCreationTokens: usage.totalCacheCreation ?? 0,
     // P16 — canonical price comes from the ai_pricing table inside the op.
     durationMs: Date.now() - startedAt,
     succeeded: succeeded && stopReason !== "error" && !aborted(),

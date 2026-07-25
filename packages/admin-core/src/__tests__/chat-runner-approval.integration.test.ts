@@ -195,11 +195,14 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
     const { chatSessionId } = session.value as { chatSessionId: string };
 
     // A resume turn carries NO content — just the Owner's decision. The
-    // provider only needs to produce the continuation text.
+    // provider only needs to produce the continuation text. It CAPTURES its
+    // input messages so we can assert the SDK-approval invariant below.
     class ResumeProvider implements AIProvider {
       readonly name: ProviderName = "anthropic";
       readonly model = "claude-test-1";
-      async *generate(): AsyncIterable<ProviderEvent> {
+      readonly seenInputs: ReadonlyArray<ChatMessageInput>[] = [];
+      async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+        (this.seenInputs as ChatMessageInput[][]).push([...input.messages]);
         yield { kind: "text-delta", text: "Applied." };
         yield { kind: "usage", inputTokens: 2, outputTokens: 1, cachedTokens: 0 };
         yield { kind: "done", stopReason: "end_turn" };
@@ -209,11 +212,12 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
       }
     }
 
+    const resumeProvider = new ResumeProvider();
     for await (const _ev of runChatTurn(
       {
         adapter,
         registry,
-        provider: new ResumeProvider(),
+        provider: resumeProvider,
         tools: new ToolRegistry(),
         aiCtx: AI,
         humanCtx: HUMAN,
@@ -222,6 +226,19 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
     )) {
       /* drain */
     }
+
+    // THE FIX (SDK collectToolApprovals): on a resume, the LAST provider
+    // message MUST be the tool-approval-response. The AI SDK only executes an
+    // approved gated tool when `messages.at(-1).role === "tool"`; a trailing
+    // status/page-context user note (which the runner injects on other turns)
+    // would strand the gated tool_use UNEXECUTED → the next call 400s
+    // ("tool_use without tool_result"). Assert no trailing note slipped in.
+    const resumeInput = resumeProvider.seenInputs[0] ?? [];
+    const lastMsg = resumeInput.at(-1);
+    expect(lastMsg?.role).toBe("tool");
+    expect(JSON.stringify((lastMsg as { sdkMessages?: unknown[] }).sdkMessages)).toContain(
+      "tool-approval-response",
+    );
 
     const sql = new SQL(ADMIN_URL!);
     let rows: {
@@ -247,11 +264,12 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
     } finally {
       await sql.end();
     }
-    // No OPERATOR row for a resume turn. The cold-start "[Site status …]" note
-    // the runner injects on a session's first turn rides the message flow as a
-    // role='user', origin='system' row (deliberate — see index.ts injectNote);
-    // it is NOT an operator message, so scope the assertion to origin!='system'.
-    expect(rows.some((r) => r.role === "user" && r.origin !== "system")).toBe(false);
+    // NO user row on a resume turn — neither an operator message nor an
+    // injected status/page-context note. The runner skips note injection on a
+    // resume so the tool-approval-response stays the LAST message (the SDK's
+    // collectToolApprovals requirement); a trailing note stranded the gated
+    // tool_use and 400'd the next call.
+    expect(rows.some((r) => r.role === "user")).toBe(false);
     // The approval-response tool row was persisted with the SDK ModelMessage
     // in response_messages (replayed verbatim to resume the paused turn).
     const toolRow = rows.find((r) => r.role === "tool");

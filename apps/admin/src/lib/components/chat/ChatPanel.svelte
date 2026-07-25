@@ -30,7 +30,12 @@
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import InlineDiff from "./InlineDiff.svelte";
   import { parseProposalContent } from "./proposal-parser.js";
-  import { collapseStatusNotes } from "./status-notes.js";
+  import {
+    collapseStatusNotes,
+    contextNoteLabel,
+    isContextNote,
+    stripNoteMarker,
+  } from "./status-notes.js";
   import StreamingMarkdown from "./StreamingMarkdown.svelte";
   import ToolCardRouter from "./tool-cards/ToolCardRouter.svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "./types.js";
@@ -487,11 +492,15 @@
   });
 
   /**
-   * v0.2.75 — Programmatic send for system-driven follow-ups
-   * (post-approval). Reuses sendMessage by routing through composer
-   * — the operator briefly sees the auto-text in the composer before
-   * it clears, which makes the action visible. No-op if a turn is
-   * already in flight.
+   * v0.2.75 — Programmatic send for system-driven follow-ups (post-approval
+   * continuation, crawl-completion nudge, queued choice answer) AND user
+   * clicks on suggestion / choice chips.
+   *
+   * The send goes to the AI via sendMessage's `overrideText` path, which does
+   * NOT touch the composer: whatever the operator has typed stays put. This is
+   * the reported requirement — clicking a chip sends it to the AI and leaves
+   * the draft in the field (an earlier version routed through the composer and
+   * cleared the draft, which was the bug).
    */
   async function sendAutoMessage(text: string): Promise<void> {
     if (streaming) return;
@@ -503,13 +512,11 @@
       console.error("[chat] sendAutoMessage called with empty text — nudge dropped");
       return;
     }
-    composer = text;
-    // issue #29 — every auto-message is system-driven (crawl-completion
-    // nudge, post-approval continuation, queued choice answer). The model
-    // still sees them as user turns, but they persist + render as muted
-    // status notes so the operator isn't misled into thinking they typed
-    // them ("das kommt nicht vom nutzer").
-    await sendMessage("system");
+    // issue #29 — every auto-message is system-driven. The model still sees
+    // them as user turns, but they persist + render as muted status notes so
+    // the operator isn't misled into thinking they typed them ("das kommt
+    // nicht vom nutzer").
+    await sendMessage("system", undefined, text);
   }
   // Live counter of pending changes during streaming — incremented per
   // AI tool result + reset between turns. Drives the "N edits during
@@ -608,6 +615,7 @@
     chatBranchId?: string;
     viewport: "desktop" | "tablet" | "mobile";
     selector?: string;
+    toolCallId?: string;
   }): Promise<void> {
     const VIEWPORT_DIMS = {
       desktop: { width: 1280, height: 800 },
@@ -676,6 +684,10 @@
           return;
         }
         captureTarget = el as HTMLElement;
+        // Bring the element into view so html2canvas frames IT — an element
+        // far down the page (a footer at y≈3500) otherwise renders as the top
+        // viewport crop.
+        captureTarget.scrollIntoView?.();
       }
       // html2canvas-pro: maintained fork with modern CSS color support
       // (color-mix(), oklch, color()) — the original html2canvas parser
@@ -723,6 +735,17 @@
         );
       }
       const base64 = btoa(binary);
+
+      // SHOT-1: stash the operator's OWN capture into toolImages by toolCallId
+      // so the screenshot card shows THIS image immediately — no dependence on
+      // the ~1 MB image being echoed back over SSE. (The upload below still
+      // runs so the AI gets its copy via the tool result.)
+      if (req.toolCallId) {
+        toolImages = new Map(toolImages).set(req.toolCallId, {
+          base64,
+          mediaType: "image/jpeg",
+        });
+      }
 
       // Capture geometry rides along so the tool result can state
       // crop-vs-full-page as a FACT (run B4: the model doubted a
@@ -797,6 +820,14 @@
    *  via this map so synthetic tool messages appended to the transcript
    *  on tool-result can be routed by name in ToolCardRouter. */
   const toolCallMeta = new Map<string, { name: string; args: Record<string, unknown> }>();
+
+  /** Part 2 — screenshots captured by image-returning tools ride on the
+   *  `tool-result` SSE event's `image` field. Bridge them to the tool card
+   *  by toolCallId so ScreenshotCard can render a live preview. LIVE for the
+   *  session only — never persisted, so a reloaded transcript has no entry
+   *  here and the card falls back to text-only. Reassigned (not mutated) so
+   *  Svelte picks up the change in the transcript render. */
+  let toolImages = $state<Map<string, { base64: string; mediaType: string }>>(new Map());
 
   // v0.2.46 — debug state captured from the SSE stream when `debug=true`.
   // Populated alongside the regular event handling; the panel reads it.
@@ -1137,14 +1168,28 @@
     // The optimistic user message + composer handling are skipped; the body
     // carries `resumeApproval` instead of content.
     resume?: { approvalId: string; approved: boolean },
+    // A system nudge / suggestion-chip send whose text goes to the AI WITHOUT
+    // passing through the composer: the operator's in-progress draft (text,
+    // chips, attachments) stays exactly as-is. Set by sendAutoMessage. This is
+    // why clicking a chip sends AND leaves your typed text untouched.
+    overrideText?: string,
   ): Promise<void> {
     if (streaming) return;
-    if (!resume && composer.trim().length === 0 && pendingAttachments.length === 0) return;
+    if (
+      !resume &&
+      overrideText === undefined &&
+      composer.trim().length === 0 &&
+      pendingAttachments.length === 0
+    )
+      return;
+    const isOverride = overrideText !== undefined;
     // Attachment-only sends get a minimal text body (the op requires
     // non-empty content; the images carry the actual intent).
-    const text = composer.trim().length > 0 ? composer : "(see attached image)";
-    const sentChips = chips;
-    const sentAttachments = pendingAttachments;
+    const text = overrideText ?? (composer.trim().length > 0 ? composer : "(see attached image)");
+    // An override rides NONE of the operator's draft — the click sends its own
+    // text and consumes neither the pending chips nor the attachments.
+    const sentChips = isOverride ? [] : chips;
+    const sentAttachments = isOverride ? [] : pendingAttachments;
     chatError = null;
     chatWarning = null;
     streamStalled = false;
@@ -1154,12 +1199,16 @@
     streamingThinkingText = "";
     currentActivity = resume ? "Applying…" : "Sending…";
     if (!resume) {
-      pendingAttachments = [];
-      composer = "";
-      // Pinned chips ride every send; transient chips clear after.
-      chips = chips.filter((c) => c.pinned);
-      // Snap the composer back to one row after clearing it.
-      queueMicrotask(autoSizeComposer);
+      // An override must NOT disturb the operator's draft — only a real
+      // composer send clears the field + consumes pending chips/attachments.
+      if (!isOverride) {
+        pendingAttachments = [];
+        composer = "";
+        // Pinned chips ride every send; transient chips clear after.
+        chips = chips.filter((c) => c.pinned);
+        // Snap the composer back to one row after clearing it.
+        queueMicrotask(autoSizeComposer);
+      }
       messages = [
         ...messages,
         {
@@ -1384,6 +1433,13 @@
                 pageId: String(ev["pageId"] ?? ""),
                 chatBranchId: typeof ev["chatBranchId"] === "string" ? ev["chatBranchId"] : undefined,
                 viewport: (ev["viewport"] as "desktop" | "tablet" | "mobile" | undefined) ?? "desktop",
+                // Forward the CSS selector so an element-scoped capture frames
+                // that element — without this it silently fell back to the full
+                // body and cropped a footer to the top viewport.
+                selector: typeof ev["selector"] === "string" ? ev["selector"] : undefined,
+                // Tag with the tool-call id so the captured bytes land in
+                // toolImages and the card shows this exact capture immediately.
+                toolCallId: typeof ev["toolCallId"] === "string" ? ev["toolCallId"] : undefined,
               });
             } else if (ev["kind"] === "assistant-message-saved") {
               currentActivity = "Continuing…";
@@ -1428,6 +1484,23 @@
               const toolCallId = String(ev["toolCallId"] ?? "");
               const meta = toolCallMeta.get(toolCallId);
               const args = (ev["arguments"] as { moduleId?: string; html?: string }) ?? {};
+              // Part 2 — a screenshot tool returned an image; stash it by
+              // toolCallId so the tool card can render a live preview. Kept
+              // in client state only for this session (never persisted).
+              const evImage = ev["image"] as
+                | { base64?: unknown; mediaType?: unknown }
+                | undefined;
+              if (
+                toolCallId &&
+                evImage &&
+                typeof evImage.base64 === "string" &&
+                typeof evImage.mediaType === "string"
+              ) {
+                toolImages = new Map(toolImages).set(toolCallId, {
+                  base64: evImage.base64,
+                  mediaType: evImage.mediaType,
+                });
+              }
               if (typeof args.moduleId === "string" && typeof args.html === "string") {
                 proposedDiffs = [
                   ...proposedDiffs,
@@ -1451,6 +1524,9 @@
                   content: String(ev["content"] ?? ""),
                   toolName: meta?.name ?? "unknown",
                   toolArgs: meta?.args ?? args,
+                  // Part 2 — carry the toolCallId so the transcript render can
+                  // look up the live screenshot in toolImages by key.
+                  toolCallId: toolCallId || null,
                 },
               ];
               // P6.7 — notify the live-edit overlay so it can reload
@@ -1658,6 +1734,7 @@
                     content={m.content}
                     ok={!isFailedToolMessage(m.content)}
                     args={m.toolArgs ?? {}}
+                    image={m.toolCallId ? toolImages.get(m.toolCallId) : undefined}
                     {csrfToken}
                     onApproved={(info) => onProposalApproved(info.kind, info.proposalId)}
                     onChoose={(answer) => {
@@ -1667,6 +1744,8 @@
                         pendingChoiceAnswer = answer;
                         return;
                       }
+                      // Sends the answer to the AI; the composer draft is left
+                      // untouched (sendAutoMessage's overrideText path).
                       void sendAutoMessage(answer);
                     }}
                   />
@@ -1698,19 +1777,41 @@
                   {/if}
                 </li>
               {:else if m.origin === "system"}
-                <!-- issue #29 — auto-injected status line (crawl-completion
-                     nudge, post-approval continuation). The model saw it as
-                     a user turn, but it did NOT come from the operator, so
-                     render it as a muted, centered status note rather than a
-                     "You:" bubble. -->
-                <li
-                  class="rounded-md bg-muted px-3 py-2 text-center text-xs italic text-muted-foreground"
-                  data-testid="chat-status-note"
-                >
-                  <strong class="not-italic">Status:</strong>
-                  {m.content}
-                </li>
-              {:else}
+                {#if isContextNote(m.content)}
+                  <!-- Injected AI-context plumbing: the current-page block
+                       ("# Current page …" with a whole page's raw module HTML)
+                       or the cold-start status line. Written FOR THE MODEL, not
+                       the operator — collapse it behind a one-line summary so
+                       the transcript isn't buried in raw (page-builder) HTML. -->
+                  <li class="text-center" data-testid="chat-context-note">
+                    <details
+                      class="inline-block max-w-full rounded-md bg-muted px-3 py-1 text-left align-top"
+                    >
+                      <summary
+                        class="cursor-pointer select-none text-xs italic text-muted-foreground"
+                      >
+                        {contextNoteLabel(m.content)}
+                      </summary>
+                      <pre
+                        class="mt-1 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-muted-foreground"
+                        >{stripNoteMarker(m.content)}</pre>
+                    </details>
+                  </li>
+                {:else}
+                  <!-- issue #29 — short auto-injected status nudge (crawl-
+                       completion, post-approval continuation). The model saw it
+                       as a user turn, but it did NOT come from the operator, and
+                       it IS operator-relevant (explains what's happening), so it
+                       stays visible as a muted, centered status note. -->
+                  <li
+                    class="rounded-md bg-muted px-3 py-2 text-center text-xs italic text-muted-foreground"
+                    data-testid="chat-status-note"
+                  >
+                    <strong class="not-italic">Status:</strong>
+                    {stripNoteMarker(m.content)}
+                  </li>
+                {/if}
+              {:else if m.role === "user" || m.content.trim().length > 0 || m.thinkingText}
                 <li
                   class={cn(
                     "rounded-md p-3 text-sm",
@@ -1749,6 +1850,18 @@
                     {/if}
                     <StreamingMarkdown text={m.content} class="mt-0.5" />
                   {/if}
+                </li>
+              {:else if m.status === "interrupted"}
+                <!-- A turn that died mid-reply (Stop, tab close, abort). Show a
+                     compact marker where it stopped instead of a blank "AI:"
+                     bubble. A tool-only completed turn (empty prose, tool cards
+                     render separately below) matches NO branch here — so it
+                     renders nothing instead of an empty bubble. -->
+                <li
+                  class="rounded-md bg-muted/50 px-3 py-1.5 text-xs italic text-muted-foreground"
+                  data-testid="chat-interrupted-marker"
+                >
+                  <strong>AI:</strong> Antwort unterbrochen.
                 </li>
               {/if}
             {/each}

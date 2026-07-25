@@ -30,8 +30,10 @@ import {
   extractTitle,
 } from "./extractor.js";
 import { computePageSignature } from "./page-signature.js";
+import { fetchRenderedHtml } from "./rendered-fetch.js";
 import { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
-import { isExternalUrlBlockedError, safeExternalFetch } from "./safe-fetch.js";
+import { assertPublicHttpUrl, isExternalUrlBlockedError, safeExternalFetch } from "./safe-fetch.js";
+import { createPlaywrightScreenshotter, type Screenshotter } from "./screenshot.js";
 import { discoverSitemapUrls, type TextFetcher } from "./sitemap.js";
 
 export interface CrawlCheckpoint {
@@ -198,7 +200,23 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   const maxPages = listMode ? (listResolved?.urls.length ?? 0) : (opts.maxPages ?? 50);
   const batchSize = opts.batchSize ?? 25;
   const concurrency = Math.max(1, opts.concurrency ?? 4);
-  const fetcher = opts.fetcher ?? makeDefaultFetcher(opts.allowedHosts ?? []);
+
+  // Render-first (docs: rendered-first plan): with no injected fetcher, run
+  // each page's JS so the crawl captures the DOM the browser BUILDS — a
+  // JS-set image/video src, a JS-built nav, sections injected on load — not
+  // the pre-JS source. ONE Chromium is launched here and reused across the
+  // whole crawl (contexts are per-page); it is disposed in the finally below.
+  // Falls back to a static fetch per page (with a loud note in the fetcher)
+  // when Chromium is unavailable. Tests inject `opts.fetcher` and never render.
+  let screenshotter: Screenshotter | null = null;
+  let fetcher = opts.fetcher;
+  if (!fetcher) {
+    // Loud-abort a blocked SOURCE before spending a Chromium launch on it —
+    // the crawler's "root-blocked crawls fail loudly" contract, kept fast.
+    assertPublicHttpUrl(opts.sourceUrl, { allowedHosts: opts.allowedHosts ?? [] });
+    screenshotter = await createPlaywrightScreenshotter({ allowedHosts: opts.allowedHosts ?? [] });
+    fetcher = makeRenderedFetcher(screenshotter, opts.allowedHosts ?? []);
+  }
   // A custom HTML fetcher without a matching text fetcher means a
   // hermetic test harness — don't reach for the real network for
   // robots/sitemap behind its back.
@@ -363,19 +381,26 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     }
   };
 
-  // The ROOT must be processed alone first: it decides loud-abort on a
-  // blocked source and feeds the first links before workers fan out.
-  if (!opts.resumeFrom && queue.length > 0 && pagesCrawled === 0) {
-    const root = queue.shift();
-    if (root && !seen.has(root.url)) {
-      seen.add(root.url);
-      await processOne(root);
+  try {
+    // The ROOT must be processed alone first: it decides loud-abort on a
+    // blocked source and feeds the first links before workers fan out.
+    if (!opts.resumeFrom && queue.length > 0 && pagesCrawled === 0) {
+      const root = queue.shift();
+      if (root && !seen.has(root.url)) {
+        seen.add(root.url);
+        await processOne(root);
+      }
     }
-  }
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
-  await flush();
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    await flush();
 
-  return { pages, seenCount: seen.size, pagesCrawled, errors };
+    return { pages, seenCount: seen.size, pagesCrawled, errors };
+  } finally {
+    // Release the shared Chromium (only launched when we render — i.e. no
+    // injected fetcher). Best-effort: a dispose failure must not mask a
+    // crawl result or a real error.
+    await screenshotter?.dispose().catch(() => undefined);
+  }
 }
 
 /**
@@ -400,6 +425,38 @@ function makeDefaultFetcher(
       return { ok: res.ok, html: "", contentType: res.contentType };
     }
     return { ok: true, html: res.bodyText, contentType: res.contentType };
+  };
+}
+
+/**
+ * Render-first crawl fetcher: runs each page's JS via the shared
+ * screenshotter (reused across the crawl) so the extracted content is the
+ * DOM the browser built, not the pre-JS source. `fetchRenderedHtml` falls
+ * back to a static fetch — with a note it swallows here — when the render
+ * fails or `screenshotter` is null (Chromium unavailable). Preserves the
+ * default fetcher's contract: same-origin redirects only, non-HTML gated.
+ */
+function makeRenderedFetcher(
+  screenshotter: Screenshotter | null,
+  allowedHosts: readonly string[],
+): (url: string) => Promise<{ ok: boolean; html: string; contentType: string }> {
+  // No Chromium → the plain SSRF-guarded static fetcher (keeps the crawler
+  // User-Agent + same-host policy). This is the loud, expected degrade.
+  const staticFetcher = makeDefaultFetcher(allowedHosts);
+  return async (url: string) => {
+    if (!screenshotter) return staticFetcher(url);
+    const rf = await fetchRenderedHtml(url, {
+      screenshotter,
+      allowedHosts,
+      maxBytes: 2 * 1024 * 1024,
+    });
+    if (!rf.ok) {
+      return { ok: false, html: "", contentType: rf.contentType ?? "fetch-error" };
+    }
+    if (new URL(rf.finalUrl).host !== new URL(url).host) {
+      return { ok: false, html: "", contentType: "redirected-off-host" };
+    }
+    return { ok: true, html: rf.html, contentType: "text/html" };
   };
 }
 

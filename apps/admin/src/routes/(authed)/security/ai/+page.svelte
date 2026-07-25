@@ -12,6 +12,8 @@
   } from "$lib/components/ui/card/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
+  import { Select } from "$lib/components/ui/select/index.js";
+  import { MODEL_HELPER_TEXT, modelsForProvider } from "$lib/ai-models.js";
 
   let { data, form } = $props();
 </script>
@@ -122,7 +124,16 @@
           </div>
           <div class="space-y-2">
             <Label for="model-{p.name}">Model</Label>
-            <Input id="model-{p.name}" name="model" type="text" value={p.model} required />
+            {#if modelsForProvider(p.name).length > 0}
+              <Select id="model-{p.name}" name="model" value={p.model}>
+                {#each modelsForProvider(p.name) as m (m.id)}
+                  <option value={m.id}>{m.label}</option>
+                {/each}
+              </Select>
+              <p class="text-xs text-muted-foreground">{MODEL_HELPER_TEXT}</p>
+            {:else}
+              <Input id="model-{p.name}" name="model" type="text" value={p.model} required />
+            {/if}
           </div>
           <div class="space-y-2">
             <Label for="maxOutputTokens-{p.name}">Max output tokens</Label>

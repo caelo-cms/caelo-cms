@@ -147,8 +147,14 @@ describe("normalizeAssetMime", () => {
     expect(normalizeAssetMime("IMAGE/PNG")).toBe("image/png");
   });
 
-  it("rejects everything outside the migration allowlist — video and html included", () => {
-    expect(normalizeAssetMime("video/mp4")).toBeNull();
+  it("admits video/mp4 (import supported; per-mime cap enforced downstream)", () => {
+    expect(normalizeAssetMime("video/mp4")).toBe("video/mp4");
+    expect(normalizeAssetMime("VIDEO/MP4; codecs=avc1")).toBe("video/mp4");
+  });
+
+  it("rejects everything outside the migration allowlist — non-mp4 video and html included", () => {
+    expect(normalizeAssetMime("video/quicktime")).toBeNull();
+    expect(normalizeAssetMime("video/webm")).toBeNull();
     expect(normalizeAssetMime("text/html; charset=utf-8")).toBeNull();
     expect(normalizeAssetMime("application/octet-stream")).toBeNull();
     expect(normalizeAssetMime("")).toBeNull();
@@ -170,5 +176,12 @@ describe("magicBytesMatchMime", () => {
   it("rejects an HTML body served under an image content-type", () => {
     expect(magicBytesMatchMime("image/png", ascii("<!doctype html><html>"))).toBe(false);
     expect(magicBytesMatchMime("font/woff2", ascii("<!doctype html>"))).toBe(false);
+  });
+
+  it("accepts mp4 by its ISO-BMFF 'ftyp' box at offset 4, rejects non-mp4 bytes", () => {
+    // 4 arbitrary leading size bytes, then ASCII "ftyp" (0x66,0x74,0x79,0x70).
+    const mp4 = new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34]);
+    expect(magicBytesMatchMime("video/mp4", mp4)).toBe(true);
+    expect(magicBytesMatchMime("video/mp4", ascii("<!doctype html>"))).toBe(false);
   });
 });

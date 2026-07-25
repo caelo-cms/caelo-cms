@@ -43,6 +43,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const form = await request.formData();
   const file = form.get("file");
   const altRaw = form.get("alt");
+  const nameRaw = form.get("name");
   if (!(file instanceof File)) {
     throw error(400, "missing 'file' field");
   }
@@ -111,8 +112,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     width: result.width,
     height: result.height,
     alt: typeof altRaw === "string" ? altRaw.slice(0, 2048) : "",
+    // Meaningful label → slug. Falls back to the uploaded filename so a
+    // plain upload still gets a readable slug; the op does slugify+uniquify.
+    name:
+      typeof nameRaw === "string" && nameRaw.trim().length > 0
+        ? nameRaw.slice(0, 512)
+        : file.name.slice(0, 512),
     storageKey: result.variants[0]?.storageKey ?? `${sha}/orig`,
     storageProvider: getMediaStorageProvider(),
+    // Media provenance (0181) — a direct operator upload.
+    sourceKind: "upload",
     variants: result.variants.map((v) => ({
       variant: v.variant,
       format: v.format,

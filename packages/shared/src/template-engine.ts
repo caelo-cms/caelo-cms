@@ -8,8 +8,14 @@
  *
  * Grammar (a Mustache subset — see CMS_REQUIREMENTS §3.1 / §5):
  *   {{name}}                  — primitive substitution
- *   {{#name}}…inner…{{/name}}  — section: iterates over text-list /
- *                                 link-list / module-list field kinds
+ *   {{#name}}…inner…{{/name}}  — section: ITERATES over a list field
+ *                                 (text-list / link-list / module-list);
+ *                                 for a SCALAR (text/image/…) or single
+ *                                 `module` field it is a CONDITIONAL —
+ *                                 the block renders once when the field
+ *                                 has a value, and is dropped when empty
+ *                                 (never a kind-mismatch — that used to
+ *                                 silently drop real scalar content)
  *   {{>name}}                 — single nested module reference
  *                                 (module field kind)
  *
@@ -342,9 +348,58 @@ function renderSection(
   if (field.kind === "link-list") {
     return renderLinkList(name, inner, field, cvs, missing);
   }
-  const reason = `kind-mismatch:${name} expected=module-list|text-list|link-list actual=${field.kind}`;
-  missing.push(reason);
-  return comment(reason);
+  // Any NON-list field used as a `{{#name}}…{{/name}}` section is a
+  // CONDITIONAL (Mustache semantics): render the inner block once when the
+  // field has a present, non-empty value; drop it when empty. This is what
+  // makes `{{#subtitle}}<p>{{subtitle}}</p>{{/subtitle}}` wrap a scalar
+  // text/image field — previously a scalar in a section fell through to
+  // `kind-mismatch` and SILENTLY DROPPED real content (headings, body copy,
+  // an image, a single nested module). `{{name}}` inside the block resolves
+  // in the later primitive pass (a `module` field's `{{>name}}` in the
+  // partial pass); `{{.}}`/`{{item}}` are substituted here for parity with
+  // the *-list renderers. An empty conditional is intentional, not
+  // "missing" — nothing is pushed to `missing`.
+  return renderConditionalSection(name, inner, field, cvs);
+}
+
+/**
+ * Render a `{{#name}}…{{/name}}` section over a scalar/module field as a
+ * Mustache conditional: the block once when the value is present, else "".
+ */
+function renderConditionalSection(
+  name: string,
+  inner: string,
+  field: TemplateField,
+  cvs: Readonly<Record<string, unknown>>,
+): string {
+  const raw = Object.hasOwn(cvs, name) ? cvs[name] : field.default;
+  if (!isPresentSectionValue(raw)) return "";
+  const value = scalarSectionString(raw);
+  return value.length > 0 ? inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => value) : inner;
+}
+
+/**
+ * Mustache-style truthiness for a conditional section value. Empty string,
+ * null/undefined, `false`, and an empty array/object are absent; everything
+ * else (incl. a numeric 0 — a real content value, not a control flag) is
+ * present.
+ */
+function isPresentSectionValue(raw: unknown): boolean {
+  if (raw === undefined || raw === null || raw === false) return false;
+  if (typeof raw === "string") return raw.trim().length > 0;
+  if (typeof raw === "number") return !Number.isNaN(raw);
+  if (Array.isArray(raw)) return raw.length > 0;
+  if (typeof raw === "object") return Object.keys(raw as object).length > 0;
+  return true;
+}
+
+/** String form for `{{.}}`/`{{item}}` inside a scalar conditional. Objects
+ *  (module refs / image objects) render through `{{name}}`/`{{>name}}`, not
+ *  `{{.}}`, so they stringify to "". */
+function scalarSectionString(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (typeof raw === "number" || typeof raw === "boolean") return String(raw);
+  return "";
 }
 
 function renderTextList(

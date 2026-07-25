@@ -38,6 +38,7 @@ import {
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { scanBranchInternalLinks } from "../content/link-integrity.js";
 
 interface SessionRow {
   chat_branch_id: string;
@@ -95,6 +96,13 @@ interface MergeResult {
   readonly entityCount: number;
   readonly session: SessionRow;
   readonly includeAll: boolean;
+  /**
+   * Internal hrefs in the merged pages that resolve to no existing page.
+   * Surfaced (never blocking) so the operator + AI see dead links before
+   * production — see `scanBranchInternalLinks`. Empty when clean or when
+   * the branch had nothing to merge.
+   */
+  readonly brokenInternalLinks: string[];
 }
 
 /**
@@ -367,7 +375,10 @@ export async function mergeBranchSnapshotsToMain(
     contentInstanceRows.length +
     themeRows.length;
   if (total === 0) {
-    return { ok: true, value: { siteSnapshotId: null, entityCount: 0, session, includeAll } };
+    return {
+      ok: true,
+      value: { siteSnapshotId: null, entityCount: 0, session, includeAll, brokenInternalLinks: [] },
+    };
   }
 
   let entities: SnapshotEntity[];
@@ -707,9 +718,21 @@ export async function mergeBranchSnapshotsToMain(
     }
   }
 
+  // Internal-link integrity — runs AFTER the replay loop wrote the merged
+  // state to the live tables, so the scan reads post-merge slugs +
+  // content. Warn-only: dead links are surfaced in the op result, never
+  // block the merge (CLAUDE.md §2 loud-honesty).
+  const { brokenInternalLinks } = await scanBranchInternalLinks(tx, session.chat_branch_id);
+
   return {
     ok: true,
-    value: { siteSnapshotId: result.siteSnapshotId, entityCount: total, session, includeAll },
+    value: {
+      siteSnapshotId: result.siteSnapshotId,
+      entityCount: total,
+      session,
+      includeAll,
+      brokenInternalLinks,
+    },
   };
 }
 
@@ -722,6 +745,12 @@ export const publishChatSessionOp = defineOperation({
   output: z.object({
     siteSnapshotId: z.string().nullable(),
     entityCount: z.number().int().nonnegative(),
+    /**
+     * Internal links in the published pages that point at no existing
+     * page. Non-blocking — the publish succeeded; these are dead links
+     * to fix. Empty when clean.
+     */
+    brokenInternalLinks: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
     // Pre-merge guard — chat.publish is the boundary that closes the
@@ -758,7 +787,7 @@ export const publishChatSessionOp = defineOperation({
     });
     if (!merged.ok) return err(merged.error);
 
-    const { siteSnapshotId, entityCount, includeAll } = merged.value;
+    const { siteSnapshotId, entityCount, includeAll, brokenInternalLinks } = merged.value;
 
     if (entityCount === 0) {
       await tx.execute(sql`
@@ -774,7 +803,7 @@ export const publishChatSessionOp = defineOperation({
         entityId: input.chatSessionId,
         resultSummary: "no-op (empty branch)",
       });
-      return ok({ siteSnapshotId: null, entityCount: 0 });
+      return ok({ siteSnapshotId: null, entityCount: 0, brokenInternalLinks: [] });
     }
 
     if (includeAll) {
@@ -789,6 +818,13 @@ export const publishChatSessionOp = defineOperation({
       await releaseChatLocks(tx, input.chatSessionId);
     }
 
+    // Loud-honesty warning line — dead internal links ride into the
+    // audit summary (and the op result below) so they're visible at the
+    // publish boundary, not discovered as production 404s.
+    const linkWarning =
+      brokenInternalLinks.length > 0
+        ? ` WARNING broken-internal-links=${brokenInternalLinks.length}: ${brokenInternalLinks.slice(0, 10).join(", ")}`
+        : "";
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -796,10 +832,11 @@ export const publishChatSessionOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.chatSessionId,
-      resultSummary: includeAll ? `entities=${entityCount}` : `partial entities=${entityCount}`,
+      resultSummary:
+        (includeAll ? `entities=${entityCount}` : `partial entities=${entityCount}`) + linkWarning,
     });
 
-    return ok({ siteSnapshotId, entityCount });
+    return ok({ siteSnapshotId, entityCount, brokenInternalLinks });
   },
 });
 
@@ -845,6 +882,12 @@ export const mergeChatToMainOp = defineOperation({
      * WHILE the staging build ran stay pending (they were not built).
      */
     mergedAt: z.string(),
+    /**
+     * Internal links in the staged pages that point at no existing page.
+     * Non-blocking — staging proceeds — but surfaced so dead links are
+     * caught before the operator promotes staging to production.
+     */
+    brokenInternalLinks: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
     const merged = await mergeBranchSnapshotsToMain(tx, ctx, input, {
@@ -856,7 +899,7 @@ export const mergeChatToMainOp = defineOperation({
     });
     if (!merged.ok) return err(merged.error);
 
-    const { siteSnapshotId, entityCount, includeAll } = merged.value;
+    const { siteSnapshotId, entityCount, includeAll, brokenInternalLinks } = merged.value;
 
     // Merge-time boundary for the pending-changes filters. Emitted as a
     // deterministic ISO string (not a driver-dependent Date/text row) so
@@ -899,6 +942,10 @@ export const mergeChatToMainOp = defineOperation({
       await releaseChatLocks(tx, input.chatSessionId);
     }
 
+    const linkWarning =
+      brokenInternalLinks.length > 0
+        ? ` WARNING broken-internal-links=${brokenInternalLinks.length}: ${brokenInternalLinks.slice(0, 10).join(", ")}`
+        : "";
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -906,10 +953,11 @@ export const mergeChatToMainOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.chatSessionId,
-      resultSummary: includeAll ? `entities=${entityCount}` : `partial entities=${entityCount}`,
+      resultSummary:
+        (includeAll ? `entities=${entityCount}` : `partial entities=${entityCount}`) + linkWarning,
     });
 
-    return ok({ siteSnapshotId, entityCount, mergedAt });
+    return ok({ siteSnapshotId, entityCount, mergedAt, brokenInternalLinks });
   },
 });
 

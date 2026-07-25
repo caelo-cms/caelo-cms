@@ -118,6 +118,12 @@ function iso(v: string | Date | null | undefined): string | null {
  * Returns `{ ok: true }` if every nested ref is valid (or no nested
  * fields exist); otherwise `{ ok: false, message }` naming the
  * offending field so the AI's recovery is one round-trip.
+ *
+ * Side-effect: NORMALIZES `values` in place for `kind=url` fields —
+ * an empty/whitespace-only url is coerced to the safe placeholder "#"
+ * (see the url branch below) so one missing link target can't abort an
+ * atomic build. Callers persist `values` after this returns, so the
+ * coercion is durable.
  */
 async function validateNestedRefs(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
@@ -179,12 +185,27 @@ async function validateNestedRefs(
         };
       }
     } else if (f.kind === "url") {
+      // Resilience (build_page atomicity) — an EMPTY or whitespace-only
+      // url value is a MISSING link target, not an authoring error worth
+      // rolling back an atomic multi-module build over (a 29-module
+      // homepage was killed by one empty CTA link). Coerce it to "#" — a
+      // safe no-op placeholder anchor — and accept. "#" is a resilience
+      // placeholder, NOT a valid target: the internal-link integrity
+      // check at stage/publish surfaces genuinely-missing targets loudly
+      // and separately. We mutate `values` in place so the coerced "#"
+      // persists through the caller's INSERT/UPDATE, the emitted
+      // snapshot state, and the audit record — not just past validation.
+      if (typeof v === "string" && v.trim() === "") {
+        values[f.name] = "#";
+        continue;
+      }
       // Permissive URL shape — paths, absolute URLs, mailto/tel, and
-      // fragment-only links all legitimate. Reject only obviously-not-
-      // a-URL primitives (numbers, booleans, empty strings).
+      // fragment-only links all legitimate. A non-empty string that is
+      // none of these is a real authoring error, kept rejected with the
+      // actionable message. Non-string primitives (numbers, booleans)
+      // stay rejected too.
       const ok =
         typeof v === "string" &&
-        v.length > 0 &&
         (v.startsWith("/") ||
           v.startsWith("http://") ||
           v.startsWith("https://") ||

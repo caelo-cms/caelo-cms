@@ -13,41 +13,45 @@ import {
   mediaListInputSchema,
   mediaSetCdnInputSchema,
   mediaUploadInputSchema,
+  slugifyMediaName,
 } from "./media.js";
 
 describe("media URL helpers", () => {
-  it("builds canonical /_caelo/media URL with assetId + variant", () => {
-    expect(buildMediaUrl("11111111-1111-1111-1111-111111111111", "webp-800")).toBe(
-      "/_caelo/media/11111111-1111-1111-1111-111111111111/webp-800",
+  it("builds a slug URL: orig is flat, named variants nest under the slug", () => {
+    expect(buildMediaUrl("searchviu-logo", "orig")).toBe("/_caelo/media/searchviu-logo");
+    expect(buildMediaUrl("searchviu-hero", "webp-800")).toBe(
+      "/_caelo/media/searchviu-hero/webp-800",
     );
   });
 
-  it("extracts every (assetId, variant) reference deduped", () => {
+  it("extracts slug refs (orig implied when flat) deduped", () => {
     const html = `
-      <img src="/_caelo/media/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/webp-800" alt="x" />
-      <img src="/_caelo/media/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/webp-800" alt="y" />
-      <img src="/_caelo/media/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/orig" />
+      <img src="/_caelo/media/searchviu-hero/webp-800" alt="x" />
+      <img src="/_caelo/media/searchviu-hero/webp-800" alt="y" />
+      <img src="/_caelo/media/searchviu-logo" />
     `;
-    const refs = extractMediaRefs(html);
-    expect(refs).toEqual([
-      { assetId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", variant: "webp-800" },
-      { assetId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", variant: "orig" },
+    expect(extractMediaRefs(html)).toEqual([
+      { ref: "searchviu-hero", isSlug: true, variant: "webp-800" },
+      { ref: "searchviu-logo", isSlug: true, variant: "orig" },
     ]);
   });
 
-  it("ignores ill-formed asset ids; accepts kebab-case variants (crops post-P7-opt-2)", () => {
-    // Short id can never match (uuid pattern in the regex). A kebab-
-    // case variant matches — this widened post-P7 to accept focal-
-    // point crop variants like `square-800`. Unknown variants reach
-    // the renderer / static-generator media-pass which fails loudly
-    // when there's no media_variants row, per the no-fallbacks rule.
+  it("still parses the legacy /_caelo/media/<uuid>/<variant> form as an id ref", () => {
     const html = `
-      <img src="/_caelo/media/short-id/webp-800" />
+      <img src="/_caelo/media/short-slug/webp-800" />
       <img src="/_caelo/media/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/square-800" />
     `;
     expect(extractMediaRefs(html)).toEqual([
-      { assetId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", variant: "square-800" },
+      { ref: "short-slug", isSlug: true, variant: "webp-800" },
+      { ref: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", isSlug: false, variant: "square-800" },
     ]);
+  });
+
+  it("slugifies a human label: accents stripped, kebab-cased, extension dropped", () => {
+    expect(slugifyMediaName("SearchVIU Logo.png")).toBe("searchviu-logo");
+    expect(slugifyMediaName("Über uns – Team!")).toBe("uber-uns-team");
+    expect(slugifyMediaName("   ")).toBe("image");
+    expect(slugifyMediaName("a".repeat(80)).length).toBeLessThanOrEqual(60);
   });
 
   it("buildStorageKey is sha-prefixed", () => {

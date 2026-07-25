@@ -215,30 +215,13 @@ export const addModuleToolInput = z
         }
       }
     }
-    const authoringKeys = (
-      [
-        "displayName",
-        "html",
-        "css",
-        "js",
-        "fields",
-        "description",
-        "kind",
-        "type",
-        "bindThemeLiterals",
-      ] as const
-    ).filter((k) => input[k] !== undefined);
-    if (input.moduleId !== undefined) {
-      if (authoringKeys.length > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            `moduleId places an EXISTING module — drop ${authoringKeys.join(", ")}. ` +
-            "To change a shared module's structure use edit_module; to mint a new one omit moduleId.",
-        });
-      }
-      return;
-    }
+    // `moduleId` is PLACEMENT-ONLY (see the buildPageModuleSchema note): a
+    // placement that CAN succeed must not fail over an extra authoring field
+    // (§1A/§11), so we do NOT reject a moduleId call that also carries authoring
+    // fields. Those fields are not applied here; the tool HANDLER surfaces an
+    // INFO for any ignored field whose value DIFFERS from the module's stored
+    // one, pointing at edit_module — so a dropped change is never silent (§2).
+    if (input.moduleId !== undefined) return;
     if (input.displayName === undefined || input.html === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -540,38 +523,6 @@ export const aiProvidersSetInput = z
   .strict();
 
 /**
- * P19 — `compose_from_import` AI tool input. Wraps
- * `imports.compose_from_run`. Single transaction synthesis: aggregates
- * theme tokens, creates one template bound to the default layout,
- * materialises every staged import_pages row into a draft page +
- * modules. Idempotent — pages already accepted skip cleanly.
- */
-export const composeFromImportToolInput = z
-  .object({
-    runId: z.string().uuid(),
-    templateSlug: z
-      .string()
-      .min(1)
-      .max(120)
-      .regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase letters/digits/hyphens, leading non-hyphen")
-      .optional(),
-    includeImportPageIds: z.array(z.string().uuid()).optional(),
-  })
-  .strict();
-
-/**
- * issue #249 (WS3) — `migrate_media` AI tool input. Wraps
- * `imports.migrate_media`: downloads every external asset the composed
- * pages still hotlink from the source site into the media library and
- * rewrites the module/template references in place.
- */
-export const migrateImportMediaToolInput = z
-  .object({
-    runId: z.string().uuid(),
-  })
-  .strict();
-
-/**
  * Input for `ai_providers.clear_key` — Owner-only NULLs the encrypted
  * triplet so the resolver falls back to the env-var path for that
  * provider (or returns null if no env is set, which surfaces the
@@ -816,6 +767,35 @@ export const setMediaAltToolInput = z
 export type SetMediaAltToolInput = z.infer<typeof setMediaAltToolInput>;
 
 /**
+ * 0184 — `set_home_page`. AI designates a page as the site homepage (per
+ * locale, the locale root). Records `locales.home_page_id`; the page keeps
+ * its own slug but resolves to `/`.
+ */
+export const setHomePageToolInput = z
+  .object({
+    pageId: z.string().uuid(),
+    locale: z.string().min(2).max(10).optional(),
+  })
+  .strict();
+export type SetHomePageToolInput = z.infer<typeof setHomePageToolInput>;
+
+/**
+ * 0181 — `set_media_source`. AI records an asset's provenance (source
+ * kind + origin detail) and licence when known. All fields but the
+ * assetId are optional; the op COALESCEs so omitted fields stay
+ * unchanged.
+ */
+export const setMediaSourceToolInput = z
+  .object({
+    assetId: z.string().uuid(),
+    sourceKind: z.enum(["upload", "ai_generated", "imported", "external"]).optional(),
+    sourceDetail: z.string().max(2048).optional(),
+    license: z.string().max(200).optional(),
+  })
+  .strict();
+export type SetMediaSourceToolInput = z.infer<typeof setMediaSourceToolInput>;
+
+/**
  * P8 — `set_page_seo`. Manual / panel writes to the per-page SEO
  * sidecar. AI calls this only on explicit user intent
  * ("set the home meta description to ..."). Doesn't bump fingerprints
@@ -957,8 +937,6 @@ export type BulkOptimizeSeoToolInput = z.infer<typeof bulkOptimizeSeoToolInput>;
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
-export type ComposeFromImportToolInput = z.infer<typeof composeFromImportToolInput>;
-export type MigrateImportMediaToolInput = z.infer<typeof migrateImportMediaToolInput>;
 export type SetStructuredSetToolInput = z.infer<typeof setStructuredSetToolInput>;
 // v0.10.22 — `UpdateThemeToolInput` removed alongside `update_theme` tool.
 export type ChatCreateSessionInput = z.infer<typeof chatCreateSessionInput>;

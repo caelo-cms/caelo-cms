@@ -186,9 +186,11 @@ export function rewriteAssetRefs(
 }
 
 // ---------------------------------------------------------------------
-// Content-type gate. The allowlist is images + fonts + pdf (issue #249)
-// — NOT video: a 15 MB per-file cap makes video migration useless-by-
-// truncation, so it is a loud skip instead of a half-migrated asset.
+// Content-type gate. The allowlist is images + fonts + pdf + video/mp4
+// (issue #249). Video/mp4 IS now supported: the per-file fetch cap was
+// raised to the 50 MB media hard limit so an mp4 lands whole, and the
+// per-mime cap (MEDIA_SIZE_CAPS["video/mp4"] = 50 MB) is enforced
+// downstream in the import op. Only mp4 — not quicktime/webm/etc.
 // ---------------------------------------------------------------------
 
 const MIME_ALIASES: Record<string, MediaMime> = {
@@ -200,6 +202,7 @@ const MIME_ALIASES: Record<string, MediaMime> = {
   "image/gif": "image/gif",
   "image/svg+xml": "image/svg+xml",
   "application/pdf": "application/pdf",
+  "video/mp4": "video/mp4",
   "font/woff2": "font/woff2",
   "application/font-woff2": "font/woff2",
   "font/woff": "font/woff",
@@ -248,6 +251,10 @@ export function magicBytesMatchMime(mime: MediaMime, bytes: Uint8Array): boolean
       return ascii("RIFF") && ascii("WEBP", 8);
     case "image/avif":
       return ascii("ftyp", 4);
+    case "video/mp4":
+      // mp4/ISO-BMFF files carry the ASCII box type "ftyp" at byte
+      // offset 4 (same container family as AVIF above).
+      return ascii("ftyp", 4);
     case "application/pdf":
       return ascii("%PDF");
     case "font/woff2":
@@ -266,9 +273,5 @@ export function magicBytesMatchMime(mime: MediaMime, bytes: Uint8Array): boolean
         .toLowerCase();
       return head.includes("<svg");
     }
-    case "video/mp4":
-      // Not migratable (see allowlist note) — normalizeAssetMime never
-      // yields it, but the switch stays exhaustive over MediaMime.
-      return false;
   }
 }

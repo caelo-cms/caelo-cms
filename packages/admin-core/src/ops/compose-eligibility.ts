@@ -15,11 +15,10 @@
  *
  *  2. Compose created per-cluster TEMPLATES but SILENTLY zero PAGES,
  *     leaving the AI to invent a "format reason" and fall back to the
- *     fragile direct-build path. `composePageSkipReason` names WHY a
- *     staging page is skipped, and `buildZeroPagesAbortMessage` builds
- *     the loud abort the handler throws when templates were created but
- *     no page survived the per-page gates (CLAUDE.md §2 — no silent
- *     degradation: fail loudly pointing at what's missing).
+ *     fragile direct-build path. `buildZeroPagesAbortMessage` builds the
+ *     loud abort the handler throws when templates were created but no
+ *     page survived (CLAUDE.md §2 — no silent degradation: fail loudly
+ *     pointing at what's missing).
  */
 
 /** How long the runner should wait before re-checking `imports.get`. */
@@ -68,41 +67,6 @@ export interface ComposeSkip {
   slug: string;
   sourceUrl: string;
   reason: string;
-}
-
-/** The per-page fields the skip gate reads (subset of `import_pages`). */
-export interface ComposePageGateInput {
-  id: string;
-  proposed_slug: string;
-  source_url: string;
-  diff_status: "pass" | "warn" | "fail" | null;
-  acknowledged_at: string | Date | null;
-}
-
-/**
- * Decide whether a staging page must be SKIPPED during compose, and if
- * so, WHY. Returns `null` when the page should be composed.
- *
- * The only skip is the screenshot-fidelity gate, matching
- * `imports.accept_page`: a page whose rebuild diverged too far from the
- * source screenshot (`diff_status='fail'`) is held back until the
- * operator acknowledges it — promoting a visually-wrong page silently
- * would be worse than pausing. Unlike the pre-fix handler, the reason is
- * captured so a run that skips EVERY page fails loudly instead of
- * returning a misleading templates-but-zero-pages "success".
- */
-export function composePageSkipReason(page: ComposePageGateInput): ComposeSkip | null {
-  if (page.diff_status === "fail" && !page.acknowledged_at) {
-    return {
-      importPageId: page.id,
-      slug: page.proposed_slug,
-      sourceUrl: page.source_url,
-      reason:
-        "screenshot-diff FAIL not acknowledged — the rebuilt page diverged too far from the source. " +
-        "Acknowledge the diff or exclude this page (includeImportPageIds), then re-run compose.",
-    };
-  }
-  return null;
 }
 
 /**

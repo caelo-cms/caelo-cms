@@ -19,7 +19,8 @@ export const setMediaAltTool: ToolDefinitionWithHandler<
     "Replace an asset's alt text. Use when you have visual context for an image " +
     "(or the user asks you to improve a11y) and the existing alt is missing or unhelpful. " +
     "Doesn't move bytes around — only updates the alt field on `media_assets`. " +
-    "If you don't know what an image depicts, do NOT invent alt text — leave it alone.",
+    "If you don't know what an image depicts, do NOT invent alt text — leave it alone. " +
+    "Prefer `set_media_alt_many` over multiple `set_media_alt` calls when changing more than one.",
   schema: setMediaAltToolInput,
   inputSchema: {
     type: "object",
