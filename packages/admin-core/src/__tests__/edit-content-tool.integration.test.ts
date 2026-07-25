@@ -70,6 +70,10 @@ afterAll(async () => {
 });
 
 async function seedModule(): Promise<string> {
+  // Idempotent: every test seeds a fresh module under the same fixed SLUG, so
+  // clear any prior row first — otherwise the 2nd+ test hits the branch-scoped
+  // dup-slug check in modules.create and fails at setup ("seed failed").
+  await wipe(ADMIN_URL as string);
   const create = await execute(ops, adapter, systemCtx, "modules.create", {
     slug: SLUG,
     displayName: "Editable",
