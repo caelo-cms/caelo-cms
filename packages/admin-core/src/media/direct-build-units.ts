@@ -23,14 +23,8 @@
  *     branch-overlay-resolved inputs, unit-testable without Postgres.
  *   - `assembleDirectBuildUnits` — PURE unit assembly (moved here from
  *     import_media.ts; same contract).
- *   - `loadModuleTextWithBranchProvenance` / `loadTemplateWithBranchProvenance`
- *     — thin DB loaders that return the branch-latest state PLUS provenance
- *     (did it come from a branched snapshot? is the live row main-owned?)
- *     so the rewrite step can decide live-update vs snapshot-only.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
-import { sql } from "drizzle-orm";
 import type { ModuleState, PageLayoutState, TemplateState } from "../snapshots/state.js";
 
 /** One rewritable text (module html/css or template css) + its base URL. */
@@ -78,13 +72,6 @@ export interface TemplateCssRow {
 /** Branch-overlay-resolved module text + provenance for the rewrite step. */
 export interface ModuleTextWithProvenance {
   readonly state: ModuleState;
-  readonly fromBranchSnapshot: boolean;
-  readonly liveChatBranchId: string | null;
-}
-
-/** Branch-overlay-resolved template state + provenance. */
-export interface TemplateWithProvenance {
-  readonly state: TemplateState;
   readonly fromBranchSnapshot: boolean;
   readonly liveChatBranchId: string | null;
 }
@@ -220,147 +207,4 @@ export function assembleDirectBuildUnits(
       }),
     ),
   ];
-}
-
-/**
- * Load a module's branch-latest text WITH provenance. Mirrors
- * `loadModuleStateWithBranchOverlay` but additionally reports whether the
- * state came from a branched snapshot and whether the live row is
- * main-owned — the rewrite step needs both to avoid leaking branch-derived
- * html into a main-owned live row (see import_media.ts step 4).
- *
- * Returns null when the module row doesn't exist or is soft-deleted.
- */
-export async function loadModuleTextWithBranchProvenance(
-  tx: TransactionRunner,
-  moduleId: string,
-  chatBranchId: string | null,
-): Promise<ModuleTextWithProvenance | null> {
-  const liveRows = (await tx.execute(sql`
-    SELECT slug, display_name, type, html, css, js, fields, deleted_at,
-           chat_branch_id::text AS chat_branch_id
-    FROM modules WHERE id = ${moduleId}::uuid AND deleted_at IS NULL LIMIT 1
-  `)) as unknown as Array<{
-    slug: string;
-    display_name: string;
-    type: string | null;
-    html: string;
-    css: string;
-    js: string;
-    fields: unknown;
-    deleted_at: string | Date | null;
-    chat_branch_id: string | null;
-  }>;
-  const live = liveRows[0];
-  if (!live) return null;
-
-  if (chatBranchId) {
-    const snapRows = (await tx.execute(sql`
-      SELECT ms.state
-        FROM module_snapshots ms
-        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-       WHERE ms.module_id = ${moduleId}::uuid
-         AND ss.chat_branch_id = ${chatBranchId}::uuid
-       ORDER BY ss.created_at DESC
-       LIMIT 1
-    `)) as unknown as Array<{ state: unknown }>;
-    const snap = snapRows[0];
-    if (snap !== undefined) {
-      const raw = (
-        typeof snap.state === "string" ? JSON.parse(snap.state) : snap.state
-      ) as ModuleState;
-      return {
-        // Pre-0103 branched snapshots lack `type` — same fallback as
-        // loadModuleStateWithBranchOverlay.
-        state: raw.type ? raw : { ...raw, type: raw.slug },
-        fromBranchSnapshot: true,
-        liveChatBranchId: live.chat_branch_id,
-      };
-    }
-  }
-
-  const rawFields = typeof live.fields === "string" ? JSON.parse(live.fields) : live.fields;
-  return {
-    state: {
-      schemaVersion: 1,
-      slug: live.slug,
-      displayName: live.display_name,
-      type: live.type ?? live.slug,
-      html: live.html,
-      css: live.css,
-      js: live.js,
-      fields: Array.isArray(rawFields) ? (rawFields as unknown[]) : [],
-      deletedAt: null,
-    },
-    fromBranchSnapshot: false,
-    liveChatBranchId: live.chat_branch_id,
-  };
-}
-
-/**
- * Load a template's branch-latest state WITH provenance. Branched template
- * edits (templates.update) skip the live UPDATE just like modules, so the
- * branch-latest css lives in `template_snapshots.state`.
- *
- * Returns null when the template row doesn't exist or is soft-deleted.
- */
-export async function loadTemplateWithBranchProvenance(
-  tx: TransactionRunner,
-  templateId: string,
-  chatBranchId: string | null,
-): Promise<TemplateWithProvenance | null> {
-  const liveRows = (await tx.execute(sql`
-    SELECT slug, display_name, html, css, chat_branch_id::text AS chat_branch_id
-    FROM templates WHERE id = ${templateId}::uuid AND deleted_at IS NULL LIMIT 1
-  `)) as unknown as Array<{
-    slug: string;
-    display_name: string;
-    html: string;
-    css: string;
-    chat_branch_id: string | null;
-  }>;
-  const live = liveRows[0];
-  if (!live) return null;
-
-  if (chatBranchId) {
-    const snapRows = (await tx.execute(sql`
-      SELECT ts.state
-        FROM template_snapshots ts
-        JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
-       WHERE ts.template_id = ${templateId}::uuid
-         AND ss.chat_branch_id = ${chatBranchId}::uuid
-       ORDER BY ss.created_at DESC
-       LIMIT 1
-    `)) as unknown as Array<{ state: unknown }>;
-    const snap = snapRows[0];
-    if (snap !== undefined) {
-      const raw = (
-        typeof snap.state === "string" ? JSON.parse(snap.state) : snap.state
-      ) as TemplateState;
-      return { state: raw, fromBranchSnapshot: true, liveChatBranchId: live.chat_branch_id };
-    }
-  }
-
-  const blocks = (await tx.execute(sql`
-    SELECT name, display_name, position FROM template_blocks
-    WHERE template_id = ${templateId}::uuid
-    ORDER BY position ASC
-  `)) as unknown as Array<{ name: string; display_name: string; position: number }>;
-  return {
-    state: {
-      schemaVersion: 1,
-      slug: live.slug,
-      displayName: live.display_name,
-      html: live.html,
-      css: live.css,
-      deletedAt: null,
-      blocks: blocks.map((b) => ({
-        name: b.name,
-        displayName: b.display_name,
-        position: b.position,
-      })),
-    },
-    fromBranchSnapshot: false,
-    liveChatBranchId: live.chat_branch_id,
-  };
 }
