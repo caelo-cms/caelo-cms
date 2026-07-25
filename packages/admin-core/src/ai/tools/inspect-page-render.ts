@@ -253,17 +253,52 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
       });
     }
     if (target) {
-      // Anything else is treated as a moduleId.
+      // Anything else is treated as a moduleId. Look among the page's own
+      // block modules first.
       const mod = modules.find((m) => m.moduleId === target);
-      if (!mod) {
-        return {
-          ok: false,
-          content:
-            `No module "${target}" on this page. Call inspect_page_render with NO target for the module list ` +
-            `(each entry's moduleId), or target: "composed" | "layout" | "template" | "theme".`,
-        };
+      if (mod) return okJson({ target: "module", module: mod });
+      // Not a page-block module — but the composed render ALSO includes chrome
+      // (header/footer) bound to the LAYOUT and modules on the TEMPLATE, plus
+      // the AI may hold a reusable module's id. Fetch it directly so inspecting
+      // a chrome/reusable module by id returns its body instead of a dead end.
+      const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.get", {
+        moduleId: target,
+      });
+      if (got.ok) {
+        const m = (
+          got.value as {
+            module: {
+              id: string;
+              slug: string;
+              displayName: string;
+              html: string;
+              css: string;
+              js: string;
+            };
+          }
+        ).module;
+        return okJson({
+          target: "module",
+          // Loud: this id is not one of the page's block modules — it was
+          // fetched by id, so it is layout/template chrome or a reusable module.
+          note: "not among this page's block modules — fetched by id (layout/template chrome, or a reusable module). Use target:'layout' or target:'template' for the chrome shell.",
+          module: {
+            moduleId: m.id,
+            slug: m.slug,
+            displayName: m.displayName,
+            html: m.html,
+            css: m.css,
+            js: m.js,
+          },
+        });
       }
-      return okJson({ target: "module", module: mod });
+      return {
+        ok: false,
+        content:
+          `No module "${target}" exists (not on this page, and modules.get found no such id). ` +
+          `Call inspect_page_render with NO target for this page's module list, or ` +
+          `target: "composed" | "layout" | "template" | "theme".`,
+      };
     }
 
     // ── Default — the SLIM SUMMARY (structure + sizes, no bodies). ──

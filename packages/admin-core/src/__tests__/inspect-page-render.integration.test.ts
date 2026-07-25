@@ -193,6 +193,42 @@ describe("inspect_page_render tool (v0.2.69)", () => {
     expect(modPayload.module.slug).toBe(MOD_SLUG);
     expect(modPayload.module.css).toContain("rebeccapurple");
 
+    // 6b. target:<moduleId> for a module that is NOT one of the page's block
+    //     modules (chrome lives on the layout; reusable modules live off-page).
+    //     It must resolve by id via modules.get, not dead-end — with a note.
+    const offPage = await execute(registry, adapter, systemCtx, "modules.create", {
+      slug: `${MOD_SLUG}-offpage`,
+      displayName: "Off-page Module",
+      html: '<footer class="chrome">OFFPAGE_BODY</footer>',
+      css: ".chrome{color:teal}",
+      js: "",
+    });
+    if (!offPage.ok) throw new Error(`offpage seed: ${JSON.stringify(offPage.error)}`);
+    const offPageId = (offPage.value as { moduleId: string }).moduleId;
+    const offRes = await tools.dispatch(
+      "inspect_page_render",
+      { pageId, target: offPageId },
+      aiCtx,
+      { adapter, registry },
+    );
+    expect(offRes.ok).toBe(true);
+    const offPayload = JSON.parse(offRes.content) as {
+      note?: string;
+      module: { html: string };
+    };
+    expect(offPayload.module.html).toContain("OFFPAGE_BODY");
+    expect(offPayload.note).toContain("fetched by id");
+
+    // 6c. A truly-nonexistent module id still fails cleanly (no false positive).
+    const missRes = await tools.dispatch(
+      "inspect_page_render",
+      { pageId, target: "11111111-1111-4111-8111-111111111111" },
+      aiCtx,
+      { adapter, registry },
+    );
+    expect(missRes.ok).toBe(false);
+    expect(missRes.content).toContain("no such id");
+
     // 7. target:"theme" → the token map (shape only; a fresh install may
     //    have no theme seeded).
     const themeRes = await tools.dispatch(
