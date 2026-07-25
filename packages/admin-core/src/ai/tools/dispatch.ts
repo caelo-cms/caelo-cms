@@ -86,6 +86,14 @@ export interface ToolContext {
   readonly chatSessionId?: string;
   readonly chatBranchId?: string;
   /**
+   * The provider tool-call id for THIS dispatch. Threaded so a tool that
+   * emits a client event mid-turn (screenshot_page → `request-screenshot`)
+   * can tag it with the id, letting ChatPanel key the captured image into
+   * `toolImages` by toolCallId — no 1 MB SSE round-trip of an image the
+   * client already holds.
+   */
+  readonly toolCallId?: string;
+  /**
    * P10.5 — provider + tools + humanCtx the parent's chat-runner is
    * currently using. The spawn handler reuses them when invoking
    * runChatTurn for the child. Optional: tool dispatch from outside

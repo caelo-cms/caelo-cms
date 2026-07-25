@@ -9,9 +9,14 @@
  * Run #15 proved advisory isn't enough — the ceiling was never armed and
  * a single 107-call session burned ~$19–92 against a $1.40 estimate.
  *
- * This module is the enforcement half, checked by the tool loop ONCE PER
- * ITERATION (i.e. before every provider call — the granularity issue #297
- * demands, since one turn can run 25 loops and grow 5× in per-call cost):
+ * This module is the enforcement half, checked by the tool loop TWICE PER
+ * ITERATION — before the provider call (don't START work over budget) AND
+ * after that call's tool dispatch (don't KEEP going once the just-finished
+ * call/subagents crossed the ceiling). The old before-only check let a single
+ * expensive loop (e.g. two build_page calls of ~29 modules each) run to ~1.5×
+ * the ceiling before the NEXT iteration's top re-evaluated; the post-dispatch
+ * check closes that gap (issue #297 overshoot fix). The granularity matters
+ * because one turn can run 25 loops and grow 5× in per-call cost:
  *
  *   liveSpend = DB roll-up of every RECORDED ai_calls row for the run's
  *               session set (past turns + completed subagent children)
@@ -132,9 +137,19 @@ export function budgetTripText(gate: BudgetGateState, liveSpentMicrocents: numbe
     gate.estimateHighUsd !== null
       ? `The approved estimate was $${gate.estimateLowUsd ?? 0}–$${gate.estimateHighUsd} and the ceiling was armed at ${ESTIMATE_CEILING_SAFETY_FACTOR}× its high end; real spend has now reached that ceiling.`
       : "Real spend has reached the budget the operator set for this run.";
+  // Honesty clause (issue #297 overshoot fix): the gate pauses the moment
+  // spend crosses the ceiling, but it cannot interrupt a provider (or
+  // subagent) call that is already generating — so the final call of the run
+  // can push spend a little past the budget. Surfaced only when it actually
+  // did, so the operator understands "spent $7.19 of $4.79" is expected, not a
+  // gate failure.
+  const overshootLine =
+    liveSpentMicrocents > gate.ceilingMicrocents
+      ? ` Spend edged past the ceiling because a call already generating when it was reached can't be stopped mid-response.`
+      : "";
   return (
     `Cost ceiling reached — pausing this import run cleanly. Spent ~${money(liveSpentMicrocents)} ` +
-    `of the ${money(gate.ceilingMicrocents)} budget. ${estimateLine} Nothing is lost: finished ` +
+    `of the ${money(gate.ceilingMicrocents)} budget.${overshootLine} ${estimateLine} Nothing is lost: finished ` +
     `work is saved and the run resumes where it stopped. To continue, set a new ceiling ` +
     `(tell the AI a new amount — it records it with set_migration_budget — or use ` +
     `/security/import) and then say "continue". To stop here, ask for the run report ` +

@@ -4,8 +4,10 @@ import { describe, expect, it } from "bun:test";
 import {
   buildHreflangLinks,
   computeContentHash,
+  isHomeSlug,
   type LocaleConfig,
   lintLocaleConfig,
+  pageIsLocaleHome,
   resolveLocaleUrl,
 } from "./i18n.js";
 
@@ -92,6 +94,54 @@ describe("resolveLocaleUrl", () => {
     expect(resolveLocaleUrl(DE_SUBDOMAIN, "home", "https://example.com")).toBe(
       "https://de.example.com/",
     );
+  });
+
+  it("explicit isHomePage collapses a NON-magic slug to the locale root (0184)", () => {
+    // slug "en" is a normal nested page without the designation...
+    expect(resolveLocaleUrl(ENG, "en", "https://example.com")).toBe("https://example.com/en/");
+    // ...and the locale root once designated, per url strategy.
+    expect(resolveLocaleUrl(ENG, "en", "https://example.com", "directory", true)).toBe(
+      "https://example.com/",
+    );
+    expect(resolveLocaleUrl(DE_SUBDIR, "en", "https://example.com", "directory", true)).toBe(
+      "https://example.com/de/",
+    );
+    expect(resolveLocaleUrl(DE_SUBDOMAIN, "en", "https://example.com", "directory", true)).toBe(
+      "https://de.example.com/",
+    );
+  });
+});
+
+describe("isHomeSlug", () => {
+  it("recognises the magic-slug sentinels regardless of surrounding slashes", () => {
+    for (const s of ["", "home", "index", "/", "/home/", "/index"]) {
+      expect(isHomeSlug(s)).toBe(true);
+    }
+  });
+
+  it("treats any other slug as non-home", () => {
+    for (const s of ["about", "en", "blog/post", "homepage"]) {
+      expect(isHomeSlug(s)).toBe(false);
+    }
+  });
+});
+
+describe("pageIsLocaleHome (0184 shared predicate)", () => {
+  const PAGE = "11111111-1111-4111-8111-111111111111";
+  const OTHER = "22222222-2222-4222-8222-222222222222";
+
+  it("is true when the page IS the locale's designated home_page_id", () => {
+    expect(pageIsLocaleHome(PAGE, "en", PAGE)).toBe(true);
+  });
+
+  it("is true for a magic slug even with no designation", () => {
+    expect(pageIsLocaleHome(PAGE, "home", null)).toBe(true);
+    expect(pageIsLocaleHome(PAGE, "index", undefined)).toBe(true);
+  });
+
+  it("is false for a non-magic slug that isn't the designated page", () => {
+    expect(pageIsLocaleHome(PAGE, "en", OTHER)).toBe(false);
+    expect(pageIsLocaleHome(PAGE, "about", null)).toBe(false);
   });
 });
 

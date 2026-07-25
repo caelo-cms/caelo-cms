@@ -34,11 +34,8 @@ interface ImportPage {
     displayName: string;
   }>;
   proposedThemeTokens: Record<string, string>;
-  /** issue #198 — persisted capture keys (side-by-side rendering). */
+  /** issue #198 — persisted source capture key. */
   screenshotObjectKey: string | null;
-  stagedScreenshotObjectKey: string | null;
-  diffStatus: "pass" | "warn" | "fail" | null;
-  diffPct: number | null;
   acceptedPageId: string | null;
   rejectedAt: string | null;
 }
@@ -98,12 +95,10 @@ export const actions: Actions = {
         before.value as {
           pages: {
             screenshotObjectKey: string | null;
-            stagedScreenshotObjectKey: string | null;
           }[];
         }
       ).pages) {
         if (pg.screenshotObjectKey) keys.push(pg.screenshotObjectKey);
-        if (pg.stagedScreenshotObjectKey) keys.push(pg.stagedScreenshotObjectKey);
       }
     }
     const r = await execute(registry, adapter, locals.ctx, "imports.cleanup_run", {

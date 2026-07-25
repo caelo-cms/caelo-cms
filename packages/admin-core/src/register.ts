@@ -60,6 +60,11 @@ import {
   setPlacementContentOp,
 } from "./ops/content/content-instances.js";
 import {
+  deleteContentInstancesManyOp,
+  setContentInstanceValuesManyOp,
+} from "./ops/content/content-instances-bulk.js";
+import { setHomePageOp } from "./ops/content/home-page.js";
+import {
   executeLayoutProposalOp,
   listPendingLayoutProposalsOp,
   proposeLayoutCreateOp,
@@ -193,10 +198,9 @@ import {
   setRateLimitProfileOp,
 } from "./ops/gateway.js";
 import { addGenesisDraftOp, listGenesisDraftsOp, selectGenesisDraftOp } from "./ops/genesis.js";
-import { migrateImportMediaOp } from "./ops/import_media.js";
+import { importMediaUrlsOp, listPageAssetsOp } from "./ops/import_media.js";
 import {
   acceptImportedPageOp,
-  acknowledgeImportPageDiffOp,
   addImportPageNotesOp,
   assignImportPageClusterOp,
   checkImportPageInventoryOp,
@@ -205,7 +209,7 @@ import {
   createImportRunOp,
   detectImportBoilerplateOp,
   executeImportProposalOp,
-  getImportPageFidelityInputsOp,
+  getImportPageGistOp,
   getImportPageScreenshotKeysOp,
   getImportRunOp,
   getImportRunReportOp,
@@ -223,7 +227,7 @@ import {
   setCostCeilingOp,
   setRunDesignTokensOp,
   updateImportRunStatusOp,
-  updatePageDiffOp,
+  updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
 import {
@@ -258,6 +262,7 @@ import {
   mediaListUsagesOp,
   mediaRecentForAiOp,
   mediaRecordUsageOp,
+  mediaSetSourceOp,
   mediaUpdateAltOp,
   mediaUploadOp,
   proposeAltOp,
@@ -266,6 +271,7 @@ import {
   setMediaCdnOp,
 } from "./ops/media.js";
 import { regenerateMediaVariantsOp } from "./ops/media_regenerate.js";
+import { mediaSetSourceManyOp, mediaUpdateAltManyOp } from "./ops/media-bulk.js";
 import { aggregateNotificationsOp } from "./ops/notifications.js";
 import {
   anyBootstrapTokenIssuedOp,
@@ -316,6 +322,7 @@ import {
   aggregateAiCallsOp,
   aggregatePluginAiSpendOp,
   setPluginAiCostCapOp,
+  spendWindowOp,
 } from "./ops/security/ai_calls.js";
 import { aggregateAuditByOpPrefixOp } from "./ops/security/ai_calls_by_op.js";
 import {
@@ -352,6 +359,7 @@ import {
   siteDefaultsGetSeoOp,
   siteDefaultsSetSeoOp,
 } from "./ops/seo.js";
+import { pagesSeoSetManyOp } from "./ops/seo-bulk.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/site_defaults.js";
 import { getSiteSettingsOp, setSiteSettingsOp } from "./ops/site_settings.js";
 import {
@@ -549,6 +557,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setPageModulesOp);
   // issue #299 — bulk-first build path (CLAUDE.md §11): one call per page.
   registry.register(buildPageOp);
+  // 0184 — explicit per-locale homepage designation (locales.home_page_id).
+  registry.register(setHomePageOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
   registry.register(setPageModuleContentManyOp);
@@ -559,6 +569,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createContentInstancesManyOp);
   registry.register(setContentInstanceValuesOp);
   registry.register(deleteContentInstanceOp);
+  // Bulk `_many` variants via the DRY defineBulkOp factory (CLAUDE.md §11).
+  registry.register(setContentInstanceValuesManyOp);
+  registry.register(deleteContentInstancesManyOp);
   registry.register(setPlacementContentOp);
   registry.register(forkPlacementContentOp);
   registry.register(duplicatePageOp);
@@ -642,6 +655,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(aggregateAiCallsOp);
   registry.register(aggregatePluginAiSpendOp);
   registry.register(setPluginAiCostCapOp);
+  // Lightweight windowed spend total for the AppShell top-bar readout.
+  registry.register(spendWindowOp);
   // v0.2.40 — per-domain AI activity attribution. Counts AI-attributed
   // audit_events per op-prefix so the operator can see where the AI
   // is spending its time (and which domains have high failure rates,
@@ -800,8 +815,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(assignImportPageClusterOp);
   // issue #198 — per-page screenshot keys (serve route + AI tool).
   registry.register(getImportPageScreenshotKeysOp);
-  // issue #250 (WS4) — fidelity verdict inputs (source vs rebuilt).
-  registry.register(getImportPageFidelityInputsOp);
+  registry.register(getImportPageGistOp);
   // issue #197 — rebuild notes + run report.
   registry.register(addImportPageNotesOp);
   registry.register(getImportRunReportOp);
@@ -821,19 +835,22 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeImportProposalOp);
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);
-  registry.register(updatePageDiffOp);
+  registry.register(updatePageCaptureOp);
   // issue #28 — run-scoped error/warning ledger.
   registry.register(logImportRunEventOp);
   registry.register(logImportRunEventsOp);
   // issue #247 — run-level computed-style token aggregate.
   registry.register(setRunDesignTokensOp);
-  registry.register(acknowledgeImportPageDiffOp);
   registry.register(writeExtractedPagesOp);
   registry.register(acceptImportedPageOp);
   registry.register(cleanupImportRunOp);
   registry.register(composeFromImportRunOp);
-  // issue #249 (WS3) — post-compose media migration.
-  registry.register(migrateImportMediaOp);
+  // Explicit, URL-driven media import (replaces the scan-and-download
+  // migrate_media). The AI names the exact source asset URLs to import.
+  registry.register(importMediaUrlsOp);
+  // Complete, searchable asset inventory of a crawled run's stored HTML —
+  // the full list behind inspect_external_page's top-20 `images` glance.
+  registry.register(listPageAssetsOp);
   // P13 — gateway hardening surface.
   registry.register(getGatewaySettingsOp);
   registry.register(setGatewaySettingsOp);
@@ -890,6 +907,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaListOp);
   registry.register(mediaGetOp);
   registry.register(mediaUpdateAltOp);
+  registry.register(mediaSetSourceOp);
+  // Bulk `_many` variants via the DRY defineBulkOp factory (CLAUDE.md §11).
+  registry.register(mediaUpdateAltManyOp);
+  registry.register(mediaSetSourceManyOp);
   registry.register(mediaDeleteOp);
   registry.register(mediaDeleteManyOp);
   registry.register(mediaRecordUsageOp);
@@ -911,6 +932,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P8 — SEO sidecar + slug-change link rewriter + site SEO defaults.
   registry.register(pagesSeoGetOp);
   registry.register(pagesSeoSetOp);
+  // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
+  registry.register(pagesSeoSetManyOp);
   registry.register(pagesSeoAutofillOp);
   registry.register(pagesSeoOptimizeOp);
   registry.register(pagesSeoOptimizeManyOp);

@@ -88,11 +88,14 @@ export type BuildPageContent = z.infer<typeof buildPageContentSchema>;
  *     `kind`, `type`, `css`, `js`). The op creates the module through the
  *     same `modules.create` path (extractor fallback, type derivation,
  *     snapshot) the singular tool uses.
- *   - **Place mode** — `moduleId` of an existing module; authoring keys
- *     must be absent.
+ *   - **Place mode** — `moduleId` of an existing module. Placement-only:
+ *     extra authoring keys are TOLERATED (§1A/§11 — a placement that can
+ *     succeed must not fail over an extra field) but NOT applied; the op
+ *     surfaces an info naming any carried field whose value differs from the
+ *     module's stored one, pointing at edit_module (§2 — no silent drop).
  *
  * The element-level superRefine reports issues WITH the element's array
- * index in the Zod path, so a mixed entry fails as `modules[3]: …`.
+ * index in the Zod path, so a mode error fails as `modules[3]: …`.
  */
 export const buildPageModuleSchema = z
   .object({
@@ -156,30 +159,15 @@ export const buildPageModuleSchema = z
           "Pass `blockName` to place it on the page instead.",
       });
     }
-    const authoringKeys = (
-      [
-        "displayName",
-        "html",
-        "css",
-        "js",
-        "fields",
-        "description",
-        "kind",
-        "type",
-        "bindThemeLiterals",
-      ] as const
-    ).filter((k) => entry[k] !== undefined);
-    if (entry.moduleId !== undefined) {
-      if (authoringKeys.length > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            `moduleId places an EXISTING module — drop ${authoringKeys.join(", ")}. ` +
-            "To change a shared module's structure use edit_module; to mint a new one omit moduleId.",
-        });
-      }
-      return;
-    }
+    // `moduleId` is PLACEMENT-ONLY: a placement that CAN succeed must never
+    // fail over an extra field (§1A/§11), so we do NOT reject a moduleId entry
+    // that also carries authoring fields. But those fields are NOT applied here
+    // (build_page places; it does not re-author a shared module). To avoid a
+    // SILENT dropped change (§2), the HANDLER surfaces an INFO in the result
+    // naming any ignored authoring field whose value DIFFERS from the module's
+    // stored one, and points at edit_module. The schema can't do that check (no
+    // DB), so it just allows the entry through.
+    if (entry.moduleId !== undefined) return;
     if (entry.displayName === undefined || entry.html === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -209,6 +197,16 @@ export const buildPageTargetSchema = z
     locale: localeSchema.optional(),
     templateId: z.string().uuid().optional(),
     status: pageStatusSchema.optional(),
+    /**
+     * Migration linkage (issue #278 flow): the `import_pages` row this
+     * page rebuilds. The op stamps `import_pages.accepted_page_id` with
+     * the built page's id so fidelity / inventory / media-migration reads
+     * resolve via that pointer regardless of slug. It ALSO makes the
+     * build idempotent — a second build_page for the same importPageId
+     * REBUILDS the already-linked page instead of minting a duplicate.
+     * Compatible with either target shape (create OR existing pageId).
+     */
+    importPageId: z.string().uuid().optional(),
   })
   .strict()
   .superRefine((page, ctx) => {

@@ -32,11 +32,15 @@ const findMediaInput = z
 
 interface MediaRow {
   id: string;
+  slug: string;
   mime: string;
   alt: string;
   width: number | null;
   height: number | null;
   originalName: string;
+  sourceKind: string | null;
+  sourceDetail: string | null;
+  license: string | null;
   variants: { variant: string }[];
 }
 
@@ -45,7 +49,7 @@ export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, Me
   description:
     "Search the media library (TOON rows: name, mime, dims, alt, url). `filter` matches alt/filename server-side; optional `mime`; `limit`/`offset`/`full` as usual. " +
     "The `url` column always points at a variant that EXISTS on the asset — use it verbatim in <img src> via edit_module; do NOT rewrite the variant segment. " +
-    "Use when the user references an asset by description and it isn't in the ## Media block. If nothing matches, ask the user to upload via /content/media.",
+    "Use when the user references an asset by description and it isn't in the ## Media block. This searches the EXISTING Caelo library only — during a site migration it is empty, so import source-site images with import_media_from_urls instead of this tool.",
   opName: "media.list",
   input: findMediaInput,
   buildOpInput: (
@@ -68,8 +72,16 @@ export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, Me
     { key: "alt", value: (a) => a.alt },
     {
       key: "url",
-      value: (a) => buildMediaUrl(a.id, pickAiImageVariant(a.variants.map((v) => v.variant))),
+      value: (a) => buildMediaUrl(a.slug, pickAiImageVariant(a.variants.map((v) => v.variant))),
     },
+    // Media provenance (0181) — where it came from + licence, when known.
+    {
+      key: "source",
+      value: (a) =>
+        a.sourceKind ? `${a.sourceKind}${a.sourceDetail ? `:${a.sourceDetail}` : ""}` : "",
+    },
+    { key: "license", value: (a) => a.license ?? "" },
   ],
-  emptyMessage: "No media matched. Ask the user to upload the asset via /content/media.",
+  emptyMessage:
+    "No media matched — this searches the EXISTING Caelo library. During a site migration the library is empty: import source-site images with import_media_from_urls (name the exact URLs from inspect_external_page's image inventory), not this tool. For a genuinely new asset the operator can upload via /content/media.",
 });

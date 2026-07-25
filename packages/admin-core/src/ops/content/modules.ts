@@ -32,6 +32,33 @@ import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
 
 /**
+ * Resolve every media reference in an HTML string to a set of asset ids.
+ * `extractMediaRefs` yields slug refs (current embeds) and legacy UUID id
+ * refs; the slug refs are batch-resolved to ids in one query so the
+ * usage-count diff below operates purely on ids.
+ */
+async function resolveHtmlToAssetIds(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  html: string,
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const slugs = new Set<string>();
+  for (const ref of extractMediaRefs(html)) {
+    if (ref.isSlug) slugs.add(ref.ref);
+    else ids.add(ref.ref);
+  }
+  if (slugs.size > 0) {
+    const slugFrags = [...slugs].map((s) => sql`${s}`);
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id FROM media_assets
+      WHERE slug IN (${sql.join(slugFrags, sql`, `)}) AND deleted_at IS NULL
+    `)) as unknown as { id: string }[];
+    for (const r of rows) ids.add(r.id);
+  }
+  return ids;
+}
+
+/**
  * Diff media references between two HTML strings and apply usage-count
  * deltas. Called from create / update / delete handlers so the AI's
  * `## Media` system-prompt block surfaces frequently-used assets.
@@ -41,8 +68,8 @@ async function applyMediaUsageDelta(
   prevHtml: string,
   nextHtml: string,
 ): Promise<void> {
-  const prev = new Set(extractMediaRefs(prevHtml).map((r) => r.assetId));
-  const next = new Set(extractMediaRefs(nextHtml).map((r) => r.assetId));
+  const prev = await resolveHtmlToAssetIds(tx, prevHtml);
+  const next = await resolveHtmlToAssetIds(tx, nextHtml);
   const deltas = new Map<string, number>();
   for (const id of next) if (!prev.has(id)) deltas.set(id, (deltas.get(id) ?? 0) + 1);
   for (const id of prev) if (!next.has(id)) deltas.set(id, (deltas.get(id) ?? 0) - 1);

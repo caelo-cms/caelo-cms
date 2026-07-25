@@ -1,103 +1,59 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #249 (WS3) — `imports.migrate_media`. A migration is not done
- * while the source host still serves the assets: kill the old server
- * and the "migrated" site loses every image. This op runs AFTER the
- * pages exist (either `imports.compose_from_run` OR the #278 homepage-first
- * direct-build flow) and, in one boundary:
+ * `imports.import_media_urls` — EXPLICIT, URL-driven media import.
  *
- *   1. reads the run's composed module bodies (page modules via
- *      import_pages.accepted_page_id, plus the layout-bound chrome
- *      modules `imported-<runid8>-header/footer`) and the cluster
- *      templates' replayed CSS. When that compose linkage is empty —
- *      the #278 direct-build flow creates pages via `pages.create`
- *      without an `import_pages.accepted_page_id` and names its chrome
- *      differently — it FALLS BACK to the migration-built site:
- *      every placed page module, the layout-bound chrome (where
- *      the header logo lives), and non-empty template CSS. The fallback
- *      is BRANCH-AWARE (issue #302): chat-built pages keep their
- *      placements in branched page_layout_snapshots (never in live
- *      page_modules) and their module text in branched module_snapshots,
- *      so collection goes through the branch overlay — and rewrites emit
- *      a branched snapshot so chat.publish ships the rewritten text,
- *   2. discovers every external asset reference (img src/srcset,
- *      source/video/audio src+poster, CSS url(...) incl. inline
- *      styles),
- *   3. downloads them through the site-importer SSRF guard with hard
- *      caps (15 MB/file, 250 MB/run, 400 assets/run, 5 min wall
- *      clock), content-type allowlist (images/fonts/pdf/svg — SVG is
- *      script-sanitised by the media pipeline),
- *   4. stores them via the standard media pipeline + storage adapter,
- *      deduped by content sha256 against the whole library,
- *   5. rewrites the module HTML/CSS + template CSS in place,
- *   6. returns a loud report — every unmigrated reference appears in
- *      `skipped` with a reason (CLAUDE.md §2: nothing silently
- *      dropped). Idempotent: refs already pointing at `/_caelo/...`
- *      are counted as `alreadyLocal` and left alone.
+ * The AI names the exact source-site asset URLs it wants in the media
+ * library (typically from `inspect_external_page`'s image inventory) and
+ * this op downloads each through the site-importer SSRF guard, re-encodes
+ * it through the standard media pipeline, and stores it — returning the
+ * Caelo media URL the AI references in `build_page`.
+ *
+ * This replaces the former scan-and-download `imports.migrate_media`,
+ * which pulled media by discovering references in already-built pages.
+ * That model coupled media import to a compose/build linkage that broke
+ * across build flows (issues #278, #302) and read a "0 assets" result as
+ * a silent success. Explicit URLs make the blast radius visible: the AI
+ * decides what to import, and every URL that could not be imported comes
+ * back in `skipped` with a reason (CLAUDE.md §2 — nothing silently
+ * dropped).
  *
  * Network I/O inside a Query-API handler is deliberate here (the
- * neighbouring media ops keep the chokepoint DB-only): the rewrite
- * must be atomic with the downloads' metadata rows, and the op is the
- * only boundary that sees both. The caps above bound how long the tx
- * can stay open.
+ * neighbouring media ops keep the chokepoint DB-only): the download's
+ * bytes and its media_assets metadata row must land in the same tx. The
+ * per-file + per-call caps below bound how long the tx can stay open.
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   err,
+  MEDIA_HARD_LIMIT_BYTES,
+  MEDIA_SIZE_CAPS,
   type MediaMime,
   type MediaStorageAdapter,
   ok,
 } from "@caelo-cms/shared";
-import {
-  isExternalUrlBlockedError,
-  type ProposedModuleBlock,
-  rebuiltHeaderHasLogoRef,
-  safeExternalFetchBinary,
-  sourceHeaderHasLogoImage,
-} from "@caelo-cms/site-importer";
+import { isExternalUrlBlockedError, safeExternalFetchBinary } from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import {
-  assembleDirectBuildUnits,
-  loadModuleTextWithBranchProvenance,
-  loadTemplateWithBranchProvenance,
-  type ModuleTextWithProvenance,
-  resolveDirectBuildModuleRows,
-  type TemplateCssRow,
-  type TextUnit,
-} from "../media/direct-build-units.js";
-import {
-  type DiscoveredAssetRef,
   discoverAssetRefs,
   magicBytesMatchMime,
   normalizeAssetMime,
-  rewriteAssetRefs,
 } from "../media/import-asset-urls.js";
 import { runMediaPipeline } from "../media/pipeline.js";
 import { getMediaStorage, getMediaStorageProvider } from "../media/storage.js";
-import type { SnapshotEntity } from "../snapshots/index.js";
-import { emitSnapshot, loadPageLayoutStateWithBranchOverlay } from "../snapshots/index.js";
-import { jsonbParam } from "../sql-helpers.js";
-import { mediaRecordUsageOp, mediaUploadOp } from "./media.js";
+import { mediaUploadOp } from "./media.js";
 
-// Re-exported so existing consumers (tests, tools) keep their import path.
-export {
-  assembleDirectBuildUnits,
-  type ModuleTextRow,
-  resolveDirectBuildModuleRows,
-  type TemplateCssRow,
-  type TextUnit,
-} from "../media/direct-build-units.js";
-
-const PER_FILE_MAX_BYTES = 15 * 1024 * 1024;
-const PER_RUN_MAX_BYTES = 250 * 1024 * 1024;
-const PER_RUN_MAX_ASSETS = 400;
+// Fetch ceiling = the shared media hard limit (50 MB). Per-mime caps
+// (MEDIA_SIZE_CAPS) narrow this further downstream so a 40 MB image
+// can't slip through the raised video-sized fetch cap.
+const PER_FILE_MAX_BYTES = MEDIA_HARD_LIMIT_BYTES;
+const PER_CALL_MAX_BYTES = 250 * 1024 * 1024;
 const PER_FILE_TIMEOUT_MS = 20_000;
-const PER_RUN_TIME_BUDGET_MS = 5 * 60_000;
+const PER_CALL_TIME_BUDGET_MS = 5 * 60_000;
 
 /**
  * Same env-var exemption list the crawler/orchestrator honour
@@ -132,115 +88,54 @@ function originalNameFromUrl(url: string): string {
   }
 }
 
+const importedEntry = z.object({
+  sourceUrl: z.string(),
+  mediaId: z.string(),
+  /** The asset's meaningful, URL-safe slug (public URL segment). */
+  slug: z.string(),
+  /** The Caelo media path to reference in <img src> (e.g. /_caelo/media/<slug>). */
+  mediaUrl: z.string(),
+});
 const skippedEntry = z.object({ url: z.string(), reason: z.string() });
 
-/**
- * issue #302 — LOUD telemetry: per-source unit counts, reported in the op
- * output, in an `import_run_events` info row, AND on the server console
- * (the console line survives a DB reset, which is exactly what erased the
- * run-15 evidence).
- */
-const unitsBySourceShape = z.object({
-  /** Compose linkage: page modules via import_pages.accepted_page_id. */
-  composePageModules: z.number().int(),
-  /** Compose linkage: `imported-<runid8>-header/footer` chrome modules. */
-  composeChrome: z.number().int(),
-  /** Compose linkage: template CSS via import_pages join. */
-  composeTemplates: z.number().int(),
-  /** Direct-build fallback: modules placed on built pages (branch-aware). */
-  directPageModules: z.number().int(),
-  /** Direct-build fallback: layout-bound chrome via layout_modules. */
-  directChrome: z.number().int(),
-  /** Direct-build fallback: non-empty template CSS on built pages. */
-  directTemplates: z.number().int(),
+/** One asset to import: its source URL + an optional meaningful label. */
+const importAssetInput = z.object({
+  /** The exact absolute source-site asset URL to download. */
+  url: z.string().url(),
+  /**
+   * Short, meaningful, human label for the asset (e.g. "SearchVIU logo",
+   * "hero background"). Becomes the public media slug (`/_caelo/media/<slug>`);
+   * the UUID id stays internal. Optional — falls back to the URL filename.
+   */
+  name: z.string().max(200).optional(),
 });
-export type UnitsBySource = z.infer<typeof unitsBySourceShape>;
 
-/**
- * Append a media-phase event to the run ledger inside the op's own tx —
- * same direct-INSERT shape as `detectRedrawnLogo` below (going through
- * `imports.log_event`'s handler would add a second audit row per event).
- */
-async function logMediaRunEvent(
-  tx: TransactionRunner,
-  runId: string,
-  severity: "info" | "warning",
-  message: string,
-  detail: unknown,
-): Promise<void> {
-  await tx.execute(sql`
-    INSERT INTO import_run_events (run_id, severity, phase, message, detail)
-    VALUES (${runId}::uuid, ${severity}, 'media', ${message}, ${jsonbParam(detail)})
-  `);
-}
-
-export const migrateImportMediaOp = defineOperation({
-  name: "imports.migrate_media",
+export const importMediaUrlsOp = defineOperation({
+  name: "imports.import_media_urls",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
     .object({
-      runId: z.string().uuid(),
       /**
-       * Optional scope for the DIRECT-BUILD fallback (issue #278): restrict
-       * the page-module + template-CSS collection to these built page ids.
-       * Omitted → site-wide (the safe default, since a migration runs on a
-       * fresh site where every page is the migration's). Ignored on the
-       * compose path, which keys off the run's `import_pages` linkage.
+       * The exact source-site assets to import (max 50 per call), each with
+       * an optional meaningful `name` that becomes the asset's public slug.
        */
-      pageIds: z.array(z.string().uuid()).optional(),
+      assets: z.array(importAssetInput).min(1).max(50),
+      /**
+       * Optional migration-run id, recorded for provenance/audit. The
+       * import itself does not depend on a run — explicit URLs stand on
+       * their own — so it is nullable/optional.
+       */
+      runId: z.string().uuid().nullable().optional(),
     })
     .strict(),
   output: z.object({
-    /** Assets downloaded + inserted into the media library. */
-    migrated: z.number().int(),
-    migratedBytes: z.number().int(),
-    /** URLs whose bytes already existed in the library (sha256 dedup). */
-    dedupedExisting: z.number().int(),
-    /** Refs already pointing at Caelo media — idempotent re-runs. */
-    alreadyLocal: z.number().int(),
-    modulesRewritten: z.number().int(),
-    templatesRewritten: z.number().int(),
-    /** Every reference that could NOT be migrated, with the reason. */
+    /** Assets that now live in the media library, with the URL to reference. */
+    imported: z.array(importedEntry),
+    /** Every URL that could NOT be imported, each with a reason. */
     skipped: z.array(skippedEntry),
-    /**
-     * issue #302 — where the rewritable units came from, per source. The
-     * AI tool surfaces these counts so a "0 assets migrated" result is
-     * diagnosable in the same turn instead of reading as a silent ok.
-     */
-    unitsBySource: unitsBySourceShape,
-    /**
-     * Set when ZERO rewritable units were found (with likely causes).
-     * The run continues to a zero-count success — the warning is the loud
-     * part; a HandlerError here would cost a full error→analyze→retry
-     * round-trip (#307 W4) without being more actionable.
-     */
-    unitsWarning: z.string().nullable(),
-    /**
-     * Logo-preservation guardrail: set when the source homepage header
-     * carried a real logo image but the rebuilt chrome header references
-     * none (no Caelo-media <img>, no {{theme_logo_url}}, no bound theme
-     * logo asset) — i.e. the logo was hand-authored as a text/CSS
-     * wordmark instead of imported. The message is also appended to the
-     * run's error/warning ledger so the closing report surfaces it.
-     * `null` when the logo was preserved, or the source had no logo image.
-     */
-    logoWarning: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
-    const runRows = (await tx.execute(sql`
-      SELECT id::text AS id, source_url FROM import_runs
-      WHERE id = ${input.runId}::uuid LIMIT 1
-    `)) as unknown as Array<{ id: string; source_url: string }>;
-    const run = runRows[0];
-    if (!run) {
-      return err({
-        kind: "HandlerError",
-        operation: "imports.migrate_media",
-        message: "import run not found — list runs with imports.list for valid ids",
-      });
-    }
-
     // Fail loudly BEFORE any network work when the storage adapter is
     // not wired (no-fallbacks pre-1.0).
     let storage: MediaStorageAdapter | null = null;
@@ -253,333 +148,39 @@ export const migrateImportMediaOp = defineOperation({
     if (storage === null) {
       return err({
         kind: "HandlerError",
-        operation: "imports.migrate_media",
+        operation: "imports.import_media_urls",
         message: storageError,
       });
     }
     // Narrowed non-null view for the persist closure below.
     const mediaStorage = storage;
 
-    // ------------------------------------------------------------------
-    // 1. Collect the run's rewritable texts.
-    // ------------------------------------------------------------------
-    const moduleRows = (await tx.execute(sql`
-      SELECT DISTINCT m.id::text AS id, m.html, m.css, ip.source_url
-      FROM modules m
-      JOIN page_modules pm ON pm.module_id = m.id
-      JOIN import_pages ip ON ip.accepted_page_id = pm.page_id
-      WHERE ip.run_id = ${input.runId}::uuid AND m.deleted_at IS NULL
-    `)) as unknown as Array<{ id: string; html: string; css: string; source_url: string }>;
-
-    // Chrome binds at the layout (issue #253), so it never appears in
-    // page_modules — address it by its deterministic slug.
-    const chromeRows = (await tx.execute(sql`
-      SELECT id::text AS id, html, css FROM modules
-      WHERE slug IN (${`imported-${input.runId.slice(0, 8)}-header`},
-                     ${`imported-${input.runId.slice(0, 8)}-footer`})
-        AND deleted_at IS NULL
-    `)) as unknown as Array<{ id: string; html: string; css: string }>;
-
-    const templateRows = (await tx.execute(sql`
-      SELECT DISTINCT t.id::text AS id, t.css
-      FROM templates t
-      JOIN pages p ON p.template_id = t.id
-      JOIN import_pages ip ON ip.accepted_page_id = p.id
-      WHERE ip.run_id = ${input.runId}::uuid AND t.deleted_at IS NULL AND t.css <> ''
-    `)) as unknown as Array<{ id: string; css: string }>;
-
-    // Dedupe modules by id — a module placed on several of the run's
-    // pages (or a chrome module that also shows up via page_modules on
-    // a legacy pre-#253 compose) must be rewritten and usage-counted
-    // exactly once. First occurrence wins; page rows come first so the
-    // page's own source_url stays the resolution base.
-    const moduleUnitsById = new Map<string, TextUnit>();
-    for (const m of moduleRows) {
-      if (!moduleUnitsById.has(m.id)) {
-        moduleUnitsById.set(m.id, {
-          kind: "module",
-          id: m.id,
-          html: m.html,
-          css: m.css,
-          baseUrl: m.source_url,
-        });
-      }
-    }
-    for (const m of chromeRows) {
-      if (!moduleUnitsById.has(m.id)) {
-        moduleUnitsById.set(m.id, {
-          kind: "module",
-          id: m.id,
-          html: m.html,
-          css: m.css,
-          baseUrl: run.source_url,
-        });
-      }
-    }
-    let units: TextUnit[] = [
-      ...moduleUnitsById.values(),
-      ...templateRows.map((t) => ({
-        kind: "template" as const,
-        id: t.id,
-        html: "",
-        css: t.css,
-        baseUrl: run.source_url,
-      })),
-    ];
-
-    const branchId = ctx.chatBranchId ?? null;
-    const unitsBySource: UnitsBySource = {
-      composePageModules: moduleRows.length,
-      composeChrome: chromeRows.length,
-      composeTemplates: templateRows.length,
-      directPageModules: 0,
-      directChrome: 0,
-      directTemplates: 0,
-    };
-
-    // Direct-build fallback (issue #278). The homepage-first flow builds
-    // pages straight through `pages.create` and binds chrome via
-    // `layout_modules`, so NONE of the three compose-keyed queries above
-    // match (no `import_pages.accepted_page_id`, chrome named differently).
-    //
-    // issue #302 — the fallback is BRANCH-AWARE. A chat-run migration
-    // creates its pages on the chat's preview branch, and branched
-    // `pages.set_modules` NEVER writes live `page_modules` rows — the
-    // placements exist only as branched `page_layout_snapshots`. The
-    // pre-#302 fallback joined live `page_modules` directly and therefore
-    // found ZERO page-module units for every chat-built page (run #15:
-    // media_assets n_tup_ins=0 across the whole run). Placements are now
-    // resolved through the branch overlay, module/template text through
-    // the branch-latest snapshot state.
-    //
-    // A migration runs on a fresh site, so site-wide is safe;
-    // `input.pageIds` narrows it when a caller wants to.
-    if (units.length === 0) {
-      // Zod validated each id as a UUID, so the raw ARRAY literal is
-      // injection-safe (same pattern as imports.reassign_cluster /
-      // pages.delete_many). `sql.raw("")` is a no-op predicate.
-      const pageFilter =
-        input.pageIds && input.pageIds.length > 0
-          ? sql`AND p.id = ANY(${sql.raw(
-              `ARRAY[${input.pageIds.map((id) => `'${id}'::uuid`).join(",")}]`,
-            )})`
-          : sql.raw("");
-      // Branch visibility (mirrors branchVisibilityFilter, alias-qualified):
-      // main rows + rows branched to THIS chat. Without a branch context,
-      // main-only — another chat's unpublished pages are not ours to touch.
-      const pageBranchFilter = branchId
-        ? sql` AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
-        : sql` AND p.chat_branch_id IS NULL`;
-      const templateBranchFilter = branchId
-        ? sql` AND (t.chat_branch_id IS NULL OR t.chat_branch_id = ${branchId}::uuid)`
-        : sql` AND t.chat_branch_id IS NULL`;
-
-      const fbPageRows = (await tx.execute(sql`
-        SELECT p.id::text AS id
-        FROM pages p
-        WHERE p.deleted_at IS NULL ${pageBranchFilter} ${pageFilter}
-      `)) as unknown as Array<{ id: string }>;
-
-      // Placements per page, branch-overlay first: branched runs read the
-      // latest page_layout_snapshot (live page_modules is empty for them);
-      // live runs fall through to the live page_modules reader.
-      const layoutStatesByPage: Array<{
-        pageId: string;
-        state: Awaited<ReturnType<typeof loadPageLayoutStateWithBranchOverlay>>;
-      }> = [];
-      for (const p of fbPageRows) {
-        layoutStatesByPage.push({
-          pageId: p.id,
-          state: await loadPageLayoutStateWithBranchOverlay(tx, p.id, branchId),
-        });
-      }
-
-      // Chrome binds at the layout (issue #253) and `layout_modules.set`
-      // writes LIVE rows even in branched chats, so the join holds for
-      // both flows. This is where the header LOGO <img> lives.
-      const fbChromeIdRows = (await tx.execute(sql`
-        SELECT DISTINCT lm.module_id::text AS id
-        FROM layout_modules lm
-        JOIN templates t ON t.layout_id = lm.layout_id
-        JOIN pages p ON p.template_id = t.id
-        WHERE t.deleted_at IS NULL AND p.deleted_at IS NULL
-          ${templateBranchFilter} ${pageBranchFilter} ${pageFilter}
-      `)) as unknown as Array<{ id: string }>;
-
-      // Resolve every referenced module's branch-latest text + provenance.
-      const referencedModuleIds = new Set<string>();
-      for (const { state } of layoutStatesByPage) {
-        for (const block of state.blocks) {
-          const ids =
-            block.placements && block.placements.length > 0
-              ? block.placements.map((pl) => pl.moduleId)
-              : block.moduleIds;
-          for (const id of ids) referencedModuleIds.add(id);
-        }
-      }
-      for (const r of fbChromeIdRows) referencedModuleIds.add(r.id);
-      const moduleTextById = new Map<string, ModuleTextWithProvenance>();
-      for (const moduleId of referencedModuleIds) {
-        const resolved = await loadModuleTextWithBranchProvenance(tx, moduleId, branchId);
-        if (resolved) moduleTextById.set(moduleId, resolved);
-      }
-
-      const resolvedRows = resolveDirectBuildModuleRows({
-        layoutStatesByPage,
-        chromeModuleIds: fbChromeIdRows.map((r) => r.id),
-        moduleTextById,
-      });
-      if (resolvedRows.missingModuleIds.length > 0) {
-        // A placement references a module with no resolvable text
-        // (deleted after placement?). Loud, not silent (CLAUDE.md §2).
-        const msg = `media unit collection: ${resolvedRows.missingModuleIds.length} placed module(s) had no resolvable text and were skipped`;
-        await logMediaRunEvent(tx, input.runId, "warning", msg, {
-          missingModuleIds: resolvedRows.missingModuleIds,
-        });
-        console.warn(`[migrate_media] run=${input.runId} ${msg}`);
-      }
-
-      const fbTemplateIdRows = (await tx.execute(sql`
-        SELECT DISTINCT t.id::text AS id
-        FROM templates t
-        JOIN pages p ON p.template_id = t.id
-        WHERE p.deleted_at IS NULL AND t.deleted_at IS NULL
-          ${templateBranchFilter} ${pageBranchFilter} ${pageFilter}
-      `)) as unknown as Array<{ id: string }>;
-      const fbTemplateRows: TemplateCssRow[] = [];
-      for (const t of fbTemplateIdRows) {
-        const resolved = await loadTemplateWithBranchProvenance(tx, t.id, branchId);
-        if (resolved && resolved.state.css !== "") {
-          fbTemplateRows.push({
-            id: t.id,
-            css: resolved.state.css,
-            templateState: resolved.state,
-            fromBranchSnapshot: resolved.fromBranchSnapshot,
-            liveChatBranchId: resolved.liveChatBranchId,
-          });
-        }
-      }
-
-      units = assembleDirectBuildUnits(
-        {
-          pageModules: resolvedRows.pageModules,
-          chromeModules: resolvedRows.chromeModules,
-          templates: fbTemplateRows,
-        },
-        run.source_url,
-      );
-      unitsBySource.directPageModules = resolvedRows.pageModules.length;
-      unitsBySource.directChrome = resolvedRows.chromeModules.length;
-      unitsBySource.directTemplates = fbTemplateRows.length;
-    }
-
-    // issue #302 — LOUD unit-collection telemetry: run ledger + console.
-    // The console line survives a DB reset (which is exactly what erased
-    // the run-15 evidence and made the zero-insert bug unattributable).
-    if (units.length === 0) {
-      const unitsWarning =
-        "0 media units found — likely causes: (1) the pages for this run have not been " +
-        "built or composed yet — build them first, then re-run migrate_media; (2) the pages " +
-        "were built in a DIFFERENT chat — chat-built placements live on that chat's preview " +
-        "branch and are invisible here, so re-run migrate_media from the chat that built the " +
-        "pages (or after publishing them); (3) a pageIds filter excluded every built page. " +
-        "Nothing was downloaded or rewritten.";
-      await logMediaRunEvent(tx, input.runId, "warning", unitsWarning, {
-        unitsBySource,
-        chatBranchId: branchId,
-        pageIdsFilter: input.pageIds?.length ?? 0,
-      });
-      console.warn(
-        `[migrate_media] run=${input.runId} ${unitsWarning}`,
-        JSON.stringify({ unitsBySource, chatBranchId: branchId }),
-      );
-      await recordAudit(tx, {
-        actorId: ctx.actorId,
-        requestId: ctx.requestId,
-        operation: "imports.migrate_media",
-        input,
-        succeeded: true,
-        entityId: input.runId,
-        resultSummary: "units=0 (warning logged)",
-      });
-      return ok({
-        migrated: 0,
-        migratedBytes: 0,
-        dedupedExisting: 0,
-        alreadyLocal: 0,
-        modulesRewritten: 0,
-        templatesRewritten: 0,
-        skipped: [],
-        unitsBySource,
-        unitsWarning,
-        logoWarning: null,
-      });
-    }
-    const unitsMessage =
-      `media unit collection: ${units.length} rewritable unit(s) — ` +
-      `compose(pageModules=${unitsBySource.composePageModules} chrome=${unitsBySource.composeChrome} templates=${unitsBySource.composeTemplates}) ` +
-      `direct-build(pageModules=${unitsBySource.directPageModules} chrome=${unitsBySource.directChrome} templates=${unitsBySource.directTemplates})`;
-    await logMediaRunEvent(tx, input.runId, "info", unitsMessage, {
-      unitsBySource,
-      chatBranchId: branchId,
-    });
-    console.info(`[migrate_media] run=${input.runId} ${unitsMessage}`);
-
-    // ------------------------------------------------------------------
-    // 2. Discover external refs. One download per unique absolute URL.
-    // ------------------------------------------------------------------
-    const skipped: Array<{ url: string; reason: string }> = [];
-    let alreadyLocal = 0;
-    const perUnitRefs = new Map<
-      TextUnit,
-      { html: DiscoveredAssetRef[]; css: DiscoveredAssetRef[] }
-    >();
-    /** url → first non-empty source alt attribute. */
-    const altByUrl = new Map<string, string>();
-    const uniqueUrls: string[] = [];
+    // De-dupe the asset list up front — the same URL twice is one download.
+    // The first occurrence's name wins.
+    const uniqueAssets: Array<{ url: string; name?: string }> = [];
     const seenUrls = new Set<string>();
-
-    for (const unit of units) {
-      const htmlDisc =
-        unit.html === ""
-          ? { refs: [], alreadyLocal: 0, unparseable: [] }
-          : discoverAssetRefs(unit.html, "html", unit.baseUrl);
-      const cssDisc =
-        unit.css === ""
-          ? { refs: [], alreadyLocal: 0, unparseable: [] }
-          : discoverAssetRefs(unit.css, "css", unit.baseUrl);
-      perUnitRefs.set(unit, { html: htmlDisc.refs, css: cssDisc.refs });
-      alreadyLocal += htmlDisc.alreadyLocal + cssDisc.alreadyLocal;
-      for (const raw of [...htmlDisc.unparseable, ...cssDisc.unparseable]) {
-        skipped.push({ url: raw.slice(0, 500), reason: "unparseable-url" });
-      }
-      for (const ref of [...htmlDisc.refs, ...cssDisc.refs]) {
-        if (!seenUrls.has(ref.url)) {
-          seenUrls.add(ref.url);
-          uniqueUrls.push(ref.url);
-        }
-        if (ref.alt && !altByUrl.has(ref.url)) altByUrl.set(ref.url, ref.alt);
+    for (const asset of input.assets) {
+      if (!seenUrls.has(asset.url)) {
+        seenUrls.add(asset.url);
+        uniqueAssets.push(asset);
       }
     }
 
-    // ------------------------------------------------------------------
-    // 3. Download + persist. urlMap holds the successful rewrites.
-    // ------------------------------------------------------------------
-    const urlMap = new Map<string, string>();
-    const assetIdByUrl = new Map<string, string>();
-    let migrated = 0;
-    let migratedBytes = 0;
-    let dedupedExisting = 0;
-    const deadline = Date.now() + PER_RUN_TIME_BUDGET_MS;
+    const imported: Array<z.infer<typeof importedEntry>> = [];
+    const skipped: Array<{ url: string; reason: string }> = [];
+    let downloadedBytes = 0;
+    const deadline = Date.now() + PER_CALL_TIME_BUDGET_MS;
     const hosts = allowedHosts();
 
-    type PersistResult = { ok: true; assetId: string } | { ok: false; reason: string };
+    type PersistResult =
+      | { ok: true; assetId: string; slug: string }
+      | { ok: false; reason: string };
     const persistAsset = async (
       url: string,
+      name: string | undefined,
       mime: MediaMime,
       sha: string,
       bytes: Uint8Array,
-      alt: string | undefined,
     ): Promise<PersistResult> => {
       let pipeline: Awaited<ReturnType<typeof runMediaPipeline>>;
       try {
@@ -592,21 +193,28 @@ export const migrateImportMediaOp = defineOperation({
       for (const v of pipeline.variants) {
         await mediaStorage.put(v.storageKey, v.body, v.contentType);
       }
-      // Direct handler call (same pattern as compose_from_run →
-      // themes.update_tokens): this op is the audited boundary; the
-      // upload handler adds its own audit row + sha dedup.
+      // Direct handler call (same pattern the neighbouring media ops use):
+      // this op is the audited boundary; the upload handler adds its own
+      // audit row + sha dedup.
       const upload = await mediaUploadOp.handler(
         ctx,
         {
           sha256: sha,
           originalName: originalNameFromUrl(url),
+          // Meaningful public slug: the AI-supplied label wins; the handler
+          // falls back to alt → originalName when it's absent.
+          name,
           mime,
           sizeBytes: bytes.byteLength,
           width: pipeline.width,
           height: pipeline.height,
-          alt: (alt ?? "").slice(0, 2048),
+          alt: "",
           storageKey: pipeline.variants[0]?.storageKey ?? `${sha}/orig`,
           storageProvider: getMediaStorageProvider(),
+          // Media provenance (0181) — the asset was downloaded from the
+          // source site being migrated; record its origin URL.
+          sourceKind: "imported",
+          sourceDetail: url,
           variants: pipeline.variants.map((v) => ({
             variant: v.variant,
             format: v.format,
@@ -624,20 +232,17 @@ export const migrateImportMediaOp = defineOperation({
           reason: `media-upload-failed: ${JSON.stringify(upload.error).slice(0, 200)}`,
         };
       }
-      return { ok: true, assetId: (upload.value as { assetId: string }).assetId };
+      const uploaded = upload.value as { assetId: string; slug: string };
+      return { ok: true, assetId: uploaded.assetId, slug: uploaded.slug };
     };
 
-    for (const url of uniqueUrls) {
-      if (migrated + dedupedExisting + skipped.length >= PER_RUN_MAX_ASSETS) {
-        skipped.push({ url, reason: `asset-count-cap (${PER_RUN_MAX_ASSETS} per run)` });
-        continue;
-      }
-      if (migratedBytes >= PER_RUN_MAX_BYTES) {
-        skipped.push({ url, reason: "run-budget-exhausted (250 MB download cap)" });
+    for (const { url, name } of uniqueAssets) {
+      if (downloadedBytes >= PER_CALL_MAX_BYTES) {
+        skipped.push({ url, reason: "call-budget-exhausted (250 MB download cap)" });
         continue;
       }
       if (Date.now() >= deadline) {
-        skipped.push({ url, reason: "time-budget-exhausted (5 min per run)" });
+        skipped.push({ url, reason: "time-budget-exhausted (5 min per call)" });
         continue;
       }
 
@@ -647,13 +252,13 @@ export const migrateImportMediaOp = defineOperation({
           allowedHosts: hosts,
           maxBytes: PER_FILE_MAX_BYTES,
           timeoutMs: PER_FILE_TIMEOUT_MS,
-          headers: { Accept: "image/*,font/*,application/pdf,*/*;q=0.5" },
+          headers: { Accept: "image/*,video/mp4,font/*,application/pdf,*/*;q=0.5" },
         });
       } catch (e) {
         if (isExternalUrlBlockedError(e)) {
           skipped.push({ url, reason: `blocked-by-ssrf-guard: ${e.reason}` });
         } else if (e instanceof Error && e.message.includes("-byte cap")) {
-          skipped.push({ url, reason: "too-large (15 MB per-file cap)" });
+          skipped.push({ url, reason: "too-large (50 MB per-file cap)" });
         } else {
           skipped.push({ url, reason: `fetch-failed: ${(e as Error).message.slice(0, 200)}` });
         }
@@ -672,261 +277,181 @@ export const migrateImportMediaOp = defineOperation({
         skipped.push({ url, reason: `content-mismatch (served bytes do not look like ${mime})` });
         continue;
       }
-
-      const sha = await sha256Hex(res.bodyBytes);
-      const existing = (await tx.execute(sql`
-        SELECT id::text AS id FROM media_assets
-        WHERE sha256 = ${sha} AND deleted_at IS NULL LIMIT 1
-      `)) as unknown as Array<{ id: string }>;
-      if (existing[0]) {
-        dedupedExisting += 1;
-        urlMap.set(url, buildMediaUrl(existing[0].id, "orig"));
-        assetIdByUrl.set(url, existing[0].id);
+      // Per-mime cap: the fetch ceiling is the 50 MB video-sized hard
+      // limit, so a 40 MB image (image cap 10 MB) would otherwise slip
+      // through. Enforce the tighter per-mime cap here, loudly.
+      const mimeCap = MEDIA_SIZE_CAPS[mime];
+      if (res.bodyBytes.length > mimeCap) {
+        skipped.push({
+          url,
+          reason: `too-large (${res.bodyBytes.length} bytes exceeds the ${mime} cap of ${mimeCap} bytes)`,
+        });
         continue;
       }
 
-      const persisted = await persistAsset(url, mime, sha, res.bodyBytes, altByUrl.get(url));
+      const sha = await sha256Hex(res.bodyBytes);
+      // Dedupe by content hash against the whole library. media.upload
+      // dedupes too, but the pre-check skips a redundant pipeline run for
+      // bytes that already exist.
+      const existing = (await tx.execute(sql`
+        SELECT id::text AS id, slug FROM media_assets
+        WHERE sha256 = ${sha} AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as Array<{ id: string; slug: string }>;
+      if (existing[0]) {
+        imported.push({
+          sourceUrl: url,
+          mediaId: existing[0].id,
+          slug: existing[0].slug,
+          mediaUrl: buildMediaUrl(existing[0].slug, "orig"),
+        });
+        continue;
+      }
+
+      const persisted = await persistAsset(url, name, mime, sha, res.bodyBytes);
       if (!persisted.ok) {
         skipped.push({ url, reason: persisted.reason });
         continue;
       }
-      migrated += 1;
-      migratedBytes += res.bodyBytes.byteLength;
-      urlMap.set(url, buildMediaUrl(persisted.assetId, "orig"));
-      assetIdByUrl.set(url, persisted.assetId);
-    }
-
-    // ------------------------------------------------------------------
-    // 4. Rewrite texts in place + track per-module usage deltas.
-    //
-    // issue #302 — branched runs need TWO extra moves per rewritten unit:
-    //   (a) Skip the live UPDATE when the unit's text came from a branched
-    //       snapshot but the live row is MAIN-owned — writing branch-derived
-    //       html into a main row would leak unpublished content.
-    //   (b) Emit a branched snapshot carrying the REWRITTEN state. Branched
-    //       creates/edits leave their pre-rewrite state as the branch-latest
-    //       snapshot, and `chat.publish` replays that state over the live
-    //       row — without (b) the media rewrite is silently reverted at
-    //       publish and the published site hotlinks the source host again.
-    // ------------------------------------------------------------------
-    let modulesRewritten = 0;
-    let templatesRewritten = 0;
-    const usageDeltas: Record<string, number> = {};
-    const rewrittenBranchEntities: SnapshotEntity[] = [];
-    for (const unit of units) {
-      const refs = perUnitRefs.get(unit);
-      if (!refs) continue;
-      const newHtml = unit.html === "" ? "" : rewriteAssetRefs(unit.html, refs.html, urlMap);
-      const newCss = unit.css === "" ? "" : rewriteAssetRefs(unit.css, refs.css, urlMap);
-      if (newHtml === unit.html && newCss === unit.css) continue;
-      const liveUpdateWouldLeakBranchContent =
-        branchId !== null && unit.fromBranchSnapshot === true && unit.liveChatBranchId === null;
-      if (unit.kind === "module") {
-        if (!liveUpdateWouldLeakBranchContent) {
-          await tx.execute(sql`
-            UPDATE modules SET html = ${newHtml}, css = ${newCss}
-            WHERE id = ${unit.id}::uuid
-          `);
-        }
-        if (branchId !== null && unit.moduleState !== undefined) {
-          rewrittenBranchEntities.push({
-            kind: "module",
-            entityId: unit.id,
-            state: { ...unit.moduleState, html: newHtml, css: newCss },
-          });
-        }
-        modulesRewritten += 1;
-        // Usage counting is per (asset, module) — mirrors the post-write
-        // usage tracker so media.delete's referenced-guard stays honest.
-        const assetsInUnit = new Set<string>();
-        for (const ref of [...refs.html, ...refs.css]) {
-          const assetId = assetIdByUrl.get(ref.url);
-          if (assetId) assetsInUnit.add(assetId);
-        }
-        for (const assetId of assetsInUnit) {
-          usageDeltas[assetId] = (usageDeltas[assetId] ?? 0) + 1;
-        }
-      } else {
-        if (!liveUpdateWouldLeakBranchContent) {
-          await tx.execute(sql`
-            UPDATE templates SET css = ${newCss} WHERE id = ${unit.id}::uuid
-          `);
-        }
-        if (branchId !== null && unit.templateState !== undefined) {
-          rewrittenBranchEntities.push({
-            kind: "template",
-            entityId: unit.id,
-            state: { ...unit.templateState, css: newCss },
-          });
-        }
-        templatesRewritten += 1;
-      }
-    }
-    if (rewrittenBranchEntities.length > 0) {
-      // One site_snapshots row for the whole rewrite — the branch-latest
-      // state per entity now carries Caelo media URLs, so chat.publish
-      // replays the rewritten text instead of the hotlinked original.
-      await emitSnapshot(tx, {
-        actorId: ctx.actorId,
-        opKind: "modules.update",
-        description: `imports.migrate_media rewrite run=${input.runId.slice(0, 8)}`,
-        chatTaskId: ctx.chatTaskId ?? null,
-        chatBranchId: branchId,
-        entities: rewrittenBranchEntities,
+      downloadedBytes += res.bodyBytes.byteLength;
+      imported.push({
+        sourceUrl: url,
+        mediaId: persisted.assetId,
+        slug: persisted.slug,
+        mediaUrl: buildMediaUrl(persisted.slug, "orig"),
       });
     }
-    if (Object.keys(usageDeltas).length > 0) {
-      // System-only op invoked through its handler — this op is the
-      // boundary; the delta write is an internal bookkeeping step.
-      await mediaRecordUsageOp.handler(ctx, { deltas: usageDeltas }, tx);
-    }
-
-    // ------------------------------------------------------------------
-    // 5. Logo-preservation guardrail. Media has just been re-hosted, so
-    // this is the moment of truth: if the source homepage header carried
-    // a real logo image but the rebuilt chrome header references none of
-    // {Caelo-media <img>, {{theme_logo_url}}, bound theme logo asset},
-    // the operator's brand logo was hand-authored as a text/CSS wordmark
-    // instead of imported (the searchviu live-run defect). Prose in the
-    // skill forbids it; this is the structural backstop that makes the
-    // miss LOUD in the run's error/warning ledger (CLAUDE.md §2, §11).
-    // Conservative: fires only when a source logo image is positively
-    // detected, so a genuine styled-text wordmark is never flagged.
-    // ------------------------------------------------------------------
-    const logoWarning = await detectRedrawnLogo(tx, input.runId, run.source_url);
-
-    // issue #302 — LOUD download/rewrite telemetry: ledger + console.
-    const summaryMessage =
-      `media migration summary: units=${units.length} refs=${uniqueUrls.length} ` +
-      `downloaded=${migrated} dedupedExisting=${dedupedExisting} alreadyLocal=${alreadyLocal} ` +
-      `failed=${skipped.length} modulesRewritten=${modulesRewritten} templatesRewritten=${templatesRewritten} ` +
-      `bytes=${migratedBytes} branchSnapshots=${rewrittenBranchEntities.length}`;
-    await logMediaRunEvent(tx, input.runId, "info", summaryMessage, {
-      unitsBySource,
-      uniqueUrls: uniqueUrls.length,
-      migrated,
-      migratedBytes,
-      dedupedExisting,
-      alreadyLocal,
-      skipped: skipped.length,
-      modulesRewritten,
-      templatesRewritten,
-      branchSnapshots: rewrittenBranchEntities.length,
-      chatBranchId: branchId,
-    });
-    console.info(`[migrate_media] run=${input.runId} ${summaryMessage}`);
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
-      operation: "imports.migrate_media",
-      input,
+      operation: "imports.import_media_urls",
+      input: { urls: uniqueAssets.length, runId: input.runId ?? null },
       succeeded: true,
-      entityId: input.runId,
-      resultSummary: `migrated=${migrated} bytes=${migratedBytes} deduped=${dedupedExisting} local=${alreadyLocal} modules=${modulesRewritten} templates=${templatesRewritten} skipped=${skipped.length}`,
+      entityId: input.runId ?? null,
+      resultSummary: `imported=${imported.length} skipped=${skipped.length} bytes=${downloadedBytes}`,
     });
 
-    return ok({
-      migrated,
-      migratedBytes,
-      dedupedExisting,
-      alreadyLocal,
-      modulesRewritten,
-      templatesRewritten,
-      skipped,
-      unitsBySource,
-      unitsWarning: null,
-      logoWarning,
-    });
+    return ok({ imported, skipped });
   },
 });
 
+const pageAssetEntry = z.object({
+  /** Absolute source URL of the asset. */
+  url: z.string(),
+  /** Total occurrences across the scanned pages (prominence signal). */
+  count: z.number().int(),
+  /** Distinct crawled pages the asset appears on. */
+  pages: z.number().int(),
+  /** First source `alt` seen for the asset, or null. */
+  alt: z.string().nullable(),
+});
+
 /**
- * The logo-preservation guardrail's DB half. Reads (a) the crawled
- * homepage's extracted source blocks, (b) the rebuilt chrome header
- * module (post-rewrite, so a just-migrated logo shows its `/_caelo/`
- * src), and (c) the active theme's bound logo asset. Returns a warning
- * string when the source had a logo image and the rebuild references
- * none of the three logo signals — and appends that warning to the run's
- * `import_run_events` ledger in the same transaction (best-effort:
- * detection must never sink a media migration that actually moved
- * assets). Returns `null` when the logo was preserved or the source had
- * none.
- *
- * `tx` is the open Query-API transaction; `runId` the migration run;
- * `sourceUrl` the run's origin (used to find the homepage import_page).
+ * `imports.list_page_assets` — the COMPLETE, searchable asset inventory of
+ * a crawled import run. `inspect_external_page`'s `images` facet shows only
+ * the top ~20 for a quick glance; this op runs the SAME comprehensive
+ * `discoverAssetRefs` (img src+srcset, CSS `url(...)`, video/audio/source)
+ * over the run's STORED page HTML (`import_pages.proposed_modules`) and
+ * returns every distinct asset URL — optionally narrowed to one page and/or
+ * a substring `search`, ranked by prominence, paginated. The AI feeds the
+ * URLs it wants to `import_media_from_urls`.
  */
-async function detectRedrawnLogo(
-  tx: Parameters<typeof migrateImportMediaOp.handler>[2],
-  runId: string,
-  sourceUrl: string,
-): Promise<string | null> {
-  // Source signal: the homepage import_page's extracted blocks. Prefer
-  // the row whose source_url matches the run origin; fall back to the
-  // earliest-crawled page for the run (the homepage is crawled first).
-  const homepageRows = (await tx.execute(sql`
-    SELECT proposed_modules
-    FROM import_pages
-    WHERE run_id = ${runId}::uuid
-    ORDER BY (source_url = ${sourceUrl}) DESC, created_at ASC
-    LIMIT 1
-  `)) as unknown as Array<{ proposed_modules: unknown }>;
-  const blocks = (homepageRows[0]?.proposed_modules ?? []) as ProposedModuleBlock[];
-  if (!Array.isArray(blocks) || blocks.length === 0) return null;
+export const listPageAssetsOp = defineOperation({
+  name: "imports.list_page_assets",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      /** Restrict to one crawled page by its source URL (exact match). */
+      pageUrl: z.string().url().optional(),
+      /** Case-insensitive substring the asset URL must contain. */
+      search: z.string().min(1).max(400).optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).optional(),
+    })
+    .strict(),
+  output: z.object({
+    /** Distinct assets matching the filter, before pagination. */
+    total: z.number().int(),
+    /** Assets returned in this page of results. */
+    assets: z.array(pageAssetEntry),
+    /** Crawled pages scanned to build the inventory. */
+    pagesScanned: z.number().int(),
+  }),
+  handler: async (ctx, input, tx) => {
+    const runRows = (await tx.execute(sql`
+      SELECT id::text AS id FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
+    `)) as unknown as Array<{ id: string }>;
+    if (!runRows[0]) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.list_page_assets",
+        message: "import run not found — list runs with imports.list for valid ids",
+      });
+    }
 
-  const sourceLogo = sourceHeaderHasLogoImage(blocks);
-  if (!sourceLogo.hasLogo) return null;
+    const pageFilter = input.pageUrl ? sql` AND source_url = ${input.pageUrl}` : sql.raw("");
+    const pageRows = (await tx.execute(sql`
+      SELECT source_url, proposed_modules
+      FROM import_pages
+      WHERE run_id = ${input.runId}::uuid ${pageFilter}
+      ORDER BY created_at ASC
+    `)) as unknown as Array<{
+      source_url: string;
+      proposed_modules: Array<{ html?: string }> | null;
+    }>;
 
-  // Rebuild signal 1+2: the rebuilt chrome header module(s), re-read
-  // AFTER the rewrite above so a migrated logo <img> already carries its
-  // /_caelo/ src. Two ways the header is attached, checked together so the
-  // guardrail evaluates the REAL header regardless of build path:
-  //   (a) compose flow — a module named `imported-<runid8>-header`,
-  //   (b) direct-build flow (#278) — a module bound to the layout's
-  //       `header` block via layout_modules (no import-slug convention).
-  // If EITHER header carries a real logo ref, the logo was preserved.
-  const headerRows = (await tx.execute(sql`
-    SELECT m.html
-    FROM modules m
-    WHERE m.deleted_at IS NULL AND (
-      m.slug = ${`imported-${runId.slice(0, 8)}-header`}
-      OR m.id IN (
-        SELECT lm.module_id
-        FROM layout_modules lm
-        JOIN templates t ON t.layout_id = lm.layout_id
-        JOIN pages p ON p.template_id = t.id
-        WHERE lm.block_name = 'header' AND t.deleted_at IS NULL AND p.deleted_at IS NULL
-      )
-    )
-  `)) as unknown as Array<{ html: string }>;
-  for (const row of headerRows) {
-    if (rebuiltHeaderHasLogoRef(row.html ?? "")) return null;
-  }
+    // Aggregate across pages: occurrence count + distinct-page count +
+    // first alt + first DOM position (tie-breaker), keyed by absolute URL.
+    const byUrl = new Map<
+      string,
+      { url: string; count: number; pages: Set<string>; alt: string | null; firstPos: number }
+    >();
+    for (const page of pageRows) {
+      const html = (page.proposed_modules ?? []).map((m) => m.html ?? "").join("\n");
+      if (html === "") continue;
+      for (const ref of discoverAssetRefs(html, "html", page.source_url).refs) {
+        const existing = byUrl.get(ref.url);
+        if (existing) {
+          existing.count += 1;
+          existing.pages.add(page.source_url);
+          if (existing.alt === null && ref.alt) existing.alt = ref.alt;
+        } else {
+          byUrl.set(ref.url, {
+            url: ref.url,
+            count: 1,
+            pages: new Set([page.source_url]),
+            alt: ref.alt ?? null,
+            firstPos: ref.start,
+          });
+        }
+      }
+    }
 
-  // Rebuild signal 3: a bound theme logo asset (set via themes.set_asset
-  // + a {{theme_logo_url}} the template engine resolves). If the operator
-  // bound the logo at the theme, the header need not carry it inline.
-  const themeRows = (await tx.execute(sql`
-    SELECT logo_media_id::text AS logo_media_id FROM themes WHERE is_active = true LIMIT 1
-  `)) as unknown as Array<{ logo_media_id: string | null }>;
-  if (themeRows[0]?.logo_media_id) return null;
+    const needle = input.search?.toLowerCase();
+    const ranked = [...byUrl.values()]
+      .filter((a) => (needle ? a.url.toLowerCase().includes(needle) : true))
+      .sort((a, b) => b.count - a.count || a.firstPos - b.firstPos);
 
-  // All three signals absent → the logo was redrawn. Record it LOUDLY.
-  const message =
-    `header logo was NOT imported: the source homepage header carried a real logo asset ` +
-    `(${sourceLogo.evidence ?? "image"}) but the rebuilt header references neither a Caelo-hosted ` +
-    `logo <img>, a {{theme_logo_url}} placeholder, nor a bound theme logo asset — it was likely ` +
-    `hand-authored as a text/CSS wordmark. Preserve the source logo as a real <img> (so migrate_media ` +
-    `re-hosts it) or bind it once with set_theme_asset({slot:'logo'}) + {{theme_logo_url}}, then re-run.`;
-  await tx.execute(sql`
-    INSERT INTO import_run_events (run_id, severity, phase, message, detail)
-    VALUES (
-      ${runId}::uuid,
-      'warning',
-      'media',
-      ${message},
-      ${jsonbParam({ check: "logo-preserved", sourceEvidence: sourceLogo.evidence ?? null })}
-    )
-  `);
-  return message;
-}
+    const offset = input.offset ?? 0;
+    const limit = input.limit ?? 200;
+    const paged = ranked.slice(offset, offset + limit);
+
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "imports.list_page_assets",
+      input,
+      succeeded: true,
+      entityId: input.runId,
+      resultSummary: `total=${ranked.length} returned=${paged.length} pages=${pageRows.length}`,
+    });
+
+    return ok({
+      total: ranked.length,
+      assets: paged.map((a) => ({ url: a.url, count: a.count, pages: a.pages.size, alt: a.alt })),
+      pagesScanned: pageRows.length,
+    });
+  },
+});

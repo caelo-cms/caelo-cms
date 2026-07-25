@@ -88,6 +88,37 @@ describe("buildToolCatalogue", () => {
     }
   });
 
+  it("auto-preloads the bulk sibling of a preloaded singular (edit_module → update_modules_many)", () => {
+    // Systemic fix for the "10 sequential edit_module calls" class: a skill
+    // that preloads only the singular still gets the batch variant tagged
+    // alwaysLoaded next to it, never left deferred-and-undiscovered.
+    const tools = registry("edit_module", "update_modules_many", "list_pages");
+    const result = buildToolCatalogue({
+      tools,
+      allowedToolNames: new Set(["edit_module"]),
+      engagedSkills: [],
+      excluded: undefined,
+      chatSessionId,
+    });
+    const loaded = new Set(result.filter((t) => t.alwaysLoaded).map((t) => t.name));
+    expect(loaded.has("edit_module")).toBe(true);
+    expect(loaded.has("update_modules_many")).toBe(true);
+  });
+
+  it("preloads the sibling in both directions (bulk → singular too)", () => {
+    const tools = registry("edit_module", "update_modules_many");
+    const result = buildToolCatalogue({
+      tools,
+      allowedToolNames: new Set(["update_modules_many"]),
+      engagedSkills: [],
+      excluded: undefined,
+      chatSessionId,
+    });
+    const loaded = new Set(result.filter((t) => t.alwaysLoaded).map((t) => t.name));
+    expect(loaded.has("update_modules_many")).toBe(true);
+    expect(loaded.has("edit_module")).toBe(true);
+  });
+
   it("issue #301: an all-garbage allowlist strands nobody — full catalogue, entries logged, nothing preloaded from it", () => {
     const tools = registry("edit_module", "add_module_to_page");
     const errSpy = spyOn(console, "error").mockImplementation(() => {});

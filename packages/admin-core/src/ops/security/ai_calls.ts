@@ -293,6 +293,39 @@ async function buildAttribution(
 }
 
 /**
+ * Lightweight windowed spend total for the admin top-bar "AI spend —
+ * last N days" readout. A single SUM over a bounded window — far cheaper
+ * than `ai_calls.aggregate` (which also builds the per-day / per-provider
+ * / per-plugin / attribution breakdowns) and safe to call on every
+ * authed page load.
+ *
+ * `human + system` only: this is a panel/UI read, not an AI tool. When
+ * the operator asks the AI about spend it uses `ai_calls.aggregate`.
+ */
+export const spendWindowOp = defineOperation({
+  name: "ai_calls.spend_window",
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ days: z.number().int().min(1).max(365).default(7) }).strict(),
+  output: z.object({ costMicrocents: z.number(), days: z.number() }),
+  handler: async (_ctx, input, tx) => {
+    // make_interval() takes the day count as a bound parameter — no
+    // string interpolation into the interval literal.
+    const rows = (await tx.execute(sql`
+      SELECT COALESCE(SUM(cost_estimate_microcents), 0)::bigint AS c
+        FROM ai_calls
+       WHERE created_at >= now() - make_interval(days => ${input.days})
+    `)) as unknown as { c: number | string | bigint }[];
+    const c = rows[0]?.c ?? 0;
+    // Number() is safe: a multi-day admin spend total is far below 2^53
+    // microcents (2^53 microcents ≈ $90M).
+    const costMicrocents =
+      typeof c === "bigint" ? Number(c) : typeof c === "string" ? Number.parseInt(c, 10) : c;
+    return ok({ costMicrocents, days: input.days });
+  },
+});
+
+/**
  * P11.6 — per-plugin AI spend rollup. The plugin-host's ctx.ai.complete
  * checks this on each invocation before dispatching to the provider;
  * if (last 24h sum) ≥ ai_cost_cap_microcents the call fails with a

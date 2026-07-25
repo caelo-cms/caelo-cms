@@ -3,7 +3,7 @@
 /**
  * issue #247 (WS1) — captureImportGroundTruth is the always-on design
  * ground-truth pass: source screenshot + computed-style token sampling
- * in one render session, staged diff, and a LOUD `screenshot_missing` /
+ * in one render session, and a LOUD `screenshot_missing` /
  * `design_tokens_missing` note wherever a page ends up without stored
  * ground truth (no silent skips — F9 regression class). Also keeps the
  * #198 persistence coverage. Real Postgres ops (admin-core is a
@@ -69,12 +69,10 @@ const shot = (fill: number, styleSamples?: ElementStyleSample[]): Screenshot => 
   ...(styleSamples ? { styleSamples } : {}),
 });
 
-/** Source captures return samples when asked; staged captures don't. */
+/** Source captures return samples when asked. */
 function fakeScreenshotter(): Screenshotter {
   return {
-    async capture(url, opts) {
-      // Distinguishable bytes per side so the storage assertion is real.
-      if (url.startsWith("http://localhost")) return shot(2);
+    async capture(_url, opts) {
       return shot(1, opts?.sampleStyles ? SAMPLES : undefined);
     },
     async dispose() {},
@@ -122,7 +120,6 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
     const stored = new Map<string, Uint8Array>();
     const result = await captureImportGroundTruth({
       runId,
-      stagedPreviewBaseUrl: "http://localhost:9999",
       adapter,
       registry,
       screenshotter: fakeScreenshotter(),
@@ -142,8 +139,6 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
         pages: {
           id: string;
           screenshotObjectKey: string | null;
-          stagedScreenshotObjectKey: string | null;
-          diffStatus: string | null;
           sampledDesignTokens: {
             palette: { value: string; count: number }[];
             roles: Record<string, Record<string, string>>;
@@ -153,13 +148,8 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
     ).pages[0];
     if (!page) throw new Error("page missing");
     expect(page.screenshotObjectKey).toBe(`import-screenshots/${runId}/${page.id}-source.png`);
-    expect(page.stagedScreenshotObjectKey).toBe(
-      `import-screenshots/${runId}/${page.id}-staged.png`,
-    );
-    expect(page.diffStatus).not.toBeNull();
-    // Both objects actually landed, with the right bytes on each side.
+    // The source object actually landed, with the right bytes.
     expect(stored.get(page.screenshotObjectKey ?? "")?.[0]).toBe(1);
-    expect(stored.get(page.stagedScreenshotObjectKey ?? "")?.[0]).toBe(2);
 
     // issue #247 — computed-style ground truth landed on the page…
     expect(page.sampledDesignTokens).not.toBeNull();
@@ -182,8 +172,7 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
     ]);
     let sourceAttempts = 0;
     const flaky: Screenshotter = {
-      async capture(url, opts) {
-        if (url.startsWith("http://localhost")) return shot(2);
+      async capture(_url, opts) {
         sourceAttempts += 1;
         if (sourceAttempts === 1) throw new Error("transient network blip");
         return shot(1, opts?.sampleStyles ? SAMPLES : undefined);
@@ -192,7 +181,6 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
     };
     const result = await captureImportGroundTruth({
       runId,
-      stagedPreviewBaseUrl: "http://localhost:9999",
       adapter,
       registry,
       screenshotter: flaky,
@@ -210,15 +198,13 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
       "https://issue247-dead.example/",
     ]);
     const dead: Screenshotter = {
-      async capture(url) {
-        if (url.startsWith("http://localhost")) return shot(2);
+      async capture() {
         throw new Error("net::ERR_NAME_NOT_RESOLVED");
       },
       async dispose() {},
     };
     const result = await captureImportGroundTruth({
       runId,
-      stagedPreviewBaseUrl: "http://localhost:9999",
       adapter,
       registry,
       screenshotter: dead,
@@ -228,12 +214,9 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
     expect(result.failed).toBe(1);
     const got = await execute(registry, adapter, SYSTEM, "imports.get", { runId });
     if (!got.ok) throw new Error(JSON.stringify(got.error));
-    const page = (
-      got.value as { pages: { screenshotObjectKey: string | null; diffStatus: string | null }[] }
-    ).pages[0];
-    // No screenshot, no diff verdict — UNVERIFIED, not silently "done".
+    const page = (got.value as { pages: { screenshotObjectKey: string | null }[] }).pages[0];
+    // No screenshot — UNVERIFIED, not silently "done".
     expect(page?.screenshotObjectKey).toBeNull();
-    expect(page?.diffStatus).toBeNull();
     const rep = await report(runId);
     expect(rep.pagesMissingScreenshot).toBe(1);
     expect(rep.notes.find((n) => n.category === "screenshot_missing")?.suggested).toBe(1);
@@ -246,7 +229,6 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
     ]);
     const result = await captureImportGroundTruth({
       runId,
-      stagedPreviewBaseUrl: "http://localhost:9999",
       adapter,
       registry,
       screenshotter: null,
@@ -265,7 +247,6 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
     ]);
     const result = await captureImportGroundTruth({
       runId,
-      stagedPreviewBaseUrl: "http://localhost:9999",
       adapter,
       registry,
       screenshotter: fakeScreenshotter(),
@@ -282,13 +263,11 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
       got.value as {
         pages: {
           screenshotObjectKey: string | null;
-          diffStatus: string | null;
           sampledDesignTokens: unknown;
         }[];
       }
     ).pages[0];
     expect(page?.screenshotObjectKey).toBeNull();
-    expect(page?.diffStatus).not.toBeNull();
     // Tokens still landed — they don't depend on the object store.
     expect(page?.sampledDesignTokens).not.toBeNull();
     // issue #247 — the dropped pixels are LOUD, not a silent NULL key.

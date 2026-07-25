@@ -20,7 +20,8 @@ export const deleteContentInstanceTool: ToolDefinitionWithHandler<
   description:
     "Soft-delete a content_instance. Only allowed when ZERO placements still bind to it (orphan instance). " +
     "When placements exist, the op returns an error pointing you at fork_placement_content for each referencing placement. " +
-    "Use list_content_instances to find orphan instances (placementCount=0) and prune them.",
+    "Use list_content_instances to find orphan instances (placementCount=0) and prune them. " +
+    "Prefer `delete_content_instances` over multiple `delete_content_instance` calls when deleting more than one.",
   schema: deleteContentInstanceToolInput,
   inputSchema: {
     type: "object",

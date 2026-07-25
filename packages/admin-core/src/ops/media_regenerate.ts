@@ -55,6 +55,7 @@ const perAssetResult = z.object({
 
 interface AssetRow {
   id: string;
+  slug: string;
   sha256: string;
   mime: string;
   width: number | null;
@@ -104,7 +105,7 @@ export const regenerateMediaVariantsOp = defineOperation({
     if (input.assetIds !== undefined) {
       for (const id of input.assetIds) {
         const rows = (await tx.execute(sql`
-          SELECT id::text AS id, sha256, mime, width, height
+          SELECT id::text AS id, slug, sha256, mime, width, height
           FROM media_assets WHERE id = ${id}::uuid AND deleted_at IS NULL LIMIT 1
         `)) as unknown as AssetRow[];
         if (rows[0]) {
@@ -123,7 +124,7 @@ export const regenerateMediaVariantsOp = defineOperation({
       // allMissing: scan raster assets (only rasters ever derive
       // variants) and keep those whose expected ladder is incomplete.
       const rows = (await tx.execute(sql`
-        SELECT id::text AS id, sha256, mime, width, height
+        SELECT id::text AS id, slug, sha256, mime, width, height
         FROM media_assets
         WHERE deleted_at IS NULL AND mime IN ('image/jpeg','image/png','image/webp','image/avif','image/gif')
         ORDER BY created_at DESC
@@ -158,7 +159,7 @@ export const regenerateMediaVariantsOp = defineOperation({
             status: gap.skipReason === null ? "complete" : "skipped",
             addedVariants: [],
             reason: gap.skipReason ?? "all expected variants are present",
-            bestUrl: buildMediaUrl(asset.id, pickAiImageVariant([...existing])),
+            bestUrl: buildMediaUrl(asset.slug, pickAiImageVariant([...existing])),
           });
         }
         continue;
@@ -199,7 +200,7 @@ export const regenerateMediaVariantsOp = defineOperation({
             added.length > 0
               ? null
               : "pipeline produced no additional variants (animated GIF, or source narrower than the remaining breakpoints) — reference an existing variant such as /orig in module HTML",
-          bestUrl: buildMediaUrl(asset.id, pickAiImageVariant([...existing])),
+          bestUrl: buildMediaUrl(asset.slug, pickAiImageVariant([...existing])),
         });
       } catch (e) {
         results.push({

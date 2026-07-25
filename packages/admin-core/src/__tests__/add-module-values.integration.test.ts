@@ -293,4 +293,85 @@ describe("add_module — initial content in the same call", () => {
     expect(r.ok).toBe(true);
     expect(r.content).toContain("Fields: body(text)");
   });
+
+  it("reuse by moduleId carrying a DIFFERING label surfaces an ℹ️ ignored-authoring info (§2 — no silent drop)", async () => {
+    // Mint a module first, then re-place it by moduleId while also passing a
+    // different displayName + fresh html. Placement-only: those must not be
+    // applied silently — the result names them and points at edit_module.
+    const mint = await addModuleTool.handler(
+      SYSTEM,
+      {
+        target: "page",
+        targetRef: pageId,
+        blockName: "content",
+        position: 0,
+        displayName: "AMV Reusable",
+        description: "Reuse source.",
+        kind: "content",
+        html: "<p>{{body}}</p>",
+        fields: [{ name: "body", kind: "text", label: "Body" }],
+        values: { body: "orig" },
+      } as never,
+      toolCtx(),
+    );
+    expect(mint.ok).toBe(true);
+    const moduleId = /module ([0-9a-f-]{36}) /.exec(mint.content ?? "")?.[1];
+    expect(moduleId).toBeTruthy();
+
+    const reuse = await addModuleTool.handler(
+      SYSTEM,
+      {
+        target: "page",
+        targetRef: pageId,
+        blockName: "content",
+        position: 0,
+        moduleId,
+        displayName: "A Totally Different Label",
+        html: "<section>ignored</section>",
+      } as never,
+      toolCtx(),
+    );
+    expect(reuse.ok).toBe(true);
+    expect(reuse.content).toContain("NOT applied");
+    expect(reuse.content).toContain("displayName='A Totally Different Label'");
+    expect(reuse.content).toContain("html (structural)");
+    expect(reuse.content).toContain("edit_module");
+  });
+
+  it("reuse by moduleId with a MATCHING label surfaces no ignored-authoring info (harmless redundancy)", async () => {
+    const mint = await addModuleTool.handler(
+      SYSTEM,
+      {
+        target: "page",
+        targetRef: pageId,
+        blockName: "content",
+        position: 0,
+        displayName: "AMV Redundant",
+        description: "Reuse source.",
+        kind: "content",
+        html: "<p>{{body}}</p>",
+        fields: [{ name: "body", kind: "text", label: "Body" }],
+        values: { body: "orig" },
+      } as never,
+      toolCtx(),
+    );
+    expect(mint.ok).toBe(true);
+    const moduleId = /module ([0-9a-f-]{36}) /.exec(mint.content ?? "")?.[1];
+    expect(moduleId).toBeTruthy();
+
+    const reuse = await addModuleTool.handler(
+      SYSTEM,
+      {
+        target: "page",
+        targetRef: pageId,
+        blockName: "content",
+        position: 0,
+        moduleId,
+        displayName: "AMV Redundant",
+      } as never,
+      toolCtx(),
+    );
+    expect(reuse.ok).toBe(true);
+    expect(reuse.content).not.toContain("NOT applied");
+  });
 });

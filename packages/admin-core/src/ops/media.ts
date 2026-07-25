@@ -28,6 +28,7 @@ import {
   mediaRecentForAiInputSchema,
   mediaRecordUsageInputSchema,
   mediaSetCdnInputSchema,
+  mediaSetSourceInputSchema,
   mediaUpdateAltInputSchema,
   mediaUploadInputSchema,
   ok,
@@ -35,6 +36,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { resolveUniqueMediaSlug } from "../media/slug.js";
 
 // ---------------------------------------------------------------------
 // Row shapes returned to callers.
@@ -51,6 +53,8 @@ const mediaVariantRow = z.object({
 
 const mediaAssetRow = z.object({
   id: z.string(),
+  /** Human-meaningful, URL-safe name — the public asset URL segment. */
+  slug: z.string(),
   sha256: z.string(),
   originalName: z.string(),
   mime: z.string(),
@@ -62,11 +66,16 @@ const mediaAssetRow = z.object({
   usageCount: z.number().int(),
   lastUsedAt: z.string().nullable(),
   createdAt: z.string(),
+  /** Media provenance (0181) — where the asset came from + its licence. */
+  sourceKind: z.enum(["upload", "ai_generated", "imported", "external"]).nullable(),
+  sourceDetail: z.string().nullable(),
+  license: z.string().nullable(),
   variants: z.array(mediaVariantRow),
 });
 
 type AssetDbRow = {
   id: string;
+  slug: string;
   sha256: string;
   original_name: string;
   mime: string;
@@ -78,6 +87,9 @@ type AssetDbRow = {
   usage_count: number | bigint | string;
   last_used_at: Date | string | null;
   created_at: Date | string;
+  source_kind: "upload" | "ai_generated" | "imported" | "external" | null;
+  source_detail: string | null;
+  license: string | null;
 };
 
 const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : String(v));
@@ -96,6 +108,7 @@ function rowToAsset(
 ): z.infer<typeof mediaAssetRow> {
   return {
     id: r.id,
+    slug: r.slug,
     sha256: r.sha256,
     originalName: r.original_name,
     mime: r.mime,
@@ -107,6 +120,9 @@ function rowToAsset(
     usageCount: num(r.usage_count),
     lastUsedAt: r.last_used_at === null ? null : iso(r.last_used_at),
     createdAt: iso(r.created_at),
+    sourceKind: r.source_kind,
+    sourceDetail: r.source_detail,
+    license: r.license,
     variants: variants.map((v) => ({
       variant: v.variant,
       format: v.format,
@@ -130,16 +146,16 @@ export const mediaUploadOp = defineOperation({
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: mediaUploadInputSchema,
-  output: z.object({ assetId: z.string(), deduped: z.boolean() }),
+  output: z.object({ assetId: z.string(), slug: z.string(), deduped: z.boolean() }),
   handler: async (ctx, input, tx) => {
-    // Dedupe by content hash. If a row already exists we return its id;
-    // the endpoint should NOT have run `storage.put` again (the dedupe
-    // check happens before the pipeline).
+    // Dedupe by content hash. If a row already exists we return its id +
+    // slug; the endpoint should NOT have run `storage.put` again (the
+    // dedupe check happens before the pipeline).
     const existing = (await tx.execute(sql`
-      SELECT id::text AS id FROM media_assets
+      SELECT id::text AS id, slug FROM media_assets
       WHERE sha256 = ${input.sha256} AND deleted_at IS NULL
       LIMIT 1
-    `)) as unknown as { id: string }[];
+    `)) as unknown as { id: string; slug: string }[];
     if (existing[0]) {
       // Re-uploads of the same content still need an audit trail entry
       // so /security/audit shows who attempted the upload, even though
@@ -153,19 +169,28 @@ export const mediaUploadOp = defineOperation({
         entityId: existing[0].id,
         resultSummary: "deduped",
       });
-      return ok({ assetId: existing[0].id, deduped: true });
+      return ok({ assetId: existing[0].id, slug: existing[0].slug, deduped: true });
     }
 
     // P7 optimization #3 — stamp the active storage provider so we
     // can later migrate / dual-write between adapters and tell at a
     // glance which assets live where.
     const provider = (input as { storageProvider?: string }).storageProvider ?? "local";
+    // Meaningful public URL segment. The operator/AI-supplied `name` wins;
+    // fall back to alt → originalName so a plain upload still gets a
+    // readable slug. Uniquified against the live library inside this tx.
+    const slug = await resolveUniqueMediaSlug(
+      tx,
+      input.name ?? (input.alt || undefined) ?? input.originalName,
+    );
     const inserted = (await tx.execute(sql`
       INSERT INTO media_assets (
-        sha256, original_name, mime, size_bytes, width, height, alt, storage_key, storage_provider, created_by
+        sha256, slug, original_name, mime, size_bytes, width, height, alt, storage_key, storage_provider,
+        source_kind, source_detail, license, created_by
       )
       VALUES (
         ${input.sha256},
+        ${slug},
         ${input.originalName},
         ${input.mime},
         ${input.sizeBytes},
@@ -174,6 +199,9 @@ export const mediaUploadOp = defineOperation({
         ${input.alt},
         ${input.storageKey},
         ${provider},
+        ${input.sourceKind ?? null},
+        ${input.sourceDetail ?? null},
+        ${input.license ?? null},
         ${ctx.actorId}::uuid
       )
       RETURNING id::text AS id
@@ -215,7 +243,7 @@ export const mediaUploadOp = defineOperation({
       resultSummary: `variants=${input.variants.length}`,
     });
 
-    return ok({ assetId, deduped: false });
+    return ok({ assetId, slug, deduped: false });
   },
 });
 
@@ -248,8 +276,9 @@ export const mediaListOp = defineOperation({
 
     const rows = (await tx.execute(sql`
       SELECT
-        id::text AS id, sha256, original_name, mime, size_bytes, width, height, alt,
-        storage_key, usage_count, last_used_at, created_at
+        id::text AS id, slug, sha256, original_name, mime, size_bytes, width, height, alt,
+        storage_key, usage_count, last_used_at, created_at,
+        source_kind, source_detail, license
       FROM media_assets
       WHERE deleted_at IS NULL ${queryCondition} ${mimeCondition}
       ${orderBy}
@@ -311,15 +340,22 @@ export const mediaGetOp = defineOperation({
   name: "media.get",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ assetId: z.string().uuid() }).strict(),
+  // `assetId` accepts EITHER a UUID id or a meaningful slug: module HTML +
+  // the admin media route now address assets by slug (`/_caelo/media/<slug>`),
+  // so the resolver looks the ref up by id when it's a UUID, else by slug
+  // among live rows.
+  input: z.object({ assetId: z.string().min(1) }).strict(),
   output: z.object({ asset: mediaAssetRow.nullable() }),
   handler: async (_ctx, input, tx) => {
+    const isUuid = z.string().uuid().safeParse(input.assetId).success;
+    const refCondition = isUuid ? sql`id = ${input.assetId}::uuid` : sql`slug = ${input.assetId}`;
     const rows = (await tx.execute(sql`
       SELECT
-        id::text AS id, sha256, original_name, mime, size_bytes, width, height, alt,
-        storage_key, usage_count, last_used_at, created_at
+        id::text AS id, slug, sha256, original_name, mime, size_bytes, width, height, alt,
+        storage_key, usage_count, last_used_at, created_at,
+        source_kind, source_detail, license
       FROM media_assets
-      WHERE id = ${input.assetId}::uuid AND deleted_at IS NULL
+      WHERE ${refCondition} AND deleted_at IS NULL
       LIMIT 1
     `)) as unknown as AssetDbRow[];
     const r = rows[0];
@@ -327,7 +363,7 @@ export const mediaGetOp = defineOperation({
 
     const variants = (await tx.execute(sql`
       SELECT variant, format, width, height, size_bytes, storage_key
-      FROM media_variants WHERE asset_id = ${input.assetId}::uuid
+      FROM media_variants WHERE asset_id = ${r.id}::uuid
       ORDER BY variant
     `)) as unknown as {
       variant: string;
@@ -379,6 +415,50 @@ export const mediaUpdateAltOp = defineOperation({
 });
 
 // ---------------------------------------------------------------------
+// media.set_source — record/patch an asset's provenance + licence.
+// COALESCE semantics: omitted fields stay unchanged, so this both sets
+// provenance the first time and patches a single field later.
+// ---------------------------------------------------------------------
+
+export const mediaSetSourceOp = defineOperation({
+  name: "media.set_source",
+  // CLAUDE.md §11: recording where media came from + its licence is
+  // routine AI territory (after importing/generating, or when the
+  // operator states a licence). Undoable by another set_source call.
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: mediaSetSourceInputSchema,
+  output: z.object({ assetId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE media_assets SET
+        source_kind = COALESCE(${input.sourceKind ?? null}, source_kind),
+        source_detail = COALESCE(${input.sourceDetail ?? null}, source_detail),
+        license = COALESCE(${input.license ?? null}, license)
+      WHERE id = ${input.assetId}::uuid AND deleted_at IS NULL
+      RETURNING 1
+    `)) as unknown as { exists: number }[];
+    if (rows.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "media.set_source",
+        message: "media asset not found",
+      });
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "media.set_source",
+      input,
+      succeeded: true,
+      entityId: input.assetId,
+      resultSummary: `kind=${input.sourceKind ?? "-"},license=${input.license ?? "-"}`,
+    });
+    return ok({ assetId: input.assetId });
+  },
+});
+
+// ---------------------------------------------------------------------
 // media.delete — soft-delete; force required when usage_count > 0.
 // ---------------------------------------------------------------------
 
@@ -397,10 +477,10 @@ export const mediaDeleteOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, usage_count FROM media_assets
+      SELECT id::text AS id, slug, usage_count FROM media_assets
       WHERE id = ${input.assetId}::uuid AND deleted_at IS NULL
       LIMIT 1
-    `)) as unknown as { id: string; usage_count: number | bigint | string }[];
+    `)) as unknown as { id: string; slug: string; usage_count: number | bigint | string }[];
     const target = rows[0];
     if (!target) {
       return err({
@@ -411,11 +491,14 @@ export const mediaDeleteOp = defineOperation({
     }
 
     // Lookup referencing modules — used for both the blocked-without-
-    // force path and the success-with-force resultSummary.
+    // force path and the success-with-force resultSummary. Modules embed
+    // assets by SLUG (`/_caelo/media/<slug>`); legacy embeds still use the
+    // id form (`/_caelo/media/<uuid>/<variant>`), so match both.
     const refRows = (await tx.execute(sql`
       SELECT id::text AS id, slug FROM modules
       WHERE deleted_at IS NULL
-        AND html LIKE ${`%/_caelo/media/${input.assetId}/%`}
+        AND (html LIKE ${`%/_caelo/media/${target.slug}%`}
+             OR html LIKE ${`%/_caelo/media/${input.assetId}/%`})
     `)) as unknown as { id: string; slug: string }[];
 
     if (num(target.usage_count) > 0 && !input.force) {
@@ -491,6 +574,8 @@ export const mediaRecentForAiOp = defineOperation({
     assets: z.array(
       z.object({
         id: z.string(),
+        /** Human-meaningful, URL-safe name — the public asset URL segment. */
+        slug: z.string(),
         originalName: z.string(),
         mime: z.string(),
         width: z.number().int().nullable(),
@@ -509,11 +594,12 @@ export const mediaRecentForAiOp = defineOperation({
     // template doesn't elegantly express a UNION with a LIMIT shared
     // across both arms, so we do two SELECTs and merge in memory.
     const recent = (await tx.execute(sql`
-      SELECT id::text AS id, original_name, mime, width, height, alt, usage_count
+      SELECT id::text AS id, slug, original_name, mime, width, height, alt, usage_count
       FROM media_assets WHERE deleted_at IS NULL
       ORDER BY created_at DESC LIMIT ${input.limit}
     `)) as unknown as {
       id: string;
+      slug: string;
       original_name: string;
       mime: string;
       width: number | null;
@@ -522,7 +608,7 @@ export const mediaRecentForAiOp = defineOperation({
       usage_count: number | bigint | string;
     }[];
     const popular = (await tx.execute(sql`
-      SELECT id::text AS id, original_name, mime, width, height, alt, usage_count
+      SELECT id::text AS id, slug, original_name, mime, width, height, alt, usage_count
       FROM media_assets WHERE deleted_at IS NULL AND usage_count > 0
       ORDER BY usage_count DESC, last_used_at DESC NULLS LAST
       LIMIT ${input.limit}
@@ -553,6 +639,7 @@ export const mediaRecentForAiOp = defineOperation({
     return ok({
       assets: merged.map((r) => ({
         id: r.id,
+        slug: r.slug,
         originalName: r.original_name,
         mime: r.mime,
         width: r.width,
@@ -578,10 +665,18 @@ export const mediaListUsagesOp = defineOperation({
     modules: z.array(z.object({ id: z.string(), slug: z.string(), displayName: z.string() })),
   }),
   handler: async (_ctx, input, tx) => {
+    // Resolve the asset's slug — modules embed it by slug now; legacy
+    // embeds still use the id form, so match both shapes.
+    const assetRows = (await tx.execute(sql`
+      SELECT slug FROM media_assets WHERE id = ${input.assetId}::uuid AND deleted_at IS NULL LIMIT 1
+    `)) as unknown as { slug: string }[];
+    const assetSlug = assetRows[0]?.slug;
+    if (assetSlug === undefined) return ok({ modules: [] });
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, display_name FROM modules
       WHERE deleted_at IS NULL
-        AND html LIKE ${`%/_caelo/media/${input.assetId}/%`}
+        AND (html LIKE ${`%/_caelo/media/${assetSlug}%`}
+             OR html LIKE ${`%/_caelo/media/${input.assetId}/%`})
       ORDER BY slug
     `)) as unknown as { id: string; slug: string; display_name: string }[];
     return ok({
@@ -1061,9 +1156,9 @@ export const mediaDeleteManyOp = defineOperation({
     const blocked: { assetId: string; referencingModuleSlugs: string[] }[] = [];
     for (const assetId of input.assetIds) {
       const rows = (await tx.execute(sql`
-        SELECT usage_count FROM media_assets
+        SELECT slug, usage_count FROM media_assets
         WHERE id = ${assetId}::uuid AND deleted_at IS NULL LIMIT 1
-      `)) as unknown as { usage_count: number | bigint | string }[];
+      `)) as unknown as { slug: string; usage_count: number | bigint | string }[];
       const target = rows[0];
       if (!target) continue;
       const usage = Number(target.usage_count);
@@ -1071,7 +1166,8 @@ export const mediaDeleteManyOp = defineOperation({
         const refs = (await tx.execute(sql`
           SELECT slug FROM modules
           WHERE deleted_at IS NULL
-            AND html LIKE ${`%/_caelo/media/${assetId}/%`}
+            AND (html LIKE ${`%/_caelo/media/${target.slug}%`}
+                 OR html LIKE ${`%/_caelo/media/${assetId}/%`})
         `)) as unknown as { slug: string }[];
         blocked.push({ assetId, referencingModuleSlugs: refs.map((r) => r.slug) });
         continue;

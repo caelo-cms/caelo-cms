@@ -30,6 +30,7 @@ import {
   ok,
   PROPOSAL_STATUSES,
   type ProposalStatus,
+  pageIsLocaleHome,
   proposalStatus,
   resolveLocaleUrl,
 } from "@caelo-cms/shared";
@@ -541,6 +542,19 @@ async function loadLocaleConfig(tx: TransactionRunner, code: string): Promise<Lo
   };
 }
 
+/**
+ * 0184 — read `locales.home_page_id` for one locale. Returned as a bare
+ * id (or null when no page is designated) so the redirect fan-out can
+ * feed `pageIsLocaleHome` and route the designated page's 301s through
+ * the locale root instead of its slug path.
+ */
+async function loadLocaleHomePageId(tx: TransactionRunner, code: string): Promise<string | null> {
+  const rows = (await tx.execute(sql`
+    SELECT home_page_id::text AS home_page_id FROM locales WHERE code = ${code} LIMIT 1
+  `)) as unknown as { home_page_id: string | null }[];
+  return rows[0]?.home_page_id ?? null;
+}
+
 async function readSiteBaseUrl(tx: TransactionRunner): Promise<string> {
   const rows = (await tx.execute(sql`
     SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
@@ -657,6 +671,10 @@ export const executeLocaleProposalOp = defineOperation({
       // URLs (subdomain/domain) get logged but no redirect row is
       // inserted — those need per-provider edge rules.
       const baseUrl = await readSiteBaseUrl(tx);
+      // 0184 — the locale's designated homepage lives at the locale root,
+      // so its old URL (and thus the 301 source) is `/` (or `/<code>/`),
+      // not `/<slug>/`. Load the designation once for this locale.
+      const homePageId = await loadLocaleHomePageId(tx, code);
       const livePages = (await tx.execute(sql`
         SELECT id::text AS id, slug FROM pages
         WHERE locale = ${code} AND deleted_at IS NULL
@@ -664,7 +682,13 @@ export const executeLocaleProposalOp = defineOperation({
       for (const p of livePages) {
         let oldUrl: string;
         try {
-          oldUrl = resolveLocaleUrl(oldLocale, p.slug, baseUrl);
+          oldUrl = resolveLocaleUrl(
+            oldLocale,
+            p.slug,
+            baseUrl,
+            "directory",
+            pageIsLocaleHome(p.id, p.slug, homePageId),
+          );
         } catch {
           continue;
         }
@@ -735,16 +759,21 @@ export const executeLocaleProposalOp = defineOperation({
       // rules and ride out under FIXME(p15) for cloud adapters.
       const newLocale: LocaleConfig = { ...oldLocale, urlStrategy, urlHost };
       const baseUrl = await readSiteBaseUrl(tx);
+      // 0184 — the designated homepage resolves to the locale root under
+      // BOTH the old and new strategy, so its 301 source/target follow
+      // the root path, not `/<slug>/`.
+      const homePageId = await loadLocaleHomePageId(tx, code);
       const livePages = (await tx.execute(sql`
-        SELECT slug FROM pages
+        SELECT id::text AS id, slug FROM pages
         WHERE locale = ${code} AND deleted_at IS NULL AND status = 'published'
-      `)) as unknown as { slug: string }[];
+      `)) as unknown as { id: string; slug: string }[];
       for (const p of livePages) {
         let oldUrl: string;
         let newUrl: string;
+        const isHome = pageIsLocaleHome(p.id, p.slug, homePageId);
         try {
-          oldUrl = resolveLocaleUrl(oldLocale, p.slug, baseUrl);
-          newUrl = resolveLocaleUrl(newLocale, p.slug, baseUrl);
+          oldUrl = resolveLocaleUrl(oldLocale, p.slug, baseUrl, "directory", isHome);
+          newUrl = resolveLocaleUrl(newLocale, p.slug, baseUrl, "directory", isHome);
         } catch {
           continue;
         }

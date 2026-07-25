@@ -240,12 +240,6 @@
             <div class="flex items-center gap-2">
               {#if p.acceptedPageId}
                 <Badge variant="secondary">already accepted</Badge>
-              {:else if p.diffStatus === "fail"}
-                <Badge variant="destructive">screenshot diff: fail</Badge>
-              {:else if p.diffStatus === "warn"}
-                <Badge variant="outline">diff: warn</Badge>
-              {:else if p.diffStatus === "pass"}
-                <Badge>diff: pass</Badge>
               {/if}
             </div>
           </div>

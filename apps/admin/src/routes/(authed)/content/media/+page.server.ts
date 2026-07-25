@@ -22,6 +22,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const { assets, totalCount } = result.value as {
     assets: {
       id: string;
+      slug: string;
       mime: string;
       originalName: string;
       sizeBytes: number;

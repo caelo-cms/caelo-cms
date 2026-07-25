@@ -221,6 +221,63 @@ describe("pages.build_page — happy path", () => {
     expect(v.placements[0]!.minted).toBe(false);
     expect(v.placements[0]!.contentInstanceId).toBe(sharedCiId);
   });
+
+  it("a moduleId reuse carrying a DIFFERING label reports it as ignored authoring (§2 — no silent drop)", async () => {
+    const g = await execute(registry, adapter, systemCtx, "content_instances.get", {
+      id: sharedCiId,
+    });
+    if (!g.ok) throw new Error("ci get failed");
+    const ctaModuleId = (g.value as { instance: { moduleId: string } }).instance.moduleId;
+
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { pageId },
+      modules: [
+        {
+          blockName: "content",
+          moduleId: ctaModuleId,
+          // Placement-only: this differing label + fresh html must NOT be
+          // applied silently — the op records them so the tool can tell the AI.
+          displayName: "A Different Label",
+          html: "<p>ignored</p>",
+          content: { source: "existing", contentInstanceId: sharedCiId, syncMode: "synced" },
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as { ignoredAuthoringByIndex: Record<string, string[]> };
+    const ignored = v.ignoredAuthoringByIndex["0"];
+    expect(ignored).toBeDefined();
+    expect(ignored!.some((s) => s.includes("displayName='A Different Label'"))).toBe(true);
+    expect(ignored!.some((s) => s.includes("html (structural)"))).toBe(true);
+  });
+
+  it("a moduleId reuse whose label MATCHES the stored one reports no ignored authoring (harmless redundancy)", async () => {
+    const g = await execute(registry, adapter, systemCtx, "content_instances.get", {
+      id: sharedCiId,
+    });
+    if (!g.ok) throw new Error("ci get failed");
+    const ctaModuleId = (g.value as { instance: { moduleId: string } }).instance.moduleId;
+    const m = await execute(registry, adapter, systemCtx, "modules.get", { moduleId: ctaModuleId });
+    if (!m.ok) throw new Error("module get failed");
+    const storedName = (m.value as { module: { displayName: string } }).module.displayName;
+
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { pageId },
+      modules: [
+        {
+          blockName: "content",
+          moduleId: ctaModuleId,
+          displayName: storedName,
+          content: { source: "existing", contentInstanceId: sharedCiId, syncMode: "synced" },
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as { ignoredAuthoringByIndex: Record<string, string[]> };
+    expect(v.ignoredAuthoringByIndex["0"]).toBeUndefined();
+  });
 });
 
 describe("pages.build_page — empty shell (consolidation: replaces create_page)", () => {

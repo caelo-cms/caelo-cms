@@ -8,8 +8,8 @@
  * homepage-driven page-type map (#278).
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import type { Screenshot } from "@caelo-cms/site-importer";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { assertPublicHttpUrl, type Screenshot, type Screenshotter } from "@caelo-cms/site-importer";
 import { resetExternalFetchBudgetForTests } from "../tools/_external-fetch-budget.js";
 import { setExternalScreenshotterForTests } from "../tools/_external-screenshotter.js";
 import { clearPageInspectionCacheForTests } from "../tools/_page-inspection-cache.js";
@@ -89,6 +89,57 @@ afterAll(() => {
 afterEach(() => {
   resetExternalFetchBudgetForTests();
   setExternalScreenshotterForTests(null);
+});
+
+/** Computed-style samples the fake render returns for the `tokens` facet;
+ *  rgb(28,25,23) → #1c1917 drives the deriveDesignTokens assertion. */
+const STYLE_SAMPLES = [{ role: "body" as const, styles: { color: "rgb(28, 25, 23)" } }];
+
+/**
+ * Deterministic screenshotter fake — the inspection tools are now
+ * RENDER-FIRST (they read the JS-applied DOM), so every test drives a fake
+ * instead of launching real Chromium (slow, and a charset-less fixture
+ * mojibakes umlauts through a real render). `renderHtml` returns the exact
+ * fixture bytes and enforces the REAL SSRF guard so blocked-URL tests still
+ * exercise it. Individual tests pass `over` to specialise a method.
+ */
+function fakeScreenshotter(over: Partial<Screenshotter> = {}): Screenshotter {
+  const allowed = (process.env.CAELO_IMPORTER_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return {
+    async capture(url, opts) {
+      assertPublicHttpUrl(url, { allowedHosts: allowed });
+      return {
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        width: 1280,
+        height: 800,
+        finalUrl: url,
+        renderedHtml: FIXTURE_HTML,
+        ...(opts?.sampleStyles ? { styleSamples: STYLE_SAMPLES } : {}),
+      };
+    },
+    async renderHtml(url, opts) {
+      assertPublicHttpUrl(url, { allowedHosts: allowed });
+      return {
+        finalUrl: url,
+        html: FIXTURE_HTML,
+        ...(opts?.sampleStyles ? { styleSamples: STYLE_SAMPLES } : {}),
+      };
+    },
+    async query() {
+      return [];
+    },
+    async dispose() {},
+    ...over,
+  };
+}
+
+beforeEach(() => {
+  // Default: a fake that renders the fixture. Tests needing a specific
+  // capture/query/render override it with their own setExternalScreenshotterForTests.
+  setExternalScreenshotterForTests(async () => fakeScreenshotter());
 });
 
 const toolCtx = { chatSessionId: "11111111-1111-4111-8111-111111111111" } as ToolContext;
@@ -196,14 +247,14 @@ describe("query_page_html", () => {
 
   it("css/xpath mode runs a selector via the shared screenshotter (setContent)", async () => {
     let queriedWith: unknown;
-    setExternalScreenshotterForTests(async () => ({
-      capture: async () => ({ bytes: new Uint8Array([1]), width: 1280, height: 800 }),
-      query: async (_html, opts) => {
-        queriedWith = opts;
-        return ['<a href="/en/pricing">Preise</a>'];
-      },
-      dispose: async () => undefined,
-    }));
+    setExternalScreenshotterForTests(async () =>
+      fakeScreenshotter({
+        query: async (_html, opts) => {
+          queriedWith = opts;
+          return ['<a href="/en/pricing">Preise</a>'];
+        },
+      }),
+    );
     clearPageInspectionCacheForTests();
     const first = await inspectExternalPageTool.handler(
       emptyCtx,
@@ -225,16 +276,16 @@ describe("query_page_html", () => {
   it("query prefers the RENDERED DOM when a screenshot render populated the pageRef", async () => {
     // The render returns HTML carrying a marker that is NOT in the static
     // fetched fixture — proving query_page_html uses renderedHtml.
-    setExternalScreenshotterForTests(async () => ({
-      capture: async () => ({
-        bytes: new Uint8Array([1]),
-        width: 1280,
-        height: 800,
-        renderedHtml: "<html><body><div id='jsonly'>RENDERED-ONLY-MARKER</div></body></html>",
+    setExternalScreenshotterForTests(async () =>
+      fakeScreenshotter({
+        capture: async () => ({
+          bytes: new Uint8Array([1]),
+          width: 1280,
+          height: 800,
+          renderedHtml: "<html><body><div id='jsonly'>RENDERED-ONLY-MARKER</div></body></html>",
+        }),
       }),
-      query: async () => [],
-      dispose: async () => undefined,
-    }));
+    );
     clearPageInspectionCacheForTests();
     const first = await inspectExternalPageTool.handler(
       emptyCtx,
@@ -303,6 +354,68 @@ describe("query_page_html", () => {
     expect(r.content).toContain('aria-label="Menü öffnen"');
   });
 
+  it("altTexts + images: img alts live only in the asset inventory (no double-listing)", async () => {
+    const r = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { altTexts: true, images: true } },
+      toolCtx,
+    );
+    // The alt-text section narrows to aria-labels (its header says so)...
+    expect(r.content).toContain(
+      "## Alt-text inventory (aria-labels; img alts are in the image/asset inventory)",
+    );
+    expect(r.content).toContain('aria-label="Menü öffnen"');
+    // ...and no longer repeats the img-alt row — that lives in the asset
+    // inventory which is printed AFTER the alt-text section.
+    const beforeImages = r.content.split("## Image / asset inventory")[0] ?? "";
+    expect(beforeImages).not.toContain('img alt="Frisches Sauerteigbrot"');
+    // The alt still appears exactly once — attached to its asset URL.
+    expect(r.content).toContain("## Image / asset inventory");
+    expect(r.content).toContain('alt="Frisches Sauerteigbrot"');
+  });
+
+  it("render-first surfaces a JS-set <video src> the static source lacks (searchviu regression)", async () => {
+    // On searchviu the hero <video> carries NO src in the static HTML — an
+    // inline script sets it at runtime. discoverAssetRefs matches src|srcset|
+    // poster ATTRIBUTES, so a static read finds nothing; only the rendered
+    // DOM (src applied) exposes the .mp4. The fake renderHtml returns the
+    // POST-JS DOM to model exactly that.
+    setExternalScreenshotterForTests(async () =>
+      fakeScreenshotter({
+        renderHtml: async (url) => ({
+          finalUrl: url,
+          html: `<!doctype html><html><body><video id="v" src="https://cdn.example.com/hero.mp4"></video></body></html>`,
+        }),
+      }),
+    );
+    const r = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/`, facets: { images: true } },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain("## Image / asset inventory");
+    expect(r.content).toContain("https://cdn.example.com/hero.mp4");
+  });
+
+  it("query_page_html (url) runs the page's JS so a JS-set value is findable", async () => {
+    setExternalScreenshotterForTests(async () =>
+      fakeScreenshotter({
+        renderHtml: async (url) => ({
+          finalUrl: url,
+          html: `<html><body><video src="https://cdn.example.com/hero.mp4"></video></body></html>`,
+        }),
+      }),
+    );
+    const r = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { url: `${base}/`, keyword: "hero.mp4" },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain("hero.mp4");
+  });
+
   it("there is NO markup facet — no ## Markup section; structure is query_page_html's job", async () => {
     const r = await inspectExternalPageTool.handler(
       emptyCtx,
@@ -322,14 +435,14 @@ describe("query_page_html", () => {
       height: 800,
     };
     let capturedOpts: unknown;
-    setExternalScreenshotterForTests(async () => ({
-      capture: async (_url, opts) => {
-        capturedOpts = opts;
-        return fakeShot;
-      },
-      query: async () => [],
-      dispose: async () => undefined,
-    }));
+    setExternalScreenshotterForTests(async () =>
+      fakeScreenshotter({
+        capture: async (_url, opts) => {
+          capturedOpts = opts;
+          return fakeShot;
+        },
+      }),
+    );
     const r = await inspectExternalPageTool.handler(
       emptyCtx,
       { url: `${base}/`, facets: { screenshot: true } },
@@ -338,33 +451,25 @@ describe("query_page_html", () => {
     expect(r.ok).toBe(true);
     expect(r.image?.mediaType).toBe("image/png");
     expect(r.image?.base64).toBe(Buffer.from(fakeShot.bytes).toString("base64"));
-    expect(capturedOpts).toMatchObject({ external: true, fullPage: false });
+    // The screenshot facet captures the WHOLE page (not just the top fold) —
+    // operators expect the full page, matching screenshot_external_page.
+    expect(capturedOpts).toMatchObject({ external: true, fullPage: true });
   });
 
-  it("tokens facet: static fact base always, computed-style tokens from one render pass", async () => {
-    setExternalScreenshotterForTests(async () => ({
-      capture: async (_url, opts) => ({
-        bytes: new Uint8Array([1]),
-        width: 1280,
-        height: 800,
-        ...(opts?.sampleStyles
-          ? { styleSamples: [{ role: "body" as const, styles: { color: "rgb(28, 25, 23)" } }] }
-          : {}),
-      }),
-      query: async () => [],
-      dispose: async () => undefined,
-    }));
+  it("tokens facet: rendered computed-style tokens ONLY (static fact base suppressed to avoid doubling)", async () => {
+    // Uses the default fake (beforeEach): tokens-only renders via renderHtml,
+    // whose sampleStyles return STYLE_SAMPLES → #1c1917.
     const r = await inspectExternalPageTool.handler(
       emptyCtx,
       { url: `${base}/`, facets: { tokens: true } },
       toolCtx,
     );
-    expect(r.content).toContain("## Design fact base (static, CSS-derived)");
-    // static inventory sees the linked stylesheet's palette.
-    expect(r.content.toLowerCase()).toContain("#fef3c7");
-    // computed-style tokens derived from the render pass.
+    // Rendered tokens are the accurate source — the ONLY design section here.
     expect(r.content).toContain("## Computed-style design tokens (rendered)");
     expect(r.content).toContain("#1c1917");
+    // Static CSS-derived fact base is the fallback; it must NOT double up when
+    // the render produced computed tokens.
+    expect(r.content).not.toContain("## Design fact base (static, CSS-derived)");
   });
 
   it("tokens facet fails LOUDLY (no silent degrade) when Playwright is missing, static base still shown", async () => {
@@ -469,7 +574,9 @@ describe("screenshot_external_page (shared screenshotter seam)", () => {
     expect(r.ok).toBe(true);
     expect(r.image?.mediaType).toBe("image/png");
     expect(r.image?.base64).toBe(Buffer.from(fakeShot.bytes).toString("base64"));
-    expect(capturedOpts).toMatchObject({ external: true, fullPage: false });
+    // Defaults to full-page capture (the tool's documented default) — no
+    // `fullPage` arg was passed, so this locks in "whole page, not viewport".
+    expect(capturedOpts).toMatchObject({ external: true, fullPage: true });
   });
 
   it("fails LOUDLY when Playwright is unavailable — no silent degrade", async () => {

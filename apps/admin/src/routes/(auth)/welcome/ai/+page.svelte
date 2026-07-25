@@ -19,6 +19,12 @@
   } from "$lib/components/ui/card/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
+  import { Select } from "$lib/components/ui/select/index.js";
+  import {
+    MODEL_HELPER_TEXT,
+    defaultModelForProvider,
+    modelsForProvider,
+  } from "$lib/ai-models.js";
 
   let { data, form } = $props();
 
@@ -48,6 +54,11 @@
 
   let selected = $state(form?.provider ?? "anthropic");
   const selectedProvider = $derived(providers.find((p) => p.name === selected) ?? providers[0]);
+
+  // The model list + default follow the selected provider. Changing the
+  // provider radio resets `model` to that provider's default.
+  const models = $derived(modelsForProvider(selected));
+  let model = $state(defaultModelForProvider(form?.provider ?? "anthropic"));
 </script>
 
 <Card>
@@ -80,6 +91,7 @@
               checked={selected === p.name}
               onchange={() => {
                 selected = p.name;
+                model = defaultModelForProvider(p.name);
               }}
               class="mt-1"
             />
@@ -109,6 +121,15 @@
             class="underline underline-offset-2">{new URL(selectedProvider.keyUrl).hostname}</a
           >. Stored encrypted, never shown again, switchable anytime.
         </p>
+      </div>
+      <div class="space-y-2">
+        <Label for="model">Model</Label>
+        <Select id="model" name="model" bind:value={model}>
+          {#each models as m (m.id)}
+            <option value={m.id}>{m.label}</option>
+          {/each}
+        </Select>
+        <p class="text-xs text-muted-foreground">{MODEL_HELPER_TEXT}</p>
       </div>
       <Button type="submit" class="w-full">Save &amp; start</Button>
     </form>

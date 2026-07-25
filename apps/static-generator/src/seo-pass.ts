@@ -23,6 +23,7 @@ import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   injectSeoIntoHead,
   type LocaleConfig,
+  pageIsLocaleHome,
   renderSeoHead,
   resolveCanonicalUrl,
   resolveLocaleUrl,
@@ -130,10 +131,15 @@ export async function runSeoPass(args: {
   ];
   const ogImageUrlByAsset = new Map<string, string>();
   for (const id of ogImageAssetIds) {
+    // Resolve to the slug so the og:image URL matches the media-pass
+    // output (`/_assets/<slug>.<ext>` for orig, `/_assets/<slug>/<variant>.<ext>`
+    // for a named variant); the UUID id stays internal.
     const rows = (await args.tx.execute(sql`
-      SELECT mv.variant, mv.format
+      SELECT ma.slug, mv.variant, mv.format
       FROM media_variants mv
+      JOIN media_assets ma ON ma.id = mv.asset_id
       WHERE mv.asset_id = ${id}::uuid
+        AND ma.deleted_at IS NULL
       ORDER BY
         CASE mv.variant
           WHEN 'webp-1200' THEN 0
@@ -143,7 +149,7 @@ export async function runSeoPass(args: {
           ELSE 4
         END
       LIMIT 1
-    `)) as unknown as { variant: string; format: string }[];
+    `)) as unknown as { slug: string; variant: string; format: string }[];
     const v = rows[0];
     if (!v) {
       throw new Error(
@@ -151,10 +157,12 @@ export async function runSeoPass(args: {
       );
     }
     const ext = v.format === "jpeg" ? "jpg" : v.format;
-    ogImageUrlByAsset.set(
-      id,
-      `${args.settings.siteBaseUrl.replace(/\/$/, "")}/_assets/${id}/${v.variant}.${ext}`,
-    );
+    const base = args.settings.siteBaseUrl.replace(/\/$/, "");
+    const assetUrl =
+      v.variant === "orig"
+        ? `${base}/_assets/${v.slug}.${ext}`
+        : `${base}/_assets/${v.slug}/${v.variant}.${ext}`;
+    ogImageUrlByAsset.set(id, assetUrl);
   }
 
   // P9 — compute hreflang per page from the locale registry + sibling
@@ -166,7 +174,8 @@ export async function runSeoPass(args: {
   const hreflangByPage = new Map<string, { locale: string; url: string }[]>();
 
   const localeRows = (await args.tx.execute(sql`
-    SELECT code, display_name, url_strategy, url_host, is_default
+    SELECT code, display_name, url_strategy, url_host, is_default,
+           home_page_id::text AS home_page_id
     FROM locales
   `)) as unknown as {
     code: string;
@@ -174,6 +183,7 @@ export async function runSeoPass(args: {
     url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
     url_host: string | null;
     is_default: boolean;
+    home_page_id: string | null;
   }[];
   const locales: LocaleConfig[] = localeRows.map((r) => ({
     code: r.code,
@@ -183,31 +193,44 @@ export async function runSeoPass(args: {
     isDefault: r.is_default,
   }));
   const localeByCode = new Map(locales.map((l) => [l.code, l]));
+  // 0184 — locale code → its designated homepage id. Feeds
+  // `pageIsLocaleHome` so canonical + hreflang for a page designated on a
+  // non-magic slug still point at the locale root.
+  const homePageByLocale = new Map(localeRows.map((r) => [r.code, r.home_page_id]));
 
   // P9 review-pass optimisation: ONE query for the (slug, locale)
   // matrix across all published pages, replacing N per-page queries.
   // Per CMS_REQUIREMENTS §7.3: only locales WITH a published
   // translation count. Draft/scheduled variants must not surface.
   const siblingRows = (await args.tx.execute(sql`
-    SELECT slug, locale FROM pages
+    SELECT id::text AS id, slug, locale FROM pages
     WHERE deleted_at IS NULL AND status = 'published'
-  `)) as unknown as { slug: string; locale: string }[];
-  const localesBySlug = new Map<string, string[]>();
+  `)) as unknown as { id: string; slug: string; locale: string }[];
+  // Slug → each published sibling's (locale, pageId). The pageId lets
+  // the hreflang loop compute each sibling's home status from its OWN
+  // locale's designation (0184).
+  const localesBySlug = new Map<string, { locale: string; pageId: string }[]>();
   for (const r of siblingRows) {
     const arr = localesBySlug.get(r.slug) ?? [];
-    arr.push(r.locale);
+    arr.push({ locale: r.locale, pageId: r.id });
     localesBySlug.set(r.slug, arr);
   }
   for (const bundle of seoBundles) {
     const siblings = localesBySlug.get(bundle.slug) ?? [];
     const auto: { locale: string; url: string }[] = [];
-    for (const localeCode of siblings) {
-      const cfg = localeByCode.get(localeCode);
+    for (const sibling of siblings) {
+      const cfg = localeByCode.get(sibling.locale);
       if (!cfg) continue;
       try {
         auto.push({
-          locale: localeCode,
-          url: resolveLocaleUrl(cfg, bundle.slug, args.settings.siteBaseUrl, args.pageUrlStyle),
+          locale: sibling.locale,
+          url: resolveLocaleUrl(
+            cfg,
+            bundle.slug,
+            args.settings.siteBaseUrl,
+            args.pageUrlStyle,
+            pageIsLocaleHome(sibling.pageId, bundle.slug, homePageByLocale.get(sibling.locale)),
+          ),
         });
       } catch {
         // Misconfigured locale (missing url_host) — skip its hreflang
@@ -246,6 +269,7 @@ export async function runSeoPass(args: {
       override: bundle.canonicalOverride,
       localeConfig: localeByCode.get(bundle.locale),
       pageUrlStyle: args.pageUrlStyle,
+      isHomePage: pageIsLocaleHome(bundle.pageId, bundle.slug, homePageByLocale.get(bundle.locale)),
     });
     const ogImageUrl = bundle.ogImageAssetId
       ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
@@ -275,6 +299,7 @@ export async function runSeoPass(args: {
           override: b.canonicalOverride,
           localeConfig: localeByCode.get(b.locale),
           pageUrlStyle: args.pageUrlStyle,
+          isHomePage: pageIsLocaleHome(b.pageId, b.slug, homePageByLocale.get(b.locale)),
         });
         return [
           "  <url>",

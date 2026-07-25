@@ -99,6 +99,37 @@ describe("pageOutputPath", () => {
       expect(pageOutputPath("about", NONE, "directory")).toBe("about/index.html");
     });
   });
+
+  describe("explicit homepage designation (0184)", () => {
+    const NONE = { code: "en", urlStrategy: "none" as const, urlHost: null };
+    const SUBDIR = { code: "de", urlStrategy: "subdirectory" as const, urlHost: null };
+    const SUBDOMAIN = {
+      code: "de",
+      urlStrategy: "subdomain" as const,
+      urlHost: "de.example.com",
+    };
+
+    it("a page designated home on a NON-magic slug emits at the locale root", () => {
+      // Without the flag `en` is a normal nested page...
+      expect(pageOutputPath("en", NONE)).toBe("en/index.html");
+      // ...with the designation it emits at the bucket root, so it is
+      // actually served at `/` (matching its canonical + hreflang).
+      expect(pageOutputPath("en", NONE, "directory", true)).toBe("index.html");
+    });
+
+    it("the locale-root emission respects the locale's prefix/host", () => {
+      expect(pageOutputPath("lander", SUBDIR, "directory", true)).toBe("de/index.html");
+      expect(pageOutputPath("lander", SUBDOMAIN, "directory", true)).toBe(
+        "_hosts/de.example.com/index.html",
+      );
+      expect(pageOutputPath("lander", SUBDIR, "no-extension", true)).toBe("de/index.html");
+    });
+
+    it("a normal (non-designated) page is unaffected", () => {
+      expect(pageOutputPath("about", NONE, "directory", false)).toBe("about/index.html");
+      expect(pageOutputPath("about", SUBDIR, "directory", false)).toBe("de/about/index.html");
+    });
+  });
 });
 
 describe("buildRobotsTxt", () => {

@@ -15,17 +15,17 @@ import {
   updatePagesManyTool,
 } from "./bulk-pages-modules.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
-import { checkGenesisParityTool } from "./check-genesis-parity.js";
-import { composeFromImportTool } from "./compose-from-import.js";
 import { createContentInstanceTool } from "./create-content-instance.js";
 import { createContentInstancesTool } from "./create-content-instances.js";
 import { createLayoutTool } from "./create-layout.js";
 import { createTemplateTool } from "./create-template.js";
 import { deleteContentInstanceTool } from "./delete-content-instance.js";
+import { deleteContentInstancesTool } from "./delete-content-instances.js";
 import { deleteStructuredSetTool } from "./delete-structured-set.js";
 import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { duplicateThemeTool } from "./duplicate-theme.js";
+import { editContentTool } from "./edit-content.js";
 import { editModuleTool } from "./edit-module.js";
 import { exportThemeTool } from "./export-theme.js";
 import { findMediaTool } from "./find-media.js";
@@ -38,10 +38,13 @@ import {
   selectGenesisDraftTool,
 } from "./genesis-tools.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
+import { getImportPageTool } from "./get-import-page.js";
 import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
 import { getPageLogTool } from "./get-page-log.js";
 import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
+import { grepContentTool } from "./grep-content.js";
+import { importMediaFromUrlsTool } from "./import-media-from-urls.js";
 import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
@@ -51,6 +54,7 @@ import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listLayoutsTool } from "./list-layouts.js";
 import { listModulesTool } from "./list-modules.js";
+import { listPageAssetsTool } from "./list-page-assets.js";
 import { listPagesTool } from "./list-pages.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
@@ -59,7 +63,6 @@ import { listThemesTool } from "./list-themes.js";
 import { loadSkillTool } from "./load-skill.js";
 import { logPageEditTool } from "./log-page-edit.js";
 import { mapExternalPageTypesTool } from "./map-external-page-types.js";
-import { migrateMediaTool } from "./migrate-media.js";
 import { checkRunBudgetTool, setMigrationBudgetTool } from "./migration-budget.js";
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
@@ -100,6 +103,7 @@ import {
 } from "./propose-tools-batch.js";
 import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
 import { queryPageHtmlTool } from "./query-page-html.js";
+import { readContentTool } from "./read-content.js";
 import { readPageMoreTool } from "./read-page-more.js";
 import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
@@ -110,11 +114,17 @@ import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotExternalPageTool } from "./screenshot-external-page.js";
 import { screenshotPageTool } from "./screenshot-page.js";
 import { setContentInstanceValuesTool } from "./set-content-instance-values.js";
+import { setContentInstanceValuesManyTool } from "./set-content-instance-values-many.js";
 import { setDesignManifestTool } from "./set-design-manifest.js";
+import { setHomePageTool } from "./set-home-page.js";
 import { setMediaAltTool } from "./set-media-alt.js";
+import { setMediaAltManyTool } from "./set-media-alt-many.js";
+import { setMediaSourceTool } from "./set-media-source.js";
+import { setMediaSourceManyTool } from "./set-media-source-many.js";
 import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageModuleContentManyTool } from "./set-page-module-content-many.js";
 import { setPageSeoTool } from "./set-page-seo.js";
+import { setPageSeoManyTool } from "./set-page-seo-many.js";
 import { setPagesStatusManyTool } from "./set-pages-status-many.js";
 import { setPlacementContentTool } from "./set-placement-content.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
@@ -143,7 +153,6 @@ import { submitResultTool } from "./submit-result.js";
 // them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
-import { verifyImportFidelityTool } from "./verify-import-fidelity.js";
 
 /**
  * Registers every shipped tool against a fresh ToolRegistry. Tests can
@@ -152,6 +161,14 @@ import { verifyImportFidelityTool } from "./verify-import-fidelity.js";
 export function createDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(editModuleTool);
+  // Claude-Code-style read/edit/grep over DB-stored bodies (html/css/js).
+  // read_content = windowed line-numbered Read; edit_content = surgical
+  // string-replace Edit (cheaper + minimal diff than re-emitting via
+  // edit_module); grep_content = catalog-wide search. One registry
+  // (content-edit/registry.ts) backs all three (CLAUDE.md §1A DRY).
+  registry.register(readContentTool);
+  registry.register(editContentTool);
+  registry.register(grepContentTool);
   registry.register(setPageModuleContentTool);
   // issue #299 — bulk-first build path (CLAUDE.md §11): one call builds a
   // page (modules + content + placements); the _many variants batch
@@ -165,6 +182,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(createContentInstanceTool);
   registry.register(setContentInstanceValuesTool);
   registry.register(deleteContentInstanceTool);
+  // Bulk `_many` variants via the DRY makeBulkTool factory (CLAUDE.md §11).
+  registry.register(setContentInstanceValuesManyTool);
+  registry.register(deleteContentInstancesTool);
   registry.register(setPlacementContentTool);
   registry.register(forkPlacementContentTool);
   // v0.5.12 — explicit read fallbacks for layouts / templates / pages.
@@ -185,8 +205,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(selectGenesisDraftTool);
   // issue #164 — compiler stage 1: draft fact base for materialisation.
   registry.register(inspectGenesisDraftTool);
-  // issue #164 slice 3 — the screenshot-parity verification gate.
-  registry.register(checkGenesisParityTool);
   // issue #165 — per-site design language writer.
   registry.register(setDesignManifestTool);
   // issue #189 / #278 — single-page external-site sensing (facet-selectable
@@ -199,12 +217,16 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #194 cluster-review tools (list/assign page clusters) were retired
   // in the #278 homepage-first flow: the AI maps page types from the homepage's
   // own nav/footer (map_external_page_types) instead of crawling everything and
-  // grouping by structural signature. compose_from_import still auto-clusters
-  // internally; that machinery is unchanged. The two AI-facing cluster tools are
+  // grouping by structural signature. The compose_from_run op (ramp-up wizard)
+  // still auto-clusters internally; that machinery is unchanged. The two AI-facing cluster tools are
   // deliberately no longer registered so the model can't be steered back into a
   // blind-crawl + manual cluster-review path that contradicts the active skill.
   // issue #198 — stored crawl screenshots as model-visible pixels.
   registry.register(getImportPageScreenshotTool);
+  // 2026-07 — read a crawled page's content as Markdown + tokens + a screenshot
+  // handle (never raw HTML) so the mass-import rebuild uses the stored crawl
+  // instead of re-fetching the live site. Mirrors inspect_external_page.
+  registry.register(getImportPageTool);
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);
@@ -216,8 +238,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // (no information loss) + repeated-subtree boilerplate detection.
   registry.register(checkPageContentInventoryTool);
   registry.register(detectImportBoilerplateTool);
-  // issue #250 (WS4) — source-vs-rebuilt fidelity verdict (self-analysis gate).
-  registry.register(verifyImportFidelityTool);
   // issue #264 — per-page work-history log: read before touching a page,
   // append after a meaningful change, so later chats / fresh subagents keep
   // the intent without dragging the whole originating transcript.
@@ -249,11 +269,12 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // with a clear "execution runtime pending" message.
   registry.register(addPluginToPageTool);
   registry.register(createTemplateTool);
-  registry.register(composeFromImportTool);
-  // issue #249 (WS3) — post-compose media migration: stop hotlinking
-  // the source site; the tool description tells the AI to call it
-  // right after compose_from_import.
-  registry.register(migrateMediaTool);
+  // Explicit, URL-driven media import: the AI names the exact source-site
+  // asset URLs (from inspect_external_page's image inventory) to pull into
+  // the media library. Replaces the former scan-and-download migrate_media.
+  registry.register(importMediaFromUrlsTool);
+  // The full, searchable asset list behind inspect's top-20 `images` glance.
+  registry.register(listPageAssetsTool);
   // audit #3 — page metadata (name / title / slug / template / status) is ONE
   // tool for 1..200 pages: update_pages_many. The former rename_page /
   // set_page_title / change_page_slug were thin single-field wrappers over
@@ -283,18 +304,27 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(revertChatChangesTool);
   // P6.7.7 — content-ops follow-ups.
   registry.register(duplicatePageTool);
+  // 0184 — designate any page as the site root (per locale). Replaces the
+  // reliance on a magic `home` slug for the homepage.
+  registry.register(setHomePageTool);
   registry.register(repointPageTemplateTool);
   registry.register(moveModuleTool);
   registry.register(reorderModuleTool);
   // P7 — media library.
   registry.register(findMediaTool);
   registry.register(setMediaAltTool);
+  registry.register(setMediaSourceTool);
+  // Bulk `_many` variants via the DRY makeBulkTool factory (CLAUDE.md §11).
+  registry.register(setMediaAltManyTool);
+  registry.register(setMediaSourceManyTool);
   // run #10 D4 — recovery for "media references unresolved" deploy failures.
   registry.register(regenerateMediaVariantsTool);
   // P16 — AI image generation via the active provider's image endpoint.
   registry.register(generateImageTool);
   // P8 — SEO sidecar tools.
   registry.register(setPageSeoTool);
+  // Bulk `_many` variant via the DRY makeBulkTool factory (CLAUDE.md §11).
+  registry.register(setPageSeoManyTool);
   registry.register(autofillPageSeoTool);
   registry.register(optimizePageSeoTool);
   // P8 AI-first review pass — bulk variants + redirect surface.

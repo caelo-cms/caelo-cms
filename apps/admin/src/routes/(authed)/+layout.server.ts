@@ -53,7 +53,23 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
     }
   }
 
+  // Live "AI spend — last 7 days" readout for the top bar. Best-effort:
+  // a failed read must never break the layout, so it degrades to null.
+  let aiSpend7d: { display: string; costMicrocents: number; days: number } | null = null;
+  try {
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "ai_calls.spend_window", { days: 7 });
+    if (r.ok) {
+      const { costMicrocents, days } = r.value as { costMicrocents: number; days: number };
+      // Microcents are 1e-8 USD.
+      aiSpend7d = { display: `$${(costMicrocents / 1e8).toFixed(2)}`, costMicrocents, days };
+    }
+  } catch {
+    aiSpend7d = null;
+  }
+
   return {
     permissions: [...locals.user.permissions].sort(),
+    aiSpend7d,
   };
 };

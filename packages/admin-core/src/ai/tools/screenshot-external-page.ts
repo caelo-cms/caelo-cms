@@ -27,9 +27,24 @@ const input = z
   .object({
     url: z.string().url(),
     viewport: z.enum(["desktop", "mobile"]).optional(),
+    /**
+     * Capture the WHOLE page (default) vs the viewport only. Full-page is the
+     * default so long pages aren't truncated to their top — the AI needs the
+     * whole thing to judge layout/content below the fold.
+     */
+    fullPage: z.boolean().optional(),
   })
   .strict();
 type Input = z.infer<typeof input>;
+
+/** Read a PNG's pixel dimensions from its IHDR chunk (width @16, height @20,
+ *  big-endian). Returns null if the bytes aren't a PNG. Exported so
+ *  inspect_external_page reports the TRUE full-page height, not the viewport. */
+export function pngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.length < 24 || bytes[0] !== 0x89 || bytes[1] !== 0x50) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: dv.getUint32(16), height: dv.getUint32(20) };
+}
 
 /**
  * Test seam alias — the screenshotter factory now lives in the shared
@@ -47,8 +62,8 @@ const VIEWPORTS = {
 export const screenshotExternalPageTool: ToolDefinitionWithHandler<Input> = {
   name: "screenshot_external_page",
   description:
-    "Render ONE page of an EXTERNAL website in headless Chromium and see it as an image (attached to your next turn). Use together with `inspect_external_page` when an operator names their existing site — the inventory gives you the facts, this gives you the visual impression the keep-design question depends on. " +
-    "Viewport-only capture (not full page): one glance, not an archive. Do NOT use for Caelo's own pages — use `screenshot_page`. Do NOT loop it over many URLs — for whole-site work propose the crawl. " +
+    "Render ONE page of an EXTERNAL website in headless Chromium and see it as an image (available to you in THIS turn — analyse it on your next step; do NOT end the turn to wait for it). Use together with `inspect_external_page` when an operator names their existing site — the inventory gives you the facts, this gives you the visual impression the keep-design question depends on. " +
+    "Captures the WHOLE page by default (long pages included, not just the top) — pass `fullPage: false` for a viewport-only glance. Do NOT use for Caelo's own pages — use `screenshot_page`. Do NOT loop it over many URLs — for whole-site work propose the crawl. " +
     "Only public http(s) URLs; private/internal addresses are refused. Fails loudly when Playwright/Chromium is not installed in this runtime — report that to the operator instead of pretending you saw the page.",
   schema: input,
   inputSchema: {
@@ -60,7 +75,12 @@ export const screenshotExternalPageTool: ToolDefinitionWithHandler<Input> = {
       viewport: {
         type: "string",
         enum: ["desktop", "mobile"],
-        description: "Capture viewport. Defaults to desktop (1280×800).",
+        description: "Capture viewport width. Defaults to desktop (1280px wide).",
+      },
+      fullPage: {
+        type: "boolean",
+        description:
+          "Capture the whole page (default true). Set false for a viewport-only (1280×800) glance.",
       },
     },
   },
@@ -84,15 +104,22 @@ export const screenshotExternalPageTool: ToolDefinitionWithHandler<Input> = {
     }
     try {
       const vp = VIEWPORTS[toolInput.viewport ?? "desktop"];
+      const fullPage = toolInput.fullPage ?? true;
       const shot = await screenshotter.capture(toolInput.url, {
         width: vp.width,
         height: vp.height,
         external: true,
-        fullPage: false,
+        fullPage,
       });
+      const dims = pngDimensions(shot.bytes);
+      const sizeNote = dims
+        ? `${dims.width}×${dims.height}px${fullPage ? " (full page)" : ""}`
+        : fullPage
+          ? "full page"
+          : `${vp.width}×${vp.height}`;
       return {
         ok: true,
-        content: `Screenshot of ${toolInput.url} captured (${toolInput.viewport ?? "desktop"} viewport, ${vp.width}×${vp.height}). Image attached to the next turn. (${budget.remaining} external fetches left in this session's budget.)`,
+        content: `Screenshot of ${toolInput.url} captured (${toolInput.viewport ?? "desktop"}, ${sizeNote}). The image is available to you in THIS turn — analyse it on your next step; do not end the turn to wait for it. (${budget.remaining} external fetches left in this session's budget.)`,
         image: { base64: Buffer.from(shot.bytes).toString("base64"), mediaType: "image/png" },
       };
     } catch (e) {

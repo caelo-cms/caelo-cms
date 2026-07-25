@@ -27,6 +27,42 @@ export function isStatusNote(m: Pick<ChatMessage, "role" | "origin">): boolean {
 }
 
 /**
+ * Injected AI-CONTEXT PLUMBING — the current-page block ("# Current page …"
+ * with raw module HTML) and the cold-start status line — ride on the message
+ * flow (see chat-runner `injectNote`) and each ends with a trailing
+ * `<!--pagectx:SIG-->` / `<!--status:SIG-->` marker. This content is written
+ * FOR THE MODEL, not the operator: it is verbose (a whole page's rendered HTML)
+ * and full of internal ids, so the transcript collapses it behind a one-line
+ * summary. Marker-less system notes (crawl nudges, post-approval continuations)
+ * are short and operator-relevant and stay visible as "Status:" lines.
+ */
+const NOTE_MARKER_RE = /\n?<!--(pagectx|status):[^>]*-->\s*$/;
+
+/** The injected-note kind if this system note is AI-context plumbing, else null. */
+export function noteMarkerKind(content: string): "pagectx" | "status" | null {
+  const m = content.match(NOTE_MARKER_RE);
+  return m ? (m[1] as "pagectx" | "status") : null;
+}
+
+/** True for the verbose current-page / status-line context notes that the
+ *  transcript should render collapsed rather than inline. */
+export function isContextNote(content: string): boolean {
+  return noteMarkerKind(content) !== null;
+}
+
+/** Strip the trailing injected `<!--marker:SIG-->` so it never shows as literal
+ *  text to the operator (applies to both collapsed context notes and the short
+ *  visible nudges). */
+export function stripNoteMarker(content: string): string {
+  return content.replace(NOTE_MARKER_RE, "").trimEnd();
+}
+
+/** Short human summary for a collapsed context note's `<summary>`. */
+export function contextNoteLabel(content: string): string {
+  return noteMarkerKind(content) === "pagectx" ? "Page context" : "Site status";
+}
+
+/**
  * Near-identity key for status-note bodies: two notes that differ only
  * in numbers or ids (crawl progress ticks, proposal/run-id prefixes)
  * are the same status line at two points in time. Hex runs (uuid or

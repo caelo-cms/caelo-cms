@@ -70,20 +70,25 @@ export function pickAiImageVariant(existingVariants: readonly string[]): string 
 export interface EnrichResponsiveImagesOptions {
   /**
    * Build the URL an enriched attribute should reference for
-   * (assetId, variant, format). Return null to leave `src` untouched
-   * (the preview keeps its admin-served URLs).
+   * (ref, variant, format), where `ref` is the asset SLUG (current form)
+   * or a legacy UUID id. Return null to leave `src` untouched (the preview
+   * keeps its admin-served URLs).
    */
-  readonly urlFor: (assetId: string, variant: string, format: string) => string;
+  readonly urlFor: (ref: string, variant: string, format: string) => string;
   /** Rewrite the `src` attribute itself (production) or keep it (preview). */
   readonly rewriteSrc: boolean;
-  /** Format lookup per (assetId, variant); defaults to webp. */
-  readonly formatFor?: (assetId: string, variant: string) => string;
+  /** Format lookup per (ref, variant); defaults to webp. */
+  readonly formatFor?: (ref: string, variant: string) => string;
 }
 
+const ENRICH_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /**
- * Walk every `<img …>` whose src points at `/_caelo/media/<id>/<variant>`
- * and append the responsive attributes. String-level rewrite; existing
- * attributes always win.
+ * Walk every `<img …>` whose src points at `/_caelo/media/<slug>` (or the
+ * legacy `/_caelo/media/<uuid>/<variant>`) and append the responsive
+ * attributes. `variantsByAsset` is keyed by the same `ref` the caller uses
+ * in `urlFor` (slug for current embeds, id for legacy). String-level
+ * rewrite; existing attributes always win.
  */
 export function enrichResponsiveImages(
   html: string,
@@ -92,12 +97,18 @@ export function enrichResponsiveImages(
 ): string {
   return html.replace(/<img\b[^>]*>/g, (tag) => {
     const srcMatch = tag.match(
-      /\bsrc=("|')\/_caelo\/media\/([0-9a-f-]{36})\/([a-z][a-z0-9-]{0,63})\1/,
+      /\bsrc=("|')\/_caelo\/media\/([a-z0-9][a-z0-9-]{0,63})(?:\/([a-z][a-z0-9-]{0,63}))?\1/,
     );
     if (!srcMatch) return tag;
-    const assetId = srcMatch[2] as string;
-    const variant = srcMatch[3] as string;
-    const variants = variantsByAsset.get(assetId) ?? [];
+    const seg1 = srcMatch[2] as string;
+    const seg2 = srcMatch[3];
+    // Legacy id form only when a full uuid is followed by an explicit
+    // variant; otherwise `ref` is the slug and orig is implied.
+    const isLegacyId = ENRICH_UUID_RE.test(seg1) && seg2 !== undefined;
+    const ref = seg1;
+    const variant = isLegacyId ? (seg2 as string) : (seg2 ?? "orig");
+    const assetId = ref;
+    const variants = variantsByAsset.get(ref) ?? [];
 
     const family = variantFamily(variant);
     const familyVariants = variants

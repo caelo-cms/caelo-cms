@@ -87,41 +87,93 @@ export const MEDIA_VARIANT_WIDTHS: Record<Exclude<MediaVariantTag, "orig">, numb
  * shape; the static generator rewrites to `/_assets/...` (or a CDN
  * URL) at deploy time.
  *
- * Format: `/_caelo/media/<asset-id>/<variant>`. The asset id, not the
- * sha, so URLs survive a re-upload of the same content under a new id.
+ * Format (current): `/_caelo/media/<slug>` for the orig variant,
+ * `/_caelo/media/<slug>/<variant>` for a named variant (webp/crops). The
+ * `<slug>` is `media_assets.slug` — a human-meaningful name (e.g.
+ * `searchviu-logo`); the UUID id stays internal. The static generator
+ * rewrites these to `/_assets/<slug>.<ext>` (orig) / `/_assets/<slug>/<variant>.<ext>`.
+ *
+ * Legacy form `/_caelo/media/<uuid>/<variant>` is still PARSED (existing
+ * persisted embeds keep resolving), but never newly EMITTED.
  */
 export const MEDIA_URL_PREFIX = "/_caelo/media";
 
-// Widened to `| string` post-run#10-D4: pickAiImageVariant returns the
-// tag of whichever variant actually exists (including crop fan-outs),
-// mirroring buildStorageKey's accept set.
-export function buildMediaUrl(assetId: string, variant: MediaVariantTag | string): string {
-  return `${MEDIA_URL_PREFIX}/${assetId}/${variant}`;
+/** Full-uuid shape — used to tell a legacy id ref from a slug ref. */
+const MEDIA_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Build the media URL for an asset SLUG + variant. The orig variant is
+ * flat (`/_caelo/media/<slug>`) so a plain image reads as a name, not a
+ * path; named variants (srcset webp / focal crops) nest under the slug.
+ * Widened to `| string` (run #10 D4): pickAiImageVariant returns whichever
+ * variant tag actually exists.
+ */
+export function buildMediaUrl(slug: string, variant: MediaVariantTag | string): string {
+  return variant === "orig"
+    ? `${MEDIA_URL_PREFIX}/${slug}`
+    : `${MEDIA_URL_PREFIX}/${slug}/${variant}`;
 }
 
-// Variant token: `orig`, `webp-<width>`, or `<crop-name>-<width>`. We
-// accept any kebab-case slug so focal-point crop fan-outs like
-// `square-800` and `wide-1200` (added by P7 optimization #2) round-trip
-// without a regex update per crop name.
+/**
+ * Turn a human/asset label into a URL-safe media slug: lowercase ascii,
+ * kebab-case, extension + junk stripped, capped at 60 chars. NOT
+ * uniquified — the caller resolves collisions against the live library
+ * (append `-2`/`-3`…); see `resolveUniqueMediaSlug` in admin-core.
+ */
+export function slugifyMediaName(name: string): string {
+  const noExt = name.replace(/\.[a-z0-9]{1,8}$/i, "");
+  const slug = noExt
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "") // strip combining accents
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .replace(/-+$/g, "");
+  return slug.length > 0 ? slug : "image";
+}
+
+// Segment token: a slug or uuid (`[a-z0-9-]`) optionally followed by a
+// variant. `orig`, `webp-<width>`, `<crop-name>-<width>` all round-trip
+// without a per-crop regex update.
 const mediaUrlPattern = new RegExp(
-  `${MEDIA_URL_PREFIX}/([0-9a-f-]{36})/([a-z][a-z0-9-]{0,63})`,
+  `${MEDIA_URL_PREFIX}/([a-z0-9][a-z0-9-]{0,63})(?:/([a-z][a-z0-9-]{0,63}))?`,
   "g",
 );
 
 /**
- * Extract every (assetId, variant) pair referenced in an HTML string.
- * Used by the post-write usage-tracker and by the static-generator
- * media-pass. Returns a deduped list to keep callers' work proportional
- * to unique assets, not raw match count.
+ * One media reference parsed from HTML. `ref` is either an asset SLUG
+ * (`isSlug: true`) or a legacy UUID id (`isSlug: false`); callers resolve
+ * a slug ref to an asset id before touching the DB. `variant` defaults to
+ * `orig` for the flat slug form.
  */
-export function extractMediaRefs(html: string): { assetId: string; variant: string }[] {
+export interface MediaRef {
+  readonly ref: string;
+  readonly isSlug: boolean;
+  readonly variant: string;
+}
+
+/**
+ * Extract every media reference in an HTML string (deduped). Used by the
+ * post-write usage-tracker and the static-generator media-pass. Handles
+ * both the current slug form and the legacy `<uuid>/<variant>` form.
+ */
+export function extractMediaRefs(html: string): MediaRef[] {
   const seen = new Set<string>();
-  const out: { assetId: string; variant: string }[] = [];
+  const out: MediaRef[] = [];
   for (const m of html.matchAll(mediaUrlPattern)) {
-    const key = `${m[1]}/${m[2]}`;
+    const seg1 = m[1] as string;
+    const seg2 = m[2];
+    // A full-uuid first segment with a trailing variant is the legacy id
+    // form; everything else is a slug (orig when no explicit variant).
+    const isLegacyId = MEDIA_UUID_RE.test(seg1) && seg2 !== undefined;
+    const ref = seg1;
+    const isSlug = !isLegacyId;
+    const variant = seg2 ?? "orig";
+    const key = `${isSlug ? "s" : "i"}:${ref}/${variant}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ assetId: m[1] as string, variant: m[2] as string });
+    out.push({ ref, isSlug, variant });
   }
   return out;
 }
@@ -136,6 +188,13 @@ export const mediaUploadInputSchema = z
   .object({
     sha256: sha256Schema,
     originalName: z.string().min(1).max(512),
+    /**
+     * Meaningful, human-facing label for the asset (e.g. "SearchVIU logo").
+     * The handler slugifies + uniquifies it into `media_assets.slug`, which
+     * becomes the public URL (`/_assets/<slug>.<ext>`); the id stays internal.
+     * Optional: falls back to `alt` → `originalName` → "image".
+     */
+    name: z.string().max(200).optional(),
     mime: z.enum(MEDIA_ALLOWED_MIMES),
     sizeBytes: z.number().int().positive(),
     width: z.number().int().positive().nullable(),
@@ -144,6 +203,16 @@ export const mediaUploadInputSchema = z
     storageKey: z.string().min(1),
     /** P7 optimization #3 — stamped by the upload endpoint via getMediaStorageProvider(). */
     storageProvider: z.string().min(1).max(64).default("local"),
+    /**
+     * Media provenance (0181). Where the asset came from + its licence
+     * when known. All optional — a plain human upload may leave them
+     * unset. `sourceDetail` is the origin: source URL for imported /
+     * external, "<provider>/<model>" for ai_generated, filename/NULL for
+     * a plain upload.
+     */
+    sourceKind: z.enum(["upload", "ai_generated", "imported", "external"]).optional(),
+    sourceDetail: z.string().max(2048).optional(),
+    license: z.string().max(200).optional(),
     variants: z
       .array(
         z.object({
@@ -178,6 +247,22 @@ export const mediaUpdateAltInputSchema = z
   })
   .strict();
 export type MediaUpdateAltInput = z.infer<typeof mediaUpdateAltInputSchema>;
+
+/**
+ * media.set_source (0181) — record/patch an asset's provenance after it
+ * exists. COALESCE semantics at the handler: omitted fields stay
+ * unchanged, so this both sets provenance the first time and patches a
+ * single field (e.g. a licence the operator states later).
+ */
+export const mediaSetSourceInputSchema = z
+  .object({
+    assetId: z.string().uuid(),
+    sourceKind: z.enum(["upload", "ai_generated", "imported", "external"]).optional(),
+    sourceDetail: z.string().max(2048).optional(),
+    license: z.string().max(200).optional(),
+  })
+  .strict();
+export type MediaSetSourceInput = z.infer<typeof mediaSetSourceInputSchema>;
 
 export const mediaDeleteInputSchema = z
   .object({

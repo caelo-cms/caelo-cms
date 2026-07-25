@@ -46,6 +46,12 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
         locale: { type: "string", minLength: 2, maxLength: 10 },
         templateId: { type: "string", format: "uuid" },
         status: { type: "string", enum: ["draft", "published"] },
+        importPageId: {
+          type: "string",
+          format: "uuid",
+          description:
+            "When rebuilding a crawled page during a site migration, pass the source import_pages id. This links the built page to the crawl (so fidelity / inventory / media-migration checks resolve regardless of slug) AND makes the build idempotent — building the same importPageId twice rebuilds the SAME page, never a duplicate.",
+        },
       },
     },
     modules: {
@@ -203,6 +209,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       }[];
       detached: { ref: string; moduleId: string; contentInstanceId: string }[];
       extractedFieldsByIndex: Record<string, { name: string; kind: string }[]>;
+      ignoredAuthoringByIndex: Record<string, string[]>;
     };
 
     const mintedCount = value.placements.filter((p) => p.minted).length;
@@ -236,6 +243,21 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       missingMeta.length > 0
         ? ` ⚠️ modules[${missingMeta.join(", ")}] minted without \`description\`/\`kind\` — \`## Modules\` shows "(no description)"; patch via edit_module.`
         : "";
+    // §2 — a moduleId entry is placement-only; any authoring field it also
+    // carried that DIFFERS from the module's stored value was NOT applied. Say
+    // so loudly so an intended change never vanishes silently.
+    const ignoredEntries = Object.entries(value.ignoredAuthoringByIndex);
+    const ignoredHint =
+      ignoredEntries.length > 0
+        ? ` ℹ️ ${ignoredEntries
+            .map(
+              ([idx, fields]) =>
+                `modules[${idx}] placed by moduleId (placement-only) — NOT applied: ${fields.join(", ")}`,
+            )
+            .join(
+              "; ",
+            )}. To change that shared module (rename / structure / fields), use edit_module.`
+        : "";
 
     // css-var scan once over ALL freshly-authored CSS; design-guard per
     // minted module (pattern-reuse needs the displayName). Reuses the
@@ -263,7 +285,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       ok: true,
       content:
         `page ${value.pageId}${value.createdPage ? " created" : ""} — ${value.placements.length} module(s) placed (${mintedCount} minted, ${reusedCount} reused) in one transaction.\n` +
-        `${lines.join("\n")}${binding}${extractedHint}${missingMetaHint}${cssWarning}${guardFindings.join("")}`,
+        `${lines.join("\n")}${binding}${extractedHint}${missingMetaHint}${ignoredHint}${cssWarning}${guardFindings.join("")}`,
       value,
     };
   },

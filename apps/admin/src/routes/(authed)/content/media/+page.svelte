@@ -7,6 +7,7 @@
    * filter on alt + filename via the `q` param and a sort toggle.
    */
 
+  import { buildMediaUrl } from "@caelo-cms/shared";
   import { Image as ImageIcon, Search, Upload } from "lucide-svelte";
   import EmptyStatePlaceholder from "$lib/components/EmptyStatePlaceholder.svelte";
   import { Button, buttonVariants } from "$lib/components/ui/button/index.js";
@@ -32,7 +33,7 @@
     const variant = a.variants.find((v) => v.variant === "webp-400")
       ? "webp-400"
       : "orig";
-    return `/_caelo/media/${a.id}/${variant}`;
+    return buildMediaUrl(a.slug, variant);
   }
 
   function fmtSize(bytes: number): string {

@@ -75,7 +75,7 @@ afterAll(async () => {
 });
 
 describe("inspect_page_render tool (v0.2.69)", () => {
-  it("returns composed HTML + each CSS layer + modules grouped by block", async () => {
+  it("returns a slim summary by default, then full bodies via target/search", async () => {
     // 1. Seed a layout with content + header blocks.
     const layoutR = await execute(registry, adapter, systemCtx, "layouts.create", {
       slug: LAYOUT_SLUG,
@@ -128,62 +128,95 @@ describe("inspect_page_render tool (v0.2.69)", () => {
       blocks: [{ blockName: "content", moduleIds: [moduleId] }],
     });
 
-    // 4. Dispatch the inspect tool.
     const tools = new ToolRegistry();
     tools.register(inspectPageRenderTool);
-    const result = await tools.dispatch("inspect_page_render", { pageId }, aiCtx, {
+
+    // 4. Default dispatch → the SLIM SUMMARY (structure + sizes, NO bodies).
+    const sumRes = await tools.dispatch("inspect_page_render", { pageId }, aiCtx, {
       adapter,
       registry,
     });
-
-    expect(result.ok).toBe(true);
-    const payload = JSON.parse(result.content) as {
+    expect(sumRes.ok).toBe(true);
+    const summary = JSON.parse(sumRes.content) as {
       page: { slug: string };
-      composedHtml: string;
+      composedHtml?: unknown;
       composedHtmlBytes: number;
-      layout: { slug: string; html: string; css: string } | null;
-      template: { slug: string; html: string; css: string } | null;
-      theme: { tokens: Record<string, string>; tokenCount: number };
-      modulesByBlock: {
-        blockName: string;
-        modules: { slug: string; html: string; css: string }[];
+      layout: { slug: string; htmlBytes: number; cssBytes: number } | null;
+      template: { slug: string; htmlBytes: number; cssBytes: number } | null;
+      theme: { tokenCount: number };
+      modules: {
+        moduleId: string;
+        slug: string;
+        block: string;
+        htmlBytes: number;
+        cssBytes: number;
       }[];
       slots: { replaced: string[]; missing: string[] };
+      hint: string;
     };
+    expect(summary.page.slug).toBe(PAGE_SLUG);
+    // Sizes, not bodies — the whole point of the slim default.
+    expect(summary.composedHtml).toBeUndefined();
+    expect(summary.composedHtmlBytes).toBeGreaterThan(0);
+    expect(summary.layout?.slug).toBe(LAYOUT_SLUG);
+    expect(summary.layout?.cssBytes).toBeGreaterThan(0);
+    expect(summary.template?.slug).toBe(TPL_SLUG);
+    expect(typeof summary.theme.tokenCount).toBe("number");
+    expect(summary.hint).toContain("screenshot_page");
+    expect(Array.isArray(summary.slots.replaced)).toBe(true);
+    const mod = summary.modules.find((m) => m.slug === MOD_SLUG);
+    expect(mod).toBeDefined();
+    expect(mod?.block).toBe("content");
+    expect(mod?.cssBytes).toBeGreaterThan(0);
 
-    // 5. Assertions on the structured response.
-    expect(payload.page.slug).toBe(PAGE_SLUG);
+    // 5. target:"composed" → the full composed HTML.
+    const compRes = await tools.dispatch(
+      "inspect_page_render",
+      { pageId, target: "composed" },
+      aiCtx,
+      { adapter, registry },
+    );
+    expect(compRes.ok).toBe(true);
+    expect((JSON.parse(compRes.content) as { composedHtml: string }).composedHtml).toContain(
+      "HELLO_INSPECT",
+    );
 
-    // Composed HTML carries the module's HTML + each layer's CSS.
-    expect(payload.composedHtml).toContain("HELLO_INSPECT");
-    expect(payload.composedHtmlBytes).toBe(payload.composedHtml.length);
+    // 6. target:<moduleId> → that one module's html+css.
+    const modRes = await tools.dispatch(
+      "inspect_page_render",
+      { pageId, target: mod?.moduleId },
+      aiCtx,
+      { adapter, registry },
+    );
+    expect(modRes.ok).toBe(true);
+    const modPayload = JSON.parse(modRes.content) as { module: { slug: string; css: string } };
+    expect(modPayload.module.slug).toBe(MOD_SLUG);
+    expect(modPayload.module.css).toContain("rebeccapurple");
 
-    // Layout layer is present + carries the original CSS string.
-    expect(payload.layout).not.toBeNull();
-    expect(payload.layout?.slug).toBe(LAYOUT_SLUG);
-    expect(payload.layout?.css).toContain("body{margin:0}");
+    // 7. target:"theme" → the token map (shape only; a fresh install may
+    //    have no theme seeded).
+    const themeRes = await tools.dispatch(
+      "inspect_page_render",
+      { pageId, target: "theme" },
+      aiCtx,
+      { adapter, registry },
+    );
+    expect(themeRes.ok).toBe(true);
+    expect(
+      typeof (JSON.parse(themeRes.content) as { theme: { tokens: unknown } }).theme.tokens,
+    ).toBe("object");
 
-    // Template layer is present.
-    expect(payload.template).not.toBeNull();
-    expect(payload.template?.slug).toBe(TPL_SLUG);
-    expect(payload.template?.css).toContain("padding:24px");
-
-    // Module layer surfaces the seeded module under "content" block.
-    const contentBlock = payload.modulesByBlock.find((b) => b.blockName === "content");
-    expect(contentBlock).toBeDefined();
-    expect(contentBlock?.modules.length).toBe(1);
-    expect(contentBlock?.modules[0]?.slug).toBe(MOD_SLUG);
-    expect(contentBlock?.modules[0]?.css).toContain("rebeccapurple");
-
-    // Theme tokens are reachable (may be empty if the install hasn't
-    // seeded a theme; we don't fail on that — the key is the field
-    // exists and is the right shape).
-    expect(typeof payload.theme.tokens).toBe("object");
-    expect(typeof payload.theme.tokenCount).toBe("number");
-
-    // Slot bookkeeping is surfaced for sanity.
-    expect(Array.isArray(payload.slots.replaced)).toBe(true);
-    expect(Array.isArray(payload.slots.missing)).toBe(true);
+    // 8. search → only the matching slice of the composed HTML.
+    const searchRes = await tools.dispatch(
+      "inspect_page_render",
+      { pageId, search: "HELLO_INSPECT" },
+      aiCtx,
+      { adapter, registry },
+    );
+    expect(searchRes.ok).toBe(true);
+    const searchPayload = JSON.parse(searchRes.content) as { composedHtml: string; search: string };
+    expect(searchPayload.composedHtml).toContain("HELLO_INSPECT");
+    expect(searchPayload.search).toBe("HELLO_INSPECT");
   });
 
   it("fails cleanly when the page does not exist", async () => {

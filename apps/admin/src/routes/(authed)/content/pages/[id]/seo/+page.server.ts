@@ -34,7 +34,21 @@ export const load: PageServerLoad = async ({ locals, params }) => {
         }
       ).seo
     : null;
-  return { page, seo };
+
+  // Resolve the persisted OG asset id → slug so the preview builds a
+  // slug-based media URL. The persisted value stays an id (pages_seo
+  // stores the id ref); the slug is display-only.
+  let ogImageSlug: string | null = null;
+  if (seo?.ogImageAssetId) {
+    const ogR = await execute(registry, adapter, locals.ctx, "media.get", {
+      assetId: seo.ogImageAssetId,
+    });
+    if (ogR.ok) {
+      ogImageSlug = (ogR.value as { asset: { slug: string } | null }).asset?.slug ?? null;
+    }
+  }
+
+  return { page, seo, ogImageSlug };
 };
 
 export const actions: Actions = {

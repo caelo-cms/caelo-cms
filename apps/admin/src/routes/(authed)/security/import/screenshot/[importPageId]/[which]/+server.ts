@@ -19,8 +19,8 @@ import type { RequestHandler } from "./$types";
 export const GET: RequestHandler = async ({ params, locals }) => {
   requirePermission(locals, "settings.write");
   const which = params.which;
-  if (which !== "source" && which !== "staged") {
-    throw error(400, "which must be 'source' or 'staged'");
+  if (which !== "source") {
+    throw error(400, "which must be 'source'");
   }
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "imports.get_page_screenshot_keys", {
@@ -29,9 +29,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
   if (!r.ok) throw error(404, "import page not found");
   const keys = r.value as {
     screenshotObjectKey: string | null;
-    stagedScreenshotObjectKey: string | null;
   };
-  const key = which === "source" ? keys.screenshotObjectKey : keys.stagedScreenshotObjectKey;
+  const key = keys.screenshotObjectKey;
   if (!key) throw error(404, `no ${which} screenshot stored for this page`);
   let bytes: Uint8Array;
   try {

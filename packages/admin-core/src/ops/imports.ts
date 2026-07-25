@@ -46,7 +46,6 @@ import {
   buildZeroPagesAbortMessage,
   type ComposeSkip,
   classifyComposeRunStatus,
-  composePageSkipReason,
 } from "./compose-eligibility.js";
 import {
   computeRunCost,
@@ -154,9 +153,6 @@ const pageRow = z.object({
   clusterKey: z.string().nullable(),
   clusterLabel: z.string().nullable(),
   screenshotObjectKey: z.string().nullable(),
-  stagedScreenshotObjectKey: z.string().nullable(),
-  diffStatus: z.enum(["pass", "warn", "fail"]).nullable(),
-  diffPct: z.number().nullable(),
   /** issue #247 — computed-style token summary sampled in the same
    *  render pass as the source screenshot; null = never sampled
    *  (fetch-only crawl or capture failure — see screenshot_missing /
@@ -259,7 +255,7 @@ export const getImportRunOp = defineOperation({
       SELECT id::text AS id, run_id::text AS run_id, source_url,
              proposed_slug, proposed_title, proposed_modules, proposed_theme_tokens,
              structural_signature, cluster_key, cluster_label,
-             screenshot_object_key, staged_screenshot_object_key, diff_status, diff_pct,
+             screenshot_object_key,
              sampled_design_tokens,
              accepted_page_id::text AS accepted_page_id, accepted_at, rejected_at, created_at
       FROM import_pages
@@ -282,9 +278,6 @@ export const getImportRunOp = defineOperation({
       cluster_key: string | null;
       cluster_label: string | null;
       screenshot_object_key: string | null;
-      staged_screenshot_object_key: string | null;
-      diff_status: "pass" | "warn" | "fail" | null;
-      diff_pct: number | null;
       sampled_design_tokens: unknown;
       accepted_page_id: string | null;
       accepted_at: string | Date | null;
@@ -305,9 +298,6 @@ export const getImportRunOp = defineOperation({
         clusterKey: p.cluster_key,
         clusterLabel: p.cluster_label,
         screenshotObjectKey: p.screenshot_object_key,
-        stagedScreenshotObjectKey: p.staged_screenshot_object_key,
-        diffStatus: p.diff_status,
-        diffPct: p.diff_pct,
         sampledDesignTokens: parseJsonbColumn(p.sampled_design_tokens),
         acceptedPageId: p.accepted_page_id,
         acceptedAt: p.accepted_at
@@ -784,54 +774,19 @@ export const logImportRunEventsOp = defineOperation({
 });
 
 /**
- * P14 polish — Owner acknowledges a `fail`-classified screenshot diff
- * so the page becomes accept-able. AI cannot ack — actorScope is
- * human + system only, matching the §11.A "hard-to-revert" pattern
- * (publishing a misrendered page silently is hard to spot post-hoc).
+ * The crawl worker writes ONE import page's captured ground truth: the
+ * source screenshot's object key + the computed-style design-token sample
+ * taken in the same render session. Both are recorded COALESCE-style so a
+ * later capture never clobbers an earlier one with a null.
  */
-export const acknowledgeImportPageDiffOp = defineOperation({
-  name: "imports.acknowledge_page_diff",
-  actorScope: ["human", "system"],
-  database: "cms_admin",
-  input: z.object({ importPageId: z.string().uuid() }).strict(),
-  output: z.object({}),
-  handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
-      UPDATE import_pages
-         SET acknowledged_by = ${ctx.actorId}::uuid, acknowledged_at = now()
-       WHERE id = ${input.importPageId}::uuid
-    `);
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "imports.acknowledge_page_diff",
-      input,
-      succeeded: true,
-      resultSummary: `acked diff on import_page ${input.importPageId}`,
-    });
-    return ok({});
-  },
-});
-
-/**
- * P14 polish — worker writes per-page screenshot diff result. Wired
- * by the orchestrator after Playwright captures source + staged
- * renders + computePixelDiff classifies them. NULL diff_status (no
- * screenshot taken) does NOT block accept; only `fail` does, gated
- * by Owner acknowledgement at /security/import/[runId].
- */
-export const updatePageDiffOp = defineOperation({
-  name: "imports.update_page_diff",
+export const updatePageCaptureOp = defineOperation({
+  name: "imports.update_page_capture",
   actorScope: ["system"],
   database: "cms_admin",
   input: z
     .object({
       importPageId: z.string().uuid(),
-      diffStatus: z.enum(["pass", "warn", "fail"]),
-      diffPct: z.number().min(0).max(1),
       screenshotObjectKey: z.string().max(500).optional(),
-      /** issue #198 — the rebuilt (staged preview) capture's key. */
-      stagedScreenshotObjectKey: z.string().max(500).optional(),
       /** issue #247 — per-page computed-style token summary, sampled
        *  in the same render session as the source screenshot. */
       sampledDesignTokens: pageDesignTokensSchema.optional(),
@@ -841,10 +796,7 @@ export const updatePageDiffOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     await tx.execute(sql`
       UPDATE import_pages
-         SET diff_status = ${input.diffStatus},
-             diff_pct = ${input.diffPct},
-             screenshot_object_key = COALESCE(${input.screenshotObjectKey ?? null}, screenshot_object_key),
-             staged_screenshot_object_key = COALESCE(${input.stagedScreenshotObjectKey ?? null}, staged_screenshot_object_key),
+         SET screenshot_object_key = COALESCE(${input.screenshotObjectKey ?? null}, screenshot_object_key),
              -- (::text)::jsonb keeps bun-postgres on the text path (see
              -- the add_page_notes comment for the double-encode trap).
              sampled_design_tokens = COALESCE(
@@ -893,6 +845,84 @@ export const setRunDesignTokensOp = defineOperation({
 });
 
 /**
+ * Actionable "not found" copy shared by the per-page import reads. Points the
+ * AI at the RELIABLE id (the staging import_pages.id, which always resolves)
+ * so a slug mismatch on a directly-built page doesn't dead-end the migrate
+ * flow. This is NOT a data-availability/TTL issue — import rows are never
+ * auto-GC'd (only Owner-run imports.cleanup_run drops them).
+ */
+const IMPORT_PAGE_NOT_FOUND_MSG =
+  "import page not found. Pass EITHER the staging import_pages.id (from get_import_page / imports.get — this ALWAYS resolves) OR the built CMS page id. A built page id resolves only when its slug equals the crawled proposed_slug, or (for the homepage) when it is the locale's designated home page. If you built the page with a custom/translated slug, pass the staging import_pages.id instead. (Import rows do not expire — a miss means an id/slug mismatch, not staleness.)";
+
+/**
+ * Resolve whatever id the AI holds for a crawled page to its owning
+ * `import_pages.id` + the composed/built CMS page id, in BOTH directions:
+ *   1. the staging `import_pages.id`,
+ *   2. the composed page id (`accepted_page_id`, set by compose_from_run),
+ *   3. a directly-built (#278) page whose slug equals the crawled
+ *      `proposed_slug`,
+ *   4. a directly-built (#278) HOMEPAGE — issue 0184 lets ANY page be the site
+ *      root via `locales.home_page_id`, so the built home's slug rarely equals
+ *      the crawler's fixed `home` slug ("homepage not at root"); match it
+ *      through `home_page_id` ↔ `proposed_slug='home'`.
+ * When given the staging id for a #278 page (no `accepted_page_id`), the built
+ * page is recovered by the same slug/home rule so callers needing the composed
+ * page (the inventory diff) still find it.
+ *
+ * Returns null only when the id maps to no crawled page at all.
+ */
+async function resolveImportPageRef(
+  tx: TransactionRunner,
+  inputId: string,
+): Promise<{ importPageId: string; composedPageId: string | null } | null> {
+  // (1)+(2): input is a staging import_pages.id OR a composed page id.
+  const direct = (await tx.execute(sql`
+    SELECT id::text AS id, accepted_page_id::text AS composed
+    FROM import_pages
+    WHERE id = ${inputId}::uuid OR accepted_page_id = ${inputId}::uuid
+    ORDER BY (id = ${inputId}::uuid) DESC
+    LIMIT 1
+  `)) as unknown as Array<{ id: string; composed: string | null }>;
+  if (direct[0]) {
+    let composedPageId = direct[0].composed;
+    // Staging id for a #278 page: no compose link — recover the built page by
+    // slug or the home-page designation so callers needing it (inventory diff)
+    // still resolve.
+    if (!composedPageId) {
+      const built = (await tx.execute(sql`
+        SELECT p.id::text AS id
+        FROM pages p
+        JOIN import_pages ip ON ip.id = ${direct[0].id}::uuid
+        WHERE p.deleted_at IS NULL
+          AND (
+            p.slug = ip.proposed_slug
+            OR (ip.proposed_slug = 'home'
+                AND EXISTS (SELECT 1 FROM locales l WHERE l.home_page_id = p.id))
+          )
+        LIMIT 1
+      `)) as unknown as Array<{ id: string }>;
+      composedPageId = built[0]?.id ?? null;
+    }
+    return { importPageId: direct[0].id, composedPageId };
+  }
+  // (3)+(4): input is a directly-built (#278) page id — reverse to the owning
+  // import_page by slug, or (homepage) via the home-page designation.
+  const byPage = (await tx.execute(sql`
+    SELECT ip.id::text AS id, p.id::text AS composed
+    FROM pages p
+    JOIN import_pages ip
+      ON ip.proposed_slug = p.slug
+      OR (ip.proposed_slug = 'home'
+          AND EXISTS (SELECT 1 FROM locales l WHERE l.home_page_id = p.id))
+    WHERE p.id = ${inputId}::uuid AND p.deleted_at IS NULL
+    ORDER BY ip.created_at DESC
+    LIMIT 1
+  `)) as unknown as Array<{ id: string; composed: string | null }>;
+  if (byPage[0]) return { importPageId: byPage[0].id, composedPageId: byPage[0].composed };
+  return null;
+}
+
+/**
  * issue #198 — screenshot keys for ONE import page. Powers the
  * authenticated serve route and the AI's look-at-the-original tool
  * without dragging the whole run through imports.get.
@@ -905,138 +935,127 @@ export const getImportPageScreenshotKeysOp = defineOperation({
   output: z.object({
     sourceUrl: z.string().nullable(),
     screenshotObjectKey: z.string().nullable(),
-    stagedScreenshotObjectKey: z.string().nullable(),
   }),
   handler: async (_ctx, input, tx) => {
-    // Resolve the staging `import_pages.id` OR the composed CMS page id
-    // (`accepted_page_id`) — the same dual-id ergonomics the fidelity +
-    // inventory tools use, so the AI can pass whichever id it is holding.
-    let rows = (await tx.execute(sql`
-      SELECT source_url, screenshot_object_key, staged_screenshot_object_key
-      FROM import_pages
-      WHERE id = ${input.importPageId}::uuid
-         OR accepted_page_id = ${input.importPageId}::uuid
-      ORDER BY (id = ${input.importPageId}::uuid) DESC
-      LIMIT 1
+    // Shared resolver handles staging id / composed id / #278 slug / #278
+    // homepage-not-at-root, in both directions (see resolveImportPageRef).
+    const ref = await resolveImportPageRef(tx, input.importPageId);
+    if (!ref) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.get_page_screenshot_keys",
+        message: IMPORT_PAGE_NOT_FOUND_MSG,
+      });
+    }
+    const rows = (await tx.execute(sql`
+      SELECT source_url, screenshot_object_key
+      FROM import_pages WHERE id = ${ref.importPageId}::uuid LIMIT 1
     `)) as unknown as Array<{
       source_url: string;
       screenshot_object_key: string | null;
-      staged_screenshot_object_key: string | null;
     }>;
-    // Direct-build fallback (issue #278): a #278-built page has no
-    // `accepted_page_id` linkage, so match the built page's slug against the
-    // crawled source's `proposed_slug`. Without this, get_import_page_screenshot
-    // fails with "import page not found" for every page a migration built
-    // directly — exactly the mismatch that surfaced in the chat.
-    if (!rows[0]) {
-      rows = (await tx.execute(sql`
-        SELECT ip.source_url, ip.screenshot_object_key, ip.staged_screenshot_object_key
-        FROM pages p
-        JOIN import_pages ip ON ip.proposed_slug = p.slug
-        WHERE p.id = ${input.importPageId}::uuid AND p.deleted_at IS NULL
-        ORDER BY ip.created_at DESC
-        LIMIT 1
-      `)) as unknown as typeof rows;
-    }
     const r = rows[0];
     if (!r) {
       return err({
         kind: "HandlerError",
         operation: "imports.get_page_screenshot_keys",
-        message:
-          "import page not found — importPageId accepts the staging import_pages.id, the composed CMS page id, OR (for a directly-built #278 page) a built page whose slug matches a crawled source page; list the run with imports.get to see the source pages and slugs",
+        message: IMPORT_PAGE_NOT_FOUND_MSG,
       });
     }
     return ok({
       sourceUrl: r.source_url,
       screenshotObjectKey: r.screenshot_object_key,
-      stagedScreenshotObjectKey: r.staged_screenshot_object_key,
     });
   },
 });
 
 /**
- * issue #250 (WS4) — everything the fidelity verdict tool needs to grade one
- * rebuilt page, resolved from EITHER id the AI is holding: the staging
- * `import_pages.id` OR the composed `pages.id` it just built
- * (accepted_page_id). Mirrors `imports.add_page_notes`' dual-id ergonomics so
- * the AI never has to look one id up from the other mid-flow.
- *
- * Returns the source screenshot key (null = UNVERIFIED — no ground truth to
- * diff against) and the accepted page id (null = not composed yet) so the
- * tool can fail loudly + specifically instead of guessing.
+ * 2026-07 — the AI-safe read of ONE crawled page's captured content. The
+ * migrate flow rebuilds every page with `build_page`, so it needs the source
+ * content — but NEVER the raw `proposed_modules` HTML (a page's legacy
+ * page-builder markup runs to hundreds of KB and blows the model's window,
+ * the same reason inspect_external_page dropped its `markup` facet in 0174).
+ * This returns the assembled source HTML to the TOOL layer only; the
+ * `get_import_page` tool converts it to Markdown + caches it under a pageRef
+ * (mirroring inspect_external_page) and surfaces Markdown + tokens + a
+ * screenshot handle to the model — never the raw HTML. Same dual-id + #278
+ * slug fallback as the sibling reads so the AI can pass either id.
  */
-export const getImportPageFidelityInputsOp = defineOperation({
-  name: "imports.get_page_fidelity_inputs",
+export const getImportPageGistOp = defineOperation({
+  name: "imports.get_page_gist",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ pageRef: z.string().uuid() }).strict(),
+  input: z.object({ importPageId: z.string().uuid() }).strict(),
   output: z.object({
     importPageId: z.string(),
-    /** issue #28 — the owning run, so the fidelity gate can append a
-     *  warn/fail event to the run's error/warning ledger. */
     runId: z.string(),
     sourceUrl: z.string().nullable(),
+    proposedSlug: z.string().nullable(),
+    proposedTitle: z.string().nullable(),
+    // Assembled source HTML — for the tool layer to convert to Markdown +
+    // cache; NEVER surfaced raw to the model (see get_import_page).
+    html: z.string(),
+    themeTokens: z.unknown(),
+    sampledDesignTokens: z.unknown(),
     screenshotObjectKey: z.string().nullable(),
-    acceptedPageId: z.string().nullable(),
-    diffStatus: z.enum(["pass", "warn", "fail"]).nullable(),
-    diffPct: z.number().nullable(),
   }),
   handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      SELECT id::text AS id, run_id::text AS run_id, source_url, screenshot_object_key,
-             accepted_page_id::text AS accepted_page_id, diff_status, diff_pct
-      FROM import_pages
-      WHERE id = ${input.pageRef}::uuid OR accepted_page_id = ${input.pageRef}::uuid
-      LIMIT 1
-    `)) as unknown as Array<{
+    type Row = {
       id: string;
       run_id: string;
       source_url: string | null;
+      proposed_slug: string | null;
+      proposed_title: string | null;
+      proposed_modules: unknown;
+      proposed_theme_tokens: unknown;
+      sampled_design_tokens: unknown;
       screenshot_object_key: string | null;
-      accepted_page_id: string | null;
-      diff_status: "pass" | "warn" | "fail" | null;
-      diff_pct: number | null;
-    }>;
-    let r = rows[0];
-
-    // Direct-build fallback (issue #278). The homepage-first flow creates
-    // pages via `pages.create`, so no import_page carries their id as
-    // `accepted_page_id` and the linkage lookup above misses. Resolve the
-    // source import_page by matching the BUILT page's slug against the
-    // crawled `proposed_slug` (the crawl DID store the source screenshot +
-    // proposed_modules). The built page id is what the fidelity gate must
-    // render, so it becomes the effective `accepted_page_id`.
-    if (!r) {
-      const bySlug = (await tx.execute(sql`
-        SELECT ip.id::text AS id, ip.run_id::text AS run_id, ip.source_url,
-               ip.screenshot_object_key, p.id::text AS accepted_page_id,
-               ip.diff_status, ip.diff_pct
-        FROM pages p
-        JOIN import_pages ip ON ip.proposed_slug = p.slug
-        WHERE p.id = ${input.pageRef}::uuid AND p.deleted_at IS NULL
-        ORDER BY (ip.screenshot_object_key IS NOT NULL) DESC, ip.created_at DESC
-        LIMIT 1
-      `)) as unknown as typeof rows;
-      r = bySlug[0];
+    };
+    // Shared resolver: staging id / composed id / #278 slug / #278
+    // homepage-not-at-root, both directions (see resolveImportPageRef).
+    const ref = await resolveImportPageRef(tx, input.importPageId);
+    if (!ref) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.get_page_gist",
+        message: IMPORT_PAGE_NOT_FOUND_MSG,
+      });
     }
-
+    const cols = sql`id::text AS id, run_id::text AS run_id, source_url, proposed_slug,
+                     proposed_title, proposed_modules, proposed_theme_tokens,
+                     sampled_design_tokens, screenshot_object_key`;
+    const rows = (await tx.execute(sql`
+      SELECT ${cols} FROM import_pages WHERE id = ${ref.importPageId}::uuid LIMIT 1
+    `)) as unknown as Row[];
+    const r = rows[0];
     if (!r) {
       return err({
         kind: "HandlerError",
-        operation: "imports.get_page_fidelity_inputs",
-        message:
-          "no import page matches this id — pass EITHER the staging import_pages id, the composed page id (accepted_page_id), OR (for a directly-built #278 page) a built page whose slug matches a crawled source page. List the run with imports.get for the source pages and their slugs.",
+        operation: "imports.get_page_gist",
+        message: IMPORT_PAGE_NOT_FOUND_MSG,
       });
     }
+    const modules =
+      (typeof r.proposed_modules === "string"
+        ? (JSON.parse(r.proposed_modules) as unknown)
+        : r.proposed_modules) ?? [];
+    const html = (
+      Array.isArray(modules) ? (modules as Array<{ position?: number; html?: string }>) : []
+    )
+      .slice()
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .map((m) => m.html ?? "")
+      .join("\n");
     return ok({
       importPageId: r.id,
       runId: r.run_id,
       sourceUrl: r.source_url,
+      proposedSlug: r.proposed_slug,
+      proposedTitle: r.proposed_title,
+      html,
+      themeTokens: parseJsonbColumn(r.proposed_theme_tokens),
+      sampledDesignTokens: parseJsonbColumn(r.sampled_design_tokens),
       screenshotObjectKey: r.screenshot_object_key,
-      acceptedPageId: r.accepted_page_id,
-      diffStatus: r.diff_status,
-      diffPct: r.diff_pct,
     });
   },
 });
@@ -1135,8 +1154,7 @@ export const acceptImportedPageOp = defineOperation({
   output: z.object({ pageId: z.string() }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT proposed_slug, proposed_title, proposed_modules, accepted_page_id,
-             diff_status, acknowledged_at
+      SELECT proposed_slug, proposed_title, proposed_modules, accepted_page_id
       FROM import_pages WHERE id = ${input.importPageId}::uuid LIMIT 1
     `)) as unknown as Array<{
       proposed_slug: string;
@@ -1147,8 +1165,6 @@ export const acceptImportedPageOp = defineOperation({
       // locales.ts uses for its preview/payload jsonb columns.
       proposed_modules: unknown;
       accepted_page_id: string | null;
-      diff_status: "pass" | "warn" | "fail" | null;
-      acknowledged_at: string | Date | null;
     }>;
     const r = rows[0];
     if (!r) {
@@ -1163,17 +1179,6 @@ export const acceptImportedPageOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.accept_page",
         message: "already accepted",
-      });
-    }
-    // P14 plan — failed screenshot diff requires explicit Owner ack
-    // before the page can be promoted to a real `pages` row. NULL
-    // diff_status (no screenshot taken) is non-blocking.
-    if (r.diff_status === "fail" && !r.acknowledged_at) {
-      return err({
-        kind: "HandlerError",
-        operation: "imports.accept_page",
-        message:
-          "screenshot diff failed for this page; acknowledge it at /security/import/<runId> before accepting",
       });
     }
     const proposedModules = (
@@ -1596,45 +1601,29 @@ export const checkImportPageInventoryOp = defineOperation({
     ),
   }),
   handler: async (ctx, input, tx) => {
-    // Resolve staging id OR composed CMS page id → the owning import_pages
-    // row, mirroring add_page_notes (#263).
-    const rows = (await tx.execute(sql`
-      SELECT id::text AS id, accepted_page_id::text AS accepted_page_id, proposed_modules
-      FROM import_pages
-      WHERE id = ${input.importPageId}::uuid
-         OR accepted_page_id = ${input.importPageId}::uuid
-      ORDER BY (id = ${input.importPageId}::uuid) DESC
-      LIMIT 1
-    `)) as unknown as Array<{
-      id: string;
-      accepted_page_id: string | null;
-      proposed_modules: unknown;
-    }>;
-    let row = rows[0];
-
-    // Direct-build fallback (issue #278). A #278-built page has no
-    // `import_pages.accepted_page_id` linkage; resolve the source
-    // import_page by matching the built page's slug against the crawled
-    // `proposed_slug`, and treat the built page id as the composed page so
-    // the rebuilt-modules diff below runs against it.
-    if (!row) {
-      const bySlug = (await tx.execute(sql`
-        SELECT ip.id::text AS id, p.id::text AS accepted_page_id, ip.proposed_modules
-        FROM pages p
-        JOIN import_pages ip ON ip.proposed_slug = p.slug
-        WHERE p.id = ${input.importPageId}::uuid AND p.deleted_at IS NULL
-        ORDER BY ip.created_at DESC
-        LIMIT 1
-      `)) as unknown as typeof rows;
-      row = bySlug[0];
+    // Shared resolver: staging id / composed id / #278 slug / #278
+    // homepage-not-at-root, both directions (see resolveImportPageRef). It
+    // also recovers the built page for a #278 staging id so the diff below
+    // has a target even when the AI passed the source id.
+    const ref = await resolveImportPageRef(tx, input.importPageId);
+    if (!ref) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.check_page_inventory",
+        message: IMPORT_PAGE_NOT_FOUND_MSG,
+      });
     }
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, proposed_modules
+      FROM import_pages WHERE id = ${ref.importPageId}::uuid LIMIT 1
+    `)) as unknown as Array<{ id: string; proposed_modules: unknown }>;
+    const row = rows[0] ? { ...rows[0], accepted_page_id: ref.composedPageId } : undefined;
 
     if (!row) {
       return err({
         kind: "HandlerError",
         operation: "imports.check_page_inventory",
-        message:
-          "import page not found — importPageId accepts the staging import_pages.id, the composed CMS page id, OR (for a directly-built #278 page) a built page whose slug matches a crawled source page; list the run with imports.get to see the source pages and slugs",
+        message: IMPORT_PAGE_NOT_FOUND_MSG,
       });
     }
     if (!row.accepted_page_id) {
@@ -1642,7 +1631,7 @@ export const checkImportPageInventoryOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.check_page_inventory",
         message:
-          "this page has not been composed yet — run imports.compose_from_run (or accept_page) first, then check the rebuild against the source",
+          "this page has not been composed yet — run imports.compose_from_run (or accept_page) first, or build it with build_page, then check the rebuild against the source",
       });
     }
 
@@ -1875,25 +1864,6 @@ export const getImportRunReportOp = defineOperation({
      *  a screenshot_missing note; downstream verification (WS4) treats
      *  them as UNVERIFIED. */
     pagesMissingScreenshot: z.number(),
-    /** issue #250 (WS4) — source-vs-rebuilt fidelity rollup. `unverified`
-     *  counts composed pages that have a source screenshot but no computed
-     *  diff yet (verify_import_page_fidelity never ran) PLUS pages missing a
-     *  source screenshot — both mean "nothing measured this rebuild".
-     *  `overThreshold` lists the warn/fail pages the report must surface so
-     *  the AI never says "fertig" over red pages. */
-    fidelity: z.object({
-      pass: z.number(),
-      warn: z.number(),
-      fail: z.number(),
-      unverified: z.number(),
-      overThreshold: z.array(
-        z.object({
-          sourceUrl: z.string(),
-          diffStatus: z.enum(["warn", "fail"]),
-          diffPct: z.number(),
-        }),
-      ),
-    }),
     /** issue #247 — the site-level computed-style token aggregate;
      *  null when the run never got a Playwright render pass. */
     siteDesignTokens: z.unknown().nullable(),
@@ -1959,7 +1929,6 @@ export const getImportRunReportOp = defineOperation({
     }
     const pages = (await tx.execute(sql`
       SELECT source_url, proposed_slug, accepted_page_id, screenshot_object_key,
-             diff_status, diff_pct,
              COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
              cluster_label, notes
       FROM import_pages WHERE run_id = ${input.runId}::uuid
@@ -1969,38 +1938,10 @@ export const getImportRunReportOp = defineOperation({
       proposed_slug: string;
       accepted_page_id: string | null;
       screenshot_object_key: string | null;
-      diff_status: "pass" | "warn" | "fail" | null;
-      diff_pct: number | null;
       cluster_key: string;
       cluster_label: string | null;
       notes: unknown;
     }>;
-
-    // issue #250 (WS4) — fidelity rollup. A composed page with a source
-    // screenshot but no diff_status is UNVERIFIED (the gate never graded it);
-    // pages missing a source screenshot are unverified by definition. warn +
-    // fail are the pages the closing report must name out loud.
-    const fidelity = {
-      pass: 0,
-      warn: 0,
-      fail: 0,
-      unverified: 0,
-      overThreshold: [] as { sourceUrl: string; diffStatus: "warn" | "fail"; diffPct: number }[],
-    };
-    for (const p of pages) {
-      if (p.diff_status === "pass") fidelity.pass += 1;
-      else if (p.diff_status === "warn" || p.diff_status === "fail") {
-        fidelity[p.diff_status] += 1;
-        fidelity.overThreshold.push({
-          sourceUrl: p.source_url,
-          diffStatus: p.diff_status,
-          diffPct: p.diff_pct ?? 1,
-        });
-      } else if (p.accepted_page_id !== null || p.screenshot_object_key === null) {
-        // Composed-but-ungraded, or never screenshotted: nothing measured it.
-        fidelity.unverified += 1;
-      }
-    }
 
     // Clusters.
     const clusterMap = new Map<string, { label: string | null; count: number }>();
@@ -2112,7 +2053,6 @@ export const getImportRunReportOp = defineOperation({
       redirectsCreated,
       crawlErrors,
       pagesMissingScreenshot: pages.filter((p) => p.screenshot_object_key === null).length,
-      fidelity,
       siteDesignTokens: parseJsonbColumn(run.site_design_tokens),
       boilerplate: parseJsonbColumn(run.boilerplate_summary),
       notes: [...byCategory.entries()].map(([category, v]) => ({
@@ -2850,7 +2790,6 @@ export const composeFromImportRunOp = defineOperation({
     const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, proposed_slug, proposed_title,
              proposed_modules, proposed_theme_tokens, accepted_page_id,
-             diff_status, acknowledged_at,
              COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
              cluster_label, page_css
       FROM import_pages
@@ -2864,8 +2803,6 @@ export const composeFromImportRunOp = defineOperation({
       proposed_modules: unknown;
       proposed_theme_tokens: unknown;
       accepted_page_id: string | null;
-      diff_status: "pass" | "warn" | "fail" | null;
-      acknowledged_at: string | Date | null;
       cluster_key: string;
       cluster_label: string | null;
       page_css: string | null;
@@ -3222,14 +3159,6 @@ export const composeFromImportRunOp = defineOperation({
       templateIdsByCluster.set(clusterKey, templateIdForCluster);
 
       for (const r of members) {
-        // Block on unacknowledged screenshot fail — same gate as accept_page.
-        // Record WHY so a run that skips every page fails loudly below
-        // instead of silently returning templates-but-zero-pages.
-        const skip = composePageSkipReason(r);
-        if (skip) {
-          skippedPages.push(skip);
-          continue;
-        }
         const proposedModules = parseModules(r.proposed_modules);
         const pageInsert = (await tx.execute(sql`
           INSERT INTO pages (slug, locale, title, name, status, template_id, version)

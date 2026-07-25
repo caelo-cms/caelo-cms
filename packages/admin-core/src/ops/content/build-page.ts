@@ -102,6 +102,10 @@ export const buildPageOp = defineOperation({
       z.string(),
       z.array(z.object({ name: z.string(), kind: z.string() })),
     ),
+    /** §2 — per placement-only entry index, authoring fields it carried that
+     *  were NOT applied (differing metadata or any structural field). Surfaced
+     *  so a change the AI intended never vanishes silently. */
+    ignoredAuthoringByIndex: z.record(z.string(), z.array(z.string())),
   }),
   handler: async (ctx, input, tx) => {
     // Once anything has been written, failures must THROW so the tx
@@ -119,13 +123,49 @@ export const buildPageOp = defineOperation({
       return err(queryError);
     };
 
+    // ── 0. Import linkage + idempotency ─────────────────────────────
+    // issue #278 flow: `importPageId` links the built page to the
+    // `import_pages` row it rebuilds. Two effects:
+    //  1. IDEMPOTENCY — if that row already points at a LIVE page
+    //     (`accepted_page_id`), this is a REBUILD: target that page
+    //     instead of minting a duplicate, so a second build for the same
+    //     import page can never create a second page (the run-observed
+    //     "homepage built twice" class).
+    //  2. LINKAGE — after the build we stamp `accepted_page_id` with the
+    //     final page id, so `imports.check_page_inventory` /
+    //     `imports.migrate_media` (which both PREFER the pointer over
+    //     slug-matching) resolve regardless of the built page's slug —
+    //     fixing the slug-coupling misses (incl. the "inventory reports
+    //     100% missing" bug, item 4b).
+    const importPageId = input.page.importPageId;
+    let rebuildTargetPageId: string | undefined;
+    if (importPageId !== undefined) {
+      const linkRows = (await tx.execute(sql`
+        SELECT ip.id::text AS import_id, p.id::text AS live_page_id
+        FROM import_pages ip
+        LEFT JOIN pages p ON p.id = ip.accepted_page_id AND p.deleted_at IS NULL
+        WHERE ip.id = ${importPageId}::uuid
+        LIMIT 1
+      `)) as unknown as { import_id: string; live_page_id: string | null }[];
+      const link = linkRows[0];
+      if (!link) {
+        return fail(
+          `import page ${importPageId} not found — pass an import_pages id from imports.get, or omit importPageId to build a standalone page`,
+        );
+      }
+      rebuildTargetPageId = link.live_page_id ?? undefined;
+    }
+
     // ── 1. Resolve the target page ─────────────────────────────────
     let pageId: string;
     let createdPage = false;
     let templateId: string;
     let pageSlug: string;
-    if (input.page.pageId !== undefined) {
-      pageId = input.page.pageId;
+    // An explicit `pageId` always wins; otherwise a prior import linkage
+    // (rebuildTargetPageId) turns this into an in-place rebuild.
+    const existingTargetId = input.page.pageId ?? rebuildTargetPageId;
+    if (existingTargetId !== undefined) {
+      pageId = existingTargetId;
       const lock = await checkAndAcquireEntityLock(tx, {
         kind: "page",
         entityId: pageId,
@@ -230,6 +270,12 @@ export const buildPageOp = defineOperation({
     const additions: ResolvedBuildPlacement[] = [];
     const mintedFlags: boolean[] = [];
     const extractedFieldsByIndex: Record<string, { name: string; kind: string }[]> = {};
+    // §2 (no silent drop) — a placement-only `moduleId` entry that ALSO carried
+    // authoring fields does NOT re-author the shared module; per index we record
+    // any such field whose value DIFFERS from the module's stored one, so the
+    // tool can tell the AI its change wasn't applied (use edit_module) instead
+    // of vanishing it.
+    const ignoredAuthoringByIndex: Record<string, string[]> = {};
     // Local `ref` handles → the ids this call minted for them. Later
     // entries embed a nested module by writing {"$ref": "<ref>"} in a
     // module / module-list field value; resolution replaces it with the
@@ -282,20 +328,50 @@ export const buildPageOp = defineOperation({
         moduleId = resolved.moduleId;
       } else if (entry.moduleId !== undefined) {
         // Place mode — branch-aware existence check (a module minted
-        // earlier in this same chat must be placeable).
+        // earlier in this same chat must be placeable). We also read the
+        // module's metadata to compare against any authoring fields this
+        // placement-only entry carried (see the ignored-authoring note below).
         const branchFilter = branchVisibilityFilter(ctx);
         const rows = (await tx.execute(sql`
-          SELECT id::text AS id FROM modules
+          SELECT id::text AS id, display_name, description, kind, type FROM modules
           WHERE id = ${entry.moduleId}::uuid AND deleted_at IS NULL ${branchFilter}
           LIMIT 1
-        `)) as unknown as { id: string }[];
-        if (!rows[0]) {
+        `)) as unknown as {
+          id: string;
+          display_name: string;
+          description: string;
+          kind: string;
+          type: string | null;
+        }[];
+        const mod = rows[0];
+        if (!mod) {
           return fail(
             `${moduleLabel(i, entry)}: module ${entry.moduleId} not found or deleted — ` +
               "pass an id from `## Modules` / list_modules, or author displayName + html to mint a new module",
           );
         }
         moduleId = entry.moduleId;
+        // §2 — surface any authoring field that DIFFERS from the module's stored
+        // value (or is structural, which placement can never apply). A matching
+        // metadata field is a harmless redundant label → no note.
+        const ignored: string[] = [];
+        if (entry.displayName !== undefined && entry.displayName !== mod.display_name) {
+          ignored.push(`displayName='${entry.displayName}' (module keeps '${mod.display_name}')`);
+        }
+        if (entry.description !== undefined && entry.description !== mod.description) {
+          ignored.push("description");
+        }
+        if (entry.kind !== undefined && entry.kind !== mod.kind) {
+          ignored.push(`kind='${entry.kind}' (module keeps '${mod.kind}')`);
+        }
+        if (entry.type !== undefined && entry.type !== (mod.type ?? undefined)) {
+          ignored.push(`type='${entry.type}' (module keeps '${mod.type ?? "(none)"}')`);
+        }
+        for (const k of ["html", "css", "js", "fields"] as const) {
+          if (entry[k] !== undefined) ignored.push(`${k} (structural)`);
+        }
+        if (entry.bindThemeLiterals !== undefined) ignored.push("bindThemeLiterals");
+        if (ignored.length > 0) ignoredAuthoringByIndex[String(i)] = ignored;
       } else {
         // Mint mode. The Zod superRefine enforces displayName+html at
         // the dispatch boundary; re-narrow for direct handler calls
@@ -502,6 +578,20 @@ export const buildPageOp = defineOperation({
       await recomputePageContentHash(tx, pageId);
     }
 
+    // Stamp the import→page linkage LAST, once pageId is final. Idempotent:
+    // on a rebuild `accepted_page_id` already equals pageId; on a first
+    // build (or when the prior link pointed at a since-deleted page) it now
+    // points at the live page. The pointer is what inventory /
+    // media-migration reads resolve on (slug-independent).
+    if (importPageId !== undefined) {
+      await tx.execute(sql`
+        UPDATE import_pages
+           SET accepted_page_id = ${pageId}::uuid,
+               accepted_at = COALESCE(accepted_at, now())
+         WHERE id = ${importPageId}::uuid
+      `);
+    }
+
     return ok({
       pageId,
       createdPage,
@@ -515,6 +605,7 @@ export const buildPageOp = defineOperation({
       })),
       detached,
       extractedFieldsByIndex,
+      ignoredAuthoringByIndex,
     });
   },
 });

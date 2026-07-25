@@ -68,6 +68,14 @@ export interface StreamTurnResult {
    * loop.ts owns recovery (retry once) and the operator messaging.
    */
   firstEventTimedOut: boolean;
+  /**
+   * The raw message of a turn-fatal provider error that WAS surfaced to the
+   * client (the generic `{kind:"error"}` path + the soft cost-cap) — captured
+   * so loop.ts can file it into the bug-report channel. Null when no such
+   * error occurred, or when the error was the context-overflow class (that
+   * rides `promptTooLongMessage` instead, since loop.ts owns its recovery).
+   */
+  providerErrorMessage: string | null;
   stoppingDiagnostics: StoppingDiagnostics | null;
 }
 
@@ -106,6 +114,7 @@ export async function* streamProviderTurn(args: {
   let loopStop: StreamTurnResult["loopStop"] = "end_turn";
   let providerErr = false;
   let promptTooLongMessage: string | null = null;
+  let providerErrorMessage: string | null = null;
   let firstEventTimedOut = false;
   // v0.10.17 — populated by the `done` event when the underlying
   // adapter forwards provider stop metadata. Read by the empty-
@@ -247,9 +256,10 @@ export async function* streamProviderTurn(args: {
           );
           if (microcents(usdSoFar) > args.costCapMicrocents) {
             providerErr = true;
+            providerErrorMessage = `cost cap reached: spent ~${microcents(usdSoFar)} µ¢ / cap ${args.costCapMicrocents} µ¢`;
             yield {
               kind: "error",
-              message: `cost cap reached: spent ~${microcents(usdSoFar)} µ¢ / cap ${args.costCapMicrocents} µ¢`,
+              message: providerErrorMessage,
             };
           }
         }
@@ -269,6 +279,10 @@ export async function* streamProviderTurn(args: {
           // compacts + retries, and only surfaces a message if that fails.
           promptTooLongMessage = ev.message;
         } else {
+          // Capture the raw message so loop.ts can file it to the bug-report
+          // channel (this is the class that includes the tool_use/tool_result
+          // pairing 400s) — the turn is fatally rejected, not recoverable.
+          providerErrorMessage = ev.message;
           yield { kind: "error", message: ev.message };
         }
       }
@@ -287,6 +301,7 @@ export async function* streamProviderTurn(args: {
     loopStop,
     providerErr,
     promptTooLongMessage,
+    providerErrorMessage,
     firstEventTimedOut,
     stoppingDiagnostics,
   };

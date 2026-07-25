@@ -192,7 +192,8 @@ export function describeAllowlistProblems(problems: readonly AllowlistProblem[])
   return (
     `allowlistedTools entries must be live AI tool names (e.g. "edit_module", "list_pages"), ` +
     `not Query-API op names. Unresolvable: ${list}. ` +
-    `Fix the named entries and retry; call with allowlistedTools=[] to leave the catalogue unrestricted.`
+    `Fix the named entries and retry; these are PRELOAD hints, not a restriction ` +
+    `(call with allowlistedTools=[] to preload no extras — the catalogue is never narrowed either way).`
   );
 }
 

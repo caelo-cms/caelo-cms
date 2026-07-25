@@ -38,6 +38,7 @@ export const editModuleTool: ToolDefinitionWithHandler<
     "**Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158). " +
     "**Module JS shares ONE page-level script** - no implicit `root`/`el` binding exists; wrap in an IIFE and query via document.querySelectorAll scoped to your module's root class (see the `js` input description). " +
     "Edits are CHAT-BRANCHED until publish. " +
+    "**For a TARGETED change to existing html/css/js, PREFER `edit_content`** (surgical string-replace: far cheaper than re-emitting the whole body here, and the diff is reviewable). Use `edit_module` for a WHOLESALE rewrite, a brand-new module body, or `fields`/`displayName`/`kind`/`type`/`description` changes. " +
     "Use this for structure, styling, fields list, or `description`/`kind` updates. " +
     "DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. " +
     "Prefer `update_modules_many` when targeting > 1 module. " +

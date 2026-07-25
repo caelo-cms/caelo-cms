@@ -553,24 +553,32 @@ describe("renderModuleWithContent — engine-routing parity (#71)", () => {
     expect(r.missingSlots).toContain("field-not-declared:unknown");
   });
 
-  it("kind-mismatch on {{#name}} against a primitive field emits the exact legacy string", () => {
-    const expected = "kind-mismatch:title expected=module-list|text-list|link-list actual=text";
+  it("{{#name}} over a primitive field is a CONDITIONAL, not a kind-mismatch (renders when set)", () => {
+    // Regression: a scalar text/image field in a `{{#name}}…{{/name}}` section
+    // used to fall through to kind-mismatch and SILENTLY DROP the content.
     const resolver = buildResolver(
       [
         {
           moduleId: PARENT_MOD_ID,
-          slug: "mismatch",
-          html: "<p>{{#title}}x{{/title}}</p>",
+          slug: "conditional",
+          html: "<h1>{{#title}}{{title}}{{/title}}</h1>",
           css: "",
           js: "",
           fields: [{ name: "title", kind: "text" }],
         },
       ],
-      [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null }],
+      [
+        {
+          id: PARENT_CI_ID,
+          moduleId: PARENT_MOD_ID,
+          values: { title: "Willkommen" },
+          deletedAt: null,
+        },
+      ],
     );
     const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toContain(`<!-- caelo:missing reason=${expected} -->`);
-    expect(r.missingSlots).toContain(expected);
+    expect(r.html).toContain("<h1>Willkommen</h1>");
+    expect(r.missingSlots.some((s) => s.includes("kind-mismatch"))).toBe(false);
   });
 
   it("kind-mismatch on {{>name}} against a list field emits the exact legacy string", () => {

@@ -59,8 +59,6 @@ interface ImportPage {
     displayName: string;
   }>;
   proposedThemeTokens: Record<string, string>;
-  diffStatus: "pass" | "warn" | "fail" | null;
-  diffPct: number | null;
   acceptedPageId: string | null;
   acceptedAt: string | null;
 }

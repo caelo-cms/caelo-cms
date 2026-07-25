@@ -67,6 +67,7 @@
     permissions={data.permissions}
     csrfToken={data.csrfToken}
     userEmail={data.currentUser?.email ?? null}
+    aiSpend7d={data.aiSpend7d}
   >
     {@render children()}
   </AppShell>

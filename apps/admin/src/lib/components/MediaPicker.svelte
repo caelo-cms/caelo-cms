@@ -4,10 +4,13 @@
   /**
    * P7 — modal media picker. Opens via parent state (`bind:open`) and
    * calls `onPick({ url, alt })` when the user selects an asset. The
-   * URL is the canonical `/_caelo/media/<id>/<variant>` (WebP-800 for
-   * raster images, `orig` otherwise) — drop straight into module HTML.
+   * URL is the canonical slug-based media URL (`/_caelo/media/<slug>` for
+   * the original, `/_caelo/media/<slug>/<variant>` for named variants;
+   * WebP-800 for raster images, `orig` otherwise) — drop straight into
+   * module HTML.
    */
 
+  import { buildMediaUrl } from "@caelo-cms/shared";
   import { Search } from "lucide-svelte";
   import { onMount } from "svelte";
   import {
@@ -21,6 +24,7 @@
 
   type AssetSummary = {
     id: string;
+    slug: string;
     mime: string;
     originalName: string;
     width: number | null;
@@ -103,7 +107,7 @@
 
   function pick(a: AssetSummary): void {
     onPick({
-      url: `/_caelo/media/${a.id}/${pickVariant(a)}`,
+      url: buildMediaUrl(a.slug, pickVariant(a)),
       alt: a.alt,
       mediaId: a.id,
     });
@@ -161,7 +165,7 @@
                 <div class="aspect-square bg-muted/50">
                   {#if RASTER.has(a.mime) || a.mime === "image/svg+xml"}
                     <img
-                      src={`/_caelo/media/${a.id}/${thumbVariant(a)}`}
+                      src={buildMediaUrl(a.slug, thumbVariant(a))}
                       alt={a.alt}
                       class="size-full object-cover"
                       loading="lazy"

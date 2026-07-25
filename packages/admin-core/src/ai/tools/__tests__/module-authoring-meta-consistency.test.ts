@@ -81,7 +81,10 @@ describe("addModuleToolInput accepts the metadata on every target (#106)", () =>
     expect(r.success).toBe(true);
   });
 
-  it("reuse mode (moduleId) rejects authoring fields as mutually exclusive", () => {
+  it("reuse mode (moduleId) TOLERATES carried authoring fields — placement-only, handler surfaces the ignored-authoring info", () => {
+    // §1A/§11 — a valid placement must never fail over an extra authoring
+    // field. moduleId + html passes the schema; the tool handler (not the
+    // schema) reports that html was not applied and points at edit_module.
     const r = addModuleToolInput.safeParse({
       target: "layout",
       targetRef: "site-default",
@@ -90,7 +93,7 @@ describe("addModuleToolInput accepts the metadata on every target (#106)", () =>
       moduleId: "00000000-0000-0000-0000-000000000000",
       html: "<footer>x</footer>",
     });
-    expect(r.success).toBe(false);
+    expect(r.success).toBe(true);
   });
 });
 

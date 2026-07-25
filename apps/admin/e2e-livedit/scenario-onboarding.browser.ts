@@ -5,14 +5,23 @@
  *
  * The epic's front-door promise: a fresh install greets the operator
  * in /edit BEFORE they type anything, and a first message naming an
- * existing website routes into the MIGRATION flow — inspect first,
- * propose the Owner-gated crawl, and never claim the crawl ran.
+ * existing website routes into the MIGRATION flow — inspect first, then
+ * ASK THE DESIGN DIRECTION (staged flow 0178) before anything is
+ * crawled or built, and never claim a crawl ran.
+ *
+ * Staged flow (0178): a domain message no longer triggers an immediate
+ * crawl proposal. Turn 1 inspects the homepage, maps the page types, and
+ * offers the 3-way design-direction choice (1:1 / refresh / optimize) —
+ * WAITING for the operator's pick before proposing even the scoped
+ * homepage import. So after one message there is NO import run yet.
  *
  * Regression classes this catches (mock-AI cannot):
  *   - the welcome seed silently not firing on untouched installs;
  *   - routing text drifting out of the cold-start prompt so a domain
  *     message gets a from-memory rebuild instead of a migration;
- *   - the AI claiming the gated crawl already ran (§11.A violation).
+ *   - the staged flow regressing to a crawl-first proposal before the
+ *     operator has picked a design direction;
+ *   - the AI claiming a crawl already ran (§11.A violation).
  *
  * OPT-IN: CAELO_LIVEDIT_ONBOARDING=1 (multi-tool migration turns are
  * nightly/on-demand cost, not per-PR).
@@ -80,7 +89,7 @@ test.describe("e2e-livedit onboarding — welcome + migration routing", () => {
     "opt-in (CAELO_LIVEDIT_ONBOARDING=1) — multi-tool migration turns are nightly/on-demand cost",
   );
 
-  test("fresh install greets first; a domain message becomes a crawl PROPOSAL, never a claimed crawl", async ({
+  test("fresh install greets first; a domain message inspects + asks the design direction, never a claimed crawl", async ({
     page,
   }) => {
     resetToUntouchedInstall();
@@ -100,7 +109,7 @@ test.describe("e2e-livedit onboarding — welcome + migration routing", () => {
         `Meine bestehende Website ist ${site.url} — bitte übernehmt sie in Caelo, das Design soll erhalten bleiben.`,
       );
 
-      // ── The AI LOOKED at the site before proposing ───────────────
+      // ── The AI LOOKED at the site before deciding anything ───────
       const inspected = dbJson<{ n: number }[]>(`
         return await tx\`
           SELECT count(*)::int AS n FROM chat_messages
@@ -109,30 +118,27 @@ test.describe("e2e-livedit onboarding — welcome + migration routing", () => {
       `);
       expect(
         inspected[0]?.n ?? 0,
-        "the migration flow must inspect the real site before the fork/proposal",
+        "the migration flow must inspect the real site before it asks the design direction",
       ).toBeGreaterThanOrEqual(1);
 
-      // ── A crawl PROPOSAL exists — and nothing beyond 'proposed' ──
-      const runs = dbJson<{ status: string; source_url: string; estimate: unknown }[]>(`
-        return await tx\`SELECT status, source_url, estimate FROM import_runs\`;
+      // ── Staged flow (0178): NO crawl proposed yet — the AI first asks
+      // the design direction and WAITS for the operator's pick. A crawl
+      // (import_runs row) before the pick is exactly the regression this
+      // now guards.
+      const runs = dbJson<{ status: string }[]>(`
+        return await tx\`SELECT status FROM import_runs\`;
       `);
-      expect(runs.length, "exactly one crawl proposal should be queued").toBe(1);
-      expect(runs[0]?.source_url).toContain("127.0.0.1");
       expect(
-        runs[0]?.status,
-        "§11.A: the AI proposes; only the Owner's click moves the run past 'proposed'",
-      ).toBe("proposed");
-      expect(runs[0]?.estimate, "the proposal carries the #193 scope estimate").not.toBeNull();
+        runs.length,
+        "staged flow: no crawl is proposed before the operator picks a design direction",
+      ).toBe(0);
 
-      // ── The AI surfaces the crawl as a PROPOSAL for the Owner to approve,
-      // and must NOT claim it already crawled. Post the SDK-native approval
-      // gate, the proposal renders as an INLINE Approve/Reject card in the
-      // chat — the pre-gate "/security/import/pending" link is gone. (The DB
-      // assertions above already prove status='proposed'; this guards the
-      // transcript wording.)
+      // ── The AI offered the 3-way DESIGN DIRECTION choice (via
+      // offer_choices), and must NOT claim any crawl ran. The choice
+      // renders as inline clickable options in the chat transcript.
       const body = (await page.locator("body").innerText()).toLowerCase();
-      expect(body, "the AI offers the crawl for the Owner to approve").toMatch(
-        /approve|freigeb|genehmig|queued|angesto/,
+      expect(body, "the AI offers the design-direction choice (1:1 / refresh / optimize)").toMatch(
+        /beibehalten|auffrisch|optimiert/,
       );
       expect(body, "the AI must NOT claim it already crawled").not.toMatch(
         /crawl (abgeschlossen|complete|done|fertig)|habe .* gecrawlt/,

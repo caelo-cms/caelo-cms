@@ -209,6 +209,65 @@ export const themeCubicBezierToken = z
   })
   .strict();
 
+/** The seven CSS `<easing-function>` keywords, in `transition-timing-function` grammar. */
+const EASING_KEYWORDS = [
+  "linear",
+  "ease",
+  "ease-in",
+  "ease-out",
+  "ease-in-out",
+  "step-start",
+  "step-end",
+] as const;
+
+/**
+ * Easing value as a literal CSS string — the form a model naturally
+ * reaches for on `motion.easing`: a timing keyword (`ease-in-out`) or a
+ * literal `cubic-bezier(a, b, c, d)` / `steps(...)`. The DTCG
+ * `cubicBezier` *tuple* (`themeCubicBezierToken`) is the canonical
+ * structured shape; this is the tolerant fallback so a correct CSS
+ * easing isn't rejected as "Invalid input" (the same tolerance
+ * `shadowValueString` gives shadows and `gradientValueString` gradients).
+ *
+ * ReDoS-safe: the function-call forms use a bounded char class with no
+ * nested quantifiers, and exclude `;<>{}` so a value can never break out
+ * of the emitted declaration. The renderer emits the string verbatim.
+ */
+// Longest-first so the alternation prefers `ease-in-out` over `ease`.
+const EASING_KEYWORD_ALT = [...EASING_KEYWORDS].sort((a, b) => b.length - a.length).join("|");
+const easingValueString = z
+  .string()
+  .min(1)
+  .max(80)
+  .regex(
+    new RegExp(
+      `^(?:${EASING_KEYWORD_ALT}|cubic-bezier\\([\\d\\s.,+-]+\\)|steps\\([\\w\\s.,+-]+\\))$`,
+      "i",
+    ),
+    `easing must be a keyword (${EASING_KEYWORDS.join("|")}) or a cubic-bezier(...) / steps(...) value`,
+  );
+
+/**
+ * Easing token for `motion.easing`. Accepts, in order of how models
+ * emit them: a CSS easing keyword / `cubic-bezier(...)` string, the DTCG
+ * `cubicBezier` `[x1,y1,x2,y2]` tuple, or a DTCG alias. `$type` may be
+ * omitted, `cubicBezier` (DTCG), or `easing` (Caelo shorthand).
+ */
+export const themeEasingToken = z
+  .object({
+    $value: z.union([
+      easingValueString,
+      z
+        .tuple([z.number().min(0).max(1), z.number(), z.number().min(0).max(1), z.number()])
+        .describe("[x1, y1, x2, y2]"),
+      aliasString,
+    ]),
+    $type: z.union([z.literal("cubicBezier"), z.literal("easing")]).optional(),
+    $description: optionalDescription,
+    $extensions: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+
 /**
  * issue #153 — first-class gradient token. Pragmatic CSS-string form
  * (`linear-gradient(135deg, #4f46e5, #7c3aed)`) rather than DTCG's
@@ -253,6 +312,7 @@ const anyThemeToken = z.union([
   themeShadowComposite,
   themeDurationToken,
   themeCubicBezierToken,
+  themeEasingToken,
   themeGradientToken,
 ]);
 
@@ -328,12 +388,44 @@ const CATEGORY_TOKEN_SCHEMAS: Record<string, z.ZodTypeAny> = {
   breakpoint: themeDimensionToken,
   typography: themeTypographyComposite,
   shadow: themeShadowComposite,
-  // motion mixes duration + easing leaves (duration.fast, ease.smooth
-  // nested under motion or flat); accept either shape.
-  motion: z.union([themeDurationToken, themeCubicBezierToken, themeDimensionToken]),
+  // motion mixes duration + easing leaves (duration.fast, ease.smooth,
+  // easing.standard nested under motion or flat); accept either shape.
+  // themeEasingToken covers the CSS-string easings (`ease-in-out`,
+  // `cubic-bezier(...)`) a model naturally emits; themeCubicBezierToken
+  // covers the DTCG tuple; themeDurationToken/themeDimensionToken the
+  // timing leaves.
+  motion: z.union([
+    themeDurationToken,
+    themeCubicBezierToken,
+    themeEasingToken,
+    themeDimensionToken,
+  ]),
   duration: themeDurationToken,
-  ease: themeCubicBezierToken,
+  ease: z.union([themeCubicBezierToken, themeEasingToken]),
 };
+
+/**
+ * Per-category "what shape is accepted" clause, spliced into the
+ * rejection message so the AI can self-correct in one step (CLAUDE.md
+ * §11 — AI-actionable errors) instead of seeing a bare "Invalid input".
+ * Categories absent here fall back to the raw Zod issue message.
+ */
+const CATEGORY_EXPECTATIONS: Record<string, string> = {
+  motion:
+    'a duration (e.g. "200ms"), a cubic-bezier(...) or easing keyword ' +
+    "(linear|ease|ease-in|ease-out|ease-in-out|step-start|step-end), or a dimension token",
+  ease: 'a cubic-bezier(...) string, an easing keyword (linear|ease|ease-in|ease-out|ease-in-out|step-start|step-end), a DTCG [x1,y1,x2,y2] tuple, or an alias like "{motion.ease}"',
+  duration: 'a duration string ending in ms or s (e.g. "200ms", "0.5s") or an alias',
+};
+
+/** Compact, human-readable render of a rejected `$value` for the error tail. */
+function describeValue(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (value === undefined) return "undefined";
+  const s = JSON.stringify(value);
+  if (s === undefined) return String(value);
+  return s.length > 80 ? `${s.slice(0, 77)}...` : s;
+}
 
 function refineKnownCategoryLeaves(
   category: string,
@@ -347,12 +439,25 @@ function refineKnownCategoryLeaves(
   if ("$value" in obj) {
     const sub = schema.safeParse(obj);
     if (!sub.success) {
-      for (const issue of sub.error.issues) {
+      const name = path[path.length - 1];
+      const expectation = CATEGORY_EXPECTATIONS[category];
+      if (expectation) {
+        // Union-based categories surface a single, actionable message
+        // (naming the token, the accepted shapes, and the offending
+        // value) instead of one "Invalid input" issue per union member.
         ctx.addIssue({
           code: "custom",
-          path: [...path, ...issue.path],
-          message: `${category} token invalid: ${issue.message}`,
+          path: [...path],
+          message: `${category} token "${String(name)}" invalid: expected ${expectation}; got ${describeValue(obj.$value)}`,
         });
+      } else {
+        for (const issue of sub.error.issues) {
+          ctx.addIssue({
+            code: "custom",
+            path: [...path, ...issue.path],
+            message: `${category} token "${String(name)}" invalid: ${issue.message} (got ${describeValue(obj.$value)})`,
+          });
+        }
       }
     }
     return;
@@ -393,6 +498,7 @@ export type ThemeShadowComposite = z.infer<typeof themeShadowComposite>;
 export type ThemeGradientToken = z.infer<typeof themeGradientToken>;
 export type ThemeDurationToken = z.infer<typeof themeDurationToken>;
 export type ThemeCubicBezierToken = z.infer<typeof themeCubicBezierToken>;
+export type ThemeEasingToken = z.infer<typeof themeEasingToken>;
 export type AnyThemeToken = z.infer<typeof anyThemeToken>;
 
 /**

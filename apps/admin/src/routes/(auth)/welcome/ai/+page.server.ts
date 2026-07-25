@@ -16,6 +16,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
+import { defaultModelForProvider, modelsForProvider } from "$lib/ai-models.js";
 import { assertCsrfToken } from "$lib/server/csrf.js";
 import { requirePermission } from "$lib/server/guards.js";
 import { getQueryContext } from "$lib/server/query.js";
@@ -26,14 +27,6 @@ import type { Actions, PageServerLoad } from "./$types";
 // linked from the wizard footer.
 const WIZARD_PROVIDERS = ["anthropic", "openai", "google"] as const;
 type WizardProvider = (typeof WIZARD_PROVIDERS)[number];
-
-// Same defaults as /security/ai — keep in sync until a shared
-// provider-catalog module exists.
-const DEFAULT_MODEL: Record<WizardProvider, string> = {
-  anthropic: "claude-sonnet-5",
-  openai: "gpt-4o",
-  google: "gemini-1.5-pro",
-};
 
 const DISPLAY_NAME: Record<WizardProvider, string> = {
   anthropic: "Anthropic (Claude)",
@@ -73,10 +66,18 @@ export const actions: Actions = {
       return fail(400, { provider: name, error: "Paste an API key to continue." });
     }
 
+    // Thread the picked model into config.model. Validate against the
+    // provider's curated list so a tampered form can't inject an
+    // arbitrary string; fall back to the provider default otherwise.
+    const submittedModel = String(form.get("model") ?? "").trim();
+    const model = modelsForProvider(name).some((m) => m.id === submittedModel)
+      ? submittedModel
+      : defaultModelForProvider(name);
+
     const result = await execute(registry, adapter, locals.ctx, "ai_providers.set", {
       name,
       displayName: DISPLAY_NAME[name],
-      config: { model: DEFAULT_MODEL[name] },
+      config: { model },
       isActive: true,
       apiKey,
     });

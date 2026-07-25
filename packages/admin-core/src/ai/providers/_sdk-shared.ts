@@ -541,17 +541,28 @@ export async function* runSDKStream(args: {
     ...(extraOptions ?? {}),
   });
   yield* translateSDKStream(result.fullStream);
-  // Option C (2026-07) — after the stream drains, emit the SDK's
-  // canonical assistant messages for this turn. The SDK assembles these
-  // with provider-executed tool blocks + reasoning signatures + tool
-  // pairing already correct; consumers persist + replay these instead of
-  // rebuilding history from the event stream (CLAUDE.md §12). Best-effort:
-  // if the response promise rejects (aborted turn, upstream error), skip
-  // the event — the turn already surfaced its error/done through the
-  // stream, and the caller falls back to its event-accumulated turn.
+  // Option C (2026-07) — after the stream drains, emit the SDK's canonical
+  // messages for this turn. The SDK assembles these with provider-executed
+  // tool blocks + reasoning signatures + tool pairing already correct;
+  // consumers persist + replay these instead of rebuilding history from the
+  // event stream (CLAUDE.md §12). Best-effort: if the promise rejects (aborted
+  // turn, upstream error), skip the event — the turn already surfaced its
+  // error/done through the stream, and the caller falls back to its
+  // event-accumulated turn.
+  //
+  // Use `responseMessages`, NOT `response.messages`. `response.messages` holds
+  // only the FINAL step's output, so it OMITS a pre-loop tool-approval
+  // resolution: when the Owner approves a gated tool, the SDK executes it
+  // BEFORE the model step and emits its tool_result as a LEADING `tool`
+  // message that lives only in `responseMessages`. Persisting `response.messages`
+  // therefore dropped the approved gated tool's tool_result, stranding its
+  // tool_use → Anthropic 400 "tool_use without tool_result" on the next turn
+  // (the theme-approval brick). `responseMessages` includes that leading
+  // tool_result; for a normal turn it equals `response.messages`. Verified
+  // against @ai-sdk streamText with a mock model + tool-approval history.
   try {
-    const response = await result.response;
-    yield { kind: "turn-messages", messages: response.messages };
+    const responseMessages = await result.responseMessages;
+    yield { kind: "turn-messages", messages: responseMessages };
   } catch {
     /* no canonical messages for an aborted/errored turn */
   }

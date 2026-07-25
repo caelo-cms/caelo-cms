@@ -59,6 +59,33 @@ class OneTurnProvider implements AIProvider {
   }
 }
 
+/**
+ * issue #297 overshoot — models the expensive-single-turn shape: ONE provider
+ * call emits a tool call (e.g. a build_page) AND, via a large output-token
+ * usage event, single-handedly pushes spend past the ceiling. The stop is
+ * `end_turn` (the turn dispatches the tool then ends — like a per-page driver
+ * closing the turn), so the OLD top-of-loop-only gate deferred the pause to
+ * the NEXT turn; the post-dispatch check must pause THIS turn instead.
+ */
+class ExpensiveToolCallProvider implements AIProvider {
+  readonly name = "anthropic" as const;
+  readonly model = "fixture-budget-overshoot";
+  calls = 0;
+  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
+    this.calls++;
+    yield {
+      kind: "tool-call",
+      id: "toolu_build_page_1",
+      name: "build_page",
+      arguments: { page: { slug: "pricing" }, modules: [] },
+    };
+    // 60k output tokens at $75/MTok ≈ $4.50 — over the $4.20 fixture ceiling
+    // in a single call, from a standing start (spent=0 at the loop-0 top).
+    yield { kind: "usage", inputTokens: 500, outputTokens: 60_000, cachedTokens: 0 };
+    yield { kind: "done", stopReason: "end_turn" };
+  }
+}
+
 interface AppendedMessage {
   role: string;
   content: string;
@@ -100,6 +127,28 @@ function buildFixtureQueryApi(gate: BudgetGateState | null): {
       input: z.looseObject({}),
       output: z.looseObject({}),
       handler: async () => ok({ gate }),
+    }),
+  );
+  // Tool-dispatch dedup cache (always a miss) so the build_page fixture call
+  // in the overshoot test can run + persist its tool_result.
+  registry.register(
+    defineOperation({
+      name: "chat.lookup_tool_result",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({}),
+      output: z.looseObject({}),
+      handler: async () => ok({ cached: null }),
+    }),
+  );
+  registry.register(
+    defineOperation({
+      name: "chat.cache_tool_result",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({}),
+      output: z.looseObject({}),
+      handler: async () => ok({}),
     }),
   );
   registry.register(
@@ -190,6 +239,40 @@ describe("runToolLoop — live budget gate (#297)", () => {
     // The trip landed in the run ledger.
     expect(fixture.gateEvents.map((e) => e.kind)).toContain("tripped");
     // No stacked "tool-loop limit" notice on top of the pause message.
+    expect(fixture.appended.filter((m) => m.content.includes("tool-loop limit"))).toHaveLength(0);
+  });
+
+  it("pauses WITHIN the turn when a single expensive call overshoots the ceiling mid-turn", async () => {
+    // Standing start (spent=0): the loop-0 top check passes, the provider call
+    // runs and jumps spend to ~$4.50 (>$4.20 ceiling) in one shot, the tool
+    // call is dispatched (pairing), then the post-dispatch check trips. The
+    // OLD top-of-loop-only gate returned stopReason "end_turn" here, deferring
+    // the pause to a whole new turn; the fix pauses this turn.
+    const provider = new ExpensiveToolCallProvider();
+    const fixture = buildFixtureQueryApi(gateFixture(0));
+    const { events, result } = await runLoop(provider, fixture);
+
+    // Exactly one provider call — the run did NOT start fresh work past the
+    // ceiling (no second, third, … build_page).
+    expect(provider.calls).toBe(1);
+    // Paused within this turn, cleanly (resumable), not a stray "end_turn".
+    expect(result.stopReason).toBe("cost_ceiling");
+    expect(result.succeeded).toBe(true);
+    expect(events.some((e) => e.kind === "error")).toBe(false);
+
+    // The tool_use it emitted was dispatched + paired before the pause (no
+    // dangling tool_use that would 400 a resume).
+    const toolResults = fixture.appended.filter((m) => m.role === "tool");
+    expect(toolResults).toHaveLength(1);
+
+    // The pause message landed, and it honestly surfaces the overshoot.
+    const pause = fixture.appended.find(
+      (m) => m.role === "assistant" && m.content.includes("Cost ceiling reached"),
+    );
+    expect(pause).toBeDefined();
+    expect(pause?.content).toContain("edged past the ceiling");
+    expect(fixture.gateEvents.map((e) => e.kind)).toContain("tripped");
+    // No stacked "tool-loop limit" notice on top of the pause.
     expect(fixture.appended.filter((m) => m.content.includes("tool-loop limit"))).toHaveLength(0);
   });
 

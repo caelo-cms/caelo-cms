@@ -183,6 +183,9 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
         {
           sha256: sha,
           originalName: `ai-generated-${Date.now()}.png`,
+          // Meaningful public URL segment: the alt/subject the AI asked for
+          // (e.g. "hero background") slugified into `/_caelo/media/<slug>`.
+          name: (input.altText ?? input.prompt).slice(0, 200),
           mime: "image/png",
           sizeBytes: bytes.byteLength,
           width: pipeline.width,
@@ -190,6 +193,10 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
           alt: (input.altText ?? input.prompt).slice(0, 2048),
           storageKey: pipeline.variants[0]?.storageKey ?? `${sha}/orig`,
           storageProvider: getMediaStorageProvider(),
+          // Media provenance (0181) — stamp the generating provider/model.
+          sourceKind: "ai_generated",
+          sourceDetail: `${providerName}/${imageModel}`,
+          license: "AI-generated",
           variants: pipeline.variants.map((v) => ({
             variant: v.variant,
             format: v.format,
@@ -206,15 +213,15 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
           content: `generate_image: media.upload failed: ${describeError(upload.error)}`,
         };
       }
-      const v = upload.value as { assetId: string };
+      const v = upload.value as { assetId: string; slug: string };
       assetId = v.assetId;
-      // The media route is /_caelo/media/<id>/<variant> — a bare
-      // /_caelo/media/<id> 404s. Use the shared AI-variant policy (the same
-      // one find_media applies): prefer webp-800, else the best available
-      // webp, else the always-present original — so the <img src> the AI
-      // references both resolves AND is a sensible display size.
+      // URL is built from the SLUG (meaningful public segment); the id stays
+      // internal. Use the shared AI-variant policy (the same one find_media
+      // applies): prefer webp-800, else the best available webp, else the
+      // always-present original — so the <img src> both resolves AND is a
+      // sensible display size.
       mediaUrl = buildMediaUrl(
-        assetId,
+        v.slug,
         pickAiImageVariant(pipeline.variants.map((pv) => pv.variant)),
       );
     } catch (e) {

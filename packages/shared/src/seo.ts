@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { isHomeSlug } from "./i18n.js";
 
 export const CHANGEFREQ_VALUES = [
   "always",
@@ -130,10 +131,19 @@ export function resolveCanonicalUrl(args: {
    * pages are emitted as bare slugs.
    */
   pageUrlStyle?: "directory" | "no-extension";
+  /**
+   * 0184 — explicit homepage designation (`locales.home_page_id`). When
+   * true this page IS the locale root and canonicalizes to `<base>/`
+   * regardless of its slug. Uses the same predicate (`isHomeSlug`) as
+   * the magic-slug fallback so canonical agrees with hreflang + the
+   * emitted output path.
+   */
+  isHomePage?: boolean;
 }): string {
   if (args.override && args.override.length > 0) return args.override;
   const base = args.siteBaseUrl.replace(/\/$/, "");
-  const cleanSlug = args.pageSlug === "home" || args.pageSlug === "" ? "" : args.pageSlug;
+  const isHome = args.isHomePage === true || isHomeSlug(args.pageSlug);
+  const cleanSlug = isHome ? "" : args.pageSlug;
   const style = args.pageUrlStyle ?? "directory";
   // Tail = the slug portion of the canonical URL, with the trailing
   // shape dictated by the page-emission style. Home pages always

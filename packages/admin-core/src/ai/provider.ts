@@ -196,9 +196,11 @@ export type ProviderEvent =
    * was called; the SDK PAUSED before running its `execute` and is waiting
    * for a `tool-approval-response`. The chat-runner surfaces this to the
    * operator (in-chat Approve/Reject) and stops the turn; the paused state
-   * is carried in `response.messages` (Option C), so resuming = appending the
-   * response and re-running. Never dispatched by our loop (the SDK owns the
-   * execute once approved).
+   * is carried in `responseMessages` (Option C), so resuming = appending the
+   * response and re-running. The SDK executes the approved tool on resume and
+   * emits its tool_result as a LEADING message in `responseMessages` (which is
+   * why we persist that, not `response.messages`). Never dispatched by our loop
+   * (the SDK owns the execute once approved).
    */
   | {
       kind: "tool-approval-request";
@@ -217,8 +219,9 @@ export type ProviderEvent =
   | { kind: "server-tool-call"; id: string; name: string; arguments: unknown }
   | { kind: "server-tool-result"; id: string; name: string; result: unknown }
   /**
-   * Option C (2026-07) — the SDK's canonical assistant messages for this
-   * turn, emitted once at turn-end from `result.response.messages`. The
+   * Option C (2026-07) — the SDK's canonical messages for this turn, emitted
+   * once at turn-end from `result.responseMessages` (NOT `response.messages`,
+   * which omits a pre-loop tool-approval resolution's leading tool_result). The
    * SDK assembles these with provider-executed tool blocks
    * (server_tool_use ↔ tool_search_tool_result), reasoning + signatures,
    * and tool-call pairing already correct — the thing our fullStream

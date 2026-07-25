@@ -6,6 +6,7 @@
    * "used in" panel + delete (Owner-only).
    */
 
+  import { buildMediaUrl } from "@caelo-cms/shared";
   import { Trash2 } from "lucide-svelte";
   import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -37,6 +38,7 @@
   };
   type Asset = {
     id: string;
+    slug: string;
     sha256: string;
     originalName: string;
     mime: string;
@@ -67,7 +69,7 @@
   }
 
   function previewUrl(variant: string): string {
-    return `/_caelo/media/${asset.id}/${variant}`;
+    return buildMediaUrl(asset.slug, variant);
   }
 
   const previewVariant = (() => {

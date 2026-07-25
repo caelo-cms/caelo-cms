@@ -17,7 +17,6 @@ import {
   COMPOSE_CRAWL_RETRY_MS,
   type ComposeSkip,
   classifyComposeRunStatus,
-  composePageSkipReason,
 } from "../ops/compose-eligibility.js";
 
 const RUN_ID = "11111111-1111-1111-1111-111111111111";
@@ -55,43 +54,6 @@ describe("classifyComposeRunStatus", () => {
     }
     // An unexpected/garbage status is also a hard error, never silent.
     expect(classifyComposeRunStatus("banana", RUN_ID).kind).toBe("error");
-  });
-});
-
-describe("composePageSkipReason", () => {
-  const base = {
-    id: "22222222-2222-2222-2222-222222222222",
-    proposed_slug: "about",
-    source_url: "https://example.com/about",
-  };
-
-  it("skips an unacknowledged screenshot-diff FAIL, naming the page + reason", () => {
-    const skip = composePageSkipReason({ ...base, diff_status: "fail", acknowledged_at: null });
-    expect(skip).not.toBeNull();
-    expect(skip?.slug).toBe("about");
-    expect(skip?.sourceUrl).toBe("https://example.com/about");
-    expect(skip?.reason).toContain("screenshot-diff FAIL");
-    expect(skip?.reason.toLowerCase()).toContain("acknowledge");
-  });
-
-  it("composes a FAIL once it has been acknowledged", () => {
-    expect(
-      composePageSkipReason({
-        ...base,
-        diff_status: "fail",
-        acknowledged_at: "2026-07-12T00:00:00Z",
-      }),
-    ).toBeNull();
-  });
-
-  it("composes pass / warn / not-yet-verified pages", () => {
-    expect(
-      composePageSkipReason({ ...base, diff_status: "pass", acknowledged_at: null }),
-    ).toBeNull();
-    expect(
-      composePageSkipReason({ ...base, diff_status: "warn", acknowledged_at: null }),
-    ).toBeNull();
-    expect(composePageSkipReason({ ...base, diff_status: null, acknowledged_at: null })).toBeNull();
   });
 });
 

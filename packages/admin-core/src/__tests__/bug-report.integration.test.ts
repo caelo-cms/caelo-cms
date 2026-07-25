@@ -128,6 +128,27 @@ describe("bug_report tool + ai_bug_reports ops", () => {
     expect(rows.find((r) => r.title === "BRT source auto")?.source).toBe("auto");
   });
 
+  it("stores the failing tool's INPUT as evidence, surfaced by list (2026-07 auto-capture)", async () => {
+    // The chat-runner auto-capture serializes the tool call's arguments into
+    // `evidence` so a detected-bug row is reproducible. Prove the field
+    // round-trips through create → list (what the bugs UI + export consume).
+    const toolInput = 'Tool input (build_page):\n{\n  "page": { "slug": "pricing" }\n}';
+    const created = await execute(registry, adapter, SYSTEM, "ai_bug_reports.create", {
+      title: "BRT with input evidence",
+      whatHappened: "build_page returned an error",
+      expected: "z",
+      suspectedTool: "build_page",
+      evidence: toolInput,
+      source: "auto",
+    });
+    expect(created.ok).toBe(true);
+    const listed = await execute(registry, adapter, SYSTEM, "ai_bug_reports.list", { limit: 200 });
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const rows = (listed.value as { reports: { title: string; evidence: string | null }[] })
+      .reports;
+    expect(rows.find((r) => r.title === "BRT with input evidence")?.evidence).toBe(toolInput);
+  });
+
   it("auto-captured reports dedupe within a session by (tool, message)", async () => {
     const sess = await execute(registry, adapter, SYSTEM, "chat.create_session", {
       title: "BRT dedup session",

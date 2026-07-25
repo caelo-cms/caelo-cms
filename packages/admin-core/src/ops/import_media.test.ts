@@ -1,28 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Unit tests for the DIRECT-BUILD unit-collection fallback in
- * `imports.migrate_media` (issue #278 keystone fix).
+ * Unit tests for the DIRECT-BUILD unit-collection helpers in
+ * `../media/direct-build-units.js` (issue #278 keystone fix).
  *
  * The #278 homepage-first flow builds pages straight through `pages.create`
- * (no `import_pages.accepted_page_id`) and binds chrome via `layout_modules`
- * — so the op's compose-keyed queries return nothing and NO media (the
- * header logo included) ever migrated. `assembleDirectBuildUnits` is the
- * pure core of the fallback: given the rows the handler collects from the
- * live migration-built site, it must produce the rewritable text units —
- * crucially including the layout-bound header where the logo lives.
+ * (no `import_pages.accepted_page_id`) and binds chrome via `layout_modules`.
+ * `assembleDirectBuildUnits` is the pure core that turns the rows collected
+ * from the live migration-built site into rewritable text units — crucially
+ * including the layout-bound header where the logo lives.
  *
  * Pure function → no Postgres, runs under `bun test`.
  */
 
 import { describe, expect, it } from "bun:test";
-import type { ModuleTextWithProvenance } from "../media/direct-build-units.js";
-import type { ModuleState, PageLayoutState } from "../snapshots/state.js";
 import {
   assembleDirectBuildUnits,
+  type ModuleTextWithProvenance,
   resolveDirectBuildModuleRows,
   type TextUnit,
-} from "./import_media.js";
+} from "../media/direct-build-units.js";
+import type { ModuleState, PageLayoutState } from "../snapshots/state.js";
 
 const SOURCE = "https://searchviu.com/";
 const BRANCH = "11111111-1111-4111-8111-111111111111";
