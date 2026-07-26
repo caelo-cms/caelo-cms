@@ -16,6 +16,10 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import {
+  IMPORT_CALLS_PER_PAGE_WITH_BULK_BUILD,
+  IMPORT_FLOW_OVERHEAD_CALLS,
+} from "../ai/import-cost-model.js";
 import type { AIProvider } from "../ai/provider.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import {
@@ -139,8 +143,14 @@ describe("propose_site_import (#193/#298)", () => {
     };
     expect(est.pages).toBe(800);
     expect(est.basis).toBe("sitemap");
-    // issue #298 — the calls×context model: 800 pages × 7 calls + 9 overhead.
-    expect(est.estimatedCalls).toBe(800 * 7 + 9);
+    // issue #298 — the calls×context model. Track the PRODUCTION default via
+    // the constants: issue #299's bulk ops made `build_page` assemble a page
+    // in one call, so the estimator's default dropped from the legacy 7
+    // calls/page to IMPORT_CALLS_PER_PAGE_WITH_BULK_BUILD (3). Hardcoding 7
+    // here made this assertion stale the moment that default changed.
+    expect(est.estimatedCalls).toBe(
+      800 * IMPORT_CALLS_PER_PAGE_WITH_BULK_BUILD + IMPORT_FLOW_OVERHEAD_CALLS,
+    );
     expect(est.aiCostUsd).not.toBeNull();
     expect(est.aiCostUsd!.low).toBeGreaterThan(0);
     expect(est.aiCostUsd!.high).toBeGreaterThanOrEqual(est.aiCostUsd!.low);
