@@ -63,6 +63,37 @@ scripts (`packages/provisioning/*`, `scripts/apply-rulesets.ts`) are dismissed
 because the data is operator-controlled config / IaC output, not untrusted
 request-path input. A dismissal without a rationale is a review failure.
 
+#### Known false-positive class: `js/clear-text-logging` via the Query-API dispatcher
+
+Every op runs through ONE generic dispatcher — `execute(registry, adapter, ctx,
+name, input)` — whose return type is the **union of every registered op's
+output**. CodeQL treats the auth ops (`changePasswordOp`, `adminSetPasswordOp`,
+`requestPasswordResetOp`, `resetPasswordOp`) as sensitive sources, and because
+the dispatcher merges all op results into one dataflow node, it concludes that
+*any* logged op result may carry a reset token. The result is a cascade of
+`js/clear-text-logging` (high) alerts on unrelated observability logs — the
+chat-runner's loop/dispatch/catalogue/passive-turn/budget-gate metrics,
+`ai/auto-recovery.ts`, and `apps/admin/scripts/sync-docs-site.ts`. A 197-file PR
+amplified it to 37 alerts at once (CodeQL itself notes *"alerts … detected
+because the code changes were too large"*).
+
+These are dismissed as false positives on this evidence:
+
+- the flagged sinks log **session ids, tool names, loop counters, token/cost
+  metrics and Zod issues** — never credentials;
+- the flagged files contain **zero references** to any auth op (grep for
+  `auth.change_password|auth.admin_set_password|auth.request_password_reset|auth.reset_password`
+  and the four `*Op` symbols returns nothing), so the sensitive source is not
+  reachable from them.
+
+**Before dismissing a NEW alert of this class, re-run that reachability check.**
+If a flagged file *does* reach an auth op, it is a real finding — fix it at
+source. The structural cure (so the cascade stops recurring) is to stop
+`auth.request_password_reset` from returning the raw token through the shared
+op-output union; that is auth-core work and needs a human owner (CLAUDE.md §2
+locks auth core from AI regeneration). Keeping PRs small also keeps CodeQL's
+per-diff attribution precise.
+
 ### Where findings surface
 
 The repo **Security tab → Code scanning alerts**. The `analyze` step uploads

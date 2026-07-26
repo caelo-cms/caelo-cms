@@ -103,6 +103,32 @@ export default definePlugin({
 });
 `;
 
+/**
+ * Seed this file's OWN test actors.
+ *
+ * `plugins.submitted_by` and `user_pending_actions.proposed_by` are
+ * `NOT NULL REFERENCES actors(id)` (migrations 0057 ff.), so the synthetic
+ * AI/system ids above must exist as real rows. This file used to rely on
+ * `propose-execute.integration.test.ts` having seeded the SAME `…aaaa` id —
+ * `actors` is a PRESERVE table (never truncated between files), so the row
+ * leaked across files and made this suite pass only when that sibling ran
+ * first. On a fresh DB (or a different file order / shard) both
+ * `users.propose_create` and `submit_plugin` failed with a bare FK violation.
+ * A test owns its fixtures: seed them here, idempotently.
+ */
+async function seedActors(): Promise<void> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`INSERT INTO actors (id, kind, display_name) VALUES (${AI.actorId}::uuid, 'ai', 'gm-test-ai') ON CONFLICT DO NOTHING`;
+      await tx`INSERT INTO actors (id, kind, display_name) VALUES (${SYSTEM.actorId}::uuid, 'system', 'gm-test-system') ON CONFLICT DO NOTHING`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
   try {
@@ -127,6 +153,7 @@ async function wipe(): Promise<void> {
 }
 
 beforeAll(async () => {
+  await seedActors();
   await wipe();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
