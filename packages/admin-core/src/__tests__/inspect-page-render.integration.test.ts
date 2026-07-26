@@ -51,7 +51,11 @@ async function wipe(): Promise<void> {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug = ${PAGE_SLUG})`;
       await tx`DELETE FROM pages WHERE slug = ${PAGE_SLUG}`;
-      await tx`DELETE FROM modules WHERE slug = ${MOD_SLUG}`;
+      // Covers BOTH this file's module slugs — `MOD_SLUG` (the page-block
+      // module) and `${MOD_SLUG}-offpage` (the chrome/reusable module the
+      // by-id fallback case seeds). Deleting only the exact slug left the
+      // off-page row behind, so a re-run failed with "slug already in use".
+      await tx`DELETE FROM modules WHERE slug LIKE ${`${MOD_SLUG}%`}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
       await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
       await tx`DELETE FROM layout_blocks WHERE layout_id IN (SELECT id FROM layouts WHERE slug = ${LAYOUT_SLUG})`;
@@ -196,12 +200,21 @@ describe("inspect_page_render tool (v0.2.69)", () => {
     // 6b. target:<moduleId> for a module that is NOT one of the page's block
     //     modules (chrome lives on the layout; reusable modules live off-page).
     //     It must resolve by id via modules.get, not dead-end — with a note.
+    //     Authored the CANONICAL way (explicit `fields[]`, CLAUDE.md §1A):
+    //     `modules.create` runs the legacy extractor whenever `fields` is
+    //     absent OR empty (`shouldExtract` in ops/content/modules.ts), which
+    //     rewrites a literal body into `{{minted_field}}` and moves the text
+    //     into the field default — so a literal marker in the HTML would not
+    //     survive the write. Declaring the field keeps the stored HTML verbatim.
     const offPage = await execute(registry, adapter, systemCtx, "modules.create", {
       slug: `${MOD_SLUG}-offpage`,
       displayName: "Off-page Module",
-      html: '<footer class="chrome">OFFPAGE_BODY</footer>',
+      html: '<footer class="chrome offpage-marker">{{offpage_body}}</footer>',
       css: ".chrome{color:teal}",
       js: "",
+      fields: [
+        { name: "offpage_body", kind: "text", label: "Off-page body", default: "OFFPAGE_BODY" },
+      ],
     });
     if (!offPage.ok) throw new Error(`offpage seed: ${JSON.stringify(offPage.error)}`);
     const offPageId = (offPage.value as { moduleId: string }).moduleId;
@@ -214,9 +227,12 @@ describe("inspect_page_render tool (v0.2.69)", () => {
     expect(offRes.ok).toBe(true);
     const offPayload = JSON.parse(offRes.content) as {
       note?: string;
-      module: { html: string };
+      module: { moduleId: string; html: string };
     };
-    expect(offPayload.module.html).toContain("OFFPAGE_BODY");
+    // The OFF-PAGE module's own body came back (not a page-block module, and
+    // not the layout/template shell) — assert on its unique marker class.
+    expect(offPayload.module.html).toContain("offpage-marker");
+    expect(offPayload.module.moduleId).toBe(offPageId);
     expect(offPayload.note).toContain("fetched by id");
 
     // 6c. A truly-nonexistent module id still fails cleanly (no false positive).
