@@ -287,7 +287,12 @@ export const recordAiCallOp = defineOperation({
       requestId: z.string().max(64).nullable().optional(),
     })
     .strict(),
-  output: z.object({ aiCallId: z.string() }),
+  // Returns what was ACTUALLY billed (pricing-table rates, cache reads at
+  // their reduced rate, cache writes at their premium) so callers can show
+  // the canonical figure instead of re-deriving an estimate. The chat-runner
+  // used to stream a cache-blind estimate to the client, which on a
+  // heavily-cached turn read ~4x the real price.
+  output: z.object({ aiCallId: z.string(), costMicrocents: z.number() }),
   handler: async (ctx, input, tx) => {
     // P16 — when caller doesn't pre-compute cost, look it up from the
     // ai_pricing table. Centralizing here means callers (chat-runner,
@@ -360,6 +365,6 @@ export const recordAiCallOp = defineOperation({
         message: "no id returned",
       });
     }
-    return ok({ aiCallId: id });
+    return ok({ aiCallId: id, costMicrocents });
   },
 });
