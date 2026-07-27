@@ -50,7 +50,13 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 2026-07-27: was 10, which the suite had grown into. Three runs that day
+    # landed at 9m57s (reported success), 10m06s and 10m36s (both cancelled) —
+    # and the cancelled ones had already printed "613 pass / 0 fail" and
+    # "[coverage] gate PASSED" before the kill. The gate was being decided by
+    # runner noise rather than by the code. Raised to give real headroom; the
+    # test step itself is ~7 min, the rest is install + bootstrap + migrate.
+    timeout-minutes: 20
 
     env:
       POSTGRES_USER: caelo
