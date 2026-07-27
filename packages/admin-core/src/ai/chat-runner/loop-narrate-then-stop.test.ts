@@ -111,6 +111,27 @@ class AlwaysNarratesProvider extends RecordingProvider {
   }
 }
 
+/**
+ * Announces the change on the very first call, with no tool ever run — the
+ * shape issue #106 was filed for.
+ */
+class NarrateWithoutToolsProvider extends RecordingProvider {
+  protected *script(call: number): Iterable<ProviderEvent> {
+    if (call === 1) {
+      yield { kind: "text-delta", text: "Ich füge den Footer jetzt zum Layout hinzu." };
+      yield { kind: "done", stopReason: "end_turn" };
+      return;
+    }
+    if (call === 2) {
+      yield { kind: "tool-call", id: "toolu_1", name: "add_module_to_layout", arguments: {} };
+      yield { kind: "done", stopReason: "tool_use" };
+      return;
+    }
+    yield { kind: "text-delta", text: "Fertig." };
+    yield { kind: "done", stopReason: "end_turn" };
+  }
+}
+
 /** Answers a question directly — zero tool calls all turn. */
 class PlainAnswerProvider extends RecordingProvider {
   protected *script(): Iterable<ProviderEvent> {
@@ -301,17 +322,33 @@ describe("runToolLoop — narrate-then-stop recovery", () => {
     expect(judge.seen).toHaveLength(1);
   });
 
-  it("never reaches the judge when the turn made no tool calls at all", async () => {
+  it("leaves a plain answer alone when the judge says it is finished", async () => {
+    // Zero tools all turn. This still reaches the judge — see the next test
+    // for why it must — and the judge is what keeps it untouched.
     const provider = new PlainAnswerProvider();
-    const judge = stubJudge([false]);
-    const result = await runLoop(provider, judge.fn);
+    const judge = stubJudge([true]);
+    const result = await runLoop(provider, judge.fn, "was ist ein Modul?");
 
     expect(provider.calls).toBe(1);
     expect(provider.toolChoices).toEqual([undefined]);
     expect(result.stopReason).toBe("end_turn");
-    // Not even a billable judge call: nothing was engaged, so there is no
-    // dropped intention to recover.
-    expect(judge.seen).toHaveLength(0);
+    expect(judge.seen).toHaveLength(1);
+    expect(judge.seen[0]?.toolNames).toEqual([]);
+  });
+
+  it("recovers a narration that used no tools at all — the originally reported shape", async () => {
+    // issue #106's step-13 footer walk: the model announced the change on its
+    // FIRST call, having run nothing. A pre-filter requiring "this turn used
+    // tools" would skip exactly this case, which is why it does not.
+    const provider = new NarrateWithoutToolsProvider();
+    const judge = stubJudge([false]);
+    const result = await runLoop(provider, judge.fn);
+
+    expect(provider.calls).toBe(3);
+    expect(provider.toolChoices).toEqual([undefined, "required", undefined]);
+    expect(result.stopReason).toBe("end_turn");
+    expect(judge.seen).toHaveLength(1);
+    expect(judge.seen[0]?.toolNames).toEqual([]);
   });
 
   it("never reaches the judge for a closing summary that follows real work", async () => {
