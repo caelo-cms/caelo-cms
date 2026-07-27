@@ -123,10 +123,12 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     // names the offending key
     expect(res.content).toContain("bogusKey");
     expect(res.content.toLowerCase()).toContain("unrecognized");
-    // hands the model the expected shape so it can self-correct
-    expect(res.content).toContain("Expected arguments for `add_module`");
-    expect(res.content).toContain("required:");
-    expect(res.content).toContain("optional:");
+    // hands the model the expected shape so it can self-correct. Since the
+    // deferred-tool fix this is a per-argument list (name + type + required)
+    // rather than a bare key list — a key list cannot convey a nested shape.
+    expect(res.content).toContain("Arguments for `add_module`");
+    expect(res.content).toMatch(/- `\w+` \(\w+, required\)/);
+    expect(res.content).toMatch(/- `\w+` \(\w+, optional\)/);
     // and tells it to retry rather than punt
     expect(res.content.toLowerCase()).toContain("retry");
     // raw Zod JSON is NOT what we hand back anymore
