@@ -15,7 +15,7 @@ directory, so every existing import path keeps resolving.
 | Module | Concern |
 |---|---|
 | `index.ts` | Orchestrator (`runChatTurn`) + public re-exports (`runChatTurn`, `ClientEvent`, `ChatRunnerOptions`). |
-| `loop.ts` | The tool loop (`runToolLoop`): pre-flight history compaction → stream → persist assistant → passive-turn recovery → dispatch, plus the `max_loops` cap notice and the issue-#261 prompt-too-long compact+retry. |
+| `loop.ts` | The tool loop (`runToolLoop`): pre-flight history compaction → stream → persist assistant → narrate-then-stop recovery → dispatch, plus the `max_loops` cap notice and the issue-#261 prompt-too-long compact+retry. |
 | `streaming.ts` | `streamProviderTurn`: consumes one `provider.generate(...)` stream, relays text/thinking deltas, accumulates tool calls, tracks usage + soft cost cap + stop diagnostics. |
 | `tool-catalogue.ts` | `buildToolCatalogue`: skill-allowlist intersection (with the issue-#106 zero-match fallback), subagent exclusion, Tier-1 plugin-tool folding. |
 | `tool-dispatch.ts` | `dispatchToolCall`: dedup cache lookup, plugin-vs-builtin routing, live subagent-event streaming, auto-recovery, result caching, multimodal image append. |
@@ -29,7 +29,8 @@ directory, so every existing import path keeps resolving.
 | `persistence.ts` | `chat.*` / `ai_memory.*` wrappers: load memory/session, persist user/assistant turns, mark interrupted, record the `ai_calls` row. |
 | `limits.ts` | Cost/token constants + `microcents` / cost helpers. |
 | `passive-turn.ts` | Loop-0 empty/passive-response diagnostics. |
-| `write-tools.ts` | Read/meta vs. write tool classification — the DETECT half of the narrate-then-stop guard (issue #106 redesign). |
+| `write-tools.ts` | Read/meta vs. write tool classification — the cheap structural pre-filter in front of the narrate-then-stop judge (issue #106 redesign). |
+| `turn-completeness-judge.ts` | Small-model verdict on whether a text-only turn answered the operator or merely announced work it never did (issue #106 redesign). |
 | `types.ts` | Shared types (`ClientEvent`, `ChatRunnerOptions`, `StopReason`, `ToolDispatchResult`, `StoppingDiagnostics`, `AccumulatedToolCall`, `RunChatTurnFn`). |
 
 ## Orchestration order (`runChatTurn`)
@@ -39,7 +40,7 @@ directory, so every existing import path keeps resolving.
 3. `buildToolCatalogue` (`tool-catalogue.ts`). Tool definitions are STATIC (#335 — no per-turn describe-state embedding, so Anthropic's `tools` prefix stays prompt-cacheable).
 4. `buildPostCatalogueBlocks` (`context/skills.ts`) — depends on the filtered catalogue.
 5. `composeSystemPromptChunks` (sibling `../system-prompt.ts`).
-6. `runToolLoop` (`loop.ts`): `streamProviderTurn` → `persistAssistantTurn` → passive-turn nudge → `dispatchToolCall` per call, repeating while `stop_reason=tool_use`.
+6. `runToolLoop` (`loop.ts`): `streamProviderTurn` → `persistAssistantTurn` → narrate-then-stop recovery → `dispatchToolCall` per call, repeating while `stop_reason=tool_use`.
 7. Epilogue: mark-interrupted on abort, emit `usage`, `recordAiCall`, `done`.
 
 ## Conventions

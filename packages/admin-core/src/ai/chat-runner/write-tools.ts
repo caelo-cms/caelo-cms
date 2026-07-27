@@ -1,28 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Read/meta vs. write classification for tool names — the DETECT layer of the
- * narrate-then-stop guard (issue #106 redesign).
+ * Read/meta vs. write classification for tool names — the cheap structural
+ * pre-filter in front of the narrate-then-stop judge (issue #106 redesign).
  *
- * The question the loop needs answered is "has this turn actually CHANGED
- * anything yet?", because that is what separates the two shapes of a text-only
- * `end_turn`:
+ * It answers exactly one question: "has this turn actually CHANGED anything
+ * yet?" A text-only `end_turn` AFTER a write is an ordinary closing summary and
+ * needs no scrutiny at all. A text-only `end_turn` after only read/meta work
+ * MIGHT be the model narrating work it never did — or might be it answering a
+ * question the operator asked. This file cannot tell those apart, and does not
+ * try: it only decides whether `turn-completeness-judge.ts` is worth a call.
  *
- *   - after real work → an ordinary closing summary. Leave it alone.
- *   - after only read/meta work → the model engaged the task, narrated what it
- *     would do, and stopped without doing it.
- *
- * The old guard approximated this with `loop === 0` ("hasn't acted yet"), which
- * silently stopped being true when progressive-disclosure skills made
- * `load_skill` occupy loop 0. Classifying the tool NAME is the honest form of
- * the same question, and it is language-agnostic — unlike the prose classifier
- * this replaced.
+ * The old guard leaned on `loop === 0` ("hasn't acted yet"), which silently
+ * stopped being true when progressive-disclosure skills made `load_skill`
+ * occupy loop 0. Classifying the tool NAME is the honest form of the same
+ * question and is language-agnostic.
  *
  * Read/meta is an explicit allowlist and everything else counts as a write, so
  * a NEW tool is treated as consequential until someone deliberately lists it.
- * That bias is the safe one: mis-classifying a write as read/meta would let the
- * guard fire after real work (a false accusation); the reverse merely declines
- * to recover a turn, which is the pre-existing behaviour.
+ * That bias is the safe one: mis-classifying a write as read/meta would send an
+ * already-finished turn to the judge (a wasted call, and a chance at a wrong
+ * verdict); the reverse merely skips a recovery.
  */
 
 /** Prefixes that only ever read or load context, never mutate site state. */

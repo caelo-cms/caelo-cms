@@ -49,8 +49,23 @@ import {
 import { streamProviderTurn, type UsageAccumulator } from "./streaming.js";
 import type { FilteredTool } from "./tool-catalogue.js";
 import { dispatchToolCall, type ToolCallOutcome } from "./tool-dispatch.js";
+import { type JudgeTurnCompleteness, judgeTurnCompleteness } from "./turn-completeness-judge.js";
 import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn, StopReason } from "./types.js";
 import { isWriteTool } from "./write-tools.js";
+
+/**
+ * The operator message that opened this turn. Scans the turn's STARTING
+ * history, not the live one: mid-turn the runner appends `role:"user"` messages
+ * to deliver tool images (see `ChatMessageInput.additionalContent`), and those
+ * would otherwise be mistaken for the request.
+ */
+function lastUserRequestText(initialMessages: readonly ChatMessageInput[]): string {
+  for (let i = initialMessages.length - 1; i >= 0; i--) {
+    const m = initialMessages[i];
+    if (m?.role === "user" && m.content.trim().length > 0) return m.content;
+  }
+  return "";
+}
 
 /**
  * Consecutive-same-tool runaway threshold. When the model calls the SAME
@@ -130,6 +145,12 @@ export interface ToolLoopArgs {
    * ⇒ streaming.ts resolves the env-tunable default (180s).
    */
   firstEventTimeoutMs?: number;
+  /**
+   * issue #106 (redesign) — override the narrate-then-stop completeness judge.
+   * Injected so tests can drive the RECOVER layer without an AI provider;
+   * production leaves it unset and gets {@link judgeTurnCompleteness}.
+   */
+  judgeTurnCompleteness?: JudgeTurnCompleteness;
   maxLoops: number;
   maxOutputTokens: number;
   temperature: number | undefined;
@@ -162,18 +183,24 @@ export async function* runToolLoop(
   // dispatch below.
   let lastToolName: string | null = null;
   let consecutiveSameTool = 0;
-  // issue #106 (redesign) — DETECT layer. True once this turn has dispatched a
-  // tool that CHANGES something; read/meta calls (load_skill, list_*, get_*,
-  // read_content, inspect_*, screenshot_*, …) deliberately don't flip it. A
-  // text-only `end_turn` after read/meta work but with nothing written is the
-  // narrate-then-stop failure; the same shape after a write is an ordinary
-  // wrap-up summary. This replaces the old `loop === 0` proxy, which stopped
-  // meaning "hasn't acted yet" once `load_skill` began consuming loop 0.
+  // issue #106 (redesign) — DETECT layer, the cheap structural PRE-FILTER in
+  // front of the completeness judge. True once this turn has dispatched a tool
+  // that CHANGES something; read/meta calls (load_skill, list_*, get_*,
+  // read_content, inspect_*, screenshot_*, …) deliberately don't flip it.
+  //
+  // On its own this cannot decide anything: "read the page, then answer the
+  // question" and "load a skill, then announce work you never do" are the SAME
+  // shape. It only decides whether the semantic judge is worth a call — see
+  // turn-completeness-judge.ts.
   let turnHasWritten = false;
   // True once ANY tool ran this turn (read/meta included) — distinguishes
   // "engaged with the task then stopped" from a plain question the model
-  // answered directly, which must never be forced into a tool call.
+  // answered directly with no tool at all.
   let turnUsedAnyTool = false;
+  // Every tool name called this turn, in order — the judge reads these to see
+  // whether anything in the turn could have performed what the closing message
+  // claims (or announces).
+  const turnToolNames: string[] = [];
   // One-shot guard for the RECOVER layer's forced-tool re-run.
   let forcedToolRetried = false;
   // Set for exactly one provider call: re-runs the step with the SDK's
@@ -836,17 +863,20 @@ export async function* runToolLoop(
     if (aborted()) break;
     lastLoopStop = loopStop;
     if (accumulatedToolCalls.length === 0) {
-      // issue #106 (redesign) — RECOVER layer. The model narrated an action and
-      // ended the turn without emitting the tool call, so nothing happened.
+      // issue #106 (redesign) — RECOVER layer. The model may have narrated an
+      // action and ended the turn without emitting the tool call, so nothing
+      // happened. Two stages, because neither alone is correct:
       //
-      // The trigger is STRUCTURAL, never textual: this turn already engaged the
-      // task with read/meta tools (`turnUsedAnyTool`) but never wrote anything
-      // (`!turnHasWritten`), and then stopped. Both halves matter —
-      //   * requiring "engaged" excludes a plain question the model answered
-      //     directly (zero tool calls all turn), which must never be forced;
-      //   * requiring "never wrote" excludes the ordinary closing summary after
-      //     real work, where a forced tool call would be a false accusation and
-      //     an invitation to redo the work.
+      //  1. A cheap STRUCTURAL pre-filter (below): the turn used tools, wrote
+      //     nothing, and stopped on `end_turn`. This is necessary but nowhere
+      //     near sufficient — "read the page, then answer the question" has
+      //     exactly this shape, and forcing there would make the assistant act
+      //     when the operator only asked something.
+      //  2. A SEMANTIC judge (turn-completeness-judge.ts) that reads the
+      //     operator's request, the tool names, and the closing message, and
+      //     decides whether the message ANSWERS or merely ANNOUNCES. That
+      //     distinction is a language question; a small model answers it in any
+      //     language, which the regex this replaced could not.
       //
       // Recovery is the API's own mechanism, not a prose request: re-run the
       // SAME step with `toolChoice: "required"`. The model must then either do
@@ -860,18 +890,47 @@ export async function* runToolLoop(
         args.filteredTools.length > 0 &&
         !aborted()
       ) {
-        forcedToolRetried = true;
-        forceToolChoice = true;
-        console.error("[chat-runner] narrate-then-stop: forcing a tool call", {
-          chatSessionId,
-          loop,
-          textChars: accumulatedText.join("").length,
-          rawFinishReason: stoppingDiagnostics?.rawFinishReason ?? null,
+        const judge = args.judgeTurnCompleteness ?? judgeTurnCompleteness;
+        const closingText = accumulatedText.join("");
+        const verdict = await judge({
+          userRequest: lastUserRequestText(args.initialMessages),
+          // A snapshot, not the live array: the loop keeps pushing to it after
+          // this call, and a judge that outlives the await would otherwise see
+          // tools that ran after the verdict it was asked for.
+          toolNames: [...turnToolNames],
+          assistantText: closingText,
+          ...(abortSignal ? { abortSignal } : {}),
         });
-        // The re-run replaces this call — don't burn a loop slot on a turn
-        // that produced no action (same shape as the other one-shot retries).
-        loop--;
-        continue;
+        // §7 — the judge is a billable sub-call; attribute it to this chat.
+        if (verdict) {
+          await execute(registry, adapter, humanCtx, "chat.record_ai_call", {
+            chatSessionId,
+            parentChatSessionId: chatSessionId,
+            provider: verdict.providerName,
+            model: verdict.model,
+            inputTokens: verdict.inputTokens,
+            outputTokens: verdict.outputTokens,
+          }).catch(() => undefined);
+        }
+        // A null verdict means the judge could not decide (no provider, bad
+        // response, provider error). Declining to force is the safe direction:
+        // it restores the pre-guard behaviour, whereas forcing on a guess can
+        // change the operator's site for a turn that was already complete.
+        if (verdict && !verdict.finished) {
+          forcedToolRetried = true;
+          forceToolChoice = true;
+          console.error("[chat-runner] narrate-then-stop: forcing a tool call", {
+            chatSessionId,
+            loop,
+            textChars: closingText.length,
+            judgeReason: verdict.reason,
+            rawFinishReason: stoppingDiagnostics?.rawFinishReason ?? null,
+          });
+          // The re-run replaces this call — don't burn a loop slot on a turn
+          // that produced no action (same shape as the other one-shot retries).
+          loop--;
+          continue;
+        }
       }
       stopReason = loopStop;
       break;
@@ -922,6 +981,7 @@ export async function* runToolLoop(
     // dispatcher ended up running: a gated proposal or a breaker-blocked call
     // is still the model having acted, not narrating.
     turnUsedAnyTool = true;
+    for (const call of accumulatedToolCalls) turnToolNames.push(call.name);
     if (!turnHasWritten && accumulatedToolCalls.some((c) => isWriteTool(c.name))) {
       turnHasWritten = true;
     }

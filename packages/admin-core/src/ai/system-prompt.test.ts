@@ -10,6 +10,8 @@ describe("composeSystemPromptChunks", () => {
     // cacheable (stable across every call).
     // v0.5.5 — the staging chunk sits after module-model (also cacheable);
     // it explains the pending → staged → published flow.
+    // issue #106 (redesign) — `finishing-a-turn` follows staging: the PREVENT
+    // layer stating that describing a change is not making it.
     // 0163 — NO `tools` chunk: the tool set is already sent as the provider
     // `tools` param, so a prose duplicate was ~23.5k wasted tokens per cold call.
     // Tool Search default-on — the tool-playbook chunk replaces the deferred
@@ -19,6 +21,7 @@ describe("composeSystemPromptChunks", () => {
       "tool-playbook",
       "module-model",
       "staging",
+      "finishing-a-turn",
       "subagents",
       "memory",
     ]);
@@ -74,12 +77,14 @@ describe("composeSystemPromptChunks", () => {
   it("skips empty slots", () => {
     const chunks = composeSystemPromptChunks([]);
     // The static core: base + tool-playbook + module-model + staging +
-    // subagents. All permanent + cacheable — the system prompt is fully static.
+    // finishing-a-turn + subagents. All permanent + cacheable — the system
+    // prompt is fully static.
     expect(chunks.map((c) => c.label)).toEqual([
       "base",
       "tool-playbook",
       "module-model",
       "staging",
+      "finishing-a-turn",
       "subagents",
     ]);
   });
