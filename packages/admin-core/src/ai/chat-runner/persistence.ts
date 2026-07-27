@@ -240,6 +240,8 @@ export async function recordAiCall(
     parentAiCallId: string | null | undefined;
     requestId: string | null;
   },
-): Promise<void> {
-  await execute(registry, adapter, humanCtx, "chat.record_ai_call", args);
+): Promise<{ costMicrocents: number } | null> {
+  const r = await execute(registry, adapter, humanCtx, "chat.record_ai_call", args);
+  if (!r.ok) return null;
+  return { costMicrocents: (r.value as { costMicrocents: number }).costMicrocents };
 }

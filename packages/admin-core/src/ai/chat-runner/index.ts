@@ -367,17 +367,11 @@ export async function* runChatTurn(
     await markInterrupted(registry, adapter, humanCtx, lastAssistantMessageId);
   }
 
-  const usdCost = finalUsdCost(usage.totalIn, usage.totalOut, inputCost, outputCost);
-  yield {
-    kind: "usage",
-    inputTokens: usage.totalIn,
-    outputTokens: usage.totalOut,
-    cachedTokens: usage.totalCached,
-    cost: usdCost,
-  };
-
-  // 4. Record one ai_calls row aggregating usage across the loop.
-  await recordAiCall(registry, adapter, humanCtx, {
+  // 4. Record one ai_calls row aggregating usage across the loop. This runs
+  // BEFORE the `usage` event so the event can carry the price actually
+  // billed: the op prices from the ai_pricing table, with cache reads at
+  // their reduced rate and cache writes at their premium.
+  const billed = await recordAiCall(registry, adapter, humanCtx, {
     chatSessionId: input.chatSessionId,
     provider: provider.name,
     model: provider.model,
@@ -394,6 +388,23 @@ export async function* runChatTurn(
     // P16 — request_id flows through aiCtx if hooks.server.ts threaded it.
     requestId: aiCtx.requestId ?? null,
   });
+
+  // `finalUsdCost` is cache-BLIND — it charges every input token at the full
+  // input rate. On a turn that reads 4.7M tokens from cache that is roughly 4x
+  // the real price, which is why the billed figure is preferred whenever the
+  // row was written. The estimate remains the fallback for the case where the
+  // insert failed, so the event still carries a number of the right magnitude.
+  const usdCost =
+    billed !== null
+      ? billed.costMicrocents / 1e8
+      : finalUsdCost(usage.totalIn, usage.totalOut, inputCost, outputCost);
+  yield {
+    kind: "usage",
+    inputTokens: usage.totalIn,
+    outputTokens: usage.totalOut,
+    cachedTokens: usage.totalCached,
+    cost: usdCost,
+  };
 
   if (aborted()) {
     yield { kind: "interrupted", messageId: lastAssistantMessageId };
