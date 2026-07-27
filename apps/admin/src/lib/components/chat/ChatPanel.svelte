@@ -90,13 +90,12 @@
     activePageId?: string | null;
     onToolResult?: (payload: ToolResultPayload) => void;
     /**
-     * Fired once per turn with that turn's cost in USD, from the SSE `usage`
-     * event the runner emits at turn end. Lets the caller keep a spend readout
-     * current without a server round-trip — the server-side figure only
-     * refreshes on a `load`, and lags by a turn because the `ai_calls` row is
-     * written after the tool results that trigger one.
+     * Fired at turn end with the site's canonical 7-day AI spend in microcents,
+     * read back from `ai_calls` by the runner once the turn's row landed. The
+     * caller assigns it; it does not accumulate or derive anything, because a
+     * money figure should be reported, not reconstructed.
      */
-    onTurnCost?: (usdCost: number) => void;
+    onSpendUpdate?: (spend7dMicrocents: number) => void;
     /** v0.2.46 — render the debug panel alongside the publish/diff
      *  sidebar. Caller (page server load) gates on `?debug=1` URL param
      *  + permission check before passing true. */
@@ -121,7 +120,7 @@
     firstRunSuggestions = [],
     activePageId = null,
     onToolResult,
-    onTurnCost,
+    onSpendUpdate,
     debug = false,
     canDebug = false,
     onToggleDebug,
@@ -1453,9 +1452,10 @@
             } else if (ev["kind"] === "assistant-message-saved") {
               currentActivity = "Continuing…";
             } else if (ev["kind"] === "usage") {
-              // Keep the prior activity pill visible; the turn's cost goes to
-              // the caller so a spend readout can stay current.
-              onTurnCost?.(Number(ev["cost"] ?? 0));
+              // Keep the prior activity pill visible; hand the canonical spend
+              // figure up so a readout can stay current.
+              const spend = ev["spend7dMicrocents"];
+              if (typeof spend === "number") onSpendUpdate?.(spend);
             }
             if (ev["kind"] === "error") {
               chatError = typeof ev["message"] === "string" ? ev["message"] : "Chat failed.";

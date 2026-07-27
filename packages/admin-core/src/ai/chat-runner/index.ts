@@ -398,12 +398,31 @@ export async function* runChatTurn(
     billed !== null
       ? billed.costMicrocents / 1e8
       : finalUsdCost(usage.totalIn, usage.totalOut, inputCost, outputCost);
+
+  // Read the canonical 7-day total back now that this turn's row exists. One
+  // SUM against ai_calls — cheaper by an order of magnitude than the
+  // `invalidateAll()` the client would otherwise need (that re-runs BOTH route
+  // loads, ~20 Query API calls), and it means nobody downstream has to
+  // accumulate or estimate a money figure. Best-effort: a failed read just
+  // omits the field and the client keeps its last value.
+  // Only for a top-level turn: a subagent child drives no readout, so making
+  // it pay for the aggregate would be spend with no reader.
+  const spend =
+    aiCtx.parentChatSessionId == null
+      ? await execute(registry, adapter, humanCtx, "ai_calls.spend_window", {
+          days: 7,
+        }).catch(() => null)
+      : null;
+  const spend7dMicrocents =
+    spend?.ok ? (spend.value as { costMicrocents: number }).costMicrocents : undefined;
+
   yield {
     kind: "usage",
     inputTokens: usage.totalIn,
     outputTokens: usage.totalOut,
     cachedTokens: usage.totalCached,
     cost: usdCost,
+    ...(spend7dMicrocents !== undefined ? { spend7dMicrocents } : {}),
   };
 
   if (aborted()) {

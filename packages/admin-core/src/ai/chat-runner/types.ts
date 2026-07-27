@@ -50,7 +50,21 @@ export type ClientEvent =
     }
   | { kind: "assistant-message-saved"; messageId: string }
   | { kind: "interrupted"; messageId: string | null }
-  | { kind: "usage"; inputTokens: number; outputTokens: number; cachedTokens: number; cost: number }
+  /**
+   * End-of-turn accounting. `cost` is this turn's billed price;
+   * `spend7dMicrocents` is the site's canonical 7-day total READ BACK from
+   * `ai_calls` after this turn's row landed — the same figure the layout load
+   * computes, so a spend readout can stay current without the client deriving
+   * anything. Absent only when the read failed.
+   */
+  | {
+      kind: "usage";
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
+      cost: number;
+      spend7dMicrocents?: number;
+    }
   | { kind: "done" }
   | { kind: "error"; message: string }
   /**
