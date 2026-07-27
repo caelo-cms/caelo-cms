@@ -37,6 +37,12 @@ export * from "./ai/system-prompt.js";
 export { describeError } from "./ai/tools/_describe-error.js";
 export * from "./ai/tools/index.js";
 export * from "./audit.js";
+// v0.2.37 — proposal GC sidecar (sweeps stale pending rows daily).
+export {
+  startChatImageGcWorker,
+  stopChatImageGcWorker,
+  sweepChatImagesOnce,
+} from "./chat-image-gc-worker.js";
 export * from "./csrf.js";
 export {
   type DeliverResetEmailArgs,
@@ -69,7 +75,6 @@ export { setMode2Provider } from "./ops/translation/mode_2.js";
 export * from "./ops/users.js";
 export * from "./password.js";
 export * from "./permissions.js";
-// v0.2.37 — proposal GC sidecar (sweeps stale pending rows daily).
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
 export * from "./rate-limit.js";
 export * from "./register.js";

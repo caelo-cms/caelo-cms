@@ -1,24 +1,36 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #190 — provider-history assembly for operator-attached images.
+ * issue #190 / #356 — provider-history assembly for images.
  *
- * Attachments persist on chat_messages rows (migration 0111), so a
- * reloaded transcript keeps its thumbnails and a regenerated turn
- * knows what rode each message. For PROVIDER calls the policy is
- * deliberately asymmetric:
+ * Attachments persist on chat_messages rows (migration 0111), so a reloaded
+ * transcript keeps its thumbnails and a replayed turn knows what rode each
+ * message. EVERY attached image is inlined as an image part, on every call,
+ * for as long as its message survives in history. Compaction is the only
+ * thing that removes one — the same rule that governs every other message.
  *
- *   - the MOST RECENT user message with attachments gets its images
- *     inlined as image parts — that's the message the model is acting
- *     on right now;
- *   - older attachment-carrying messages get a text marker instead
- *     (`[attached image: …]`), because re-sending every historical
- *     image on every turn multiplies token cost by chat length while
- *     adding nothing the model didn't already see when the image was
- *     current.
+ * This reverses #190's original asymmetry, which inlined only the most recent
+ * attachment-carrying message and replaced older ones with a text marker. The
+ * stated reason was that re-sending historical images "multiplies token cost
+ * by chat length". Two things were wrong with that:
  *
- * Failed or oversized loads become explicit text notes — the model
- * must never silently believe it saw an image it didn't (same rule as
+ *   - an image is roughly one to three thousand tokens — smaller than text
+ *     tool results we keep for the whole session — and a retained, unchanged
+ *     block bills far below its first-read price on any provider with prompt
+ *     caching. Retention is cheap; re-fetching is not, because a re-fetch is
+ *     an extra agent loop carrying the entire working context;
+ *   - replacing an image with a marker IS an edit to the prompt prefix, and
+ *     an edited prefix invalidates the cached message history from that point
+ *     on. The policy that existed to save tokens spent a full history re-read
+ *     every time it fired.
+ *
+ * The operator-facing consequence was worse than the cost one: the model kept
+ * its own prose about an image it could no longer see, with nothing marking
+ * the absence, and would reason from that lossy summary or re-fetch the image
+ * before every section of a build.
+ *
+ * Failed or missing loads still become explicit text notes — the model must
+ * never silently believe it saw an image it didn't (same rule as
  * screenshot_external_page's loud UNAVAILABLE).
  */
 
@@ -53,6 +65,24 @@ export function createMediaAttachmentLoader(
   humanCtx: ExecutionContext,
 ): AttachmentImageLoader {
   return async (att) => {
+    // A chat image is a bare object-store key — no media_assets row exists
+    // for it by design, so there is nothing to look up.
+    if (att.storageKey !== undefined) {
+      try {
+        const bytes = await getMediaStorage().get(att.storageKey);
+        return {
+          type: "image",
+          base64: Buffer.from(bytes).toString("base64"),
+          mediaType: att.mime,
+        };
+      } catch (e) {
+        return {
+          failed: `chat image ${att.storageKey} is gone from storage: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        };
+      }
+    }
     const r = await execute(registry, adapter, humanCtx, "media.get", { assetId: att.assetId });
     if (!r.ok) return { failed: `media.get failed for ${att.assetId}` };
     const asset = (
@@ -97,12 +127,6 @@ export interface HistoryMessage {
   responseMessages?: unknown[] | null;
 }
 
-function attachmentMarker(atts: readonly ChatAttachment[]): string {
-  return atts
-    .map((a) => `[attached image: ${a.alt && a.alt.length > 0 ? a.alt : a.mime}]`)
-    .join(" ");
-}
-
 /**
  * Map persisted chat history into provider messages, inlining the most
  * recent user message's attachments as image parts (see file header
@@ -112,10 +136,6 @@ export async function buildProviderHistory(
   messages: readonly HistoryMessage[],
   loadImage: AttachmentImageLoader,
 ): Promise<ChatMessageInput[]> {
-  const lastAttachedIdx = messages.reduce(
-    (acc, m, i) => (m.role === "user" && m.attachments && m.attachments.length > 0 ? i : acc),
-    -1,
-  );
   const out: ChatMessageInput[] = [];
   // Option C — an assistant row that carries the SDK's canonical assembly
   // replays it verbatim (passthrough). The SDK already pairs tool_use ↔
@@ -165,10 +185,6 @@ export async function buildProviderHistory(
     const atts = m.role === "user" && m.attachments ? m.attachments : [];
     if (atts.length === 0) {
       out.push(base);
-      continue;
-    }
-    if (i !== lastAttachedIdx) {
-      out.push({ ...base, content: `${m.content}\n${attachmentMarker(atts)}` });
       continue;
     }
     const parts: ContentPart[] = [];
