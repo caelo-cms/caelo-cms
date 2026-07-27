@@ -465,19 +465,22 @@ function describeProperties(inputSchema: ToolInputSchema): string[] {
  * exactly this, emitting `offer_choices` with `{}` twice in a row.
  *
  * So when the call carried nothing, hand back the actual JSON Schema. The tool
- * result rides the SAME turn's history, so the retry has the definition without
- * a tool-search round-trip — and without materialising the tool in the
- * catalogue, which would rewrite the cached tool prefix for the rest of the
- * turn.
+ * result rides the SAME turn's history, so the definition is available for the
+ * retry without a tool-search round-trip — and without materialising the tool
+ * in the catalogue, which would rewrite the cached tool prefix for the rest of
+ * the turn.
+ *
+ * It states the situation and supplies the schema; it does not tell the model
+ * what to do next. Deciding that is the model's job, and a directive here would
+ * be one more instruction competing with the ones that matter.
  */
 function schemaRecoveryBlock(inputSchema: ToolInputSchema, calledEmpty: boolean): string {
   if (!calledEmpty) return "";
   const json = JSON.stringify(inputSchema, null, 2);
   if (json.length > FULL_SCHEMA_MAX_CHARS) return "";
   return (
-    "You called this tool with NO arguments, which happens when its definition " +
-    "was never loaded into your context. Here it is — use it directly, you do " +
-    "not need to search for the tool first:\n" +
+    "This call carried NO arguments, which happens when the tool's definition " +
+    "was never loaded into context. Here it is:\n" +
     `\`\`\`json\n${json}\n\`\`\`\n`
   );
 }
