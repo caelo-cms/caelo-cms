@@ -79,9 +79,15 @@ export function extractLoadedSkillSlugs(messages: readonly { toolCalls?: unknown
           continue;
         }
       }
-      const slug =
-        argsRaw && typeof argsRaw === "object" ? (argsRaw as { slug?: unknown }).slug : undefined;
-      if (typeof slug === "string" && slug.length > 0) slugs.add(slug);
+      if (!argsRaw || typeof argsRaw !== "object") continue;
+      // `slugs` is the current shape; `slug` is what chats persisted before
+      // the tool went bulk. Both must be read — dropping the singular form
+      // would silently lose the preload hints of every pre-existing chat.
+      const args = argsRaw as { slug?: unknown; slugs?: unknown };
+      const candidates = Array.isArray(args.slugs) ? args.slugs : [args.slug];
+      for (const s of candidates) {
+        if (typeof s === "string" && s.length > 0) slugs.add(s);
+      }
     }
   }
   return [...slugs];
@@ -125,7 +131,7 @@ export async function buildSkillsContext(
   const regular = sorted.filter((s) => s.hints.alwaysOn !== true && s.hints.chipTrigger !== true);
   const parts: string[] = [
     "# Skills",
-    "Skills are packaged instructions for specific tasks. Load one with load_skill({slug}); its guidance enters this conversation and stays for the rest of the chat, so load each skill only once (do not reload one already loaded above).",
+    "Skills are packaged instructions for specific tasks. Load them with load_skill({slugs}) — pass every skill you already know you need in ONE call. Their guidance enters this conversation and stays for the rest of the chat, so load each skill only once (do not reload one already loaded above).",
   ];
   if (alwaysOn.length > 0) {
     parts.push(

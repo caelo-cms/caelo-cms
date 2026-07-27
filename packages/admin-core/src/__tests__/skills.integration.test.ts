@@ -335,7 +335,7 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     const skills = await buildSkillsContext(registry, adapter, systemCtx, { loadedSkillSlugs: [] });
     const idx = skills.skillsIndexBlock ?? "";
     expect(idx).toContain("# Skills");
-    expect(idx).toContain("load_skill({slug})");
+    expect(idx).toContain("load_skill({slugs})");
     for (const slug of ALL_NEW) expect(idx).toContain(`- ${slug}:`);
     // Structural-trigger skills get a prominent callout so the model loads them
     // at the right moment (body still fetched on demand): brand-voice-guard is
@@ -349,11 +349,11 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     expect(skills.engagedSkills.length).toBe(0);
   });
 
-  // load_skill is the activation step: valid slug returns the full body; an
+  // load_skill is the activation step: valid slugs return the full bodies; an
   // unknown slug returns the list of valid slugs (AI-actionable error, §11).
   it("load_skill returns the body for a valid slug and lists slugs for an unknown one", async () => {
     const toolCtx = { registry, adapter } as unknown as ToolContext;
-    const ok = await loadSkillTool.handler(aiCtx, { slug: "manage-menu" }, toolCtx);
+    const ok = await loadSkillTool.handler(aiCtx, { slugs: ["manage-menu"] }, toolCtx);
     expect(ok.ok).toBe(true);
     if (ok.ok) {
       expect(ok.content).toContain("manage-menu");
@@ -362,20 +362,81 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
       // The allowlisted tools are surfaced so the model knows what it can call.
       expect(ok.content).toContain("set_structured_set");
     }
-    const bad = await loadSkillTool.handler(aiCtx, { slug: "does-not-exist" }, toolCtx);
+    const bad = await loadSkillTool.handler(aiCtx, { slugs: ["does-not-exist"] }, toolCtx);
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.content).toContain("manage-menu"); // names a valid slug
+  });
+
+  // §11 — the load is a routine operation, so it ships in bulk form. Loading
+  // three skills used to cost three provider round-trips whose only output was
+  // one tool call each.
+  it("load_skill loads several skills in ONE call", async () => {
+    const toolCtx = { registry, adapter } as unknown as ToolContext;
+    const res = await loadSkillTool.handler(
+      aiCtx,
+      { slugs: ["manage-menu", "templates-layouts"] },
+      toolCtx,
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.content).toContain("manage-menu");
+      expect(res.content).toContain("templates-layouts");
+      expect(res.content).toContain("REPLACES the whole items list");
+    }
+  });
+
+  // A bad slug alongside good ones must not throw away the good bodies — the
+  // model gets what resolved plus the exact thing to retry.
+  it("load_skill returns the resolved bodies and names only what failed", async () => {
+    const toolCtx = { registry, adapter } as unknown as ToolContext;
+    const res = await loadSkillTool.handler(
+      aiCtx,
+      { slugs: ["manage-menu", "does-not-exist"] },
+      toolCtx,
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.content).toContain("REPLACES the whole items list");
+      expect(res.content).toContain('No active skill with slug "does-not-exist"');
+    }
+  });
+
+  // The same slug twice in one call is a model slip; injecting the body twice
+  // would defeat the tool's whole premise (a body lands once).
+  it("load_skill de-duplicates repeated slugs within a call", async () => {
+    const toolCtx = { registry, adapter } as unknown as ToolContext;
+    const res = await loadSkillTool.handler(
+      aiCtx,
+      { slugs: ["manage-menu", "manage-menu"] },
+      toolCtx,
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const occurrences = res.content.split("REPLACES the whole items list").length - 1;
+      expect(occurrences).toBe(1);
+    }
   });
 
   // Once loaded, a skill stays available: extractLoadedSkillSlugs recovers it
   // from the history's load_skill tool call, and buildSkillsContext then
   // preloads that skill's tools (no tool-search round-trip on later turns).
   it("a loaded skill is recovered from history and its tools preloaded", async () => {
+    // NOTE: `{slug}` (singular) is the shape chats persisted BEFORE the tool
+    // went bulk. The parser must keep reading it — dropping it would silently
+    // lose the preload hints of every pre-existing chat.
     const history = [
       { toolCalls: [{ id: "t1", name: "load_skill", arguments: { slug: "manage-menu" } }] },
       { toolCalls: [{ id: "t2", name: "edit_module", arguments: { moduleId: "x" } }] },
     ];
     expect(extractLoadedSkillSlugs(history)).toEqual(["manage-menu"]);
+
+    // The current shape, and a mix of both in one history.
+    expect(
+      extractLoadedSkillSlugs([
+        { toolCalls: [{ id: "t3", name: "load_skill", arguments: { slugs: ["a", "b"] } }] },
+        { toolCalls: [{ id: "t4", name: "load_skill", arguments: { slug: "c" } }] },
+      ]),
+    ).toEqual(["a", "b", "c"]);
 
     const skills = await buildSkillsContext(registry, adapter, systemCtx, {
       loadedSkillSlugs: ["manage-menu"],

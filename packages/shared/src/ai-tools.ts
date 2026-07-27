@@ -126,18 +126,32 @@ export const siteMemoryProposeToolInput = z
 
 /**
  * Progressive-disclosure skill loading. The `## Skills` system-prompt block
- * lists each active skill's slug + description; when a task matches one, the
- * model calls `load_skill({slug})` to pull the full instructions into the
- * conversation (they persist as a tool result for the rest of the chat, so
- * each skill loads at most once).
+ * lists each active skill's slug + description; when a task matches one or
+ * more, the model calls `load_skill({slugs})` to pull their full instructions
+ * into the conversation (they persist as a tool result for the rest of the
+ * chat, so each skill loads at most once).
+ *
+ * Takes a LIST, not a single slug, per CLAUDE.md §11: a load is a routine
+ * operation and every routine operation ships in bulk form, with n=1 as its
+ * smallest case rather than a separate singular tool. Loading three skills was
+ * three provider round-trips whose only output was one tool call each.
+ *
+ * Capped at 5: skills are task-scoped, and a model that wants more than a
+ * handful at once has almost certainly matched the index too loosely — each
+ * body is a sizeable injection into history.
  */
 export const loadSkillToolInput = z
   .object({
-    slug: z
-      .string()
+    slugs: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .max(120)
+          .regex(/^[a-z0-9-]+$/, "lowercase letters/digits/hyphens"),
+      )
       .min(1)
-      .max(120)
-      .regex(/^[a-z0-9-]+$/, "lowercase letters/digits/hyphens"),
+      .max(5),
   })
   .strict();
 export type LoadSkillToolInput = z.infer<typeof loadSkillToolInput>;
