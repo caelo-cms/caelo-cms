@@ -1,21 +1,27 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #106 — passive-turn recovery in the chat-runner loop.
+ * issue #106 — narrate-then-stop recovery in the chat-runner loop.
  *
  * Step-13's browser walk caught the footer path failing because the model
  * narrated the action ("A site-wide footer belongs on the layout's footer
  * block ... adding it there now.") and then ended the turn with ZERO tool
  * calls (loopStop='end_turn'). The operator had to manually type "go ahead"
  * to get `add_module_to_layout` to fire. Per CLAUDE.md §4 that's a real
- * defect in our layer, not model nondeterminism: the runner now nudges once
- * and re-prompts when the assistant announces an action without emitting a
- * tool call.
+ * defect in our layer, not model nondeterminism.
  *
- * These tests pin BOTH directions against a real Postgres + the runner:
- *  1. announced-action-without-tool → one nudge → the tool fires on retry.
- *  2. clarifying-question-without-tool → NO retry (the v0.5.9 false-positive
- *     class must not come back).
+ * Note the shape: the model narrates on the FIRST call, having run no tools
+ * at all. That is why the structural pre-filter must NOT require "this turn
+ * used tools" — an earlier revision of the redesign did, and would have left
+ * exactly the originally-reported failure unrecovered.
+ *
+ * Recovery re-runs the step with the SDK's `toolChoice: "required"` once,
+ * gated on a completeness judge (turn-completeness-judge.ts). The judge is
+ * stubbed here — these tests pin the LOOP's response to a verdict against a
+ * real Postgres, not the judge's own accuracy:
+ *  1. verdict "not finished" → one forced re-run → the tool fires.
+ *  2. verdict "finished" (a clarifying question) → NO retry (the v0.5.9
+ *     false-positive class must not come back).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -23,6 +29,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { z } from "zod";
+import type { JudgeTurnCompleteness } from "../ai/chat-runner/turn-completeness-judge.js";
 import { runChatTurn } from "../ai/chat-runner.js";
 import type { AIProvider, GenerateInput, ProviderEvent, ProviderName } from "../ai/provider.js";
 import { ToolRegistry } from "../ai/tools/dispatch.js";
@@ -91,6 +98,28 @@ class ClarifyingQuestionProvider implements AIProvider {
   }
 }
 
+/**
+ * A judge with a fixed verdict. The real one asks a small model; these tests
+ * pin what the LOOP does once a verdict exists, so the model is out of scope.
+ */
+function fixedJudge(finished: boolean): { fn: JudgeTurnCompleteness; calls: number } {
+  const state = {
+    calls: 0,
+    fn: (async () => {
+      state.calls += 1;
+      return {
+        finished,
+        reason: "fixture",
+        providerName: "anthropic",
+        model: "stub-judge",
+        inputTokens: 1,
+        outputTokens: 1,
+      };
+    }) as JudgeTurnCompleteness,
+  };
+  return state;
+}
+
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
   try {
@@ -117,8 +146,8 @@ afterAll(async () => {
   await adapter.close();
 });
 
-describe("chat-runner passive-turn recovery (issue #106)", () => {
-  it("nudges once and the announced tool call fires on the retry", async () => {
+describe("chat-runner narrate-then-stop recovery (issue #106)", () => {
+  it("forces one re-run and the announced tool call fires on it", async () => {
     const session = await execute(registry, adapter, HUMAN, "chat.create_session", {
       title: "issue106-passive-announced",
     });
@@ -143,15 +172,26 @@ describe("chat-runner passive-turn recovery (issue #106)", () => {
     // make filteredTools empty and mask the behaviour under test. The
     // detector keys on the ASSISTANT text (from the provider), not this.
     const provider = new AnnouncedThenToolProvider();
+    // The announced work never happened → the judge reports "not finished".
+    const judge = fixedJudge(false);
     const events: { kind: string; ok?: boolean }[] = [];
     for await (const ev of runChatTurn(
-      { adapter, registry, provider, tools, aiCtx: AI, humanCtx: HUMAN },
+      {
+        adapter,
+        registry,
+        provider,
+        tools,
+        aiCtx: AI,
+        humanCtx: HUMAN,
+        judgeTurnCompleteness: judge.fn,
+      },
       { chatSessionId, content: "Please proceed.", chips: [] },
     )) {
       events.push({ kind: ev.kind, ok: (ev as { ok?: boolean }).ok });
     }
 
-    // The nudge re-prompted: generate ran 3× (passive → nudge retry → post-tool).
+    // The forced re-run happened: generate ran 3× (narration → forced retry
+    // that emits the tool → post-tool summary).
     expect(provider.calls).toBe(3);
     // The announced tool actually fired.
     expect(toolRan).toBe(1);
@@ -159,8 +199,10 @@ describe("chat-runner passive-turn recovery (issue #106)", () => {
     expect(toolResult).toBeDefined();
     expect(toolResult?.ok).toBe(true);
 
-    // The synthetic nudge is in-memory only — it must NOT be persisted as a
-    // visible user turn in chat history. Scope to OPERATOR turns: the runner
+    // Recovery must leave NO synthetic operator turn behind. The old nudge
+    // injected a `role:"user"` message (in-memory only, but one bad persist
+    // away from corrupting history); `toolChoice` adds nothing to history at
+    // all. This assertion is what keeps that property honest. Scope to OPERATOR turns: the runner
     // also injects a cold-start "[Site status …]" note on a session's first
     // turn as a role='user', origin='system' row (deliberate — see index.ts
     // injectNote), which is not an operator message and must not count here.
@@ -205,8 +247,18 @@ describe("chat-runner passive-turn recovery (issue #106)", () => {
     });
 
     const provider = new ClarifyingQuestionProvider();
+    // Asking the operator a real question IS a finished turn.
+    const judge = fixedJudge(true);
     for await (const _ev of runChatTurn(
-      { adapter, registry, provider, tools, aiCtx: AI, humanCtx: HUMAN },
+      {
+        adapter,
+        registry,
+        provider,
+        tools,
+        aiCtx: AI,
+        humanCtx: HUMAN,
+        judgeTurnCompleteness: judge.fn,
+      },
       { chatSessionId, content: "Please proceed.", chips: [] },
     )) {
       // drain

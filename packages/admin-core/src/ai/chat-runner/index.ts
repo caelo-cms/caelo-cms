@@ -348,6 +348,9 @@ export async function* runChatTurn(
     compactionTargetTokens: resolveCompactionTargetTokens(),
     compactionRecentTokens: resolveCompactionRecentTokens(),
     proactiveCompaction: resolveProactiveCompaction(),
+    ...(options.judgeTurnCompleteness
+      ? { judgeTurnCompleteness: options.judgeTurnCompleteness }
+      : {}),
     maxLoops,
     // Run #8 R1 — model-aware default: adaptive-thinking models share the
     // output budget with thinking and need >=32k headroom (see limits.ts).

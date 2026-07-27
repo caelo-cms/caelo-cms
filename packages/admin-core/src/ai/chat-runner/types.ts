@@ -13,6 +13,7 @@ import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 import type { AIProvider } from "../provider.js";
 import type { SubagentResultCapture } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
+import type { JudgeTurnCompleteness } from "./turn-completeness-judge.js";
 
 export type ClientEvent =
   | { kind: "text-delta"; text: string }
@@ -121,6 +122,12 @@ export interface ChatRunnerOptions {
   readonly maxToolLoops?: number;
   /** P5.2 #2 — propagated to the provider; aborts halt the loop cleanly. */
   readonly abortSignal?: AbortSignal;
+  /**
+   * issue #106 (redesign) — override the narrate-then-stop completeness judge.
+   * Tests inject a stub so the RECOVER layer can be driven without an AI
+   * provider; production leaves it unset and the loop uses the real judge.
+   */
+  readonly judgeTurnCompleteness?: JudgeTurnCompleteness;
   /**
    * P10.5 — names of tools to STRIP from the tool catalogue for THIS
    * invocation. The `spawn_subagent` tool handler passes

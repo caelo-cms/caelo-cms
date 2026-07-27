@@ -193,10 +193,6 @@ export async function* runToolLoop(
   // shape. It only decides whether the semantic judge is worth a call — see
   // turn-completeness-judge.ts.
   let turnHasWritten = false;
-  // True once ANY tool ran this turn (read/meta included) — distinguishes
-  // "engaged with the task then stopped" from a plain question the model
-  // answered directly with no tool at all.
-  let turnUsedAnyTool = false;
   // Every tool name called this turn, in order — the judge reads these to see
   // whether anything in the turn could have performed what the closing message
   // claims (or announces).
@@ -867,11 +863,13 @@ export async function* runToolLoop(
       // action and ended the turn without emitting the tool call, so nothing
       // happened. Two stages, because neither alone is correct:
       //
-      //  1. A cheap STRUCTURAL pre-filter (below): the turn used tools, wrote
-      //     nothing, and stopped on `end_turn`. This is necessary but nowhere
-      //     near sufficient — "read the page, then answer the question" has
-      //     exactly this shape, and forcing there would make the assistant act
-      //     when the operator only asked something.
+      //  1. A cheap STRUCTURAL pre-filter (below): the turn wrote nothing and
+      //     stopped on `end_turn`. It excludes only what needs no scrutiny at
+      //     all — a closing summary that follows real work. It deliberately
+      //     does NOT require that tools ran: the originally reported failure
+      //     (issue #106, the step-13 footer walk) narrated on the FIRST call
+      //     with zero tool calls, and an "engaged with tools" precondition
+      //     would exclude exactly that case.
       //  2. A SEMANTIC judge (turn-completeness-judge.ts) that reads the
       //     operator's request, the tool names, and the closing message, and
       //     decides whether the message ANSWERS or merely ANNOUNCES. That
@@ -884,7 +882,6 @@ export async function* runToolLoop(
       // card) — both strictly better than a dropped intention. Once per turn.
       if (
         !forcedToolRetried &&
-        turnUsedAnyTool &&
         !turnHasWritten &&
         loopStop === "end_turn" &&
         args.filteredTools.length > 0 &&
@@ -980,7 +977,6 @@ export async function* runToolLoop(
     // iteration. Classified from what the model CALLED, not from what our
     // dispatcher ended up running: a gated proposal or a breaker-blocked call
     // is still the model having acted, not narrating.
-    turnUsedAnyTool = true;
     for (const call of accumulatedToolCalls) turnToolNames.push(call.name);
     if (!turnHasWritten && accumulatedToolCalls.some((c) => isWriteTool(c.name))) {
       turnHasWritten = true;
