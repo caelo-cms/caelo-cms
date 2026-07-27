@@ -123,10 +123,18 @@ export function budgetWarningText(gate: BudgetGateState, liveSpentMicrocents: nu
   const money = (mc: number): string => formatMicrocentsAsMoney(mc, gate.ceilingCurrency);
   const pct = Math.floor((liveSpentMicrocents / gate.ceilingMicrocents) * 100);
   return (
+    // "including the turn in progress" is load-bearing, not padding. This
+    // figure adds the live usage accumulator to the recorded ai_calls rows,
+    // while `check_run_budget` reports the recorded rows alone. On
+    // 2026-07-27 both surfaced in the SAME second — "$3.83 spent, within
+    // budget" from the tool and "used ~$6.82 (86%)" from this notice — and
+    // read as a contradiction rather than as two different questions.
     `Budget notice: this import run has used ~${money(liveSpentMicrocents)} of its ` +
-    `${money(gate.ceilingMicrocents)} cost ceiling (${pct}%). The run pauses automatically at ` +
-    `the ceiling; to avoid the pause, the operator can raise the budget now ` +
-    `(set_migration_budget).${unpricedSuffix(gate)}`
+    `${money(gate.ceilingMicrocents)} cost ceiling (${pct}%), including the turn in progress ` +
+    `(check_run_budget reports only spend already recorded, so it reads lower). The run pauses ` +
+    `automatically at the ceiling. Raising the budget needs the operator: propose a new ceiling ` +
+    `with set_migration_budget and they approve it — do not treat a raise as already granted.` +
+    `${unpricedSuffix(gate)}`
   );
 }
 

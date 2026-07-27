@@ -36,7 +36,9 @@ import {
   recentTailCount,
   TOOL_RESULT_HEAD_CHARS,
 } from "./compaction.js";
+import { buildContextSplitEstimate } from "./context-split.js";
 import { costCapUsd, microcents } from "./limits.js";
+import { appendLoopTrace, fingerprintMessages, hashOf, loopTracePath } from "./loop-trace.js";
 import { evaluateLoopZeroDiagnostics } from "./passive-turn.js";
 import { persistAssistantTurn } from "./persistence.js";
 import { compactOldToolResults, type ToolResultOrigin } from "./proactive-compaction.js";
@@ -842,6 +844,41 @@ export async function* runToolLoop(
       tokensCached: args.usage.totalCached,
       tokensOut: args.usage.totalOut,
     });
+
+    // Durable per-loop prompt trace (off unless CAELO_CHAT_TRACE=1). The
+    // console line above says a cache miss HAPPENED; this says WHERE — two
+    // records diffed at their first disagreeing message fingerprint name the
+    // message that broke the prefix. Guarded so the fingerprinting cost is
+    // not paid when tracing is off.
+    if (loopTracePath() !== null) {
+      const { fingerprints, totalImageParts } = fingerprintMessages(messages);
+      const split = buildContextSplitEstimate({
+        systemChunks: args.systemChunks,
+        providerTools: args.filteredTools,
+        messages,
+      });
+      appendLoopTrace({
+        chatSessionId,
+        loop,
+        systemHash: hashOf(args.systemChunks),
+        toolsHash: hashOf(args.filteredTools),
+        toolCount: args.filteredTools.length,
+        messages: fingerprints,
+        totalImageParts,
+        split: {
+          systemPromptTokens: split.systemPromptTokens,
+          toolCatalogueTokens: split.toolCatalogueTokens,
+          historyTokens: split.historyTokens,
+          totalTokens: split.totalTokens,
+        },
+        cache: {
+          inThisCall,
+          read: cacheReadThisCall,
+          write: cacheWriteThisCall,
+          fresh: freshInThisCall,
+        },
+      });
+    }
 
     // v0.10.16/.17/.21 — loop-0 zero-tool diagnostics.
     if (loop === 0 && accumulatedToolCalls.length === 0 && loopStop === "end_turn" && !aborted()) {
