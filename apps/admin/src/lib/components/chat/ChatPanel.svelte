@@ -89,6 +89,14 @@
     /** P6.7.3 — when set, the runner gets a Current-page system block. */
     activePageId?: string | null;
     onToolResult?: (payload: ToolResultPayload) => void;
+    /**
+     * Fired once per turn with that turn's cost in USD, from the SSE `usage`
+     * event the runner emits at turn end. Lets the caller keep a spend readout
+     * current without a server round-trip — the server-side figure only
+     * refreshes on a `load`, and lags by a turn because the `ai_calls` row is
+     * written after the tool results that trigger one.
+     */
+    onTurnCost?: (usdCost: number) => void;
     /** v0.2.46 — render the debug panel alongside the publish/diff
      *  sidebar. Caller (page server load) gates on `?debug=1` URL param
      *  + permission check before passing true. */
@@ -113,6 +121,7 @@
     firstRunSuggestions = [],
     activePageId = null,
     onToolResult,
+    onTurnCost,
     debug = false,
     canDebug = false,
     onToggleDebug,
@@ -1444,7 +1453,9 @@
             } else if (ev["kind"] === "assistant-message-saved") {
               currentActivity = "Continuing…";
             } else if (ev["kind"] === "usage") {
-              // No update; keep the prior activity pill visible.
+              // Keep the prior activity pill visible; the turn's cost goes to
+              // the caller so a spend readout can stay current.
+              onTurnCost?.(Number(ev["cost"] ?? 0));
             }
             if (ev["kind"] === "error") {
               chatError = typeof ev["message"] === "string" ? ev["message"] : "Chat failed.";
