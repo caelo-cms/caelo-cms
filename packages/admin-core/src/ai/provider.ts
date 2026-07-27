@@ -161,6 +161,15 @@ export interface GenerateInput {
   readonly systemPrompt: string | readonly SystemPromptChunk[];
   readonly messages: readonly ChatMessageInput[];
   readonly tools: readonly ToolDefinition[];
+  /**
+   * How the model may use `tools` on THIS call. Absent ⇒ the provider default
+   * (`auto` — the model decides). `"required"` forces at least one tool call
+   * (Anthropic's `tool_choice: {"type":"any"}`); the chat-runner sets it for a
+   * single bounded re-run when a turn narrated an action and ended without
+   * emitting the call (issue #106 redesign, RECOVER layer). Deliberately NOT a
+   * per-tool choice: the loop knows an action is owed, never which one.
+   */
+  readonly toolChoice?: "auto" | "required";
   /** Anthropic-style cache breakpoints; ignored by providers that don't
    * support it. */
   readonly cacheBreakpoints?: readonly ("system" | "tools")[];

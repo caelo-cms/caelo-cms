@@ -86,6 +86,12 @@ export async function* streamProviderTurn(args: {
   tools: FilteredTool[];
   abortSignal: AbortSignal | undefined;
   maxTokens: number;
+  /**
+   * issue #106 (redesign) — `"required"` forces the model to emit a tool call
+   * on this one call. The loop sets it for a single bounded re-run after a
+   * narrate-then-stop turn; absent on every normal call.
+   */
+  toolChoice?: "auto" | "required";
   temperature: number | undefined;
   thinkingBudget: number | null;
   usage: UsageAccumulator;
@@ -141,6 +147,8 @@ export async function* streamProviderTurn(args: {
       tools,
       abortSignal: watchdogCtrl.signal,
       maxTokens: args.maxTokens,
+      // issue #106 (redesign) — set only on the loop's forced re-run.
+      ...(args.toolChoice !== undefined ? { toolChoice: args.toolChoice } : {}),
       ...(args.temperature !== undefined ? { temperature: args.temperature } : {}),
       ...(args.thinkingBudget !== null ? { thinking: { budgetTokens: args.thinkingBudget } } : {}),
     })

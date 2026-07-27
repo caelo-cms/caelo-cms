@@ -1,64 +1,33 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Turn-completion guards (issue #106 + the v0.10.x empty-response
- * diagnostics). Extracted verbatim from the pre-split `chat-runner.ts`:
- * the passive-action nudge constant, the legitimate-text-only classifier,
- * the loop-0 diagnostic logger, and the nudge-decision predicate.
+ * Turn-completion diagnostics (the v0.10.x empty-response hunt).
+ *
+ * This file used to also carry the issue-#106 "passive turn" nudge: a regex
+ * classifier plus a synthetic `role:"user"` message injected into the replay
+ * when the model narrated an action and ended the turn without emitting the
+ * tool call. That whole mechanism is gone (see `write-tools.ts` +
+ * `system-prompt.ts` for what replaced it). It was removed because it was the
+ * wrong shape three times over:
+ *
+ *   - it classified INTENT from prose with an English-only regex, in a product
+ *     whose operators write German — a legitimate German stop that doesn't end
+ *     in "?" was nudged, and an announced action phrased outside the verb list
+ *     was not;
+ *   - it injected a fake user turn, the parallel-format antipattern CLAUDE.md
+ *     §12 warns about (the provider docs are explicit that a synthetic
+ *     "Continue." message is NOT how a turn is resumed);
+ *   - it was gated to `loop === 0`, a proxy for "hasn't acted yet" that stopped
+ *     being true once progressive-disclosure skills made `load_skill` consume
+ *     loop 0 — so from 2026-07-19 the guard silently never fired.
+ *
+ * The replacement is three layers: PREVENT (an end-of-turn self-check in the
+ * system prompt), DETECT (`turnHasWritten` in loop.ts — structural, not
+ * textual), RECOVER (a bounded `toolChoice: "required"` re-run — the
+ * API-native way to require an action, instead of asking for one in prose).
  */
 
 import type { ClientEvent, StoppingDiagnostics } from "./types.js";
-
-/**
- * issue #106 — in-memory nudge re-prompted to the model when it narrates an
- * imminent action but ends the turn without emitting the tool call. NOT
- * persisted to chat history, so the operator never sees a synthetic turn —
- * they only see the model self-correct into the real tool call.
- */
-export const PASSIVE_ACTION_NUDGE =
-  "You described an action you were about to take but did not emit any tool call, so nothing actually happened. If you intended to perform it, call the appropriate tool now with the concrete arguments. If you genuinely need information or a decision from the operator first, ask one direct question instead.";
-
-/**
- * issue #106 — classify a loop-0 text-only `end_turn` as a LEGITIMATE stop
- * (so the passive-turn nudge skips it) vs. the passive failure (an announced
- * or implied action the model never carried out — the step-13 footer
- * regression, where it said "A site-wide footer belongs on the layout's
- * footer block …" and stopped without calling add_module_to_layout).
- *
- * The legitimate stops are: a clarifying question, and a message awaiting an
- * Owner approval click (the propose/execute gate — CLAUDE.md §11.A). Anything
- * else on a loop-0 text-only turn is treated as the passive failure and gets
- * ONE nudge. This is the inverse of the earlier narrow verb-matcher
- * (`looksLikeAnnouncedAction`), which only fired on first-person commitment
- * phrasing ("I'll add…", "adding it now") and so missed footer-style
- * declaratives that announce the placement without a commitment verb.
- *
- * Why "nudge unless legitimate" and not "warn on every text-only turn" (the
- * v0.5.9 noise we removed): a nudge re-prompt the operator never sees is
- * functional recovery, not noise — worst case on a genuine info-only answer
- * is one extra round-trip, bounded to once per turn by `passiveNudged`.
- */
-export function isLegitimateTextOnlyTurn(text: string): boolean {
-  const t = text.trim();
-  if (t.length === 0) return false; // empty → the empty-response path, not a nudge
-  // A clarifying question is a legitimate text-only turn.
-  if (/\?\s*$/.test(t)) return true;
-  if (
-    /\b(would you|should i|do you want|want me to|shall i|let me know|which (option|one)|or should i)\b/i.test(
-      t,
-    )
-  )
-    return true;
-  // Awaiting an Owner approval click (propose/execute gate) — a real
-  // human-in-the-loop stop, not a dropped tool call.
-  if (
-    /(\/security\/[a-z-]+\/pending|click +approve|once (you|it'?s) (approve|active)|approve (it|the|that|this)|awaiting your approval|need you to approve)/i.test(
-      t,
-    )
-  )
-    return true;
-  return false;
-}
 
 /**
  * v0.10.16/.17/.21 — loop-0 zero-tool diagnostics. Called only when
@@ -136,31 +105,4 @@ export function evaluateLoopZeroDiagnostics(args: {
   // === 0 captures the all-zero case; mixed cases are rare and
   // not worth a third branch).
   return null;
-}
-
-/**
- * issue #106 — predicate for the once-per-turn passive-action nudge. Gated
- * to loop 0, a text-only `end_turn` with tools available, non-empty text that
- * is NOT a clarifying question or an awaiting-approval message, and not yet
- * nudged this turn. The caller owns the `messages.push(nudge); continue`.
- */
-export function shouldNudgePassiveTurn(args: {
-  passiveNudged: boolean;
-  loop: number;
-  loopStop: string;
-  toolCallCount: number;
-  toolsAvailable: number;
-  aborted: boolean;
-  text: string;
-}): boolean {
-  return (
-    !args.passiveNudged &&
-    args.loop === 0 &&
-    args.loopStop === "end_turn" &&
-    args.toolCallCount === 0 &&
-    args.toolsAvailable > 0 &&
-    !args.aborted &&
-    args.text.trim().length > 0 &&
-    !isLegitimateTextOnlyTurn(args.text)
-  );
 }
