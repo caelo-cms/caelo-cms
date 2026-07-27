@@ -55,7 +55,6 @@ import type { UsageAccumulator } from "./streaming.js";
 import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
-export { isLegitimateTextOnlyTurn } from "./passive-turn.js";
 // Public surface re-exports — the `../chat-runner.ts` shim does `export *`
 // from here, so these keep the pre-split import paths working.
 export type { ChatRunnerOptions, ClientEvent } from "./types.js";

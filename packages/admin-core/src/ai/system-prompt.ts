@@ -476,6 +476,32 @@ const SUBAGENTS_BLOCK = [
 ].join("\n");
 
 /**
+ * issue #106 (redesign) — PREVENT layer, and the primary fix for
+ * narrate-then-stop: the model audits its own last paragraph before ending the
+ * turn, so the failure never reaches the harness.
+ *
+ * This replaces a runtime nudge that classified the model's prose with an
+ * English-only regex and then injected a synthetic `role:"user"` message. That
+ * was wrong in kind: it inferred intent from text after the fact, in a product
+ * whose operators write German, and it invented a message shape the provider
+ * does not define. Prevention costs nothing at runtime and is language-neutral
+ * — the check is about what the paragraph DOES, not which words it uses.
+ *
+ * The escape hatches are deliberate and must stay: a genuine question and a
+ * gated approval are legitimate ends of a turn. Naming them keeps the rule from
+ * pushing the model to act when it should be asking — and pointing the question
+ * case at `offer_choices` turns it into a real tool call, which is both better
+ * UX (a choice card) and, incidentally, satisfies the RECOVER layer's forced
+ * `toolChoice` without any special-casing.
+ */
+const FINISHING_A_TURN_BLOCK = [
+  "## Finishing a turn",
+  "Describing a change is not making it. Before you end a turn, re-read your last paragraph. If it is a plan, an intention, a list of next steps, or a promise about work you have NOT done yet ('I'll add the footer next', 'als Nächstes lege ich … an'), then do that work NOW with tool calls in this same turn instead of ending. This applies in whatever language you are writing.",
+  "End the turn only when one of these is true: the work is actually done; you need a decision that only the operator can make — then ASK it with `offer_choices` rather than as prose, so they get a real choice to click; or you are waiting on an approval click for a gated action you already proposed.",
+  "A turn that ends with an announcement and no tool call does nothing at all, and the operator has to notice and ask again — that is worse than either doing the work or asking a direct question.",
+].join("\n");
+
+/**
  * Static-only context passthrough. The system prompt carries NO dynamic
  * content (operator's rule — the whole prompt stays cached and is never
  * busted); live site state is fetched on-demand via the list_/get_ tools and
@@ -495,6 +521,7 @@ export function composeSystemPromptChunks(
     { body: TOOL_PLAYBOOK_BLOCK, cacheable: true, label: "tool-playbook" },
     { body: MODULE_MODEL_BLOCK, cacheable: true, label: "module-model" },
     { body: STAGING_BLOCK, cacheable: true, label: "staging" },
+    { body: FINISHING_A_TURN_BLOCK, cacheable: true, label: "finishing-a-turn" },
   ];
   // Static subagents guidance — suppressed when subagents are disabled (the
   // CAELO_DISABLE_SUBAGENTS toggle also strips the spawn tools) so the model is

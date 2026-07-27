@@ -2,8 +2,9 @@
 
 /**
  * The chat-runner tool loop: repeatedly streams a provider turn, persists the
- * assistant message, runs the passive-turn recovery, and dispatches tool
- * calls until the model stops (or the loop cap / abort fires). Extracted
+ * assistant message, recovers a narrate-then-stop turn (issue #106 redesign —
+ * see `write-tools.ts`), and dispatches tool calls until the model stops (or
+ * the loop cap / abort fires). Extracted
  * verbatim from the pre-split `chat-runner.ts`; `yield*`-delegated from
  * `runChatTurn` in `index.ts`. The `return` value carries the terminal state
  * the orchestrator needs for the epilogue.
@@ -36,11 +37,7 @@ import {
   TOOL_RESULT_HEAD_CHARS,
 } from "./compaction.js";
 import { costCapUsd, microcents } from "./limits.js";
-import {
-  evaluateLoopZeroDiagnostics,
-  PASSIVE_ACTION_NUDGE,
-  shouldNudgePassiveTurn,
-} from "./passive-turn.js";
+import { evaluateLoopZeroDiagnostics } from "./passive-turn.js";
 import { persistAssistantTurn } from "./persistence.js";
 import { compactOldToolResults, type ToolResultOrigin } from "./proactive-compaction.js";
 import { fileTurnFatalProviderReport } from "./provider-error-report.js";
@@ -53,6 +50,7 @@ import { streamProviderTurn, type UsageAccumulator } from "./streaming.js";
 import type { FilteredTool } from "./tool-catalogue.js";
 import { dispatchToolCall, type ToolCallOutcome } from "./tool-dispatch.js";
 import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn, StopReason } from "./types.js";
+import { isWriteTool } from "./write-tools.js";
 
 /**
  * Consecutive-same-tool runaway threshold. When the model calls the SAME
@@ -164,8 +162,24 @@ export async function* runToolLoop(
   // dispatch below.
   let lastToolName: string | null = null;
   let consecutiveSameTool = 0;
-  // issue #106 — one-shot guard for the passive-turn nudge.
-  let passiveNudged = false;
+  // issue #106 (redesign) — DETECT layer. True once this turn has dispatched a
+  // tool that CHANGES something; read/meta calls (load_skill, list_*, get_*,
+  // read_content, inspect_*, screenshot_*, …) deliberately don't flip it. A
+  // text-only `end_turn` after read/meta work but with nothing written is the
+  // narrate-then-stop failure; the same shape after a write is an ordinary
+  // wrap-up summary. This replaces the old `loop === 0` proxy, which stopped
+  // meaning "hasn't acted yet" once `load_skill` began consuming loop 0.
+  let turnHasWritten = false;
+  // True once ANY tool ran this turn (read/meta included) — distinguishes
+  // "engaged with the task then stopped" from a plain question the model
+  // answered directly, which must never be forced into a tool call.
+  let turnUsedAnyTool = false;
+  // One-shot guard for the RECOVER layer's forced-tool re-run.
+  let forcedToolRetried = false;
+  // Set for exactly one provider call: re-runs the step with the SDK's
+  // `toolChoice: "required"` (Anthropic `{"type":"any"}`) so the model must
+  // emit a tool call instead of narrating another intention.
+  let forceToolChoice = false;
   // issue #261 — one-shot guard for the prompt-too-long compact+retry.
   let promptTooLongRetried = false;
   // Run #10 D5 — one-shot guard for the first-event-timeout retry.
@@ -423,6 +437,11 @@ export async function* runToolLoop(
     // space — lets the postmortem see the prefix shrink at a compaction.
     const sentPrefixEstimate = estimateHistoryTokens(messages);
 
+    // RECOVER layer — consume the one-shot flag so exactly the next provider
+    // call carries `toolChoice: "required"` and every later one is normal.
+    const toolChoiceThisCall = forceToolChoice ? ("required" as const) : undefined;
+    forceToolChoice = false;
+
     const {
       accumulatedText,
       accumulatedToolCalls,
@@ -441,6 +460,7 @@ export async function* runToolLoop(
       systemPrompt: args.systemChunks,
       messages,
       tools: args.filteredTools,
+      ...(toolChoiceThisCall !== undefined ? { toolChoice: toolChoiceThisCall } : {}),
       abortSignal,
       maxTokens: maxOutputTokensThisTurn,
       temperature: args.temperature,
@@ -816,27 +836,41 @@ export async function* runToolLoop(
     if (aborted()) break;
     lastLoopStop = loopStop;
     if (accumulatedToolCalls.length === 0) {
-      // issue #106 — passive-turn recovery. The model sometimes describes
-      // the change it's about to make and ends the turn WITHOUT emitting the
-      // tool call. Nudge once and re-run; the nudge rides in-memory only.
+      // issue #106 (redesign) — RECOVER layer. The model narrated an action and
+      // ended the turn without emitting the tool call, so nothing happened.
+      //
+      // The trigger is STRUCTURAL, never textual: this turn already engaged the
+      // task with read/meta tools (`turnUsedAnyTool`) but never wrote anything
+      // (`!turnHasWritten`), and then stopped. Both halves matter —
+      //   * requiring "engaged" excludes a plain question the model answered
+      //     directly (zero tool calls all turn), which must never be forced;
+      //   * requiring "never wrote" excludes the ordinary closing summary after
+      //     real work, where a forced tool call would be a false accusation and
+      //     an invitation to redo the work.
+      //
+      // Recovery is the API's own mechanism, not a prose request: re-run the
+      // SAME step with `toolChoice: "required"`. The model must then either do
+      // the work or ask via a real tool (`offer_choices` renders as a choice
+      // card) — both strictly better than a dropped intention. Once per turn.
       if (
-        shouldNudgePassiveTurn({
-          passiveNudged,
-          loop,
-          loopStop,
-          toolCallCount: accumulatedToolCalls.length,
-          toolsAvailable: args.filteredTools.length,
-          aborted: aborted(),
-          text: accumulatedText.join(""),
-        })
+        !forcedToolRetried &&
+        turnUsedAnyTool &&
+        !turnHasWritten &&
+        loopStop === "end_turn" &&
+        args.filteredTools.length > 0 &&
+        !aborted()
       ) {
-        passiveNudged = true;
-        console.error("[chat-runner] passive-action-nudge", {
+        forcedToolRetried = true;
+        forceToolChoice = true;
+        console.error("[chat-runner] narrate-then-stop: forcing a tool call", {
           chatSessionId,
+          loop,
           textChars: accumulatedText.join("").length,
           rawFinishReason: stoppingDiagnostics?.rawFinishReason ?? null,
         });
-        messages = [...messages, { role: "user", content: PASSIVE_ACTION_NUDGE }];
+        // The re-run replaces this call — don't burn a loop slot on a turn
+        // that produced no action (same shape as the other one-shot retries).
+        loop--;
         continue;
       }
       stopReason = loopStop;
@@ -882,6 +916,16 @@ export async function* runToolLoop(
     // free-text-answer wedge). Dispatching here keeps the persisted
     // transcript pairing-complete so a free-text OR click answer next turn
     // replays a valid history.
+    // DETECT layer (issue #106 redesign) — record what KIND of work this turn
+    // has done, for the text-only-`end_turn` check at the top of the next
+    // iteration. Classified from what the model CALLED, not from what our
+    // dispatcher ended up running: a gated proposal or a breaker-blocked call
+    // is still the model having acted, not narrating.
+    turnUsedAnyTool = true;
+    if (!turnHasWritten && accumulatedToolCalls.some((c) => isWriteTool(c.name))) {
+      turnHasWritten = true;
+    }
+
     const deferredImageMessages: ChatMessageInput[] = [];
     const turnOutcomes: ToolCallOutcome[] = [];
     for (const call of accumulatedToolCalls) {

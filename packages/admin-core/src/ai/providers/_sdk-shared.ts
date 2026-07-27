@@ -527,6 +527,14 @@ export async function* runSDKStream(args: {
     ...(Object.keys(sdkTools).length > 0
       ? { tools: sdkTools as Parameters<typeof streamText>[0]["tools"] }
       : {}),
+    // issue #106 (redesign) — RECOVER layer. Only ever set on the chat-runner's
+    // single bounded re-run after a narrate-then-stop turn; `"required"` is the
+    // SDK spelling of Anthropic's `tool_choice: {"type":"any"}`. Omitted (not
+    // sent as "auto") on every normal call so the request bytes — and the
+    // prompt cache — stay byte-identical to before this landed.
+    ...(input.toolChoice === "required" && Object.keys(sdkTools).length > 0
+      ? { toolChoice: "required" as const }
+      : {}),
     ...(Object.keys(toolApproval).length > 0
       ? {
           toolApproval: toolApproval as Parameters<typeof streamText>[0]["toolApproval"],
