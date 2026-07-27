@@ -71,8 +71,8 @@
     /** v0.2.14 — global chats (`page_id IS NULL`) for cross-cutting work. */
     globalChats?: ChatRef[];
     onToolResult?: (payload: ToolResultPayload) => void;
-    /** Passed straight through to ChatPanel — see its `onTurnCost`. */
-    onTurnCost?: (usdCost: number) => void;
+    /** Passed straight through to ChatPanel — see its `onSpendUpdate`. */
+    onSpendUpdate?: (spend7dMicrocents: number) => void;
     /**
      * v0.9.4 — fires `true` when a drag or resize gesture starts and
      * `false` when it ends (or is browser-cancelled). The parent uses
@@ -95,7 +95,7 @@
     pageChats = [],
     globalChats = [],
     onToolResult,
-    onTurnCost,
+    onSpendUpdate,
     onDragStateChange,
   }: Props = $props();
 
@@ -519,7 +519,7 @@
       {firstRunSuggestions}
       compact
       onToolResult={handleToolResult}
-      {onTurnCost}
+      {onSpendUpdate}
     />
 
     <!-- P7 review-pass: Cmd+M opens the media picker; on pick, the URL +

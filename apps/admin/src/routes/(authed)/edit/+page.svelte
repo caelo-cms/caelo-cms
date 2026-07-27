@@ -48,31 +48,27 @@
   let activePageId = $state(data.activePageId ?? "");
 
   /**
-   * Cost of the turns that have finished since the server last computed
-   * `data.aiSpend7d`, in microcents. The server figure is refreshed by a
-   * `load`, which on this page only happens on a tool result — so a text-only
-   * turn never moved it, and a turn WITH tools moved it to a value that did
-   * not yet include itself (the `ai_calls` row lands at turn end, after the
-   * tool results). Adding the turn's own cost from the SSE `usage` event fixes
-   * both without asking the server anything.
+   * The 7-day AI spend the runner reported at the end of the most recent turn,
+   * in microcents. It is the canonical `ai_calls` total, read back server-side
+   * once the turn's row existed — so this is an assignment, never a sum.
+   *
+   * An earlier revision accumulated per-turn costs on top of the server figure
+   * instead. That was wrong twice over: the streamed per-turn number was
+   * cache-blind (a turn reading 4.7M cached tokens was priced ~4x its real
+   * cost), and adding it to a figure that already contained the same turns
+   * double-counted. The readout showed $17 for a session that cost $3.25.
+   * Money gets reported, not reconstructed.
+   *
+   * Null until the first turn completes, when the server-rendered value stands.
    */
-  let aiSpendDeltaMicrocents = $state(0);
+  let aiSpendLiveMicrocents = $state<number | null>(null);
 
-  // A fresh server figure already contains everything the delta was standing
-  // in for, so it resets. Reading the figure here IS the effect's dependency —
-  // it is deliberately keyed on the VALUE, not on `data`, so an invalidateAll
-  // that changed something else does not discard a delta the server has not
-  // caught up with yet. Do not "simplify" the read away.
-  $effect(() => {
-    void data.aiSpend7d?.costMicrocents;
-    aiSpendDeltaMicrocents = 0;
+  const aiSpendDisplay = $derived.by(() => {
+    const microcents = aiSpendLiveMicrocents ?? data.aiSpend7d?.costMicrocents;
+    return microcents === undefined || microcents === null
+      ? null
+      : `$${(microcents / 1e8).toFixed(2)}`;
   });
-
-  const aiSpendDisplay = $derived(
-    data.aiSpend7d
-      ? `$${((data.aiSpend7d.costMicrocents + aiSpendDeltaMicrocents) / 1e8).toFixed(2)}`
-      : null,
-  );
   // v0.9.4 — true while the Overlay's title-bar drag or any resize
   // handle is mid-gesture. Drives the iframe's pointer-events toggle
   // below so the cursor crossing into the iframe area can't hijack the
@@ -585,8 +581,8 @@
     pageChats={data.pageChats}
     globalChats={data.globalChats}
     onToolResult={onAiToolResult}
-    onTurnCost={(usd) => {
-      aiSpendDeltaMicrocents += Math.round(usd * 1e8);
+    onSpendUpdate={(microcents) => {
+      aiSpendLiveMicrocents = microcents;
     }}
     onDragStateChange={(active) => (overlayDragging = active)}
   />
