@@ -22,11 +22,12 @@ const msg = (role: string, content: string, images = 0) => ({
 describe("loopTracePath", () => {
   it("is off unless explicitly enabled", () => {
     const prev = process.env.CAELO_CHAT_TRACE;
-    process.env.CAELO_CHAT_TRACE = undefined as unknown as string;
-    // biome-ignore lint/performance/noDelete: restoring env for the assertion
-    delete process.env.CAELO_CHAT_TRACE;
+    process.env.CAELO_CHAT_TRACE = "0";
     expect(loopTracePath()).toBeNull();
-    if (prev !== undefined) process.env.CAELO_CHAT_TRACE = prev;
+    process.env.CAELO_CHAT_TRACE = "1";
+    expect(loopTracePath()).not.toBeNull();
+    if (prev === undefined) process.env.CAELO_CHAT_TRACE = "0";
+    else process.env.CAELO_CHAT_TRACE = prev;
   });
 });
 
