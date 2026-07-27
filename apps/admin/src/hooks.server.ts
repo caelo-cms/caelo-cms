@@ -29,6 +29,7 @@ import {
   resetStuckTranslationUnits,
   setMode2Provider,
   setTranslationProvider,
+  startChatImageGcWorker,
   startProposalGcWorker,
   startReleaseCheckWorker,
   startTranslationWorker,
@@ -308,6 +309,18 @@ function bootstrapProposalGc(): void {
   startProposalGcWorker({ adapter });
 }
 
+// issue #356 — chat-image sweep. Images the AI produced live on their message
+// like any other content, so they accumulate; unlike operator uploads nobody
+// curates or browses them. Removes objects under `chat-images/` whose messages
+// are older than 7 days, skipping any key a surviving message still shares.
+let chatImageGcBootstrapped = false;
+function bootstrapChatImageGc(): void {
+  if (chatImageGcBootstrapped) return;
+  chatImageGcBootstrapped = true;
+  const { adapter } = getQueryContext();
+  startChatImageGcWorker({ adapter });
+}
+
 // P17 PR4 + P18 — wire the MCP bridge to the ProviderResolver so
 // external `bunx @caelo-cms/mcp-server` callers can drive the
 // chat-runner. resolveProvider returns null when no key is wired
@@ -355,6 +368,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapRedeploy();
   bootstrapReleaseCheck();
   bootstrapProposalGc();
+  bootstrapChatImageGc();
   bootstrapMcpBridge();
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));

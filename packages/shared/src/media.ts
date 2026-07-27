@@ -315,6 +315,36 @@ export interface MediaStorageAdapter {
   totalSizeBytes(): Promise<number>;
 }
 
+/**
+ * Object-store prefix for images the AI produced during a chat (screenshots
+ * of a page, of an external site, of a crawled source page).
+ *
+ * They are NOT media assets. The operator's library is their own curated
+ * space; filling it with machine screenshots would make it useless, and these
+ * images have no life outside the conversation that produced them. They live
+ * under their own prefix instead, and a scheduled sweep removes the ones whose
+ * conversations have aged out (see `chat_images.gc`).
+ *
+ * The key is `chat-images/<UTC day>/<sha256>.<ext>`:
+ *   - the day segment makes age the first thing you can see in a key, so a
+ *     sweep never has to open a file to decide;
+ *   - the content hash means re-shooting an unchanged page writes the SAME
+ *     key. That is not just a storage saving — an identical key keeps the
+ *     message history byte-identical, so the provider's prompt cache survives
+ *     a re-screenshot of something that did not change.
+ */
+export const CHAT_IMAGE_PREFIX = "chat-images";
+
+/** Build the storage key for a chat image. `day` is `YYYY-MM-DD` (UTC). */
+export function buildChatImageKey(day: string, sha256: string, ext: string): string {
+  return `${CHAT_IMAGE_PREFIX}/${day}/${sha256}.${ext}`;
+}
+
+/** True for keys under the chat-image prefix — the sweep's safety check. */
+export function isChatImageKey(key: string): boolean {
+  return key.startsWith(`${CHAT_IMAGE_PREFIX}/`);
+}
+
 /** Build the canonical storage key for a given asset variant. */
 export function buildStorageKey(
   sha256: string,

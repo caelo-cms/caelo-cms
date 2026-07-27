@@ -10,10 +10,15 @@
  * exactly as the inline loop did.
  */
 
+import { createHash } from "node:crypto";
+
 import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import type { ChatAttachment, ExecutionContext } from "@caelo-cms/shared";
+import { buildChatImageKey } from "@caelo-cms/shared";
+
+import { getMediaStorage } from "../../media/storage.js";
 
 import { tryAutoRecover } from "../auto-recovery.js";
 import type { AIProvider, ChatMessageInput } from "../provider.js";
@@ -104,6 +109,43 @@ export interface DispatchDeps {
  * tool-result message append (+ multimodal screenshot append). Mutates
  * `messages` in place.
  */
+/**
+ * Store a tool-produced image under the chat-image prefix and return the
+ * attachment that references it, or null when the tool returned no image.
+ *
+ * Best-effort: a storage failure must not fail the tool call, because the
+ * image is a bonus on top of a text result the model can already use. It logs
+ * loudly instead — a silently missing screenshot is exactly the class of
+ * failure the loud-UNAVAILABLE rule elsewhere exists to prevent.
+ */
+async function persistToolImage(
+  toolName: string,
+  image: { base64: string; mediaType: string } | undefined,
+): Promise<ChatAttachment[] | null> {
+  if (!image) return null;
+  try {
+    const bytes = Buffer.from(image.base64, "base64");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const ext = image.mediaType === "image/png" ? "png" : (image.mediaType.split("/")[1] ?? "bin");
+    const day = new Date().toISOString().slice(0, 10);
+    const key = buildChatImageKey(day, sha256, ext);
+    await getMediaStorage().put(key, bytes, image.mediaType);
+    return [
+      {
+        storageKey: key,
+        mime: image.mediaType as ChatAttachment["mime"],
+        alt: `image returned by ${toolName}`,
+      },
+    ];
+  } catch (e) {
+    console.error("[chat-runner] tool image not stored — it will not survive this turn", {
+      toolName,
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return null;
+  }
+}
+
 export async function* dispatchToolCall(
   call: AccumulatedToolCall,
   messages: ChatMessageInput[],
@@ -403,11 +445,18 @@ export async function* dispatchToolCall(
     // is the operator's copy; the AI's copy is deferred below into messages.
     ...(result.image ? { image: result.image } : {}),
   };
+  // issue #356 — an image the AI produced is conversation content, so it is
+  // stored and referenced from the persisted tool row rather than living only
+  // for the current turn. Content-addressed: re-shooting an unchanged page
+  // writes the same key, which leaves the message history byte-identical and
+  // keeps the provider's prompt cache intact.
+  const attachments = await persistToolImage(call.name, result.image);
   await execute(registry, adapter, humanCtx, "chat.append_message", {
     chatSessionId: deps.chatSessionId,
     role: "tool",
     content: result.content,
     toolCallId: call.id,
+    ...(attachments ? { attachments } : {}),
     // issue #303 — producer hint for the empty-content diagnostics.
     source: `tool result (${call.name})`,
   });

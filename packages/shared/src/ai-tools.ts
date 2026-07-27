@@ -389,11 +389,21 @@ export const chatCreateSessionInput = z
  */
 export const chatAttachmentSchema = z
   .object({
-    assetId: z.string().uuid(),
+    /** Set for an operator upload — a `media_assets` row. */
+    assetId: z.string().uuid().optional(),
+    /**
+     * Set for an AI-produced chat image — an object-store key under
+     * `CHAT_IMAGE_PREFIX`. Deliberately not a media asset: see the prefix's
+     * doc comment. Exactly one of `assetId` / `storageKey` is present.
+     */
+    storageKey: z.string().min(1).max(512).optional(),
     mime: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]),
     alt: z.string().max(2048).optional(),
   })
-  .strict();
+  .strict()
+  .refine((a) => (a.assetId === undefined) !== (a.storageKey === undefined), {
+    message: "exactly one of assetId (operator upload) or storageKey (chat image) must be set",
+  });
 export type ChatAttachment = z.infer<typeof chatAttachmentSchema>;
 
 /** issue #190 — attachments-per-message cap; bounds provider payload size. */

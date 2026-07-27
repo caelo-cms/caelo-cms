@@ -34,17 +34,28 @@ const okLoader = async (a: ChatAttachment) =>
   ({ type: "image", base64: `b64-${a.assetId.slice(-1)}`, mediaType: a.mime }) as const;
 
 describe("buildProviderHistory (#190)", () => {
-  it("inlines images ONLY on the most recent attachment-carrying user message", async () => {
+  // issue #356 — reverses #190's "most recent only" policy. Every attached
+  // image is inlined for as long as its message lives in history; compaction
+  // is the only remover. Replacing an older image with a marker was an edit
+  // to the prompt prefix, which invalidates the cached message history from
+  // that point — the policy that existed to save tokens spent a full re-read
+  // each time it fired.
+  it("inlines EVERY attached image, not just the most recent", async () => {
     const history = [
       msg("user", "here is my mockup", [att(1, "mockup v1")]),
       msg("assistant", "looks good"),
       msg("user", "and the revised one", [att(2)]),
     ];
     const out = await buildProviderHistory(history, okLoader);
-    // Older message: marker, no image parts.
-    expect(out[0]?.additionalContent).toBeUndefined();
-    expect(out[0]?.content).toContain("[attached image: mockup v1]");
-    // Latest message: real image part, content untouched.
+
+    // The older image is still a real image part — the model can still look
+    // at what it was shown earlier instead of at its own summary of it.
+    expect(out[0]?.additionalContent).toEqual([
+      { type: "image", base64: "b64-1", mediaType: "image/png" },
+    ]);
+    expect(out[0]?.content).toBe("here is my mockup");
+    expect(out[0]?.content).not.toContain("[attached image:");
+
     expect(out[2]?.additionalContent).toEqual([
       { type: "image", base64: "b64-2", mediaType: "image/png" },
     ]);
