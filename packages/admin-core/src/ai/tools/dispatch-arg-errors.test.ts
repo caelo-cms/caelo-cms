@@ -61,10 +61,10 @@ describe("tool argument rejection", () => {
 
     expect(res.ok).toBe(false);
     const msg = res.content;
-    // The tell that the definition was never loaded, stated plainly so the
-    // model does not go looking for a tool-search round-trip it does not need.
+    // States what happened and hands over the schema — no instruction about
+    // what to do with it. That call is the model's to make.
     expect(msg).toContain("NO arguments");
-    expect(msg).toContain("you do not need to search for the tool first");
+    expect(msg).not.toMatch(/you (do not|don't) need to/i);
     // The nested shape — the part a key list can never convey.
     expect(msg).toContain("```json");
     expect(msg).toContain('"minItems": 2');
