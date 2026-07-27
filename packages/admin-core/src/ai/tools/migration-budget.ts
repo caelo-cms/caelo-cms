@@ -11,6 +11,21 @@
  * The gate is ADVISORY: these tools never stop the run. The flow (Wave 3
  * site-migrate skill) decides when to call `check_run_budget` and how to
  * act on `overBudget` — this engine only supplies honest data.
+ *
+ * `set_migration_budget` is HUMAN-APPROVAL-GATED (CLAUDE.md §11.A). It used to
+ * rely on the words "Do NOT invent a ceiling the operator never confirmed" in
+ * its own description, and on 2026-07-27 that failed exactly as an
+ * instruction-only guard eventually does: 39 seconds after the budget gate
+ * warned at 86% of a $7.89 ceiling, the AI called this tool and raised the
+ * ceiling to $100 on its own. The audit row reads `actor_kind = ai`, and the
+ * operator learned about it afterwards.
+ *
+ * Raising a spend ceiling is the §11.A test case — "if the AI got this wrong,
+ * can the user undo it with one tool call?" No: the money is gone by the time
+ * anyone notices. So the AI proposes the number and the operator clicks. It
+ * keeps `actorScope: ["human","ai","system"]` at the op, because the gate
+ * belongs at the tool where the click happens, not at a scope that would also
+ * lock out the Owner panel and the system path.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -46,7 +61,20 @@ type SetBudgetInput = z.infer<typeof setBudgetInput>;
 export const setMigrationBudgetTool: ToolDefinitionWithHandler<SetBudgetInput> = {
   name: "set_migration_budget",
   description:
-    "Record the operator-CONFIRMED money ceiling for a migration run, in the currency they named. Approving an import proposal already arms a ceiling automatically from the estimate (3x its high end), so call this only when the operator names a DIFFERENT amount — or to RAISE the budget after the automatic gate paused the run ('Cost ceiling reached'): recording a new ceiling re-arms the gate and the run can continue. `ceiling` is the whole-run budget in major units (10 for €10), not per-page. Do NOT invent a ceiling the operator never confirmed. Use `check_run_budget` to track spend against it.",
+    "Propose the money ceiling for a migration run, in the currency the operator named. Approving an import proposal already arms a ceiling from the estimate's high end, so call this only when the operator names a DIFFERENT amount — or to RAISE the budget after the gate paused the run ('Cost ceiling reached'), which re-arms it so the run can continue. `ceiling` is the whole-run budget in major units (10 for €10), not per-page. " +
+    "This is a TWO-STEP flow: you propose the amount, the operator clicks Approve on the card in the chat, and only then is the ceiling recorded. Do not claim the budget was applied, and do not carry on as if the higher ceiling were already in force. Never propose an amount the operator has not named — the click confirms their number, it does not authorise yours. Use `check_run_budget` to track spend against the ceiling.",
+  // Always gated, in both directions. Lowering a ceiling is harmless, but a
+  // predicate cannot tell the directions apart: `needsApproval` receives only
+  // (input, ctx) — no adapter — so the current ceiling is not readable here.
+  // Given the choice between an unconditional click and a guess, a money
+  // figure gets the click.
+  needsApproval: () => true,
+  buildApprovalPreview: (input) => ({
+    op: "set_migration_budget",
+    runId: input.runId,
+    proposedCeiling: input.ceiling,
+    currency: input.currency.toUpperCase(),
+  }),
   schema: setBudgetInput,
   inputSchema: {
     type: "object",
