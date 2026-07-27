@@ -74,6 +74,21 @@ describe("composeSystemPromptChunks", () => {
     expect(idx?.body).toContain("# Skills");
   });
 
+  // issue #106 — the block states THAT waiting on the operator ends a turn,
+  // never HOW to ask. An earlier revision said "ASK it with `offer_choices`",
+  // which pointed the model at a DEFERRED tool: it had the name but not the
+  // schema, emitted `input: {}`, and could not repair. It also worked against
+  // the deliberate decision (CORE_TOOL_NAMES) to keep that tool unobtrusive so
+  // the model does not stall on questions it could answer itself.
+  it("finishing-a-turn prescribes no tool", () => {
+    const block = composeSystemPromptChunks([]).find((c) => c.label === "finishing-a-turn");
+    expect(block).toBeDefined();
+    const body = block?.body ?? "";
+    expect(body).toContain("re-read your last paragraph");
+    // A backtick here is always an identifier — i.e. a tool name.
+    expect(body).not.toContain("`");
+  });
+
   it("skips empty slots", () => {
     const chunks = composeSystemPromptChunks([]);
     // The static core: base + tool-playbook + module-model + staging +

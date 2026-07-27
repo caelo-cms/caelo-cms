@@ -487,17 +487,27 @@ const SUBAGENTS_BLOCK = [
  * does not define. Prevention costs nothing at runtime and is language-neutral
  * — the check is about what the paragraph DOES, not which words it uses.
  *
- * The escape hatches are deliberate and must stay: a genuine question and a
- * gated approval are legitimate ends of a turn. Naming them keeps the rule from
- * pushing the model to act when it should be asking — and pointing the question
- * case at `offer_choices` turns it into a real tool call, which is both better
- * UX (a choice card) and, incidentally, satisfies the RECOVER layer's forced
- * `toolChoice` without any special-casing.
+ * NAMES NO TOOL, deliberately. An earlier revision of this block ended the
+ * question case with "then ASK it with `offer_choices`". That was drift from
+ * the documented shape, which states only THAT waiting on the operator is a
+ * legitimate end, never HOW to ask — and it did real damage twice over:
+ *
+ *   - `offer_choices` is deferred (see the comment at CORE_TOOL_NAMES), so the
+ *     model has its name but not its schema. Told to reach for it, it emitted
+ *     `offer_choices` with `input: {}` and could not repair, because the
+ *     rejection message cannot supply a schema the model never loaded.
+ *   - the deferral is a deliberate decision — keeping the ask-the-operator
+ *     button always loaded lowered the model's threshold to stall on questions
+ *     it could answer itself. An imperative here worked against that.
+ *
+ * The escape hatch stays single and unnamed for the same reason it is single
+ * in the source: a question is listed ABOVE as a reason to keep working, so
+ * only something genuinely outside the model's reach ends a turn.
  */
 const FINISHING_A_TURN_BLOCK = [
   "## Finishing a turn",
-  "Describing a change is not making it. Before you end a turn, re-read your last paragraph. If it is a plan, an intention, a list of next steps, or a promise about work you have NOT done yet ('I'll add the footer next', 'als Nächstes lege ich … an'), then do that work NOW with tool calls in this same turn instead of ending. This applies in whatever language you are writing.",
-  "End the turn only when one of these is true: the work is actually done; you need a decision that only the operator can make — then ASK it with `offer_choices` rather than as prose, so they get a real choice to click; or you are waiting on an approval click for a gated action you already proposed.",
+  "Describing a change is not making it. Before you end a turn, re-read your last paragraph. If it is a plan, an analysis, a question, a list of next steps, or a promise about work you have NOT done yet ('I'll add the footer next', 'als Nächstes lege ich … an'), then do that work NOW with tool calls in this same turn instead of ending. This applies in whatever language you are writing.",
+  "End the turn only when the work is actually done, or when you are waiting for something only the operator can give you — a decision that is genuinely theirs to make, or an approval click on a gated action you already proposed. A question you could answer yourself by looking is not one of those; look instead.",
   "A turn that ends with an announcement and no tool call does nothing at all, and the operator has to notice and ask again — that is worse than either doing the work or asking a direct question.",
 ].join("\n");
 
