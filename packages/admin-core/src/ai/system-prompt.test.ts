@@ -89,6 +89,20 @@ describe("composeSystemPromptChunks", () => {
     expect(body).not.toContain("`");
   });
 
+  // The live footer scenario failed twice with the model stopping to ask which
+  // brand colour to use, because the escape hatch read "a decision that is
+  // genuinely theirs to make". Under CLAUDE.md §1A that is exactly backwards:
+  // the operator describes outcomes, the AI decides implementation.
+  it("finishing-a-turn rules a preference out as a reason to stop", () => {
+    const block = composeSystemPromptChunks([]).find((c) => c.label === "finishing-a-turn");
+    const body = block?.body ?? "";
+    expect(body).toContain("PREFERENCE is not one of those");
+    expect(body).toContain("decide how to build it");
+    // The hatch names what only the operator can supply, rather than gesturing
+    // at "their decision" — which a colour or a wording reads as.
+    expect(body).toMatch(/credential/);
+  });
+
   it("skips empty slots", () => {
     const chunks = composeSystemPromptChunks([]);
     // The static core: base + tool-playbook + module-model + staging +

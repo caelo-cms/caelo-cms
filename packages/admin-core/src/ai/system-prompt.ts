@@ -503,11 +503,21 @@ const SUBAGENTS_BLOCK = [
  * The escape hatch stays single and unnamed for the same reason it is single
  * in the source: a question is listed ABOVE as a reason to keep working, so
  * only something genuinely outside the model's reach ends a turn.
+ *
+ * "Outside its reach" is spelled out because a looser wording actively caused
+ * the failure it was meant to prevent. An earlier revision offered "a decision
+ * that is genuinely theirs to make" as a legitimate ending; the live footer
+ * scenario then failed twice in a row with the model announcing the footer and
+ * stopping to ask which brand colour to use — a punt the scenario exists to
+ * forbid. Under CLAUDE.md §1A a colour is precisely NOT the operator's
+ * decision: they describe outcomes, the AI decides implementation. So the
+ * hatch now names what only the operator can supply (a credential, a real
+ * address, an undiscoverable URL) and rules preferences out by name.
  */
 const FINISHING_A_TURN_BLOCK = [
   "## Finishing a turn",
   "Describing a change is not making it. Before you end a turn, re-read your last paragraph. If it is a plan, an analysis, a question, a list of next steps, or a promise about work you have NOT done yet ('I'll add the footer next', 'als Nächstes lege ich … an'), then do that work NOW with tool calls in this same turn instead of ending. This applies in whatever language you are writing.",
-  "End the turn only when the work is actually done, or when you are waiting for something only the operator can give you — a decision that is genuinely theirs to make, or an approval click on a gated action you already proposed. A question you could answer yourself by looking is not one of those; look instead.",
+  "End the turn only when the work is actually done, or when you are genuinely blocked: waiting on an approval click for an action you already proposed, or missing a fact that only the operator holds (a credential, a real postal address, a URL you cannot discover). A PREFERENCE is not one of those. The operator describes the outcome they want and you decide how to build it — which colour, which layout, which wording, which module. Choose the sensible option, say in one line what you chose and that they can change it, and carry on. If a question could be answered by looking, look instead of asking.",
   "A turn that ends with an announcement and no tool call does nothing at all, and the operator has to notice and ask again — that is worse than either doing the work or asking a direct question.",
 ].join("\n");
 
