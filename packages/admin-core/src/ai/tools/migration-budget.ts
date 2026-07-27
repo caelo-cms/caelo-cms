@@ -201,7 +201,12 @@ export const checkRunBudgetTool: ToolDefinitionWithHandler<CheckBudgetInput> = {
         : "Not enough pages rebuilt yet to project the total.";
     return {
       ok: true,
-      content: `Within budget. Budget ${ceiling}; spent ${spent} (${remaining} remaining); ${progress}. ${projLine} Keep going; re-check before the next batch.${noteSuffix}`,
+      // "recorded so far" distinguishes this from the runner's budget notice,
+      // which adds the turn currently in progress. Both numbers are right;
+      // without the labels they read as a contradiction (2026-07-27: this
+      // said "$3.83, within budget" in the same second the notice said
+      // "$6.82, 86%").
+      content: `Within budget. Budget ${ceiling}; spent ${spent} recorded so far (${remaining} remaining; the turn in progress is not counted yet); ${progress}. ${projLine} Keep going; re-check before the next batch.${noteSuffix}`,
     };
   },
 };
