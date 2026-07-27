@@ -430,15 +430,65 @@ function nestingIntentHint(
   );
 }
 
+/**
+ * Above this, the full JSON Schema is dropped in favour of the per-property
+ * summary alone. A schema this large belongs to a tool the model almost
+ * certainly has loaded (the big authoring tools are in the preloaded core);
+ * pasting it into a failure would cost more than it repairs.
+ */
+const FULL_SCHEMA_MAX_CHARS = 6000;
+
+/** One line per argument: name, type, required, and the schema's own blurb. */
+function describeProperties(inputSchema: ToolInputSchema): string[] {
+  const props = (inputSchema.properties ?? {}) as Record<string, unknown>;
+  const required = new Set(
+    Array.isArray(inputSchema.required) ? (inputSchema.required as string[]) : [],
+  );
+  return Object.entries(props).map(([key, raw]) => {
+    const def = (raw ?? {}) as { type?: unknown; description?: unknown; enum?: unknown };
+    const type = typeof def.type === "string" ? def.type : "any";
+    const enums = Array.isArray(def.enum) ? ` (one of: ${def.enum.join(" | ")})` : "";
+    const blurb =
+      typeof def.description === "string" && def.description.length > 0
+        ? ` — ${def.description.slice(0, 160)}`
+        : "";
+    return `- \`${key}\` (${type}${required.has(key) ? ", required" : ", optional"})${enums}${blurb}`;
+  });
+}
+
+/**
+ * A DEFERRED tool (Anthropic tool search, `deferLoading: true`) is advertised
+ * to the model by NAME only — its schema is not in context until the model
+ * loads it. Called from the name alone, the arguments arrive empty, and naming
+ * the required keys cannot repair that: the model still does not know the shape
+ * of a nested argument, only that it is required. A live migrate chat looped on
+ * exactly this, emitting `offer_choices` with `{}` twice in a row.
+ *
+ * So when the call carried nothing, hand back the actual JSON Schema. The tool
+ * result rides the SAME turn's history, so the retry has the definition without
+ * a tool-search round-trip — and without materialising the tool in the
+ * catalogue, which would rewrite the cached tool prefix for the rest of the
+ * turn.
+ */
+function schemaRecoveryBlock(inputSchema: ToolInputSchema, calledEmpty: boolean): string {
+  if (!calledEmpty) return "";
+  const json = JSON.stringify(inputSchema, null, 2);
+  if (json.length > FULL_SCHEMA_MAX_CHARS) return "";
+  return (
+    "You called this tool with NO arguments, which happens when its definition " +
+    "was never loaded into your context. Here it is — use it directly, you do " +
+    "not need to search for the tool first:\n" +
+    `\`\`\`json\n${json}\n\`\`\`\n`
+  );
+}
+
 function formatToolArgError(
   name: string,
   issues: readonly z.ZodIssue[],
   inputSchema: ToolInputSchema,
+  args?: unknown,
 ): string {
   const props = (inputSchema.properties ?? {}) as Record<string, unknown>;
-  const allKeys = Object.keys(props);
-  const required = Array.isArray(inputSchema.required) ? (inputSchema.required as string[]) : [];
-  const optional = allKeys.filter((k) => !required.includes(k));
 
   const lines = issues.slice(0, 6).map((issue) => {
     const path = issue.path.join(".") || "(root)";
@@ -464,10 +514,20 @@ function formatToolArgError(
     }
   });
 
-  const shape =
-    `Expected arguments for \`${name}\` — ` +
-    `required: ${required.length ? required.map((k) => `\`${k}\``).join(", ") : "(none)"}; ` +
-    `optional: ${optional.length ? optional.map((k) => `\`${k}\``).join(", ") : "(none)"}.`;
+  // The argument STRUCTURE, not just the key names. A bare "required: `question`,
+  // `options`" leaves the model guessing at every nested shape, which is how a
+  // rejected call gets re-sent almost unchanged.
+  const propertyLines = describeProperties(inputSchema);
+  const shape = propertyLines.length
+    ? `Arguments for \`${name}\`:\n${propertyLines.join("\n")}`
+    : `\`${name}\` takes no arguments.`;
+
+  // `{}` (or nothing at all) is the signature of a tool called without its
+  // definition in context — see schemaRecoveryBlock.
+  const calledEmpty =
+    args === undefined ||
+    args === null ||
+    (typeof args === "object" && Object.keys(args as object).length === 0);
 
   // When an unrecognized key signals nesting intent (e.g. `children`), name the
   // real mechanism (a `fields` list entry) so the model switches approach on
@@ -478,6 +538,7 @@ function formatToolArgError(
     `invalid arguments for ${name}:\n` +
     lines.map((l) => `- ${l}`).join("\n") +
     `\n${shape}\n` +
+    schemaRecoveryBlock(inputSchema, calledEmpty) +
     (nesting ? `${nesting}\n` : "") +
     `Re-call \`${name}\` with only the listed properties (drop any unrecognized keys) and retry — do not ask the operator.`
   );
@@ -564,7 +625,7 @@ export class ToolRegistry {
       // rather than guessing or punting to the operator. See formatToolArgError.
       return {
         ok: false,
-        content: formatToolArgError(name, parsed.error.issues, tool.inputSchema),
+        content: formatToolArgError(name, parsed.error.issues, tool.inputSchema, normalized.args),
       };
     }
     // v0.6.0 W5 — approval gate. When the tool declares
