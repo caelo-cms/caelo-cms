@@ -413,8 +413,9 @@ export async function* runChatTurn(
           days: 7,
         }).catch(() => null)
       : null;
-  const spend7dMicrocents =
-    spend?.ok ? (spend.value as { costMicrocents: number }).costMicrocents : undefined;
+  const spend7dMicrocents = spend?.ok
+    ? (spend.value as { costMicrocents: number }).costMicrocents
+    : undefined;
 
   yield {
     kind: "usage",
