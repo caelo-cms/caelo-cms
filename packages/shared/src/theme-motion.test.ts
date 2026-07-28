@@ -79,3 +79,37 @@ describe("motion tokens reject junk loudly with an actionable message", () => {
     expect(msg).not.toContain("Invalid input");
   });
 });
+
+/**
+ * 2026-07-28 — a model wrote `motion: "180ms ease"`, the CSS transition
+ * shorthand. Listing the accepted forms did not tell it what was actually
+ * wrong (two tokens in one string), so it took three attempts to correct —
+ * and, because gated proposals were validated only AFTER approval, three
+ * operator clicks. The message now names the mistake.
+ */
+describe("a CSS shorthand names the real mistake, not just the legal forms", () => {
+  it("tells the caller to split duration and easing", () => {
+    const r = themeDocument.safeParse(docWithMotion("motion", "180ms ease"));
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    const msg = r.error.issues[0]!.message;
+    expect(msg).toContain("CSS transition shorthand");
+    expect(msg).toContain('put "180ms" in a duration token');
+    expect(msg).toContain('"ease" in an easing token');
+  });
+
+  it("covers the seconds form too", () => {
+    const r = themeDocument.safeParse(docWithMotion("motion", "0.2s ease-in-out"));
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues[0]!.message).toContain('put "0.2s" in a duration token');
+  });
+
+  it("stays silent when the value is not a shorthand", () => {
+    // A plain bad value must not get a shorthand lecture it cannot act on.
+    const r = themeDocument.safeParse(docWithMotion("motion", "banana"));
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues[0]!.message).not.toContain("shorthand");
+  });
+});

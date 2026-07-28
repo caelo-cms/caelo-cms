@@ -427,6 +427,29 @@ function describeValue(value: unknown): string {
   return s.length > 80 ? `${s.slice(0, 77)}...` : s;
 }
 
+/**
+ * Name the mistake when a value looks like a CSS shorthand packing several
+ * design tokens into one string. Design tokens are single-valued by
+ * definition, so `"180ms ease"` is not a malformed duration — it is a
+ * duration and an easing that belong in separate tokens, and saying so is
+ * what lets the caller fix it on the first try.
+ */
+function shorthandHint(category: string, value: unknown): string {
+  if (typeof value !== "string") return "";
+  const v = value.trim();
+  if (category === "duration" || category === "motion") {
+    // A duration followed by anything else: "180ms ease", "0.2s ease-in-out".
+    if (/^\d*\.?\d+\s*(ms|s)\s+\S/i.test(v)) {
+      return (
+        ` — that looks like a CSS transition shorthand (duration + easing) in ONE token. ` +
+        `Design tokens hold a single value: put "${v.split(/\s+/)[0]}" in a duration token ` +
+        `and "${v.split(/\s+/).slice(1).join(" ")}" in an easing token.`
+      );
+    }
+  }
+  return "";
+}
+
 function refineKnownCategoryLeaves(
   category: string,
   schema: z.ZodTypeAny,
@@ -445,10 +468,20 @@ function refineKnownCategoryLeaves(
         // Union-based categories surface a single, actionable message
         // (naming the token, the accepted shapes, and the offending
         // value) instead of one "Invalid input" issue per union member.
+        //
+        // 2026-07-28: listing accepted shapes was not enough. A model wrote
+        // `motion` as the CSS shorthand `"180ms ease"` — idiomatic in a
+        // `transition:` declaration, but two design tokens in one string. The
+        // message enumerated the legal forms without naming the actual
+        // mistake, so the fix took three attempts (and, because gated
+        // proposals were validated only after approval, three operator
+        // clicks). Naming the likely mistake turns that into one attempt.
         ctx.addIssue({
           code: "custom",
           path: [...path],
-          message: `${category} token "${String(name)}" invalid: expected ${expectation}; got ${describeValue(obj.$value)}`,
+          message:
+            `${category} token "${String(name)}" invalid: expected ${expectation}; got ${describeValue(obj.$value)}` +
+            shorthandHint(category, obj.$value),
         });
       } else {
         for (const issue of sub.error.issues) {

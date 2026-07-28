@@ -17,6 +17,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import type { AIProvider, ChatMessageInput } from "../provider.js";
 import { capWrapUpNoticeText, shouldWrapUpAtCap } from "../tools/subagent-budget.js";
 import { buildApprovalPreview } from "./approval.js";
+import { preflightGatedCall } from "./approval-preflight.js";
 import {
   type BudgetGateState,
   budgetTripText,
@@ -52,7 +53,13 @@ import { streamProviderTurn, type UsageAccumulator } from "./streaming.js";
 import type { FilteredTool } from "./tool-catalogue.js";
 import { dispatchToolCall, type ToolCallOutcome } from "./tool-dispatch.js";
 import { type JudgeTurnCompleteness, judgeTurnCompleteness } from "./turn-completeness-judge.js";
-import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn, StopReason } from "./types.js";
+import type {
+  ApprovalRequest,
+  ChatRunnerOptions,
+  ClientEvent,
+  RunChatTurnFn,
+  StopReason,
+} from "./types.js";
 import { isWriteTool } from "./write-tools.js";
 
 /**
@@ -1123,7 +1130,45 @@ export async function* runToolLoop(
     // approval-request blocks) is persisted via Option C responseMessages, so
     // approving = appending a tool-approval-response and re-running.
     if (accumulatedApprovalRequests.length > 0) {
+      // Never spend a click on a proposal that cannot apply. A payload the
+      // propose op would reject is declined here, SDK-natively, so the model
+      // fixes it and the operator never sees a card for it (see
+      // approval-preflight.ts for the three-clicks-for-one-theme case).
+      const rejected: ApprovalRequest[] = [];
+      const askable: ApprovalRequest[] = [];
       for (const req of accumulatedApprovalRequests) {
+        const bad = preflightGatedCall(tools, registry, req.name, req.arguments);
+        if (bad) {
+          console.error("[chat-runner] gated call rejected before asking the operator", {
+            chatSessionId,
+            tool: req.name,
+          });
+          messages.push({
+            role: "tool",
+            content: "",
+            sdkMessages: [
+              {
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-approval-response",
+                    approvalId: req.approvalId,
+                    approved: false,
+                    reason: bad.reason,
+                  },
+                ],
+              },
+            ],
+          });
+          rejected.push(req);
+        } else {
+          askable.push(req);
+        }
+      }
+      // Everything failed preflight → nothing to ask; resume so the model can
+      // correct itself on the next call.
+      if (askable.length === 0 && rejected.length > 0) continue;
+      for (const req of askable) {
         yield {
           kind: "tool-approval-request",
           approvalId: req.approvalId,
