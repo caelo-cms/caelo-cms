@@ -6,10 +6,13 @@
  * dispatches `mcp.send_chat` (system-only op) which resolves the
  * bearer to a Caelo actor and drives `runChatTurn`.
  *
- * 30-second client-side timeout — chat-runner turns longer than that
- * are likely stuck (the runner has its own provider-call timeouts).
- * MCP clients see a clean error instead of a hung connection.
+ * 30-second default client-side timeout (override with
+ * `CAELO_MCP_TIMEOUT_MS`) — chat-runner turns longer than that are
+ * likely stuck (the runner has its own provider-call timeouts). MCP
+ * clients see a clean error instead of a hung connection.
  */
+
+import { postAdmin, resolveTimeoutMs } from "./http.js";
 
 export interface SendChatOpts {
   readonly adminUrl: string;
@@ -28,46 +31,16 @@ export interface SendChatResult {
   readonly costMicrocents: number;
 }
 
-const TIMEOUT_MS = 30_000;
-
 export async function sendChat(opts: SendChatOpts): Promise<SendChatResult> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    const url = `${opts.adminUrl.replace(/\/+$/, "")}/api/mcp/chat`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-caelo-mcp-token": opts.token,
-      },
-      body: JSON.stringify({
-        message: opts.message,
-        chatSessionId: opts.chatSessionId,
-        pageId: opts.pageId,
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      const body = await safeText(res);
-      throw new Error(`HTTP ${res.status}: ${body || res.statusText}`);
-    }
-    const json = (await res.json()) as SendChatResult;
-    return json;
-  } catch (e) {
-    if (e instanceof Error && e.name === "AbortError") {
-      throw new Error(`timeout after ${TIMEOUT_MS / 1000}s`);
-    }
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function safeText(res: Response): Promise<string> {
-  try {
-    return (await res.text()).slice(0, 500);
-  } catch {
-    return "";
-  }
+  return postAdmin<SendChatResult>({
+    adminUrl: opts.adminUrl,
+    token: opts.token,
+    path: "/api/mcp/chat",
+    body: {
+      message: opts.message,
+      chatSessionId: opts.chatSessionId,
+      pageId: opts.pageId,
+    },
+    timeoutMs: resolveTimeoutMs(30_000),
+  });
 }

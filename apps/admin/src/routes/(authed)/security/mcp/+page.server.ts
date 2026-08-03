@@ -11,6 +11,7 @@ type TokenRow = {
   id: string;
   actorId: string;
   displayName: string;
+  scope: "chat" | "admin";
   aiCostCapMicrocents: number | null;
   lastUsedAt: string | null;
   revokedAt: string | null;
@@ -37,20 +38,25 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const displayName = String(form.get("displayName") ?? "").trim();
     const capRaw = String(form.get("aiCostCapMicrocents") ?? "");
+    const scopeRaw = String(form.get("scope") ?? "chat");
     if (!displayName) return fail(400, { error: "displayName required" });
+    if (scopeRaw !== "chat" && scopeRaw !== "admin") {
+      return fail(400, { error: "scope must be 'chat' or 'admin'" });
+    }
     const cap = capRaw === "" ? null : Number.parseInt(capRaw, 10);
     if (cap !== null && (!Number.isFinite(cap) || cap < 0)) {
       return fail(400, { error: "aiCostCapMicrocents must be a non-negative integer" });
     }
     const r = await execute(registry, adapter, locals.ctx, "mcp_tokens.create", {
       displayName,
+      scope: scopeRaw,
       aiCostCapMicrocents: cap,
     });
     if (!r.ok) return fail(400, { error: "could not create token" });
     const v = r.value as { id: string; plaintextToken: string };
     // Returned ONCE — the page renders it as a save-now banner, then the
     // user copies + pastes into their `claude mcp add` invocation.
-    return { ok: true, id: v.id, plaintextToken: v.plaintextToken, displayName };
+    return { ok: true, id: v.id, plaintextToken: v.plaintextToken, displayName, scope: scopeRaw };
   },
   revoke: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");

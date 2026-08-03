@@ -1,13 +1,23 @@
 # `@caelo-cms/mcp-server`
 
-MCP server exposing your Caelo CMS install's chat-runner as a single
-`caelo_chat` tool. Lets Claude Code (or any MCP-aware client) drive
-your install — read pages, propose edits, queue Owner-approval
-proposals, summarise plugin data — without opening the browser.
+MCP servers for your Caelo CMS install. Two surfaces, selected by the
+token's scope:
 
-This package is a thin shim. Every `caelo_chat` invocation becomes one
-HTTPS POST against your admin install's `/api/mcp/chat` endpoint, which
-dispatches into the same chat-runner that powers the live-edit overlay.
+- **`caelo_chat`** (default mode, scope `chat`) — one tool that talks
+  to Caelo's own AI agent. You describe an outcome; Caelo's chat-runner
+  does the work.
+- **Power-MCP** (`caelo-admin-mcp` binary / `caelo-mcp-server admin`,
+  scope `admin`) — the full chat-runner tool catalogue exposed
+  directly, so YOUR agent (Claude Code et al.) drives the tool loop and
+  Caelo makes no provider calls of its own. `caelo-mcp-server export`
+  additionally writes a CLAUDE.md + `.claude/skills/` tree generated
+  from the install's live context.
+
+Every mode is a thin shim: calls become HTTPS POSTs against your admin
+install's `/api/mcp/*` endpoints, which dispatch into the same
+chat-runner machinery that powers the live-edit overlay. See the
+[docs page](https://caelo-cms.com/mcp) for the full Power-MCP working
+model (work sessions, preview branches, approval gates).
 
 ## Install
 

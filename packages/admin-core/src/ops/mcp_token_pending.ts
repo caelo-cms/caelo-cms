@@ -31,6 +31,8 @@ import { createMcpTokenOp, revokeMcpTokenOp } from "./security/mcp_tokens.js";
 const proposeCreateInput = z
   .object({
     displayName: z.string().min(1).max(100),
+    /** Issue #376 — 'admin' unlocks the Power-MCP surface. Default 'chat'. */
+    scope: z.enum(["chat", "admin"]).optional(),
     aiCostCapMicrocents: z.number().int().nonnegative().nullable().optional(),
   })
   .strict();
@@ -48,6 +50,7 @@ export const proposeMcpTokenCreateOp = defineOperation({
     const preview = {
       kind: "create",
       displayName: input.displayName,
+      scope: input.scope ?? "chat",
       aiCostCapMicrocents: input.aiCostCapMicrocents ?? null,
       // Always-true reminder for the Owner UI banner.
       tokenPolicy: "server-generated-on-approve",
