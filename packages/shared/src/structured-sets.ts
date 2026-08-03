@@ -81,12 +81,7 @@ export const linkListItem = z
  *  v0.11.0 (#45) — `theme` is no longer a structured-set kind. The
  *  theme primitive moved to its own `themes` table with DTCG-shaped
  *  jsonb tokens; see `themes.ts` + `theme-render.ts`. */
-export const structuredSetKind = z.enum([
-  "nav-menu",
-  "taxonomy",
-  "tags",
-  "link-list",
-]);
+export const structuredSetKind = z.enum(["nav-menu", "taxonomy", "tags", "link-list"]);
 export type StructuredSetKind = z.infer<typeof structuredSetKind>;
 
 /** Validate `items` against the right schema for `kind`. Throws a

@@ -66,8 +66,7 @@ async function gcOnce(opts: ProposalGcWorkerOpts): Promise<{ totalMarked: number
       // status transition (plugin_rate_limit_proposals' CHECK was
       // widened to include 'superseded' in v0.2.42).
       const ageColumn = "created_at";
-      const reasonColumn =
-        table === "plugin_rate_limit_proposals" ? "reason" : "decision_reason";
+      const reasonColumn = table === "plugin_rate_limit_proposals" ? "reason" : "decision_reason";
       const result = (await tx.unsafe(
         `UPDATE ${table}
             SET status = 'superseded',

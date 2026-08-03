@@ -32,9 +32,9 @@ import {
   type ComposeTheme,
   composePageWithLayout,
   fontUnresolvableMarker,
+  isDesignatedHomePage,
   isHomeSlug,
   type ModuleFieldKind,
-  isDesignatedHomePage,
   type ThemeDocument,
   trimSlashes,
 } from "@caelo-cms/shared";
@@ -631,9 +631,7 @@ export async function generateSite(args: {
       });
     } catch (e) {
       if (e instanceof ComposeError) {
-        throw new Error(
-          `static-generator: page slug=${page.slug}: ${e.message}`,
-        );
+        throw new Error(`static-generator: page slug=${page.slug}: ${e.message}`);
       }
       throw e;
     }

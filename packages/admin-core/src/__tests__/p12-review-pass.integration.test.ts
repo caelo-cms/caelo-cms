@@ -309,7 +309,8 @@ describe("forms plugin: honeypot lands as spam", () => {
       pluginSlug: "forms",
       operationName: "submit",
       args: {
-        formSlug: "contact", data: { email: "a@b.c" },
+        formSlug: "contact",
+        data: { email: "a@b.c" },
         honeypot: "bot-fill",
         captchaToken: "dev",
       },
@@ -337,7 +338,8 @@ describe("forms plugin: honeypot lands as spam", () => {
       pluginSlug: "forms",
       operationName: "submit",
       args: {
-        formSlug: "contact", data: { email: "real@user.com" },
+        formSlug: "contact",
+        data: { email: "real@user.com" },
         honeypot: "",
         captchaToken: "dev",
       },

@@ -51,8 +51,7 @@ describe("Caddyfile generator", () => {
     expect(out).toContain(":8081 {");
     expect(out).toContain("reverse_proxy localhost:5173");
   });
-
-  });
+});
 
 describe("docker-compose generator", () => {
   it("emits postgres + caddy + caelo services with the supplied secrets", () => {

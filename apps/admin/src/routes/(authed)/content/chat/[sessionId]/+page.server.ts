@@ -56,16 +56,10 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
   }));
   // v0.3.21 — pick the default preview page (mirrors /edit's logic).
   // Prefer home/en, fall back to the first page, null when none exist.
-  const allPages = pagesR.ok
-    ? (pagesR.value as { pages: { slug: string }[] }).pages
-    : [];
+  const allPages = pagesR.ok ? (pagesR.value as { pages: { slug: string }[] }).pages : [];
   const home = allPages.find((p) => p.slug === "home");
   const firstPage = allPages[0];
-  const previewDefault = home
-    ? { slug: home.slug }
-    : firstPage
-      ? { slug: firstPage.slug }
-      : null;
+  const previewDefault = home ? { slug: home.slug } : firstPage ? { slug: firstPage.slug } : null;
 
   return {
     session: sessionData.session,

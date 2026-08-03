@@ -154,7 +154,7 @@ describe("import page reads — directly-built homepage-not-at-root (#278)", () 
       await tx`UPDATE pages SET slug = ${CUSTOM_SLUG} WHERE id = ${composedPageId}::uuid`;
     });
     const setHome = await execute(registry, adapter, AI, "pages.set_home_page", {
-      pageId: composedPageId
+      pageId: composedPageId,
     });
     expect(setHome.ok).toBe(true);
 

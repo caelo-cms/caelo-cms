@@ -87,7 +87,6 @@ export default definePlugin<PluginContextTier1>({
       const input = (args ?? {}) as { pageId?: string };
       const filter: Record<string, unknown> = { limit: 200 };
       if (input.pageId) filter.page_id = input.pageId;
-;
       const rows = await ctx.query.list<"rating_aggregates", AggregateRow>(
         "rating_aggregates",
         filter,
@@ -101,15 +100,12 @@ export default definePlugin<PluginContextTier1>({
      * ratings via two ctx.query passes — simple, idempotent.
      */
     _refresh: async (ctx, _args) => {
-      const ratings = await ctx.query.list<
+      const ratings = await ctx.query.list<"ratings", { page_id: string; score: number }>(
         "ratings",
-        { page_id: string; score: number }
-      >("ratings", { limit: 1000 });
+        { limit: 1000 },
+      );
       // Bucket.
-      const buckets = new Map<
-        string,
-        { page_id: string; count: number; sum: number }
-      >();
+      const buckets = new Map<string, { page_id: string; count: number; sum: number }>();
       for (const r of ratings) {
         const key = r.page_id;
         const b = buckets.get(key) ?? {
