@@ -22,6 +22,12 @@ import { createTemplateTool } from "./create-template.js";
 import { deleteContentInstanceTool } from "./delete-content-instance.js";
 import { deleteContentInstancesTool } from "./delete-content-instances.js";
 import { deleteStructuredSetTool } from "./delete-structured-set.js";
+import {
+  listDesignDraftsTool,
+  presentDesignVariantsTool,
+  saveDesignDraftTool,
+  selectDesignDraftTool,
+} from "./design-draft-tools.js";
 import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { duplicateThemeTool } from "./duplicate-theme.js";
@@ -32,11 +38,6 @@ import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
 import { forkPlacementContentTool } from "./fork-placement-content.js";
 import { generateImageTool } from "./generate-image.js";
-import {
-  listGenesisDraftsTool,
-  saveGenesisDraftTool,
-  selectGenesisDraftTool,
-} from "./genesis-tools.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
 import { getImportPageTool } from "./get-import-page.js";
 import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
@@ -48,8 +49,8 @@ import { importMediaFromUrlsTool } from "./import-media-from-urls.js";
 import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
+import { inspectDesignDraftTool } from "./inspect-design-draft.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
-import { inspectGenesisDraftTool } from "./inspect-genesis-draft.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listLayoutsTool } from "./list-layouts.js";
@@ -199,12 +200,15 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listModulesTool);
   // 2026-07-12 — clickable multiple-choice questions in the chat.
   registry.register(offerChoicesTool);
-  // issue #163 — Site Genesis draft storage (workflow lives in the site-genesis skill).
-  registry.register(saveGenesisDraftTool);
-  registry.register(listGenesisDraftsTool);
-  registry.register(selectGenesisDraftTool);
+  // issue #163 — design-draft storage, generalised to growth-time variants
+  // by #375 (workflows live in the site-genesis + design-preview skills).
+  registry.register(saveDesignDraftTool);
+  registry.register(listDesignDraftsTool);
+  registry.register(selectDesignDraftTool);
+  // issue #375 — inline chat presentation of one variant set.
+  registry.register(presentDesignVariantsTool);
   // issue #164 — compiler stage 1: draft fact base for materialisation.
-  registry.register(inspectGenesisDraftTool);
+  registry.register(inspectDesignDraftTool);
   // issue #165 — per-site design language writer.
   registry.register(setDesignManifestTool);
   // issue #189 / #278 — single-page external-site sensing (facet-selectable

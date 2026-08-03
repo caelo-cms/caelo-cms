@@ -4,7 +4,7 @@
  * Coverage for the theme + genesis read/config tools that had no dedicated
  * test (the thickest gap in the catalogue): get_theme, list_themes,
  * duplicate_theme, export_theme, import_theme, set_theme_asset,
- * set_design_manifest, list_genesis_drafts.
+ * set_design_manifest, list_design_drafts.
  *
  * Exercised against the seeded `site-default` theme (present after migrate).
  * Real Postgres (§6). The gated theme ops (create/activate/delete) have their
@@ -15,10 +15,10 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { listDesignDraftsTool } from "../ai/tools/design-draft-tools.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { duplicateThemeTool } from "../ai/tools/duplicate-theme.js";
 import { exportThemeTool } from "../ai/tools/export-theme.js";
-import { listGenesisDraftsTool } from "../ai/tools/genesis-tools.js";
 import { getThemeTool } from "../ai/tools/get-theme.js";
 import { importThemeTool } from "../ai/tools/import-theme.js";
 import { listThemesTool } from "../ai/tools/list-themes.js";
@@ -113,8 +113,8 @@ describe("theme read tools", () => {
     expect(r.content.length).toBeGreaterThan(0);
   });
 
-  it("list_genesis_drafts responds (empty state is fine)", async () => {
-    const r = await listGenesisDraftsTool.handler(SYSTEM, {}, toolCtx());
+  it("list_design_drafts responds (empty state is fine)", async () => {
+    const r = await listDesignDraftsTool.handler(SYSTEM, {}, toolCtx());
     expect(r.ok).toBe(true);
   });
 });
