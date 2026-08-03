@@ -318,8 +318,10 @@ jobs:
             ok=""
             for attempt in 1 2 3 4 5; do
               if npm install --no-save "${INSTALL}"; then ok=1; break; fi
-              echo "attempt ${attempt} failed — waiting 30s for registry propagation..."
-              sleep 30
+              if [ "${attempt}" -lt 5 ]; then
+                echo "attempt ${attempt} failed — waiting 30s for registry propagation..."
+                sleep 30
+              fi
             done
             [ -n "$ok" ] || { echo "::error::smoke install of ${INSTALL} failed after 5 attempts"; exit 1; }
             echo "::endgroup::"

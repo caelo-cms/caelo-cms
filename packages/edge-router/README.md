@@ -7,8 +7,9 @@ deployments. Maps incoming visitor URLs onto the static site's locale/URL
 strategy (prefix, domain, or hybrid) from the deploy manifest — the same
 routing logic everywhere a request first lands:
 
-- the provisioning stacks' edge handlers (CloudFront Functions, Azure Front
-  Door, Cloud Functions) bundle it at provision time,
+- the provisioning stacks' edge handlers bundle it at provision time
+  (Lambda@Edge on AWS; the equivalent edge hooks on the GCP and Azure
+  stacks),
 - the static generator uses it to precompute per-locale routes.
 
 It is published as part of Caelo's lockstep release because the shipped
