@@ -65,3 +65,7 @@ packages/plugins/*/manifest.json
 # a commit, and made `biome check .` fail on the generated manifests.
 data/fonts/
 apps/admin/data/fonts/
+
+# Local debug/analysis artifacts from e2e-livedit runs (wire logs, A/B rounds,
+# dev-run logs) — session working material, never repo content.
+run-logs/
