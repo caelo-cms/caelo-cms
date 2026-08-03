@@ -37,9 +37,9 @@
   {#if data.firstRun}
     <Alert>
       <AlertDescription>
-        <strong>One more step:</strong> configure your first AI provider to enable chat,
-        translation, and AI tools. Pick a provider below, paste an API key, and click Save. You can
-        switch providers anytime from this page.
+        <strong>One more step:</strong> configure your first AI provider to enable chat and AI
+        tools. Pick a provider below, paste an API key, and click Save. You can switch providers
+        anytime from this page.
       </AlertDescription>
     </Alert>
   {/if}

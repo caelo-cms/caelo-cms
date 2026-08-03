@@ -65,13 +65,6 @@ export {
 export * from "./ops/roles.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";
-export {
-  resetStuckTranslationUnits,
-  startTranslationWorker,
-  stopTranslationWorker,
-} from "./ops/translation/jobs.js";
-export { setTranslationProvider } from "./ops/translation/mode_1.js";
-export { setMode2Provider } from "./ops/translation/mode_2.js";
 export * from "./ops/users.js";
 export * from "./password.js";
 export * from "./permissions.js";

@@ -39,7 +39,6 @@
     "@caelo-cms/plugin-forms": "workspace:*",
     "@caelo-cms/plugin-newsletter": "workspace:*",
     "@caelo-cms/plugin-ratings": "workspace:*",
-    "@caelo-cms/plugin-sdk": "workspace:*",
-    "@caelo-cms/plugin-translation": "workspace:*"
+    "@caelo-cms/plugin-sdk": "workspace:*"
   }
 }

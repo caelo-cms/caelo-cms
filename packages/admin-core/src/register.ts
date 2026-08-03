@@ -130,7 +130,6 @@ import {
   setTemplateLayoutOp,
   updateTemplateOp,
 } from "./ops/content/templates.js";
-import { translationStatusMatrixOp } from "./ops/content/translation_status.js";
 import {
   listDeployRunsOp,
   listDeployTargetsOp,
@@ -438,29 +437,6 @@ import {
   readToolApprovalForExecuteOp,
   rejectToolApprovalOp,
 } from "./ops/tool_approvals.js";
-import {
-  deleteGlossaryEntryOp,
-  listGlossaryOp,
-  setGlossaryEntryOp,
-} from "./ops/translation/glossary.js";
-import {
-  aggregateActiveTranslationJobsOp,
-  cancelTranslationJobOp,
-  createTranslationJobOp,
-  getTranslationJobOp,
-  listTranslationJobsOp,
-  publishCompletedTranslationJobOp,
-  revertTranslationJobOp,
-  updateTranslationJobCapOp,
-} from "./ops/translation/jobs.js";
-import { translationModeOneOp } from "./ops/translation/mode_1.js";
-import { translationDiffOp, translationModeTwoOp } from "./ops/translation/mode_2.js";
-import {
-  deleteStyleGuideOp,
-  getStyleGuideOp,
-  listStyleGuidesOp,
-  setStyleGuideOp,
-} from "./ops/translation/style_guide.js";
 import {
   executeUserProposalOp,
   listPendingUserProposalsOp,
@@ -967,26 +943,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectLocaleProposalOp);
   registry.register(getSiteSettingsOp);
   registry.register(setSiteSettingsOp);
-  registry.register(translationStatusMatrixOp);
-  // P10 — translation surface (glossary + style guide + Mode 1/2 + bulk jobs).
-  registry.register(listGlossaryOp);
-  registry.register(setGlossaryEntryOp);
-  registry.register(deleteGlossaryEntryOp);
-  registry.register(listStyleGuidesOp);
-  registry.register(getStyleGuideOp);
-  registry.register(setStyleGuideOp);
-  registry.register(deleteStyleGuideOp);
-  registry.register(translationModeOneOp);
-  registry.register(translationModeTwoOp);
-  registry.register(translationDiffOp);
-  registry.register(createTranslationJobOp);
-  registry.register(listTranslationJobsOp);
-  registry.register(getTranslationJobOp);
-  registry.register(aggregateActiveTranslationJobsOp);
-  registry.register(cancelTranslationJobOp);
-  registry.register(updateTranslationJobCapOp);
-  registry.register(revertTranslationJobOp);
-  registry.register(publishCompletedTranslationJobOp);
   // P10A — skills system.
   registry.register(listSkillsOp);
   registry.register(getSkillOp);

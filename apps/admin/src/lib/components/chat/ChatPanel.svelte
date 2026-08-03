@@ -879,7 +879,6 @@
     { label: "/rename", insert: "Rename ", description: "rename a page or update slug" },
     { label: "/seo", insert: "Optimize the SEO for ", description: "rewrite meta description" },
     { label: "/redirect", insert: "Add a redirect from ", description: "create a 301 redirect" },
-    { label: "/translate", insert: "Translate ", description: "translate a page to another locale" },
     { label: "/delete", insert: "Delete ", description: "remove a page or module" },
     { label: "/publish", insert: "Publish the staged changes", description: "merge chat branch to main" },
     { label: "/revert", insert: "Revert ", description: "undo a recent change via snapshot" },

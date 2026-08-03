@@ -30,7 +30,6 @@
         "@caelo-cms/plugin-ratings": "workspace:*",
         "@caelo-cms/plugin-sandbox": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
-        "@caelo-cms/plugin-translation": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/redeploy-orchestrator": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
@@ -130,7 +129,6 @@
         "@caelo-cms/plugin-newsletter": "workspace:*",
         "@caelo-cms/plugin-ratings": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
-        "@caelo-cms/plugin-translation": "workspace:*",
       },
     },
     "packages/edge-router": {
@@ -232,13 +230,6 @@
       "version": "0.10.22",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
-        "@caelo-cms/plugin-sdk": "workspace:*",
-      },
-    },
-    "packages/plugins/translation": {
-      "name": "@caelo-cms/plugin-translation",
-      "version": "0.10.22",
-      "dependencies": {
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
     },
@@ -440,8 +431,6 @@
     "@caelo-cms/plugin-sandbox": ["@caelo-cms/plugin-sandbox@workspace:packages/plugin-sandbox"],
 
     "@caelo-cms/plugin-sdk": ["@caelo-cms/plugin-sdk@workspace:packages/plugin-sdk"],
-
-    "@caelo-cms/plugin-translation": ["@caelo-cms/plugin-translation@workspace:packages/plugins/translation"],
 
     "@caelo-cms/provisioning": ["@caelo-cms/provisioning@workspace:packages/provisioning"],
 

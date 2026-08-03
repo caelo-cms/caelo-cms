@@ -74,7 +74,7 @@ describe("custom role end-to-end enforcement", () => {
     const roleRes = await execute(registry, adapter, systemCtx, "roles.create", {
       name: TRANSLATOR_ROLE,
       description: "Translator — reduced rights",
-      permissions: ["content.read", "translations.write"],
+      permissions: ["content.read", "settings.read"],
     });
     expect(roleRes.ok).toBe(true);
 
@@ -111,7 +111,7 @@ describe("custom role end-to-end enforcement", () => {
     const session = resolved.value as { permissions: string[]; roles: string[] };
 
     // 5. Assert the resolved permission set equals exactly the role's grants.
-    expect([...session.permissions].sort()).toEqual(["content.read", "translations.write"]);
+    expect([...session.permissions].sort()).toEqual(["content.read", "settings.read"]);
     expect(session.roles).toEqual([TRANSLATOR_ROLE]);
     expect(session.permissions).not.toContain("deploy.trigger");
     expect(session.permissions).not.toContain("roles.manage");

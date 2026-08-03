@@ -35,8 +35,6 @@ const SEEDED_OP_NOTATION_ENTRIES = [
   "pages.get_with_modules",
   "pages.get",
   "pages.list",
-  "glossary.list",
-  "style_guide.get",
   "ai_memory.list",
   "structured_sets.get",
   "structured_sets.list",
@@ -77,8 +75,6 @@ describe("OP_NAME_TO_TOOL_NAMES completeness (issue #301)", () => {
           "pages.get_with_modules",
           "pages.get",
           "pages.list",
-          "glossary.list",
-          "style_guide.get",
           "ai_memory.list",
           "structured_sets.get",
           "structured_sets.list",
@@ -92,7 +88,7 @@ describe("OP_NAME_TO_TOOL_NAMES completeness (issue #301)", () => {
       },
       {
         // legal-check
-        seeded: ["pages.get_with_modules", "pages.get", "pages.list", "glossary.list"],
+        seeded: ["pages.get_with_modules", "pages.get", "pages.list", "ai_memory.list"],
         expected: ["inspect_page_render", "list_pages"],
       },
       {
@@ -138,7 +134,6 @@ describe("resolveAllowlistEntry", () => {
   });
 
   it("context-served ops (system-prompt reads) resolve to nothing, explicitly", () => {
-    expect(resolveAllowlistEntry("glossary.list", live)).toEqual({ kind: "context-served" });
     expect(resolveAllowlistEntry("ai_memory.list", live)).toEqual({ kind: "context-served" });
   });
 
@@ -162,7 +157,7 @@ describe("resolveAllowlistEntries", () => {
   it("partitions a mixed allowlist and dedupes the resolved set", () => {
     const live = new Set(["edit_module", "list_pages"]);
     const r = resolveAllowlistEntries(
-      ["edit_module", "pages.list", "pages.get", "glossary.list", "no.such_op"],
+      ["edit_module", "pages.list", "pages.get", "ai_memory.list", "no.such_op"],
       live,
     );
     expect([...r.resolvedToolNames].sort()).toEqual(["edit_module", "list_pages"]);
@@ -170,7 +165,7 @@ describe("resolveAllowlistEntries", () => {
       { entry: "pages.list", toolNames: ["list_pages"] },
       { entry: "pages.get", toolNames: ["list_pages"] },
     ]);
-    expect(r.contextServed).toEqual(["glossary.list"]);
+    expect(r.contextServed).toEqual(["ai_memory.list"]);
     expect(r.unresolved.length).toBe(1);
     expect(r.unresolved[0]?.entry).toBe("no.such_op");
   });
@@ -181,7 +176,7 @@ describe("validateAllowlistEntries (save-time gate)", () => {
 
   it("normalizes op notation to tool names with order-preserving dedupe", () => {
     const v = validateAllowlistEntries(
-      ["pages.get", "pages.list", "edit_module", "glossary.list"],
+      ["pages.get", "pages.list", "edit_module", "ai_memory.list"],
       live,
     );
     expect(v.ok).toBe(true);

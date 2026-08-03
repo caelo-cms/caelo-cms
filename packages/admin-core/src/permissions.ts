@@ -12,7 +12,6 @@
 export const PERMISSIONS = [
   "content.read",
   "content.write",
-  "translations.write",
   "deploy.trigger",
   "ops.view",
   "plugins.approve",

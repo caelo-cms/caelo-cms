@@ -70,7 +70,7 @@
       {#if data.tier1.length === 0}
         <p class="text-sm text-muted-foreground">
           No Tier 1 plugins loaded yet. They'll appear here once the host loader (P11.5+) ports
-          translation / SEO / media into <code>packages/plugins/&lt;slug&gt;/</code>.
+          SEO / media into <code>packages/plugins/&lt;slug&gt;/</code>.
         </p>
       {:else}
         <Table>
