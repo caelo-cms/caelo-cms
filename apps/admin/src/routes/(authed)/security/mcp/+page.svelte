@@ -12,6 +12,7 @@
   } from "$lib/components/ui/card/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
+  import { Select } from "$lib/components/ui/select/index.js";
   import {
     Table,
     TableBody,
@@ -38,11 +39,21 @@
     return "destructive";
   }
 
+  // Admin-scoped tokens wire the Power-MCP binary (full tool catalogue,
+  // external agent drives the loop); chat tokens wire the caelo_chat shim.
+  // `claude mcp add` syntax: options first, the server command after `--`
+  // (there is no --command flag in the Claude Code CLI).
   const claudeMcpAddSnippet = $derived(
     form?.ok && form?.plaintextToken
-      ? `claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \\
+      ? form?.scope === "admin"
+        ? `claude mcp add caelo-admin \\
   --env CAELO_ADMIN_URL=${data.adminUrl} \\
-  --env CAELO_MCP_TOKEN=${form.plaintextToken}`
+  --env CAELO_MCP_TOKEN=${form.plaintextToken} \\
+  -- bunx --package @caelo-cms/mcp-server caelo-admin-mcp`
+        : `claude mcp add caelo \\
+  --env CAELO_ADMIN_URL=${data.adminUrl} \\
+  --env CAELO_MCP_TOKEN=${form.plaintextToken} \\
+  -- bunx @caelo-cms/mcp-server`
       : null,
   );
 </script>
@@ -51,9 +62,11 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">MCP tokens</h1>
     <p class="text-sm text-muted-foreground">
-      Bearer tokens for the Caelo MCP server. Mint one per "place I want to talk to my Caelo install
-      from" — laptop terminal, CI, Claude Code in the IDE. Each token assumes your Owner identity;
-      every chat-runner write is attributed to you in audit + cost dashboards.
+      Bearer tokens for the Caelo MCP servers. Mint one per "place I want to talk to my Caelo install
+      from" — laptop terminal, CI, Claude Code in the IDE. Scope "chat" talks to Caelo's own AI
+      (caelo_chat); scope "admin" exposes the full tool catalogue to an external agent (Power-MCP) —
+      the agent's writes run as an AI actor on a preview branch, and approval-gated actions still
+      queue for your click. Each token assumes your Owner identity in audit + cost dashboards.
     </p>
   </div>
 
@@ -90,6 +103,7 @@
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead>Scope</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Cap</TableHead>
               <TableHead>Last used</TableHead>
@@ -102,6 +116,9 @@
               {@const status = rowStatus(t)}
               <TableRow>
                 <TableCell>{t.displayName}</TableCell>
+                <TableCell>
+                  <Badge variant={t.scope === "admin" ? "default" : "secondary"}>{t.scope}</Badge>
+                </TableCell>
                 <TableCell><Badge variant={rowVariant(status)}>{status}</Badge></TableCell>
                 <TableCell>{fmtUsdMc(t.aiCostCapMicrocents)}</TableCell>
                 <TableCell class="text-xs">{t.lastUsedAt ?? "never"}</TableCell>
@@ -132,11 +149,18 @@
       </CardDescription>
     </CardHeader>
     <CardContent>
-      <form method="post" action="?/create" class="grid gap-4 md:grid-cols-3">
+      <form method="post" action="?/create" class="grid gap-4 md:grid-cols-4">
         <input type="hidden" name="_csrf" value={data.csrfToken} />
         <div class="space-y-2">
           <Label for="displayName">Name</Label>
           <Input id="displayName" name="displayName" type="text" placeholder="claude-code" required />
+        </div>
+        <div class="space-y-2">
+          <Label for="scope">Scope</Label>
+          <Select id="scope" name="scope">
+            <option value="chat">chat — talk to Caelo's AI (caelo_chat)</option>
+            <option value="admin">admin — full tool catalogue (Power-MCP)</option>
+          </Select>
         </div>
         <div class="space-y-2">
           <Label for="aiCostCapMicrocents">Cap (microcents)</Label>

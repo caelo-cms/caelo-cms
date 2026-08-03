@@ -65,4 +65,12 @@ describe("parseProposalContent", () => {
   it("returns null on empty string", () => {
     expect(parseProposalContent("")).toBeNull();
   });
+
+  // `/security/locales/pending` was removed in #382; old persisted chat
+  // messages that reference it must degrade to plain markdown rather than
+  // rendering an actionable ProposeCard whose Approve/Reject POSTs 404.
+  it("returns null for deprecated locales domain (route removed in #382)", () => {
+    const content = `Queued proposal ${UUID}: add locale 'de'. Approve it on the proposal card in this chat (queue: /security/locales/pending).`;
+    expect(parseProposalContent(content)).toBeNull();
+  });
 });

@@ -470,11 +470,14 @@ export const proposeMcpTokenCreateTool = makeProposeTool({
   opName: "mcp_tokens.propose_create",
   pendingQueuePath: "/security/mcp/pending",
   when:
-    "Propose minting a new MCP bearer token. Pass displayName + optional aiCostCapMicrocents. " +
+    "Propose minting a new MCP bearer token. Pass displayName + optional scope + optional aiCostCapMicrocents. " +
+    "scope 'chat' (default) drives the caelo_chat surface; scope 'admin' additionally unlocks the Power-MCP " +
+    "tool surface for external agents. " +
     "Token plaintext is generated server-side at approve time and shown ONCE in the Owner UI banner.",
   schema: z
     .object({
       displayName: z.string().min(1).max(100),
+      scope: z.enum(["chat", "admin"]).optional(),
       aiCostCapMicrocents: z.number().int().nonnegative().nullable().optional(),
     })
     .strict(),
@@ -484,10 +487,11 @@ export const proposeMcpTokenCreateTool = makeProposeTool({
     required: ["displayName"],
     properties: {
       displayName: { type: "string", minLength: 1, maxLength: 100 },
+      scope: { type: "string", enum: ["chat", "admin"] },
       aiCostCapMicrocents: { type: "integer", minimum: 0, nullable: true },
     },
   },
-  summarize: (input) => `mint MCP token "${input.displayName}"`,
+  summarize: (input) => `mint MCP token "${input.displayName}" (scope: ${input.scope ?? "chat"})`,
 });
 
 export const proposeMcpTokenRevokeTool = makeProposeTool({
