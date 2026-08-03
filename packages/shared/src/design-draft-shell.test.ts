@@ -60,9 +60,11 @@ describe("composeDesignDraftShell (issue #375)", () => {
       title: "assets",
     });
     expect(out.html).toContain('src="/_caelo/media/logo/orig"');
-    // Unbound slot: placeholder survives raw (§2 no-fallbacks) + marker.
-    expect(out.html).toContain("{{theme_favicon_url}}");
-    expect(out.html).toContain("caelo:missing reason=theme-asset-unbound:favicon");
+    // Unbound slot: placeholder survives raw IN PLACE (§2 no-fallbacks;
+    // the attribute value must not be corrupted by an inline marker) …
+    expect(out.html).toContain('src="{{theme_favicon_url}}"');
+    // … and the marker rides as a real comment node at the body's end.
+    expect(out.html).toContain("<!-- caelo:missing reason=theme-asset-unbound:favicon --></body>");
     expect(out.missingSlots).toEqual(["theme-asset-unbound:favicon"]);
   });
 

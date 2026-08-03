@@ -48,11 +48,17 @@ export interface VariantSetView {
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "content.write");
   const { adapter, registry } = getQueryContext();
-  const r = await execute(registry, adapter, locals.ctx, "genesis.list_drafts", {
-    includeHtml: true,
-  });
-  const all = r.ok ? (r.value as { drafts: GenesisDraftView[] }).drafts : [];
-  const view: GenesisDraftView[] = all.map((d) => ({
+  // Two listings on purpose (PR-378 review): only site documents need
+  // their HTML here (srcdoc render); fragments render via the preview
+  // route, so pulling their bodies would grow with every variant round.
+  const [siteRes, fragRes] = await Promise.all([
+    execute(registry, adapter, locals.ctx, "genesis.list_drafts", {
+      scope: "site",
+      includeHtml: true,
+    }),
+    execute(registry, adapter, locals.ctx, "genesis.list_drafts", { includeHtml: false }),
+  ]);
+  const strip = (d: GenesisDraftView, withHtml: boolean): GenesisDraftView => ({
     id: d.id,
     direction: d.direction,
     rationale: d.rationale,
@@ -61,11 +67,16 @@ export const load: PageServerLoad = async ({ locals }) => {
     format: d.format,
     variantSetId: d.variantSetId,
     createdAt: d.createdAt,
-    ...(d.format === "document" && d.html !== undefined ? { html: d.html } : {}),
-  }));
-  const siteDrafts = view.filter((d) => d.scope === "site");
+    ...(withHtml && d.html !== undefined ? { html: d.html } : {}),
+  });
+  const siteDrafts = (
+    siteRes.ok ? (siteRes.value as { drafts: GenesisDraftView[] }).drafts : []
+  ).map((d) => strip(d, true));
+  const fragments = (
+    fragRes.ok ? (fragRes.value as { drafts: GenesisDraftView[] }).drafts : []
+  ).map((d) => strip(d, false));
   const sets = new Map<string, VariantSetView>();
-  for (const d of view) {
+  for (const d of fragments) {
     if (d.scope === "site") continue;
     const existing = sets.get(d.variantSetId);
     if (existing) existing.drafts.push(d);

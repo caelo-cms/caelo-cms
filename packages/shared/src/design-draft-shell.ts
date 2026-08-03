@@ -49,9 +49,12 @@ export interface DesignDraftShellOutput {
 /**
  * Resolve `{{theme_*_url}}` placeholders in a draft fragment. Bound
  * slots substitute their URL; a placeholder on an unbound slot stays
- * loud-raw and lands in `missingSlots` — the same contract module HTML
- * gets from the template engine. Other `{{…}}` sequences are left
- * untouched: a draft is not a fielded module.
+ * loud-raw IN PLACE (placeholders usually sit inside attribute values,
+ * where an appended comment would corrupt the URL string — PR-378
+ * review) and lands in `missingSlots`; the caller appends the real
+ * `caelo:missing` comment nodes at the end of the body so the marker
+ * tooling still sees them. Other `{{…}}` sequences are left untouched:
+ * a draft is not a fielded module.
  */
 function substituteThemeAssetUrls(
   html: string,
@@ -64,7 +67,7 @@ function substituteThemeAssetUrls(
     const url = theme?.assets[slot]?.url;
     if (url === undefined) {
       missing.push(`theme-asset-unbound:${slot}`);
-      return match + caeloMissingComment(`theme-asset-unbound:${slot}`);
+      return match;
     }
     return url;
   });
@@ -72,7 +75,10 @@ function substituteThemeAssetUrls(
 
 export function composeDesignDraftShell(input: DesignDraftShellInput): DesignDraftShellOutput {
   const missing: string[] = [];
-  const body = substituteThemeAssetUrls(input.fragmentHtml, input.theme, missing);
+  const substituted = substituteThemeAssetUrls(input.fragmentHtml, input.theme, missing);
+  // Real comment NODES, after the fragment — never inside an attribute.
+  const markers = [...new Set(missing)].map((m) => caeloMissingComment(m)).join("");
+  const body = substituted + markers;
 
   // Head order mirrors composePagePreview: fonts first (URL discovery),
   // then theme vars (so fragment CSS can `var(--color-primary)`), then
