@@ -89,14 +89,14 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
       };
     }
 
-    // Look up page slug + locale to compose the object key.
+    // Look up the page slug to compose the object key.
     const pageR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get", {
       pageId: input.pageId,
     });
     if (!pageR.ok) {
       return { ok: false, content: `pages.get failed: ${describeError(pageR.error)}` };
     }
-    const page = (pageR.value as { page: { slug: string; locale: string } }).page;
+    const page = (pageR.value as { page: { slug: string } }).page;
 
     // Resolve runId for staging target if not pinned.
     let runId = input.runId;
@@ -131,8 +131,8 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
       };
     }
 
-    // Standard generator output layout: <locale>/<slug>/index.html.
-    const objectKey = `${page.locale}/${page.slug}/index.html`;
+    // Standard generator output layout: <slug>/index.html.
+    const objectKey = `${page.slug}/index.html`;
     const stagingKey = `${runId}/${objectKey}`;
 
     // Lazy-load @google-cloud/storage so self-hosted runtimes don't
@@ -189,7 +189,7 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
       ok: true,
       content: JSON.stringify(
         {
-          page: { id: input.pageId, slug: page.slug, locale: page.locale },
+          page: { id: input.pageId, slug: page.slug },
           target: input.target,
           runId: input.target === "staging" ? runId : undefined,
           location,

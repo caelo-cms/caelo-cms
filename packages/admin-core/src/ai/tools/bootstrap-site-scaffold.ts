@@ -272,7 +272,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
       nextAction: {
         tool: "create_page",
         reason:
-          "bootstrap finished the SETUP; the user's deliverable usually starts with creating at least one page. Use the slug/locale/title they described in the original message. Skip ONLY if the user explicitly asked for the scaffold alone.",
+          "bootstrap finished the SETUP; the user's deliverable usually starts with creating at least one page. Use the slug/title they described in the original message. Skip ONLY if the user explicitly asked for the scaffold alone.",
       },
     };
   },
