@@ -32,9 +32,10 @@ The browser chat is one consumer of the chat-runner; `caelo_chat` is another. Th
 3. The page renders the exact `claude mcp add` snippet — copy + run it
 
 ```bash
-claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \
+claude mcp add caelo \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
-  --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex>
+  --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex> \
+  -- bunx @caelo-cms/mcp-server
 ```
 
 ### The tool
@@ -63,9 +64,10 @@ Because the executing context is identical to a chat turn, **every invariant car
 Mint a token with scope **`admin`** at `/security/mcp`, then:
 
 ```bash
-claude mcp add caelo-admin --command "bunx --package @caelo-cms/mcp-server caelo-admin-mcp" \
+claude mcp add caelo-admin \
   --env CAELO_ADMIN_URL=https://your-install.example.com \
-  --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex>
+  --env CAELO_MCP_TOKEN=mcp_<32-bytes-hex> \
+  -- bunx --package @caelo-cms/mcp-server caelo-admin-mcp
 ```
 
 (`caelo-mcp-server admin` is the same server; the separate binary keeps the snippet flag-free.)
