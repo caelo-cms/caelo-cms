@@ -26,7 +26,6 @@
     "@caelo-cms/plugin-ratings": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*",
     "@caelo-cms/plugin-sdk": "workspace:*",
-    "@caelo-cms/plugin-translation": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/redeploy-orchestrator": "workspace:*",
     "@caelo-cms/shared": "workspace:*",

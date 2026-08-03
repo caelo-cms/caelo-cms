@@ -34,7 +34,6 @@ COPY packages/edge-router/package.json packages/edge-router/
 COPY packages/migrations/package.json packages/migrations/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/provisioning/package.json packages/provisioning/
-COPY packages/plugins/translation/package.json packages/plugins/translation/
 COPY packages/plugins/forms/package.json packages/plugins/forms/
 COPY packages/plugins/comments/package.json packages/plugins/comments/
 COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/

@@ -66,7 +66,7 @@ describe("roles CRUD", () => {
     const res = await execute(registry, adapter, systemCtx, "roles.create", {
       name: CUSTOM_ROLE_NAME,
       description: "Translations + content read only",
-      permissions: ["content.read", "translations.write"],
+      permissions: ["content.read", "settings.read"],
     });
     expect(res.ok).toBe(true);
 
@@ -79,7 +79,7 @@ describe("roles CRUD", () => {
     ).roles.find((r) => r.name === CUSTOM_ROLE_NAME);
     expect(custom).toBeTruthy();
     expect(custom?.isBuiltin).toBe(false);
-    expect(custom?.permissions.sort()).toEqual(["content.read", "translations.write"]);
+    expect(custom?.permissions.sort()).toEqual(["content.read", "settings.read"]);
   });
 
   it("rejects creating a role that reuses a built-in name", async () => {

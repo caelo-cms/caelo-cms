@@ -148,9 +148,6 @@ import {
 } from "./state-read-tools.js";
 import { submitPluginTool } from "./submit-plugin.js";
 import { submitResultTool } from "./submit-result.js";
-// P11.5 — translate_page + start_translation_job moved to the translation
-// Tier-1 plugin (`packages/plugins/translation/`). The chat-runner discovers
-// them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
 
@@ -355,10 +352,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeRemoveLocaleTool);
   registry.register(proposeSetDefaultLocaleTool);
   registry.register(proposeUpdateLocaleStrategyTool);
-  // P10 — AI translation surface MOVED to the translation Tier-1 plugin
-  // (P11.5 commit 2). The plugin's `tools[]` declaration registers
-  // `translate_page` + `start_translation_job` into pluginToolsRegistry at
-  // bootstrap; chat-runner folds them into its catalogue per turn.
   // P10A — AI proposes a new skill body for Owner review.
   registry.register(proposeSkillTool);
   // P10.5 — AI spawns subagents (single + plural) for parallel

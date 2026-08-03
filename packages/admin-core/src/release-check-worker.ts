@@ -15,7 +15,7 @@
  * negative result (NULL) so the next op call still answers fast.
  *
  * Bootstrapped once per process from apps/admin/src/hooks.server.ts —
- * same pattern as startTranslationWorker / startRedeployOrchestrator.
+ * same pattern as startRedeployOrchestrator.
  */
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";

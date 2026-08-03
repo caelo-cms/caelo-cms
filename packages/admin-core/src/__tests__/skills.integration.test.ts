@@ -475,7 +475,7 @@ describe("skill allowlist validation (issue #301)", () => {
       slug: "test-p10a-opnames",
       displayName: "Op notation",
       body: "Body",
-      allowlistedTools: ["pages.list", "structured_sets.get", "edit_module", "glossary.list"],
+      allowlistedTools: ["pages.list", "structured_sets.get", "edit_module", "ai_memory.list"],
     });
     expect(r.ok).toBe(true);
     const get = await execute(registry, adapter, systemCtx, "skills.get", {
@@ -483,7 +483,7 @@ describe("skill allowlist validation (issue #301)", () => {
     });
     if (!get.ok) return;
     const skill = (get.value as { skill: { allowlistedTools: string[] } | null }).skill;
-    // Translated + deduped; the context-served glossary read drops.
+    // Translated + deduped; the context-served memory read drops.
     expect(skill?.allowlistedTools).toEqual(["list_pages", "get_structured_set", "edit_module"]);
   });
 

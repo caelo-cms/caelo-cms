@@ -17,7 +17,6 @@ process.on("uncaughtException", (e) => {
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
-  type AIProvider as AdminAIProvider,
   buildEmailTransport,
   configureMcpBridge,
   configureProviderResolver,
@@ -26,13 +25,9 @@ import {
   generateKekHex,
   getActiveProvider,
   getMediaStorage,
-  resetStuckTranslationUnits,
-  setMode2Provider,
-  setTranslationProvider,
   startChatImageGcWorker,
   startProposalGcWorker,
   startReleaseCheckWorker,
-  startTranslationWorker,
 } from "@caelo-cms/admin-core";
 import authPluginDefinition from "@caelo-cms/plugin-auth";
 import commentsPluginDefinition from "@caelo-cms/plugin-comments";
@@ -44,7 +39,6 @@ import {
 } from "@caelo-cms/plugin-host";
 import newsletterPluginDefinition from "@caelo-cms/plugin-newsletter";
 import ratingsPluginDefinition from "@caelo-cms/plugin-ratings";
-import translationPluginDefinition from "@caelo-cms/plugin-translation";
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -83,31 +77,6 @@ const SYSTEM_CTX: ExecutionContext = {
   actorKind: "system",
   requestId: "hooks",
 };
-
-// P10 / P18 — one-time translation worker bootstrap. Runs at module
-// load (i.e. once when SvelteKit boots). The worker polls for queued
-// translation_job_units and dispatches Mode 1 / Mode 2 sequentially,
-// resolving the AIProvider per unit via the ProviderResolver so a
-// freshly-saved key picks up without a restart. When no provider is
-// configured anywhere (DB or env), individual units fail with
-// "AI provider not configured — visit /security/ai" — the dashboard
-// surfaces it; the worker stays running.
-let translationBootstrapped = false;
-async function bootstrapTranslationWorker(): Promise<void> {
-  if (translationBootstrapped) return;
-  translationBootstrapped = true;
-  // Resolver returns null → setTranslationProvider's resolver wrapper
-  // throws "AI provider not configured" inside the unit handler.
-  const resolveProvider = async (): Promise<{ provider: AdminAIProvider } | null> => {
-    const r = await getActiveProvider();
-    return r ? { provider: r.provider } : null;
-  };
-  setTranslationProvider({ resolveProvider });
-  setMode2Provider({ resolveProvider });
-  const { adapter, registry } = getQueryContext();
-  await resetStuckTranslationUnits({ adapter, registry, systemCtx: SYSTEM_CTX });
-  startTranslationWorker({ adapter, registry, systemCtx: SYSTEM_CTX });
-}
 
 // P11.5 audit fix #3 + P18 — adapter from admin-core's event-streaming
 // AIProvider to plugin-host's single-shot complete() shape. Drains the
@@ -227,7 +196,6 @@ async function bootstrapPlugins(): Promise<void> {
     testPlugins: useDisk
       ? undefined
       : [
-          { definition: translationPluginDefinition },
           { definition: formsPluginDefinition },
           { definition: ratingsPluginDefinition },
           { definition: newsletterPluginDefinition },
@@ -361,10 +329,8 @@ export const handle: Handle = async ({ event, resolve }) => {
   ensureProviderResolverConfigured();
   // v0.5.9 — fire-and-forget bootstraps had `void` prefixes that
   // swallowed their rejections. Replace with .catch() so background
-  // task failures (translation worker crash, plugin manifest invalid,
-  // bootstrap token DB write) land in Cloud Run stderr instead of
-  // disappearing into the void.
-  bootstrapTranslationWorker().catch((e) => console.error("[bootstrap.translation] failed", e));
+  // task failures (plugin manifest invalid, bootstrap token DB write)
+  // land in Cloud Run stderr instead of disappearing into the void.
   bootstrapRedeploy();
   bootstrapReleaseCheck();
   bootstrapProposalGc();
