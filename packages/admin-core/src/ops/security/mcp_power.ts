@@ -365,13 +365,11 @@ export const mcpExecuteToolOp = defineOperation({
         WHERE chat_session_id = ${input.chatSessionId}::uuid
       `)) as unknown as Array<{ spent: bigint | string | number }>;
       const raw = spendRows[0]?.spent ?? 0;
+      // Compare as bigint — a Number round-trip could lose precision past
+      // 2^53 µ¢ and let a capped token slip through (review finding, PR #379).
       const spent =
-        typeof raw === "bigint"
-          ? Number(raw)
-          : typeof raw === "string"
-            ? Number.parseInt(raw, 10)
-            : raw;
-      if (spent >= auth.aiCostCapMicrocents) {
+        typeof raw === "bigint" ? raw : BigInt(typeof raw === "string" ? raw : Math.trunc(raw));
+      if (spent >= BigInt(auth.aiCostCapMicrocents)) {
         return err({
           kind: "HandlerError",
           operation: "mcp.execute_tool",

@@ -11,6 +11,12 @@
  *
  * The renderers are pure and exported for tests; `runExport` does the
  * fetching + file I/O.
+ *
+ * Writing fetched content to disk is the feature, not an oversight
+ * (CodeQL flags the network→file flow): the source is the operator's OWN
+ * admin install, authenticated by their bearer, and the only
+ * path-influencing value is the skill slug — gated by SAFE_SLUG below so
+ * a hostile row cannot escape the out directory.
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -64,10 +70,12 @@ export function renderClaudeMd(context: ExportContext, generatedAt: string): str
 }
 
 export function renderSkillMd(skill: ExportSkill): string {
+  // JSON.stringify is YAML-compatible quoting — a description containing
+  // `#`, `:` or quotes must not break the frontmatter.
   return [
     "---",
     `name: ${skill.slug}`,
-    `description: ${skill.description.replace(/\n/g, " ")}`,
+    `description: ${JSON.stringify(skill.description.replace(/\n/g, " "))}`,
     "---",
     "",
     skill.body ?? "",
