@@ -50,7 +50,7 @@ describe("renderSkillMd", () => {
     });
     expect(md.startsWith("---\n")).toBe(true);
     expect(md).toContain("name: site-migrate");
-    expect(md).toContain("description: Line one line two");
+    expect(md).toContain('description: "Line one line two"');
     expect(md).toContain("Homepage first, then key page types.");
   });
 });
