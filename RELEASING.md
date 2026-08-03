@@ -77,7 +77,8 @@ Before the first tag:
 
 1. **Configure npm Trusted Publishing** for each publishable package
    (one-time per package). No long-lived token, no 2FA bypass.
-   - For each of `@caelo-cms/mcp-server` and `@caelo-cms/provisioning`:
+   - For each of `@caelo-cms/shared`, `@caelo-cms/edge-router`,
+     `@caelo-cms/mcp-server` and `@caelo-cms/provisioning`:
      - Visit <https://www.npmjs.com/package/@caelo-cms/PACKAGE/access>
      - Scroll to **Trusted Publishers** → **Add Trusted Publisher**
      - Subject: **GitHub Actions**
@@ -93,8 +94,16 @@ Before the first tag:
    - First-time publish for a brand-new package needs a one-time
      manual publish (or a temporary token) to create the package
      name; trusted publishing applies from the second release on.
-     Both Caelo packages were already published in `0.1.x`, so this
-     gate is past.
+     `shared`, `mcp-server` and `provisioning` were published in
+     `0.1.x`; `edge-router`'s first publish was the manual
+     `0.10.23` repair (see the v0.10.23 postmortem note below).
+   - A new publishable workspace needs FOUR wire-ups or the release
+     breaks at the verify gate (how v0.10.23 broke: `provisioning`
+     depended on a still-`private` `edge-router`, so the published
+     tarball had an uninstallable dependency): `private: false` +
+     dist build in its package.json, the publish matrix in
+     `release.yml`, the verify loops in `release.yml`, and the npm
+     Trusted Publisher config above.
 
 2. **Generate a Tier-1 plugin signing key** (one per maintainer machine):
    ```bash

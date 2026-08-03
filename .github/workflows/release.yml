@@ -159,13 +159,14 @@ jobs:
       # files at job start. Hardcoded keeps the job idempotent.)
       matrix:
         package:
-          # `shared` ships first so `provisioning`'s runtime dep
-          # resolves on the registry by the time `bunx
+          # `shared` + `edge-router` ship first so `provisioning`'s
+          # runtime deps resolve on the registry by the time `bunx
           # @caelo-cms/provisioning` fetches it. Matrix jobs run
           # in parallel by default, but the sequence here is
           # documentation — registry-side ordering is
           # eventually-consistent within a single workflow run.
           - shared
+          - edge-router
           - mcp-server
           - provisioning
 
@@ -292,7 +293,7 @@ jobs:
 
       - name: Verify npm packages are installable
         run: |
-          for pkg in shared mcp-server provisioning; do
+          for pkg in shared edge-router mcp-server provisioning; do
             INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
             echo "Inspecting ${INSTALL}..."
             npm view "${INSTALL}" version || { echo "::error::npm view ${INSTALL} failed"; exit 1; }
@@ -307,11 +308,20 @@ jobs:
           TMPDIR=$(mktemp -d)
           cd "$TMPDIR"
           npm init -y >/dev/null
-          for pkg in shared mcp-server provisioning; do
+          for pkg in shared edge-router mcp-server provisioning; do
             INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
             echo "::group::install ${INSTALL}"
-            npm install --no-save "${INSTALL}" \
-              || { echo "::error::smoke install of ${INSTALL} failed"; exit 1; }
+            # Retry with backoff: right after publish, npm's CDN can
+            # 404 the tarball while the metadata endpoint already
+            # knows the version (observed on v0.10.23) — transient
+            # for a minute or two, so don't fail the release on it.
+            ok=""
+            for attempt in 1 2 3 4 5; do
+              if npm install --no-save "${INSTALL}"; then ok=1; break; fi
+              echo "attempt ${attempt} failed — waiting 30s for registry propagation..."
+              sleep 30
+            done
+            [ -n "$ok" ] || { echo "::error::smoke install of ${INSTALL} failed after 5 attempts"; exit 1; }
             echo "::endgroup::"
           done
           echo "::group::require @caelo-cms/shared"
