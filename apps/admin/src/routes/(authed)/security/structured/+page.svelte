@@ -15,8 +15,7 @@
 
   // v0.11.0 (#45) — theme moved out of structured_sets into its own
   // `themes` primitive. The dedicated editor lives at /design/themes
-  // (v0.11.1). language-selector is also a structured-set kind but
-  // operators rarely touch it directly; it surfaces in the locale UI.
+  // (v0.11.1).
   const KINDS: { kind: string; label: string; desc: string }[] = [
     { kind: "nav-menu", label: "Nav menus", desc: "Header / footer / sidebar navigation" },
     { kind: "tags", label: "Tags", desc: "Flat tag lists for content filtering" },

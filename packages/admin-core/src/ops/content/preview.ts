@@ -32,7 +32,6 @@ import {
   pageIsLocaleHome,
   renderSeoHead,
   resolveCanonicalUrl,
-  resolveLocaleUrl,
   type SiteSeoSettings,
   scanCssVars,
   type ThemeDocument,
@@ -929,63 +928,6 @@ export const renderPagePreviewOp = defineOperation({
       modules,
     }));
 
-    // P9 — language-selector context for the preview. Lists every
-    // locale with a published variant of this page's slug so the
-    // composer can render `language-selector-*` modules. Mirrors what
-    // the static generator does at deploy. siteBaseUrl is loaded here
-    // (and reused by the SEO head block below) so resolveLocaleUrl
-    // gets the same base in both passes.
-    const earlySettingsRows = (await tx.execute(sql`
-      SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
-    `)) as unknown as { site_base_url: string }[];
-    const earlySiteBaseUrl = earlySettingsRows[0]?.site_base_url ?? "http://localhost:8082";
-    const langSiblings = (await tx.execute(sql`
-      SELECT id::text AS id, locale FROM pages
-      WHERE slug = ${pageRow.slug}
-        AND deleted_at IS NULL
-        AND status = 'published'
-    `)) as unknown as { id: string; locale: string }[];
-    // 0184 — home_page_id per locale so a sibling designated as its
-    // locale's homepage on a non-magic slug resolves to the root, same
-    // as the canonical + hreflang passes below.
-    const langLocaleRows = (await tx.execute(sql`
-      SELECT code, url_strategy, url_host, home_page_id::text AS home_page_id FROM locales
-    `)) as unknown as {
-      code: string;
-      url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
-      url_host: string | null;
-      home_page_id: string | null;
-    }[];
-    const langLocaleByCode = new Map(langLocaleRows.map((l) => [l.code, l]));
-    const availableLocales = langSiblings
-      .map(({ id: siblingId, locale }) => {
-        const cfg = langLocaleByCode.get(locale);
-        if (!cfg) return null;
-        try {
-          return {
-            code: locale,
-            displayName: locale,
-            href: resolveLocaleUrl(
-              {
-                code: cfg.code,
-                displayName: cfg.code,
-                urlStrategy: cfg.url_strategy,
-                urlHost: cfg.url_host,
-                isDefault: false,
-              },
-              pageRow.slug,
-              earlySiteBaseUrl,
-              "directory",
-              pageIsLocaleHome(siblingId, pageRow.slug, cfg.home_page_id),
-            ),
-            isCurrent: locale === pageRow.locale,
-          };
-        } catch {
-          return null;
-        }
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
-
     // v0.11.0 (#45) — `composeTheme` loaded earlier (above the render
     // loop) so its asset URLs flow into renderModuleWithContent for
     // `{{theme_logo_url}}` substitution (v0.11.1, issue #76). Same row
@@ -1030,7 +972,6 @@ export const renderPagePreviewOp = defineOperation({
         layoutCss: pageRow.layout_css,
         layoutBlocks,
         layoutSlug: pageRow.layout_slug,
-        languageSelector: { availableLocales },
       });
     } catch (e) {
       if (e instanceof ComposeError) {
@@ -1045,9 +986,9 @@ export const renderPagePreviewOp = defineOperation({
     // P8 review-pass — preview parity with the static deploy.
     // Without this, editors can't verify SEO meta / canonical /
     // OG / JSON-LD before publishing. Loads pages_seo + site_defaults
-    // SEO settings + pages_hreflang inline; same shape as the static
-    // generator's seo-pass.ts. Missing rows (unfilled SEO) are
-    // tolerated — we just emit a head with whatever's present.
+    // SEO settings inline; same shape as the static generator's
+    // seo-pass.ts. Missing rows (unfilled SEO) are tolerated — we
+    // just emit a head with whatever's present.
     let html = composed.html;
 
     // issue #162 — preview/production image parity: the SAME srcset/
@@ -1152,87 +1093,21 @@ export const renderPagePreviewOp = defineOperation({
         ogImageUrl = buildMediaUrl(v.slug, v.variant);
       }
     }
-    // P9 — preview matches the static generator: explicit hreflang
-    // overrides win, otherwise auto-compute from sibling-locale pages
-    // for the same slug. Locale registry drives URL strategy.
-    const localeRows = (await tx.execute(sql`
-      SELECT code, url_strategy, url_host, is_default, home_page_id::text AS home_page_id
-      FROM locales
-    `)) as unknown as {
-      code: string;
-      url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
-      url_host: string | null;
-      is_default: boolean;
-      home_page_id: string | null;
-    }[];
-    const localeByCode = new Map(
-      localeRows.map((r) => [
-        r.code,
-        {
-          code: r.code,
-          urlStrategy: r.url_strategy,
-          urlHost: r.url_host,
-          isDefault: r.is_default,
-          homePageId: r.home_page_id,
-        },
-      ]),
-    );
-    const explicitHreflang = (await tx.execute(sql`
-      SELECT locale, url FROM pages_hreflang
-      WHERE page_id = ${input.pageId}::uuid
-      ORDER BY locale
-    `)) as unknown as { locale: string; url: string }[];
-    let hreflang: { locale: string; url: string }[];
-    if (explicitHreflang.length > 0) {
-      hreflang = explicitHreflang.map((r) => ({ locale: r.locale, url: r.url }));
-    } else {
-      // Preview mirrors the static generator: only published variants
-      // count toward hreflang per CMS_REQUIREMENTS §7.3.
-      const siblings = (await tx.execute(sql`
-        SELECT id::text AS id, locale FROM pages
-        WHERE slug = ${pageRow.slug}
-          AND deleted_at IS NULL
-          AND status = 'published'
-      `)) as unknown as { id: string; locale: string }[];
-      hreflang = [];
-      for (const s of siblings) {
-        const cfg = localeByCode.get(s.locale);
-        if (!cfg) continue;
-        try {
-          hreflang.push({
-            locale: s.locale,
-            url: resolveLocaleUrl(
-              {
-                code: cfg.code,
-                displayName: cfg.code,
-                urlStrategy: cfg.urlStrategy,
-                urlHost: cfg.urlHost,
-                isDefault: cfg.isDefault,
-              },
-              pageRow.slug,
-              siteBaseUrl,
-              "directory",
-              // 0184 — each sibling's home status comes from its OWN
-              // locale's home_page_id + its own page id.
-              pageIsLocaleHome(s.id, pageRow.slug, cfg.homePageId),
-            ),
-          });
-        } catch {
-          // Misconfigured locale — skip its hreflang entry.
-        }
-      }
-    }
-    const canonicalLocaleCfg = localeByCode.get(pageRow.locale);
+    // 0184 — the designated homepage id, still parked per locale row
+    // until #384 moves it to site_defaults. Looked up via the page's
+    // own locale so the designation semantics survive the #383 cut.
+    const homeRows = (await tx.execute(sql`
+      SELECT home_page_id::text AS home_page_id FROM locales WHERE code = ${pageRow.locale} LIMIT 1
+    `)) as unknown as { home_page_id: string | null }[];
+    const designatedHomePageId = homeRows[0]?.home_page_id ?? null;
     const canonical = resolveCanonicalUrl({
       siteBaseUrl,
       pageSlug: pageRow.slug,
-      pageLocale: pageRow.locale,
       override: seoRow?.canonical_url ?? null,
-      localeConfig: canonicalLocaleCfg,
-      // 0184 — this page is the locale root when it's the designated
+      // 0184 — this page is the site root when it's the designated
       // home_page_id (or carries a magic slug). input.pageId is this
       // page's own id.
-      isHomePage: pageIsLocaleHome(input.pageId, pageRow.slug, canonicalLocaleCfg?.homePageId),
+      isHomePage: pageIsLocaleHome(input.pageId, pageRow.slug, designatedHomePageId),
     });
     const headBlock = renderSeoHead({
       title: pageRow.title,
@@ -1240,7 +1115,6 @@ export const renderPagePreviewOp = defineOperation({
       canonical,
       noindex: seoRow?.noindex ?? false,
       ogImageUrl,
-      hreflang,
       organization,
     });
     html = injectSeoIntoHead(html, headBlock);

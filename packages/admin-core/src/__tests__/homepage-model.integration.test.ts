@@ -4,7 +4,7 @@
  * 0184 — explicit HOMEPAGE model + build_page import-linkage & idempotency.
  *
  * Covers:
- *  (a) `pages.set_home_page` writes `locales.home_page_id`; resolveLocaleUrl
+ *  (a) `pages.set_home_page` writes `locales.home_page_id`; resolveCanonicalUrl
  *      with `isHomePage:true` returns the locale root.
  *  (b) build_page with `importPageId` stamps `import_pages.accepted_page_id`;
  *      a SECOND build with the same importPageId REBUILDS the same page (no
@@ -19,7 +19,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import { type ExecutionContext, resolveLocaleUrl } from "@caelo-cms/shared";
+import { type ExecutionContext, resolveCanonicalUrl } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
@@ -153,22 +153,20 @@ async function homePageIdFor(locale: string): Promise<string | null> {
 }
 
 describe("0184 (a) set_home_page + resolver", () => {
-  it("resolveLocaleUrl(isHomePage:true) returns the locale root regardless of slug", () => {
-    const cfg = {
-      code: LOCALE,
-      displayName: "Test ZZ",
-      urlStrategy: "none" as const,
-      urlHost: null,
-      isDefault: false,
-    };
+  it("resolveCanonicalUrl(isHomePage:true) returns the site root regardless of slug", () => {
     // Non-magic slug: without the flag it is a normal page URL...
-    expect(resolveLocaleUrl(cfg, "welcome", "https://example.com")).toBe(
-      "https://example.com/welcome/",
-    );
-    // ...with the explicit designation it collapses to the locale root.
-    expect(resolveLocaleUrl(cfg, "welcome", "https://example.com", "directory", true)).toBe(
-      "https://example.com/",
-    );
+    expect(
+      resolveCanonicalUrl({ siteBaseUrl: "https://example.com", pageSlug: "welcome", override: null }),
+    ).toBe("https://example.com/welcome/");
+    // ...with the explicit designation it collapses to the site root.
+    expect(
+      resolveCanonicalUrl({
+        siteBaseUrl: "https://example.com",
+        pageSlug: "welcome",
+        override: null,
+        isHomePage: true,
+      }),
+    ).toBe("https://example.com/");
   });
 
   it("pages.set_home_page writes locales.home_page_id", async () => {
@@ -284,7 +282,7 @@ describe("0184 (c) duplicate-URL backstop", () => {
   });
 });
 
-describe("0184 (e) preview canonical + hreflang honour the designation end-to-end", () => {
+describe("0184 (e) preview canonical honours the designation end-to-end", () => {
   /** Extract the pathname of the first attribute matched by `re`. */
   function pathnameOf(html: string, re: RegExp): string {
     const m = re.exec(html);
@@ -292,9 +290,8 @@ describe("0184 (e) preview canonical + hreflang honour the designation end-to-en
     return new URL(m[1]).pathname;
   }
   const CANONICAL = /<link rel="canonical" href="([^"]+)"/;
-  const HREFLANG_ZZ = /<link rel="alternate" hreflang="zz" href="([^"]+)"/;
 
-  it("a page designated home on a NON-magic slug canonicalizes + hreflangs at the locale root", async () => {
+  it("a page designated home on a NON-magic slug canonicalizes at the locale root", async () => {
     const slug = `${PFX}-lander`;
     const created = await execute(registry, adapter, sysCtx, "pages.build_page", {
       page: { slug, title: "Lander", locale: LOCALE, templateId },
@@ -303,7 +300,7 @@ describe("0184 (e) preview canonical + hreflang honour the designation end-to-en
     if (!created.ok) throw new Error(JSON.stringify(created.error));
     const pageId = (created.value as { pageId: string }).pageId;
 
-    // Published so the auto-hreflang sibling pass surfaces this locale.
+    // Published to mirror the deploy-path filter.
     const pub = await execute(registry, adapter, sysCtx, "pages.set_status", {
       pageId,
       status: "published",
@@ -318,12 +315,10 @@ describe("0184 (e) preview canonical + hreflang honour the designation end-to-en
     if (!preview.ok) throw new Error(JSON.stringify(preview.error));
     const html = (preview.value as { html: string }).html;
 
-    // ALL-OR-NOTHING: canonical AND hreflang agree on the locale root.
     expect(pathnameOf(html, CANONICAL)).toBe("/");
-    expect(pathnameOf(html, HREFLANG_ZZ)).toBe("/");
   });
 
-  it("a normal (non-designated) page keeps its slug path in canonical + hreflang", async () => {
+  it("a normal (non-designated) page keeps its slug path in canonical", async () => {
     const slug = `${PFX}-plain`;
     const created = await execute(registry, adapter, sysCtx, "pages.build_page", {
       page: { slug, title: "Plain", locale: LOCALE, templateId },
@@ -341,9 +336,8 @@ describe("0184 (e) preview canonical + hreflang honour the designation end-to-en
     if (!preview.ok) throw new Error(JSON.stringify(preview.error));
     const html = (preview.value as { html: string }).html;
 
-    // Unaffected: strategy=none directory style → `/<slug>/`.
+    // Unaffected: directory style → `/<slug>/`.
     expect(pathnameOf(html, CANONICAL)).toBe(`/${slug}/`);
-    expect(pathnameOf(html, HREFLANG_ZZ)).toBe(`/${slug}/`);
   });
 });
 
