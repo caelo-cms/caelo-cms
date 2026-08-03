@@ -154,7 +154,6 @@ describe("run #8 R3 — branch-aware read ops", () => {
 
     const page = await execute(registry, adapter, HUMAN, "pages.create", {
       slug: PAGE_SLUG,
-      locale: "en",
       title: "P",
       templateId,
       status: "draft",
@@ -269,7 +268,6 @@ describe("run #8 R3 — branch-aware read ops", () => {
     // Branched CREATE — the pages row itself is tagged with the branch.
     const page = await execute(registry, adapter, aiCtx, "pages.create", {
       slug: `${PAGE_SLUG}-pv`,
-      locale: "en",
       title: "Branched page",
       templateId,
       status: "draft",

@@ -19,13 +19,11 @@
     title: string;
     anchorPageId: string | null;
     anchorPageSlug: string | null;
-    anchorPageLocale: string | null;
     pendingCount: number;
   }
 
   let { chats }: { chats: OtherChat[] } = $props();
 
-  // Default-locale (en) gets a bare /slug; others get /<locale>/slug
   // so the link matches the operator's mental URL.
   function hrefFor(c: OtherChat): string {
     if (!c.anchorPageId) return "/edit";
@@ -34,9 +32,7 @@
   function labelFor(c: OtherChat): string {
     if (!c.anchorPageSlug) return c.title || "global chat";
     const slug = c.anchorPageSlug;
-    return c.anchorPageLocale && c.anchorPageLocale !== "en"
-      ? `/${c.anchorPageLocale}/${slug}`
-      : `/${slug}`;
+    return `/${slug}`;
   }
 </script>
 

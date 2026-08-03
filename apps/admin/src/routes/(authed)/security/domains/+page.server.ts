@@ -16,8 +16,7 @@ import type { Actions, PageServerLoad } from "./$types";
 interface Domain {
   id: string;
   hostname: string;
-  kind: "admin" | "public" | "locale-public";
-  localeCode: string | null;
+  kind: "admin" | "public";
   tlsStatus: "pending" | "active" | "failed" | "unknown";
   tlsExpiresAt: string | null;
   tlsError: string | null;
@@ -39,15 +38,13 @@ export const actions: Actions = {
     const form = await request.formData();
     const hostname = (form.get("hostname") as string) ?? "";
     const kind = (form.get("kind") as string) ?? "public";
-    const localeCode = (form.get("localeCode") as string) ?? "";
-    if (!["admin", "public", "locale-public"].includes(kind)) {
-      return fail(400, { error: "kind must be admin/public/locale-public" });
+    if (!["admin", "public"].includes(kind)) {
+      return fail(400, { error: "kind must be admin/public" });
     }
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "domains.add", {
       hostname,
       kind,
-      ...(kind === "locale-public" && localeCode ? { localeCode } : {}),
     });
     if (!r.ok) return fail(400, { error: r.error.kind });
     return {

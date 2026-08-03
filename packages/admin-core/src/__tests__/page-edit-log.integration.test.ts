@@ -67,8 +67,8 @@ beforeAll(async () => {
       ON CONFLICT (id) DO NOTHING
     `;
     await tx`
-      INSERT INTO pages (id, slug, locale, title, template_id)
-      VALUES (${PAGE_ID}::uuid, 'issue-264-page-log', 'en', 'issue-264 page', ${TEMPLATE_ID}::uuid)
+      INSERT INTO pages (id, slug, title, template_id)
+      VALUES (${PAGE_ID}::uuid, 'issue-264-page-log', 'issue-264 page', ${TEMPLATE_ID}::uuid)
       ON CONFLICT (id) DO NOTHING
     `;
   });

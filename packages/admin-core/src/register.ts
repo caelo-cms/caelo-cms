@@ -229,7 +229,6 @@ import {
   updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
-import { getLocaleOp, listLocalesOp } from "./ops/locales.js";
 import {
   executeMcpTokenProposalOp,
   listPendingMcpTokenProposalsOp,
@@ -907,9 +906,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(siteDefaultsSetSeoOp);
   registry.register(lookupLinksInModulesOp);
   registry.register(rewriteModuleLinksOp);
-  // Locale registry reads — survive until the page-identity cut (#384).
-  registry.register(listLocalesOp);
-  registry.register(getLocaleOp);
   // P10A — skills system.
   registry.register(listSkillsOp);
   registry.register(getSkillOp);

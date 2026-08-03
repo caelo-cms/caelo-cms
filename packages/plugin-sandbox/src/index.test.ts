@@ -57,7 +57,7 @@ export default definePlugin({
     tag: "cms-hello-world",
     async mounted(host, { theme }) {
       const root = host.shadowRoot ?? host;
-      root.innerHTML = "<p>Hello from " + theme.locale + "</p>";
+      root.innerHTML = "<p>Hello world</p>";
     },
   }),
 });
@@ -76,16 +76,6 @@ describe("validateManifest", () => {
       requestedCapabilities: ["cms_admin"],
     });
     expect(r.failures.some((f) => f.kind === "manifest-tier2-cap-leak")).toBe(true);
-  });
-
-  it("rejects schemas where a page_id table is missing locale", () => {
-    const r = validateManifest({
-      ...helloWorldManifest,
-      schema: {
-        greetings: { id: "uuid", page_id: "string", message: "string" },
-      },
-    });
-    expect(r.failures.some((f) => f.kind === "schema-missing-locale")).toBe(true);
   });
 
   it("rejects manifests missing required fields", () => {

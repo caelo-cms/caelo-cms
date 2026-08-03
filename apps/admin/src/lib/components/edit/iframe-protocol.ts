@@ -8,7 +8,7 @@
  *   - iframe → parent: `caelo:ready` after first paint.
  *   - iframe → parent: `caelo:navigated` whenever the iframe loads
  *     a new path (covers initial load + click-through navigation).
- *     Carries the resolved pageId/locale/slug so the parent can sync
+ *     Carries the resolved pageId/slug so the parent can sync
  *     its activePageId + URL display + chat-branch context.
  *   - iframe → parent: `caelo:element-clicked` when the editor clicks
  *     a hover-affordanced element with the modifier combo held.
@@ -24,7 +24,6 @@ export interface ReadyMessage {
 export interface NavigatedMessage {
   kind: "caelo:navigated";
   pageId: string;
-  locale: string;
   slug: string;
 }
 

@@ -44,10 +44,7 @@ const inputSchema = z
      *  triggers a full-site rebuild because templates reference menus
      *  / theme tokens implicitly today. */
     structuredSetSlugs: z.array(z.string()).default([]),
-    /** Optional locale filter — when set, the cascade restricts to
-     *  pages in this locale. Useful for "translate one locale only"
-     *  flows. Empty/undefined = all locales. */
-    locale: z.string().optional(),
+
   })
   .strict();
 
@@ -95,7 +92,6 @@ export const publishImpactPagesOp = defineOperation({
     // generator's same-shape query but trips inside transactions —
     // tracked but not blocking; the inline form sidesteps it).
     type Row = { page_id: string; src: "module" | "template" | "layout" };
-    const localeFilter = input.locale ? sql`AND p.locale = ${input.locale}` : sql.raw("");
     const moduleArr = uuidArrayLiteral(input.moduleIds);
     const templateArr = uuidArrayLiteral(input.templateIds);
     const layoutArr = uuidArrayLiteral(input.layoutIds);
@@ -105,8 +101,7 @@ export const publishImpactPagesOp = defineOperation({
         ? sql`SELECT DISTINCT pm.page_id::text AS page_id, 'module'::text AS src
               FROM page_modules pm
               JOIN pages p ON p.id = pm.page_id AND p.deleted_at IS NULL
-              WHERE pm.module_id = ANY(${sql.raw(moduleArr)}::uuid[])
-              ${localeFilter}`
+              WHERE pm.module_id = ANY(${sql.raw(moduleArr)}::uuid[])`
         : sql`SELECT NULL::text AS page_id, NULL::text AS src WHERE FALSE`;
 
     const templateCte =
@@ -114,8 +109,7 @@ export const publishImpactPagesOp = defineOperation({
         ? sql`SELECT DISTINCT p.id::text AS page_id, 'template'::text AS src
               FROM pages p
               WHERE p.template_id = ANY(${sql.raw(templateArr)}::uuid[])
-                AND p.deleted_at IS NULL
-              ${localeFilter}`
+                AND p.deleted_at IS NULL`
         : sql`SELECT NULL::text AS page_id, NULL::text AS src WHERE FALSE`;
 
     const layoutCte =
@@ -124,8 +118,7 @@ export const publishImpactPagesOp = defineOperation({
               FROM pages p
               JOIN templates t ON t.id = p.template_id
               WHERE t.layout_id = ANY(${sql.raw(layoutArr)}::uuid[])
-                AND p.deleted_at IS NULL
-              ${localeFilter}`
+                AND p.deleted_at IS NULL`
         : sql`SELECT NULL::text AS page_id, NULL::text AS src WHERE FALSE`;
 
     const rows = (await tx.execute(sql`

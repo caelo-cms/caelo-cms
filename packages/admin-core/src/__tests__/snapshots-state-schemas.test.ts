@@ -136,7 +136,6 @@ describe("parseAndUpgradePageState", () => {
     const r = parseAndUpgradePageState({
       schemaVersion: 1,
       slug: "home",
-      locale: "en",
       title: "Home",
       templateId: "11111111-1111-4111-8111-111111111111",
       status: "draft",
@@ -151,7 +150,6 @@ describe("parseAndUpgradePageState", () => {
       parseAndUpgradePageState({
         schemaVersion: 1,
         slug: "home",
-        locale: "en",
         title: "Home",
         templateId: "not-a-uuid",
         status: "draft",

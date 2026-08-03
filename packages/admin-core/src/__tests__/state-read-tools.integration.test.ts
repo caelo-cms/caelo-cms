@@ -19,7 +19,6 @@ import {
   getSiteDefaultsTool,
   listAiProvidersTool,
   listDomainsTool,
-  listLocalesTool,
   listPendingProposalsTool,
   listRolesTool,
   listUsersTool,
@@ -54,8 +53,7 @@ describe("state read endpoints — every chunk has a live read", () => {
   const tools = [
     getSiteDefaultsTool,
     getDesignManifestTool,
-    listLocalesTool,
-    listPendingProposalsTool,
+      listPendingProposalsTool,
     listUsersTool,
     listRolesTool,
     listAiProvidersTool,

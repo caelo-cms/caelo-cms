@@ -195,8 +195,8 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
       // retries=1. ON CONFLICT DO UPDATE makes seedMinimalSite
       // idempotent across the race.
       const pg = await tx\`
-        INSERT INTO pages (slug, locale, name, title, template_id, status)
-        VALUES ('home', 'en', 'Home', 'Home', \${templateId}::uuid, 'draft')
+        INSERT INTO pages (slug, name, title, template_id, status)
+        VALUES ('home', 'Home', 'Home', \${templateId}::uuid, 'draft')
         ON CONFLICT (slug, locale, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
           WHERE deleted_at IS NULL
           DO UPDATE SET

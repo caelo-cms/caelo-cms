@@ -46,8 +46,8 @@ test.beforeAll(() => {
       const kept = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.KEPT_MOD_SLUG}, 'k', \${process.env.KEPT_MOD_SLUG}, '<p>K</p>') RETURNING id::text AS id\`)[0])?.id;
       const orphan = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.ORPHAN_MOD_SLUG}, 'o', \${process.env.ORPHAN_MOD_SLUG}, '<p>O</p>') RETURNING id::text AS id\`)[0])?.id;
       const pg = ((await tx\`
-        INSERT INTO pages (slug, locale, name, title, template_id, status)
-        VALUES (\${process.env.TEST_PAGE}, 'en', 'CT', 'CT', \${oldTpl}::uuid, 'draft')
+        INSERT INTO pages (slug, name, title, template_id, status)
+        VALUES (\${process.env.TEST_PAGE}, 'CT', 'CT', \${oldTpl}::uuid, 'draft')
         RETURNING id::text AS id\`)[0])?.id;
       const ciKept = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${kept}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;
       const ciOrphan = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${orphan}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;

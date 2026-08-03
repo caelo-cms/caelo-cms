@@ -207,7 +207,7 @@ export async function releaseChatLocks(
  * react uniformly.
  *
  * v0.8.0 — async + tx-aware. The helper does one extra read to look up
- * the holder chat's title + anchor page (slug + locale) so the message
+ * the holder chat's title + anchor page slug so the message
  * names the *other chat the operator already knows about* instead of
  * a raw session UUID. The AI then surfaces something like:
  *   "module 'hero' is busy in another chat ('Build the docs site')
@@ -233,17 +233,14 @@ export async function lockedError(
   holder: LockHolder & {
     title?: string;
     anchorPageSlug?: string;
-    anchorPageLocale?: string;
   };
 }> {
   let title: string | undefined;
   let anchorPageSlug: string | undefined;
-  let anchorPageLocale: string | undefined;
   try {
     const rows = (await tx.execute(sql`
       SELECT cs.title,
-             p.slug   AS page_slug,
-             p.locale AS page_locale
+             p.slug   AS page_slug
       FROM chat_sessions cs
       LEFT JOIN pages p ON p.id = cs.page_id AND p.deleted_at IS NULL
       WHERE cs.id = ${holder.chatSessionId}::uuid
@@ -251,13 +248,11 @@ export async function lockedError(
     `)) as unknown as {
       title: string | null;
       page_slug: string | null;
-      page_locale: string | null;
     }[];
     const r = rows[0];
     if (r) {
       if (typeof r.title === "string") title = r.title;
       if (typeof r.page_slug === "string") anchorPageSlug = r.page_slug;
-      if (typeof r.page_locale === "string") anchorPageLocale = r.page_locale;
     }
   } catch {
     // Enrich-read failed — keep the structural error, fall through to
@@ -280,7 +275,6 @@ export async function lockedError(
       ...holder,
       ...(title !== undefined ? { title } : {}),
       ...(anchorPageSlug !== undefined ? { anchorPageSlug } : {}),
-      ...(anchorPageLocale !== undefined ? { anchorPageLocale } : {}),
     },
   };
 }

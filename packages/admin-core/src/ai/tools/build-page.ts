@@ -37,13 +37,12 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
       type: "object",
       additionalProperties: false,
       description:
-        "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, name?, locale?, templateId?, status? } to create the page in the same call. Never both.",
+        "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, name?, templateId?, status? } to create the page in the same call. Never both.",
       properties: {
         pageId: { type: "string", format: "uuid" },
         slug: { type: "string", minLength: 1, maxLength: 120 },
         title: { type: "string", minLength: 1, maxLength: 256 },
         name: { type: "string", minLength: 1, maxLength: 256 },
-        locale: { type: "string", minLength: 2, maxLength: 10 },
         templateId: { type: "string", format: "uuid" },
         status: { type: "string", enum: ["draft", "published"] },
         importPageId: {

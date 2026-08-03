@@ -65,38 +65,6 @@ export const getDesignManifestTool = makeReadTool<Record<string, never>>({
   },
 });
 
-/** locales chunk — renders from locales.list. */
-export const listLocalesTool = makeListReadTool<
-  Record<string, never>,
-  {
-    code: string;
-    displayName: string;
-    urlStrategy: string;
-    isDefault: boolean;
-  }
->({
-  name: "list_locales",
-  description:
-    "List the site's locales (code, display name, URL strategy, default flag). " +
-    "Call this when you need the current registry (e.g. before creating a page in a specific locale).",
-  opName: "locales.list",
-  input: noInput,
-  label: "locales",
-  rows: (value) =>
-    (
-      value as {
-        locales: { code: string; displayName: string; urlStrategy: string; isDefault: boolean }[];
-      }
-    ).locales,
-  columns: [
-    { key: "code", value: (l) => l.code },
-    { key: "displayName", value: (l) => l.displayName },
-    { key: "urlStrategy", value: (l) => l.urlStrategy },
-    { key: "default", value: (l) => (l.isDefault ? "yes" : "") },
-  ],
-  emptyMessage: "No locales configured.",
-});
-
 /** pending_proposals chunk — renders from pending_proposals.list. */
 export const listPendingProposalsTool = makeListReadTool<
   Record<string, never>,
@@ -252,7 +220,6 @@ export const listDomainsTool = makeListReadTool<
   {
     hostname: string;
     kind: string;
-    localeCode: string | null;
     tlsStatus: string;
   }
 >({
@@ -266,13 +233,12 @@ export const listDomainsTool = makeListReadTool<
   rows: (value) =>
     (
       value as {
-        domains: { hostname: string; kind: string; localeCode: string | null; tlsStatus: string }[];
+        domains: { hostname: string; kind: string; tlsStatus: string }[];
       }
     ).domains,
   columns: [
     { key: "hostname", value: (d) => d.hostname },
     { key: "kind", value: (d) => d.kind },
-    { key: "locale", value: (d) => d.localeCode ?? "" },
     { key: "tls", value: (d) => d.tlsStatus },
   ],
   emptyMessage: "No domains configured.",

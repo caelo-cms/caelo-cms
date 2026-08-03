@@ -68,13 +68,13 @@ test("link click without modifier navigates the iframe; URL display updates", as
           VALUES (\${process.env.MOD_B_SLUG}, 'B', \${process.env.MOD_B_SLUG}, '<h1>PAGE_B_LANDED</h1>')
           RETURNING id::text AS id\`;
         const pgA = await tx\`
-          INSERT INTO pages (slug, locale, title, template_id, status)
-          VALUES (\${process.env.PAGE_A_SLUG}, 'en', 'A', \${out.tpl}::uuid, 'draft')
+          INSERT INTO pages (slug, title, template_id, status)
+          VALUES (\${process.env.PAGE_A_SLUG}, 'A', \${out.tpl}::uuid, 'draft')
           RETURNING id::text AS id\`;
         out.pgA = pgA[0].id;
         const pgB = await tx\`
-          INSERT INTO pages (slug, locale, title, template_id, status)
-          VALUES (\${process.env.PAGE_B_SLUG}, 'en', 'B', \${out.tpl}::uuid, 'draft')
+          INSERT INTO pages (slug, title, template_id, status)
+          VALUES (\${process.env.PAGE_B_SLUG}, 'B', \${out.tpl}::uuid, 'draft')
           RETURNING id::text AS id\`;
         out.pgB = pgB[0].id;
         const ciA = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${modA[0].id}::uuid, '{}'::jsonb) RETURNING id::text AS id\`;

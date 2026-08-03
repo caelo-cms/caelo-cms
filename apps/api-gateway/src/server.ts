@@ -466,8 +466,6 @@ export async function handleRequest(req: Request): Promise<Response> {
 
   // 2. Resolve signed visitor cookie.
   const visitor = await resolveVisitor(req, settings.cookieSecret);
-  const localeHeader = req.headers.get("accept-language") ?? "en";
-  const locale = localeHeader.split(",")[0]?.split(";")[0]?.split("-")[0] ?? "en";
 
   const cookies: string[] = [];
   if (visitor.isFresh) {
@@ -594,7 +592,6 @@ export async function handleRequest(req: Request): Promise<Response> {
     args: body,
     visitorContext: {
       visitorId: visitor.visitorId,
-      locale,
       sessionToken: visitor.sessionToken,
       sessionMutation,
     },

@@ -209,18 +209,16 @@ describe("P14 imports happy path (propose → execute → write → accept)", ()
       await sql.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
         const pages = (await tx`
-          SELECT slug, status, locale, template_id::text AS template_id
+          SELECT slug, status, template_id::text AS template_id
           FROM pages WHERE id = ${newPageId}::uuid
         `) as unknown as Array<{
           slug: string;
           status: string;
-          locale: string;
           template_id: string;
         }>;
         expect(pages).toHaveLength(1);
         expect(pages[0]?.slug).toBe("p14-imports-about");
         expect(pages[0]?.status).toBe("draft");
-        expect(pages[0]?.locale).toBe("en");
         expect(pages[0]?.template_id).toBe(templateId);
 
         const pms = (await tx`

@@ -137,7 +137,6 @@ import {
   listAiProvidersTool,
   listDomainsTool,
   listEntityLocksTool,
-  listLocalesTool,
   listPendingProposalsTool,
   listRolesTool,
   listUsersTool,
@@ -246,7 +245,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // because a stale chunk still shows the old value.
   registry.register(getSiteDefaultsTool);
   registry.register(getDesignManifestTool);
-  registry.register(listLocalesTool);
   registry.register(listPendingProposalsTool);
   registry.register(listEntityLocksTool);
   registry.register(listUsersTool);

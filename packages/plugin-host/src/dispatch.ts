@@ -173,7 +173,6 @@ interface MakeContextOpts {
  */
 export interface VisitorDispatchContext {
   readonly visitorId: string;
-  readonly locale: string;
   readonly sessionToken: string | null;
   readonly sessionMutation?: {
     current:
@@ -435,7 +434,7 @@ function extractEntityId(result: unknown): string | null {
 }
 
 /**
- * P13 — invoke the plugin's `staticRender(ctx, {pageId, locale})`
+ * P13 — invoke the plugin's `staticRender(ctx, {pageId})`
  * function via the same context factory used by ordinary ops. Returns
  * `null` when the plugin doesn't declare a staticRender. Used by the
  * static generator's plugin pass to bake plugin-emitted HTML at deploy.
@@ -443,7 +442,6 @@ function extractEntityId(result: unknown): string | null {
 export async function runPluginStaticRender(opts: {
   pluginSlug: string;
   pageId: string;
-  locale: string;
 }): Promise<string | null> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return null;
@@ -453,22 +451,18 @@ export async function runPluginStaticRender(opts: {
     throw new Error("plugin host not bootstrapped");
   }
   const ctx = await makeContext({ plugin, infra: cachedInfra });
-  const out = await render(ctx as PluginContext, {
-    pageId: opts.pageId,
-    locale: opts.locale,
-  });
+  const out = await render(ctx as PluginContext, { pageId: opts.pageId });
   return typeof out === "string" ? out : "";
 }
 
 /**
  * P13 perf-pass — invoke the plugin's `metaSignatureBatch(...)` to
- * resolve N (page, locale) signatures in ONE call. Returns a Map keyed
+ * resolve N page signatures in ONE call. Returns a Map keyed
  * by pageId. Empty Map when the plugin doesn't declare the batch
  * variant — caller falls back to per-page `runPluginMetaSignature`.
  */
 export async function runPluginMetaSignatureBatch(opts: {
   pluginSlug: string;
-  locale: string;
   pageIds: ReadonlyArray<string>;
 }): Promise<ReadonlyMap<string, string>> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
@@ -482,9 +476,9 @@ export async function runPluginMetaSignatureBatch(opts: {
   const out = await (
     sig as (
       c: unknown,
-      a: { locale: string; pageIds: ReadonlyArray<string> },
+      a: { pageIds: ReadonlyArray<string> },
     ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>
-  )(ctx, { locale: opts.locale, pageIds: opts.pageIds });
+  )(ctx, { pageIds: opts.pageIds });
   return out instanceof Map ? out : new Map();
 }
 
@@ -497,7 +491,6 @@ export async function runPluginMetaSignatureBatch(opts: {
 export async function runPluginMetaSignature(opts: {
   pluginSlug: string;
   pageId: string;
-  locale: string;
 }): Promise<string> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return "";
@@ -508,7 +501,7 @@ export async function runPluginMetaSignature(opts: {
   }
   const ctx = await makeContext({ plugin, infra: cachedInfra });
   const out = await (
-    sig as (c: unknown, a: { pageId: string; locale: string }) => Promise<string> | string
-  )(ctx, { pageId: opts.pageId, locale: opts.locale });
+    sig as (c: unknown, a: { pageId: string }) => Promise<string> | string
+  )(ctx, { pageId: opts.pageId });
   return typeof out === "string" ? out : "";
 }

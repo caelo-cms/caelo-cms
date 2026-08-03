@@ -8,7 +8,7 @@
  */
 
 import { z } from "zod";
-import { isHomeSlug } from "./i18n.js";
+import { isHomeSlug } from "./url.js";
 
 export const CHANGEFREQ_VALUES = [
   "always",

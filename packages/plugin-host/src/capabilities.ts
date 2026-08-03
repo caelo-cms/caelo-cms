@@ -46,7 +46,6 @@ export interface MakePluginContextOpts {
  */
 export interface VisitorContext {
   readonly visitorId: string;
-  readonly locale: string;
   readonly sessionToken: string | null;
   readonly sessionMutation?: { current: SessionMutation };
 }
@@ -70,7 +69,7 @@ export async function makePluginContext(
   const baseCtx: PluginContext = {
     query: makePluginQuery(plugin, infra),
     api: makePluginApi(plugin, infra),
-    theme: makePluginTheme(visitorContext),
+    theme: makePluginTheme(),
     visitor: makePluginVisitor(visitorContext),
     captcha: makePluginCaptcha(),
   };
@@ -353,7 +352,6 @@ function makePluginVisitor(visitorContext?: VisitorContext): PluginVisitor {
     id: visitorContext?.visitorId ?? "00000000-0000-0000-0000-000000000000",
     publicUserId: null,
     ipHash: "",
-    locale: visitorContext?.locale ?? "en",
     sessionToken: visitorContext?.sessionToken ?? null,
     setSession: (args) => {
       if (!mut) return; // outside-gateway dispatch — no-op
@@ -399,13 +397,12 @@ function makePluginEmail(infra: PluginHostInfra): PluginEmail {
 }
 
 // ---------------------------------------------------------------------------
-// PluginTheme — read-only tokens + locale. Visitor-context-aware.
+// PluginTheme — read-only tokens.
 // ---------------------------------------------------------------------------
 
-function makePluginTheme(visitorContext?: { locale: string }): PluginTheme {
+function makePluginTheme(): PluginTheme {
   return {
     tokens: Object.freeze({}), // P12 wires real theme tokens from structured_sets
-    locale: visitorContext?.locale ?? "en",
   };
 }
 

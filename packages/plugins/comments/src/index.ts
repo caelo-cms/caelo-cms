@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo-cms/plugin-comments — Tier-1 plugin: moderated comments with locale awareness.
+ * @caelo-cms/plugin-comments — Tier-1 plugin: moderated comments.
  *
  * P12 PR2.5 — first AI-moderation user. Visitor submits → status='pending' →
  * AI classifies → Owner/AI flips to approved/rejected/spam. Static-render at
  * deploy bakes approved comments; deltas land via api.list({since}).
  *
  * Schema (cms_public.plugin_comments.*):
- *   comments — page_id + locale + parent_id (3-level threads) + author + status
- *   comment_meta — page_id + locale + last_approved_at + count (delta-fetch since)
+ *   comments — page_id + parent_id (3-level threads) + author + status
+ *   comment_meta — page_id + last_approved_at + count (delta-fetch since)
  */
 
 import {
@@ -28,7 +28,6 @@ const MAX_THREAD_DEPTH = 3;
 
 interface SubmitInput {
   pageId: string;
-  locale: string;
   parentId?: string | null;
   authorName: string;
   content: string;
@@ -38,7 +37,6 @@ interface SubmitInput {
 interface CommentRow {
   id: string;
   page_id: string;
-  locale: string;
   parent_id: string | null;
   author_name: string;
   content: string;
@@ -84,7 +82,6 @@ async function archiveAndDeletePublic(
     {
       publicRowId: string;
       pageId: string;
-      locale: string;
       parentId: string | null;
       authorName: string;
       content: string;
@@ -95,7 +92,6 @@ async function archiveAndDeletePublic(
   >("comment_archive.insert", {
     publicRowId: row.id,
     pageId: row.page_id,
-    locale: row.locale,
     parentId: row.parent_id && row.parent_id.length > 0 ? row.parent_id : null,
     authorName: row.author_name,
     content: row.content,
@@ -120,7 +116,6 @@ export default definePlugin<PluginContextTier1>({
     comments: {
       id: "uuid",
       page_id: "string",
-      locale: "string",
       parent_id: "string",
       author_name: "string",
       content: "text",
@@ -130,7 +125,6 @@ export default definePlugin<PluginContextTier1>({
     comment_meta: {
       id: "uuid",
       page_id: "string",
-      locale: "string",
       count_approved: "int",
       last_approved_at: "timestamp",
     },
@@ -164,7 +158,6 @@ export default definePlugin<PluginContextTier1>({
 
       const r = await ctx.query.insert("comments", {
         page_id: input.pageId,
-        locale: input.locale,
         parent_id: input.parentId ?? "",
         author_name: input.authorName.slice(0, 80),
         content: input.content.slice(0, 4000),
@@ -178,10 +171,10 @@ export default definePlugin<PluginContextTier1>({
       // comment_archive after moderation. cms_public.plugin_comments
       // is now a write-only inbox; reads go through ctx.cms.call so a
       // public-DB compromise leaks at most pending submissions.
-      const input = args as { pageId: string; locale: string; since?: string };
+      const input = args as { pageId: string; since?: string };
       if (!("cms" in ctx) || !ctx.cms) return { comments: [] };
       const r = await ctx.cms.call<
-        { pageId: string; locale: string; status: "approved"; since?: string; limit: number },
+        { pageId: string; status: "approved"; since?: string; limit: number },
         {
           comments: ReadonlyArray<{
             publicRowId: string;
@@ -192,7 +185,6 @@ export default definePlugin<PluginContextTier1>({
         }
       >("comment_archive.list_for_page", {
         pageId: input.pageId,
-        locale: input.locale,
         status: "approved",
         ...(input.since ? { since: input.since } : {}),
         limit: 200,
@@ -203,7 +195,6 @@ export default definePlugin<PluginContextTier1>({
         comments: r.comments.map((c) => ({
           id: c.publicRowId,
           page_id: input.pageId,
-          locale: input.locale,
           parent_id: "",
           author_name: c.authorName,
           content: c.content,
@@ -321,7 +312,7 @@ export default definePlugin<PluginContextTier1>({
     },
   ],
   /**
-   * P13 perf-pass — batched signature for the whole locale at once.
+   * P13 perf-pass — batched signature for the whole build at once.
    * The static-generator prefers this over `metaSignature` so a
    * 1000-page site does ONE list query instead of 1000.
    */
@@ -329,23 +320,22 @@ export default definePlugin<PluginContextTier1>({
     // v0.2.18 / Fix D — approved comments are in cms_admin's
     // comment_archive after moderation. Per-page batched signature
     // reads from there so a 1000-page deploy still does ONE query
-    // per (slug, locale) bucket.
+    // per page bucket.
     if (!("cms" in ctx) || !ctx.cms) return new Map();
     const out = new Map<string, string>();
     try {
       // List for each requested page. comment_archive has its own
-      // (page_id, locale, status) index, so per-page lookups are
-      // cheap even though we issue N. The single-bucket pattern
-      // below stays in cms_admin.
+      // (page_id, status) index, so per-page lookups are cheap even
+      // though we issue N. The single-bucket pattern below stays in
+      // cms_admin.
       for (const pageId of args.pageIds) {
         const r = await ctx.cms.call<
-          { pageId: string; locale: string; status: string; limit: number },
+          { pageId: string; status: string; limit: number },
           {
             comments: ReadonlyArray<{ id: string; submittedAt: string }>;
           }
         >("comment_archive.list_for_page", {
           pageId,
-          locale: args.locale,
           status: "approved",
           limit: 5000,
         });
@@ -366,7 +356,7 @@ export default definePlugin<PluginContextTier1>({
   },
 
   /**
-   * P13 audit fix #4 — cheap signature of the (page, locale) thread
+   * P13 audit fix #4 — cheap signature of the page's thread
    * state. The static-generator folds this into the bake cache key so
    * approving a new comment busts the stale bake even though the
    * page itself didn't change.
@@ -376,13 +366,12 @@ export default definePlugin<PluginContextTier1>({
     if (!("cms" in ctx) || !ctx.cms) return "";
     try {
       const r = await ctx.cms.call<
-        { pageId: string; locale: string; status: string; limit: number },
+        { pageId: string; status: string; limit: number },
         {
           comments: ReadonlyArray<{ id: string; submittedAt: string }>;
         }
       >("comment_archive.list_for_page", {
         pageId: args.pageId,
-        locale: args.locale,
         status: "approved",
         limit: 1000,
       });
@@ -406,7 +395,7 @@ export default definePlugin<PluginContextTier1>({
     if (!("cms" in ctx) || !ctx.cms) return "";
     try {
       const r = await ctx.cms.call<
-        { pageId: string; locale: string; status: string; limit: number },
+        { pageId: string; status: string; limit: number },
         {
           comments: ReadonlyArray<{
             id: string;
@@ -417,7 +406,6 @@ export default definePlugin<PluginContextTier1>({
         }
       >("comment_archive.list_for_page", {
         pageId: args.pageId,
-        locale: args.locale,
         status: "approved",
         limit: 200,
       });
@@ -444,7 +432,7 @@ export default definePlugin<PluginContextTier1>({
    * Server-renders approved comments at deploy via staticRender (P13);
    * client-side fetch refreshes after `since` for late comments.
    *
-   * Attributes: page-id, locale.
+   * Attributes: page-id.
    */
   component: defineComponent({
     tag: "caelo-comments",
@@ -452,7 +440,6 @@ export default definePlugin<PluginContextTier1>({
     mounted: async (host) => {
       const root = host.shadowRoot ?? host.attachShadow({ mode: "open" });
       const pageId = host.getAttribute("page-id") ?? "";
-      const locale = host.getAttribute("locale") ?? "en";
 
       // Comments-specific CSS extends the kit base.
       const extraCss = `
@@ -488,7 +475,7 @@ export default definePlugin<PluginContextTier1>({
 
       async function refresh(): Promise<void> {
         try {
-          const args: Record<string, unknown> = { pageId, locale };
+          const args: Record<string, unknown> = { pageId };
           if (bakedAt) args.since = bakedAt;
           const json = await postPluginJson<{
             comments: Array<{
@@ -533,7 +520,6 @@ export default definePlugin<PluginContextTier1>({
           const captcha = await attachCaptchaProof().catch(() => null);
           const json = await postPluginJson("comments", "submit", {
             pageId,
-            locale,
             authorName: fd.get("authorName"),
             content: fd.get("content"),
             captchaToken: "dev",

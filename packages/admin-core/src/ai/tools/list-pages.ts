@@ -12,18 +12,17 @@ import { makeListReadTool } from "./_make-read-tool.js";
 const listPagesInput = z
   .object({
     includeDeleted: z.boolean().default(false),
-    locale: z.string().max(16).optional(),
   })
   .strict();
 
 export const listPagesTool = makeListReadTool<
   z.infer<typeof listPagesInput>,
-  { id: string; slug: string; locale: string; title: string; status?: string; templateId: string }
+  { id: string; slug: string; title: string; status?: string; templateId: string }
 >({
   name: "list_pages",
   description:
-    "List every page with UUID, slug, locale, title, and template UUID (TOON rows). " +
-    "Optional `locale`, plus the standard list params: `filter` (substring across all columns), `limit`/`offset` (pagination), `full: true` (no truncation). " +
+    "List every page with UUID, slug, title, and template UUID (TOON rows). " +
+    "Standard list params: `filter` (substring across all columns), `limit`/`offset` (pagination), `full: true` (no truncation). " +
     "Use when you need a page UUID that isn't in the `# All pages` context block — the block is a turn-start snapshot, this is live. DO NOT ask the operator to paste a UUID.",
   opName: "pages.list",
   input: listPagesInput,
@@ -34,7 +33,6 @@ export const listPagesTool = makeListReadTool<
         pages: {
           id: string;
           slug: string;
-          locale: string;
           title: string;
           status?: string;
           templateId: string;
@@ -44,7 +42,6 @@ export const listPagesTool = makeListReadTool<
   columns: [
     { key: "slug", value: (p) => p.slug },
     { key: "id", value: (p) => p.id },
-    { key: "locale", value: (p) => p.locale },
     { key: "title", value: (p) => p.title },
     { key: "templateId", value: (p) => p.templateId },
   ],

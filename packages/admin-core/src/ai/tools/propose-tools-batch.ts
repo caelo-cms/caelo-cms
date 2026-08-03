@@ -600,14 +600,13 @@ export const proposeDomainAddTool = makeProposeTool({
   opName: "domains.propose_add",
   pendingQueuePath: "/security/domains/pending",
   when:
-    "Propose registering a new custom domain (admin / public / locale-public). " +
+    "Propose registering a new custom domain (admin / public). " +
     "Approval triggers cms-provision regenerate-caddy on next deploy + ACME issues TLS. " +
     "Use domains.verify (read-only DNS lookup) BEFORE proposing to confirm the hostname resolves.",
   schema: z
     .object({
       hostname: z.string().min(1).max(253),
-      kind: z.enum(["admin", "public", "locale-public"]),
-      localeCode: z.string().min(2).max(20).optional(),
+      kind: z.enum(["admin", "public"]),
     })
     .strict(),
   inputSchema: {
@@ -616,8 +615,7 @@ export const proposeDomainAddTool = makeProposeTool({
     required: ["hostname", "kind"],
     properties: {
       hostname: { type: "string", minLength: 1, maxLength: 253 },
-      kind: { type: "string", enum: ["admin", "public", "locale-public"] },
-      localeCode: { type: "string", minLength: 2, maxLength: 20 },
+      kind: { type: "string", enum: ["admin", "public"] },
     },
   },
   summarize: (input) => `add ${input.kind} domain "${input.hostname}"`,

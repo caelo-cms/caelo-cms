@@ -150,8 +150,8 @@ beforeAll(async () => {
       `) as unknown as { id: string }[];
 
       const page = (await tx`
-        INSERT INTO pages (slug, locale, name, title, template_id)
-        VALUES (${PAGE_SLUG}, 'en', 'Branch fields', 'Branch fields', ${seeded.templateId}::uuid)
+        INSERT INTO pages (slug, name, title, template_id)
+        VALUES (${PAGE_SLUG}, 'Branch fields', 'Branch fields', ${seeded.templateId}::uuid)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seeded.pageId = page[0]?.id ?? "";

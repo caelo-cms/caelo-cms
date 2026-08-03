@@ -18,7 +18,6 @@ import type { Actions, PageServerLoad } from "./$types";
 interface PageRow {
   id: string;
   slug: string;
-  locale: string;
   title: string;
   status: "draft" | "published";
 }
@@ -92,7 +91,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const queryPage = url.searchParams.get("page");
   let activePage =
     pages.find((p) => p.id === queryPage) ??
-    pages.find((p) => p.slug === "home" && p.locale === "en") ??
+    pages.find((p) => p.slug === "home") ??
     pages[0] ??
     null;
   let activePageId = activePage?.id ?? null;
@@ -232,7 +231,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     pages = (branchPagesR.value as { pages: PageRow[] }).pages;
     activePage =
       pages.find((p) => p.id === queryPage) ??
-      pages.find((p) => p.slug === "home" && p.locale === "en") ??
+      pages.find((p) => p.slug === "home") ??
       pages[0] ??
       null;
     activePageId = activePage?.id ?? null;
@@ -446,7 +445,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     pages: pages.map((p) => ({
       id: p.id,
       slug: p.slug,
-      locale: p.locale,
       title: p.title,
       // v0.9.9 — surfaces on the top-bar status toggle so the editor
       // can flip draft↔published without leaving the live-edit surface.

@@ -116,8 +116,7 @@ async function seedPage(): Promise<string> {
   const p = await execute(registry, adapter, HUMAN, "pages.create", {
     slug: PAGE_SLUG,
     title: "About",
-    templateId,
-    locale: "en",
+    templateId
   });
   if (!p.ok) throw new Error("page seed");
   const pageId = (p.value as { pageId: string }).pageId;
@@ -139,8 +138,7 @@ async function seedPage(): Promise<string> {
   const hp = await execute(registry, adapter, HUMAN, "pages.create", {
     slug: HOME_SLUG,
     title: "Home",
-    templateId,
-    locale: "en",
+    templateId
   });
   if (!hp.ok) throw new Error("home page seed");
   const homePageId = (hp.value as { pageId: string }).pageId;

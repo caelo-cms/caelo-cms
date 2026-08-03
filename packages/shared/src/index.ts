@@ -15,7 +15,7 @@ export * from "./design-manifest.js";
 export * from "./fonts.js";
 export * from "./genesis.js";
 export * from "./genesis-inventory.js";
-export * from "./i18n.js";
+export * from "./url.js";
 export * from "./interactions.js";
 export {
   type LogContext,

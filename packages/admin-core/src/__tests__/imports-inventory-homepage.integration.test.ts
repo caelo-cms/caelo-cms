@@ -3,7 +3,7 @@
 /**
  * Regression: the per-page import reads must resolve a directly-built (#278)
  * HOMEPAGE. The crawler always assigns the root `proposed_slug = 'home'`, but
- * issue 0184 lets ANY page be the site root via `locales.home_page_id`, so a
+ * issue 0184 lets ANY page be the site root via `site_defaults.home_page_id`, so a
  * migrate flow that builds the homepage at a custom/translated slug (e.g.
  * `startseite`) breaks the old `proposed_slug == page.slug` match — the AI
  * saw "import page not found — again and again" (reported in chat).
@@ -52,7 +52,7 @@ async function wipe(): Promise<void> {
   await sqlc.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
     // Restore the seed home designation we borrowed.
-    await tx`UPDATE locales SET home_page_id = ${originalHomePageId} WHERE code = 'en'`;
+    await tx`UPDATE site_defaults SET home_page_id = ${originalHomePageId} WHERE id = 1`;
     if (composedPageId) {
       await tx`DELETE FROM page_modules WHERE page_id = ${composedPageId}::uuid`;
       await tx`DELETE FROM pages WHERE id = ${composedPageId}::uuid`;
@@ -73,7 +73,7 @@ beforeAll(async () => {
   await sqlc.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
     const rows = (await tx`
-      SELECT home_page_id::text AS id FROM locales WHERE code = 'en'
+      SELECT home_page_id::text AS id FROM site_defaults WHERE id = 1
     `) as unknown as { id: string | null }[];
     originalHomePageId = rows[0]?.id ?? null;
   });
@@ -154,8 +154,7 @@ describe("import page reads — directly-built homepage-not-at-root (#278)", () 
       await tx`UPDATE pages SET slug = ${CUSTOM_SLUG} WHERE id = ${composedPageId}::uuid`;
     });
     const setHome = await execute(registry, adapter, AI, "pages.set_home_page", {
-      pageId: composedPageId,
-      locale: "en",
+      pageId: composedPageId
     });
     expect(setHome.ok).toBe(true);
 

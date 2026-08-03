@@ -165,7 +165,7 @@ describe("Ratings plugin", () => {
     const r1 = await runPluginOperation({
       pluginSlug: "ratings",
       operationName: "submit",
-      args: { pageId: "page-1", locale: "en", score: 4 },
+      args: { pageId: "page-1", score: 4 },
     });
     expect(r1.ok).toBe(true);
     if (!r1.ok) return;
@@ -174,7 +174,7 @@ describe("Ratings plugin", () => {
     const r2 = await runPluginOperation({
       pluginSlug: "ratings",
       operationName: "submit",
-      args: { pageId: "page-1", locale: "en", score: 5 },
+      args: { pageId: "page-1", score: 5 },
     });
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
@@ -186,12 +186,12 @@ describe("Ratings plugin", () => {
     await runPluginOperation({
       pluginSlug: "ratings",
       operationName: "submit",
-      args: { pageId: "p", locale: "en", score: 4 },
+      args: { pageId: "p", score: 4 },
     });
     await runPluginOperation({
       pluginSlug: "ratings",
       operationName: "submit",
-      args: { pageId: "p", locale: "en", score: 5 },
+      args: { pageId: "p", score: 5 },
     });
     const refresh = await runPluginOperation({
       pluginSlug: "ratings",
@@ -202,7 +202,7 @@ describe("Ratings plugin", () => {
     const list = await runPluginOperation({
       pluginSlug: "ratings",
       operationName: "list_aggregates",
-      args: { pageId: "p", locale: "en" },
+      args: { pageId: "p" },
     });
     if (!list.ok) return;
     const aggs = (
@@ -221,7 +221,7 @@ describe("Newsletter plugin", () => {
     const sub = await runPluginOperation({
       pluginSlug: "newsletter",
       operationName: "subscribe",
-      args: { email: "alice@example.com", locale: "en" },
+      args: { email: "alice@example.com" },
     });
     expect(sub.ok).toBe(true);
 
@@ -286,7 +286,6 @@ describe("Comments plugin", () => {
       operationName: "submit",
       args: {
         pageId: "11111111-1111-4111-8111-111111111111",
-        locale: "en",
         authorName: "Alice",
         content: "Great post!",
       },
@@ -298,7 +297,7 @@ describe("Comments plugin", () => {
     const before = await runPluginOperation({
       pluginSlug: "comments",
       operationName: "list_approved",
-      args: { pageId: "11111111-1111-4111-8111-111111111111", locale: "en" },
+      args: { pageId: "11111111-1111-4111-8111-111111111111" },
     });
     if (!before.ok) return;
     expect((before.value as { comments: unknown[] }).comments).toHaveLength(0);
@@ -313,7 +312,7 @@ describe("Comments plugin", () => {
     const after = await runPluginOperation({
       pluginSlug: "comments",
       operationName: "list_approved",
-      args: { pageId: "11111111-1111-4111-8111-111111111111", locale: "en" },
+      args: { pageId: "11111111-1111-4111-8111-111111111111" },
     });
     if (!after.ok) return;
     expect((after.value as { comments: Array<{ status: string }> }).comments).toHaveLength(1);
@@ -331,7 +330,6 @@ describe("Comments plugin", () => {
         operationName: "submit",
         args: {
           pageId: "22222222-2222-4222-8222-222222222222",
-          locale: "en",
           authorName: "A",
           content: `c${i}`,
         },
@@ -369,7 +367,6 @@ describe("Auth plugin", () => {
       args: { email: "alice@example.com", password: "supersecret" },
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
-        locale: "en",
         sessionToken: null,
         sessionMutation: mut,
       },
@@ -388,7 +385,6 @@ describe("Auth plugin", () => {
       args: {},
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
-        locale: "en",
         sessionToken,
       },
     });
@@ -403,7 +399,6 @@ describe("Auth plugin", () => {
       args: {},
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
-        locale: "en",
         sessionToken,
         sessionMutation: logoutMut,
       },
@@ -418,7 +413,6 @@ describe("Auth plugin", () => {
       args: {},
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
-        locale: "en",
         sessionToken: null,
       },
     });
@@ -433,7 +427,6 @@ describe("Auth plugin", () => {
       args: { email: "alice@example.com", password: "supersecret" },
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
-        locale: "en",
         sessionToken: null,
         sessionMutation: loginMut,
       },
@@ -447,7 +440,6 @@ describe("Auth plugin", () => {
       args: {},
       visitorContext: {
         visitorId: "00000000-0000-0000-0000-00000000aaaa",
-        locale: "en",
         sessionToken: loginMut.current.sessionToken,
       },
     });

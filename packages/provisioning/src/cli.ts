@@ -262,9 +262,8 @@ async function up(): Promise<void> {
 
 interface DomainRow {
   hostname: string;
-  kind: "admin" | "public" | "locale-public";
+  kind: "admin" | "public";
   env: "production" | "staging";
-  localeCode?: string | null;
 }
 
 /**
@@ -277,7 +276,7 @@ async function tryFetchExtraDomains(cfg: CaeloConfig): Promise<CaddyDomainSpec[]
   try {
     const composeFile = COMPOSE_PATH;
     const sql =
-      "SELECT hostname, kind, env, locale_code FROM domains WHERE removed_at IS NULL ORDER BY hostname";
+      "SELECT hostname, kind, env FROM domains WHERE removed_at IS NULL ORDER BY hostname";
     const proc = Bun.spawn(
       [
         "docker",
@@ -309,20 +308,19 @@ async function tryFetchExtraDomains(cfg: CaeloConfig): Promise<CaddyDomainSpec[]
     const rows: DomainRow[] = [];
     for (const line of stdout.split("\n")) {
       if (!line.trim()) continue;
-      const [hostname, kind, env, localeCode] = line.split("|");
+      const [hostname, kind, env] = line.split("|");
       if (!hostname || !kind || !env) continue;
       rows.push({
         hostname,
         kind: kind as DomainRow["kind"],
         env: env as DomainRow["env"],
-        localeCode: localeCode || null,
       });
     }
-    return rows.map<CaddyDomainSpec>((r) =>
-      r.kind === "locale-public" && r.localeCode
-        ? { hostname: r.hostname, kind: "locale-public", localeCode: r.localeCode, env: r.env }
-        : { hostname: r.hostname, kind: r.kind as "admin" | "public", env: r.env },
-    );
+    return rows.map<CaddyDomainSpec>((r) => ({
+      hostname: r.hostname,
+      kind: r.kind,
+      env: r.env,
+    }));
   } catch (e) {
     console.warn("regenerate-caddy: domains lookup threw (DB unreachable?); using seed only", e);
     return [];

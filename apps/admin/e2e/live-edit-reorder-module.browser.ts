@@ -28,7 +28,7 @@ test.beforeAll(() => {
       const a = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.MOD_A}, 'a', \${process.env.MOD_A}, '<p>A</p>') RETURNING id::text AS id\`)[0])?.id;
       const b = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.MOD_B}, 'b', \${process.env.MOD_B}, '<p>B</p>') RETURNING id::text AS id\`)[0])?.id;
       const cc = ((await tx\`INSERT INTO modules (slug, display_name, type, html) VALUES (\${process.env.MOD_C}, 'c', \${process.env.MOD_C}, '<p>C</p>') RETURNING id::text AS id\`)[0])?.id;
-      const pg = ((await tx\`INSERT INTO pages (slug, locale, name, title, template_id, status) VALUES (\${process.env.PAGE_SLUG}, 'en', 'RO', 'RO', \${tplId}::uuid, 'draft') RETURNING id::text AS id\`)[0])?.id;
+      const pg = ((await tx\`INSERT INTO pages (slug, name, title, template_id, status) VALUES (\${process.env.PAGE_SLUG}, 'RO', 'RO', \${tplId}::uuid, 'draft') RETURNING id::text AS id\`)[0])?.id;
       // v0.12.0 — page_modules.content_instance_id is NOT NULL. Mint
       // one unsynced content_instance per placement before inserting.
       const ciA = ((await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${a}::uuid, '{}'::jsonb) RETURNING id::text AS id\`)[0])?.id;

@@ -89,8 +89,8 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
           RETURNING id::text AS id\`;
         out.mod = mod[0].id;
         const pg = await tx\`
-          INSERT INTO pages (slug, locale, title, template_id, status)
-          VALUES (\${process.env.PAGE_SLUG}, 'en', 'LE Page', \${out.tpl}::uuid, 'published')
+          INSERT INTO pages (slug, title, template_id, status)
+          VALUES (\${process.env.PAGE_SLUG}, 'LE Page', \${out.tpl}::uuid, 'published')
           RETURNING id::text AS id\`;
         out.pg = pg[0].id;
         const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${out.mod}::uuid, '{}'::jsonb) RETURNING id::text AS id\`;

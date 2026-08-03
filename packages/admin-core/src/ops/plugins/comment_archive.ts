@@ -13,7 +13,7 @@
  *                                   crash-and-retry doesn't double-archive.
  *
  *   comment_archive.list_for_page — read approved archived comments for
- *                                   one (page, locale). Used by the
+ *                                   one page. Used by the
  *                                   comments plugin's staticRender +
  *                                   metaSignature so the static bake
  *                                   reads from cms_admin (the long-term
@@ -41,7 +41,6 @@ const insertInput = z
     // installs. Validate as uuid here so a malformed test fixture
     // surfaces clearly instead of an opaque DB FK error.
     pageId: z.string().uuid(),
-    locale: z.string().min(2).max(20),
     parentId: z.string().uuid().nullable(),
     authorName: z.string().min(1).max(256),
     content: z.string().min(1).max(50_000),
@@ -65,12 +64,11 @@ export const commentArchiveInsertOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       INSERT INTO comment_archive (
-        public_row_id, page_id, locale, parent_id,
+        public_row_id, page_id, parent_id,
         author_name, content, status, submitted_at
       ) VALUES (
         ${input.publicRowId}::uuid,
         ${input.pageId}::uuid,
-        ${input.locale},
         ${input.parentId === null ? null : sql`${input.parentId}::uuid`},
         ${input.authorName},
         ${input.content},
@@ -87,7 +85,6 @@ export const commentArchiveInsertOp = defineOperation({
 const listForPageInput = z
   .object({
     pageId: z.string().uuid(),
-    locale: z.string().min(2).max(20),
     status: z.enum(["approved", "rejected", "spam"]).optional(),
     since: z.string().datetime().optional(),
     limit: z.number().int().min(1).max(500).optional(),
@@ -98,7 +95,6 @@ const archiveRowSchema = z.object({
   id: z.string(),
   publicRowId: z.string(),
   pageId: z.string(),
-  locale: z.string(),
   parentId: z.string().nullable(),
   authorName: z.string(),
   content: z.string(),
@@ -122,7 +118,6 @@ export const commentArchiveListForPageOp = defineOperation({
         id::text             AS id,
         public_row_id::text  AS public_row_id,
         page_id::text        AS page_id,
-        locale,
         parent_id::text      AS parent_id,
         author_name,
         content,
@@ -131,7 +126,6 @@ export const commentArchiveListForPageOp = defineOperation({
         archived_at
       FROM comment_archive
       WHERE page_id = ${input.pageId}::uuid
-        AND locale = ${input.locale}
         AND status = ${status}
         AND archived_at > ${since}::timestamptz
       ORDER BY submitted_at ASC
@@ -140,7 +134,6 @@ export const commentArchiveListForPageOp = defineOperation({
       id: string;
       public_row_id: string;
       page_id: string;
-      locale: string;
       parent_id: string | null;
       author_name: string;
       content: string;
@@ -153,7 +146,6 @@ export const commentArchiveListForPageOp = defineOperation({
         id: r.id,
         publicRowId: r.public_row_id,
         pageId: r.page_id,
-        locale: r.locale,
         parentId: r.parent_id,
         authorName: r.author_name,
         content: r.content,

@@ -67,12 +67,11 @@ function toolCtxWith(calls: string[]): ToolContext {
         case "pages.list":
           return ok({
             pages: [
-              { id: PAGE_A, slug: "post-one", locale: "en", templateId: TEMPLATE_ID },
-              { id: PAGE_B, slug: "post-two", locale: "en", templateId: TEMPLATE_ID },
+              { id: PAGE_A, slug: "post-one", templateId: TEMPLATE_ID },
+              { id: PAGE_B, slug: "post-two", templateId: TEMPLATE_ID },
               {
                 id: "11111111-1111-4111-8111-1111111100c3",
                 slug: "landing",
-                locale: "en",
                 templateId: "22222222-2222-4222-8222-222222222222",
               },
             ],

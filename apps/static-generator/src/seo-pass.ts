@@ -22,7 +22,7 @@ import { join } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   injectSeoIntoHead,
-  pageIsLocaleHome,
+  isDesignatedHomePage,
   renderSeoHead,
   resolveCanonicalUrl,
   type SiteSeoSettings,
@@ -32,7 +32,6 @@ import { sql } from "drizzle-orm";
 interface PageSeoBundle {
   pageId: string;
   slug: string;
-  locale: string;
   title: string;
   metaDescription: string;
   noindex: boolean;
@@ -45,7 +44,6 @@ interface PageSeoBundle {
 
 export interface SeoPagesContext {
   pageSlug: string;
-  pageLocale: string;
   pageTitle: string;
   html: string;
 }
@@ -73,7 +71,7 @@ export async function runSeoPass(args: {
   for (const slug of slugs) {
     const rows = (await args.tx.execute(sql`
       SELECT
-        p.id::text AS page_id, p.slug, p.locale, p.title,
+        p.id::text AS page_id, p.slug, p.title,
         coalesce(s.meta_description, '') AS meta_description,
         coalesce(s.noindex, false) AS noindex,
         coalesce(s.changefreq, 'weekly') AS changefreq,
@@ -88,7 +86,6 @@ export async function runSeoPass(args: {
     `)) as unknown as {
       page_id: string;
       slug: string;
-      locale: string;
       title: string;
       meta_description: string;
       noindex: boolean;
@@ -103,7 +100,6 @@ export async function runSeoPass(args: {
     seoBundles.push({
       pageId: r.page_id,
       slug: r.slug,
-      locale: r.locale,
       title: r.title,
       metaDescription: r.meta_description,
       noindex: r.noindex,
@@ -156,27 +152,23 @@ export async function runSeoPass(args: {
     ogImageUrlByAsset.set(id, assetUrl);
   }
 
-  // 0184 — the designated homepage id, still parked per locale row
-  // until #384 moves it to site_defaults. Looked up via each page's
-  // own locale so the designation semantics survive the #383 cut.
+  // 0184 — the designated homepage id (site_defaults since #384).
   const homeRows = (await args.tx.execute(sql`
-    SELECT code, home_page_id::text AS home_page_id FROM locales
-  `)) as unknown as { code: string; home_page_id: string | null }[];
-  const homePageByLocale = new Map(homeRows.map((r) => [r.code, r.home_page_id]));
+    SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
+  `)) as unknown as { home_page_id: string | null }[];
+  const designatedHomePageId = homeRows[0]?.home_page_id ?? null;
 
-  // Inject the head block per page. Match by (slug, locale).
-  const bundleBySlug = new Map<string, PageSeoBundle>(
-    seoBundles.map((b) => [`${b.slug}|${b.locale}`, b]),
-  );
+  // Inject the head block per page, matched by slug.
+  const bundleBySlug = new Map<string, PageSeoBundle>(seoBundles.map((b) => [b.slug, b]));
   for (const p of args.pages) {
-    const bundle = bundleBySlug.get(`${p.pageSlug}|${p.pageLocale}`);
+    const bundle = bundleBySlug.get(p.pageSlug);
     if (!bundle) continue;
     const canonical = resolveCanonicalUrl({
       siteBaseUrl: args.settings.siteBaseUrl,
       pageSlug: bundle.slug,
       override: bundle.canonicalOverride,
       pageUrlStyle: args.pageUrlStyle,
-      isHomePage: pageIsLocaleHome(bundle.pageId, bundle.slug, homePageByLocale.get(bundle.locale)),
+      isHomePage: isDesignatedHomePage(bundle.pageId, bundle.slug, designatedHomePageId),
     });
     const ogImageUrl = bundle.ogImageAssetId
       ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
@@ -203,7 +195,7 @@ export async function runSeoPass(args: {
           pageSlug: b.slug,
           override: b.canonicalOverride,
           pageUrlStyle: args.pageUrlStyle,
-          isHomePage: pageIsLocaleHome(b.pageId, b.slug, homePageByLocale.get(b.locale)),
+          isHomePage: isDesignatedHomePage(b.pageId, b.slug, designatedHomePageId),
         });
         return [
           "  <url>",

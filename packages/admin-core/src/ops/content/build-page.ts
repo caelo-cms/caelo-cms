@@ -46,7 +46,6 @@ import {
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import { planBuildPagePlacements, type ResolvedBuildPlacement } from "./build-page-plan.js";
-import { recomputePageContentHash } from "./content_hash.js";
 import { createContentInstanceOp } from "./content-instances.js";
 import { createModuleOp } from "./modules.js";
 import { createPageOp } from "./pages.js";
@@ -192,14 +191,13 @@ export const buildPageOp = defineOperation({
       pageSlug = row.slug;
     } else {
       // Create mode — parse through the singular schema so defaults
-      // (locale, status) apply exactly as pages.create expects, then
+      // (status) applies exactly as pages.create expects, then
       // delegate to its handler for template resolution + slug checks
       // + snapshot emission.
       const parsed = pageCreateSchema.safeParse({
         slug: input.page.slug,
         title: input.page.title,
         ...(input.page.name !== undefined ? { name: input.page.name } : {}),
-        ...(input.page.locale !== undefined ? { locale: input.page.locale } : {}),
         ...(input.page.templateId !== undefined ? { templateId: input.page.templateId } : {}),
         ...(input.page.status !== undefined ? { status: input.page.status } : {}),
       });
@@ -574,9 +572,6 @@ export const buildPageOp = defineOperation({
       chatBranchId: ctx.chatBranchId ?? null,
       entities: [{ kind: "pageLayout", entityId: pageId, state: layoutState }],
     });
-    if (!branched) {
-      await recomputePageContentHash(tx, pageId);
-    }
 
     // Stamp the import→page linkage LAST, once pageId is final. Idempotent:
     // on a rebuild `accepted_page_id` already equals pageId; on a first

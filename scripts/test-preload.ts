@@ -12,7 +12,7 @@
  *      audit events, rate-limit buckets, …) accumulates as the suite
  *      progresses. Queries that scan churn tables (the cross-chat scan
  *      with 6 correlated subqueries per row, the rate limiter's first
- *      INSERT, locales' wipe DELETEs) get slower file-by-file, until
+ *      INSERT, the wipe DELETEs) get slower file-by-file, until
  *      they trip Bun's 5-second hook timeout — or in the rate limiter's
  *      case, the transaction takes long enough that `pg_now()` (captured
  *      at tx start) lags JS `Date.now()` by the time the await resolves,
@@ -32,7 +32,7 @@
  *
  * Approach: dynamically enumerate every user table in `cms_admin` /
  * `cms_public`, subtract a curated `PRESERVE` allowlist of seed-bearing
- * tables (locales' `en`, the layout / template / site_defaults seed
+ * tables (the layout / template / site_defaults seed
  * chain, builtin roles + permissions, etc.), and TRUNCATE the rest in
  * one statement with CASCADE. Dynamic enumeration means new churn
  * tables added in future migrations are picked up automatically; the
@@ -104,7 +104,7 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL ?? process.env.PUBLIC_D
 /**
  * Tables in `cms_admin` whose rows come from migrations (not test
  * inserts). Truncating them would force every file to re-seed the
- * builtin roles / permissions / locales / layout chain / etc., which is
+ * builtin roles / permissions / layout chain / etc., which is
  * the wrong layer to do that at. New entries here only when a NEW
  * seed-bearing table lands in a migration.
  */
@@ -116,7 +116,6 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "email_config",
   "layout_blocks",
   "layouts",
-  "locales",
   "permissions",
   "rate_limit_profiles",
   "release_check_cache",
@@ -162,10 +161,8 @@ export const PUBLIC_PRESERVE: ReadonlySet<string> = new Set([
  *     (`logo_media_id` etc.) are ON DELETE SET NULL; CASCADE truncated
  *     `themes` and left installs with no active theme (empty themes UI,
  *     cold-start gate firing on every mock-AI spec).
- *   - `pages` (#0184): `locales.home_page_id` is ON DELETE SET NULL;
- *     CASCADE-truncating `pages` would empty the `locales` seed (the `en`
- *     row), so every integration test that seeds a page/module then failed
- *     at setup. `pages`' only outbound FK targets `templates` (a PRESERVE
+ *   - `pages` (#0184): `site_defaults.home_page_id` is ON DELETE SET
+ *     NULL; `pages`' only outbound FK targets `templates` (a PRESERVE
  *     table), so protecting it opens no new hole (invariant test #112).
  *
  * These DELETEs run AFTER the truncate so plain NO ACTION references

@@ -84,11 +84,6 @@ export function slugifyModuleSection(
   return `${deriveModuleType(displayName)}-${idx}-${suffix}`;
 }
 
-/** BCP-47 shape: 2-letter language with optional 2-letter region. P9 widens this. */
-export const localeSchema = z
-  .string()
-  .regex(/^[a-z]{2}(-[A-Z]{2})?$/, "locale must be 'xx' or 'xx-YY' (BCP-47 shape)");
-
 const displayNameSchema = z.string().min(1).max(128);
 
 /** Caps are arbitrary but cheap — paste-of-binary mistakes get caught. */
@@ -457,7 +452,6 @@ export const pageStatusSchema = z.enum(["draft", "published"]);
 export const pageCreateSchema = z
   .object({
     slug: slugSchema,
-    locale: localeSchema.default("en"),
     /** P6.7.5 — internal editor label. Defaults to title if omitted. */
     name: z.string().min(1).max(256).optional(),
     title: z.string().min(1).max(256),

@@ -70,8 +70,8 @@ test("clicking an element in the live-preview iframe appends a chip", async ({ p
         VALUES (\${process.env.MOD_SLUG}, 'le mod', \${process.env.MOD_SLUG}, '<h1>HERO_CLICK_TARGET</h1>')
         RETURNING id::text AS id\`;
       const pg = await tx\`
-        INSERT INTO pages (slug, locale, title, template_id, status)
-        VALUES (\${process.env.PAGE_SLUG}, 'en', 'LE Click Page', \${tpl[0].id}::uuid, 'draft')
+        INSERT INTO pages (slug, title, template_id, status)
+        VALUES (\${process.env.PAGE_SLUG}, 'LE Click Page', \${tpl[0].id}::uuid, 'draft')
         RETURNING id::text AS id\`;
       out.pg = pg[0].id;
       const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${mod[0].id}::uuid, '{}'::jsonb) RETURNING id::text AS id\`;

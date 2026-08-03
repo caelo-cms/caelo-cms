@@ -136,7 +136,6 @@ describe("v0.9.0 branched-create", () => {
 
     const p = await execute(registry, adapter, sysCtx, "pages.create", {
       slug: `${PFX}block-p1`,
-      locale: "en",
       title: "Block test",
       templateId,
     });
@@ -265,7 +264,6 @@ describe("v0.9.0 branched-create", () => {
     // Create page in chat — branched.
     const pr = await execute(registry, adapter, cCtx, "pages.create", {
       slug: `${PFX}chain-p1`,
-      locale: "en",
       title: "Chain Page",
       templateId,
     });

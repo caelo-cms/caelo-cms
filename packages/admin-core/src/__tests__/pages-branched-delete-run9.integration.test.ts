@@ -76,7 +76,6 @@ describe("run #9 R9 — branched pages.delete reads back as deleted", () => {
 
     const page = await execute(registry, adapter, SYSTEM, "pages.create", {
       slug: PAGE_SLUG,
-      locale: "en",
       title: "Run9 deletable page",
       templateId,
       status: "draft",

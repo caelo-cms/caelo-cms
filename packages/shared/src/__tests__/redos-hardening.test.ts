@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { fontFamilySlug, parseFontsCss } from "../fonts.js";
-import { trimSlashes, trimTrailingSlashes } from "../i18n.js";
+import { trimSlashes, trimTrailingSlashes } from "../url.js";
 import { renderTemplate } from "../template-engine.js";
 import { stripCssComments } from "../theme-importers/css-comments.js";
 

@@ -83,7 +83,6 @@ describe("v0.10.0 chained branched edits", () => {
 
     const page = await execute(registry, adapter, HUMAN, "pages.create", {
       slug: PAGE_SLUG,
-      locale: "en",
       title: "Original Title",
       templateId,
       status: "draft",

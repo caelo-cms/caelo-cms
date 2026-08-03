@@ -78,7 +78,6 @@ beforeAll(async () => {
   if (!tpl.ok) throw new Error(JSON.stringify(tpl.error));
   const shadowPage = await execute(registry, adapter, SYSTEM, "pages.create", {
     slug: SHADOW_SLUG,
-    locale: "en",
     title: "Existing tools page",
     templateId: (tpl.value as { templateId: string }).templateId,
     status: "draft",

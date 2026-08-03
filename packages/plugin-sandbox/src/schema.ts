@@ -23,9 +23,6 @@
  *   jsonb      → jsonb
  *   enum:a,b,c → text CHECK (col IN ('a','b','c'))
  *
- * Tables with `page_id` get an additional CHECK ensuring `locale`
- * is NOT NULL (the validator already rejects schemas missing locale,
- * but the constraint is defense-in-depth).
  */
 
 import type { PluginSchemaMap } from "@caelo-cms/plugin-sdk";
