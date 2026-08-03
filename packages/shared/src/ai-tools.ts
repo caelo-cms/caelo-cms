@@ -973,7 +973,6 @@ export type MoveModuleToolInput = z.infer<typeof moveModuleToolInput>;
 export type ReorderModuleToolInput = z.infer<typeof reorderModuleToolInput>;
 // v0.10.22 — `SetNavMenuToolInput` removed alongside `set_nav_menu` tool.
 
-
 /**
  * P10A — `propose_skill`. AI drafts a new skill body (or revision) and
  * queues it for Owner review. Per CLAUDE.md §2: skills augment the AI's
