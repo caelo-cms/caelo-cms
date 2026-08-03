@@ -20,14 +20,22 @@ Actions → **release-cut** → *Run workflow* → pick `patch` / `minor` /
 that PR merges the workflow tags the merge commit and dispatches
 `release.yml` automatically — identical artifacts to the local flow.
 
-One-time setup: CI needs the Tier-1 manifest signing key that
-maintainer machines keep in `.caelo-dev-key` (release.ts re-signs the
-plugin manifests). From a checkout that has the file:
+One-time setup: CI needs the Tier-1 manifest signing key (release.ts
+re-signs the plugin manifests). The pair stored here IS the release
+keypair from that point on — every published manifest verifies against
+this public key, so it must be the ONE canonical pair, not an
+arbitrary per-machine dev key. Source it from the team secrets
+manager; extracting from a local `.caelo-dev-key` is only correct when
+that file holds the canonical pair (the historical solo-maintainer
+case, where every release so far was signed from it):
 
 ```bash
 jq -r .privateKeyHex .caelo-dev-key | gh secret set CAELO_TIER1_PRIVATE_KEY
 jq -r .publicKeyHex  .caelo-dev-key | gh variable set CAELO_TIER1_PUBLIC_KEY
 ```
+
+To rotate: generate a fresh pair, update the secret + variable, and
+ship a release so the manifests re-sign with the new key.
 
 Merging the release PR: PRs opened with the repo `GITHUB_TOKEN` get no
 workflow runs, so its required checks sit pending. Merge with
