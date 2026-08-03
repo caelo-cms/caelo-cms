@@ -31,6 +31,11 @@
 #   - AWS public ECR + Azure ACR will land alongside the P15 cloud
 #     adapters; same pattern (workflow pushes once per release; stack
 #     references the public URL).
+#
+# Retention: release tags live forever; the per-merge `main-<sha7>`
+# dev images are pruned after 7 days — GHCR via registry-retention.yml,
+# the AR mirror via native cleanup policies. See
+# docs/maintainer-public-registry-setup.md ("Retention").
 
 name: release-images
 
