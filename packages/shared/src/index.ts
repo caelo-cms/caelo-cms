@@ -15,7 +15,6 @@ export * from "./design-manifest.js";
 export * from "./fonts.js";
 export * from "./genesis.js";
 export * from "./genesis-inventory.js";
-export * from "./url.js";
 export * from "./interactions.js";
 export {
   type LogContext,
@@ -55,4 +54,5 @@ export * from "./theme-ramp.js";
 export * from "./theme-render.js";
 export * from "./themes.js";
 export * from "./themes-errors.js";
+export * from "./url.js";
 export { CAELO_VERSION, CALEO_VERSION, type CaeloVersion, parseVersion } from "./version.js";

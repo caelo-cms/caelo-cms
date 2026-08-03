@@ -44,7 +44,6 @@ const inputSchema = z
      *  triggers a full-site rebuild because templates reference menus
      *  / theme tokens implicitly today. */
     structuredSetSlugs: z.array(z.string()).default([]),
-
   })
   .strict();
 

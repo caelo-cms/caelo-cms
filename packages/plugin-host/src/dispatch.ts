@@ -500,8 +500,8 @@ export async function runPluginMetaSignature(opts: {
     throw new Error("plugin host not bootstrapped");
   }
   const ctx = await makeContext({ plugin, infra: cachedInfra });
-  const out = await (
-    sig as (c: unknown, a: { pageId: string }) => Promise<string> | string
-  )(ctx, { pageId: opts.pageId });
+  const out = await (sig as (c: unknown, a: { pageId: string }) => Promise<string> | string)(ctx, {
+    pageId: opts.pageId,
+  });
   return typeof out === "string" ? out : "";
 }

@@ -99,7 +99,7 @@ describe("deploy.rollback", () => {
     const p = await execute(registry, adapter, HUMAN, "pages.create", {
       slug: PAGE_SLUG,
       title: "RB",
-      templateId: tplId
+      templateId: tplId,
     });
     if (!p.ok) throw new Error("seed");
     const pageId = (p.value as { pageId: string }).pageId;
@@ -114,7 +114,7 @@ describe("deploy.rollback", () => {
     const hp = await execute(registry, adapter, HUMAN, "pages.create", {
       slug: HOME_SLUG,
       title: "Home",
-      templateId: tplId
+      templateId: tplId,
     });
     if (!hp.ok) throw new Error("home seed");
     const homePageId = (hp.value as { pageId: string }).pageId;

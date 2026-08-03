@@ -53,7 +53,7 @@ describe("state read endpoints — every chunk has a live read", () => {
   const tools = [
     getSiteDefaultsTool,
     getDesignManifestTool,
-      listPendingProposalsTool,
+    listPendingProposalsTool,
     listUsersTool,
     listRolesTool,
     listAiProvidersTool,

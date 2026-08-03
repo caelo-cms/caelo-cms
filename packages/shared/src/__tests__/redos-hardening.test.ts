@@ -12,9 +12,9 @@
 
 import { describe, expect, it } from "bun:test";
 import { fontFamilySlug, parseFontsCss } from "../fonts.js";
-import { trimSlashes, trimTrailingSlashes } from "../url.js";
 import { renderTemplate } from "../template-engine.js";
 import { stripCssComments } from "../theme-importers/css-comments.js";
+import { trimSlashes, trimTrailingSlashes } from "../url.js";
 
 // 250ms, not 100: under CI coverage instrumentation on a loaded runner
 // the LINEAR 100k-char scans measured up to ~113ms (PR #170 flake). A

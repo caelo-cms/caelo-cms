@@ -141,7 +141,7 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
             { name: "email", type: "email" },
             { name: "message", type: "text" },
           ],
-        }
+        },
       },
     });
     expect(create.ok).toBe(true);
@@ -152,7 +152,8 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         formSlug: FORM_SLUG,
-        pageId: "00000000-0000-0000-0000-000000000001", data: { email: "alice@example.com", message: "hello!" },
+        pageId: "00000000-0000-0000-0000-000000000001",
+        data: { email: "alice@example.com", message: "hello!" },
       }),
     });
     const submitRes = await handleRequest(submitReq);
@@ -249,7 +250,8 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          formSlug: "no-such-form", data: { x: 1 },
+          formSlug: "no-such-form",
+          data: { x: 1 },
         }),
       }),
     );
