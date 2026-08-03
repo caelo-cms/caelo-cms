@@ -1,0 +1,24 @@
+[
+  {
+    "name": "delete-main-dev-images-after-7d",
+    "action": { "type": "Delete" },
+    "condition": {
+      "tagState": "TAGGED",
+      "tagPrefixes": ["main-"],
+      "olderThan": "7d"
+    }
+  },
+  {
+    "name": "delete-untagged-after-7d",
+    "action": { "type": "Delete" },
+    "condition": {
+      "tagState": "UNTAGGED",
+      "olderThan": "7d"
+    }
+  },
+  {
+    "name": "keep-10-most-recent-versions",
+    "action": { "type": "Keep" },
+    "mostRecentVersions": { "keepCount": 10 }
+  }
+]

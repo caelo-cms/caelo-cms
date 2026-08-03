@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Caelo CMS — registry retention (GHCR).
+#
+# release-images.yml publishes TWO kinds of images per service:
+#   1. Release images (`vX.Y.Z` semver + `latest`) — the artifacts
+#      operators pin (`cms-provision upgrade` defaults to `latest`;
+#      the live caelo-cms.com deploy runs a release digest). Kept
+#      FOREVER — an operator must always be able to pull + cosign-
+#      verify any released version.
+#   2. Dev images (`:main` floating + `main-<sha7>` per merge) — one
+#      per push to main, useful for a few days of debugging/bisecting,
+#      then dead weight. Two services × ~1 merge/day ≈ 700+ full
+#      images per year that nothing references.
+#
+# This workflow prunes kind 2 from GHCR daily: every image whose tags
+# all match `main-*` and that is older than 7 days, plus untagged
+# orphans (superseded manifests, dangling attestation trees). The
+# floating `main` tag is excluded explicitly so the newest dev image
+# survives even during idle weeks — the provisioning wizard's fresh-
+# install path resolves `admin:main`/`gateway:main` and must always
+# find it. Release tags never match `main-*`, and the action's
+# `validate` pass checks the manifest graph after deletion.
+#
+# Deleting an old `main-<sha7>` digest cannot break a deployed
+# operator install: Cloud Run copies the container image at revision-
+# creation time and serves (incl. scale-from-zero) from its own copy,
+# not from the registry.
+#
+# The GCP Artifact Registry mirror has the equivalent rules applied
+# server-side as native cleanup policies — no workflow needed; see
+# docs/maintainer-public-registry-setup.md ("Retention") and
+# docs/maintainer-ar-cleanup-policy.json.
+
+name: registry-retention
+
+on:
+  schedule:
+    # Daily, off-peak. Offbeat minute per GitHub's guidance to avoid
+    # top-of-hour scheduler congestion.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log what would be deleted without deleting"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # GHCR package deletion. The admin + gateway packages are linked to
+  # this repo (pushed by release-images.yml with GITHUB_TOKEN), which
+  # grants this repo's token package-admin on them.
+  packages: write
+
+concurrency:
+  group: registry-retention
+  cancel-in-progress: false
+
+jobs:
+  prune-ghcr:
+    name: prune GHCR dev images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete main-<sha7> images older than 7 days (+ untagged orphans)
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          owner: caelo-cms
+          repository: caelo-cms
+          packages: admin,gateway
+          delete-tags: "main-*"
+          # Belt-and-braces: `main-*` cannot match the bare `main` tag,
+          # but the floating tag is what fresh installs resolve — never
+          # let a config tweak take it out.
+          exclude-tags: main
+          older-than: 7 days
+          # Orphaned untagged manifests only — the action walks the
+          # manifest graph, so attestation/platform children of tagged
+          # images are NOT touched.
+          delete-untagged: true
+          # Cosign signature/referrer artifacts whose subject image was
+          # deleted (by this run or an earlier one).
+          delete-orphaned-images: true
+          validate: true
+          # Scheduled runs delete for real; manual dispatches default
+          # to a dry run so the config can be tested from the UI.
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}

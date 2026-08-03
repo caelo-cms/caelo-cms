@@ -107,6 +107,34 @@ gcloud artifacts docker images list europe-west1-docker.pkg.dev/caelo-website/ca
 docker pull europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/admin:main  # no auth
 ```
 
+## Retention — releases live forever, dev images for 7 days
+
+release-images publishes two kinds of images per service, with different lifetimes:
+
+| Kind | Tags | Lifetime | Why |
+|---|---|---|---|
+| Release images | `X.Y.Z`, `X.Y`, `latest` | forever | The artifacts operators pin. `cms-provision upgrade` defaults to `latest`; the live caelo-cms.com deploy runs a release digest. Deleting one would break `--version vX.Y.Z` pins + cosign verification. |
+| Dev images | `main` (floating), `main-<sha7>` (per merge) | 7 days | Debug/bisect material only. Nothing references them after a few days — the wizard resolves the floating `main` tag, never a `main-<sha7>`. |
+
+Deleting an old digest cannot break a deployed install: per the Cloud Run docs, *"The container image is imported by Cloud Run when deployed. Cloud Run keeps this copy of the container image as long as it is used by a serving revision."* Only re-deploying that exact digest would need the registry copy — and both retention rules below always keep the newest dev images, so the floating `main` tag stays resolvable.
+
+Enforcement is per registry:
+
+- **GHCR** — the scheduled [`registry-retention.yml`](../.github/workflows/registry-retention.yml) workflow prunes `main-<sha7>` images older than 7 days plus orphaned untagged manifests, daily. Manual `workflow_dispatch` runs default to dry-run.
+- **GCP AR mirror** — native [cleanup policies](https://cloud.google.com/artifact-registry/docs/repositories/cleanup-policy) do the same server-side (no credentials, no cron to maintain). One-time apply (policy file lives at [`maintainer-ar-cleanup-policy.json`](./maintainer-ar-cleanup-policy.json)):
+
+```bash
+gcloud artifacts repositories set-cleanup-policies caelo-cms-images \
+  --location=europe-west1 \
+  --project=caelo-website \
+  --policy=docs/maintainer-ar-cleanup-policy.json \
+  --no-dry-run
+```
+
+The policy deletes `main-*`-tagged versions older than 7 days and untagged versions older than 7 days, with a keep-rule for the 10 most recent versions per package as an idle-week backstop (keep beats delete in AR policy evaluation, and release tags never match the `main-` prefix). AR runs cleanup policies roughly daily; expect up to a day of lag after applying.
+
+Known cosmetic leftover: cosign signature artifacts (`sha256-<digest>.sig` tags) of deleted dev images stay behind as orphaned versions in AR — they can't be prefix-matched without also matching release signatures, and at ~2 KB each they're not worth a bespoke GC. GHCR-side the cleanup action removes them together with their subject image.
+
 ## Operator deploy after mirror is live
 
 Operators run `bunx @caelo-cms/provisioning --provider gcp` and Cloud Run pulls from the mirror — no operator-side AR repo, no copy step, no auth. To pin a specific tag, operators do `pulumi config set caelo-gcp:image-tag v0.1.2`.
