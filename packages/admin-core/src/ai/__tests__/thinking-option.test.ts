@@ -22,13 +22,12 @@ describe("isAdaptiveModel — the class that rejects pre-4.6 sampling/thinking k
     expect(isAdaptiveModel(model)).toBe(true);
   });
 
-  it.each([
-    "claude-opus-4-5",
-    "claude-sonnet-4-5",
-    "claude-haiku-4-5",
-  ])("%s is NOT adaptive (still accepts temperature + budget_tokens)", (model) => {
-    expect(isAdaptiveModel(model)).toBe(false);
-  });
+  it.each(["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"])(
+    "%s is NOT adaptive (still accepts temperature + budget_tokens)",
+    (model) => {
+      expect(isAdaptiveModel(model)).toBe(false);
+    },
+  );
 });
 
 describe("resolveThinkingOption", () => {
@@ -43,14 +42,13 @@ describe("resolveThinkingOption", () => {
     expect(resolveThinkingOption(model, 4096)).toEqual({ type: "adaptive" });
   });
 
-  it.each([
-    "claude-opus-4-5",
-    "claude-sonnet-4-5",
-    "claude-haiku-4-5",
-  ])("keeps the explicit budget form for %s", (model) => {
-    expect(resolveThinkingOption(model, 4096)).toEqual({
-      type: "enabled",
-      budgetTokens: 4096,
-    });
-  });
+  it.each(["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"])(
+    "keeps the explicit budget form for %s",
+    (model) => {
+      expect(resolveThinkingOption(model, 4096)).toEqual({
+        type: "enabled",
+        budgetTokens: 4096,
+      });
+    },
+  );
 });
