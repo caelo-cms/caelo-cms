@@ -37,10 +37,6 @@ const PROPOSE_TOOL_FILES = [
   "tune-rate-limit.ts",
   "propose-site-import.ts",
   "propose-deploy-promote.ts",
-  "propose-add-locale.ts",
-  "propose-remove-locale.ts",
-  "propose-set-default-locale.ts",
-  "propose-update-locale-strategy.ts",
   "_make-propose-tool.ts",
 ];
 
@@ -54,7 +50,7 @@ const EXEMPT_FROM_CANONICAL_LOCK = new Set(["propose-skill.ts"]);
  * it needs `Queued proposal <uuid>: <summary>.`
  *
  * This pattern used to be `/content:\s*[`"']Queued proposal /` — prefix only.
- * That hole is why the four locale tools shipped
+ * That hole is why the (since-deleted) locale tools shipped
  * `Queued proposal ${proposalId} to add locale 'de'` (no colon): they passed
  * this lock and still never rendered an Approve card, because the parser
  * requires the colon this test wasn't checking. Requiring `${…}:` closes it.

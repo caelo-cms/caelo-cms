@@ -229,17 +229,7 @@ import {
   updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
-import {
-  executeLocaleProposalOp,
-  getLocaleOp,
-  listLocalesOp,
-  listPendingLocaleProposalsOp,
-  proposeCreateLocaleOp,
-  proposeDeleteLocaleOp,
-  proposeSetDefaultLocaleOp,
-  proposeUpdateStrategyOp,
-  rejectLocaleProposalOp,
-} from "./ops/locales.js";
+import { getLocaleOp, listLocalesOp } from "./ops/locales.js";
 import {
   executeMcpTokenProposalOp,
   listPendingMcpTokenProposalsOp,
@@ -360,7 +350,6 @@ import {
 } from "./ops/seo.js";
 import { pagesSeoSetManyOp } from "./ops/seo-bulk.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/site_defaults.js";
-import { getSiteSettingsOp, setSiteSettingsOp } from "./ops/site_settings.js";
 import {
   listPinDefaultsOp,
   setEngagedSkillsOp,
@@ -918,18 +907,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(siteDefaultsSetSeoOp);
   registry.register(lookupLinksInModulesOp);
   registry.register(rewriteModuleLinksOp);
-  // P9 — locale registry + propose/execute split + site_settings toggle.
+  // Locale registry reads — survive until the page-identity cut (#384).
   registry.register(listLocalesOp);
   registry.register(getLocaleOp);
-  registry.register(proposeCreateLocaleOp);
-  registry.register(proposeDeleteLocaleOp);
-  registry.register(proposeSetDefaultLocaleOp);
-  registry.register(proposeUpdateStrategyOp);
-  registry.register(listPendingLocaleProposalsOp);
-  registry.register(executeLocaleProposalOp);
-  registry.register(rejectLocaleProposalOp);
-  registry.register(getSiteSettingsOp);
-  registry.register(setSiteSettingsOp);
   // P10A — skills system.
   registry.register(listSkillsOp);
   registry.register(getSkillOp);

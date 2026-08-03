@@ -44,7 +44,6 @@ const PENDING_TABLES = [
   "mcp_token_pending_actions",
   "template_pending_actions",
   "domain_pending_actions",
-  "locale_pending_actions",
   "plugin_rate_limit_proposals",
   // v0.11.0 (#45) — themes primitive uses the standard pending shape.
   "theme_pending_actions",
@@ -60,24 +59,15 @@ async function gcOnce(opts: ProposalGcWorkerOpts): Promise<{ totalMarked: number
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
     for (const table of PENDING_TABLES) {
       // Per-table column-name reality:
-      //  - age column: most use `created_at`; locale uses `proposed_at`.
-      //  - reason column: 11 unified tables use `decision_reason`;
-      //    locale_pending_actions uses `decision_note`;
+      //  - age column: every remaining table uses `created_at`.
+      //  - reason column: the unified tables use `decision_reason`;
       //    plugin_rate_limit_proposals uses `reason` (NOT NULL DEFAULT '').
       // All have `decided_at`; all share the 'pending'→'superseded'
-      // status transition (locale's check supports superseded;
-      // plugin_rate_limit's CHECK is ('pending', 'applied', 'rejected')
-      // and does NOT include 'superseded' — skip it from auto-supersede
-      // until v0.2.41 widens that constraint).
-      // v0.2.42 — plugin_rate_limit_proposals' status CHECK was widened
-      // to include 'superseded', so it now participates in the sweep.
-      const ageColumn = table === "locale_pending_actions" ? "proposed_at" : "created_at";
+      // status transition (plugin_rate_limit_proposals' CHECK was
+      // widened to include 'superseded' in v0.2.42).
+      const ageColumn = "created_at";
       const reasonColumn =
-        table === "locale_pending_actions"
-          ? "decision_note"
-          : table === "plugin_rate_limit_proposals"
-            ? "reason"
-            : "decision_reason";
+        table === "plugin_rate_limit_proposals" ? "reason" : "decision_reason";
       const result = (await tx.unsafe(
         `UPDATE ${table}
             SET status = 'superseded',

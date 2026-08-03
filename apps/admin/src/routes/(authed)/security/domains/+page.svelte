@@ -33,8 +33,7 @@
     </h1>
     <p class="text-sm text-muted-foreground">
       Hostnames Caelo serves. <code>cms-provision regenerate-caddy</code> reads this table at deploy
-      to emit Caddyfile vhosts + request Let's Encrypt certs. Per-locale URL routing (subdomain /
-      separate domain) lives at <a href="/security/locales" class="underline">/security/locales</a>.
+      to emit Caddyfile vhosts + request Let's Encrypt certs.
     </p>
   </div>
 

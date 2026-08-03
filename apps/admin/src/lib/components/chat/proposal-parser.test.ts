@@ -20,10 +20,10 @@ describe("parseProposalContent", () => {
   // still lives in persisted chat_messages rows — those must keep
   // rendering ProposeCards after the wording change.
   it("parses the legacy pre-card-first tail (persisted messages)", () => {
-    const content = `Queued proposal ${UUID}: add locale 'de' (subpath). An Owner must click Approve at /security/locales/pending to apply.`;
+    const content = `Queued proposal ${UUID}: add domain 'shop.example.com'. An Owner must click Approve at /security/domains/pending to apply.`;
     const result = parseProposalContent(content);
-    expect(result?.domain).toBe("locales");
-    expect(result?.queueUrl).toBe("/security/locales/pending");
+    expect(result?.domain).toBe("domains");
+    expect(result?.queueUrl).toBe("/security/domains/pending");
   });
 
   it("parses canonical propose_deploy_promote output", () => {
