@@ -394,6 +394,19 @@ interface CloudRunArgs {
   readonly iapEnabled?: boolean;
 }
 
+// Same image-pin mechanism as the gcp stack: the wizard resolves the
+// floating `:latest` release tag to a sha256 digest at provision time
+// and stores it as `image-digest-<service>` config. Reading it here
+// keeps every `pulumi up` on the exact resolved image — and never
+// rolls a digest-pinned service (e.g. after `cms-provision upgrade`)
+// back to whatever the floating tag currently points at. Pre-v0.11
+// this stack hardcoded `:main` and silently ignored the wizard's pin.
+function imageRef(service: string): string {
+  const digest = cfg.get(`image-digest-${service}`);
+  const base = `europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/${service}`;
+  return digest ? `${base}@${digest}` : `${base}:${cfg.get("image-tag") ?? "latest"}`;
+}
+
 function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
   return new gcp.cloudrunv2.Service(
     `${namePrefix}-${args.serviceName}`,
@@ -415,7 +428,7 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         timeout: args.timeout,
         containers: [
           {
-            image: `europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/${args.serviceName}:main`,
+            image: imageRef(args.serviceName),
             envs: [
               { name: "CAELO_PROVIDER", value: "gcp-firebase" },
               { name: "CAELO_ENV", value: env },
