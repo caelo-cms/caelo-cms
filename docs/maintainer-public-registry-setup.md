@@ -113,8 +113,8 @@ release-images publishes two kinds of images per service, with different lifetim
 
 | Kind | Tags | Lifetime | Why |
 |---|---|---|---|
-| Release images | `X.Y.Z`, `X.Y`, `latest` | forever | The artifacts operators pin. `cms-provision upgrade` defaults to `latest`; the live caelo-cms.com deploy runs a release digest. Deleting one would break `--version vX.Y.Z` pins + cosign verification. |
-| Dev images | `main` (floating), `main-<sha7>` (per merge) | 7 days | Debug/bisect material only. Nothing references them after a few days — the wizard resolves the floating `main` tag, never a `main-<sha7>`. |
+| Release images | `X.Y.Z`, `X.Y`, `latest` | forever | The artifacts operators pin. Fresh installs and `cms-provision upgrade` both resolve `latest`; the live caelo-cms.com deploy runs a release digest. Deleting one would break `--version vX.Y.Z` pins + cosign verification. |
+| Dev images | `main` (floating), `main-<sha7>` (per merge) | 7 days | Debug/bisect material only — compose dev setups and manual pulls. Nothing in the install path references them: the wizard and `upgrade` resolve release tags. |
 
 Deleting an old digest cannot break a deployed install: per the Cloud Run docs, *"The container image is imported by Cloud Run when deployed. Cloud Run keeps this copy of the container image as long as it is used by a serving revision."* Only re-deploying that exact digest would need the registry copy — and both retention rules below always keep the newest dev images, so the floating `main` tag stays resolvable.
 

@@ -170,10 +170,10 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
 
   // === 9. Resolve image digests so each pulumi up rolls Cloud Run ===
   // Cloud Run keys revisions by image reference; if the reference is
-  // a floating tag like ":main", a fresh image push doesn't trigger a
+  // a floating tag like ":latest", a fresh release doesn't trigger a
   // new revision because the reference text is unchanged. Resolve the
   // floating tag to its current sha256 digest so each provisioning run
-  // pulls the freshest published image.
+  // pulls the newest release image.
   const imageDigests = await resolveImageDigests(["admin", "gateway"]);
 
   // === 9.5. Drain the legacy `caelo_admin` SQL user before pulumi-up ===
@@ -268,11 +268,16 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
 }
 
 /**
- * Resolve the floating `:main` tag on each service's public AR image
+ * Resolve the floating `:latest` tag on each service's public AR image
  * to its current sha256 digest, so the Pulumi stack can pin Cloud Run
  * to the exact image rather than the mutable tag. Without this, a
- * fresh release-images push doesn't trigger a new Cloud Run revision
- * because the image reference in the stack (":main") is unchanged.
+ * fresh release doesn't trigger a new Cloud Run revision because the
+ * image reference in the stack (":latest") is unchanged.
+ *
+ * `latest` = newest release — the same channel `cms-provision upgrade`
+ * defaults to. Deliberately NOT the `:main` dev tag: fresh installs
+ * start on a released version, and the per-merge dev images are pruned
+ * after 7 days (docs/maintainer-public-registry-setup.md, "Retention").
  */
 async function resolveImageDigests(services: string[]): Promise<Record<string, string>> {
   const project = "caelo-website";
@@ -281,10 +286,10 @@ async function resolveImageDigests(services: string[]): Promise<Record<string, s
   const out: Record<string, string> = {};
   for (const service of services) {
     const s = spinner();
-    s.start(`Resolving ${service}:main → digest...`);
-    // gcloud's --filter='tag=main' is in a transitional state (warns + matches
-    // nothing) and 'tag:main' substring-matches main-<sha> too. List all tags
-    // and grep for the exact-match row in JS.
+    s.start(`Resolving ${service}:latest → digest...`);
+    // gcloud's --filter='tag=latest' is in a transitional state (warns +
+    // matches nothing) and 'tag:latest' substring-matching is unreliable.
+    // List all tags and grep for the exact-match row in JS.
     const r = await gcloud([
       "artifacts",
       "docker",
@@ -301,11 +306,13 @@ async function resolveImageDigests(services: string[]): Promise<Record<string, s
     const exact = r.stdout
       .split("\n")
       .map((line) => line.trim().split(/\s+/))
-      .find(([tag]) => tag === "main");
+      .find(([tag]) => tag === "latest");
     const digest = exact?.[1] ?? "";
     if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
-      s.stop(red(`Unexpected digest format for ${service}: ${digest}`));
-      cancel("Aborted.");
+      s.stop(red(`No usable 'latest' release image for ${service} (got: ${digest || "no tag"})`));
+      cancel(
+        "Aborted — the public mirror has no released image. Releases live at https://github.com/caelo-cms/caelo-cms/releases.",
+      );
       process.exit(1);
     }
     s.stop(green(`${service}: ${dim(`${digest.slice(0, 19)}...`)}`));

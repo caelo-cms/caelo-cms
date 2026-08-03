@@ -17,9 +17,10 @@
 # all match `main-*` and that is older than 7 days, plus untagged
 # orphans (superseded manifests, dangling attestation trees). The
 # floating `main` tag is excluded explicitly so the newest dev image
-# survives even during idle weeks — the provisioning wizard's fresh-
-# install path resolves `admin:main`/`gateway:main` and must always
-# find it. Release tags never match `main-*`, and the action's
+# survives even during idle weeks — nothing in the install path
+# resolves it anymore (fresh installs and `cms-provision upgrade` both
+# pin releases), but it's the tag compose dev setups and manual debug
+# pulls reach for. Release tags never match `main-*`, and the action's
 # `validate` pass checks the manifest graph after deletion.
 #
 # Deleting an old `main-<sha7>` digest cannot break a deployed
@@ -72,8 +73,8 @@ jobs:
           packages: admin,gateway
           delete-tags: "main-*"
           # Belt-and-braces: `main-*` cannot match the bare `main` tag,
-          # but the floating tag is what fresh installs resolve — never
-          # let a config tweak take it out.
+          # but the floating dev tag should never vanish entirely —
+          # don't let a config tweak take it out.
           exclude-tags: main
           older-than: 7 days
           # Orphaned untagged manifests only — the action walks the

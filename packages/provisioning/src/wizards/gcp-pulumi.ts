@@ -30,8 +30,8 @@ export interface PulumiUpInputs {
   wafAdaptiveProtection: boolean;
   iapAllowlist: string[];
   /** Resolved sha256 digests per service (admin, gateway). The wizard
-   *  pre-resolves the floating `:main` tag to a fixed digest so each
-   *  pulumi up rolls Cloud Run to the freshest published image. */
+   *  pre-resolves the floating `:latest` release tag to a fixed digest
+   *  so each pulumi up rolls Cloud Run to the newest release image. */
   imageDigests: Record<string, string>;
   /**
    * v0.3.1 — provider variant. Selects which stack dir to apply
