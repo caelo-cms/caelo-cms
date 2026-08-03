@@ -196,7 +196,12 @@ import {
   setRateLimitOverrideOp,
   setRateLimitProfileOp,
 } from "./ops/gateway.js";
-import { addGenesisDraftOp, listGenesisDraftsOp, selectGenesisDraftOp } from "./ops/genesis.js";
+import {
+  addGenesisDraftOp,
+  listGenesisDraftsOp,
+  renderDesignDraftOp,
+  selectGenesisDraftOp,
+} from "./ops/genesis.js";
 import { importMediaUrlsOp, listPageAssetsOp } from "./ops/import_media.js";
 import {
   acceptImportedPageOp,
@@ -755,6 +760,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(addGenesisDraftOp);
   registry.register(listGenesisDraftsOp);
   registry.register(selectGenesisDraftOp);
+  // issue #375 — view-time theme-shell composition for draft previews.
+  registry.register(renderDesignDraftOp);
   // issue #165 — Design Manifest (per-site design language).
   registry.register(getDesignManifestOp);
   registry.register(setDesignManifestOp);
