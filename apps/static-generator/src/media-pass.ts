@@ -165,7 +165,7 @@ export async function runMediaPass(args: {
   for (const [ref, info] of refs) {
     const res = resolved.get(ref);
     for (const v of info.variants) {
-      if (!res || !res.variants.has(v)) missing.push(`${ref}/${v}`);
+      if (!res?.variants.has(v)) missing.push(`${ref}/${v}`);
     }
   }
   if (missing.length > 0) {
