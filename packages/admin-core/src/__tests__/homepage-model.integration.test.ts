@@ -156,7 +156,11 @@ describe("0184 (a) set_home_page + resolver", () => {
   it("resolveCanonicalUrl(isHomePage:true) returns the site root regardless of slug", () => {
     // Non-magic slug: without the flag it is a normal page URL...
     expect(
-      resolveCanonicalUrl({ siteBaseUrl: "https://example.com", pageSlug: "welcome", override: null }),
+      resolveCanonicalUrl({
+        siteBaseUrl: "https://example.com",
+        pageSlug: "welcome",
+        override: null,
+      }),
     ).toBe("https://example.com/welcome/");
     // ...with the explicit designation it collapses to the site root.
     expect(
