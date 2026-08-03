@@ -49,15 +49,16 @@ function copyBunfigBeforeInstall(src: string): boolean {
   return /\nCOPY\s+[^\n]*\bbunfig\.toml\b/.test(head);
 }
 
-describe.each(
-  CASES.map((c) => [c.label, c]),
-)("%s Dockerfile — bunfig.toml is copied before bun install", (_label, { path }) => {
-  const src = readFileSync(resolve(REPO_ROOT, path), "utf8");
+describe.each(CASES.map((c) => [c.label, c]))(
+  "%s Dockerfile — bunfig.toml is copied before bun install",
+  (_label, { path }) => {
+    const src = readFileSync(resolve(REPO_ROOT, path), "utf8");
 
-  it("contains a COPY directive that includes bunfig.toml before the first `RUN bun install`", () => {
-    expect(
-      copyBunfigBeforeInstall(src),
-      `${path}: \`COPY ... bunfig.toml ...\` must appear before \`RUN bun install\` so Bun's hoisted linker setting is in effect during install`,
-    ).toBe(true);
-  });
-});
+    it("contains a COPY directive that includes bunfig.toml before the first `RUN bun install`", () => {
+      expect(
+        copyBunfigBeforeInstall(src),
+        `${path}: \`COPY ... bunfig.toml ...\` must appear before \`RUN bun install\` so Bun's hoisted linker setting is in effect during install`,
+      ).toBe(true);
+    });
+  },
+);
