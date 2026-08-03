@@ -89,4 +89,3 @@ export async function computeContentHash(value: unknown): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", TEXT_ENCODER.encode(canonical));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-
