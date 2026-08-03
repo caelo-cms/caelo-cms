@@ -65,7 +65,7 @@ describe("roles CRUD", () => {
   it("creates a custom role with a reduced permission set", async () => {
     const res = await execute(registry, adapter, systemCtx, "roles.create", {
       name: CUSTOM_ROLE_NAME,
-      description: "Translations + content read only",
+      description: "Content and settings read only",
       permissions: ["content.read", "settings.read"],
     });
     expect(res.ok).toBe(true);

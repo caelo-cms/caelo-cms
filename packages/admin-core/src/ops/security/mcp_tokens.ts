@@ -23,10 +23,20 @@ import type { AIProvider } from "../../ai/provider.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 
+/**
+ * Issue #376 — token scope. `chat` drives the caelo_chat surface only;
+ * `admin` additionally unlocks the Power-MCP surface (mcp.list_tools /
+ * mcp.execute_tool / mcp.open_session / mcp.get_context — see
+ * ./mcp_power.ts).
+ */
+export const mcpTokenScope = z.enum(["chat", "admin"]);
+export type McpTokenScope = z.infer<typeof mcpTokenScope>;
+
 const tokenRow = z.object({
   id: z.string(),
   actorId: z.string(),
   displayName: z.string(),
+  scope: mcpTokenScope,
   aiCostCapMicrocents: z.number().int().nonnegative().nullable(),
   lastUsedAt: z.string().nullable(),
   revokedAt: z.string().nullable(),
@@ -44,7 +54,7 @@ export const listMcpTokensOp = defineOperation({
   output: z.object({ tokens: z.array(tokenRow) }),
   handler: async (_ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, actor_id::text AS actor_id, display_name,
+      SELECT id::text AS id, actor_id::text AS actor_id, display_name, scope,
              ai_cost_cap_microcents, last_used_at, revoked_at,
              created_at, expires_at
       FROM mcp_tokens
@@ -53,6 +63,7 @@ export const listMcpTokensOp = defineOperation({
       id: string;
       actor_id: string;
       display_name: string;
+      scope: McpTokenScope;
       ai_cost_cap_microcents: bigint | string | number | null;
       last_used_at: string | Date | null;
       revoked_at: string | Date | null;
@@ -74,6 +85,7 @@ export const listMcpTokensOp = defineOperation({
         id: r.id,
         actorId: r.actor_id,
         displayName: r.display_name,
+        scope: r.scope,
         aiCostCapMicrocents: toN(r.ai_cost_cap_microcents),
         lastUsedAt: toS(r.last_used_at),
         revokedAt: toS(r.revoked_at),
@@ -91,6 +103,10 @@ export const createMcpTokenOp = defineOperation({
   input: z
     .object({
       displayName: z.string().min(1).max(100),
+      // Optional (not .default) so the execute_proposal path — which calls
+      // this handler with the persisted payload, WITHOUT a Zod re-parse —
+      // and a direct call behave identically via the `?? "chat"` below.
+      scope: mcpTokenScope.optional(),
       aiCostCapMicrocents: z.number().int().nonnegative().nullable().optional(),
     })
     .strict(),
@@ -108,9 +124,10 @@ export const createMcpTokenOp = defineOperation({
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
 
+    const scope = input.scope ?? "chat";
     const rows = (await tx.execute(sql`
-      INSERT INTO mcp_tokens (actor_id, token_hash, display_name, ai_cost_cap_microcents)
-      VALUES (${ctx.actorId}::uuid, ${tokenHash}, ${input.displayName}, ${input.aiCostCapMicrocents ?? null})
+      INSERT INTO mcp_tokens (actor_id, token_hash, display_name, scope, ai_cost_cap_microcents)
+      VALUES (${ctx.actorId}::uuid, ${tokenHash}, ${input.displayName}, ${scope}, ${input.aiCostCapMicrocents ?? null})
       RETURNING id::text AS id
     `)) as unknown as Array<{ id: string }>;
     const id = rows[0]?.id;
@@ -125,10 +142,10 @@ export const createMcpTokenOp = defineOperation({
       actorId: ctx.actorId ?? SYSTEM_ACTOR_ID,
       requestId: ctx.requestId,
       operation: "mcp_tokens.create",
-      input: { displayName: input.displayName },
+      input: { displayName: input.displayName, scope },
       succeeded: true,
       entityId: id,
-      resultSummary: `display_name=${input.displayName}`,
+      resultSummary: `display_name=${input.displayName} scope=${scope}`,
     });
     return ok({ id, plaintextToken });
   },
@@ -164,13 +181,16 @@ export const revokeMcpTokenOp = defineOperation({
  * NOT an op: the bearer would otherwise appear in audit input. The
  * `mcp.send_chat` op above audits the resolved actor's chat write, not
  * this lookup.
+ *
+ * Exported for the Power-MCP ops (./mcp_power.ts) which share the same
+ * bearer model but additionally require `scope === "admin"`.
  */
-async function resolveMcpToken(
+export async function resolveMcpToken(
   adapter: DatabaseAdapter,
   plaintextToken: string,
 ): Promise<
   Result<
-    { actorId: string; tokenId: string; aiCostCapMicrocents: number | null },
+    { actorId: string; tokenId: string; scope: McpTokenScope; aiCostCapMicrocents: number | null },
     "not_found" | "expired" | "revoked"
   >
 > {
@@ -186,13 +206,14 @@ async function resolveMcpToken(
     },
     async (tx) => {
       const rows = (await tx.execute(sql`
-        SELECT id::text AS id, actor_id::text AS actor_id,
+        SELECT id::text AS id, actor_id::text AS actor_id, scope,
                ai_cost_cap_microcents, expires_at, revoked_at
         FROM mcp_tokens
         WHERE token_hash = ${tokenHash}
       `)) as unknown as Array<{
         id: string;
         actor_id: string;
+        scope: McpTokenScope;
         ai_cost_cap_microcents: bigint | string | number | null;
         expires_at: string | Date;
         revoked_at: string | Date | null;
@@ -213,7 +234,7 @@ async function resolveMcpToken(
             : typeof r.ai_cost_cap_microcents === "string"
               ? Number.parseInt(r.ai_cost_cap_microcents, 10)
               : r.ai_cost_cap_microcents;
-      return ok({ actorId: r.actor_id, tokenId: r.id, aiCostCapMicrocents: cap });
+      return ok({ actorId: r.actor_id, tokenId: r.id, scope: r.scope, aiCostCapMicrocents: cap });
     },
   );
 }
@@ -236,6 +257,10 @@ export interface SendChatBridgeOpts {
 let bridgeOpts: SendChatBridgeOpts | null = null;
 export function configureMcpBridge(opts: SendChatBridgeOpts): void {
   bridgeOpts = opts;
+}
+/** Read side of the DI singleton — shared with the Power-MCP ops. */
+export function getMcpBridge(): SendChatBridgeOpts | null {
+  return bridgeOpts;
 }
 
 const sendChatInput = z

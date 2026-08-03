@@ -13,6 +13,40 @@ at the bottom instead.
 
 ## At a glance
 
+**One-button (preferred — no local checkout needed):** GitHub →
+Actions → **release-cut** → *Run workflow* → pick `patch` / `minor` /
+`major` (or an explicit `x.y.z`). CI runs the same
+`scripts/release.ts`, opens a `chore(release): vX.Y.Z` PR, and once
+that PR merges the workflow tags the merge commit and dispatches
+`release.yml` automatically — identical artifacts to the local flow.
+
+One-time setup: CI needs the Tier-1 manifest signing key (release.ts
+re-signs the plugin manifests). The pair stored here IS the release
+keypair from that point on — every published manifest verifies against
+this public key, so it must be the ONE canonical pair, not an
+arbitrary per-machine dev key. Source it from the team secrets
+manager; extracting from a local `.caelo-dev-key` is only correct when
+that file holds the canonical pair (the historical solo-maintainer
+case, where every release so far was signed from it):
+
+```bash
+jq -r .privateKeyHex .caelo-dev-key | gh secret set CAELO_TIER1_PRIVATE_KEY
+jq -r .publicKeyHex  .caelo-dev-key | gh variable set CAELO_TIER1_PUBLIC_KEY
+```
+
+To rotate: generate a fresh pair, update the secret + variable, and
+ship a release so the manifests re-sign with the new key.
+
+Merging the release PR: PRs opened with the repo `GITHUB_TOKEN` get no
+workflow runs, so its required checks sit pending. Merge with
+`gh pr merge --squash --admin` — safe, because `release.yml` re-runs
+the full lint+typecheck+test gate on the tagged commit before anything
+publishes. To make the PR's checks run like on any other PR (and allow
+plain merging), add a `RELEASE_PAT` repo secret: a fine-grained PAT
+with contents:write + pull-requests:write on this repo.
+
+**Local flow (still works):**
+
 ```
 bun scripts/release.ts patch        # 0.2.0 → 0.2.1 (or minor / major / x.y.z)
 git push origin main --follow-tags  # fires release.yml + release-images.yml

@@ -330,6 +330,12 @@ import {
 } from "./ops/security/ai_providers.js";
 import { auditByRequestIdOp } from "./ops/security/audit_by_request.js";
 import {
+  mcpExecuteToolOp,
+  mcpGetContextOp,
+  mcpListToolsOp,
+  mcpOpenSessionOp,
+} from "./ops/security/mcp_power.js";
+import {
   createMcpTokenOp,
   listMcpTokensOp,
   mcpSendChatOp,
@@ -644,6 +650,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createMcpTokenOp);
   registry.register(revokeMcpTokenOp);
   registry.register(mcpSendChatOp);
+  // Issue #376 — Power-MCP: admin-scoped tokens drive the chat-runner
+  // tool catalogue directly (external agent owns the loop). See
+  // ops/security/mcp_power.ts for the invariants.
+  registry.register(mcpListToolsOp);
+  registry.register(mcpOpenSessionOp);
+  registry.register(mcpExecuteToolOp);
+  registry.register(mcpGetContextOp);
   // v0.2.27 — mcp_tokens propose/execute pairs (create / revoke).
   // AI proposes new tokens by displayName + cap; the Owner approves
   // at /security/mcp/pending and the plaintext token is generated
