@@ -84,15 +84,15 @@ export type {
 export { runSubagentBatch } from "./subagent-batch.js";
 
 // A child session inherits the parent's catalogue MINUS these. spawn_*
-// is the P10.5 depth cap. screenshot_page is stripped because a subagent
-// has NO operator browser: the capture is a `request-screenshot` SSE the
-// operator's ChatPanel services via html2canvas, and a child has no tab
-// bound to its branch preview — so every call runs the full 30s timeout
-// and returns a failure. A single footer live-edit run measured 14 such
-// timeouts inside subagents (~7min wasted) plus an edit→screenshot→edit
-// thrash that blew the 25-loop cap; children verify with the server-side
-// `inspect_page_render` (pages.render_preview, no browser) instead.
-const EXCLUDED_FOR_CHILD = new Set(["spawn_subagent", "spawn_subagents", "screenshot_page"]);
+// is the P10.5 depth cap. screenshot_page is NO LONGER stripped (issue
+// #412): a child turn never gets `operatorBrowserAttached` (the spawn
+// closure builds fresh ChatRunnerOptions without it), so its calls render
+// the branch preview server-side in headless Chromium — no operator
+// browser involved, no 30s timeouts (a single pre-#412 footer live-edit
+// run measured 14 such timeouts, ~7min wasted), and no contention when
+// parallel children screenshot at once (rate-capped per session by
+// `_preview-screenshot-budget.ts`).
+const EXCLUDED_FOR_CHILD = new Set(["spawn_subagent", "spawn_subagents"]);
 
 /**
  * issue #268 — parse an OPTIONAL numeric env override to a finite

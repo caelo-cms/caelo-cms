@@ -93,7 +93,7 @@ This writes a `CLAUDE.md` plus one `.claude/skills/<slug>/SKILL.md` per active s
 
 ### Not exposed over Power-MCP
 
-A handful of tools only make sense inside Caelo's own loop and are filtered out (calling them anyway returns the reason + the routing alternative): `spawn_subagent`/`spawn_subagents` (your agent brings its own parallelism), `screenshot_page` (needs the operator's browser; use `inspect_built_page` / `inspect_page_render`), `offer_choices`, `submit_result`.
+A handful of tools only make sense inside Caelo's own loop and are filtered out (calling them anyway returns the reason + the routing alternative): `spawn_subagent`/`spawn_subagents` (your agent brings its own parallelism), `offer_choices`, `submit_result`. `screenshot_page` IS served: on this surface it renders the session branch's preview in server-side Chromium and returns the pixels as an MCP image content block.
 
 ## Token scopes, caps, rotation
 

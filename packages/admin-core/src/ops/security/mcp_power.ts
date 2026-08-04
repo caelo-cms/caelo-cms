@@ -54,10 +54,6 @@ export const POWER_MCP_EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
     "spawn_subagents",
     "subagents need the chat-runner loop; your own agent runtime provides parallelism instead",
   ],
-  [
-    "screenshot_page",
-    "needs the operator's browser via the SSE stream; use inspect_built_page / inspect_page_render, or screenshot the public URL yourself",
-  ],
   ["offer_choices", "renders chat-UI choice chips; ask your own operator directly"],
   ["submit_result", "subagent-only structured result channel"],
 ]);
@@ -419,6 +415,10 @@ export const mcpExecuteToolOp = defineOperation({
           ...(provider ? { provider } : {}),
           // No spawnChildChatTurn / requestScreenshot / pushClientEvent:
           // the tools that need them are in POWER_MCP_EXCLUDED_TOOLS.
+          // screenshot_page works WITHOUT them since issue #412 — with no
+          // pushClientEvent it renders the branch preview server-side and
+          // returns the image, which flows to the MCP client as an image
+          // content block.
         });
 
     if (input.toolCallId) {

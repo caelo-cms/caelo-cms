@@ -42,6 +42,11 @@ export interface Screenshot {
   /** The URL after redirects (`page.url()`), so callers report where they
    *  actually landed. */
   readonly finalUrl?: string;
+  /** HTTP status of the navigation response, when the browser exposed one.
+   *  issue #412 — the branch-preview screenshot service refuses to present
+   *  a 401/404 error page as "the page", so it needs the status alongside
+   *  the pixels. Undefined for non-HTTP navigations (about:blank etc.). */
+  readonly finalStatus?: number;
   /** issue #247 — raw computed-style samples collected in the SAME
    *  render session, present only when `sampleStyles: true` was
    *  requested. Feed into `deriveDesignTokens`. */
@@ -102,6 +107,15 @@ export interface Screenshotter {
       /** Also return `page.content()` (the rendered JS-applied HTML) in the
        *  same render session, as `renderedHtml`. */
       captureHtml?: boolean;
+      /** issue #412 — capture ONLY the first element matching this CSS
+       *  selector instead of the page. Fails loudly when nothing matches
+       *  (a silent full-page capture would misrepresent the crop). */
+      selector?: string;
+      /** issue #412 — headers sent with EVERY request the page makes
+       *  (navigation + subresources). The branch-preview service rides its
+       *  short-lived signed token here so the admin's asset routes
+       *  (`/_caelo/media`, `/_caelo/fonts`) authorize without a session. */
+      extraHTTPHeaders?: Record<string, string>;
     },
   ): Promise<Screenshot>;
   /**
@@ -181,7 +195,12 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
    */
   async function withGuardedPage<T>(
     url: string,
-    opts: { external?: boolean; width?: number; height?: number },
+    opts: {
+      external?: boolean;
+      width?: number;
+      height?: number;
+      extraHTTPHeaders?: Record<string, string>;
+    },
     // biome-ignore lint/suspicious/noExplicitAny: Playwright page + response handles (dynamic import, no @types)
     fn: (page: any, gotoResponse: any) => Promise<T>,
   ): Promise<T> {
@@ -192,6 +211,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     }
     const ctx = await browser.newContext({
       viewport: { width: opts.width ?? 1280, height: opts.height ?? 800 },
+      ...(opts.extraHTTPHeaders ? { extraHTTPHeaders: opts.extraHTTPHeaders } : {}),
     });
     if (opts.external) {
       // Guard every request the page makes (navigation + subresources).
@@ -245,9 +265,25 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     async capture(url, opts) {
       return withGuardedPage(
         url,
-        { external: opts?.external, width: opts?.width, height: opts?.height },
-        async (page) => {
-          const png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
+        {
+          external: opts?.external,
+          width: opts?.width,
+          height: opts?.height,
+          ...(opts?.extraHTTPHeaders ? { extraHTTPHeaders: opts.extraHTTPHeaders } : {}),
+        },
+        async (page, gotoResponse) => {
+          let png: Uint8Array;
+          if (opts?.selector) {
+            const loc = page.locator(opts.selector).first();
+            if ((await loc.count()) === 0) {
+              // Loud, not a silent full-page fallback — the caller asked for
+              // a crop and must not get "the whole page" labelled as one.
+              throw new Error(`selector matched no element: ${opts.selector}`);
+            }
+            png = await loc.screenshot({ type: "png", timeout: 10_000 });
+          } else {
+            png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
+          }
           // issue #247 — sample AFTER the screenshot so the pixels are
           // captured even if the evaluate throws mid-flight; the throw still
           // fails this capture attempt (loud, retried upstream).
@@ -262,11 +298,16 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           const renderedHtml: string | undefined = opts?.captureHtml
             ? ((await page.content()) as string)
             : undefined;
+          const finalStatus =
+            typeof gotoResponse?.status === "function"
+              ? (gotoResponse.status() as number)
+              : undefined;
           return {
             bytes: new Uint8Array(png),
             width: opts?.width ?? 1280,
             height: opts?.height ?? 800,
             finalUrl: page.url() as string,
+            ...(finalStatus !== undefined ? { finalStatus } : {}),
             ...(styleSamples ? { styleSamples } : {}),
             ...(renderedHtml !== undefined ? { renderedHtml } : {}),
           };
