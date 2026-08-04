@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.10.24
+
+### Features
+- 13016b2f growth-time design variants — draft → present → select → materialise (#375) (#378)
+
+### Fixes
+- eedb9a7f edge-router must ship — provisioning depends on it (#408)
+- 555c6bfd claude mcp add snippets use the current CLI syntax
+
+### Chores
+- 3b022e6c batch the safe minor/patch dependabot updates (#374)
+- e18bab65 remove the translation feature end-to-end (#381) (#401)
+
 ## v0.10.23
 
 ### Features

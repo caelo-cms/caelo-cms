@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/mcp-server",
-  "version": "0.10.23",
+  "version": "0.10.24",
   "private": false,
   "license": "MPL-2.0",
   "description": "MCP servers for Caelo CMS: `caelo_chat` (talk to Caelo's own AI) and the admin-scoped Power-MCP (the full chat-runner tool catalogue, driven by your own agent). Lets Claude Code (or any MCP-aware client) drive a Caelo install from outside the browser.",
