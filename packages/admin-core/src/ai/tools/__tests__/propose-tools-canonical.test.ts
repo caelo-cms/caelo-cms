@@ -38,10 +38,6 @@ describe("propose_* tools are SDK approval-gated (Plan B)", () => {
   });
 
   for (const name of [
-    "propose_add_locale",
-    "propose_remove_locale",
-    "propose_set_default_locale",
-    "propose_update_locale_strategy",
     "propose_deploy_promote",
     "propose_deploy_rollback",
     "propose_update_layout",

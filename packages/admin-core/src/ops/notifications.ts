@@ -97,7 +97,6 @@ export const aggregateNotificationsOp = defineOperation({
         UNION ALL SELECT 1 FROM mcp_token_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM template_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM domain_pending_actions WHERE status = 'pending'
-        UNION ALL SELECT 1 FROM locale_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM plugin_rate_limit_proposals WHERE status = 'pending'
         UNION ALL SELECT 1 FROM site_memory_proposals WHERE status = 'pending'
         UNION ALL SELECT 1 FROM skill_proposals WHERE status = 'pending'

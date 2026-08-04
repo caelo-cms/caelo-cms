@@ -5,8 +5,8 @@
  *
  * The propose/execute sweep (v0.2.19 → v0.2.30) shipped 11 per-domain
  * `*_pending_actions` tables. Older subsystems use varying shapes
- * (`locale_pending_actions`, `plugin_rate_limit_proposals`,
- * `site_memory_proposals`, `skill_proposals`). Each domain has a
+ * (`plugin_rate_limit_proposals`, `site_memory_proposals`,
+ * `skill_proposals`). Each domain has a
  * per-domain list_pending op for its Owner UI page; nothing aggregates
  * across them. Two consumers need the union:
  *
@@ -64,16 +64,16 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const limit = input.limit ?? 50;
-    // Common-shape stanzas use `created_at`. Older tables use
-    // `proposed_at` — they're explicitly aliased so the outer ORDER BY
-    // sees the same column name. The `kind` column normalizes
-    // `action_kind` (locales) and inferred kinds (gateway, site_memory,
-    // skills) into one discriminator.
+    // Common-shape stanzas use `created_at`. Older tables that keep
+    // their own shapes are explicitly aliased so the outer ORDER BY
+    // sees the same column name. The `kind` column normalizes the
+    // inferred kinds (gateway, site_memory, skills) into one
+    // discriminator.
     //
     // v0.2.36 — joins chat_sessions to project chatSessionId + title
     // per row (v0.2.35 schema added chat_session_id to all unified
-    // tables; older locale/gateway/site_memory/skills already have
-    // their own chat_session_id column).
+    // tables; older gateway/site_memory/skills already have their own
+    // chat_session_id column).
     const rows = (await tx.execute(sql`
       WITH all_pending AS (
         -- v0.2.19 → v0.2.30 unified-shape *_pending_actions tables.
@@ -156,11 +156,6 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                chat_session_id::text
           FROM import_runs WHERE status = 'proposed'
         UNION ALL
-        SELECT 'locales', action_kind, id::text, proposed_by::text, proposed_at,
-               COALESCE(payload->>'code', 'locale'),
-               chat_session_id::text
-          FROM locale_pending_actions WHERE status = 'pending'
-        UNION ALL
         SELECT 'gateway', 'rate_limit', id::text, proposed_by::text, created_at,
                plugin_slug || '.' || operation,
                chat_session_id::text
@@ -208,7 +203,6 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'templates' FROM template_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'domains' FROM domain_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'themes' FROM theme_pending_actions WHERE status = 'pending'
-        UNION ALL SELECT 'locales' FROM locale_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'gateway' FROM plugin_rate_limit_proposals WHERE status = 'pending'
         UNION ALL SELECT 'site_memory' FROM site_memory_proposals WHERE status = 'pending'
         UNION ALL SELECT 'skills' FROM skill_proposals WHERE status = 'pending'

@@ -6,7 +6,6 @@ import {
   computeContentHash,
   isHomeSlug,
   type LocaleConfig,
-  lintLocaleConfig,
   pageIsLocaleHome,
   resolveLocaleUrl,
 } from "./i18n.js";
@@ -247,28 +246,5 @@ describe("computeContentHash", () => {
     const a = await computeContentHash({ x: [1, 2] });
     const b = await computeContentHash({ x: [2, 1] });
     expect(a).not.toBe(b);
-  });
-});
-
-describe("lintLocaleConfig", () => {
-  it("warns when subdomain/domain used while advanced toggle is off", () => {
-    const warnings = lintLocaleConfig([ENG, DE_SUBDOMAIN], false);
-    expect(warnings.find((w) => w.code === "advanced-routing-disabled")).toBeTruthy();
-  });
-
-  it("does not warn when toggle matches usage", () => {
-    const warnings = lintLocaleConfig([ENG, DE_SUBDOMAIN], true);
-    expect(warnings.find((w) => w.code === "advanced-routing-disabled")).toBeFalsy();
-  });
-
-  it("warns when subdomain locale lacks urlHost", () => {
-    const broken: LocaleConfig = { ...DE_SUBDOMAIN, urlHost: null };
-    const warnings = lintLocaleConfig([ENG, broken], true);
-    expect(warnings.find((w) => w.code === "missing-url-host")).toBeTruthy();
-  });
-
-  it("warns about mixed default-none + subdir-sibling configs", () => {
-    const warnings = lintLocaleConfig([ENG, DE_SUBDIR], true);
-    expect(warnings.find((w) => w.code === "mixed-default-none-subdir")).toBeTruthy();
   });
 });
