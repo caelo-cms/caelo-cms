@@ -103,6 +103,29 @@ describe("composeSystemPromptChunks", () => {
     expect(body).toMatch(/credential/);
   });
 
+  // issue #413 — the "power-mcp" surface variant: same static core minus the
+  // chat-runner-only chunks ("finishing-a-turn" is the runner's own turn
+  // mechanics; the subagent spawn tools are excluded from that surface).
+  // What the variant playbook must and must not say is asserted next to the
+  // exclusion list in ops/security/mcp_power_prose.test.ts.
+  it("power-mcp surface drops the chat-runner-only chunks", () => {
+    const chunks = composeSystemPromptChunks([{ slot: "tone", body: "calm" }], {}, "power-mcp");
+    expect(chunks.map((c) => c.label)).toEqual([
+      "base",
+      "tool-playbook",
+      "module-model",
+      "staging",
+      "memory",
+    ]);
+    for (const c of chunks) expect(c.cacheable).toBe(true);
+  });
+
+  it("surface defaults to chat — the split changes nothing for existing callers", () => {
+    expect(composeSystemPromptChunks([{ slot: "tone", body: "calm" }])).toEqual(
+      composeSystemPromptChunks([{ slot: "tone", body: "calm" }], {}, "chat"),
+    );
+  });
+
   it("skips empty slots", () => {
     const chunks = composeSystemPromptChunks([]);
     // The static core: base + tool-playbook + module-model + staging +

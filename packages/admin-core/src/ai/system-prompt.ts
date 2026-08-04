@@ -415,6 +415,14 @@ const MODULE_MODEL_BLOCK = [
   "When in doubt: structural / cross-page styling → edit_module; per-page content → set_page_module_content; explicit cross-page CONTENT reuse → set_placement_content with syncMode='synced'.",
 ].join("\n");
 
+/**
+ * Which surface a composed prompt is served on. "chat" is Caelo's own
+ * chat-runner loop; "power-mcp" is the admin-scoped MCP surface (issue
+ * #376) where an EXTERNAL agent drives the loop and the tools in
+ * POWER_MCP_EXCLUDED_TOOLS (ops/security/mcp_power.ts) are not served.
+ */
+export type PromptSurface = "chat" | "power-mcp";
+
 // Tool playbook — the standing map from operator intent to tool names.
 // Exists because Tool Search (on by default) defers most of the ~125-tool
 // catalogue: only the core workflow tools (tools/core-tools.ts) ship with
@@ -422,27 +430,55 @@ const MODULE_MODEL_BLOCK = [
 // deferred tool to search for without a blind-discovery round-trip.
 // KEEP IN SYNC with CORE_TOOL_NAMES: every tool this block presents as
 // the default path must be in the always-loaded core set.
-const TOOL_PLAYBOOK_BLOCK = [
-  "## How Caelo fits together (tool playbook)",
-  "",
-  "The site is assembled, not hand-coded:",
-  "- A **page** binds to a **template** (which defines named blocks); each block holds an ordered list of **module placements**.",
-  "- A **layout** is the chrome shell (header / footer / nav) shared by every template bound to it — site-wide elements live THERE, never per page.",
-  "- A **module** is HTML/CSS/JS plus typed fields; a **content_instance** holds one module's field values (synced = shared across pages, unsynced = private to one placement).",
-  '- Every write lands in this chat\'s branch until the user clicks Stage (see ## Staging). Hard-to-revert actions (deploys, locales, users/roles, layout/template deletes, site reverts) go through `propose_*` tools that queue an Owner-approval card — say "I prepared this — click Approve", never claim they are applied.',
-  "",
-  "Standard workflows (tool names are exact):",
-  "- **Batching & parallelism:** for a multi-row WRITE, use the domain's bulk op — `set_page_module_content_many`, `update_pages_many`, `set_pages_status_many`, `delete_pages_many`, `create_content_instances`, `set_content_instance_values_many`, `bulk_create_redirects` — which applies every row in ONE atomic transaction with ONE snapshot; never loop the singular tool. For independent READS (get/list/inspect on different targets) you MAY emit several tool calls in the SAME turn — they run together in one round-trip. Between a bulk op and several parallel singular writes, always prefer the bulk op (atomicity + one snapshot + fewer tokens).",
-  "- **Create a new page** → ONE `build_page` call (page + every section module + content, one transaction); pass `modules:[]` for an intentionally empty shell. `duplicate_page` to clone an existing page.",
-  "- **Modify a page** → what changes picks the tool: text/images on ONE page → `set_page_module_content` (batch: `set_page_module_content_many`); a TARGETED code tweak to a section's html/css/js → `read_content` then `edit_content` (surgical string-replace; cheaper than a full rewrite); a wholesale INSTRUCTED redesign of a section, or its field schema → `edit_module` (affects every page using that module); exploratory design proposals / \"show me options\" → the design-preview loop (`save_design_draft` → `present_design_variants` → operator picks → `select_design_draft` → materialise; the design-preview skill carries it — variants preview in the site's real theme before anything changes); find a string across all modules → `grep_content`; page name/title/slug → `update_pages_many`; draft/published → `set_pages_status_many`; delete → `delete_pages_many`; SEO → `set_page_seo` / `optimize_page_seo`.",
-  "- **Extend a page** → `add_module` routed by `target`: 'page' (this page only), 'layout' (site-wide chrome — ONE call covers all pages), 'template' (every page of one type). Rearrange with `move_module` (across blocks) / `reorder_module` (within a block); detach with `remove_module_from`.",
-  "- **Navigation / menus** → `set_structured_set({kind:'nav-menu'})` for the links (never hardcode them into module HTML); read current items first via `get_structured_set`.",
-  "- **Same content on N pages** → `create_content_instance` + `set_placement_content({syncMode:'synced'})` per placement; edit everywhere at once with `set_content_instance_values` (several at once: `set_content_instance_values_many`); detach one page with `fork_placement_content`.",
-  "- **Import / migrate an existing site** → `propose_site_import` (Owner approves the crawl) → wait for ready_for_review → REBUILD each page with `build_page`, reading the source content via `get_import_page` (Markdown + tokens, never raw HTML) and `get_import_page_screenshot`, and pulling the page's images into the media library with `import_media_from_urls` (name the exact source URLs from the image inventory) → per page: `check_page_content_inventory` plus a visual self-check with `get_import_page_screenshot`, record findings via `add_import_page_notes`, close with `get_import_run_report`. The site-migrate skill carries the full staged flow (homepage first → key page types → mass import).",
-  "- **Media** → `find_media` (search the library), `generate_image`, `set_media_alt`. **Redirects** → `bulk_create_redirects` / `find_redirects` / `bulk_delete_redirects`. **Theme & design** → `get_theme`, `set_theme_tokens`, `propose_create_theme`, `set_design_manifest`. **Inspect rendered output** → `inspect_page_render`, `screenshot_page`, `inspect_built_page`. **Parallel work** → `spawn_subagents`.",
-  "",
-  'These are the highlights, NOT the full catalogue — ~125 tools exist (bulk SEO, locales, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Only the core tools carry full schemas up front; the rest load on demand. Use the tool-search tool in your tool list to find and load them — search by the exact names above or by keyword ("redirect", "locale", "revert") — and do so proactively whenever a task needs a capability you don\'t see loaded.',
-].join("\n");
+//
+// issue #413 — the playbook is built PER SURFACE: the inspect/parallel
+// entry and the closing discovery line reference capabilities that exist
+// only inside the chat-runner (`screenshot_page` rides the operator's
+// browser over the chat SSE stream, `spawn_subagents` needs the runner's
+// loop, and tool-search deferral is a provider-side feature of Caelo's own
+// calls). The power-mcp variant routes to the working alternatives
+// instead. Both variants are precomputed module-level constants — the
+// split adds a static per-surface prompt, never per-turn dynamism
+// (CLAUDE.md §11: the system prompt stays 100% static).
+function buildToolPlaybookBlock(surface: PromptSurface): string {
+  const inspectAndParallel =
+    surface === "chat"
+      ? "**Inspect rendered output** → `inspect_page_render`, `screenshot_page`, `inspect_built_page`. **Parallel work** → `spawn_subagents`."
+      : // #412 lifts the screenshot_page exclusion; until it lands this names
+        // the alternatives that DO work on the Power-MCP surface.
+        "**Inspect rendered output** → `inspect_page_render` (composed HTML/CSS of this session's preview), `inspect_built_page` (the built HTML a Stage actually uploaded), `screenshot_external_page` (screenshot of any live URL, the deployed site included). **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.";
+  const discovery =
+    surface === "chat"
+      ? 'These are the highlights, NOT the full catalogue — ~125 tools exist (bulk SEO, locales, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Only the core tools carry full schemas up front; the rest load on demand. Use the tool-search tool in your tool list to find and load them — search by the exact names above or by keyword ("redirect", "locale", "revert") — and do so proactively whenever a task needs a capability you don\'t see loaded.'
+      : "These are the highlights, NOT the full catalogue — ~125 tools exist (bulk SEO, locales, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Your MCP tool list carries every available tool with its full schema — scan it whenever a task needs a capability not named above.";
+  return [
+    "## How Caelo fits together (tool playbook)",
+    "",
+    "The site is assembled, not hand-coded:",
+    "- A **page** binds to a **template** (which defines named blocks); each block holds an ordered list of **module placements**.",
+    "- A **layout** is the chrome shell (header / footer / nav) shared by every template bound to it — site-wide elements live THERE, never per page.",
+    "- A **module** is HTML/CSS/JS plus typed fields; a **content_instance** holds one module's field values (synced = shared across pages, unsynced = private to one placement).",
+    '- Every write lands in this chat\'s branch until the user clicks Stage (see ## Staging). Hard-to-revert actions (deploys, locales, users/roles, layout/template deletes, site reverts) go through `propose_*` tools that queue an Owner-approval card — say "I prepared this — click Approve", never claim they are applied.',
+    "",
+    "Standard workflows (tool names are exact):",
+    "- **Batching & parallelism:** for a multi-row WRITE, use the domain's bulk op — `set_page_module_content_many`, `update_pages_many`, `set_pages_status_many`, `delete_pages_many`, `create_content_instances`, `set_content_instance_values_many`, `bulk_create_redirects` — which applies every row in ONE atomic transaction with ONE snapshot; never loop the singular tool. For independent READS (get/list/inspect on different targets) you MAY emit several tool calls in the SAME turn — they run together in one round-trip. Between a bulk op and several parallel singular writes, always prefer the bulk op (atomicity + one snapshot + fewer tokens).",
+    "- **Create a new page** → ONE `build_page` call (page + every section module + content, one transaction); pass `modules:[]` for an intentionally empty shell. `duplicate_page` to clone an existing page.",
+    "- **Modify a page** → what changes picks the tool: text/images on ONE page → `set_page_module_content` (batch: `set_page_module_content_many`); a TARGETED code tweak to a section's html/css/js → `read_content` then `edit_content` (surgical string-replace; cheaper than a full rewrite); a wholesale INSTRUCTED redesign of a section, or its field schema → `edit_module` (affects every page using that module); exploratory design proposals / \"show me options\" → the design-preview loop (`save_design_draft` → `present_design_variants` → operator picks → `select_design_draft` → materialise; the design-preview skill carries it — variants preview in the site's real theme before anything changes); find a string across all modules → `grep_content`; page name/title/slug → `update_pages_many`; draft/published → `set_pages_status_many`; delete → `delete_pages_many`; SEO → `set_page_seo` / `optimize_page_seo`.",
+    "- **Extend a page** → `add_module` routed by `target`: 'page' (this page only), 'layout' (site-wide chrome — ONE call covers all pages), 'template' (every page of one type). Rearrange with `move_module` (across blocks) / `reorder_module` (within a block); detach with `remove_module_from`.",
+    "- **Navigation / menus** → `set_structured_set({kind:'nav-menu'})` for the links (never hardcode them into module HTML); read current items first via `get_structured_set`.",
+    "- **Same content on N pages** → `create_content_instance` + `set_placement_content({syncMode:'synced'})` per placement; edit everywhere at once with `set_content_instance_values` (several at once: `set_content_instance_values_many`); detach one page with `fork_placement_content`.",
+    "- **Import / migrate an existing site** → `propose_site_import` (Owner approves the crawl) → wait for ready_for_review → REBUILD each page with `build_page`, reading the source content via `get_import_page` (Markdown + tokens, never raw HTML) and `get_import_page_screenshot`, and pulling the page's images into the media library with `import_media_from_urls` (name the exact source URLs from the image inventory) → per page: `check_page_content_inventory` plus a visual self-check with `get_import_page_screenshot`, record findings via `add_import_page_notes`, close with `get_import_run_report`. The site-migrate skill carries the full staged flow (homepage first → key page types → mass import).",
+    "- **Media** → `find_media` (search the library), `generate_image`, `set_media_alt`. **Redirects** → `bulk_create_redirects` / `find_redirects` / `bulk_delete_redirects`. **Theme & design** → `get_theme`, `set_theme_tokens`, `propose_create_theme`, `set_design_manifest`. " +
+      inspectAndParallel,
+    "",
+    discovery,
+  ].join("\n");
+}
+
+const TOOL_PLAYBOOK_BLOCKS: Record<PromptSurface, string> = {
+  chat: buildToolPlaybookBlock("chat"),
+  "power-mcp": buildToolPlaybookBlock("power-mcp"),
+};
 
 // v0.5.5 — staging model. Every chat write is "pending" until the user
 // stages + publishes it. Cacheable — applies to every chat session.
@@ -535,20 +571,27 @@ export interface VolatileContext {
 export function composeSystemPromptChunks(
   memory: readonly MemoryRow[],
   volatile: VolatileContext = {},
+  surface: PromptSurface = "chat",
 ): SystemPromptChunk[] {
   const chunks: SystemPromptChunk[] = [
     { body: BASE_SYSTEM, cacheable: true, label: "base" },
-    { body: TOOL_PLAYBOOK_BLOCK, cacheable: true, label: "tool-playbook" },
+    { body: TOOL_PLAYBOOK_BLOCKS[surface], cacheable: true, label: "tool-playbook" },
     { body: MODULE_MODEL_BLOCK, cacheable: true, label: "module-model" },
     { body: STAGING_BLOCK, cacheable: true, label: "staging" },
-    { body: FINISHING_A_TURN_BLOCK, cacheable: true, label: "finishing-a-turn" },
   ];
-  // Static subagents guidance — suppressed when subagents are disabled (the
-  // CAELO_DISABLE_SUBAGENTS toggle also strips the spawn tools) so the model is
-  // never told about a capability it doesn't have. Env is process-static, so
-  // the prompt stays byte-stable within a run (cache-safe).
-  if (process.env.CAELO_DISABLE_SUBAGENTS !== "1") {
-    chunks.push({ body: SUBAGENTS_BLOCK, cacheable: true, label: "subagents" });
+  // issue #413 — two chunks exist only on the chat surface. They describe the
+  // chat-runner's own loop and would mislead an external agent driving its own
+  // loop over Power-MCP: "finishing-a-turn" is the runner's turn mechanics,
+  // and the subagent spawn tools are in POWER_MCP_EXCLUDED_TOOLS.
+  if (surface === "chat") {
+    chunks.push({ body: FINISHING_A_TURN_BLOCK, cacheable: true, label: "finishing-a-turn" });
+    // Static subagents guidance — suppressed when subagents are disabled (the
+    // CAELO_DISABLE_SUBAGENTS toggle also strips the spawn tools) so the model
+    // is never told about a capability it doesn't have. Env is process-static,
+    // so the prompt stays byte-stable within a run (cache-safe).
+    if (process.env.CAELO_DISABLE_SUBAGENTS !== "1") {
+      chunks.push({ body: SUBAGENTS_BLOCK, cacheable: true, label: "subagents" });
+    }
   }
 
   const bySlot = new Map(memory.map((m) => [m.slot, m.body.trim()]));
