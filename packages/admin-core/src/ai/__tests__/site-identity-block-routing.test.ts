@@ -19,7 +19,7 @@ describe("formatSiteIdentityBlock — first-conversation routing (#187)", () => 
     expect(b).toContain("Untouched install");
     // Route 1 — Genesis (from scratch).
     expect(b).toContain("Site Genesis");
-    expect(b).toContain("save_genesis_draft");
+    expect(b).toContain("save_design_draft");
     // Route 2 — migration: the tool, the Owner gate, and the two
     // behavioural guardrails (don't claim it ran; don't rebuild from
     // memory).

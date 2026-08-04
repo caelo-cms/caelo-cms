@@ -163,8 +163,10 @@ function injectBefore(source: string, marker: RegExp, fragment: string): string 
  * `crossorigin` attribute is REQUIRED for font preloads even same-origin,
  * per the fetch spec's font-destination CORS rule) + the @font-face
  * block. Empty css with no preloads → null (system-stack-only theme).
+ * Exported for the design-draft theme shell (#375) so draft previews
+ * load the identical fonts as the page preview.
  */
-function fontsHeadFragment(fonts: ComposeFonts | undefined): string | null {
+export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | null {
   if (fonts === undefined) return null;
   const links = fonts.preloads
     .map((href) => `<link rel="preload" as="font" type="font/woff2" crossorigin href="${href}">`)
