@@ -264,7 +264,6 @@ import {
   mediaGetSettingsOp,
   mediaListOp,
   mediaListUsagesOp,
-  mediaRecentForAiOp,
   mediaRecordUsageOp,
   mediaSetSourceOp,
   mediaUpdateAltOp,
@@ -910,7 +909,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaDeleteOp);
   registry.register(mediaDeleteManyOp);
   registry.register(mediaRecordUsageOp);
-  registry.register(mediaRecentForAiOp);
   registry.register(mediaListUsagesOp);
   registry.register(mediaGetSettingsOp);
   registry.register(setMediaCdnOp);
