@@ -532,7 +532,7 @@ describe("skill allowlist validation (issue #301)", () => {
   });
 });
 
-// Issue #417 — migration 0201 appended the field-naming subsection to the
+// Issue #417 — migration 0208 appended the field-naming subsection to the
 // authoring skills ADDITIVELY (append + sentinel guard, no replacement of
 // existing text — so it cannot conflict with parallel skill migrations).
 describe("field-naming guidance appended to authoring skills (#417)", () => {

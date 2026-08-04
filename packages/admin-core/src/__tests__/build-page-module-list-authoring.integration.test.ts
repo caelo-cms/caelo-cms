@@ -132,7 +132,6 @@ async function renderPage(ctx: ExecutionContext, pageId: string): Promise<string
 
 describe("build_page authors a module-list card grid (the path issue #417's dogfood agent routed around)", () => {
   let pageId = "";
-  let gridModuleId = "";
   let cardModuleId = "";
   const cardRefs: { moduleId: string; contentInstanceId: string }[] = [];
 
@@ -202,7 +201,6 @@ describe("build_page authors a module-list card grid (the path issue #417's dogf
     // One placement (the grid); both cards are detached, not placed.
     expect(v.placements.length).toBe(1);
     expect(v.detached.length).toBe(2);
-    gridModuleId = v.placements[0]?.moduleId ?? "";
     cardModuleId = v.detached[0]?.moduleId ?? "";
     // card_b re-used card_a's module — one card module, two instances.
     expect(v.detached[1]?.moduleId).toBe(cardModuleId);

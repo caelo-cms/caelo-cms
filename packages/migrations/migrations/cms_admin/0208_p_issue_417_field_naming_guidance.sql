@@ -13,8 +13,10 @@
 --
 -- ADDITIVE ON PURPOSE: appends a new subsection to the skill bodies via
 -- `body || …` with a sentinel-phrase idempotency guard — no string
--- replacement of existing text — so it cannot conflict with issue
--- #414's parallel skill edits (0199). Targets both authoring skills:
+-- replacement of existing text — so it cannot conflict with the
+-- parallel in-flight skill migrations (issue #414's docs pass, the
+-- plugin-v2 chain holding 0200-0201, and 0202-0207 reserved by other
+-- PRs — hence this file's 0208). Targets both authoring skills:
 -- manage-module (module authoring) AND compose-page (build_page turns
 -- engage it without manage-module).
 

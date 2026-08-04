@@ -349,9 +349,9 @@ const moduleFieldsArray = z
         message:
           `numbered-scalar fanout: ${run.map((n) => `"${n}"`).join(", ")} repeat one role as ` +
           "numbered scalar fields — repeating content is ONE list field, never numbered scalars " +
-          "(CLAUDE.md §1A). Replace the run with a single field: kind \"text-list\" (list of " +
-          "strings, inner template iterates {{.}}), \"link-list\" (list of {label, href}), or " +
-          "\"module-list\" (rich per-item structure: mint a card sub-module and reference it per " +
+          '(CLAUDE.md §1A). Replace the run with a single field: kind "text-list" (list of ' +
+          'strings, inner template iterates {{.}}), "link-list" (list of {label, href}), or ' +
+          '"module-list" (rich per-item structure: mint a card sub-module and reference it per ' +
           "item — in build_page, author the card detached with `ref` and pass " +
           '[{"$ref": "<ref>"}, …] as the field value). A two-field split like col1/col2 is fine; ' +
           `${NUMBERED_SCALAR_FANOUT_THRESHOLD}+ numbered siblings is a list.`,
