@@ -70,9 +70,9 @@ export function formatStructuredSetsBlock(
 ): string {
   const primer = [
     "# Structured-data sets you can edit",
-    "Caelo has typed named lists for **global repeated content**: navigation menus, tags, taxonomies, link-lists, and language-selectors. When the user asks about any of these, prefer creating or editing a structured set over hardcoding values in module HTML — that's what these lists are for.",
+    "Caelo has typed named lists for **global repeated content**: navigation menus, tags, taxonomies, and link-lists. When the user asks about any of these, prefer creating or editing a structured set over hardcoding values in module HTML — that's what these lists are for.",
     "",
-    "Kinds: `nav-menu`, `tags`, `taxonomy`, `link-list`, `language-selector`. Item shape is per-kind and enforced by the JSON Schema on `set_structured_set` (a mismatch is rejected at the tool boundary with a structured error). " +
+    "Kinds: `nav-menu`, `tags`, `taxonomy`, `link-list`. Item shape is per-kind and enforced by the JSON Schema on `set_structured_set` (a mismatch is rejected at the tool boundary with a structured error). " +
       "**Theme tokens are NOT a structured-set kind anymore (v0.11.0)** — see the `## Theme` block below; use `set_theme_tokens` for token tweaks and `propose_create_theme` to mint a new theme.",
     "",
     "Tools (one unified CRUD surface — `kind` is a discriminator argument):",
@@ -81,7 +81,7 @@ export function formatStructuredSetsBlock(
     "- `set_structured_set({ kind, slug, displayName, items })` — UPSERT. Creates the set when the slug doesn't exist; REPLACES `items` if it does (NOT append — pass the full desired list).",
     "- `delete_structured_set({ kind, slug })` — remove a set.",
     "",
-    "Renderer convention: a module with slug `<kind>-<slug>` auto-renders the matching `<kind>/<slug>` set. Currently only `nav-menu-<slug>` and `language-selector-<slug>` auto-wire — for the other kinds, the rendering module's HTML/JS references the items directly via the structured-sets API. To wire a brand-new nav menu onto a layout: (1) `set_structured_set({ kind: 'nav-menu', slug: 'X', displayName: '…', items: [...] })` to create the items, (2) ensure a module named `nav-menu-X` is on the layout's header (or footer) block — use `add_module` (target='layout') if it doesn't exist yet.",
+    "Renderer convention: a module with slug `<kind>-<slug>` auto-renders the matching `<kind>/<slug>` set. Currently only `nav-menu-<slug>` auto-wires — for the other kinds, the rendering module's HTML/JS references the items directly via the structured-sets API. To wire a brand-new nav menu onto a layout: (1) `set_structured_set({ kind: 'nav-menu', slug: 'X', displayName: '…', items: [...] })` to create the items, (2) ensure a module named `nav-menu-X` is on the layout's header (or footer) block — use `add_module` (target='layout') if it doesn't exist yet.",
     "",
     'If the user mentions "navigation", "the nav", "the menu", "header links", "footer menu" — that\'s a nav-menu, NOT a module to edit. Reach for `set_structured_set` with `kind: "nav-menu"` first.',
   ].join("\n");

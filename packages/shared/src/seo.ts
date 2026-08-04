@@ -108,22 +108,14 @@ export interface SiteSeoSettings {
 
 /**
  * Resolve the canonical URL for a page. If `pages_seo.canonical_url`
- * is set it wins; otherwise build `<siteBaseUrl>/<page-path>` from
- * the page's slug + locale. Locale strategy is single-locale (no
- * prefix) until P9 i18n.
+ * is set it wins; otherwise build `<siteBaseUrl>/<slug>` (home pages
+ * canonicalize to the bare base URL). URL shaping beyond base + slug
+ * becomes a plugin contribution on the URL composition point (#390).
  */
 export function resolveCanonicalUrl(args: {
   siteBaseUrl: string;
   pageSlug: string;
-  pageLocale: string;
   override: string | null;
-  /** P9 — when present, the locale's url_strategy decides the URL shape. */
-  localeConfig?: {
-    code: string;
-    urlStrategy: "none" | "subdirectory" | "subdomain" | "domain";
-    urlHost: string | null;
-    isDefault: boolean;
-  };
   /**
    * v0.2.85 — page emission style. 'directory' (default) → URLs end
    * in `/<slug>/`; 'no-extension' → URLs end in `/<slug>` (no
@@ -132,11 +124,10 @@ export function resolveCanonicalUrl(args: {
    */
   pageUrlStyle?: "directory" | "no-extension";
   /**
-   * 0184 — explicit homepage designation (`locales.home_page_id`). When
-   * true this page IS the locale root and canonicalizes to `<base>/`
-   * regardless of its slug. Uses the same predicate (`isHomeSlug`) as
-   * the magic-slug fallback so canonical agrees with hreflang + the
-   * emitted output path.
+   * 0184 — explicit homepage designation. When true this page IS the
+   * site root and canonicalizes to `<base>/` regardless of its slug.
+   * Uses the same predicate (`isHomeSlug`) as the magic-slug fallback
+   * so canonical agrees with the emitted output path.
    */
   isHomePage?: boolean;
 }): string {
@@ -149,16 +140,6 @@ export function resolveCanonicalUrl(args: {
   // shape dictated by the page-emission style. Home pages always
   // resolve to the base URL (no tail) regardless of style.
   const tail = cleanSlug ? (style === "no-extension" ? cleanSlug : `${cleanSlug}/`) : "";
-  const cfg = args.localeConfig;
-  if (cfg && cfg.urlStrategy !== "none") {
-    if (cfg.urlStrategy === "subdirectory") {
-      return tail ? `${base}/${cfg.code}/${tail}` : `${base}/${cfg.code}/`;
-    }
-    if ((cfg.urlStrategy === "subdomain" || cfg.urlStrategy === "domain") && cfg.urlHost) {
-      const protocol = base.startsWith("http://") ? "http://" : "https://";
-      return tail ? `${protocol}${cfg.urlHost}/${tail}` : `${protocol}${cfg.urlHost}/`;
-    }
-  }
   return tail ? `${base}/${tail}` : `${base}/`;
 }
 
@@ -168,7 +149,6 @@ export interface SeoMetaInput {
   canonical: string;
   noindex: boolean;
   ogImageUrl: string | null;
-  hreflang: { locale: string; url: string }[];
   organization: SiteSeoSettings["organization"];
 }
 
@@ -177,7 +157,7 @@ export interface SeoMetaInput {
  * the renderer injects just before </head>. Order is canonical
  * (W3C-recommended): charset / viewport stay in the layout; meta
  * description + canonical + robots + Open Graph + Twitter card +
- * hreflang + JSON-LD.
+ * JSON-LD.
  *
  * No raw HTML escape hatch — every variable is HTML-attribute-encoded.
  */
@@ -208,14 +188,6 @@ export function renderSeoHead(input: SeoMetaInput): string {
   lines.push(
     `<meta name="twitter:card" content="${input.ogImageUrl ? "summary_large_image" : "summary"}" />`,
   );
-  // Hreflang per locale + x-default. P8 ships zero rows; P9 i18n
-  // populates pages_hreflang and the existing renderer iterates.
-  for (const h of input.hreflang) {
-    lines.push(`<link rel="alternate" hreflang="${enc(h.locale)}" href="${enc(h.url)}" />`);
-  }
-  if (input.hreflang.length > 0) {
-    lines.push(`<link rel="alternate" hreflang="x-default" href="${enc(input.canonical)}" />`);
-  }
   // JSON-LD WebPage block referencing the Organization (when set).
   const ld: Record<string, unknown> = {
     "@context": "https://schema.org",

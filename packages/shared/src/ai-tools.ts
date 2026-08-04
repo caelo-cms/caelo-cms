@@ -614,11 +614,10 @@ export type RemoveModuleFromToolInput = z.infer<typeof removeModuleFromToolInput
 
 export const setStructuredSetToolInput = z
   .object({
-    // v0.10.22 — added "language-selector" to match @caelo-cms/shared
     // structuredSetKind (the 6th kind that was previously unreachable
     // from any AI tool — the kind-specific wrappers covered only
     // nav-menu + theme).
-    kind: z.enum(["nav-menu", "taxonomy", "theme", "tags", "link-list", "language-selector"]),
+    kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list"]),
     slug: slugInputSchema,
     displayName: z.string().min(1).max(200),
     items: z.array(z.unknown()),

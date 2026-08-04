@@ -4,11 +4,11 @@
  * P8 — static-generator SEO pass.
  *
  *  - Per-page <head> rewriter — injects meta description, canonical,
- *    Open Graph, Twitter card, JSON-LD WebPage, and (when populated)
- *    hreflang link entries.
- *  - sitemap.xml writer — single-locale flat list of every published
- *    non-noindex page, with lastmod/changefreq/priority. Skipped
- *    entirely when site_defaults.sitemap_enabled = false.
+ *    Open Graph, Twitter card, and JSON-LD WebPage. hreflang returns
+ *    as a head contribution from the international-site plugin (#398).
+ *  - sitemap.xml writer — flat list of every published non-noindex
+ *    page, with lastmod/changefreq/priority. Skipped entirely when
+ *    site_defaults.sitemap_enabled = false.
  *  - robots.txt extension — adds `Sitemap:` line in production.
  *
  * Ordering: runs AFTER `media-pass` (URLs already rewritten to
@@ -22,11 +22,9 @@ import { join } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   injectSeoIntoHead,
-  type LocaleConfig,
   pageIsLocaleHome,
   renderSeoHead,
   resolveCanonicalUrl,
-  resolveLocaleUrl,
   type SiteSeoSettings,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -45,12 +43,6 @@ interface PageSeoBundle {
   updatedAt: string;
 }
 
-interface HreflangRow {
-  page_id: string;
-  locale: string;
-  url: string;
-}
-
 export interface SeoPagesContext {
   pageSlug: string;
   pageLocale: string;
@@ -66,16 +58,15 @@ export async function runSeoPass(args: {
   /** `noindex` deploy target overrides per-page settings — staging
       stays out of the sitemap entirely regardless of the page flag. */
   envIsNoindex: boolean;
-  /** v0.2.85 — per-target page emission style. Drives canonical +
-   *  hreflang URL trailing-slash decisions to match what the bucket
-   *  actually serves. */
+  /** v0.2.85 — per-target page emission style. Drives canonical
+   *  trailing-slash decisions to match what the bucket serves. */
   pageUrlStyle?: "directory" | "no-extension";
 }): Promise<{ sitemapEmitted: boolean }> {
   if (args.pages.length === 0) {
     return { sitemapEmitted: false };
   }
 
-  // Resolve every page's slug to its sidecar SEO row + hreflang rows.
+  // Resolve every page's slug to its sidecar SEO row.
   const slugs = args.pages.map((p) => p.pageSlug);
   // Per-id query — same Bun-SQL constraint as media.list.
   const seoBundles: PageSeoBundle[] = [];
@@ -165,95 +156,13 @@ export async function runSeoPass(args: {
     ogImageUrlByAsset.set(id, assetUrl);
   }
 
-  // P9 — compute hreflang per page from the locale registry + sibling
-  // pages sharing the same slug across locales. Rows in `pages_hreflang`
-  // (P8 stub) act as explicit overrides; auto-computed entries fill in
-  // the rest. Hreflang is emitted in <head> only — not the sitemap —
-  // per crawler-coherency reasoning (P8 review pass decision).
-  const pageIds = seoBundles.map((b) => b.pageId);
-  const hreflangByPage = new Map<string, { locale: string; url: string }[]>();
-
-  const localeRows = (await args.tx.execute(sql`
-    SELECT code, display_name, url_strategy, url_host, is_default,
-           home_page_id::text AS home_page_id
-    FROM locales
-  `)) as unknown as {
-    code: string;
-    display_name: string;
-    url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
-    url_host: string | null;
-    is_default: boolean;
-    home_page_id: string | null;
-  }[];
-  const locales: LocaleConfig[] = localeRows.map((r) => ({
-    code: r.code,
-    displayName: r.display_name,
-    urlStrategy: r.url_strategy,
-    urlHost: r.url_host,
-    isDefault: r.is_default,
-  }));
-  const localeByCode = new Map(locales.map((l) => [l.code, l]));
-  // 0184 — locale code → its designated homepage id. Feeds
-  // `pageIsLocaleHome` so canonical + hreflang for a page designated on a
-  // non-magic slug still point at the locale root.
-  const homePageByLocale = new Map(localeRows.map((r) => [r.code, r.home_page_id]));
-
-  // P9 review-pass optimisation: ONE query for the (slug, locale)
-  // matrix across all published pages, replacing N per-page queries.
-  // Per CMS_REQUIREMENTS §7.3: only locales WITH a published
-  // translation count. Draft/scheduled variants must not surface.
-  const siblingRows = (await args.tx.execute(sql`
-    SELECT id::text AS id, slug, locale FROM pages
-    WHERE deleted_at IS NULL AND status = 'published'
-  `)) as unknown as { id: string; slug: string; locale: string }[];
-  // Slug → each published sibling's (locale, pageId). The pageId lets
-  // the hreflang loop compute each sibling's home status from its OWN
-  // locale's designation (0184).
-  const localesBySlug = new Map<string, { locale: string; pageId: string }[]>();
-  for (const r of siblingRows) {
-    const arr = localesBySlug.get(r.slug) ?? [];
-    arr.push({ locale: r.locale, pageId: r.id });
-    localesBySlug.set(r.slug, arr);
-  }
-  for (const bundle of seoBundles) {
-    const siblings = localesBySlug.get(bundle.slug) ?? [];
-    const auto: { locale: string; url: string }[] = [];
-    for (const sibling of siblings) {
-      const cfg = localeByCode.get(sibling.locale);
-      if (!cfg) continue;
-      try {
-        auto.push({
-          locale: sibling.locale,
-          url: resolveLocaleUrl(
-            cfg,
-            bundle.slug,
-            args.settings.siteBaseUrl,
-            args.pageUrlStyle,
-            pageIsLocaleHome(sibling.pageId, bundle.slug, homePageByLocale.get(sibling.locale)),
-          ),
-        });
-      } catch {
-        // Misconfigured locale (missing url_host) — skip its hreflang
-        // entry but keep the deploy going so the rest of the site builds.
-      }
-    }
-    if (auto.length > 0) hreflangByPage.set(bundle.pageId, auto);
-  }
-
-  // Explicit overrides from pages_hreflang win when present.
-  for (const pid of pageIds) {
-    const rows = (await args.tx.execute(sql`
-      SELECT page_id::text AS page_id, locale, url
-      FROM pages_hreflang WHERE page_id = ${pid}::uuid
-      ORDER BY locale
-    `)) as unknown as HreflangRow[];
-    if (rows.length > 0) {
-      hreflangByPage.set(
-        pid,
-        rows.map((r) => ({ locale: r.locale, url: r.url })),
-      );
-    }
-  }
+  // 0184 — the designated homepage id, still parked per locale row
+  // until #384 moves it to site_defaults. Looked up via each page's
+  // own locale so the designation semantics survive the #383 cut.
+  const homeRows = (await args.tx.execute(sql`
+    SELECT code, home_page_id::text AS home_page_id FROM locales
+  `)) as unknown as { code: string; home_page_id: string | null }[];
+  const homePageByLocale = new Map(homeRows.map((r) => [r.code, r.home_page_id]));
 
   // Inject the head block per page. Match by (slug, locale).
   const bundleBySlug = new Map<string, PageSeoBundle>(
@@ -265,9 +174,7 @@ export async function runSeoPass(args: {
     const canonical = resolveCanonicalUrl({
       siteBaseUrl: args.settings.siteBaseUrl,
       pageSlug: bundle.slug,
-      pageLocale: bundle.locale,
       override: bundle.canonicalOverride,
-      localeConfig: localeByCode.get(bundle.locale),
       pageUrlStyle: args.pageUrlStyle,
       isHomePage: pageIsLocaleHome(bundle.pageId, bundle.slug, homePageByLocale.get(bundle.locale)),
     });
@@ -280,7 +187,6 @@ export async function runSeoPass(args: {
       canonical,
       noindex: bundle.noindex || args.envIsNoindex,
       ogImageUrl,
-      hreflang: hreflangByPage.get(bundle.pageId) ?? [],
       organization: args.settings.organization,
     });
     p.html = injectSeoIntoHead(p.html, headBlock);
@@ -295,9 +201,7 @@ export async function runSeoPass(args: {
         const canonical = resolveCanonicalUrl({
           siteBaseUrl: args.settings.siteBaseUrl,
           pageSlug: b.slug,
-          pageLocale: b.locale,
           override: b.canonicalOverride,
-          localeConfig: localeByCode.get(b.locale),
           pageUrlStyle: args.pageUrlStyle,
           isHomePage: pageIsLocaleHome(b.pageId, b.slug, homePageByLocale.get(b.locale)),
         });
