@@ -105,11 +105,18 @@ export function powerToolCatalogue(tools: ToolRegistry): z.infer<typeof toolCata
       inputSchema: t.inputSchema,
       ...(t.gated ? { gated: true } : {}),
     }));
-  const plugin = pluginToolsRegistry.list().map((p) => ({
-    name: p.spec.name,
-    description: annotateExcludedToolMentions(p.spec.description, POWER_MCP_EXCLUDED_TOOLS),
-    inputSchema: p.spec.inputJsonSchema,
-  }));
+  // Same exclusion filter as core tools (PR #420 review): a plugin tool
+  // whose name collides with an excluded one would otherwise be advertised
+  // here yet refused by mcp.execute_tool — the exact catalogue↔prose
+  // inconsistency this module exists to prevent.
+  const plugin = pluginToolsRegistry
+    .list()
+    .filter((p) => !POWER_MCP_EXCLUDED_TOOLS.has(p.spec.name))
+    .map((p) => ({
+      name: p.spec.name,
+      description: annotateExcludedToolMentions(p.spec.description, POWER_MCP_EXCLUDED_TOOLS),
+      inputSchema: p.spec.inputJsonSchema,
+    }));
   return [...core, ...plugin];
 }
 
