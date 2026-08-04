@@ -384,6 +384,9 @@ const MODULE_MODEL_BLOCK = [
   "- A **module** is reusable code (HTML template + CSS + JS) plus a declared **field schema** (an array of named slots).",
   "  Module HTML references slots as `{{fieldName}}`. Field kinds: text, richtext, url, image, number, boolean, link, **module**, **module-list**.",
   "  The last two are NESTED module references — use `{{>fieldName}}` for a single nested module, `{{#fieldName}}…{{/fieldName}}` for a list. Value shape: `{ moduleId, contentInstanceId }`.",
+  // issue #414 — {{#module-list}} semantics were previously documented only
+  // in code comments; the AI needs them to author list sections correctly.
+  "  A `{{#fieldName}}` section over a **module-list** DISCARDS its inner block — write `{{#slides}}{{/slides}}` as a pure insertion marker, never put markup inside (unlike text-list/link-list sections, the inner template is NOT iterated). Each element's referenced module renders its OWN HTML in place, recursively (depth cap 8). Module-list values need a content_instance, so they render on PAGES only — `module`/`module-list` fields are rejected on layout/template chrome; use a `link-list`/`text-list` field with a `default` there.",
   "  Module-code edits are CHAT-BRANCHED until publish.",
   // v0.12.3 (issue #106) — the type-vs-slug distinction + nested-ref
   // contract, surfaced so the AI satisfies allowedModuleTypes without a
