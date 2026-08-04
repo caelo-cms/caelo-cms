@@ -107,6 +107,14 @@ gcloud artifacts docker images list europe-west1-docker.pkg.dev/caelo-website/ca
 docker pull europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/admin:main  # no auth
 ```
 
+## Signatures must survive the mirror
+
+`cms-provision upgrade` cosign-verifies every image digest it is about to roll, against the AR mirror — so an AR copy without its signature is an unrollable release, even when GHCR's copy is signed fine.
+
+The mirror step therefore uses `oras copy -r`, which walks the OCI referrer graph. Do NOT go back to `cosign copy`: cosign 3.x attaches signatures as OCI referrers instead of the legacy `<digest>.sig` tag, and `cosign copy` (deprecated in 3.x) only moves the legacy scheme — it exits 0 and leaves the mirror unsigned. That is how v0.10.23 and v0.10.24 shipped unverifiable mirror images. The `Verify the mirrored image is signed` step in `release-images.yml` now runs the operator's exact check inside CI so the failure surfaces at release time, not days later on someone's upgrade.
+
+To repair an already-published release whose mirror is unsigned, re-run `release-images` against the tag (`gh workflow run release-images.yml --ref vX.Y.Z`): it re-signs and re-mirrors under the same semver tags.
+
 ## Retention — releases live forever, dev images for 7 days
 
 release-images publishes two kinds of images per service, with different lifetimes:
