@@ -19,6 +19,7 @@
   import StreamingMarkdown from "../StreamingMarkdown.svelte";
   import BulkOpCard from "./BulkOpCard.svelte";
 import ChoiceCard from "./ChoiceCard.svelte";
+  import DesignVariantsCard from "./DesignVariantsCard.svelte";
   import EditContentCard from "./EditContentCard.svelte";
   import EditModuleCard from "./EditModuleCard.svelte";
   import FindResultsCard from "./FindResultsCard.svelte";
@@ -108,6 +109,10 @@ import ChoiceCard from "./ChoiceCard.svelte";
   <ProposeCard {name} {content} {args} {csrfToken} {onApproved} />
 {:else if name === "offer_choices"}
   <ChoiceCard {content} {onChoose} />
+{:else if name === "present_design_variants"}
+  <!-- issue #375 — inline design-variant previews; the pick posts back
+       as the operator's message, same flow as ChoiceCard. -->
+  <DesignVariantsCard {content} {onChoose} />
 {:else if name === "edit_module"}
   <EditModuleCard {content} {args} />
 {:else if name === "edit_content"}
