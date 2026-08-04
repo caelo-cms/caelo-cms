@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #164 — AI tool: inspect_genesis_draft (compiler stage 1).
+ * issue #164 — AI tool: inspect_design_draft (compiler stage 1);
+ * renamed + scope-generalised by #375.
  *
  * After the operator selects a draft at /design/genesis, a LATER chat
  * session no longer has the draft HTML in context (listings are
@@ -24,7 +25,8 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const inspectInput = z
   .object({
-    /** Defaults to the SELECTED draft — the only one worth compiling. */
+    /** Defaults to the selected SITE draft — the compiler's source.
+     *  Growth-time variants (#375) are inspected by explicit id. */
     draftId: z.string().uuid().optional(),
     /**
      * Also return the raw HTML. Costly in context — fetch it only when
@@ -35,12 +37,12 @@ const inspectInput = z
   .strict();
 type InspectInput = z.infer<typeof inspectInput>;
 
-export const inspectGenesisDraftTool: ToolDefinitionWithHandler<InspectInput> = {
-  name: "inspect_genesis_draft",
+export const inspectDesignDraftTool: ToolDefinitionWithHandler<InspectInput> = {
+  name: "inspect_design_draft",
   description:
-    "Read a Genesis draft as a design FACT BASE: distinct colors with usage counts + properties, gradients, font families, font-size/spacing/radius histograms, shadows, and the section outline. Defaults to the SELECTED draft. " +
-    "This is how you materialise the chosen design: derive the theme document from THIS inventory (the draft's exact palette/typefaces — never invent different ones), then re-express the outline's sections as modules. " +
-    "Pass `includeHtml: true` ONLY when you need the markup itself (building the modules) — the inventory alone answers every theming question at a fraction of the context.",
+    "Read a design draft as a design FACT BASE: distinct colors with usage counts + properties, gradients, font families, font-size/spacing/radius histograms, shadows, and the section outline. Without draftId it defaults to the selected SITE draft (the Genesis compiler's source); growth-time page/module variants (#375) are inspected by explicit draftId. " +
+    "This is how you materialise a chosen design: for a SITE draft, derive the theme document from THIS inventory (the draft's exact palette/typefaces — never invent different ones), then re-express the outline's sections as modules; for a page/module variant, the fragment is already token-bound — transfer it faithfully. " +
+    "Pass `includeHtml: true` ONLY when you need the markup itself (building or editing the modules) — the inventory alone answers every theming question at a fraction of the context.",
   schema: inspectInput,
   inputSchema: {
     type: "object",
@@ -59,20 +61,20 @@ export const inspectGenesisDraftTool: ToolDefinitionWithHandler<InspectInput> = 
     }
     const drafts = (
       r.value as {
-        drafts: { id: string; direction: string; status: string; html?: string }[];
+        drafts: { id: string; direction: string; status: string; scope: string; html?: string }[];
       }
     ).drafts;
     const target =
       input.draftId !== undefined
         ? drafts.find((d) => d.id === input.draftId)
-        : drafts.find((d) => d.status === "selected");
+        : drafts.find((d) => d.status === "selected" && d.scope === "site");
     if (!target) {
       return {
         ok: false,
         content:
           input.draftId !== undefined
-            ? "draft not found — call list_genesis_drafts for current ids"
-            : "no draft is selected yet — the operator picks at /design/genesis (or tells you in chat; then call select_genesis_draft)",
+            ? "draft not found — call list_design_drafts for current ids"
+            : "no site draft is selected yet — the operator picks at /design/genesis (or tells you in chat; then call select_design_draft)",
       };
     }
     const html = target.html ?? "";

@@ -1160,7 +1160,7 @@ export const renderPagePreviewOp = defineOperation({
  * parity). The migration ensures at least one is_active row exists
  * post-install so this only fires before-the-migration tests.
  */
-async function loadActiveThemeForCompose(
+export async function loadActiveThemeForCompose(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   chatBranchId: string | undefined,
 ): Promise<ComposeTheme | undefined> {
