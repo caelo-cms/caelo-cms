@@ -19,7 +19,6 @@
  *   buildHreflangLinks(currentLocale, perLocaleUrls, defaultLocaleCode) —
  *     emits the `<link rel="alternate" hreflang=...>` markup.
  *
- *   lintLocaleConfig(locales, advancedUrlRouting) — surfaces config
  *     warnings (mixed strategies, missing url_host for subdomain/
  *     domain, default locale using `none` alongside subdirectory
  *     siblings, advanced strategy chosen while toggle is off).
@@ -214,56 +213,4 @@ export async function computeContentHash(value: unknown): Promise<string> {
   });
   const digest = await crypto.subtle.digest("SHA-256", TEXT_ENCODER.encode(canonical));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-export interface LocaleLintWarning {
-  code: string;
-  message: string;
-}
-
-/**
- * Cross-row config sanity checks. Run at:
- *   - propose-time (warnings stored on the proposal preview)
- *   - render-time (no fail-loudly per CLAUDE.md §2 since the renderer
- *     can still emit; surfaced in admin UI as banners)
- */
-export function lintLocaleConfig(
-  locales: ReadonlyArray<LocaleConfig>,
-  advancedUrlRouting: boolean,
-): LocaleLintWarning[] {
-  const warnings: LocaleLintWarning[] = [];
-  const usingAdvanced = locales.some(
-    (l) => l.urlStrategy === "subdomain" || l.urlStrategy === "domain",
-  );
-  if (usingAdvanced && !advancedUrlRouting) {
-    warnings.push({
-      code: "advanced-routing-disabled",
-      message:
-        "one or more locales use 'subdomain' or 'domain' strategy but Advanced URL Routing is disabled — enable it under /security/locales",
-    });
-  }
-  for (const l of locales) {
-    if ((l.urlStrategy === "subdomain" || l.urlStrategy === "domain") && !l.urlHost) {
-      warnings.push({
-        code: "missing-url-host",
-        message: `locale '${l.code}' uses url_strategy='${l.urlStrategy}' without url_host`,
-      });
-    }
-  }
-  // Default-locale 'none' alongside subdirectory siblings is a common
-  // mixed config; surface it so users know the default's URL stays bare
-  // while siblings get prefixed.
-  const def = locales.find((l) => l.isDefault);
-  const subdirSiblings = locales.filter((l) => !l.isDefault && l.urlStrategy === "subdirectory");
-  if (def && def.urlStrategy === "none" && subdirSiblings.length > 0) {
-    warnings.push({
-      code: "mixed-default-none-subdir",
-      message: `default locale '${def.code}' uses 'none' while ${subdirSiblings
-        .map((l) => l.code)
-        .join(
-          ", ",
-        )} use 'subdirectory' — this is valid but unusual; verify hreflang renders correctly`,
-    });
-  }
-  return warnings;
 }
