@@ -12,8 +12,9 @@
  * branch-scoped token (see `preview-screenshot-token.ts`) — real
  * rendering including real asset delivery, byte-identical to what the
  * operator's preview iframe shows for the same branch. The token rides a
- * request HEADER on every request the page makes (navigation +
- * subresources), so it never appears in URLs or access logs.
+ * request HEADER on the navigation and same-origin subresource requests
+ * ONLY (never in a URL, never to third-party hosts the page may embed),
+ * so it cannot land in access logs or leave the admin's origin.
  *
  * The browser is the SAME shared Chromium `screenshot_external_page`
  * uses (`_external-screenshotter.ts`) — one instance, idle-closed, no
@@ -125,7 +126,7 @@ export async function capturePreviewScreenshot(args: {
         external: false,
         fullPage: true,
         ...(args.selector ? { selector: args.selector } : {}),
-        extraHTTPHeaders: { [PREVIEW_SCREENSHOT_TOKEN_HEADER]: token },
+        sameOriginHeaders: { [PREVIEW_SCREENSHOT_TOKEN_HEADER]: token },
       },
     );
     if (shot.finalStatus !== undefined && shot.finalStatus >= 400) {

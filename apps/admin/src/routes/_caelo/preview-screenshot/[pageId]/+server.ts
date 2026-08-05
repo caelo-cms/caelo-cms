@@ -14,9 +14,11 @@
  * signed payload carries pageId + chatBranchId, verification binds the
  * payload's pageId to the route param, and the branch is read from the
  * payload — so neither can be tampered without breaking the signature.
- * The token normally arrives as a header (the capture service sends it
- * on every request); `?token=` is accepted for the document navigation
- * so agent-driven browser tooling can open a preview from a plain URL.
+ * The token is accepted from the request HEADER only. Deliberately NOT
+ * from `?token=` (PR #427 security review): a query-string credential is
+ * written into access logs and can leak onward via `Referer`, and the
+ * capture service — this route's only intended caller — always sends
+ * the header on every same-origin request anyway.
  */
 
 import {
@@ -32,9 +34,8 @@ import type { RequestHandler } from "./$types";
 /** Same fixed system actor as hooks.server.ts and the /api/mcp shells. */
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 
-export const GET: RequestHandler = async ({ params, request, url }) => {
-  const token =
-    request.headers.get(PREVIEW_SCREENSHOT_TOKEN_HEADER) ?? url.searchParams.get("token");
+export const GET: RequestHandler = async ({ params, request }) => {
+  const token = request.headers.get(PREVIEW_SCREENSHOT_TOKEN_HEADER);
   if (!token) throw error(401, "missing preview screenshot token");
   const v = verifyPreviewScreenshotToken(token, { expectedPageId: params.pageId });
   // Reason only — never echo token material into the response/logs.
@@ -56,10 +57,11 @@ export const GET: RequestHandler = async ({ params, request, url }) => {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      // Never indexed, never framed — this exists solely for the capture
-      // browser and short-lived token holders.
+      // Never indexed, never framed, never a referrer source — this exists
+      // solely for the capture browser and short-lived token holders.
       "x-robots-tag": "noindex",
       "x-frame-options": "SAMEORIGIN",
+      "referrer-policy": "no-referrer",
     },
   });
 };

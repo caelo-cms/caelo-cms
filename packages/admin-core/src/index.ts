@@ -26,7 +26,6 @@ export {
   mintPreviewScreenshotToken,
   PREVIEW_SCREENSHOT_TOKEN_HEADER,
   type PreviewScreenshotTokenVerification,
-  setPreviewScreenshotSecretForTests,
   verifyPreviewScreenshotToken,
 } from "./ai/preview-screenshot-token.js";
 export * from "./ai/pricing-cache.js";

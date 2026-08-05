@@ -29,9 +29,9 @@ import { assertPublicHttpUrl, isPublicIpAddress } from "./safe-fetch.js";
 /** Minimal Playwright route surface — typed locally so the package
  * doesn't need @types/playwright (Playwright stays a dynamic import). */
 interface PlaywrightRoute {
-  request(): { url(): string };
+  request(): { url(): string; headers(): Record<string, string> };
   abort(errorCode?: string): Promise<void>;
-  continue(): Promise<void>;
+  continue(opts?: { headers?: Record<string, string> }): Promise<void>;
 }
 
 export interface Screenshot {
@@ -111,11 +111,15 @@ export interface Screenshotter {
        *  selector instead of the page. Fails loudly when nothing matches
        *  (a silent full-page capture would misrepresent the crop). */
       selector?: string;
-      /** issue #412 — headers sent with EVERY request the page makes
-       *  (navigation + subresources). The branch-preview service rides its
-       *  short-lived signed token here so the admin's asset routes
-       *  (`/_caelo/media`, `/_caelo/fonts`) authorize without a session. */
-      extraHTTPHeaders?: Record<string, string>;
+      /** issue #412 — headers sent ONLY with requests to the navigation
+       *  URL's own origin (navigation + same-origin subresources), never to
+       *  third-party hosts. The branch-preview service rides its short-lived
+       *  signed token here so the admin's asset routes (`/_caelo/media`,
+       *  `/_caelo/fonts`) authorize without a session; a page embedding an
+       *  external font/image/script must not receive the credential (PR #427
+       *  security-review finding — a context-wide extraHTTPHeaders would
+       *  leak it to every embedded CDN host). */
+      sameOriginHeaders?: Record<string, string>;
     },
   ): Promise<Screenshot>;
   /**
@@ -139,6 +143,28 @@ export interface Screenshotter {
     opts: { cssSelector?: string; xpath?: string; maxMatches?: number },
   ): Promise<string[]>;
   dispose(): Promise<void>;
+}
+
+/**
+ * issue #412 / PR #427 security review — decide whether a request may carry
+ * the caller's `sameOriginHeaders` credential: returns the merged header
+ * object ONLY when `requestUrl` targets `selfOrigin`, null otherwise
+ * (cross-origin request, unparseable URL). Pure + exported so the
+ * "credential never leaves the origin" invariant is unit-testable without
+ * launching a browser.
+ */
+export function sameOriginHeaderPatch(
+  requestUrl: string,
+  selfOrigin: string,
+  existingHeaders: Record<string, string>,
+  headers: Record<string, string>,
+): Record<string, string> | null {
+  try {
+    if (new URL(requestUrl).origin !== selfOrigin) return null;
+  } catch {
+    return null;
+  }
+  return { ...existingHeaders, ...headers };
 }
 
 /**
@@ -199,7 +225,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       external?: boolean;
       width?: number;
       height?: number;
-      extraHTTPHeaders?: Record<string, string>;
+      sameOriginHeaders?: Record<string, string>;
     },
     // biome-ignore lint/suspicious/noExplicitAny: Playwright page + response handles (dynamic import, no @types)
     fn: (page: any, gotoResponse: any) => Promise<T>,
@@ -211,8 +237,26 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     }
     const ctx = await browser.newContext({
       viewport: { width: opts.width ?? 1280, height: opts.height ?? 800 },
-      ...(opts.extraHTTPHeaders ? { extraHTTPHeaders: opts.extraHTTPHeaders } : {}),
     });
+    if (opts.sameOriginHeaders) {
+      // Deliberately NOT `newContext({ extraHTTPHeaders })`: that would send
+      // the caller's credential (the preview capture token) to EVERY host the
+      // page embeds — external fonts, CDN images, analytics. Route-inject the
+      // headers only when the request targets the navigation URL's origin.
+      // Never combined with the `external` route guard below: only Caelo's
+      // own-origin captures (`external: false`) pass sameOriginHeaders.
+      const selfOrigin = new URL(url).origin;
+      const headers = opts.sameOriginHeaders;
+      await ctx.route("**/*", async (route: PlaywrightRoute) => {
+        const patched = sameOriginHeaderPatch(
+          route.request().url(),
+          selfOrigin,
+          route.request().headers(),
+          headers,
+        );
+        await route.continue(patched ? { headers: patched } : undefined);
+      });
+    }
     if (opts.external) {
       // Guard every request the page makes (navigation + subresources).
       // Hostnames are resolved at route time; the browser resolves again to
@@ -269,7 +313,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           external: opts?.external,
           width: opts?.width,
           height: opts?.height,
-          ...(opts?.extraHTTPHeaders ? { extraHTTPHeaders: opts.extraHTTPHeaders } : {}),
+          ...(opts?.sameOriginHeaders ? { sameOriginHeaders: opts.sameOriginHeaders } : {}),
         },
         async (page, gotoResponse) => {
           let png: Uint8Array;

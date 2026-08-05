@@ -132,7 +132,7 @@ describe("server-side backend selection", () => {
     const recorded: RecordedCapture[] = [];
     installFakeScreenshotter(recorded);
     await screenshotPageTool.handler(aiCtx, { pageId: PAGE_ID }, toolCtx());
-    const header = recorded[0]?.opts?.extraHTTPHeaders?.[PREVIEW_SCREENSHOT_TOKEN_HEADER];
+    const header = recorded[0]?.opts?.sameOriginHeaders?.[PREVIEW_SCREENSHOT_TOKEN_HEADER];
     expect(typeof header).toBe("string");
     const v = verifyPreviewScreenshotToken(header as string, { expectedPageId: PAGE_ID });
     expect(v).toEqual({ ok: true, pageId: PAGE_ID, chatBranchId: BRANCH_ID });

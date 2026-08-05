@@ -241,7 +241,7 @@ describe("Power-MCP surface (admin token)", () => {
     pngBytes[1] = 0x50;
     const fake: Screenshotter = {
       async capture(url, opts) {
-        captured.push({ url, headers: opts?.extraHTTPHeaders });
+        captured.push({ url, headers: opts?.sameOriginHeaders });
         const shot: Screenshot = {
           bytes: pngBytes,
           width: opts?.width ?? 1280,
