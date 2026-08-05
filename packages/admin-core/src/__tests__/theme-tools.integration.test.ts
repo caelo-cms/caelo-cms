@@ -4,7 +4,7 @@
  * Coverage for the theme + genesis read/config tools that had no dedicated
  * test (the thickest gap in the catalogue): get_theme, list_themes,
  * duplicate_theme, export_theme, import_theme, set_theme_asset,
- * set_design_manifest, list_design_drafts.
+ * list_design_drafts.
  *
  * Exercised against the seeded `site-default` theme (present after migrate).
  * Real Postgres (§6). The gated theme ops (create/activate/delete) have their
@@ -23,7 +23,6 @@ import { findMediaTool } from "../ai/tools/find-media.js";
 import { getThemeTool } from "../ai/tools/get-theme.js";
 import { importThemeTool } from "../ai/tools/import-theme.js";
 import { listThemesTool } from "../ai/tools/list-themes.js";
-import { setDesignManifestTool } from "../ai/tools/set-design-manifest.js";
 import { setThemeAssetTool } from "../ai/tools/set-theme-asset.js";
 import { registerAdminOps } from "../register.js";
 
@@ -47,9 +46,6 @@ const toolCtx = () => ({ adapter, registry }) as ToolContext;
 const MEDIA_SHA = `0411f411${"a".repeat(56)}`;
 const MEDIA_NAME = "issue411-bind-regression.png";
 
-/** The design manifest is a site-singleton; capture it so afterAll restores it. */
-let originalManifest: unknown = null;
-
 async function cleanup(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
   try {
@@ -70,16 +66,10 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
   await cleanup();
-  const m = await execute(registry, adapter, SYSTEM, "design_manifest.get", {});
-  if (m.ok) originalManifest = (m.value as { manifest: unknown }).manifest;
 });
 
 afterAll(async () => {
   await cleanup();
-  // Restore the site design manifest so the test doesn't leave state behind.
-  if (originalManifest) {
-    await execute(registry, adapter, SYSTEM, "design_manifest.set", { manifest: originalManifest });
-  }
   await adapter.close();
 });
 
@@ -208,27 +198,5 @@ describe("theme config tools", () => {
     );
     expect(bound.ok).toBe(true);
     expect(bound.content).toContain(modelVisibleId);
-  });
-
-  it("set_design_manifest writes the site design language", async () => {
-    const r = await setDesignManifestTool.handler(
-      SYSTEM,
-      {
-        manifest: {
-          typography: "Display: system-ui bold; body: system-ui regular.",
-          rhythm: "8px base spacing scale.",
-          patterns: [{ name: "Hero", spec: "Full-bleed heading + one CTA." }],
-        },
-      },
-      toolCtx(),
-    );
-    expect(r.ok).toBe(true);
-    // It reads back through the manifest getter.
-    const got = await execute(registry, adapter, SYSTEM, "design_manifest.get", {});
-    expect(got.ok).toBe(true);
-    if (got.ok) {
-      const man = (got.value as { manifest: { typography?: string } | null }).manifest;
-      expect(man?.typography).toContain("system-ui");
-    }
   });
 });

@@ -470,7 +470,7 @@ function buildToolPlaybookBlock(surface: PromptSurface): string {
     "- **Navigation / menus** → `set_structured_set({kind:'nav-menu'})` for the links (never hardcode them into module HTML); read current items first via `get_structured_set`.",
     "- **Same content on N pages** → `create_content_instance` + `set_placement_content({syncMode:'synced'})` per placement; edit everywhere at once with `set_content_instance_values` (several at once: `set_content_instance_values_many`); detach one page with `fork_placement_content`.",
     "- **Import / migrate an existing site** → `propose_site_import` (Owner approves the crawl) → wait for ready_for_review → REBUILD each page with `build_page`, reading the source content via `get_import_page` (Markdown + tokens, never raw HTML) and `get_import_page_screenshot`, and pulling the page's images into the media library with `import_media_from_urls` (name the exact source URLs from the image inventory) → per page: `check_page_content_inventory` plus a visual self-check with `get_import_page_screenshot`, record findings via `add_import_page_notes`, close with `get_import_run_report`. The site-migrate skill carries the full staged flow (homepage first → key page types → mass import).",
-    "- **Media** → `find_media` (search the library), `generate_image`, `set_media_alt`. **Redirects** → `bulk_create_redirects` / `find_redirects` / `bulk_delete_redirects`. **Theme & design** → `get_theme`, `set_theme_tokens`, `propose_create_theme`, `set_design_manifest`. " +
+    "- **Media** → `find_media` (search the library), `generate_image`, `set_media_alt`. **Redirects** → `bulk_create_redirects` / `find_redirects` / `bulk_delete_redirects`. **Theme & design** → `get_theme`, `set_theme_tokens` (values AND their roles in one call), `propose_create_theme`. " +
       inspectAndParallel,
     "",
     discovery,
@@ -481,7 +481,6 @@ const TOOL_PLAYBOOK_BLOCKS: Record<PromptSurface, string> = {
   chat: buildToolPlaybookBlock("chat"),
   "power-mcp": buildToolPlaybookBlock("power-mcp"),
 };
-
 // v0.5.5 — staging model. Every chat write is "pending" until the user
 // stages + publishes it. Cacheable — applies to every chat session.
 //
