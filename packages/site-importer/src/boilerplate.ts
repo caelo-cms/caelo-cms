@@ -111,7 +111,12 @@ function hash(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-function normalizeText(raw: string): string {
+/**
+ * Whitespace/entity-insensitive lowercase text key. Exported
+ * (package-internal) so the duplicate-nav collapse (content-only.ts)
+ * compares nav text the same way boilerplate grouping does.
+ */
+export function normalizeText(raw: string): string {
   return raw
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
@@ -131,8 +136,9 @@ interface Frame {
 }
 
 /** One qualifying block subtree of a walked page. Exported for the
- *  single-page dedup in `repeated-strip.ts` (issue #415); not part of the
- *  package barrel. */
+ *  single-page dedup in `repeated-strip.ts` (issue #415) and the
+ *  read-time content-only stripper (`content-only.ts`, issue #424); not
+ *  part of the package barrel. */
 export interface SubtreeRecord {
   pageId: string;
   url: string;
@@ -148,13 +154,26 @@ export interface SubtreeRecord {
 }
 
 /**
+ * Default `minTextLength` for {@link collectSubtrees}. Shared with the
+ * read-time stripper (content-only.ts, issue #424) so a replayed walk
+ * produces byte-for-byte the signatures the detector persisted.
+ */
+export const DEFAULT_MIN_TEXT_LENGTH = 20;
+
+/**
  * Walk one page, emitting a record per qualifying block subtree.
  *
- * Exported for the single-page dedup (`repeated-strip.ts`, issue #415),
- * which passes a deeper `maxActiveFrames`: page-builder div-soup nests a
- * carousel's clone slides well below 8 open block frames, and the
- * single-page walk can afford the larger (still constant) per-event cost.
- * The crawl path keeps the default — its behaviour is unchanged.
+ * Exported (package-internal, not via the barrel) for two consumers:
+ *   - the single-page dedup (`repeated-strip.ts`, issue #415), which
+ *     passes a deeper `maxActiveFrames`: page-builder div-soup nests a
+ *     carousel's clone slides well below 8 open block frames, and the
+ *     single-page walk can afford the larger (still constant) per-event
+ *     cost;
+ *   - the read-time content-only stripper (`content-only.ts`, issue
+ *     #424), which must replay EXACTLY the detector's walk (default
+ *     frames + min-text) to map a stored candidate signature back onto
+ *     byte ranges in one page's HTML.
+ * The crawl path keeps the defaults — its behaviour is unchanged.
  */
 export function collectSubtrees(
   page: BoilerplatePageInput,
@@ -380,7 +399,7 @@ export function detectBoilerplate(
   opts: DetectBoilerplateOptions = {},
 ): BoilerplateReport {
   const minPages = Math.max(2, opts.minPages ?? 3);
-  const minTextLength = opts.minTextLength ?? 20;
+  const minTextLength = opts.minTextLength ?? DEFAULT_MIN_TEXT_LENGTH;
   const maxCandidates = opts.maxCandidates ?? 40;
 
   const pagesAnalyzed = pages.length;

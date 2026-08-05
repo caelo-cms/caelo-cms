@@ -26,6 +26,9 @@ import { gunzipSync } from "node:zlib";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { getPageInspection } from "../ai/tools/_page-inspection-cache.js";
+import type { ToolContext } from "../ai/tools/dispatch.js";
+import { getImportPageTool } from "../ai/tools/get-import-page.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -298,6 +301,74 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
     } finally {
       await db.end();
     }
+  });
+});
+
+// issue #424 — content-only read against the RECORDED crawl: the real
+// searchviu pages carry the exact ballast the 2026-08-04 dogfood measured
+// (110KB Elementor header per page, the Complianz modal INSIDE the stored
+// content module — this crawl predates the extraction-time consent strip —
+// and 47 `--wp--preset--*` tokens, none referenced by any page).
+describe("get_import_page content-only on the recorded crawl (issue #424)", () => {
+  let blogPageId: string;
+
+  beforeAll(async () => {
+    const detected = await execute(registry, adapter, ctx, "imports.detect_boilerplate", {
+      runId,
+      minPages: 2,
+    });
+    if (!detected.ok) throw new Error(`detect_boilerplate failed: ${detected.error.kind}`);
+
+    const got = await execute(registry, adapter, ctx, "imports.get", { runId });
+    if (!got.ok) throw new Error(`imports.get failed: ${got.error.kind}`);
+    const pages = (got.value as { pages: Array<{ id: string; proposedSlug: string }> }).pages;
+    const blog = pages.find((p) => p.proposedSlug.includes("bigquery"));
+    if (!blog) throw new Error("bigquery fixture page missing");
+    blogPageId = blog.id;
+  });
+
+  it("default read drops chrome modules, the consent modal, and the whole unreferenced preset dump — loudly", async () => {
+    const res = await getImportPageTool.handler(ctx, { importPageId: blogPageId }, {
+      adapter,
+      registry,
+      chatSessionId: "stage-content-only",
+    } as ToolContext);
+    expect(res.ok).toBe(true);
+    const c = res.content;
+
+    expect(c).toContain("## Stripped from this read");
+    expect(c).toContain(
+      "- source chrome modules (layout-owned — bind ONCE at the layout, never per page): header, footer",
+    );
+    expect(c).toMatch(/- consent noise: \d+ cookie\/GDPR subtree\(s\)/);
+    expect(c).toMatch(/- design tokens: \d+ unreferenced --wp--preset--\* entries dropped/);
+
+    // Header nav + footer text are gone; the article is not.
+    expect(c).not.toContain("Smart Alerting");
+    expect(c).not.toContain("we once needed ourselves");
+    expect(c).toContain("BigQuery");
+    // The raw preset dump never reaches the model in this view.
+    expect(c).not.toContain("--wp--preset--aspect-ratio--square");
+
+    // Cache: content-only Markdown, FULL html (raw stays reachable).
+    const pageRef = c.match(/pg_[a-z0-9]+/)?.[0];
+    expect(pageRef).toBeDefined();
+    const cached = getPageInspection(pageRef!);
+    expect(cached?.markdown).not.toContain("Manage Consent");
+    expect(cached?.html).toContain("cmplz");
+  });
+
+  it("fullPage: true returns the untouched capture, counters absent", async () => {
+    const res = await getImportPageTool.handler(ctx, { importPageId: blogPageId, fullPage: true }, {
+      adapter,
+      registry,
+      chatSessionId: "stage-full-page",
+    } as ToolContext);
+    expect(res.ok).toBe(true);
+    const c = res.content;
+    expect(c).not.toContain("## Stripped from this read");
+    expect(c).toContain("Smart Alerting"); // header nav is back
+    expect(c).toContain("--wp--preset--aspect-ratio--square"); // raw token dump is back
   });
 });
 

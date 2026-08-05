@@ -39,6 +39,13 @@ export {
   normHref,
 } from "./content-inventory.js";
 export {
+  type BoilerplateStripTarget,
+  collapseDuplicateNavs,
+  filterPresetThemeTokens,
+  type StrippedChromeBlock,
+  stripBoilerplateSubtrees,
+} from "./content-only.js";
+export {
   type CrawlCheckpoint,
   type CrawledPage,
   type CrawlOptions,
