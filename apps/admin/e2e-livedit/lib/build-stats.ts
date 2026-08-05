@@ -372,10 +372,55 @@ export function parseBugReports(raw: string): BugReport[] | null {
 /** Blocking first — the ordering a reader scanning the table wants. */
 const SEVERITY_RANK: Record<string, number> = { blocking: 0, degraded: 1, cosmetic: 2 };
 
-/** Cap length and flatten whitespace — for table cells and inline bullets, where a newline breaks markdown. */
-function truncate(s: string, max: number): string {
-  const flat = s.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+function cap(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * Prepare bug-report text for an INLINE markdown position — a table cell, a
+ * list item, a bold heading. Flattens whitespace (a newline would end the
+ * row/item), caps length, then neutralizes the two characters that would
+ * change the document's STRUCTURE rather than its text.
+ *
+ * Deliberately HTML entities, not backslash escapes: a backslash escape has to
+ * escape the escape character first, and getting that wrong is the
+ * incomplete-sanitization class (CodeQL `js/incomplete-sanitization`). Entity
+ * substitution has no such second-order case.
+ *
+ * `<` is neutralized for two reasons that point the same way: a report whose
+ * text contains `</details>` would otherwise close the collapsible block out
+ * from under the remaining rows, and bug evidence routinely carries module
+ * HTML (`<section class="hero">`) that the comment renderer would otherwise
+ * swallow as a tag instead of showing to the reader.
+ *
+ * Backticks are deliberately left alone — real reports quote tool names as
+ * `` `create_module` `` and rendering that as code is what we want. A stray
+ * backtick can at worst open an inline code span; it cannot inject block
+ * structure. Values this function's output gets WRAPPED in backticks go
+ * through {@link codeSpan} instead.
+ */
+function inline(s: string, max: number): string {
+  return (
+    cap(s.replace(/\s+/g, " ").trim(), max)
+      // `&` FIRST — it is the entity-escape character, so a report containing
+      // the literal text `&lt;/details>` would otherwise pass through unchanged
+      // and render as a real closing tag. Ampersand, then `<`, then the pipe
+      // LAST because its replacement introduces an `&` that must not be
+      // re-escaped. Order is the whole correctness argument here.
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/\|/g, "&#124;")
+  );
+}
+
+/**
+ * Prepare freeform text the caller wraps in a backtick code span. Entities are
+ * NOT decoded inside a code span, so {@link inline}'s approach would show
+ * `&#124;` literally; a backtick in the value is the only real hazard here
+ * (it would close the span early), so replace those with an apostrophe.
+ */
+function codeSpan(s: string, max: number): string {
+  return cap(s.replace(/\s+/g, " ").trim(), max).replace(/`/g, "'");
 }
 
 /**
@@ -384,13 +429,23 @@ function truncate(s: string, max: number): string {
  * so flattening it would destroy the very structure that makes it readable.
  */
 function truncateBlock(s: string, max: number): string {
-  const trimmed = s.trim();
-  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+  return cap(s.trim(), max);
 }
 
-/** Escape the pipes that would split a markdown table cell. Newlines are already flattened by {@link truncate}. */
-function cell(s: string): string {
-  return s.replace(/\|/g, "\\|");
+/**
+ * Pick a code fence long enough to contain `body`.
+ *
+ * CommonMark closes a fenced block at the first line carrying at least as many
+ * backticks as the opener, so ANY fixed-width fence is escapable by content
+ * that happens to contain one — and `evidence` is exactly that kind of
+ * content: a replayed-history digest or a captured tool argument can carry a
+ * whole ```` ```ts ```` block. Scanning for the longest backtick run and adding
+ * one makes it impossible for the body to terminate its own fence.
+ */
+function fenceFor(body: string): string {
+  let longest = 0;
+  for (const run of body.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  return "`".repeat(Math.max(3, longest + 1));
 }
 
 /**
@@ -435,11 +490,12 @@ export function formatBugSection(reports: BugReport[] | null): string[] {
   for (const b of shown) {
     // `suspected_tool` is freeform text up to 200 chars — the AI sometimes
     // names several tools at once — so cap it or it stretches the table.
-    const tool = b.suspectedTool ? `\`${cell(truncate(b.suspectedTool, 40))}\`` : "—";
+    const tool = b.suspectedTool ? `\`${codeSpan(b.suspectedTool, 40)}\`` : "—";
     lines.push(
-      `| ${b.severity || "—"} | ${b.source || "—"} | ${cell(truncate(b.title, 80))} | ${tool} | ${
-        b.blockedTask ? "yes" : "no"
-      } |`,
+      `| ${inline(b.severity, 20) || "—"} | ${inline(b.source, 10) || "—"} | ${inline(
+        b.title,
+        80,
+      )} | ${tool} | ${b.blockedTask ? "yes" : "no"} |`,
     );
   }
   lines.push("");
@@ -457,19 +513,24 @@ export function formatBugSection(reports: BugReport[] | null): string[] {
   lines.push(`<summary>Bug details (${shown.length})</summary>`);
   lines.push("");
   for (const [i, b] of shown.entries()) {
-    lines.push(`**${i + 1}. [${b.severity} · ${b.source}] ${truncate(b.title, 200)}**`);
+    lines.push(
+      `**${i + 1}. [${inline(b.severity, 20)} · ${inline(b.source, 10)}] ${inline(b.title, 200)}**`,
+    );
     lines.push("");
-    if (b.suspectedTool) lines.push(`- Suspected tool: \`${b.suspectedTool}\``);
-    if (b.chatSessionId) lines.push(`- Chat session: \`${b.chatSessionId}\``);
-    lines.push(`- What happened: ${truncate(b.whatHappened, BUG_DETAIL_MAX_CHARS)}`);
-    lines.push(`- Expected: ${truncate(b.expected, BUG_DETAIL_MAX_CHARS)}`);
+    if (b.suspectedTool) lines.push(`- Suspected tool: \`${codeSpan(b.suspectedTool, 200)}\``);
+    if (b.chatSessionId) lines.push(`- Chat session: \`${codeSpan(b.chatSessionId, 40)}\``);
+    lines.push(`- What happened: ${inline(b.whatHappened, BUG_DETAIL_MAX_CHARS)}`);
+    lines.push(`- Expected: ${inline(b.expected, BUG_DETAIL_MAX_CHARS)}`);
     if (b.evidence) {
+      const body = truncateBlock(b.evidence, BUG_DETAIL_MAX_CHARS);
+      // Fence width derived from the body — evidence can itself contain a
+      // fence, and a fixed-width one would let it break out into the comment.
+      const fence = fenceFor(body);
       lines.push("- Evidence:");
       lines.push("");
-      // Four backticks so evidence containing a ``` fence can't break out.
-      lines.push("````");
-      lines.push(truncateBlock(b.evidence, BUG_DETAIL_MAX_CHARS));
-      lines.push("````");
+      lines.push(fence);
+      lines.push(body);
+      lines.push(fence);
     }
     lines.push("");
   }

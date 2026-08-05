@@ -278,10 +278,78 @@ describe("formatBugSection", () => {
     expect(lines.find((l) => l.startsWith("E"))).toHaveLength(600);
   });
 
-  it("escapes pipes so a title cannot break the table", () => {
+  // Regression: CodeQL js/incomplete-sanitization (alert #134 on PR #440).
+  // A backslash escape has to escape the backslash first; entities don't.
+  it("neutralizes pipes with an entity, leaving no escape character to mishandle", () => {
     const rows = parseBugReports(JSON.stringify([bugRow({ title: "a | b" })]));
     const md = formatBugSection(rows).join("\n");
-    expect(md).toContain("a \\| b");
+    expect(md).toContain("a &#124; b");
+    expect(md).not.toContain("\\|");
+  });
+
+  it("keeps a trailing backslash from smuggling a pipe past the escape", () => {
+    // `x \` + `| y` under backslash-escaping renders as `x \\| y` — the escape
+    // escapes the backslash and the pipe splits the row. Entities can't.
+    const rows = parseBugReports(JSON.stringify([bugRow({ title: "x \\| y" })]));
+    const row = formatBugSection(rows).find((l) => l.startsWith("| degraded |"));
+    // Exactly the 5 table columns ⇒ 6 delimiters. No injected extra cell.
+    expect(row?.split("|")).toHaveLength(7);
+  });
+
+  // Regression: the AI security review on PR #440 — evidence containing a
+  // fence as wide as the opener would close it and inject free markdown
+  // (fake tables, fake warnings) into the PR comment body.
+  it("widens the evidence fence past any backtick run in the content", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ evidence: "before\n````\n| Sev | fake row |\n````\nafter" })]),
+    );
+    const lines = formatBugSection(rows);
+    const open = lines.findIndex((l) => /^`{3,}$/.test(l));
+    const fence = lines[open];
+    expect(fence).toBe("`````");
+    // The body sits between a matched pair, so nothing escapes into markdown.
+    expect(lines.lastIndexOf(fence)).toBeGreaterThan(open);
+    expect(lines.filter((l) => l === fence)).toHaveLength(2);
+  });
+
+  it("still uses a plain fence for evidence with no backticks", () => {
+    const rows = parseBugReports(JSON.stringify([bugRow({ evidence: "no fences here" })]));
+    const lines = formatBugSection(rows);
+    expect(lines.filter((l) => l === "```")).toHaveLength(2);
+  });
+
+  it("stops a backtick in suspected_tool from closing its code span", () => {
+    const rows = parseBugReports(JSON.stringify([bugRow({ suspectedTool: "a`b" })]));
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("`a'b`");
+  });
+
+  it("neutralizes a </details> that would break the collapsible block open", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ whatHappened: "then </details> happened" })]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("&lt;/details>");
+    expect(md.match(/<\/details>/g)).toHaveLength(1);
+  });
+
+  it("escapes the ampersand first, so a pre-encoded tag cannot slip through", () => {
+    // Without escaping `&`, this passes through unchanged and the renderer
+    // decodes it back into a real closing tag.
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ whatHappened: "literal &lt;/details> in the text" })]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("&amp;lt;/details>");
+    expect(md.match(/<\/details>/g)).toHaveLength(1);
+  });
+
+  it("shows module HTML in evidence bullets instead of letting it render as tags", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ expected: 'the <section class="hero"> should persist' })]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain('&lt;section class="hero">');
   });
 });
 
