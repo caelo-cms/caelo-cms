@@ -113,7 +113,11 @@ function strippedCounterLines(args: {
       `- repeated per-type blocks, template-owned per the run's boilerplate detection (bind ONCE at the template): ${template.length} — ${template.map(label).join(", ")}`,
     );
   }
-  if (args.chromeNote !== null) lines.push(`- repeated in-content blocks: ${args.chromeNote}`);
+  // The status lives in the LABEL (not only the note text) so this line
+  // cannot be misread as a successful strip next to the lines above.
+  if (args.chromeNote !== null) {
+    lines.push(`- repeated in-content blocks NOT stripped: ${args.chromeNote}`);
+  }
   if (args.consentRemoved > 0) {
     lines.push(`- consent noise: ${args.consentRemoved} cookie/GDPR subtree(s)`);
   }
@@ -188,12 +192,12 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
       let chromeNote: string | null = null;
       if (g.boilerplateSummary === null || g.boilerplateSummary === undefined) {
         chromeNote =
-          "NOT stripped — this run has no boilerplate summary (detect_import_boilerplate has not run on it). Treat blocks repeated across pages as shared, not per-page content.";
+          "this run has no boilerplate summary (detect_import_boilerplate has not run on it). Treat blocks repeated across pages as shared, not per-page content.";
       } else {
         const summary = boilerplateSummarySchema.safeParse(g.boilerplateSummary);
         if (!summary.success) {
           chromeNote =
-            "NOT stripped — the stored boilerplate summary does not match the expected shape (schema drift; re-run detect_import_boilerplate).";
+            "the stored boilerplate summary does not match the expected shape (schema drift; re-run detect_import_boilerplate).";
         } else {
           const res = stripBoilerplateSubtrees(
             contentHtml,
