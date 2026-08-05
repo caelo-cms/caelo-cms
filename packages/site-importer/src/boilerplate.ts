@@ -135,6 +135,10 @@ interface Frame {
   start: number;
 }
 
+/** One qualifying block subtree of a walked page. Exported for the
+ *  single-page dedup in `repeated-strip.ts` (issue #415) and the
+ *  read-time content-only stripper (`content-only.ts`, issue #424); not
+ *  part of the package barrel. */
 export interface SubtreeRecord {
   pageId: string;
   url: string;
@@ -159,13 +163,22 @@ export const DEFAULT_MIN_TEXT_LENGTH = 20;
 /**
  * Walk one page, emitting a record per qualifying block subtree.
  *
- * Exported (package-internal, not via the barrel) because the read-time
- * content-only stripper (issue #424) must replay EXACTLY this walk to map
- * a stored candidate signature back onto byte ranges in one page's HTML.
+ * Exported (package-internal, not via the barrel) for two consumers:
+ *   - the single-page dedup (`repeated-strip.ts`, issue #415), which
+ *     passes a deeper `maxActiveFrames`: page-builder div-soup nests a
+ *     carousel's clone slides well below 8 open block frames, and the
+ *     single-page walk can afford the larger (still constant) per-event
+ *     cost;
+ *   - the read-time content-only stripper (`content-only.ts`, issue
+ *     #424), which must replay EXACTLY the detector's walk (default
+ *     frames + min-text) to map a stored candidate signature back onto
+ *     byte ranges in one page's HTML.
+ * The crawl path keeps the defaults — its behaviour is unchanged.
  */
 export function collectSubtrees(
   page: BoilerplatePageInput,
   minTextLength: number,
+  maxActiveFrames: number = MAX_ACTIVE_FRAMES,
 ): SubtreeRecord[] {
   const stack: Array<{ name: string; frame: Frame | null }> = [];
   // The open block frames only (never non-block entries), capped at
@@ -211,7 +224,7 @@ export function collectSubtrees(
     {
       onopentag(name) {
         const tag = name.toLowerCase();
-        const startFrame = BLOCK_TAGS.has(tag) && activeFrames.length < MAX_ACTIVE_FRAMES;
+        const startFrame = BLOCK_TAGS.has(tag) && activeFrames.length < maxActiveFrames;
         const frame: Frame | null = startFrame
           ? {
               tag,

@@ -132,31 +132,97 @@ describe("buildReport integration", () => {
     ],
   });
 
+  // The CURRENT loop-line shape (incl. tokensCached between tokensIn and
+  // tokensOut — the field whose arrival silently broke the previous
+  // build-stats-local regex into reporting 0 loops; issue #432).
+  const LOOP_LOG = [
+    "[chat-runner] enter {",
+    "[chat-runner] loop {",
+    '  chatSessionId: "s",',
+    "  loop: 0,",
+    '  loopStop: "end_turn",',
+    "  toolCalls: 2,",
+    '  toolNames: [ "build_page", "add_module" ],',
+    "  serverToolCalls: 0,",
+    "  serverToolNames: [],",
+    "  textChars: 1,",
+    "  thinkingBlocks: 0,",
+    "  inThisCall: 1000,",
+    "  cacheRead: 800,",
+    "  cacheWrite: 100,",
+    "  freshIn: 100,",
+    "  cacheHitPct: 80,",
+    "  outThisCall: 50,",
+    "  sentPrefixEstimate: 900,",
+    "  tokensIn: 1000,",
+    "  tokensCached: 800,",
+    "  tokensOut: 50,",
+    "}",
+  ].join("\n");
+
+  it("parses the current loop-line format — tokensCached must not zero the stats (issue #432)", () => {
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "" });
+    expect(md).toContain("**1** tool-call loops");
+    expect(md).toContain("**2** tool calls dispatched");
+    expect(md).toContain("1.0k** tokens in");
+  });
+
   it("leads with the cost section and drops loop-log tokens when cost is present", () => {
-    const log =
-      '[chat-runner] enter {\n[chat-runner] loop {\n  chatSessionId: "s",\n  loop: 1,\n  loopStop: "end_turn",\n  toolCalls: 2,\n  textChars: 1,\n  thinkingBlocks: 0,\n  tokensIn: 1000,\n  tokensOut: 50,\n}';
-    const md = buildReport({ log, reportRaw: REPORT, aiCostRaw: FULL });
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: FULL });
     expect(md.indexOf("Real AI cost")).toBeLessThan(md.indexOf("Chat-runner API stats"));
     expect(md).toContain("see **Real AI cost** above");
     // Loop-log token bullet must NOT appear when real cost is present.
-    expect(md).not.toContain("cumulative per turn");
+    expect(md).not.toContain("per-call sums");
     expect(md).toContain("scenario x");
   });
 
   it("keeps the loop-log token bullet when no cost json is present", () => {
-    const log = [
-      "[chat-runner] enter {",
-      '[chat-runner] loop {\n  chatSessionId: "s",\n  loop: 1,\n  loopStop: "end_turn",\n  toolCalls: 2,\n  textChars: 1,\n  thinkingBlocks: 0,\n  tokensIn: 1000,\n  tokensOut: 50,\n}',
-    ].join("\n");
-    const md = buildReport({ log, reportRaw: REPORT, aiCostRaw: "" });
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "" });
     expect(md).not.toContain("Real AI cost");
     expect(md).toContain("tokens in");
-    expect(md).toContain("cumulative per turn");
+    expect(md).toContain("per-call sums");
   });
 
   it("degrades gracefully with all inputs empty", () => {
     const md = buildReport({ log: "", reportRaw: "", aiCostRaw: "" });
     expect(md).not.toContain("Real AI cost");
     expect(md).toContain("No chat-runner activity recorded");
+  });
+
+  it("renders the input-token breakdown table + breach warning from metrics.json", () => {
+    const metricsRaw = JSON.stringify([
+      {
+        scenario: "homepage",
+        loops: 33,
+        inputTokens: 2_660_400,
+        attribution: { staticPerCallTokens: 52_600, historyEndTokens: 62_400 },
+        violations: [
+          {
+            metric: "inputTokens",
+            actual: 2_660_400,
+            limit: 2_000_000,
+            message: "total input 2660.4k > ceiling 2000.0k",
+          },
+        ],
+      },
+      {
+        scenario: "homepage",
+        loops: 18,
+        inputTokens: 1_200_000,
+        attribution: { staticPerCallTokens: 52_600, historyEndTokens: 40_000 },
+        violations: [],
+      },
+    ]);
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "", metricsRaw });
+    expect(md).toContain("### Input-token breakdown (per scenario attempt)");
+    expect(md).toContain("| homepage | 33 | 2660.4k | 52.6k | 62.4k |");
+    expect(md).toContain("**breached:** total input 2660.4k > ceiling 2000.0k");
+    expect(md).toContain("| homepage (attempt 2) | 18 |");
+    expect(md).toContain("1 attempt(s) breached token/loop thresholds");
+  });
+
+  it("omits the breakdown section when metrics.json is absent", () => {
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "" });
+    expect(md).not.toContain("Input-token breakdown");
   });
 });

@@ -82,8 +82,10 @@ export {
   extractTitle,
   type ModuleExtraction,
   stripCommentThreads,
-  stripConsentNoiseCounted,
+  stripConsentNoise,
+  stripConsentSubtrees,
 } from "./extractor.js";
+export { REMOVE_HIDDEN_ELEMENTS_SCRIPT } from "./hidden-elements.js";
 export { htmlToMarkdown } from "./html-to-markdown.js";
 export {
   type ProposedModuleBlock,
@@ -123,6 +125,7 @@ export {
   type RenderedFetchOk,
   type RenderedFetchResult,
 } from "./rendered-fetch.js";
+export { type RepeatedSubtreeStrip, stripRepeatedSubtrees } from "./repeated-strip.js";
 export { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 export {
   assertPublicHttpUrl,

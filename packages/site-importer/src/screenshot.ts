@@ -24,6 +24,7 @@
 import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import { COLLECT_STYLE_SAMPLES_SCRIPT, type ElementStyleSample } from "./design-tokens.js";
+import { REMOVE_HIDDEN_ELEMENTS_SCRIPT } from "./hidden-elements.js";
 import { assertPublicHttpUrl, isPublicIpAddress } from "./safe-fetch.js";
 
 /** Minimal Playwright route surface — typed locally so the package
@@ -51,6 +52,14 @@ export interface Screenshot {
    *  pageRef cache hold the rendered DOM so query_page_html's selectors run
    *  against it instead of the static fetched HTML. */
   readonly renderedHtml?: string;
+  /** issue #415 — the rendered DOM AFTER the hidden-element pass removed
+   *  invisible subtrees (mobile-nav clones, offscreen carousel slides,
+   *  aria-hidden chrome). Present only when `stripHidden: true` was
+   *  requested with `captureHtml`; `renderedHtml` above stays unstripped. */
+  readonly visibleHtml?: string;
+  /** Number of hidden subtrees the pass removed — callers MUST surface it
+   *  (CLAUDE.md §2). Present exactly when `visibleHtml` is. */
+  readonly hiddenRemoved?: number;
   /** issue #423 — `Content-Type` from the navigation response, so callers
    *  using `capture` as their PRIMARY fetch (the crawl's capture-first
    *  path) can gate non-HTML the same way `renderHtml` does. Undefined
@@ -76,6 +85,12 @@ export interface RenderedHtml {
   readonly contentType?: string;
   /** Computed-style samples from the same render, when `sampleStyles: true`. */
   readonly styleSamples?: readonly ElementStyleSample[];
+  /** issue #415 — the DOM AFTER the hidden-element pass, when
+   *  `stripHidden: true`; `html` above stays the full unstripped DOM. */
+  readonly visibleHtml?: string;
+  /** Removed-subtree count of the hidden-element pass — present exactly
+   *  when `visibleHtml` is; callers MUST surface it (CLAUDE.md §2). */
+  readonly hiddenRemoved?: number;
 }
 
 export interface Screenshotter {
@@ -108,6 +123,11 @@ export interface Screenshotter {
       /** Also return `page.content()` (the rendered JS-applied HTML) in the
        *  same render session, as `renderedHtml`. */
       captureHtml?: boolean;
+      /** issue #415 — additionally run the hidden-element removal pass
+       *  AFTER `renderedHtml` was read and return the visible-only DOM as
+       *  `visibleHtml` (+ `hiddenRemoved`). Only meaningful together with
+       *  `captureHtml`. */
+      stripHidden?: boolean;
     },
   ): Promise<Screenshot>;
   /**
@@ -118,7 +138,15 @@ export interface Screenshotter {
    */
   renderHtml(
     url: string,
-    opts?: { width?: number; height?: number; external?: boolean; sampleStyles?: boolean },
+    opts?: {
+      width?: number;
+      height?: number;
+      external?: boolean;
+      sampleStyles?: boolean;
+      /** issue #415 — also run the hidden-element removal pass after the
+       *  full DOM was read; returns `visibleHtml` + `hiddenRemoved`. */
+      stripHidden?: boolean;
+    },
   ): Promise<RenderedHtml>;
   /**
    * Run a css/xpath selector against an HTML STRING (via `setContent` — no
@@ -282,6 +310,16 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           const renderedHtml: string | undefined = opts?.captureHtml
             ? ((await page.content()) as string)
             : undefined;
+          // issue #415 — the hidden-element pass runs IN the page (only the
+          // browser knows layout/visibility) and MUTATES the DOM, so it goes
+          // last: pixels, styles, and the full `renderedHtml` above are all
+          // read first, keeping the unstripped DOM for query_page_html.
+          let visibleHtml: string | undefined;
+          let hiddenRemoved: number | undefined;
+          if (opts?.captureHtml && opts?.stripHidden) {
+            hiddenRemoved = (await page.evaluate(REMOVE_HIDDEN_ELEMENTS_SCRIPT)) as number;
+            visibleHtml = (await page.content()) as string;
+          }
           const contentType = await contentTypeOf(gotoResponse);
           return {
             bytes: new Uint8Array(png),
@@ -290,6 +328,8 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             finalUrl: page.url() as string,
             ...(styleSamples ? { styleSamples } : {}),
             ...(renderedHtml !== undefined ? { renderedHtml } : {}),
+            ...(visibleHtml !== undefined ? { visibleHtml } : {}),
+            ...(hiddenRemoved !== undefined ? { hiddenRemoved } : {}),
             ...(contentType !== undefined ? { contentType } : {}),
           };
         },
@@ -307,6 +347,14 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             )) as ElementStyleSample[];
           }
           const html = (await page.content()) as string;
+          // issue #415 — hidden-element pass AFTER the full DOM read (it
+          // mutates the page); see the matching block in `capture`.
+          let visibleHtml: string | undefined;
+          let hiddenRemoved: number | undefined;
+          if (opts?.stripHidden) {
+            hiddenRemoved = (await page.evaluate(REMOVE_HIDDEN_ELEMENTS_SCRIPT)) as number;
+            visibleHtml = (await page.content()) as string;
+          }
           // Content-type from the navigation response so callers can gate
           // non-HTML (a PDF/image renders in a viewer, not usable HTML).
           let contentType: string | undefined;
@@ -321,6 +369,8 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             html,
             ...(contentType !== undefined ? { contentType } : {}),
             ...(styleSamples ? { styleSamples } : {}),
+            ...(visibleHtml !== undefined ? { visibleHtml } : {}),
+            ...(hiddenRemoved !== undefined ? { hiddenRemoved } : {}),
           };
         },
       );

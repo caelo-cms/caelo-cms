@@ -22,6 +22,8 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import type { ToolContext } from "../ai/tools/dispatch.js";
+import { importMediaFromUrlsTool } from "../ai/tools/import-media-from-urls.js";
 import { LocalVolumeAdapter, setMediaStorage } from "../media/storage.js";
 import { registerAdminOps } from "../register.js";
 
@@ -219,6 +221,24 @@ describe("imports.import_media_urls", () => {
   it("rejects an empty asset list at the validator (min 1)", async () => {
     const r = await execute(registry, adapter, AI, "imports.import_media_urls", { assets: [] });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("import_media_from_urls tool output", () => {
+  it("result lines carry each row's mediaId so the model can bind it (issue #411)", async () => {
+    // The op always returned mediaId; the TOOL printed only sourceUrl →
+    // mediaUrl, so the model-visible content had no bindable id. Assert
+    // on the content string — it is all the model ever sees.
+    const r = await importMediaFromUrlsTool.handler(
+      AI,
+      { assets: [{ url: `${baseUrl}/importurls-logo.png`, name: "importurls tool logo" }] },
+      { adapter, registry } as ToolContext,
+    );
+    expect(r.ok).toBe(true);
+    const line = r.content.split("\n").find((l) => l.includes("/importurls-logo.png"));
+    expect(line).toBeDefined();
+    const id = line?.match(/mediaId ([0-9a-f-]{36})/)?.[1] ?? "";
+    expect(id).toMatch(UUID_RE);
   });
 });
 

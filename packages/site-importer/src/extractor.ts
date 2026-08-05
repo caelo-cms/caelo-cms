@@ -173,17 +173,22 @@ const CONSENT_NOISE_PATTERN =
   /(cmplz|cookiebot|onetrust|borlabs|usercentrics|didomi|klaro|iubenda|cookie-?(banner|notice|consent|law|bar)|consent-?(banner|modal|manager|popup)|gdpr-?(banner|popup))/i;
 
 export function stripConsentNoise(html: string): string {
-  return stripConsentNoiseCounted(html).html;
+  return stripConsentSubtrees(html).html;
 }
 
 /**
- * {@link stripConsentNoise} with the removal count surfaced, for callers
- * that must report what was stripped (CLAUDE.md §2 — never silent). The
- * content-only read path (issue #424) uses this as defense in depth:
- * extraction already strips consent noise, but consent DOM injected by
- * JS after the static fetch can still land in stored modules.
+ * Counted variant of {@link stripConsentNoise} — same matcher, same engine.
+ *
+ * issue #415's inspect cleanup stage and issue #424's content-only import
+ * read both surface the number of removed consent subtrees in their
+ * counters line (CLAUDE.md §2 — never strip silently); for #424 it is
+ * defense in depth: extraction already strips consent noise, but stored
+ * runs recorded before that stripper — and consent DOM injected by JS
+ * after the static fetch — still carry it. The crawl path keeps the
+ * plain-string form above, whose signature stays stable for external
+ * reuse.
  */
-export function stripConsentNoiseCounted(html: string): { html: string; removed: number } {
+export function stripConsentSubtrees(html: string): { html: string; removed: number } {
   return stripMatchingSubtrees(html, (attrs) => {
     const fingerprint = `${attrs.id ?? ""} ${attrs.class ?? ""} ${attrs["data-nosnippet"] ?? ""}`;
     return CONSENT_NOISE_PATTERN.test(fingerprint);

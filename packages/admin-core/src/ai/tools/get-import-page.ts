@@ -32,7 +32,7 @@ import {
   htmlToMarkdown,
   type StrippedChromeBlock,
   stripBoilerplateSubtrees,
-  stripConsentNoiseCounted,
+  stripConsentSubtrees,
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
@@ -182,7 +182,7 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
       //    keeps attribution honest: a consent modal repeated on every
       //    page would otherwise match a site-wide boilerplate candidate
       //    and be miscounted as chrome.
-      const consent = stripConsentNoiseCounted(contentHtml);
+      const consent = stripConsentSubtrees(contentHtml);
       contentHtml = consent.html;
       // 2. Repeated layout/template-owned blocks, per the run's OWN
       //    boilerplate classification (issue #424 — the data existed, the

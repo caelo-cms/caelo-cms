@@ -15,7 +15,7 @@ import {
   filterPresetThemeTokens,
   stripBoilerplateSubtrees,
 } from "./content-only.js";
-import { stripConsentNoiseCounted } from "./extractor.js";
+import { stripConsentSubtrees } from "./extractor.js";
 
 const NAV =
   '<nav class="main-nav"><ul><li><a href="/pricing">Pricing</a></li><li><a href="/blog">Blog</a></li><li><a href="/about">About us</a></li></ul></nav>';
@@ -158,11 +158,11 @@ describe("filterPresetThemeTokens", () => {
   });
 });
 
-describe("stripConsentNoiseCounted", () => {
+describe("stripConsentSubtrees", () => {
   it("returns the removal count alongside the stripped html", () => {
     const html =
       '<main><p>Real content stays.</p></main><div id="cmplz-cookiebanner-container"><p>Manage Consent — we use cookies.</p></div>';
-    const { html: out, removed } = stripConsentNoiseCounted(html);
+    const { html: out, removed } = stripConsentSubtrees(html);
     expect(removed).toBe(1);
     expect(out).toContain("Real content stays.");
     expect(out).not.toContain("Manage Consent");
