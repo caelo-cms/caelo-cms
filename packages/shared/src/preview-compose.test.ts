@@ -107,6 +107,22 @@ describe("composePagePreview", () => {
     });
     expect(out.missingSlots).toEqual(["missing"]);
   });
+
+  it("applies the theme's --font-body to body via the technical baseline (issue #410)", () => {
+    // Regression: --font-body was declared by the theme renderer but no
+    // rule consumed it, so fresh sites rendered the UA serif. The base
+    // block must apply it (with a declared cascade default for
+    // themeless installs).
+    const out = composePagePreview({
+      templateHtml: `<head></head><body><caelo-slot name="x">_</caelo-slot></body>`,
+      templateCss: "",
+      blocks: [{ blockName: "x", modules: [{ ...blankModule, html: "<p>x</p>" }] }],
+    });
+    const base = out.html.indexOf('<style data-source="base">');
+    expect(base).toBeGreaterThan(-1);
+    const baseBlock = out.html.slice(base, out.html.indexOf("</style>", base));
+    expect(baseBlock).toContain("body{font-family:var(--font-body,system-ui,sans-serif)}");
+  });
 });
 
 describe("tagModuleId (P6.7 live-edit overlay support)", () => {
@@ -534,6 +550,25 @@ describe("composePageWithLayout", () => {
     // Zero design opinion: no colors, no font sizes, no type scale.
     const baseBlock = out.html.slice(base, out.html.indexOf("</style>", base));
     expect(baseBlock).not.toMatch(/#[0-9a-f]{3}|font-size|color:|rem\b/i);
+  });
+
+  it("applies the theme's --font-body to body via the technical baseline (issue #410)", () => {
+    // Same regression as the composePagePreview variant: both compose
+    // paths must ship a consumer for --font-body or the theme's chosen
+    // stack never reaches an element.
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+    });
+    const base = out.html.indexOf('<style data-source="base">');
+    expect(base).toBeGreaterThan(-1);
+    const baseBlock = out.html.slice(base, out.html.indexOf("</style>", base));
+    expect(baseBlock).toContain("body{font-family:var(--font-body,system-ui,sans-serif)}");
   });
 
   it("emits a twice-placed module's CSS/JS exactly once (issue #158)", () => {

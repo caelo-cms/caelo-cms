@@ -37,7 +37,6 @@ let mediaRoot: string;
 let buildDir: string;
 let assetId = "";
 let assetSlug = "";
-let heroId = "";
 let heroSlug = "";
 
 const systemCtx: ExecutionContext = {
@@ -128,7 +127,6 @@ beforeAll(async () => {
     })),
   });
   if (!heroUpload.ok) throw new Error("hero seed upload failed");
-  heroId = (heroUpload.value as { assetId: string }).assetId;
   heroSlug = (heroUpload.value as { slug: string }).slug;
 
   await mkdir(join(mediaRoot, HERO_SHA), { recursive: true });

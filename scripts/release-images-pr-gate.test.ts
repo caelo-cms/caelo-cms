@@ -253,7 +253,6 @@ describe("release-images.yml — issue #54 PR-gate contract", () => {
 
   it("W3: `Build + push` step's `push:` uses the positive publish-event expression", () => {
     const body = extractStepBody(workflow, "Build + push");
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we're matching against
     expect(body).toContain(`push: \${{ ${PUBLISH_EVENT_GATE} }}`);
     // And specifically does NOT carry the old unconditional `push: true`
     // (the pre-#54 shape), a regression to `push: false`, or the older

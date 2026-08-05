@@ -14,7 +14,7 @@
  *
  * v0.11.0 (#45) — theme is no longer a structured-set kind; the
  * branched-write semantics are identical for the surviving kinds
- * (nav-menu, taxonomy, tags, link-list, language-selector), so this
+ * (nav-menu, taxonomy, tags, link-list), so this
  * test now uses nav-menu. The theme primitive's own branched-write
  * isolation is exercised by the v0.11.0 themes integration suite.
  */

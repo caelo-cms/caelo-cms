@@ -29,10 +29,19 @@ export interface ParsedProposal {
 }
 
 /**
+ * Domains whose `/security/<domain>/pending` route has been removed.
+ * Legacy persisted chat messages that reference these degrade to plain
+ * markdown rather than rendering an actionable ProposeCard whose
+ * Approve/Reject POSTs would 404.
+ */
+const DEPRECATED_DOMAINS = new Set(["locales"]);
+
+/**
  * Parse a propose-style tool's success content. Returns null for
  * non-canonical strings (the v0.5.11 lock means every shipped tool
  * matches this shape; future broken shapes return null and degrade
- * gracefully to plain markdown).
+ * gracefully to plain markdown). Also returns null for deprecated
+ * domains whose pending-queue route has been removed.
  */
 export function parseProposalContent(content: string): ParsedProposal | null {
   const proposalMatch = PROPOSAL_CONTENT_PATTERN.exec(content);
@@ -43,5 +52,6 @@ export function parseProposalContent(content: string): ParsedProposal | null {
   const queueUrl = queueMatch[1];
   const domain = queueMatch[2];
   if (!proposalId || !summary || !queueUrl || !domain) return null;
+  if (DEPRECATED_DOMAINS.has(domain)) return null;
   return { proposalId, summary, queueUrl, domain };
 }

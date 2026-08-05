@@ -78,8 +78,7 @@ export const listLocalesTool = makeListReadTool<
   name: "list_locales",
   description:
     "List the site's locales (code, display name, URL strategy, default flag). " +
-    "The `## Locales` context block is a snapshot from turn start — call this when an Owner approved a locale proposal mid-conversation or you need the current registry. " +
-    "Locale changes themselves go through propose_add_locale / propose_remove_locale (Owner-approved).",
+    "Call this when you need the current registry (e.g. before creating a page in a specific locale).",
   opName: "locales.list",
   input: noInput,
   label: "locales",

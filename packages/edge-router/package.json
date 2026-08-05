@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/edge-router",
-  "version": "0.10.23",
+  "version": "0.10.24",
   "private": false,
   "license": "MPL-2.0",
   "description": "Locale-aware edge request router for Caelo CMS deployments — shared by the provisioning stacks' edge handlers (CDN URL-strategy routing) and the static generator.",
