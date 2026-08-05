@@ -23,10 +23,17 @@
 
 import { collectSubtrees, type SubtreeRecord } from "./boilerplate.js";
 
-/** Result of {@link stripRepeatedSubtrees}: the deduped HTML + the number
- *  of removed duplicate blocks (surviving first occurrences not counted). */
+/** Result of {@link stripRepeatedSubtrees}. */
 export interface RepeatedSubtreeStrip {
   readonly html: string;
+  /**
+   * Number of removed CONTIGUOUS duplicate regions, after merging nested /
+   * overlapping duplicate ranges — a cloned section that itself contains
+   * cloned cards counts ONCE, not once per inner clone. This is the number
+   * the operator-facing counters line reports ("N repeated block(s)"), so
+   * it must match what a reader would perceive as distinct removed blocks.
+   * Surviving first occurrences are never counted.
+   */
   readonly removed: number;
 }
 

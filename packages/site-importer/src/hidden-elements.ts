@@ -34,6 +34,11 @@ export const REMOVE_HIDDEN_ELEMENTS_SCRIPT = `(() => {
     if (el.getAttribute("aria-hidden") === "true") return true;
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") return true;
+    // A display:contents element generates NO box (offsetParent is null)
+    // yet its children render — it is a visible wrapper, never hidden.
+    // Descendants still get their own checks. (checkVisibility() has the
+    // same no-box false negative, which is why it is not used here.)
+    if (cs.display === "contents") return false;
     // offsetParent === null also catches a display:none ANCESTOR — but it is
     // null for position:fixed (and, in some engines, sticky) elements too,
     // which are typically VISIBLE chrome (a fixed header/cookie bar), so

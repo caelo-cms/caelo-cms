@@ -23,6 +23,7 @@ const FIXTURE = `<!doctype html><html><head><style>
 <div class="off-ancestor"><p>ChildOfHiddenAncestor</p></div>
 <span aria-hidden="true">DecorativeGlyph</span>
 <header style="position:fixed;top:0">FixedButVisibleHeader</header>
+<div style="display:contents"><p>ContentsWrapperChild</p></div>
 <main><p>Real content stays</p></main>
 </body></html>`;
 
@@ -73,6 +74,9 @@ describe("REMOVE_HIDDEN_ELEMENTS_SCRIPT (live render)", () => {
     expect(r.visibleHtml).toContain("Real content stays");
     expect(r.visibleHtml).toContain("Visible link");
     expect(r.visibleHtml).toContain("FixedButVisibleHeader");
+    // display:contents generates no box (offsetParent === null) but its
+    // children render — the wrapper must survive (Copilot review, PR #431).
+    expect(r.visibleHtml).toContain("ContentsWrapperChild");
     // Each hidden SUBTREE counts once: mobile-nav, .invisible, .off-ancestor
     // (its child is not double-counted), aria-hidden span.
     expect(r.hiddenRemoved).toBe(4);
