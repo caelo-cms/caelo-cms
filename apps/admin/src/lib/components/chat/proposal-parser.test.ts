@@ -20,10 +20,10 @@ describe("parseProposalContent", () => {
   // still lives in persisted chat_messages rows — those must keep
   // rendering ProposeCards after the wording change.
   it("parses the legacy pre-card-first tail (persisted messages)", () => {
-    const content = `Queued proposal ${UUID}: add locale 'de' (subpath). An Owner must click Approve at /security/locales/pending to apply.`;
+    const content = `Queued proposal ${UUID}: add domain 'shop.example.com'. An Owner must click Approve at /security/domains/pending to apply.`;
     const result = parseProposalContent(content);
-    expect(result?.domain).toBe("locales");
-    expect(result?.queueUrl).toBe("/security/locales/pending");
+    expect(result?.domain).toBe("domains");
+    expect(result?.queueUrl).toBe("/security/domains/pending");
   });
 
   it("parses canonical propose_deploy_promote output", () => {
@@ -64,5 +64,13 @@ describe("parseProposalContent", () => {
 
   it("returns null on empty string", () => {
     expect(parseProposalContent("")).toBeNull();
+  });
+
+  // `/security/locales/pending` was removed in #382; old persisted chat
+  // messages that reference it must degrade to plain markdown rather than
+  // rendering an actionable ProposeCard whose Approve/Reject POSTs 404.
+  it("returns null for deprecated locales domain (route removed in #382)", () => {
+    const content = `Queued proposal ${UUID}: add locale 'de'. Approve it on the proposal card in this chat (queue: /security/locales/pending).`;
+    expect(parseProposalContent(content)).toBeNull();
   });
 });

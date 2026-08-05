@@ -716,16 +716,9 @@ export const actions: Actions = {
       previewUrl = summary.previewUrl;
     } else if (process.env.CAELO_PROVIDER === "gcp" && pageId) {
       const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
-      const localesR = await execute(registry, adapter, locals.ctx, "locales.list", {});
-      if (pageRow.ok && localesR.ok) {
-        const p = (pageRow.value as { page: { slug: string; locale: string } }).page;
-        const locales = (
-          localesR.value as {
-            locales: { code: string; urlStrategy: string; urlHost: string | null }[];
-          }
-        ).locales;
-        const cfg = locales.find((l) => l.code === p.locale);
-        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.slug, cfg)}`;
+      if (pageRow.ok) {
+        const p = (pageRow.value as { page: { slug: string } }).page;
+        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.slug)}`;
       } else {
         previewUrl = `/_staging-preview/${summary.runId}/`;
       }

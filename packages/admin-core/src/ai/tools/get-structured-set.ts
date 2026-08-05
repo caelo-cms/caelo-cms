@@ -22,7 +22,7 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const getStructuredSetToolInput = z
   .object({
-    kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list", "language-selector"]),
+    kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list"]),
     slug: z.string().min(1).max(120),
   })
   .strict();

@@ -70,9 +70,9 @@ export function formatStructuredSetsBlock(
 ): string {
   const primer = [
     "# Structured-data sets you can edit",
-    "Caelo has typed named lists for **global repeated content**: navigation menus, tags, taxonomies, link-lists, and language-selectors. When the user asks about any of these, prefer creating or editing a structured set over hardcoding values in module HTML — that's what these lists are for.",
+    "Caelo has typed named lists for **global repeated content**: navigation menus, tags, taxonomies, and link-lists. When the user asks about any of these, prefer creating or editing a structured set over hardcoding values in module HTML — that's what these lists are for.",
     "",
-    "Kinds: `nav-menu`, `tags`, `taxonomy`, `link-list`, `language-selector`. Item shape is per-kind and enforced by the JSON Schema on `set_structured_set` (a mismatch is rejected at the tool boundary with a structured error). " +
+    "Kinds: `nav-menu`, `tags`, `taxonomy`, `link-list`. Item shape is per-kind and enforced by the JSON Schema on `set_structured_set` (a mismatch is rejected at the tool boundary with a structured error). " +
       "**Theme tokens are NOT a structured-set kind anymore (v0.11.0)** — see the `## Theme` block below; use `set_theme_tokens` for token tweaks and `propose_create_theme` to mint a new theme.",
     "",
     "Tools (one unified CRUD surface — `kind` is a discriminator argument):",
@@ -81,7 +81,7 @@ export function formatStructuredSetsBlock(
     "- `set_structured_set({ kind, slug, displayName, items })` — UPSERT. Creates the set when the slug doesn't exist; REPLACES `items` if it does (NOT append — pass the full desired list).",
     "- `delete_structured_set({ kind, slug })` — remove a set.",
     "",
-    "Renderer convention: a module with slug `<kind>-<slug>` auto-renders the matching `<kind>/<slug>` set. Currently only `nav-menu-<slug>` and `language-selector-<slug>` auto-wire — for the other kinds, the rendering module's HTML/JS references the items directly via the structured-sets API. To wire a brand-new nav menu onto a layout: (1) `set_structured_set({ kind: 'nav-menu', slug: 'X', displayName: '…', items: [...] })` to create the items, (2) ensure a module named `nav-menu-X` is on the layout's header (or footer) block — use `add_module` (target='layout') if it doesn't exist yet.",
+    "Renderer convention: a module with slug `<kind>-<slug>` auto-renders the matching `<kind>/<slug>` set. Currently only `nav-menu-<slug>` auto-wires — for the other kinds, the rendering module's HTML/JS references the items directly via the structured-sets API. To wire a brand-new nav menu onto a layout: (1) `set_structured_set({ kind: 'nav-menu', slug: 'X', displayName: '…', items: [...] })` to create the items, (2) ensure a module named `nav-menu-X` is on the layout's header (or footer) block — use `add_module` (target='layout') if it doesn't exist yet.",
     "",
     'If the user mentions "navigation", "the nav", "the menu", "header links", "footer menu" — that\'s a nav-menu, NOT a module to edit. Reach for `set_structured_set` with `kind: "nav-menu"` first.',
   ].join("\n");
@@ -432,7 +432,7 @@ const TOOL_PLAYBOOK_BLOCK = [
   "- A **page** binds to a **template** (which defines named blocks); each block holds an ordered list of **module placements**.",
   "- A **layout** is the chrome shell (header / footer / nav) shared by every template bound to it — site-wide elements live THERE, never per page.",
   "- A **module** is HTML/CSS/JS plus typed fields; a **content_instance** holds one module's field values (synced = shared across pages, unsynced = private to one placement).",
-  '- Every write lands in this chat\'s branch until the user clicks Stage (see ## Staging). Hard-to-revert actions (deploys, locales, users/roles, layout/template deletes, site reverts) go through `propose_*` tools that queue an Owner-approval card — say "I prepared this — click Approve", never claim they are applied.',
+  '- Every write lands in this chat\'s branch until the user clicks Stage (see ## Staging). Hard-to-revert actions (deploys, users/roles, layout/template deletes, site reverts) go through `propose_*` tools that queue an Owner-approval card — say "I prepared this — click Approve", never claim they are applied.',
   "",
   "Standard workflows (tool names are exact):",
   "- **Batching & parallelism:** for a multi-row WRITE, use the domain's bulk op — `set_page_module_content_many`, `update_pages_many`, `set_pages_status_many`, `delete_pages_many`, `create_content_instances`, `set_content_instance_values_many`, `bulk_create_redirects` — which applies every row in ONE atomic transaction with ONE snapshot; never loop the singular tool. For independent READS (get/list/inspect on different targets) you MAY emit several tool calls in the SAME turn — they run together in one round-trip. Between a bulk op and several parallel singular writes, always prefer the bulk op (atomicity + one snapshot + fewer tokens).",

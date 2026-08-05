@@ -9,7 +9,6 @@
 // run the build step before the first real deploy.
 exports.handler = async (event) => {
   const req = event.Records[0].cf.request;
-  // biome-ignore lint/suspicious/noConsole: startup warning visible in CloudWatch
   console.log(
     JSON.stringify({
       kind: "edge_handler_stub",
