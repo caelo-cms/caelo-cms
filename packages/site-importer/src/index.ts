@@ -39,6 +39,13 @@ export {
   normHref,
 } from "./content-inventory.js";
 export {
+  type BoilerplateStripTarget,
+  collapseDuplicateNavs,
+  filterPresetThemeTokens,
+  type StrippedChromeBlock,
+  stripBoilerplateSubtrees,
+} from "./content-only.js";
+export {
   type CrawlCheckpoint,
   type CrawledPage,
   type CrawlOptions,
@@ -75,6 +82,7 @@ export {
   extractTitle,
   type ModuleExtraction,
   stripCommentThreads,
+  stripConsentNoiseCounted,
 } from "./extractor.js";
 export { htmlToMarkdown } from "./html-to-markdown.js";
 export {

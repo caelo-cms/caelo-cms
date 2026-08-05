@@ -111,7 +111,12 @@ function hash(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-function normalizeText(raw: string): string {
+/**
+ * Whitespace/entity-insensitive lowercase text key. Exported
+ * (package-internal) so the duplicate-nav collapse (content-only.ts)
+ * compares nav text the same way boilerplate grouping does.
+ */
+export function normalizeText(raw: string): string {
   return raw
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
@@ -130,7 +135,7 @@ interface Frame {
   start: number;
 }
 
-interface SubtreeRecord {
+export interface SubtreeRecord {
   pageId: string;
   url: string;
   clusterKey: string;
@@ -144,8 +149,24 @@ interface SubtreeRecord {
   end: number;
 }
 
-/** Walk one page, emitting a record per qualifying block subtree. */
-function collectSubtrees(page: BoilerplatePageInput, minTextLength: number): SubtreeRecord[] {
+/**
+ * Default `minTextLength` for {@link collectSubtrees}. Shared with the
+ * read-time stripper (content-only.ts, issue #424) so a replayed walk
+ * produces byte-for-byte the signatures the detector persisted.
+ */
+export const DEFAULT_MIN_TEXT_LENGTH = 20;
+
+/**
+ * Walk one page, emitting a record per qualifying block subtree.
+ *
+ * Exported (package-internal, not via the barrel) because the read-time
+ * content-only stripper (issue #424) must replay EXACTLY this walk to map
+ * a stored candidate signature back onto byte ranges in one page's HTML.
+ */
+export function collectSubtrees(
+  page: BoilerplatePageInput,
+  minTextLength: number,
+): SubtreeRecord[] {
   const stack: Array<{ name: string; frame: Frame | null }> = [];
   // The open block frames only (never non-block entries), capped at
   // MAX_ACTIVE_FRAMES — every per-event loop runs over THIS list, so the
@@ -365,7 +386,7 @@ export function detectBoilerplate(
   opts: DetectBoilerplateOptions = {},
 ): BoilerplateReport {
   const minPages = Math.max(2, opts.minPages ?? 3);
-  const minTextLength = opts.minTextLength ?? 20;
+  const minTextLength = opts.minTextLength ?? DEFAULT_MIN_TEXT_LENGTH;
   const maxCandidates = opts.maxCandidates ?? 40;
 
   const pagesAnalyzed = pages.length;

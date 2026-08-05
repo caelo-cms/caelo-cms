@@ -995,9 +995,21 @@ export const getImportPageGistOp = defineOperation({
     // Assembled source HTML — for the tool layer to convert to Markdown +
     // cache; NEVER surfaced raw to the model (see get_import_page).
     html: z.string(),
+    /** issue #424 — the assembled HTML WITHOUT the extraction-classified
+     *  chrome modules (blockName header/footer — the same layout-owned
+     *  rule imports.check_page_inventory applies). The tool's default
+     *  content-only view builds on this; `html` stays the full join. */
+    contentHtml: z.string(),
+    /** blockNames of the chrome modules excluded from `contentHtml`, in
+     *  position order — the tool MUST surface them (CLAUDE.md §2). */
+    chromeModuleBlocks: z.array(z.string()),
     themeTokens: z.unknown(),
     sampledDesignTokens: z.unknown(),
     screenshotObjectKey: z.string().nullable(),
+    /** issue #424 — the run's stored imports.detect_boilerplate summary
+     *  (nullable when detection has not run), so the tool's content-only
+     *  view can strip layout/template-owned chrome at read time. */
+    boilerplateSummary: z.unknown(),
   }),
   handler: async (_ctx, input, tx) => {
     type Row = {
@@ -1010,6 +1022,7 @@ export const getImportPageGistOp = defineOperation({
       proposed_theme_tokens: unknown;
       sampled_design_tokens: unknown;
       screenshot_object_key: string | null;
+      boilerplate_summary: unknown;
     };
     // Shared resolver: staging id / composed id / #278 slug / #278
     // homepage-not-at-root, both directions (see resolveImportPageRef).
@@ -1021,11 +1034,14 @@ export const getImportPageGistOp = defineOperation({
         message: IMPORT_PAGE_NOT_FOUND_MSG,
       });
     }
-    const cols = sql`id::text AS id, run_id::text AS run_id, source_url, proposed_slug,
-                     proposed_title, proposed_modules, proposed_theme_tokens,
-                     sampled_design_tokens, screenshot_object_key`;
+    const cols = sql`p.id::text AS id, p.run_id::text AS run_id, p.source_url, p.proposed_slug,
+                     p.proposed_title, p.proposed_modules, p.proposed_theme_tokens,
+                     p.sampled_design_tokens, p.screenshot_object_key,
+                     r.boilerplate_summary`;
     const rows = (await tx.execute(sql`
-      SELECT ${cols} FROM import_pages WHERE id = ${ref.importPageId}::uuid LIMIT 1
+      SELECT ${cols} FROM import_pages p
+      JOIN import_runs r ON r.id = p.run_id
+      WHERE p.id = ${ref.importPageId}::uuid LIMIT 1
     `)) as unknown as Row[];
     const r = rows[0];
     if (!r) {
@@ -1039,13 +1055,24 @@ export const getImportPageGistOp = defineOperation({
       (typeof r.proposed_modules === "string"
         ? (JSON.parse(r.proposed_modules) as unknown)
         : r.proposed_modules) ?? [];
-    const html = (
-      Array.isArray(modules) ? (modules as Array<{ position?: number; html?: string }>) : []
+    const ordered = (
+      Array.isArray(modules)
+        ? (modules as Array<{ blockName?: string; position?: number; html?: string }>)
+        : []
     )
       .slice()
-      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    const html = ordered.map((m) => m.html ?? "").join("\n");
+    // Chrome modules are layout-owned (#253/WS0) — same blockName rule as
+    // imports.check_page_inventory. The content join feeds the tool's
+    // default content-only view (issue #424).
+    const isChrome = (m: { blockName?: string }): boolean =>
+      m.blockName === "header" || m.blockName === "footer";
+    const contentHtml = ordered
+      .filter((m) => !isChrome(m))
       .map((m) => m.html ?? "")
       .join("\n");
+    const chromeModuleBlocks = ordered.filter(isChrome).map((m) => m.blockName ?? "");
     return ok({
       importPageId: r.id,
       runId: r.run_id,
@@ -1053,9 +1080,12 @@ export const getImportPageGistOp = defineOperation({
       proposedSlug: r.proposed_slug,
       proposedTitle: r.proposed_title,
       html,
+      contentHtml,
+      chromeModuleBlocks,
       themeTokens: parseJsonbColumn(r.proposed_theme_tokens),
       sampledDesignTokens: parseJsonbColumn(r.sampled_design_tokens),
       screenshotObjectKey: r.screenshot_object_key,
+      boilerplateSummary: parseJsonbColumn(r.boilerplate_summary),
     });
   },
 });
