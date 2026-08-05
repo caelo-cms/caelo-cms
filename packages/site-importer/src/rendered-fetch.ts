@@ -28,6 +28,14 @@ export interface RenderedFetchOk {
   readonly rendered: boolean;
   /** Computed-style samples, when `sampleStyles` was requested AND a render happened. */
   readonly styleSamples?: readonly ElementStyleSample[];
+  /** issue #415 — the DOM after the render's hidden-element pass, when
+   *  `stripHidden` was requested AND a render happened; `html` stays the
+   *  full DOM. Absent on the static fallback (no layout → no pass), which
+   *  the caller must surface loudly. */
+  readonly visibleHtml?: string;
+  /** Removed-subtree count of the hidden-element pass — present exactly
+   *  when `visibleHtml` is; callers MUST surface it (CLAUDE.md §2). */
+  readonly hiddenRemoved?: number;
   /** Loud note when the static fallback was used (see file header). */
   readonly note?: string;
 }
@@ -65,6 +73,9 @@ export async function fetchRenderedHtml(
     readonly maxBytes: number;
     /** Also collect computed-style samples during the render (design tokens). */
     readonly sampleStyles?: boolean;
+    /** issue #415 — also run the render's hidden-element removal pass and
+     *  return `visibleHtml` + `hiddenRemoved` (rendered path only). */
+    readonly stripHidden?: boolean;
   },
 ): Promise<RenderedFetchResult> {
   if (opts.screenshotter) {
@@ -72,6 +83,7 @@ export async function fetchRenderedHtml(
       const r = await opts.screenshotter.renderHtml(url, {
         external: true,
         sampleStyles: opts.sampleStyles,
+        stripHidden: opts.stripHidden,
       });
       // Gate non-HTML even on the rendered path: a PDF/image navigates into a
       // browser viewer whose `page.content()` is not the resource. Only gate
@@ -89,6 +101,8 @@ export async function fetchRenderedHtml(
         html: r.html,
         rendered: true,
         ...(r.styleSamples ? { styleSamples: r.styleSamples } : {}),
+        ...(r.visibleHtml !== undefined ? { visibleHtml: r.visibleHtml } : {}),
+        ...(r.hiddenRemoved !== undefined ? { hiddenRemoved: r.hiddenRemoved } : {}),
       };
     } catch (e) {
       // A blocked URL is a hard stop — do NOT quietly retry it over the static

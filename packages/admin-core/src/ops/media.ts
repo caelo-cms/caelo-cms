@@ -25,7 +25,6 @@ import {
   err,
   mediaDeleteInputSchema,
   mediaListInputSchema,
-  mediaRecentForAiInputSchema,
   mediaRecordUsageInputSchema,
   mediaSetCdnInputSchema,
   mediaSetSourceInputSchema,
@@ -558,97 +557,6 @@ export const mediaRecordUsageOp = defineOperation({
       `);
     }
     return ok({});
-  },
-});
-
-// ---------------------------------------------------------------------
-// media.recent_for_ai — top-N for the system-prompt block.
-// ---------------------------------------------------------------------
-
-export const mediaRecentForAiOp = defineOperation({
-  name: "media.recent_for_ai",
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: mediaRecentForAiInputSchema,
-  output: z.object({
-    assets: z.array(
-      z.object({
-        id: z.string(),
-        /** Human-meaningful, URL-safe name — the public asset URL segment. */
-        slug: z.string(),
-        originalName: z.string(),
-        mime: z.string(),
-        width: z.number().int().nullable(),
-        height: z.number().int().nullable(),
-        alt: z.string(),
-        usageCount: z.number().int(),
-        /** run #10 D4 — variant tags that actually exist, so AI-facing
-         *  surfaces advertise a resolvable URL (pickAiImageVariant)
-         *  instead of assuming webp-800 from the mime. */
-        variants: z.array(z.string()),
-      }),
-    ),
-  }),
-  handler: async (_ctx, input, tx) => {
-    // Union of recent + most-used, deduped, capped at limit. Bun SQL
-    // template doesn't elegantly express a UNION with a LIMIT shared
-    // across both arms, so we do two SELECTs and merge in memory.
-    const recent = (await tx.execute(sql`
-      SELECT id::text AS id, slug, original_name, mime, width, height, alt, usage_count
-      FROM media_assets WHERE deleted_at IS NULL
-      ORDER BY created_at DESC LIMIT ${input.limit}
-    `)) as unknown as {
-      id: string;
-      slug: string;
-      original_name: string;
-      mime: string;
-      width: number | null;
-      height: number | null;
-      alt: string;
-      usage_count: number | bigint | string;
-    }[];
-    const popular = (await tx.execute(sql`
-      SELECT id::text AS id, slug, original_name, mime, width, height, alt, usage_count
-      FROM media_assets WHERE deleted_at IS NULL AND usage_count > 0
-      ORDER BY usage_count DESC, last_used_at DESC NULLS LAST
-      LIMIT ${input.limit}
-    `)) as unknown as typeof recent;
-
-    const seen = new Set<string>();
-    const merged: typeof recent = [];
-    for (const r of [...popular, ...recent]) {
-      if (seen.has(r.id)) continue;
-      seen.add(r.id);
-      merged.push(r);
-      if (merged.length >= input.limit) break;
-    }
-
-    // run #10 D4 — variant tags per asset. Per-id query (Bun SQL array
-    // splat caveat, same as media.list); bounded by `limit` (max 60).
-    const variantTagsByAsset = new Map<string, string[]>();
-    for (const r of merged) {
-      const tags = (await tx.execute(sql`
-        SELECT variant FROM media_variants WHERE asset_id = ${r.id}::uuid
-      `)) as unknown as { variant: string }[];
-      variantTagsByAsset.set(
-        r.id,
-        tags.map((t) => t.variant),
-      );
-    }
-
-    return ok({
-      assets: merged.map((r) => ({
-        id: r.id,
-        slug: r.slug,
-        originalName: r.original_name,
-        mime: r.mime,
-        width: r.width,
-        height: r.height,
-        alt: r.alt,
-        usageCount: num(r.usage_count),
-        variants: variantTagsByAsset.get(r.id) ?? [],
-      })),
-    });
   },
 });
 

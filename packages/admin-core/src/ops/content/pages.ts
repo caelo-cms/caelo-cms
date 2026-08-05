@@ -1895,7 +1895,7 @@ export const duplicatePageOp = defineOperation({
     `);
     // P7 review-pass: bump media usage_count for every distinct asset
     // referenced from the cloned modules' HTML. A duplicated page adds
-    // a fresh set of live references, so the AI's `## Media` block
+    // a fresh set of live references, so find_media's `most_used` sort
     // surfaces the asset as more popular. Same diff helper that
     // modules.update calls; HTML is unchanged so we treat the empty
     // string as "before" and the union of all module HTML as "after".

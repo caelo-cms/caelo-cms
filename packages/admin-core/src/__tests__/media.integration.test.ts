@@ -10,7 +10,6 @@
  *  - media.delete soft-deletes; force=true required when usage_count > 0
  *  - the usage tracker bumps usage_count on modules.update + decrements
  *    when a media reference is removed
- *  - media.recent_for_ai returns recent + most-used assets
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -254,15 +253,6 @@ describe("P7 media ops", () => {
     expect(
       (forced.value as { referencingModules: { slug: string }[] }).referencingModules.length,
     ).toBeGreaterThan(0);
-  });
-
-  it("media.recent_for_ai returns deduped recent + popular", async () => {
-    const r = await execute(registry, adapter, systemCtx, "media.recent_for_ai", { limit: 30 });
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const ids = (r.value as { assets: { id: string }[] }).assets.map((a) => a.id);
-    const set = new Set(ids);
-    expect(set.size).toBe(ids.length);
   });
 
   it("media.get_settings returns defaults when site_defaults singleton is seeded", async () => {
