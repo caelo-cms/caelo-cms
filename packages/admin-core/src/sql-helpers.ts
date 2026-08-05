@@ -51,7 +51,7 @@ export function buildPatchSet(patch: Patch): SQL {
  * Example:
  *   const filters = [];
  *   if (!opts.includeDeleted) filters.push(sql`deleted_at IS NULL`);
- *   if (opts.locale) filters.push(sql`locale = ${opts.locale}`);
+ *   if (opts.status) filters.push(sql`status = ${opts.status}`);
  *   sql`SELECT … FROM pages ${buildWhere(filters)} ORDER BY …`
  */
 export function buildWhere(predicates: readonly SQL[]): SQL {

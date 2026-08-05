@@ -12,8 +12,7 @@
  * existing module list at the requested block + position. This way
  * the existing `pages.set_modules` validator runs unchanged — pages
  * still reference modules only — and the per-page module carries
- * the right `data-page-id` + `data-locale` for the static-generator
- * regex to match.
+ * the right `data-page-id` for the static-generator regex to match.
  *
  * Pre-flight checks:
  *   1. plugin loaded + active (resolves via plugin-host's in-memory
@@ -21,8 +20,6 @@
  *      DB load, with an explicit error for Tier-2 since execution
  *      isn't wired yet).
  *   2. block exists on the page.
- *   3. page row's locale is readable so the placeholder embeds the
- *      right value.
  */
 
 import { loadedPlugins } from "@caelo-cms/plugin-host";
@@ -39,7 +36,6 @@ interface PageWithModules {
 
 interface PageRow {
   id: string;
-  locale: string;
 }
 
 function uniqueSlug(pluginSlug: string): string {
@@ -88,7 +84,7 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
       };
     }
 
-    // 2. Read the page's locale so the placeholder embeds the right value.
+    // 2. Confirm the page exists before splicing.
     const pageR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get", {
       pageId: input.pageId,
     });
@@ -102,7 +98,6 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
     if (!page) {
       return { ok: false, content: `page ${input.pageId} not found or deleted` };
     }
-    const locale = page.locale;
 
     // 3. Read the page's existing block layout to validate the target
     //    block + compute the splice index.
@@ -133,8 +128,7 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
     const moduleSlug = uniqueSlug(input.pluginSlug);
     const placeholderHtml =
       `<div data-caelo-plugin="${escapeAttr(input.pluginSlug)}" ` +
-      `data-page-id="${escapeAttr(input.pageId)}" ` +
-      `data-locale="${escapeAttr(locale)}">` +
+      `data-page-id="${escapeAttr(input.pageId)}">` +
       `<!-- ${escapeAttr(input.pluginSlug)} loads here -->` +
       `</div>`;
     const created = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.create", {

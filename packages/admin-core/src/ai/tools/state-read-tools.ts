@@ -77,7 +77,7 @@ export const listPendingProposalsTool = makeListReadTool<
 >({
   name: "list_pending_proposals",
   description:
-    "List every proposal currently awaiting Owner approval, across all gated domains (locales, layouts, users, roles, reverts, themes, deploys, …). " +
+    "List every proposal currently awaiting Owner approval, across all gated domains (layouts, users, roles, reverts, themes, deploys, …). " +
     "The `## Pending proposals` context block is a snapshot from turn start — call this BEFORE queueing a proposal you may already have filed this turn (a duplicate is rejected), and after the user says they approved something.",
   opName: "pending_proposals.list",
   input: noInput,
@@ -225,7 +225,7 @@ export const listDomainsTool = makeListReadTool<
 >({
   name: "list_domains",
   description:
-    "List the site's domains (hostname, kind, locale, TLS status). Domain changes go through propose_add_domain / propose_remove_domain (Owner-approved). " +
+    "List the site's domains (hostname, kind, TLS status). Domain changes go through propose_add_domain / propose_remove_domain (Owner-approved). " +
     "The `## Domains` context block is a snapshot from turn start.",
   opName: "domains.list",
   input: noInput,

@@ -532,7 +532,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setPageModulesOp);
   // issue #299 — bulk-first build path (CLAUDE.md §11): one call per page.
   registry.register(buildPageOp);
-  // 0184 — explicit per-locale homepage designation (locales.home_page_id).
+  // 0184 — explicit homepage designation (site_defaults.home_page_id).
   registry.register(setHomePageOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
