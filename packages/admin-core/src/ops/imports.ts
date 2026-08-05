@@ -810,6 +810,68 @@ export const updatePageCaptureOp = defineOperation({
 });
 
 /**
+ * issue #423 — bulk capture persistence for the crawl-time ground truth.
+ * The crawler captures screenshot + computed-style tokens in the SAME
+ * render session that yields each page's HTML; the orchestrator's batch
+ * flush lands them here in ONE call per batch (CLAUDE.md §11 bulk-first),
+ * keyed by the run's UNIQUE(run_id, source_url) so no import_pages id is
+ * needed at write time. Returns the resolved ids so the caller can attach
+ * follow-up notes (e.g. `design_tokens_missing`) without a second lookup.
+ *
+ * Unknown sourceUrls are returned in `unmatched` — loud, so a batch that
+ * raced a cleanup or replayed a stale checkpoint is visible, never a
+ * silent partial write (CLAUDE.md §2).
+ */
+export const setPageCapturesByUrlOp = defineOperation({
+  name: "imports.set_page_captures_by_url",
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      captures: z
+        .array(
+          z
+            .object({
+              sourceUrl: z.string().url(),
+              screenshotObjectKey: z.string().max(500).optional(),
+              sampledDesignTokens: pageDesignTokensSchema.optional(),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(500),
+    })
+    .strict(),
+  output: z.object({
+    updated: z.array(z.object({ importPageId: z.string(), sourceUrl: z.string() })),
+    unmatched: z.array(z.string()),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const updated: Array<{ importPageId: string; sourceUrl: string }> = [];
+    const unmatched: string[] = [];
+    for (const c of input.captures) {
+      const rows = (await tx.execute(sql`
+        UPDATE import_pages
+           SET screenshot_object_key = COALESCE(${c.screenshotObjectKey ?? null}, screenshot_object_key),
+               -- (::text)::jsonb keeps bun-postgres on the text path (see
+               -- the add_page_notes comment for the double-encode trap).
+               sampled_design_tokens = COALESCE(
+                 (${c.sampledDesignTokens ? JSON.stringify(c.sampledDesignTokens) : null}::text)::jsonb,
+                 sampled_design_tokens
+               )
+         WHERE run_id = ${input.runId}::uuid AND source_url = ${c.sourceUrl}
+         RETURNING id::text AS id
+      `)) as unknown as Array<{ id: string }>;
+      const id = rows[0]?.id;
+      if (id) updated.push({ importPageId: id, sourceUrl: c.sourceUrl });
+      else unmatched.push(c.sourceUrl);
+    }
+    return ok({ updated, unmatched });
+  },
+});
+
+/**
  * issue #247 — worker writes the run-level design-token aggregate after
  * the per-page ground-truth captures. `imports.compose_from_run`
  * prefers this over the extractor's inline-CSS-derived tokens because
@@ -1864,6 +1926,17 @@ export const getImportRunReportOp = defineOperation({
      *  a screenshot_missing note; downstream verification (WS4) treats
      *  them as UNVERIFIED. */
     pagesMissingScreenshot: z.number(),
+    /** issue #423 — the run's visual-ground-truth ledger, derived live
+     *  from row state so later heals (a re-capture) are reflected:
+     *  `captured` = screenshot stored; `failed` = none stored AND a loud
+     *  screenshot_missing note names why; `skipped` = none stored and NO
+     *  note — silent degradation, must be 0 on a completed run
+     *  (CLAUDE.md §2). */
+    captureStats: z.object({
+      captured: z.number(),
+      failed: z.number(),
+      skipped: z.number(),
+    }),
     /** issue #247 — the site-level computed-style token aggregate;
      *  null when the run never got a Playwright render pass. */
     siteDesignTokens: z.unknown().nullable(),
@@ -2005,6 +2078,23 @@ export const getImportRunReportOp = defineOperation({
       }
     }
 
+    // issue #423 — visual-ground-truth ledger, derived from row state so a
+    // later heal (post-crawl re-capture) is reflected without bookkeeping.
+    // `skipped` > 0 on a completed run = silent degradation (CLAUDE.md §2).
+    const captureStats = { captured: 0, failed: 0, skipped: 0 };
+    for (const p of pages) {
+      if (p.screenshot_object_key !== null) {
+        captureStats.captured += 1;
+        continue;
+      }
+      const parsed = typeof p.notes === "string" ? (JSON.parse(p.notes) as unknown) : p.notes;
+      const noted =
+        Array.isArray(parsed) &&
+        parsed.some((n) => (n as { category?: unknown } | null)?.category === "screenshot_missing");
+      if (noted) captureStats.failed += 1;
+      else captureStats.skipped += 1;
+    }
+
     // issue #28 — the run-scoped error/warning LEDGER. Ordered error →
     // warning → info (the severity the report leads with), newest-first
     // within a severity. Capped so a pathological run can't blow the payload.
@@ -2053,6 +2143,7 @@ export const getImportRunReportOp = defineOperation({
       redirectsCreated,
       crawlErrors,
       pagesMissingScreenshot: pages.filter((p) => p.screenshot_object_key === null).length,
+      captureStats,
       siteDesignTokens: parseJsonbColumn(run.site_design_tokens),
       boilerplate: parseJsonbColumn(run.boilerplate_summary),
       notes: [...byCategory.entries()].map(([category, v]) => ({
