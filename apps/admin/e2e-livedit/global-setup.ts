@@ -9,7 +9,9 @@
  *    fallback bypasses DB decryption when `ANTHROPIC_API_KEY` is set.
  * 2. Asserts `ANTHROPIC_API_KEY_E2E` is set (loud failure with a
  *    message naming `.env.test` — no silent skip).
- * 3. Spawns the admin (`bun run build/index.js`) with stdio piped to
+ * 3. Wipes `ai_bug_reports` so the run's detected-bugs report covers
+ *    this run only (see RESET_BUG_REPORTS_SCRIPT).
+ * 4. Spawns the admin (`bun run build/index.js`) with stdio piped to
  *    `test-results/livedit/admin.log` and records its PID in a
  *    scratch file the matching `global-teardown.ts` reads.
  *
@@ -54,6 +56,28 @@ function loadDotEnvTestIfPresent(): void {
   }
 }
 
+/**
+ * Wipe `ai_bug_reports` once per suite, so the run's PR-comment "Detected
+ * bugs" table and the `e2e-livedit-bugs` metric describe THIS run only.
+ *
+ * Deliberately here and not in `resetLiveditFixtures()` — that helper runs
+ * per scenario, so wiping there would erase earlier scenarios' reports and
+ * leave the run-level table showing only the last scenario. In CI the
+ * property holds for free (fresh DB per job); this is what gives a repeated
+ * local run the same clean slate. It also clears the `chat_session_id`
+ * values left dangling by the per-scenario `chat_sessions` wipe (the column
+ * has no FK, by design, so background/import runs can file).
+ */
+const RESET_BUG_REPORTS_SCRIPT = `
+  import { SQL } from "bun";
+  const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+  await sql.begin(async (tx) => {
+    await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+    await tx\`DELETE FROM ai_bug_reports\`;
+  });
+  await sql.end();
+`;
+
 async function pollAdminReady(): Promise<void> {
   const deadline = Date.now() + ADMIN_READY_TIMEOUT_MS;
   let lastError: string | null = null;
@@ -92,6 +116,7 @@ export default async function globalSetup(): Promise<void> {
   }
 
   runBun(SETUP_SCRIPT);
+  runBun(RESET_BUG_REPORTS_SCRIPT);
 
   mkdirSync(ADMIN_LOG_DIR, { recursive: true });
   // Truncate the log between runs so the diag-grep helper only sees

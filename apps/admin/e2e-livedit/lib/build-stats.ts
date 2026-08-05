@@ -6,6 +6,7 @@
  *   apps/admin/test-results/livedit/admin.log          (chat-runner stderr)
  *   apps/admin/test-results/livedit/playwright-report.json
  *   apps/admin/test-results/livedit/ai-cost.json        (real ai_calls totals)
+ *   apps/admin/test-results/livedit/bug-reports.json    (ai_bug_reports rows)
  *
  * and writes a self-contained markdown block to stdout. The workflow
  * captures it and splices it into the sticky PR comment alongside the
@@ -19,6 +20,13 @@
  * (older runs, DB-only scenarios, a failed capture that fell back to
  * `{}`) the cost section is silently omitted.
  *
+ * The bug-reports.json input carries every `ai_bug_reports` row filed
+ * during the run — the model's own `bug_report` calls plus the
+ * chat-runner's auto-capture of failed tool results and turn-fatal
+ * provider errors. It is the signal the pass/fail verdict cannot
+ * carry: a GREEN run whose bug count rose means the AI routed around a
+ * defect rather than failing on it.
+ *
  * NOT a Playwright reporter — those run in the test process and would
  * have to share state with the suite. This is a separate post-process
  * that's easier to evolve.
@@ -29,6 +37,7 @@ import { existsSync, readFileSync } from "node:fs";
 const ADMIN_LOG = "apps/admin/test-results/livedit/admin.log";
 const REPORT_JSON = "apps/admin/test-results/livedit/playwright-report.json";
 const AI_COST_JSON = "apps/admin/test-results/livedit/ai-cost.json";
+const BUG_REPORTS_JSON = "apps/admin/test-results/livedit/bug-reports.json";
 
 /** 1 USD = 1e8 microcents (cost_estimate_microcents is stored in microcents). */
 const MICROCENTS_PER_USD = 100_000_000;
@@ -279,6 +288,196 @@ export function formatCostSection(cost: AiCost | null): string[] {
   return lines;
 }
 
+/**
+ * One `ai_bug_reports` row as captured by the workflow's psql dump.
+ * Mirrors the table (migrations 0165 + 0177); `source` is `'ai'` when the
+ * model filed it via the `bug_report` tool and `'auto'` when the chat-runner
+ * captured it from a failed tool result or a turn-fatal provider error.
+ */
+interface BugReport {
+  id: string;
+  createdAt: string;
+  chatSessionId: string | null;
+  title: string;
+  whatHappened: string;
+  expected: string;
+  suspectedTool: string | null;
+  evidence: string | null;
+  severity: string;
+  blockedTask: boolean;
+  status: string;
+  source: string;
+}
+
+/** Rendered rows are capped so a pathological run can't blow GitHub's 65k comment limit. */
+const BUG_TABLE_MAX_ROWS = 50;
+/** Per-field cap inside the details block. The artifact carries the untruncated text. */
+const BUG_DETAIL_MAX_CHARS = 600;
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+function strOrNull(v: unknown): string | null {
+  return typeof v === "string" ? v : null;
+}
+
+/**
+ * Parse the `bug-reports.json` capture into rows, or `null` when the input
+ * carries no capture data at all.
+ *
+ * The null-vs-empty split is load-bearing and drives {@link formatBugSection}:
+ * `null` (missing file, unparseable content, or the `{}` sentinel the workflow
+ * writes when the psql capture fails) omits the section entirely, while `[]`
+ * (a capture that ran and found nothing) renders the zero-state. Without the
+ * distinction a clean run and a broken capture would look identical.
+ *
+ * Same defensive salvage as {@link parseAiCost}: if a stray psql command tag
+ * leaks in front of the JSON we retry on the `[…]` substring.
+ *
+ * @param raw the file contents (pass "" when the file does not exist).
+ */
+export function parseBugReports(raw: string): BugReport[] | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+
+  let parsed: unknown = tryJson(trimmed);
+  if (parsed === undefined) {
+    const first = trimmed.indexOf("[");
+    const last = trimmed.lastIndexOf("]");
+    if (first !== -1 && last > first) parsed = tryJson(trimmed.slice(first, last + 1));
+  }
+  // The `{}` capture-failure sentinel parses fine but isn't an array — absent.
+  if (!Array.isArray(parsed)) return null;
+
+  return parsed.map((r) => {
+    const row = (r ?? {}) as Record<string, unknown>;
+    return {
+      id: str(row.id),
+      createdAt: str(row.createdAt),
+      chatSessionId: strOrNull(row.chatSessionId),
+      title: str(row.title),
+      whatHappened: str(row.whatHappened),
+      expected: str(row.expected),
+      suspectedTool: strOrNull(row.suspectedTool),
+      evidence: strOrNull(row.evidence),
+      severity: str(row.severity),
+      blockedTask: row.blockedTask === true,
+      status: str(row.status),
+      source: str(row.source),
+    };
+  });
+}
+
+/** Blocking first — the ordering a reader scanning the table wants. */
+const SEVERITY_RANK: Record<string, number> = { blocking: 0, degraded: 1, cosmetic: 2 };
+
+/** Cap length and flatten whitespace — for table cells and inline bullets, where a newline breaks markdown. */
+function truncate(s: string, max: number): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * Cap length but KEEP newlines — for text rendered inside a fenced block.
+ * The provider-error digest is line-oriented (`#0 user`, `#1 assistant …`),
+ * so flattening it would destroy the very structure that makes it readable.
+ */
+function truncateBlock(s: string, max: number): string {
+  const trimmed = s.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+/** Escape the pipes that would split a markdown table cell. Newlines are already flattened by {@link truncate}. */
+function cell(s: string): string {
+  return s.replace(/\|/g, "\\|");
+}
+
+/**
+ * Render the `### Detected bugs (N)` markdown section from the `ai_bug_reports`
+ * rows filed during the run.
+ *
+ * Returns an empty array when `reports` is `null` (no capture data) so the
+ * caller can splice unconditionally — matching {@link formatCostSection}. An
+ * empty array of reports is NOT the same thing: it renders an explicit
+ * zero-state, because "no bugs were filed" is the result we most want to see
+ * stated out loud.
+ *
+ * Rows sort by severity, then source, then time, so `auto` and `ai` rows
+ * cluster inside each severity band. Sorting lives here rather than in the
+ * capture SQL so it is unit-testable.
+ */
+export function formatBugSection(reports: BugReport[] | null): string[] {
+  if (!reports) return [];
+
+  const lines: string[] = [];
+  if (reports.length === 0) {
+    lines.push("### Detected bugs (0)");
+    lines.push("");
+    lines.push("_None filed during this run._");
+    lines.push("");
+    return lines;
+  }
+
+  const sorted = [...reports].sort((a, b) => {
+    const rank = (SEVERITY_RANK[a.severity] ?? 3) - (SEVERITY_RANK[b.severity] ?? 3);
+    if (rank !== 0) return rank;
+    if (a.source !== b.source) return a.source < b.source ? -1 : 1;
+    return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+  });
+  const shown = sorted.slice(0, BUG_TABLE_MAX_ROWS);
+  const dropped = sorted.length - shown.length;
+
+  lines.push(`### Detected bugs (${sorted.length})`);
+  lines.push("");
+  lines.push("| Sev | Source | Title | Tool | Blocked |");
+  lines.push("| --- | --- | --- | --- | --- |");
+  for (const b of shown) {
+    // `suspected_tool` is freeform text up to 200 chars — the AI sometimes
+    // names several tools at once — so cap it or it stretches the table.
+    const tool = b.suspectedTool ? `\`${cell(truncate(b.suspectedTool, 40))}\`` : "—";
+    lines.push(
+      `| ${b.severity || "—"} | ${b.source || "—"} | ${cell(truncate(b.title, 80))} | ${tool} | ${
+        b.blockedTask ? "yes" : "no"
+      } |`,
+    );
+  }
+  lines.push("");
+  if (dropped > 0) {
+    // Never truncate silently (CLAUDE.md) — say what was dropped and where it lives.
+    lines.push(
+      `_…${dropped} more not shown — see the \`e2e-livedit-bugs-<run_id>\` artifact for the full set._`,
+    );
+    lines.push("");
+  }
+
+  // A title alone isn't actionable and the full rows are artifact-only, so
+  // carry the diagnosis inline — collapsed, to keep the comment scannable.
+  lines.push("<details>");
+  lines.push(`<summary>Bug details (${shown.length})</summary>`);
+  lines.push("");
+  for (const [i, b] of shown.entries()) {
+    lines.push(`**${i + 1}. [${b.severity} · ${b.source}] ${truncate(b.title, 200)}**`);
+    lines.push("");
+    if (b.suspectedTool) lines.push(`- Suspected tool: \`${b.suspectedTool}\``);
+    if (b.chatSessionId) lines.push(`- Chat session: \`${b.chatSessionId}\``);
+    lines.push(`- What happened: ${truncate(b.whatHappened, BUG_DETAIL_MAX_CHARS)}`);
+    lines.push(`- Expected: ${truncate(b.expected, BUG_DETAIL_MAX_CHARS)}`);
+    if (b.evidence) {
+      lines.push("- Evidence:");
+      lines.push("");
+      // Four backticks so evidence containing a ``` fence can't break out.
+      lines.push("````");
+      lines.push(truncateBlock(b.evidence, BUG_DETAIL_MAX_CHARS));
+      lines.push("````");
+    }
+    lines.push("");
+  }
+  lines.push("</details>");
+  lines.push("");
+  return lines;
+}
+
 function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
@@ -292,20 +491,30 @@ function fmtTokens(n: number): string {
 }
 
 /**
- * Build the full markdown stats block from the three raw inputs. Pure —
+ * Build the full markdown stats block from the four raw inputs. Pure —
  * no filesystem access — so it is unit-testable without spawning. When
  * `aiCostRaw` parses to real cost data, that section leads and becomes
  * the authoritative token/dollar source; the chat-runner section then
  * drops its (cumulative-per-turn, non-summable) loop-log token bullet in
  * favour of a pointer.
+ *
+ * Section order is cost (headline optimization metric) → chat-runner stats
+ * → per-scenario results (the verdict) → detected bugs (which qualify that
+ * verdict: a green run can still have filed defects the AI worked around).
  */
-export function buildReport(inputs: { log: string; reportRaw: string; aiCostRaw: string }): string {
-  const { log, reportRaw, aiCostRaw } = inputs;
+export function buildReport(inputs: {
+  log: string;
+  reportRaw: string;
+  aiCostRaw: string;
+  bugsRaw: string;
+}): string {
+  const { log, reportRaw, aiCostRaw, bugsRaw } = inputs;
 
   const loops = parseChatRunnerLoops(log);
   const turns = countEnters(log);
   const { results, totalDurationMs } = parsePlaywrightReport(reportRaw);
   const cost = parseAiCost(aiCostRaw);
+  const bugs = parseBugReports(bugsRaw);
 
   const totalLoops = loops.length;
   const totalToolCalls = loops.reduce((a, l) => a + l.toolCalls, 0);
@@ -367,6 +576,7 @@ export function buildReport(inputs: { log: string; reportRaw: string; aiCostRaw:
     );
   }
   lines.push("");
+  lines.push(...formatBugSection(bugs));
 
   return lines.join("\n");
 }
@@ -375,7 +585,8 @@ function main(): void {
   const log = existsSync(ADMIN_LOG) ? readFileSync(ADMIN_LOG, "utf8") : "";
   const reportRaw = existsSync(REPORT_JSON) ? readFileSync(REPORT_JSON, "utf8") : "";
   const aiCostRaw = existsSync(AI_COST_JSON) ? readFileSync(AI_COST_JSON, "utf8") : "";
-  process.stdout.write(buildReport({ log, reportRaw, aiCostRaw }));
+  const bugsRaw = existsSync(BUG_REPORTS_JSON) ? readFileSync(BUG_REPORTS_JSON, "utf8") : "";
+  process.stdout.write(buildReport({ log, reportRaw, aiCostRaw, bugsRaw }));
 }
 
 // Only run when invoked directly (not when imported by the unit test).

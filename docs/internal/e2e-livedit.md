@@ -82,6 +82,8 @@ Artifacts land under `apps/admin/test-results/livedit/`:
 - `playwright-report/index.html` — Playwright's HTML report with the
   trace viewer.
 - `*-failed-*.png` — screenshots from any failed step.
+- `bug-reports.json` — every `ai_bug_reports` row filed during the run.
+  Worth reading even on a green run; see *AI-detected bugs per run* below.
 
 In CI those same files upload as the
 `e2e-livedit-artifacts-${run_id}-${attempt}` artifact, plus per-table
@@ -143,6 +145,69 @@ psql dump), the cost section is silently omitted — older/DB-only runs
 degrade gracefully. The pure parse + format logic lives in exported
 `parseAiCost` / `formatCostSection` / `buildReport` functions in
 `build-stats.ts`, unit-tested in `build-stats.test.ts`.
+
+## AI-detected bugs per run (defect metric)
+
+The pass/fail verdict cannot see the failure mode that matters most here:
+**a green run in which the AI routed *around* a defect instead of failing
+on it.** Caelo's internal defect channel — the `ai_bug_reports` table —
+records exactly that, from three writers:
+
+| `source` | Written by | Severity |
+| --- | --- | --- |
+| `ai` | the model calling the `bug_report` tool when it diagnoses a defect mid-task | model-chosen |
+| `auto` | the chat-runner auto-capturing a failed tool result after auto-recovery gives up (`tool-dispatch.ts`) | `degraded` |
+| `auto` | a turn-fatal provider error, with a replayed-history digest flagging `!UNANSWERED` / `!ORPHAN` tool pairs (`provider-error-report.ts`) | `blocking` |
+
+The `Capture AI-detected bugs from ai_bug_reports` step runs
+`if: always()` and dumps every row to
+`apps/admin/test-results/livedit/bug-reports.json`. Same two properties as
+the cost capture above: no date filter (the CI DB is fresh per job, so
+every row belongs to the run) and `SET caelo.actor_kind='system'` in the
+same session (RLS is `FORCE`d behind that GUC). `evidence` is dumped
+untruncated so the artifact is complete; the PR comment truncates its own
+copy. Rows are **not** ordered in SQL — sorting lives in
+`formatBugSection` where it is unit-testable.
+
+Locally, `global-setup.ts` wipes `ai_bug_reports` once at suite start, which
+gives a repeated local run the same "every row is this run's" property CI
+gets for free. It is deliberately **not** in `resetLiveditFixtures()` —
+that helper runs per scenario, so wiping there would leave the run-level
+report showing only the last scenario.
+
+The metric surfaces the same three ways as cost:
+
+1. **Sticky PR comment** — a `### Detected bugs (N)` section after the
+   per-scenario results (it qualifies that verdict), with a
+   `Sev | Source | Title | Tool | Blocked` table sorted blocking-first then
+   by source, plus a collapsed `Bug details` block carrying
+   what-happened / expected / evidence per row. Capped at 50 rows to stay
+   under GitHub's 65k comment limit; when it caps it says so and points at
+   the artifact.
+2. **Run summary + annotations** — a greppable
+   `e2e-livedit-bugs total=… blocking=… degraded=… cosmetic=… ai=… auto=…
+   sha=…` line in `$GITHUB_STEP_SUMMARY`, a `::notice`, and a `::warning`
+   when any `blocking` row was filed.
+3. **Durable artifact** — `bug-reports.json` uploads `if: always()` as
+   `e2e-livedit-bugs-<run_id>` with 90-day retention. Kept separate from
+   `e2e-livedit-cost-<run_id>` so that artifact name stays stable for
+   anything already scraping it.
+
+**Informational, not gating.** No count fails the job today — the suite's
+pass/fail stays driven purely by the Playwright assertions. Making
+`blocking` rows (or `blocked_task = true`) fail the run is the intended
+follow-up once the signal has stayed clean across a few runs.
+
+`{}` vs `[]` is load-bearing: the workflow writes the `{}` sentinel when
+the psql capture fails, which `parseBugReports` reads as "no data" and
+omits the section entirely, while a real `[]` renders an explicit
+`Detected bugs (0)` zero-state. A broken capture must never be
+indistinguishable from a clean run. The pure logic lives in exported
+`parseBugReports` / `formatBugSection` in `build-stats.ts`, unit-tested in
+`build-stats.test.ts`.
+
+Operators can browse the same rows against a live DB at `/security/bugs`,
+which also exports them as Markdown for pasting into a GitHub issue.
 
 ## The 10× determinism recipe (post-merge gate, AC #15)
 

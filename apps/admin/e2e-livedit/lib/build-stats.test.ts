@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { buildReport, formatCostSection, parseAiCost } from "./build-stats.js";
+import {
+  buildReport,
+  formatBugSection,
+  formatCostSection,
+  parseAiCost,
+  parseBugReports,
+} from "./build-stats.js";
 
 const FULL = JSON.stringify({
   totalMicrocents: 150_000_000, // $1.50
@@ -120,6 +126,165 @@ describe("formatCostSection", () => {
   });
 });
 
+/** One `ai_bug_reports` row as the workflow's psql capture emits it. */
+function bugRow(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "11111111-1111-1111-1111-111111111111",
+    createdAt: "2026-08-05 10:00:00+00",
+    chatSessionId: "22222222-2222-2222-2222-222222222222",
+    title: "create_module drops nested fields",
+    whatHappened: "The nested module-list field came back empty.",
+    expected: "The two child modules should have been persisted.",
+    suspectedTool: "create_module",
+    evidence: null,
+    severity: "degraded",
+    blockedTask: false,
+    status: "new",
+    source: "ai",
+    ...over,
+  };
+}
+
+const BUGS = JSON.stringify([
+  bugRow({ severity: "cosmetic", source: "ai", title: "list_modules description truncated" }),
+  bugRow({
+    severity: "blocking",
+    source: "auto",
+    title: "messages.4: tool_use ids were found without tool_result blocks",
+    suspectedTool: null,
+    blockedTask: true,
+    evidence: "#0 user\n#1 assistant tool_use[toolu_01!UNANSWERED]",
+  }),
+  bugRow({ severity: "degraded", source: "auto", title: "pages.add_module → ValidationFailed" }),
+]);
+
+describe("parseBugReports", () => {
+  it("parses a well-formed row array", () => {
+    const rows = parseBugReports(BUGS);
+    expect(rows).toHaveLength(3);
+    expect(rows?.[0]?.severity).toBe("cosmetic");
+    expect(rows?.[1]?.blockedTask).toBe(true);
+    expect(rows?.[1]?.suspectedTool).toBeNull();
+  });
+
+  it("returns null for a missing file (empty string)", () => {
+    expect(parseBugReports("")).toBeNull();
+    expect(parseBugReports("   \n ")).toBeNull();
+  });
+
+  it("returns null for the {} capture-failure sentinel", () => {
+    // Distinct from `[]` — a failed capture must not look like a clean run.
+    expect(parseBugReports("{}")).toBeNull();
+  });
+
+  it("returns null for malformed JSON", () => {
+    expect(parseBugReports("not json at all")).toBeNull();
+    expect(parseBugReports("[ broken")).toBeNull();
+  });
+
+  it("returns an empty array for a capture that found nothing", () => {
+    expect(parseBugReports("[]")).toEqual([]);
+  });
+
+  it("salvages JSON behind a stray psql command tag", () => {
+    expect(parseBugReports(`SET\n${BUGS}`)).toHaveLength(3);
+  });
+
+  it("coerces missing/nullable columns without throwing", () => {
+    const rows = parseBugReports(JSON.stringify([{}]));
+    expect(rows?.[0]?.title).toBe("");
+    expect(rows?.[0]?.evidence).toBeNull();
+    expect(rows?.[0]?.blockedTask).toBe(false);
+  });
+});
+
+describe("formatBugSection", () => {
+  it("omits the section entirely when the capture is absent", () => {
+    expect(formatBugSection(null)).toEqual([]);
+  });
+
+  it("renders an explicit zero-state for a clean run", () => {
+    const md = formatBugSection([]).join("\n");
+    expect(md).toContain("### Detected bugs (0)");
+    expect(md).toContain("_None filed during this run._");
+  });
+
+  it("orders blocking first, then degraded, then cosmetic", () => {
+    const md = formatBugSection(parseBugReports(BUGS)).join("\n");
+    expect(md).toContain("### Detected bugs (3)");
+    const blocking = md.indexOf("tool_use ids were found");
+    const degraded = md.indexOf("pages.add_module");
+    const cosmetic = md.indexOf("list_modules description");
+    expect(blocking).toBeLessThan(degraded);
+    expect(degraded).toBeLessThan(cosmetic);
+  });
+
+  it("renders the table columns, the source, and the blocked flag", () => {
+    const md = formatBugSection(parseBugReports(BUGS)).join("\n");
+    expect(md).toContain("| Sev | Source | Title | Tool | Blocked |");
+    expect(md).toContain("| blocking | auto |");
+    expect(md).toContain("`create_module`");
+    // A null suspected_tool renders as an em dash, not an empty cell.
+    expect(md).toContain("| — | yes |");
+  });
+
+  it("carries diagnosis in a collapsed details block", () => {
+    const md = formatBugSection(parseBugReports(BUGS)).join("\n");
+    expect(md).toContain("<summary>Bug details (3)</summary>");
+    expect(md).toContain("- What happened:");
+    expect(md).toContain("!UNANSWERED");
+  });
+
+  it("keeps evidence newlines — the provider-error digest is line-oriented", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ evidence: "#0 user\n#1 assistant tool_use[toolu_01!UNANSWERED]" })]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("#0 user\n#1 assistant");
+  });
+
+  it("groups sources within a severity band", () => {
+    const rows = parseBugReports(
+      JSON.stringify([
+        bugRow({ severity: "degraded", source: "auto", title: "auto one" }),
+        bugRow({ severity: "degraded", source: "ai", title: "ai one" }),
+        bugRow({ severity: "degraded", source: "auto", title: "auto two" }),
+      ]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md.indexOf("ai one")).toBeLessThan(md.indexOf("auto one"));
+    expect(md.indexOf("auto one")).toBeLessThan(md.indexOf("auto two"));
+  });
+
+  it("caps the table and says out loud what it dropped", () => {
+    const many = Array.from({ length: 63 }, (_, i) => bugRow({ title: `bug number ${i}` }));
+    const md = formatBugSection(parseBugReports(JSON.stringify(many))).join("\n");
+    // The heading reports the true total even though the table is capped.
+    expect(md).toContain("### Detected bugs (63)");
+    expect(md).toContain("…13 more not shown");
+    expect(md).toContain("e2e-livedit-bugs-<run_id>");
+  });
+
+  it("truncates long titles and evidence to keep the comment under GitHub's limit", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ title: "T".repeat(300), evidence: "E".repeat(2000) })]),
+    );
+    const lines = formatBugSection(rows);
+    // Table cell caps at 80, the details heading at 200, evidence at 600.
+    const tableRow = lines.find((l) => l.startsWith("| degraded |"));
+    expect(tableRow).toBeDefined();
+    expect(tableRow?.match(/T+…/)?.[0]).toHaveLength(80);
+    expect(lines.find((l) => l.startsWith("**1."))?.match(/T+…/)?.[0]).toHaveLength(200);
+    expect(lines.find((l) => l.startsWith("E"))).toHaveLength(600);
+  });
+
+  it("escapes pipes so a title cannot break the table", () => {
+    const rows = parseBugReports(JSON.stringify([bugRow({ title: "a | b" })]));
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("a \\| b");
+  });
+});
+
 describe("buildReport integration", () => {
   const REPORT = JSON.stringify({
     stats: { duration: 1000 },
@@ -135,7 +300,7 @@ describe("buildReport integration", () => {
   it("leads with the cost section and drops loop-log tokens when cost is present", () => {
     const log =
       '[chat-runner] enter {\n[chat-runner] loop {\n  chatSessionId: "s",\n  loop: 1,\n  loopStop: "end_turn",\n  toolCalls: 2,\n  textChars: 1,\n  thinkingBlocks: 0,\n  tokensIn: 1000,\n  tokensOut: 50,\n}';
-    const md = buildReport({ log, reportRaw: REPORT, aiCostRaw: FULL });
+    const md = buildReport({ log, reportRaw: REPORT, aiCostRaw: FULL, bugsRaw: "" });
     expect(md.indexOf("Real AI cost")).toBeLessThan(md.indexOf("Chat-runner API stats"));
     expect(md).toContain("see **Real AI cost** above");
     // Loop-log token bullet must NOT appear when real cost is present.
@@ -148,15 +313,28 @@ describe("buildReport integration", () => {
       "[chat-runner] enter {",
       '[chat-runner] loop {\n  chatSessionId: "s",\n  loop: 1,\n  loopStop: "end_turn",\n  toolCalls: 2,\n  textChars: 1,\n  thinkingBlocks: 0,\n  tokensIn: 1000,\n  tokensOut: 50,\n}',
     ].join("\n");
-    const md = buildReport({ log, reportRaw: REPORT, aiCostRaw: "" });
+    const md = buildReport({ log, reportRaw: REPORT, aiCostRaw: "", bugsRaw: "" });
     expect(md).not.toContain("Real AI cost");
     expect(md).toContain("tokens in");
     expect(md).toContain("cumulative per turn");
   });
 
   it("degrades gracefully with all inputs empty", () => {
-    const md = buildReport({ log: "", reportRaw: "", aiCostRaw: "" });
+    const md = buildReport({ log: "", reportRaw: "", aiCostRaw: "", bugsRaw: "" });
     expect(md).not.toContain("Real AI cost");
     expect(md).toContain("No chat-runner activity recorded");
+    // No capture ⇒ no section at all, same contract as the cost section.
+    expect(md).not.toContain("Detected bugs");
+  });
+
+  it("places detected bugs after the per-scenario verdict they qualify", () => {
+    const md = buildReport({ log: "", reportRaw: REPORT, aiCostRaw: "", bugsRaw: BUGS });
+    expect(md.indexOf("Per-scenario results")).toBeLessThan(md.indexOf("### Detected bugs"));
+    expect(md).toContain("### Detected bugs (3)");
+  });
+
+  it("reports a green run's clean bug slate rather than staying silent", () => {
+    const md = buildReport({ log: "", reportRaw: REPORT, aiCostRaw: "", bugsRaw: "[]" });
+    expect(md).toContain("### Detected bugs (0)");
   });
 });
