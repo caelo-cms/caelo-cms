@@ -5,6 +5,7 @@ import {
   localeSchema,
   MODULE_HTML_MAX,
   moduleCreateSchema,
+  moduleUpdateSchema,
   pageCreateSchema,
   pageSetModulesSchema,
   pageUpdateSchema,
@@ -70,6 +71,45 @@ describe("moduleCreateSchema", () => {
       displayName: "Hero",
       html: "<p>hi</p>",
       unexpected: "noop",
+    });
+    expect(r.success).toBe(false);
+  });
+
+  // issue #432 — CDATA wrappers stored verbatim broke rendering and sent the
+  // AI into a ~20-loop visual repair spiral; the write boundary now rejects
+  // them with an actionable message.
+  it("rejects XML CDATA wrappers in css and js, with an actionable message", () => {
+    const base = { slug: "site-header", displayName: "Site header", html: "<header></header>" };
+    const css = moduleCreateSchema.safeParse({
+      ...base,
+      css: "/*<![CDATA[*/ .x { color: red } /*]]>*/",
+    });
+    expect(css.success).toBe(false);
+    if (!css.success) {
+      expect(css.error.issues.map((i) => i.message).join(" ")).toContain("CDATA");
+    }
+    const js = moduleCreateSchema.safeParse({
+      ...base,
+      js: "//<![CDATA[\nconsole.log('hi');\n//]]>",
+    });
+    expect(js.success).toBe(false);
+  });
+
+  it("accepts plain css/js (and js merely mentioning ']]>' in a string)", () => {
+    const base = { slug: "site-header", displayName: "Site header", html: "<header></header>" };
+    expect(
+      moduleCreateSchema.safeParse({ ...base, css: ".x { color: red }", js: "console.log(1);" })
+        .success,
+    ).toBe(true);
+    // Only the OPENING marker is the corruption signature; a bare "]]>"
+    // inside a string literal is legitimate (e.g. code emitting XML).
+    expect(moduleCreateSchema.safeParse({ ...base, js: 'xml += "]]>";' }).success).toBe(true);
+  });
+
+  it("rejects CDATA on the update path too (edit_module / edit_content funnel)", () => {
+    const r = moduleUpdateSchema.safeParse({
+      moduleId: "8c2f2f2a-0000-4000-8000-000000000432",
+      css: "/*<![CDATA[*/ .x{} /*]]>*/",
     });
     expect(r.success).toBe(false);
   });
