@@ -50,6 +50,23 @@ const FIXTURE_HTML = `<!doctype html><html lang="en"><head>
 const FIXTURE_CSS = `body { color: #1c1917; background: #fef3c7; font-family: "Fraunces", serif; }
 h1 { font-size: 3rem; color: #7c2d12; }`;
 
+/** issue #415 — a page with all three boilerplate classes: a consent
+ *  banner, a hidden mobile-nav duplicate (removed by the RENDER's hidden
+ *  pass — emulated by the fake below), and carousel clone slides. */
+const BOILERPLATE_FIXTURE = `<!doctype html><html lang="en"><head><title>Cleanup fixture</title></head><body>
+<div id="cookiebanner" class="cookie-banner"><h2>Manage Consent</h2><button>Accept all cookies please</button></div>
+<nav class="desktop-nav"><a href="/one">One</a><a href="/two">Two</a></nav>
+<nav class="mobile-nav"><a href="/one">One</a><a href="/two">Two</a><a href="/menu">MobileOnly</a></nav>
+<main>
+<h1>Cleanup fixture</h1>
+<div class="carousel">
+<div class="slide"><img src="/i.jpg" alt="s"><p>Same testimonial repeated in every clone</p></div>
+<div class="slide"><img src="/i.jpg" alt="s"><p>Same testimonial repeated in every clone</p></div>
+<div class="slide"><img src="/i.jpg" alt="s"><p>Same testimonial repeated in every clone</p></div>
+</div>
+<p>Unique closing paragraph.</p>
+</main></body></html>`;
+
 let server: ReturnType<typeof Bun.serve>;
 let base: string;
 const savedAllowed = process.env.CAELO_IMPORTER_ALLOWED_HOSTS;
@@ -65,6 +82,9 @@ beforeAll(() => {
       }
       if (path === "/styles/main.css") {
         return new Response(FIXTURE_CSS, { headers: { "content-type": "text/css" } });
+      }
+      if (path === "/boilerplate") {
+        return new Response(BOILERPLATE_FIXTURE, { headers: { "content-type": "text/html" } });
       }
       if (path === "/sitemap.xml") {
         const u = (p: string) => `<url><loc>${base}${p}</loc></url>`;
@@ -118,6 +138,11 @@ function fakeScreenshotter(over: Partial<Screenshotter> = {}): Screenshotter {
         finalUrl: url,
         renderedHtml: FIXTURE_HTML,
         ...(opts?.sampleStyles ? { styleSamples: STYLE_SAMPLES } : {}),
+        // Emulate the render's hidden-element pass (issue #415): the fixture
+        // has no hidden DOM, so the visible DOM equals the full DOM.
+        ...(opts?.captureHtml && opts?.stripHidden
+          ? { visibleHtml: FIXTURE_HTML, hiddenRemoved: 0 }
+          : {}),
       };
     },
     async renderHtml(url, opts) {
@@ -126,6 +151,7 @@ function fakeScreenshotter(over: Partial<Screenshotter> = {}): Screenshotter {
         finalUrl: url,
         html: FIXTURE_HTML,
         ...(opts?.sampleStyles ? { styleSamples: STYLE_SAMPLES } : {}),
+        ...(opts?.stripHidden ? { visibleHtml: FIXTURE_HTML, hiddenRemoved: 0 } : {}),
       };
     },
     async query() {
@@ -191,6 +217,132 @@ describe("inspect_external_page — facet selection", () => {
     const missing = await readPageMoreTool.handler(emptyCtx, { pageRef: "pg_nope" }, toolCtx);
     expect(missing.ok).toBe(false);
     expect(missing.content).toContain("inspect_external_page");
+  });
+});
+
+describe("inspect_external_page — boilerplate cleanup (issue #415)", () => {
+  const countOf = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
+  const MOBILE_NAV_RE = /<nav class="mobile-nav">[\s\S]*?<\/nav>\n?/;
+  /** Renders the boilerplate fixture; emulates the browser's hidden-element
+   *  pass by dropping the display:none mobile nav when stripHidden is on. */
+  const boilerplateFake = () =>
+    fakeScreenshotter({
+      renderHtml: async (url, opts) => ({
+        finalUrl: url,
+        html: BOILERPLATE_FIXTURE,
+        ...(opts?.stripHidden
+          ? { visibleHtml: BOILERPLATE_FIXTURE.replace(MOBILE_NAV_RE, ""), hiddenRemoved: 1 }
+          : {}),
+      }),
+    });
+
+  it("default ON: consent + hidden + repeated subtrees leave the Markdown, with loud counters", async () => {
+    setExternalScreenshotterForTests(async () => boilerplateFake());
+    clearPageInspectionCacheForTests();
+    const r = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/boilerplate` },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    // The counters line is ALWAYS present when cleanup ran — never silent.
+    expect(r.content).toContain(
+      "Boilerplate stripped: 1 consent block(s), 1 hidden subtree(s), 2 repeated block(s)",
+    );
+    expect(r.content).not.toContain("Manage Consent");
+    expect(r.content).not.toContain("MobileOnly");
+    expect(countOf(r.content, "Same testimonial repeated")).toBe(1);
+    expect(r.content).toContain("Unique closing paragraph.");
+  });
+
+  it("opt-out fidelity: stripBoilerplate:false reads the page verbatim and says cleanup is OFF", async () => {
+    setExternalScreenshotterForTests(async () => boilerplateFake());
+    clearPageInspectionCacheForTests();
+    const r = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/boilerplate`, facets: { markdown: true }, stripBoilerplate: false },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    // Opt-out is stated loudly too — the model must know it reads raw text.
+    expect(r.content).toContain("Boilerplate cleanup OFF (stripBoilerplate:false)");
+    expect(r.content).not.toContain("Boilerplate stripped:");
+    expect(r.content).toContain("Manage Consent");
+    expect(r.content).toContain("MobileOnly");
+    expect(countOf(r.content, "Same testimonial repeated")).toBe(3);
+  });
+
+  it("top-level stripBoilerplate does NOT disable the gist default (the resolveFacets trap)", async () => {
+    setExternalScreenshotterForTests(async () => boilerplateFake());
+    clearPageInspectionCacheForTests();
+    const r = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/boilerplate`, stripBoilerplate: false },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    // Were the flag nested in `facets`, resolveFacets would treat it as a
+    // requested facet and the meta+markdown default would vanish.
+    expect(r.content).toContain("Facets: meta, markdown");
+    expect(r.content).toContain("## Meta");
+    expect(r.content).toContain("## Page text (Markdown)");
+  });
+
+  it("caches STRIPPED markdown for read_page_more but the FULL DOM for query_page_html", async () => {
+    setExternalScreenshotterForTests(async () => boilerplateFake());
+    clearPageInspectionCacheForTests();
+    const first = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/boilerplate`, facets: { markdown: true } },
+      toolCtx,
+    );
+    const pageRef = /Page handle: (pg_\w+)/.exec(first.content ?? "")?.[1];
+    expect(pageRef).toBeDefined();
+    // Pagination reads the cleaned text…
+    const more = await readPageMoreTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, cursor: 0 },
+      toolCtx,
+    );
+    expect(more.ok).toBe(true);
+    expect(more.content).not.toContain("Manage Consent");
+    expect(more.content).not.toContain("MobileOnly");
+    expect(more.content).toContain("Unique closing paragraph.");
+    // …while structure queries still see everything that was stripped.
+    const consent = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, keyword: "Manage Consent" },
+      toolCtx,
+    );
+    expect(consent.ok).toBe(true);
+    expect(consent.content).toContain("Manage Consent");
+    const hidden = await queryPageHtmlTool.handler(
+      emptyCtx,
+      { pageRef: pageRef!, keyword: "MobileOnly" },
+      toolCtx,
+    );
+    expect(hidden.ok).toBe(true);
+    expect(hidden.content).toContain("MobileOnly");
+  });
+
+  it("static fallback: consent + dedup still strip; the hidden pass is skipped LOUDLY", async () => {
+    setExternalScreenshotterForTests(async () => null);
+    clearPageInspectionCacheForTests();
+    const r = await inspectExternalPageTool.handler(
+      emptyCtx,
+      { url: `${base}/boilerplate` },
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain("hidden-element pass skipped (page not rendered)");
+    expect(r.content).toContain("1 consent block(s)");
+    expect(r.content).toContain("2 repeated block(s)");
+    expect(r.content).toContain("## Note — page not rendered");
+    // Static path can still strip by markup: consent + carousel clones gone…
+    expect(r.content).not.toContain("Manage Consent");
+    expect(countOf(r.content, "Same testimonial repeated")).toBe(1);
+    // …but the hidden mobile nav needs layout knowledge and survives.
+    expect(r.content).toContain("MobileOnly");
   });
 });
 

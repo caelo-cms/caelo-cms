@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { extractModulesFromHtml, stripConsentNoise } from "./extractor.js";
+import { extractModulesFromHtml, stripConsentNoise, stripConsentSubtrees } from "./extractor.js";
 
 const CONSENT_DIV =
   '<div id="cmplz-cookiebanner-container"><div class="cmplz-cookiebanner"><h2>Manage Consent</h2><button>Accept</button><button>Deny</button></div></div>';
@@ -39,6 +39,21 @@ describe("stripConsentNoise", () => {
     const html =
       "<article><h1>Our cookie recipe</h1><p>Best cookies in town, with consent of grandma.</p></article>";
     expect(stripConsentNoise(html)).toBe(html);
+  });
+
+  it("stripConsentSubtrees reports the removed count (issue #415 — loud counters)", () => {
+    const html = `<p>keep</p>${CONSENT_DIV}<div class="cookie-notice">more noise</div>`;
+    const out = stripConsentSubtrees(html);
+    expect(out.removed).toBe(2);
+    expect(out.html).not.toContain("Manage Consent");
+    expect(out.html).not.toContain("more noise");
+    expect(out.html).toContain("keep");
+    // The plain-string form stays byte-identical to the counted form's html.
+    expect(stripConsentNoise(html)).toBe(out.html);
+    // No consent chrome → zero removed, html untouched.
+    const clean = stripConsentSubtrees("<article><p>Best cookies in town.</p></article>");
+    expect(clean.removed).toBe(0);
+    expect(clean.html).toBe("<article><p>Best cookies in town.</p></article>");
   });
 
   it("is applied by extractModulesFromHtml", () => {
