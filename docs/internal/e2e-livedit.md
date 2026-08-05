@@ -144,6 +144,42 @@ degrade gracefully. The pure parse + format logic lives in exported
 `parseAiCost` / `formatCostSection` / `buildReport` functions in
 `build-stats.ts`, unit-tested in `build-stats.test.ts`.
 
+## Input-token breakdown & threshold guards (issue #432)
+
+Every run's report attributes each scenario's input tokens instead of
+printing one opaque total. The pure parsing/aggregation core lives in
+`e2e-livedit/lib/metrics-core.ts` (shared by the harness and
+`lib/build-stats.ts` — one parser, so the two can no longer drift; the
+previous build-stats-local regex silently reported 0 loops once the log
+gained a `tokensCached` field). Sources, all already emitted by the
+chat-runner:
+
+- `[chat-runner] loop` — real per-call token splits + the per-call
+  `sentPrefixEstimate` (chars/4 history estimate → the per-loop `hist`
+  column and the per-loop growth line).
+- `[chat-runner] context-split` — one record per turn: system prompt /
+  tool catalogue / per-label context blocks / per-slug skill bodies /
+  history (chars/4 estimates, issue #300 part A).
+
+The per-scenario report (`metrics-report.txt`, `metrics.json`, the
+`[livedit-metrics]` console block, and the PR comment's *Input-token
+breakdown* table) shows: per-call static context (system + tool
+catalogue + blocks + skills), static × loops vs Σ history, history
+start→end growth per loop, and per-tool result tokens. Rule of thumb
+from the measured baseline: the tool catalogue dominates the static
+share (~48k of ~53k est per call), so **loop count is the input-token
+lever** — every extra loop re-bills the whole context.
+
+**Thresholds** (`THRESHOLDS` in `lib/metrics-core.ts`) gate the homepage
+scenario; the ceilings were re-derived 2026-08-05 from measured
+baselines (healthy first attempts ~1.0–1.65M input / 16–21 loops;
+stored-corruption repair spirals 2.18–2.66M / 27–33 — see the rationale
+comment at the constant and issue #432). Every scenario attempt's
+violations persist into `scenario-metrics.jsonl`, and global-teardown
+emits a GitHub `::warning` annotation per breached attempt **even when a
+Playwright retry passed** — a green check with annotations means "look
+at the metrics artifact", not "all clear".
+
 ## The 10× determinism recipe (post-merge gate, AC #15)
 
 Real-AI assertions need to pass consistently or they're flaky-by-design.
