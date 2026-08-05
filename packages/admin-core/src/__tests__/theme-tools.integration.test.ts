@@ -19,6 +19,7 @@ import { listDesignDraftsTool } from "../ai/tools/design-draft-tools.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { duplicateThemeTool } from "../ai/tools/duplicate-theme.js";
 import { exportThemeTool } from "../ai/tools/export-theme.js";
+import { findMediaTool } from "../ai/tools/find-media.js";
 import { getThemeTool } from "../ai/tools/get-theme.js";
 import { importThemeTool } from "../ai/tools/import-theme.js";
 import { listThemesTool } from "../ai/tools/list-themes.js";
@@ -41,6 +42,11 @@ const SYSTEM: ExecutionContext = {
 const DUP = "test-theme-dup";
 const toolCtx = () => ({ adapter, registry }) as ToolContext;
 
+// Issue #411 bind-from-find_media regression — sha-tagged so cleanup()
+// can scrub even after a failed mid-test run.
+const MEDIA_SHA = `0411f411${"a".repeat(56)}`;
+const MEDIA_NAME = "issue411-bind-regression.png";
+
 /** The design manifest is a site-singleton; capture it so afterAll restores it. */
 let originalManifest: unknown = null;
 
@@ -51,6 +57,8 @@ async function cleanup(): Promise<void> {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM theme_snapshots WHERE theme_id IN (SELECT id FROM themes WHERE slug LIKE 'test-theme-%')`;
       await tx`DELETE FROM themes WHERE slug LIKE 'test-theme-%'`;
+      await tx`DELETE FROM media_variants WHERE asset_id IN (SELECT id FROM media_assets WHERE sha256 = ${MEDIA_SHA})`;
+      await tx`DELETE FROM media_assets WHERE sha256 = ${MEDIA_SHA}`;
     });
   } finally {
     await sql.end();
@@ -152,6 +160,54 @@ describe("theme config tools", () => {
       toolCtx(),
     );
     expect(r.ok).toBe(true);
+  });
+
+  it("binds a theme slot with the id taken from a find_media row (issue #411)", async () => {
+    // The 2026-08-03 dogfood failure: the agent had imported the logo but
+    // find_media's TOON table dropped the id, so set_theme_asset could
+    // never be satisfied. The id must be readable from the tool's CONTENT
+    // string — the raw op value never reaches the model's transcript.
+    const up = await execute(registry, adapter, SYSTEM, "media.upload", {
+      sha256: MEDIA_SHA,
+      originalName: MEDIA_NAME,
+      mime: "image/png",
+      sizeBytes: 2048,
+      width: 512,
+      height: 512,
+      alt: "issue 411 bind regression",
+      storageKey: `${MEDIA_SHA}/orig.png`,
+      variants: [
+        {
+          variant: "orig",
+          format: "png",
+          width: 512,
+          height: 512,
+          sizeBytes: 2048,
+          storageKey: `${MEDIA_SHA}/orig.png`,
+        },
+      ],
+    });
+    expect(up.ok).toBe(true);
+    if (!up.ok) return;
+    const uploadedId = (up.value as { assetId: string }).assetId;
+
+    const found = await findMediaTool.handler(SYSTEM, { filter: MEDIA_NAME }, toolCtx());
+    expect(found.ok).toBe(true);
+    // TOON header declares the id column; the row's first cell is the UUID.
+    const [header = "", ...rows] = found.content.split("\n");
+    expect(header).toContain("{id,");
+    const row = rows.find((l) => l.includes(MEDIA_NAME));
+    expect(row).toBeDefined();
+    const modelVisibleId = (row ?? "").trim().split(",")[0] ?? "";
+    expect(modelVisibleId).toBe(uploadedId);
+
+    const bound = await setThemeAssetTool.handler(
+      SYSTEM,
+      { themeSlug: DUP, slot: "logo", mediaId: modelVisibleId },
+      toolCtx(),
+    );
+    expect(bound.ok).toBe(true);
+    expect(bound.content).toContain(modelVisibleId);
   });
 
   it("set_design_manifest writes the site design language", async () => {

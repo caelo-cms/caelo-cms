@@ -731,11 +731,11 @@ export const reorderModuleToolInput = z
 
 /**
  * P7 — `find_media`. Searches the media library by alt-text /
- * filename / mime. Returns up to `limit` matches with the WebP-800
- * URL pre-resolved (or `orig` for non-image kinds). The system prompt
- * already lists recent + frequently-used media; this tool covers the
- * "search for an image of a sunlit office" case where the asset isn't
- * in the recent slice.
+ * filename / mime. Each row carries the media UUID (what
+ * `set_theme_asset` / `set_media_alt` require) plus a pre-resolved
+ * variant URL. The AI's only media-inventory surface — the `## Media`
+ * system-prompt block was removed by the context diet (#300), so every
+ * asset lookup ("an image of a sunlit office") goes through this tool.
  */
 export const findMediaToolInput = z
   .object({

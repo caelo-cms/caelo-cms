@@ -29,10 +29,10 @@ export const setThemeAssetTool: ToolDefinitionWithHandler<SetThemeAssetToolInput
   name: "set_theme_asset",
   description:
     "Bind one of the theme's brand assets (logo / logoDark / favicon / socialShare) to an " +
-    "uploaded media row. Pass `mediaId: null` to clear a slot. The mediaId must reference a " +
-    "row in `media_assets` — upload via /api/media/upload first if needed (search existing " +
-    "uploads with `find_media`). Targets the active theme by default; pass `themeSlug` to " +
-    "bind on a specific theme.",
+    "uploaded media row. Pass `mediaId: null` to clear a slot. The mediaId is the media UUID " +
+    "from a `find_media` row's `id` column, an `import_media_from_urls` result line, or a " +
+    "`generate_image` result — never a slug or URL, and never invented. Targets the active " +
+    "theme by default; pass `themeSlug` to bind on a specific theme.",
   schema: setThemeAssetToolInput,
   inputSchema: {
     type: "object",

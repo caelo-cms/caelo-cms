@@ -37,11 +37,12 @@ export function variantFamily(variant: string): string {
  * Pick the variant tag AI-facing surfaces should hand out for an
  * asset, given the variant tags that ACTUALLY exist on it.
  *
- * Run #10 D4: `find_media` and the `## Media` system-prompt block
- * advertised `webp-800` for every raster mime, but the pipeline never
- * emits `webp-800` for sources narrower than 800px (no upscaling) or
- * for animated GIFs — the AI wrote those URLs into module HTML and the
- * static generator's media pass failed the whole staging build on
+ * Run #10 D4: `find_media` (and the since-removed `## Media`
+ * system-prompt block) advertised `webp-800` for every raster mime, but
+ * the pipeline never emits `webp-800` for sources narrower than 800px
+ * (no upscaling) or for animated GIFs — the AI wrote those URLs into
+ * module HTML and the static generator's media pass failed the whole
+ * staging build on
  * "asset/variant pairs missing". Advertising must be grounded in the
  * `media_variants` rows, not in the mime.
  *
