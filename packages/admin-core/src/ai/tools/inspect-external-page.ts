@@ -53,7 +53,11 @@ import {
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { discoverAssetRefs } from "../../media/import-asset-urls.js";
-import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
+import {
+  describeFetchBudgetDenied,
+  externalFetchAllowedHosts,
+  takeExternalFetchBudget,
+} from "./_external-fetch-budget.js";
 import { getExternalScreenshotter } from "./_external-screenshotter.js";
 import { putPageInspection, sliceMarkdown } from "./_page-inspection-cache.js";
 import type { ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
@@ -339,8 +343,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     if (!budget.ok) {
       return {
         ok: false,
-        content:
-          "External-fetch budget exhausted for this session (12 per 10 minutes). This tool is for a one-page glance — if you need many pages, propose the crawl via `propose_site_import` instead.",
+        content: `${describeFetchBudgetDenied(budget)} This tool is for a one-page glance — if you need many pages, propose the crawl via \`propose_site_import\` instead.`,
       };
     }
     const f = resolveFacets(toolInput.facets);
