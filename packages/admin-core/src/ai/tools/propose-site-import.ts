@@ -37,6 +37,10 @@ import {
   ESTIMATE_CEILING_SAFETY_FACTOR,
   formatMicrocentsAsMoney,
 } from "../../ops/imports-cost.js";
+import {
+  importCrawlScopeSchema,
+  refineCrawlScopeAgainstSourceUrl,
+} from "../../ops/imports-crawl-scope.js";
 import { estimateImportAiCost, type ImportModelRates } from "../import-cost-model.js";
 import { describeError } from "./_describe-error.js";
 import { externalFetchAllowedHosts } from "./_external-fetch-budget.js";
@@ -55,6 +59,8 @@ const proposeSiteImportInput = z
     /** issue #229 — LIST mode: fetch EXACTLY these absolute URLs (no BFS,
      *  no depth). Mutually exclusive with depth/maxPages. */
     urls: z.array(z.string().url()).min(1).max(LIST_MODE_MAX_URLS).optional(),
+    /** issue #425 — language/section scope; valid in both modes. */
+    scope: importCrawlScopeSchema.optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -66,6 +72,7 @@ const proposeSiteImportInput = z
         path: ["urls"],
       });
     }
+    refineCrawlScopeAgainstSourceUrl(v, ctx);
   });
 
 export type ProposeSiteImportInput = z.infer<typeof proposeSiteImportInput>;
@@ -185,8 +192,9 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
     "This QUEUES the proposal; the chat renders it as a card with an APPROVE button — tell the " +
     "operator to click Approve right there (the /security/import/pending page works too). The " +
     "crawler only runs after that click. DO NOT claim the crawl ran. After approval you receive " +
-    "an automatic 'Approved' message; the crawl runs in the BACKGROUND — check `imports.get` for " +
-    "status, and if it is still 'crawling', say so and continue when it is ready_for_review. " +
+    "an automatic 'Approved' message; the crawl runs in the BACKGROUND — check `list_import_pages({runId})` for " +
+    "status, and if it is still 'crawling', say so and continue when it is ready_for_review (it also " +
+    "lists every crawled page's importPageId for the rebuild). " +
     "Use this when the user asks to bring an existing site into Caelo. " +
     "TWO MODES — pick one, never both:\n" +
     "• LIST mode — pass `urls` (array of absolute URL strings): the crawl fetches EXACTLY those " +
@@ -201,6 +209,13 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
     "do NOT yet know the specific pages and want to discover the site from its root. Do NOT set " +
     "`urls` in this mode.\n" +
     "`sourceUrl` is ALWAYS required (origin + robots.txt scoping + run identity), in both modes. " +
+    "SCOPE (issue #425): when the operator migrates ONE language or section of a larger site " +
+    '(“migrate the German site”, “only /docs/”), ALWAYS pass `scope`: `pathPrefix` (e.g. "/de/") ' +
+    "confines the crawl to that path — out-of-scope URLs are reported as skipped, never crawled — " +
+    'and `locale` (e.g. "de") adds hreflang awareness: a page whose markup names a different URL ' +
+    "as the locale's version is skipped and that alternate crawled instead, so samples land in the " +
+    "operator's language even when the language has no path prefix. With a pathPrefix scope, " +
+    "`sourceUrl` must live inside the prefix (crawl the scope root, e.g. https://site.com/de/). " +
     "The tool returns a page-count + cost estimate: RESTATE the scope, duration, and cost band in " +
     "your chat message BEFORE pointing at the Approve button — the operator decides with numbers, " +
     "not vibes.",
@@ -220,6 +235,24 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
         maxItems: LIST_MODE_MAX_URLS,
         description:
           "LIST mode: absolute URLs to fetch EXACTLY (no BFS). Mutually exclusive with depth/maxPages.",
+      },
+      scope: {
+        type: "object",
+        additionalProperties: false,
+        description:
+          "issue #425 — language/section scope; set it whenever the operator migrates one language/section of a larger site. At least one of pathPrefix/locale.",
+        properties: {
+          pathPrefix: {
+            type: "string",
+            description:
+              'URL path prefix in-scope pages live under, e.g. "/de/". Out-of-scope URLs are skipped, never crawled; sourceUrl must live inside it.',
+          },
+          locale: {
+            type: "string",
+            description:
+              'Source-site language code, e.g. "de" — hreflang alternates bridge wrong-language samples to this locale\'s version.',
+          },
+        },
       },
     },
   },
@@ -252,13 +285,23 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
       return { ok: false, content: `propose_site_import failed: ${describeError(r.error)}` };
     }
     const v = r.value as { runId: string };
-    const scope = listMode
+    const mode = listMode
       ? `list mode: ${input.urls?.length} specific page${input.urls?.length === 1 ? "" : "s"}`
       : `depth=${input.depth ?? 2}, max=${input.maxPages ?? 50}`;
+    // issue #425 — the queued summary names the scope so the operator
+    // approves a SCOPED crawl knowingly.
+    const scopeNote = input.scope
+      ? ` Scoped to ${[
+          input.scope.pathPrefix !== undefined ? `path ${input.scope.pathPrefix}` : null,
+          input.scope.locale !== undefined ? `locale ${input.scope.locale}` : null,
+        ]
+          .filter((s) => s !== null)
+          .join(" + ")}; out-of-scope URLs will be skipped and reported.`
+      : "";
     return {
       ok: true,
       // v0.5.11 — canonical shape so ProposeCard renders inline approve.
-      content: `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (${scope}). ${describeEstimate(estimate)} Approve it on the proposal card in this chat (queue: /security/import/pending).`,
+      content: `Queued proposal ${v.runId}: site-import ${input.sourceUrl} (${mode}).${scopeNote} ${describeEstimate(estimate)} Approve it on the proposal card in this chat (queue: /security/import/pending).`,
     };
   },
 };

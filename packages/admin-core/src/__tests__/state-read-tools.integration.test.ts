@@ -15,7 +15,6 @@ import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import {
-  getDesignManifestTool,
   getSiteDefaultsTool,
   listAiProvidersTool,
   listDomainsTool,
@@ -52,7 +51,6 @@ afterAll(async () => {
 describe("state read endpoints — every chunk has a live read", () => {
   const tools = [
     getSiteDefaultsTool,
-    getDesignManifestTool,
     listPendingProposalsTool,
     listUsersTool,
     listRolesTool,

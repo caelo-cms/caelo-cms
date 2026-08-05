@@ -96,7 +96,11 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
           // issue #106 — shared field schema (single source of truth).
           fields: MODULE_FIELDS_JSON_SCHEMA,
-          bindThemeLiterals: { type: "boolean" },
+          bindThemeLiterals: {
+            type: "boolean",
+            description:
+              "Rewrite CSS literals that equal a theme token value into var(--…). DEFAULT true — omit it. Pass false only to keep a deliberate off-palette literal.",
+          },
           content: {
             description:
               "The placement's content. Omit for an empty private instance. " +
@@ -169,13 +173,13 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     // biome-ignore lint/style/noNonNullAssertion: gateResult is always set when gate.blocked is true
     if (gate.blocked) return gate.gateResult!;
 
-    // issue #164 slice 2 — opt-in mechanical token binding, applied at
-    // the tool layer (same as add_module_to_page) so the op receives
-    // the bound CSS.
+    // issue #164 slice 2 — mechanical token binding, applied at the tool
+    // layer (same as add_module_to_page) so the op receives the bound CSS.
+    // issue #430 — on by default; pass `false` per module to keep a literal.
     const bindingReports: string[] = [];
     const modules = [...input.modules];
     for (const [i, m] of modules.entries()) {
-      if (m.bindThemeLiterals === true && m.css !== undefined && m.css.length > 0) {
+      if (m.bindThemeLiterals !== false && m.css !== undefined && m.css.length > 0) {
         const bound = await bindCssToTheme(ctx, toolCtx, m.css);
         modules[i] = { ...m, css: bound.css };
         if (bound.report.length > 0) bindingReports.push(`modules[${i}]:${bound.report}`);

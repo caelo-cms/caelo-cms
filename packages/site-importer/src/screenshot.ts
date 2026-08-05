@@ -24,14 +24,15 @@
 import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import { COLLECT_STYLE_SAMPLES_SCRIPT, type ElementStyleSample } from "./design-tokens.js";
+import { REMOVE_HIDDEN_ELEMENTS_SCRIPT } from "./hidden-elements.js";
 import { assertPublicHttpUrl, isPublicIpAddress } from "./safe-fetch.js";
 
 /** Minimal Playwright route surface — typed locally so the package
  * doesn't need @types/playwright (Playwright stays a dynamic import). */
 interface PlaywrightRoute {
-  request(): { url(): string };
+  request(): { url(): string; headers(): Record<string, string> };
   abort(errorCode?: string): Promise<void>;
-  continue(): Promise<void>;
+  continue(opts?: { headers?: Record<string, string> }): Promise<void>;
 }
 
 export interface Screenshot {
@@ -42,6 +43,11 @@ export interface Screenshot {
   /** The URL after redirects (`page.url()`), so callers report where they
    *  actually landed. */
   readonly finalUrl?: string;
+  /** HTTP status of the navigation response, when the browser exposed one.
+   *  issue #412 — the branch-preview screenshot service refuses to present
+   *  a 401/404 error page as "the page", so it needs the status alongside
+   *  the pixels. Undefined for non-HTTP navigations (about:blank etc.). */
+  readonly finalStatus?: number;
   /** issue #247 — raw computed-style samples collected in the SAME
    *  render session, present only when `sampleStyles: true` was
    *  requested. Feed into `deriveDesignTokens`. */
@@ -51,6 +57,20 @@ export interface Screenshot {
    *  pageRef cache hold the rendered DOM so query_page_html's selectors run
    *  against it instead of the static fetched HTML. */
   readonly renderedHtml?: string;
+  /** issue #415 — the rendered DOM AFTER the hidden-element pass removed
+   *  invisible subtrees (mobile-nav clones, offscreen carousel slides,
+   *  aria-hidden chrome). Present only when `stripHidden: true` was
+   *  requested with `captureHtml`; `renderedHtml` above stays unstripped. */
+  readonly visibleHtml?: string;
+  /** Number of hidden subtrees the pass removed — callers MUST surface it
+   *  (CLAUDE.md §2). Present exactly when `visibleHtml` is. */
+  readonly hiddenRemoved?: number;
+  /** issue #423 — `Content-Type` from the navigation response, so callers
+   *  using `capture` as their PRIMARY fetch (the crawl's capture-first
+   *  path) can gate non-HTML the same way `renderHtml` does. Undefined
+   *  when the response exposed no headers (callers treat that as HTML,
+   *  matching `fetchRenderedHtml`). */
+  readonly contentType?: string;
 }
 
 /**
@@ -70,6 +90,12 @@ export interface RenderedHtml {
   readonly contentType?: string;
   /** Computed-style samples from the same render, when `sampleStyles: true`. */
   readonly styleSamples?: readonly ElementStyleSample[];
+  /** issue #415 — the DOM AFTER the hidden-element pass, when
+   *  `stripHidden: true`; `html` above stays the full unstripped DOM. */
+  readonly visibleHtml?: string;
+  /** Removed-subtree count of the hidden-element pass — present exactly
+   *  when `visibleHtml` is; callers MUST surface it (CLAUDE.md §2). */
+  readonly hiddenRemoved?: number;
 }
 
 export interface Screenshotter {
@@ -102,6 +128,24 @@ export interface Screenshotter {
       /** Also return `page.content()` (the rendered JS-applied HTML) in the
        *  same render session, as `renderedHtml`. */
       captureHtml?: boolean;
+      /** issue #415 — additionally run the hidden-element removal pass
+       *  AFTER `renderedHtml` was read and return the visible-only DOM as
+       *  `visibleHtml` (+ `hiddenRemoved`). Only meaningful together with
+       *  `captureHtml`. */
+      stripHidden?: boolean;
+      /** issue #412 — capture ONLY the first element matching this CSS
+       *  selector instead of the page. Fails loudly when nothing matches
+       *  (a silent full-page capture would misrepresent the crop). */
+      selector?: string;
+      /** issue #412 — headers sent ONLY with requests to the navigation
+       *  URL's own origin (navigation + same-origin subresources), never to
+       *  third-party hosts. The branch-preview service rides its short-lived
+       *  signed token here so the admin's asset routes (`/_caelo/media`,
+       *  `/_caelo/fonts`) authorize without a session; a page embedding an
+       *  external font/image/script must not receive the credential (PR #427
+       *  security-review finding — a context-wide extraHTTPHeaders would
+       *  leak it to every embedded CDN host). */
+      sameOriginHeaders?: Record<string, string>;
     },
   ): Promise<Screenshot>;
   /**
@@ -112,7 +156,15 @@ export interface Screenshotter {
    */
   renderHtml(
     url: string,
-    opts?: { width?: number; height?: number; external?: boolean; sampleStyles?: boolean },
+    opts?: {
+      width?: number;
+      height?: number;
+      external?: boolean;
+      sampleStyles?: boolean;
+      /** issue #415 — also run the hidden-element removal pass after the
+       *  full DOM was read; returns `visibleHtml` + `hiddenRemoved`. */
+      stripHidden?: boolean;
+    },
   ): Promise<RenderedHtml>;
   /**
    * Run a css/xpath selector against an HTML STRING (via `setContent` — no
@@ -125,6 +177,28 @@ export interface Screenshotter {
     opts: { cssSelector?: string; xpath?: string; maxMatches?: number },
   ): Promise<string[]>;
   dispose(): Promise<void>;
+}
+
+/**
+ * issue #412 / PR #427 security review — decide whether a request may carry
+ * the caller's `sameOriginHeaders` credential: returns the merged header
+ * object ONLY when `requestUrl` targets `selfOrigin`, null otherwise
+ * (cross-origin request, unparseable URL). Pure + exported so the
+ * "credential never leaves the origin" invariant is unit-testable without
+ * launching a browser.
+ */
+export function sameOriginHeaderPatch(
+  requestUrl: string,
+  selfOrigin: string,
+  existingHeaders: Record<string, string>,
+  headers: Record<string, string>,
+): Record<string, string> | null {
+  try {
+    if (new URL(requestUrl).origin !== selfOrigin) return null;
+  } catch {
+    return null;
+  }
+  return { ...existingHeaders, ...headers };
 }
 
 /**
@@ -181,7 +255,12 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
    */
   async function withGuardedPage<T>(
     url: string,
-    opts: { external?: boolean; width?: number; height?: number },
+    opts: {
+      external?: boolean;
+      width?: number;
+      height?: number;
+      sameOriginHeaders?: Record<string, string>;
+    },
     // biome-ignore lint/suspicious/noExplicitAny: Playwright page + response handles (dynamic import, no @types)
     fn: (page: any, gotoResponse: any) => Promise<T>,
   ): Promise<T> {
@@ -193,6 +272,25 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     const ctx = await browser.newContext({
       viewport: { width: opts.width ?? 1280, height: opts.height ?? 800 },
     });
+    if (opts.sameOriginHeaders) {
+      // Deliberately NOT `newContext({ extraHTTPHeaders })`: that would send
+      // the caller's credential (the preview capture token) to EVERY host the
+      // page embeds — external fonts, CDN images, analytics. Route-inject the
+      // headers only when the request targets the navigation URL's origin.
+      // Never combined with the `external` route guard below: only Caelo's
+      // own-origin captures (`external: false`) pass sameOriginHeaders.
+      const selfOrigin = new URL(url).origin;
+      const headers = opts.sameOriginHeaders;
+      await ctx.route("**/*", async (route: PlaywrightRoute) => {
+        const patched = sameOriginHeaderPatch(
+          route.request().url(),
+          selfOrigin,
+          route.request().headers(),
+          headers,
+        );
+        await route.continue(patched ? { headers: patched } : undefined);
+      });
+    }
     if (opts.external) {
       // Guard every request the page makes (navigation + subresources).
       // Hostnames are resolved at route time; the browser resolves again to
@@ -241,13 +339,43 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     }
   }
 
+  /** Content-type from the navigation response so callers can gate
+   *  non-HTML (a PDF/image renders in a viewer, not usable HTML). Shared
+   *  by `capture` and `renderHtml`; best-effort — undefined means the
+   *  response exposed no headers. */
+  // biome-ignore lint/suspicious/noExplicitAny: Playwright response handle (dynamic import, no @types)
+  async function contentTypeOf(gotoResponse: any): Promise<string | undefined> {
+    try {
+      const headers = (await gotoResponse?.headers?.()) as Record<string, string> | undefined;
+      return headers?.["content-type"];
+    } catch {
+      return undefined;
+    }
+  }
+
   return {
     async capture(url, opts) {
       return withGuardedPage(
         url,
-        { external: opts?.external, width: opts?.width, height: opts?.height },
-        async (page) => {
-          const png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
+        {
+          external: opts?.external,
+          width: opts?.width,
+          height: opts?.height,
+          ...(opts?.sameOriginHeaders ? { sameOriginHeaders: opts.sameOriginHeaders } : {}),
+        },
+        async (page, gotoResponse) => {
+          let png: Uint8Array;
+          if (opts?.selector) {
+            const loc = page.locator(opts.selector).first();
+            if ((await loc.count()) === 0) {
+              // Loud, not a silent full-page fallback — the caller asked for
+              // a crop and must not get "the whole page" labelled as one.
+              throw new Error(`selector matched no element: ${opts.selector}`);
+            }
+            png = await loc.screenshot({ type: "png", timeout: 10_000 });
+          } else {
+            png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
+          }
           // issue #247 — sample AFTER the screenshot so the pixels are
           // captured even if the evaluate throws mid-flight; the throw still
           // fails this capture attempt (loud, retried upstream).
@@ -262,13 +390,35 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           const renderedHtml: string | undefined = opts?.captureHtml
             ? ((await page.content()) as string)
             : undefined;
+          // issue #412 — navigation HTTP status alongside #434's content-type:
+          // the preview capture service refuses to present an error page as
+          // "the page", so it needs the status with the pixels.
+          const finalStatus =
+            typeof gotoResponse?.status === "function"
+              ? (gotoResponse.status() as number)
+              : undefined;
+          // issue #415 — the hidden-element pass runs IN the page (only the
+          // browser knows layout/visibility) and MUTATES the DOM, so it goes
+          // last: pixels, styles, and the full `renderedHtml` above are all
+          // read first, keeping the unstripped DOM for query_page_html.
+          let visibleHtml: string | undefined;
+          let hiddenRemoved: number | undefined;
+          if (opts?.captureHtml && opts?.stripHidden) {
+            hiddenRemoved = (await page.evaluate(REMOVE_HIDDEN_ELEMENTS_SCRIPT)) as number;
+            visibleHtml = (await page.content()) as string;
+          }
+          const contentType = await contentTypeOf(gotoResponse);
           return {
             bytes: new Uint8Array(png),
             width: opts?.width ?? 1280,
             height: opts?.height ?? 800,
             finalUrl: page.url() as string,
+            ...(finalStatus !== undefined ? { finalStatus } : {}),
             ...(styleSamples ? { styleSamples } : {}),
             ...(renderedHtml !== undefined ? { renderedHtml } : {}),
+            ...(visibleHtml !== undefined ? { visibleHtml } : {}),
+            ...(hiddenRemoved !== undefined ? { hiddenRemoved } : {}),
+            ...(contentType !== undefined ? { contentType } : {}),
           };
         },
       );
@@ -285,6 +435,14 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             )) as ElementStyleSample[];
           }
           const html = (await page.content()) as string;
+          // issue #415 — hidden-element pass AFTER the full DOM read (it
+          // mutates the page); see the matching block in `capture`.
+          let visibleHtml: string | undefined;
+          let hiddenRemoved: number | undefined;
+          if (opts?.stripHidden) {
+            hiddenRemoved = (await page.evaluate(REMOVE_HIDDEN_ELEMENTS_SCRIPT)) as number;
+            visibleHtml = (await page.content()) as string;
+          }
           // Content-type from the navigation response so callers can gate
           // non-HTML (a PDF/image renders in a viewer, not usable HTML).
           let contentType: string | undefined;
@@ -299,6 +457,8 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             html,
             ...(contentType !== undefined ? { contentType } : {}),
             ...(styleSamples ? { styleSamples } : {}),
+            ...(visibleHtml !== undefined ? { visibleHtml } : {}),
+            ...(hiddenRemoved !== undefined ? { hiddenRemoved } : {}),
           };
         },
       );

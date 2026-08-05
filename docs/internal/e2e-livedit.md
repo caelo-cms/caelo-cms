@@ -82,6 +82,8 @@ Artifacts land under `apps/admin/test-results/livedit/`:
 - `playwright-report/index.html` — Playwright's HTML report with the
   trace viewer.
 - `*-failed-*.png` — screenshots from any failed step.
+- `bug-reports.json` — every `ai_bug_reports` row filed during the run.
+  Worth reading even on a green run; see *AI-detected bugs per run* below.
 
 In CI those same files upload as the
 `e2e-livedit-artifacts-${run_id}-${attempt}` artifact, plus per-table
@@ -143,6 +145,117 @@ psql dump), the cost section is silently omitted — older/DB-only runs
 degrade gracefully. The pure parse + format logic lives in exported
 `parseAiCost` / `formatCostSection` / `buildReport` functions in
 `build-stats.ts`, unit-tested in `build-stats.test.ts`.
+
+## Input-token breakdown & threshold guards (issue #432)
+
+Every run's report attributes each scenario's input tokens instead of
+printing one opaque total. The pure parsing/aggregation core lives in
+`e2e-livedit/lib/metrics-core.ts` (shared by the harness and
+`lib/build-stats.ts` — one parser, so the two can no longer drift; the
+previous build-stats-local regex silently reported 0 loops once the log
+gained a `tokensCached` field). Sources, all already emitted by the
+chat-runner:
+
+- `[chat-runner] loop` — real per-call token splits + the per-call
+  `sentPrefixEstimate` (chars/4 history estimate → the per-loop `hist`
+  column and the per-loop growth line).
+- `[chat-runner] context-split` — one record per turn: system prompt /
+  tool catalogue / per-label context blocks / per-slug skill bodies /
+  history (chars/4 estimates, issue #300 part A).
+
+The per-scenario report (`metrics-report.txt`, `metrics.json`, the
+`[livedit-metrics]` console block, and the PR comment's *Input-token
+breakdown* table) shows: per-call static context (system + tool
+catalogue + blocks + skills), static × loops vs Σ history, history
+start→end growth per loop, and per-tool result tokens. Rule of thumb
+from the measured baseline: the tool catalogue dominates the static
+share (~48k of ~53k est per call), so **loop count is the input-token
+lever** — every extra loop re-bills the whole context.
+
+**Thresholds** (`THRESHOLDS` in `lib/metrics-core.ts`) gate the homepage
+scenario; the ceilings were re-derived 2026-08-05 from measured
+baselines (healthy first attempts ~1.0–1.65M input / 16–21 loops;
+stored-corruption repair spirals 2.18–2.66M / 27–33 — see the rationale
+comment at the constant and issue #432). Every scenario attempt's
+violations persist into `scenario-metrics.jsonl`, and global-teardown
+emits a GitHub `::warning` annotation per breached attempt **even when a
+Playwright retry passed** — a green check with annotations means "look
+at the metrics artifact", not "all clear".
+
+## AI-detected bugs per run (defect metric)
+
+The pass/fail verdict cannot see the failure mode that matters most here:
+**a green run in which the AI routed *around* a defect instead of failing
+on it.** Caelo's internal defect channel — the `ai_bug_reports` table —
+records exactly that, from three writers:
+
+| `source` | Written by | Severity |
+| --- | --- | --- |
+| `ai` | the model calling the `bug_report` tool when it diagnoses a defect mid-task | model-chosen |
+| `auto` | the chat-runner auto-capturing a failed tool result after auto-recovery gives up (`tool-dispatch.ts`) | `degraded` |
+| `auto` | a turn-fatal provider error, with a replayed-history digest flagging `!UNANSWERED` / `!ORPHAN` tool pairs (`provider-error-report.ts`) | `blocking` |
+
+The `Capture AI-detected bugs from ai_bug_reports` step runs
+`if: always()` and dumps every row to
+`apps/admin/test-results/livedit/bug-reports.json`. Same two properties as
+the cost capture above: no date filter (the CI DB is fresh per job, so
+every row belongs to the run) and `SET caelo.actor_kind='system'` in the
+same session (RLS is `FORCE`d behind that GUC). `evidence` is dumped
+untruncated so the artifact is complete; the PR comment truncates its own
+copy. Rows are **not** ordered in SQL — sorting lives in
+`formatBugSection` where it is unit-testable.
+
+Locally, `global-setup.ts` wipes `ai_bug_reports` once at suite start, which
+gives a repeated local run the same "every row is this run's" property CI
+gets for free. It is deliberately **not** in `resetLiveditFixtures()` —
+that helper runs per scenario, so wiping there would leave the run-level
+report showing only the last scenario.
+
+The metric surfaces the same three ways as cost:
+
+1. **Sticky PR comment** — a `### Detected bugs (N)` section after the
+   per-scenario results (it qualifies that verdict), with a
+   `Sev | Source | Title | Tool | Blocked` table sorted blocking-first then
+   by source, plus a collapsed `Bug details` block carrying
+   what-happened / expected / evidence per row. Capped at 50 rows to stay
+   under GitHub's 65k comment limit; when it caps it says so and points at
+   the artifact.
+2. **Run summary + annotations** — a greppable
+   `e2e-livedit-bugs total=… blocking=… degraded=… cosmetic=… ai=… auto=…
+   sha=…` line in `$GITHUB_STEP_SUMMARY`, a `::notice`, and a `::warning`
+   when any `blocking` row was filed.
+3. **Durable artifact** — `bug-reports.json` uploads `if: always()` as
+   `e2e-livedit-bugs-<run_id>` with 90-day retention. Kept separate from
+   `e2e-livedit-cost-<run_id>` so that artifact name stays stable for
+   anything already scraping it.
+
+**Informational, not gating.** No count fails the job today — the suite's
+pass/fail stays driven purely by the Playwright assertions. Making
+`blocking` rows (or `blocked_task = true`) fail the run is the intended
+follow-up once the signal has stayed clean across a few runs.
+
+`{}` vs `[]` is load-bearing: the workflow writes the `{}` sentinel when
+the psql capture fails, which `parseBugReports` reads as "no data" and
+omits the section entirely, while a real `[]` renders an explicit
+`Detected bugs (0)` zero-state. A broken capture must never be
+indistinguishable from a clean run.
+
+**Escaping.** Report text is AI- and tool-derived, so it is treated as
+untrusted when spliced into the comment: inline positions (table cells,
+bullets) go through `inline()`, which HTML-entity-encodes `&` then `<` then
+`|` — in that order, because `&` is the escape character and the pipe's
+replacement introduces a new one. Backslash escaping was tried first and
+was flagged by CodeQL (`js/incomplete-sanitization`) for exactly the
+second-order case entities avoid. The evidence code fence derives its width
+from the body (`fenceFor`) rather than using a fixed four backticks, since
+evidence legitimately contains fences and CommonMark would let one close
+the block and inject free markdown into the comment.
+
+The pure logic lives in exported `parseBugReports` / `formatBugSection` in
+`build-stats.ts`, unit-tested in `build-stats.test.ts`.
+
+Operators can browse the same rows against a live DB at `/security/bugs`,
+which also exports them as Markdown for pasting into a GitHub issue.
 
 ## The 10× determinism recipe (post-merge gate, AC #15)
 
@@ -227,7 +340,7 @@ content-shape rather than literal strings the AI wrote.
 | Same `page_modules` keys before/after re-edit | Re-edit didn't churn placements (add/delete/reorder). |
 | ≥1 `page_module_content.updated_at` advanced, <total | Edit landed on one content row, not all. |
 | `transcript-failure-count == 0` after a footer-nav prompt (`scenario-ai-layout-footer`) | issue #106: `add_module_to_layout` was emitted, not narrated-then-dropped — the field-schema enum gap that made `link-list` unrepresentable is closed. |
-| `layout_modules` row in the `footer` block whose nav is a `link-list` field OR inline `<a>` tags carrying the labels (`scenario-ai-layout-footer`) | issue #106 / §1A: the footer nav is present + structured, not numbered `label1`/`label2` scalars. Accepts either the §1A-ideal link-list field or inline anchors — both valid for a fixed nav — so the live-AI assertion stays robust to the model's stylistic choice. The schema's link-list *capability* is pinned deterministically in `module-fields-schema.test.ts`. |
+| `layout_modules` row in the `footer` block whose nav is a `link-list` field OR inline `<a>` tags carrying the labels (`scenario-ai-layout-footer`) | issue #106 / §1A: the footer nav is present + structured, not numbered `label1`/`label2` scalars. Accepts either the §1A-ideal link-list field or inline anchors — both valid for a fixed nav — so the live-AI assertion stays robust to the model's stylistic choice. The schema's link-list *capability* is pinned deterministically in `module-fields-schema.test.ts`. Re-ratified for issue #414: a link-list nav on the chrome module is the INTENDED outcome today, not a defensive fallback — the `nav-menu` structured-set binding (module slug `nav-menu-<set-slug>`) is unreachable for the AI (minted slugs carry a generated suffix), so this row deliberately does NOT require the set. Revisit once #414's binding-mechanism decision lands. |
 | Active theme is non-seed, described, and `color.primary` is chromatic — hex RGB-spread > 24 or oklch chroma > 0.03, never a seed grayscale value (`scenario-homepage`) | issue #112 / §1A: "preset-menu grayscale ship" — PR #107 run 26767610953 published a fully grayscale site because the AI satisfied the cold-start gate by minting the `shadcn-default` preset and stopping. With presets removed, the AI must compose a brand-derived `ThemeDocument` itself; this row fails if the gate criterion (origin + description) or the compose guidance regresses. Scenario-safe: the prompt names a SaaS/dev-tools brand AND states the design intent explicitly ("fitting color scheme", "nice background for the header") — run 27357551606 proved intent-free prompts let the AI clear the gate while leaving the seed grayscale primary untouched, so a chromatic primary is the only correct outcome here. |
 | Composed palette carries at least two DISTINCT chromatic colors; gradient / surface-alt / web-font presence logged as `[design-report]` warnings (`scenario-homepage`) | issue #161 / epic #149: flat single-hue documents were the post-#112 ceiling — #153's palette-pair hints + DEPTH_AND_SURFACE_HINTS instruct primary + accent. The two-chromatic floor is deterministic under those primers; the richer checks (gradient, surface-alt, non-system typography) start as non-blocking warnings and get promoted to hard assertions once 10x determinism runs show they hold. |
 | Genesis: a brief-rich prompt saves >=2 drafts with distinct directions AND non-identical skeletons; /design/genesis lists them in sandboxed iframes; one click yields exactly one `selected` row (`scenario-genesis`, OPT-IN via `CAELO_LIVEDIT_GENESIS=1`) | issue #163 / epic #149 AC #1: the design-time flow must DIVERGE (parallel freeform drafts), not emit palette-swapped clones of one skeleton, and the operator's selection is the single design contract downstream (#164 parity gate). Opt-in because a Genesis turn spawns three parallel full-page generations — nightly/on-demand cost, not per-PR (CLAUDE.md 6: live tests are gated, opt-in). |

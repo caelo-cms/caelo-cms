@@ -32,6 +32,7 @@ import { loadMemory } from "../../ai/chat-runner/persistence.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
+import { annotateExcludedToolMentions } from "./mcp_power_prose.js";
 import {
   getMcpBridge,
   type McpTokenScope,
@@ -53,10 +54,6 @@ export const POWER_MCP_EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
   [
     "spawn_subagents",
     "subagents need the chat-runner loop; your own agent runtime provides parallelism instead",
-  ],
-  [
-    "screenshot_page",
-    "needs the operator's browser via the SSE stream; use inspect_built_page / inspect_page_render, or screenshot the public URL yourself",
   ],
   ["offer_choices", "renders chat-UI choice chips; ask your own operator directly"],
   ["submit_result", "subagent-only structured result channel"],
@@ -87,6 +84,12 @@ const toolCatalogueEntry = z.object({
 /**
  * The provider-shaped catalogue minus the excluded set, plus any live
  * Tier-1 plugin tools. Exported for the unit test.
+ *
+ * issue #413 — descriptions are annotated at this boundary rather than
+ * reworded at their author sites: several descriptions (correctly, for
+ * the chat surface) route to `screenshot_page` and friends, and the
+ * in-app copies must stay untouched. Annotating here keeps every current
+ * AND future description honest on this surface with one transform.
  */
 export function powerToolCatalogue(tools: ToolRegistry): z.infer<typeof toolCatalogueEntry>[] {
   const core = tools
@@ -94,15 +97,22 @@ export function powerToolCatalogue(tools: ToolRegistry): z.infer<typeof toolCata
     .filter((t) => !POWER_MCP_EXCLUDED_TOOLS.has(t.name))
     .map((t) => ({
       name: t.name,
-      description: t.description,
+      description: annotateExcludedToolMentions(t.description, POWER_MCP_EXCLUDED_TOOLS),
       inputSchema: t.inputSchema,
       ...(t.gated ? { gated: true } : {}),
     }));
-  const plugin = pluginToolsRegistry.list().map((p) => ({
-    name: p.spec.name,
-    description: p.spec.description,
-    inputSchema: p.spec.inputJsonSchema,
-  }));
+  // Same exclusion filter as core tools (PR #420 review): a plugin tool
+  // whose name collides with an excluded one would otherwise be advertised
+  // here yet refused by mcp.execute_tool — the exact catalogue↔prose
+  // inconsistency this module exists to prevent.
+  const plugin = pluginToolsRegistry
+    .list()
+    .filter((p) => !POWER_MCP_EXCLUDED_TOOLS.has(p.spec.name))
+    .map((p) => ({
+      name: p.spec.name,
+      description: annotateExcludedToolMentions(p.spec.description, POWER_MCP_EXCLUDED_TOOLS),
+      inputSchema: p.spec.inputJsonSchema,
+    }));
   return [...core, ...plugin];
 }
 
@@ -397,7 +407,7 @@ export const mcpExecuteToolOp = defineOperation({
     // Tier-1 plugin tools route through the plugin host, exactly like the
     // chat-runner's dispatcher does (tool-dispatch.ts).
     const pluginTool = pluginToolsRegistry.resolve(input.toolName);
-    const result: ToolResult = pluginTool
+    const rawResult: ToolResult = pluginTool
       ? await runPluginOperation({
           pluginSlug: pluginTool.pluginSlug,
           operationName: pluginTool.spec.operationName,
@@ -419,7 +429,20 @@ export const mcpExecuteToolOp = defineOperation({
           ...(provider ? { provider } : {}),
           // No spawnChildChatTurn / requestScreenshot / pushClientEvent:
           // the tools that need them are in POWER_MCP_EXCLUDED_TOOLS.
+          // screenshot_page works WITHOUT them since issue #412 — with no
+          // pushClientEvent it renders the branch preview server-side and
+          // returns the image, which flows to the MCP client as an image
+          // content block.
         });
+
+    // issue #413 — tool-result prose is also authored for the chat surface
+    // (e.g. inspect_page_render's summary hint says to call an excluded
+    // screenshot tool next). Annotate at the same boundary as the catalogue
+    // descriptions, BEFORE caching, so replays serve the same honest copy.
+    const result: ToolResult = {
+      ...rawResult,
+      content: annotateExcludedToolMentions(rawResult.content, POWER_MCP_EXCLUDED_TOOLS),
+    };
 
     if (input.toolCallId) {
       await execute(registry, adapter, humanCtxWithBranch, "chat.cache_tool_result", {
@@ -500,13 +523,23 @@ export const mcpGetContextOp = defineOperation({
     const skillsCtx = await buildSkillsContext(registry, adapter, humanCtx, {
       loadedSkillSlugs: [],
     });
-    // Two chunks are chat-runner-specific and would mislead an external
-    // agent: "subagents" (the spawn tools are excluded from this surface)
-    // and "finishing-a-turn" (loop mechanics of Caelo's own runner).
-    const chunks = composeSystemPromptChunks(memory, {
-      ...(skillsCtx.skillsIndexBlock ? { skillsIndexBlock: skillsCtx.skillsIndexBlock } : {}),
-    }).filter((c) => c.label !== "subagents" && c.label !== "finishing-a-turn");
-    const systemContext = chunks.map((c) => c.body).join("\n\n");
+    // issue #413 — compose the "power-mcp" surface variant: the composer
+    // itself drops the chat-runner-only chunks ("subagents",
+    // "finishing-a-turn") and swaps the playbook's inspect/parallel entry
+    // for the tools this surface actually serves. Dynamic parts (site
+    // memory, skills index) can still name excluded tools, so the composed
+    // string gets the same annotation pass as the catalogue descriptions.
+    const chunks = composeSystemPromptChunks(
+      memory,
+      {
+        ...(skillsCtx.skillsIndexBlock ? { skillsIndexBlock: skillsCtx.skillsIndexBlock } : {}),
+      },
+      "power-mcp",
+    );
+    const systemContext = annotateExcludedToolMentions(
+      chunks.map((c) => c.body).join("\n\n"),
+      POWER_MCP_EXCLUDED_TOOLS,
+    );
 
     const [layoutsR, templatesR, defaultsR, themeR] = await Promise.all([
       execute(registry, adapter, humanCtx, "layouts.list", { includeDeleted: false }),
@@ -540,15 +573,21 @@ export const mcpGetContextOp = defineOperation({
         ).skills
       : [];
 
+    // issue #413 — skill bodies are seeded/operator data written for the
+    // chat surface (several MANDATE excluded tools: "call screenshot_page
+    // for BOTH viewports"). They cannot be rewritten per surface, so every
+    // excluded-tool mention is annotated with the working alternative —
+    // the content stays honest without touching the stored skill.
+    const surfaced = (text: string) => annotateExcludedToolMentions(text, POWER_MCP_EXCLUDED_TOOLS);
     return ok({
       systemContext,
-      statusLine: statusLine ?? null,
+      statusLine: statusLine ? surfaced(statusLine) : null,
       skills: skillRows.map((s) => ({
         slug: s.slug,
         displayName: s.displayName,
-        description: s.description,
+        description: surfaced(s.description),
         allowlistedTools: s.allowlistedTools,
-        ...(input.includeSkillBodies ? { body: s.body } : {}),
+        ...(input.includeSkillBodies ? { body: surfaced(s.body) } : {}),
       })),
     });
   },

@@ -201,6 +201,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             aiCtx,
             humanCtx: locals.ctx,
             abortSignal,
+            // issue #412 — THIS stream feeds a live ChatPanel, so the
+            // operator-browser screenshot path is actually serviceable.
+            operatorBrowserAttached: true,
             ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
             ...(temperature !== undefined ? { temperature } : {}),
           },

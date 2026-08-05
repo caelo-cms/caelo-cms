@@ -13,6 +13,21 @@ export {
 export * from "./ai/chat-runner.js";
 // issue #298 — the calls×context import cost model + calibration helpers.
 export * from "./ai/import-cost-model.js";
+// issue #412 — server-side screenshot_page backend: in-process capture
+// service + the signed branch-scoped tokens its browser presents (the
+// admin's preview-screenshot + asset routes verify them).
+export {
+  capturePreviewScreenshot,
+  type PreviewScreenshotResult,
+  type PreviewScreenshotViewport,
+  resolvePreviewSelfOrigin,
+} from "./ai/preview-screenshot.js";
+export {
+  mintPreviewScreenshotToken,
+  PREVIEW_SCREENSHOT_TOKEN_HEADER,
+  type PreviewScreenshotTokenVerification,
+  verifyPreviewScreenshotToken,
+} from "./ai/preview-screenshot-token.js";
 export * from "./ai/pricing-cache.js";
 export * from "./ai/provider.js";
 export {

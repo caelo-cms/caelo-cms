@@ -50,21 +50,6 @@ export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
   },
 });
 
-/** design-system chunk — renders from design_manifest.get. */
-export const getDesignManifestTool = makeReadTool<Record<string, never>>({
-  name: "get_design_manifest",
-  description:
-    "Fetch the CURRENT Design Manifest (typography, rhythm, named patterns) — the site's design language. " +
-    "The `## Design system` context block is a snapshot from turn start — call this after set_design_manifest THIS turn to confirm the stored state instead of repeating the write.",
-  opName: "design_manifest.get",
-  input: noInput,
-  format: (value) => {
-    const m = (value as { manifest: unknown }).manifest;
-    if (!m) return "No design manifest set yet — set_design_manifest creates it.";
-    return `Current design manifest:\n${JSON.stringify(m, null, 2)}`;
-  },
-});
-
 /** pending_proposals chunk — renders from pending_proposals.list. */
 export const listPendingProposalsTool = makeListReadTool<
   Record<string, never>,

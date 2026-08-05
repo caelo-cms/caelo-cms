@@ -33,7 +33,7 @@ export const getStructuredSetTool: ToolDefinitionWithHandler<GetStructuredSetToo
   name: "get_structured_set",
   description:
     "Fetch one structured-data set's current items by `kind` + `slug`. " +
-    "Use this when (1) the system-prompt block didn't inline the items (>30 cap, or non-nav-menu kind) and you need to extend an existing set, or (2) you're doing a partial update (single link rename) and need the current state before `set_structured_set` to merge in JS. " +
+    "Sets are NOT inlined in the system prompt — ALWAYS fetch the current items with this tool before `set_structured_set` (which REPLACES the whole list: merge in JS, then write the complete result). " +
     "Theme tokens are NOT a structured-set kind (v0.11.0+) — use `get_theme` / `set_theme_tokens` instead. " +
     "Returns null in the set field if no row exists for that kind+slug.",
   schema: getStructuredSetToolInput,

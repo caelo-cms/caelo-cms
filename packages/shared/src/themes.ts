@@ -24,6 +24,7 @@
 
 import { z } from "zod";
 import { isUnsafeKey } from "./safe-keys.js";
+import { UnknownTokenName } from "./themes-errors.js";
 
 // ────────────────────────────────────────────────────────────────────
 // Primitives
@@ -728,11 +729,18 @@ function pluralise(category: string, n: number): string {
  * use this same logic — extracted so the dotted-path merge lives in
  * one place and v0.11.1's OKLCH auto-ramp can extend it without
  * forking.
+ *
+ * issue #430 — `$description` (the token's ROLE: what it is for and
+ * where it must not be used) is preserved across value-only edits and
+ * overwritten only when `descriptions` supplies a new one. Before this,
+ * every routine value edit silently erased the role, so recording a
+ * role at all was pointless: the next `set_theme_tokens` wiped it.
  */
 export function applyDtcgWrites(
   current: ThemeDocument,
   writes: Record<string, unknown>,
   types: Record<string, string>,
+  descriptions: Record<string, string> = {},
 ): ThemeDocument {
   const out: ThemeDocument = JSON.parse(JSON.stringify(current));
   for (const [path, value] of Object.entries(writes)) {
@@ -759,9 +767,40 @@ export function applyDtcgWrites(
         ...(value as Record<string, unknown>),
       };
     }
+    // Role precedence: an explicitly supplied description wins; otherwise
+    // the leaf keeps the one it already carries. Only a token that never
+    // had a role ends up without one.
+    const existingDescription =
+      existing && typeof existing === "object"
+        ? (existing as { $description?: unknown }).$description
+        : undefined;
+    const nextDescription =
+      descriptions[path] ??
+      (typeof existingDescription === "string" ? existingDescription : undefined);
     setLeafAtPath(out, path, {
       $value: nextValue,
       ...(inferredType ? { $type: inferredType } : {}),
+      ...(nextDescription !== undefined ? { $description: nextDescription } : {}),
+    });
+  }
+
+  // issue #430 — ROLE-ONLY paths: a description with no value in `writes`.
+  // The anchor-page design review annotates tokens whose values are already
+  // settled, so it must not have to restate them (a restated value is a
+  // chance to drift one). Patch the metadata, leave `$value` and `$type`
+  // exactly as they are.
+  for (const [path, description] of Object.entries(descriptions)) {
+    if (path in writes) continue;
+    const existing = readLeafAtPath(out, path);
+    if (!existing) {
+      // Annotating a token that does not exist is a mistake worth naming —
+      // silently minting a value-less leaf would produce a document the
+      // renderer can't emit (CLAUDE.md §2).
+      throw new UnknownTokenName(path, []);
+    }
+    setLeafAtPath(out, path, {
+      ...(existing as Record<string, unknown>),
+      $description: description,
     });
   }
   return out;

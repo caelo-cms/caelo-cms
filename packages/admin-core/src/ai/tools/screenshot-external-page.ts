@@ -16,7 +16,11 @@
  */
 
 import { z } from "zod";
-import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
+import {
+  describeFetchBudgetDenied,
+  externalFetchAllowedHosts,
+  takeExternalFetchBudget,
+} from "./_external-fetch-budget.js";
 import {
   getExternalScreenshotter,
   setExternalScreenshotterForTests,
@@ -89,8 +93,7 @@ export const screenshotExternalPageTool: ToolDefinitionWithHandler<Input> = {
     if (!budget.ok) {
       return {
         ok: false,
-        content:
-          "External-fetch budget exhausted for this session (12 per 10 minutes). For whole-site visual review, propose the crawl via `propose_site_import` — its worker captures screenshots per page.",
+        content: `${describeFetchBudgetDenied(budget)} For whole-site visual review, propose the crawl via \`propose_site_import\` — it captures screenshots per page.`,
       };
     }
     const allowedHosts = externalFetchAllowedHosts();

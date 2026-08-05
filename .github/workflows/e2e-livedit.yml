@@ -194,6 +194,16 @@ jobs:
         run: bun x playwright install chromium --with-deps
         working-directory: apps/admin
 
+      # Token/loop regression guards (issue #432): the per-scenario ceilings
+      # this step gates on live in `apps/admin/e2e-livedit/lib/metrics-core.ts`
+      # THRESHOLDS. Re-derived 2026-08-05 from measured baselines: healthy
+      # homepage first attempts run ~1.0–1.65M input / 16–21 loops (design-
+      # quality self-review + tool-search + skill-routing era); the stored-
+      # corruption repair spirals the ceilings exist to catch measured
+      # 2.18–2.66M / 27–33 loops. Ceilings: 2.0M input (≈1.2× worst healthy,
+      # below the spiral floor) and 26 loops. Attempt-level breaches surface
+      # as `::warning` annotations from global-teardown EVEN when a Playwright
+      # retry turns this step green — never let a retry hide a breach again.
       - name: Run e2e-livedit (Scenario 1)
         env:
           ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
@@ -250,6 +260,64 @@ jobs:
             echo "::warning title=e2e-livedit cost::${UNPRICED} unpriced ai_calls row(s) — real cost is HIGHER than \$${USD}; add ai_pricing rates."
           fi
 
+      # Every defect filed during the run, from `ai_bug_reports`: the model's
+      # own `bug_report` tool calls (source 'ai') plus the chat-runner's
+      # auto-capture of failed tool results and turn-fatal provider errors
+      # (source 'auto'). This is the signal the pass/fail verdict cannot
+      # carry — a GREEN run whose bug count rose means the AI routed AROUND
+      # a defect instead of failing on it.
+      #
+      # No date or session filter, for the same reason the cost capture
+      # above needs none: the DB is fresh per job, so every row belongs to
+      # this run. (Locally, global-setup wipes the table at suite start to
+      # get the same property.) Do not "fix" this by adding a window.
+      #
+      # No ORDER BY either — sorting lives in build-stats.ts where it is
+      # unit-testable. Full `evidence` is dumped untruncated so the uploaded
+      # artifact is complete; the PR comment does its own truncation.
+      #
+      # RLS is FORCEd behind a non-empty `caelo.actor_kind` GUC, so we SET
+      # it in the same session. `-q` suppresses the SET command tag so
+      # stdout is pure JSON. `if: always()` so a red suite still reports.
+      # Annotations only — this step never fails the job.
+      - name: Capture AI-detected bugs from ai_bug_reports
+        if: always()
+        env:
+          PGHOST: localhost
+        run: |
+          set -uo pipefail
+          OUT_DIR=apps/admin/test-results/livedit
+          OUT="${OUT_DIR}/bug-reports.json"
+          mkdir -p "${OUT_DIR}"
+          PGPASSWORD=${ADMIN_ROLE_PASSWORD} \
+            psql "${ADMIN_DATABASE_URL}" -qAtc \
+            "SET caelo.actor_kind='system'; SELECT COALESCE(json_agg(json_build_object('id', id::text, 'createdAt', created_at::text, 'chatSessionId', chat_session_id::text, 'title', title, 'whatHappened', what_happened, 'expected', expected, 'suspectedTool', suspected_tool, 'evidence', evidence, 'severity', severity, 'blockedTask', blocked_task, 'status', status, 'source', source)), '[]'::json) FROM ai_bug_reports" \
+            > "${OUT}" 2>/dev/null || echo '{}' > "${OUT}"
+          # An empty/whitespace file is as useless as a missing one. The `{}`
+          # sentinel is deliberately NOT an array — build-stats.ts reads that
+          # as "capture failed" and omits the section, which must stay
+          # distinguishable from a real `[]` ("ran, found nothing").
+          if [ ! -s "${OUT}" ]; then echo '{}' > "${OUT}"; fi
+          echo "bug-reports.json:"; head -c 2000 "${OUT}"; echo
+
+          TOTAL=$(jq -r 'if type=="array" then length else 0 end' "${OUT}" 2>/dev/null || echo 0)
+          BLOCKING=$(jq -r 'if type=="array" then [.[]|select(.severity=="blocking")]|length else 0 end' "${OUT}" 2>/dev/null || echo 0)
+          DEGRADED=$(jq -r 'if type=="array" then [.[]|select(.severity=="degraded")]|length else 0 end' "${OUT}" 2>/dev/null || echo 0)
+          COSMETIC=$(jq -r 'if type=="array" then [.[]|select(.severity=="cosmetic")]|length else 0 end' "${OUT}" 2>/dev/null || echo 0)
+          AI_FILED=$(jq -r 'if type=="array" then [.[]|select(.source=="ai")]|length else 0 end' "${OUT}" 2>/dev/null || echo 0)
+          AUTO_FILED=$(jq -r 'if type=="array" then [.[]|select(.source=="auto")]|length else 0 end' "${OUT}" 2>/dev/null || echo 0)
+          # Durable, greppable per-run metric, mirroring `e2e-livedit-cost`:
+          # a scraper can walk run summaries to chart defect count over time.
+          {
+            echo '```'
+            echo "e2e-livedit-bugs total=${TOTAL} blocking=${BLOCKING} degraded=${DEGRADED} cosmetic=${COSMETIC} ai=${AI_FILED} auto=${AUTO_FILED} sha=${GITHUB_SHA}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "::notice title=e2e-livedit bugs::${TOTAL} detected (${BLOCKING} blocking, ${AI_FILED} AI-filed)"
+          if [ "${BLOCKING}" != "0" ]; then
+            echo "::warning title=e2e-livedit bugs::${BLOCKING} blocking bug report(s) filed during this run — see the PR comment's Detected bugs table."
+          fi
+
       # Durable per-run cost record — the trend metric the operator wants.
       # Separate from the failure-only artifact below: this uploads on
       # every run (green + red) so the metric series has no gaps.
@@ -259,6 +327,20 @@ jobs:
         with:
           name: e2e-livedit-cost-${{ github.run_id }}
           path: apps/admin/test-results/livedit/ai-cost.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      # Same always-upload rationale as the cost metric: the failure-only
+      # bundle below never runs on a green suite, and a green run that filed
+      # bugs is exactly the case worth keeping. Kept as its own artifact
+      # rather than folded into the cost one so `e2e-livedit-cost-<run_id>`
+      # keeps its name for anything already scraping that series.
+      - name: Upload detected-bugs metric (always)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-livedit-bugs-${{ github.run_id }}
+          path: apps/admin/test-results/livedit/bug-reports.json
           if-no-files-found: warn
           retention-days: 90
 
@@ -392,8 +474,9 @@ jobs:
           ERR_CONTEXT_MDS=("${ERR_CONTEXT_DIR}"/*.md)
 
           # PR #61 follow-up — `build-stats.ts` parses admin.log +
-          # playwright-report.json + ai-cost.json and emits a Real-AI-cost
-          # block, an API-stats block, and a per-scenario results table.
+          # playwright-report.json + ai-cost.json + metrics.json and emits a
+          # Real-AI-cost block, an API-stats block, the issue #432 per-attempt
+          # input-token breakdown table, and a per-scenario results table.
           # We splice it in between the screenshots and the error details.
           # Falls through silently if the script errors so a bug here
           # can't block the rest of the comment.

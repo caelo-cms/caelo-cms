@@ -41,6 +41,9 @@ async function run(
         }),
       );
     },
+    // issue #412 — the SSE path now also requires the browser-attached
+    // flag; without it the tool routes to the server-side backend.
+    operatorBrowserAttached: true,
   } as unknown as ToolContext;
   return screenshotPageTool.handler(
     CTX,

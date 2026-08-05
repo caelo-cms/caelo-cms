@@ -149,7 +149,7 @@ export const buildPageOp = defineOperation({
       const link = linkRows[0];
       if (!link) {
         return fail(
-          `import page ${importPageId} not found — pass an import_pages id from imports.get, or omit importPageId to build a standalone page`,
+          `import page ${importPageId} not found — pass an import_pages id from list_import_pages({runId}), or omit importPageId to build a standalone page`,
         );
       }
       rebuildTargetPageId = link.live_page_id ?? undefined;

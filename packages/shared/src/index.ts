@@ -12,7 +12,6 @@ export * from "./context.js";
 export * from "./css-gradient-scan.js";
 export * from "./css-var-scan.js";
 export * from "./design-draft-shell.js";
-export * from "./design-manifest.js";
 export * from "./fonts.js";
 export * from "./genesis.js";
 export * from "./genesis-inventory.js";

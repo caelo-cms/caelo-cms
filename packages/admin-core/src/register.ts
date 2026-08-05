@@ -145,7 +145,6 @@ import {
   proposeDeployRollbackOp,
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
-import { getDesignManifestOp, setDesignManifestOp } from "./ops/design_manifest.js";
 import {
   executeDomainProposalOp,
   listPendingDomainProposalsOp,
@@ -221,6 +220,7 @@ import {
   getRunCostOp,
   getSessionBudgetStateOp,
   listImportPageClustersOp,
+  listImportPagesOp,
   listImportRunsOp,
   listPendingImportProposalsOp,
   logImportRunEventOp,
@@ -229,6 +229,7 @@ import {
   recordBudgetGateEventOp,
   rejectImportProposalOp,
   setCostCeilingOp,
+  setPageCapturesByUrlOp,
   setRunDesignTokensOp,
   updateImportRunStatusOp,
   updatePageCaptureOp,
@@ -253,7 +254,6 @@ import {
   mediaGetSettingsOp,
   mediaListOp,
   mediaListUsagesOp,
-  mediaRecentForAiOp,
   mediaRecordUsageOp,
   mediaSetSourceOp,
   mediaUpdateAltOp,
@@ -750,9 +750,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(selectGenesisDraftOp);
   // issue #375 — view-time theme-shell composition for draft previews.
   registry.register(renderDesignDraftOp);
-  // issue #165 — Design Manifest (per-site design language).
-  registry.register(getDesignManifestOp);
-  registry.register(setDesignManifestOp);
   // issue #264 — per-page edit log (durable work history for later chats /
   // subagents that touch the page). Append-only, ungated.
   registry.register(appendPageLogOp);
@@ -791,6 +788,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P14 — Site Import Wizard.
   registry.register(listImportRunsOp);
   registry.register(getImportRunOp);
+  // issue #422 — lean per-run page list (ids + status, no HTML payload);
+  // the AI-facing surface behind list_import_pages.
+  registry.register(listImportPagesOp);
   registry.register(createImportRunOp);
   registry.register(proposeImportRunOp);
   registry.register(listPendingImportProposalsOp);
@@ -820,6 +820,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);
   registry.register(updatePageCaptureOp);
+  // issue #423 — crawl-time bulk capture persistence (screenshot keys +
+  // sampled tokens per batch, keyed by run_id + source_url).
+  registry.register(setPageCapturesByUrlOp);
   // issue #28 — run-scoped error/warning ledger.
   registry.register(logImportRunEventOp);
   registry.register(logImportRunEventsOp);
@@ -898,7 +901,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaDeleteOp);
   registry.register(mediaDeleteManyOp);
   registry.register(mediaRecordUsageOp);
-  registry.register(mediaRecentForAiOp);
   registry.register(mediaListUsagesOp);
   registry.register(mediaGetSettingsOp);
   registry.register(setMediaCdnOp);

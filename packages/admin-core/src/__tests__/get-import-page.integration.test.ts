@@ -143,4 +143,17 @@ describe("imports.get_page_gist + get_import_page tool", () => {
     expect(cached).not.toBeNull();
     expect(cached?.markdown).toContain("Our Pricing");
   });
+
+  it("tool emits the resolved staging import_pages id (issue #422 — every follow-up call needs it)", async () => {
+    const res = await getImportPageTool.handler(SYSTEM, { importPageId: PAGE_ID }, {
+      adapter,
+      registry,
+      chatSessionId: "gist-test-session",
+    } as ToolContext);
+    expect(res.ok).toBe(true);
+    // The id line names the id verbatim plus where to pass it — before #422
+    // the tool concealed the one field build_page/inventory/notes require.
+    expect(res.content).toContain(`Import page id: ${PAGE_ID}`);
+    expect(res.content).toContain("page.importPageId");
+  });
 });

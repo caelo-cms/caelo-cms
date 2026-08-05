@@ -29,7 +29,11 @@ import { execute } from "@caelo-cms/query-api";
 import { fetchRenderedHtml, htmlToMarkdown } from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { getActiveProviderForModel } from "../provider-resolver.js";
-import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
+import {
+  describeFetchBudgetDenied,
+  externalFetchAllowedHosts,
+  takeExternalFetchBudget,
+} from "./_external-fetch-budget.js";
 import { getExternalScreenshotter } from "./_external-screenshotter.js";
 import { getPageInspection, putPageInspection } from "./_page-inspection-cache.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -111,8 +115,7 @@ async function resolveHtml(
   if (!budget.ok) {
     return {
       ok: false,
-      content:
-        "External-fetch budget exhausted for this session. Reuse a `pageRef` from a prior inspect_external_page instead of re-fetching.",
+      content: `${describeFetchBudgetDenied(budget)} Reuse a \`pageRef\` from a prior inspect_external_page instead of re-fetching.`,
     };
   }
   const allowedHosts = externalFetchAllowedHosts();

@@ -405,14 +405,19 @@ export const executeThemeProposalOp = defineOperation({
           }
         }
         if (Object.keys(nonPrimarySet).length > 0) {
-          tokens = applyDtcgWrites(tokens, nonPrimarySet, nonPrimaryTypes);
+          tokens = applyDtcgWrites(
+            tokens,
+            nonPrimarySet,
+            nonPrimaryTypes,
+            normalizedForRamp.descriptions,
+          );
         }
       } else if (Object.keys(overrides).length > 0) {
         // Re-normalize at execute time so the value-shape errors from
         // propose time stay consistent and so we don't trust the
         // payload jsonb that was persisted between propose and execute.
         const normalized = normalizeTokens(overrides);
-        tokens = applyDtcgWrites(tokens, normalized.set, normalized.types);
+        tokens = applyDtcgWrites(tokens, normalized.set, normalized.types, normalized.descriptions);
       }
 
       // v0.11.4 (issue #76 follow-up) — origin='operator'. The AI may

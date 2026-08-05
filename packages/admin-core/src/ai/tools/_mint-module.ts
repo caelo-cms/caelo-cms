@@ -122,9 +122,14 @@ export async function mintModuleFromHtml(
     }
   }
 
-  // issue #164 — opt-in mechanical theme-token binding on the CSS.
+  // issue #164 — mechanical theme-token binding on the CSS.
+  // issue #430 — ON by default. Opting in was a correction round-trip we
+  // asked the AI to make for something we can do ourselves, and the six
+  // modules on the dogfood install that hardcoded exact token values are
+  // what happens when nobody opts in. Pass `false` for deliberate
+  // off-palette values.
   let css = args.css ?? "";
-  if (args.bindThemeLiterals === true && css.length > 0) {
+  if (args.bindThemeLiterals !== false && css.length > 0) {
     const bound = await bindCssToTheme(ctx, toolCtx, css);
     css = bound.css;
     note += bound.report;

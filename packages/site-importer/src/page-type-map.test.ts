@@ -106,4 +106,38 @@ describe("classifyPageTypes", () => {
     expect(map2.activeLocale).toBe("");
     expect(map2.types[0]?.section).toBe("products");
   });
+
+  // issue #425 — the #278 flow's samples must come from inside the
+  // operator's scope; out-of-scope URLs are reported, never sampled.
+  describe("scopePathPrefix (#425)", () => {
+    const scoped = classifyPageTypes({
+      siteUrl: `${H}/de`,
+      links: [
+        { href: `${H}/de/preise`, text: "Preise", location: "nav" },
+        { href: `${H}/en/pricing`, text: "Pricing", location: "nav" },
+        { href: `${H}/tools`, text: "Tools", location: "nav" },
+      ],
+      scopePathPrefix: "/de/",
+    });
+
+    it("samples only inside the scope and echoes the normalised prefix", () => {
+      expect(scoped.scopePathPrefix).toBe("/de");
+      expect(scoped.types.map((t) => t.sampleUrl)).toEqual([`${H}/de/preise`]);
+    });
+
+    it("reports out-of-scope URLs in filtered instead of dropping them silently", () => {
+      const outOfScope = scoped.filtered.filter((f) => f.reason.includes("out-of-scope"));
+      expect(outOfScope.map((f) => f.url).sort()).toEqual([`${H}/en/pricing`, `${H}/tools`]);
+    });
+
+    it("is segment-aware — /design never matches a /de scope", () => {
+      const m = classifyPageTypes({
+        siteUrl: `${H}/de`,
+        links: [{ href: `${H}/design`, text: "Design", location: "nav" }],
+        scopePathPrefix: "/de",
+      });
+      expect(m.types).toEqual([]);
+      expect(m.filtered.some((f) => f.url === `${H}/design`)).toBe(true);
+    });
+  });
 });

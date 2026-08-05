@@ -279,12 +279,6 @@ export const mediaRecordUsageInputSchema = z
   .strict();
 export type MediaRecordUsageInput = z.infer<typeof mediaRecordUsageInputSchema>;
 
-export const mediaRecentForAiInputSchema = z
-  .object({
-    limit: z.number().int().positive().max(60).default(30),
-  })
-  .strict();
-
 export const mediaSetCdnInputSchema = z
   .object({
     enabled: z.boolean(),

@@ -26,6 +26,9 @@ import { gunzipSync } from "node:zlib";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { getPageInspection } from "../ai/tools/_page-inspection-cache.js";
+import type { ToolContext } from "../ai/tools/dispatch.js";
+import { getImportPageTool } from "../ai/tools/get-import-page.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -298,5 +301,148 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
     } finally {
       await db.end();
     }
+  });
+});
+
+// issue #424 — content-only read against the RECORDED crawl: the real
+// searchviu pages carry the exact ballast the 2026-08-04 dogfood measured
+// (110KB Elementor header per page, the Complianz modal INSIDE the stored
+// content module — this crawl predates the extraction-time consent strip —
+// and 47 `--wp--preset--*` tokens, none referenced by any page).
+describe("get_import_page content-only on the recorded crawl (issue #424)", () => {
+  let blogPageId: string;
+
+  beforeAll(async () => {
+    const detected = await execute(registry, adapter, ctx, "imports.detect_boilerplate", {
+      runId,
+      minPages: 2,
+    });
+    if (!detected.ok) throw new Error(`detect_boilerplate failed: ${detected.error.kind}`);
+
+    const got = await execute(registry, adapter, ctx, "imports.get", { runId });
+    if (!got.ok) throw new Error(`imports.get failed: ${got.error.kind}`);
+    const pages = (got.value as { pages: Array<{ id: string; proposedSlug: string }> }).pages;
+    const blog = pages.find((p) => p.proposedSlug.includes("bigquery"));
+    if (!blog) throw new Error("bigquery fixture page missing");
+    blogPageId = blog.id;
+  });
+
+  it("default read drops chrome modules, the consent modal, and the whole unreferenced preset dump — loudly", async () => {
+    const res = await getImportPageTool.handler(ctx, { importPageId: blogPageId }, {
+      adapter,
+      registry,
+      chatSessionId: "stage-content-only",
+    } as ToolContext);
+    expect(res.ok).toBe(true);
+    const c = res.content;
+
+    expect(c).toContain("## Stripped from this read");
+    expect(c).toContain(
+      "- source chrome modules (layout-owned — bind ONCE at the layout, never per page): header, footer",
+    );
+    expect(c).toMatch(/- consent noise: \d+ cookie\/GDPR subtree\(s\)/);
+    expect(c).toMatch(/- design tokens: \d+ unreferenced --wp--preset--\* entries dropped/);
+
+    // Header nav + footer text are gone; the article is not.
+    expect(c).not.toContain("Smart Alerting");
+    expect(c).not.toContain("we once needed ourselves");
+    expect(c).toContain("BigQuery");
+    // The raw preset dump never reaches the model in this view.
+    expect(c).not.toContain("--wp--preset--aspect-ratio--square");
+
+    // Cache: content-only Markdown, FULL html (raw stays reachable).
+    const pageRef = c.match(/pg_[a-z0-9]+/)?.[0];
+    expect(pageRef).toBeDefined();
+    const cached = getPageInspection(pageRef!);
+    expect(cached?.markdown).not.toContain("Manage Consent");
+    expect(cached?.html).toContain("cmplz");
+  });
+
+  it("fullPage: true returns the untouched capture, counters absent", async () => {
+    const res = await getImportPageTool.handler(ctx, { importPageId: blogPageId, fullPage: true }, {
+      adapter,
+      registry,
+      chatSessionId: "stage-full-page",
+    } as ToolContext);
+    expect(res.ok).toBe(true);
+    const c = res.content;
+    expect(c).not.toContain("## Stripped from this read");
+    expect(c).toContain("Smart Alerting"); // header nav is back
+    expect(c).toContain("--wp--preset--aspect-ratio--square"); // raw token dump is back
+  });
+});
+
+// issue #422 — the id-bearing list surface. Runs AFTER compose, so every
+// fixture page is accepted and linked; the pending-state + build_page-link
+// paths live in import-id-chain.integration.test.ts.
+describe("imports.list_pages (recorded searchviu crawl, post-compose)", () => {
+  it("lists every page with its staging id, rebuild status, and built-page link", async () => {
+    const r = await execute(registry, adapter, ctx, "imports.list_pages", { runId });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as {
+      run: { id: string; status: string; sourceUrl: string };
+      total: number;
+      pages: { id: string; proposedSlug: string; status: string; acceptedPageId: string | null }[];
+    };
+    expect(v.run.id).toBe(runId);
+    expect(v.total).toBe(FIXTURE.length);
+    expect(v.pages.length).toBe(FIXTURE.length);
+    for (const p of v.pages) {
+      expect(p.id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(p.status).toBe("accepted");
+      expect(p.acceptedPageId).toMatch(/^[0-9a-f-]{36}$/);
+    }
+  });
+
+  it("filters by status and searches by slug/url/title", async () => {
+    const pending = await execute(registry, adapter, ctx, "imports.list_pages", {
+      runId,
+      status: "pending",
+    });
+    expect(pending.ok).toBe(true);
+    if (pending.ok) expect((pending.value as { total: number }).total).toBe(0);
+
+    const first = FIXTURE[0];
+    if (!first) throw new Error("fixture empty");
+    const bySlug = await execute(registry, adapter, ctx, "imports.list_pages", {
+      runId,
+      search: `${PREFIX}${first.proposed_slug}`.slice(0, 60),
+    });
+    expect(bySlug.ok).toBe(true);
+    if (bySlug.ok) {
+      const v = bySlug.value as { pages: { proposedSlug: string }[] };
+      expect(v.pages.length).toBeGreaterThanOrEqual(1);
+    }
+
+    const miss = await execute(registry, adapter, ctx, "imports.list_pages", {
+      runId,
+      search: "no-such-page-zzz",
+    });
+    expect(miss.ok).toBe(true);
+    if (miss.ok) expect((miss.value as { total: number }).total).toBe(0);
+
+    // `limit` caps the rows while `total` still names the full match count,
+    // so truncation is visible (Copilot review on PR #437: the tool exposes
+    // the op's limit for crawls beyond the 200-row default).
+    const capped = await execute(registry, adapter, ctx, "imports.list_pages", {
+      runId,
+      limit: 1,
+    });
+    expect(capped.ok).toBe(true);
+    if (capped.ok) {
+      const v = capped.value as { total: number; pages: unknown[] };
+      expect(v.pages.length).toBe(1);
+      expect(v.total).toBe(FIXTURE.length);
+    }
+  });
+
+  it("run report's rebuilt counter reflects the linked pages", async () => {
+    // The same accepted_page_id linkage list_pages surfaces is what the
+    // report counts — post-compose all fixture pages are rebuilt/linked.
+    const r = await execute(registry, adapter, ctx, "imports.get_run_report", { runId });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect((r.value as { acceptedPages: number }).acceptedPages).toBe(FIXTURE.length);
   });
 });

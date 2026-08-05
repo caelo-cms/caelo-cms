@@ -47,9 +47,10 @@ interface MediaRow {
 export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, MediaRow>({
   name: "find_media",
   description:
-    "Search the media library (TOON rows: name, mime, dims, alt, url). `filter` matches alt/filename server-side; optional `mime`; `limit`/`offset`/`full` as usual. " +
+    "Search the media library (TOON rows: id, name, mime, dims, alt, url). `filter` matches alt/filename server-side; optional `mime`; `limit`/`offset`/`full` as usual. " +
+    "The `id` column is the media UUID that `set_theme_asset` / `set_media_alt` / `regenerate_media_variants` require — take it from here; never invent one. " +
     "The `url` column always points at a variant that EXISTS on the asset — use it verbatim in <img src> via edit_module; do NOT rewrite the variant segment. " +
-    "Use when the user references an asset by description and it isn't in the ## Media block. This searches the EXISTING Caelo library only — during a site migration it is empty, so import source-site images with import_media_from_urls instead of this tool.",
+    "Use when the user references an asset by description. This searches the EXISTING Caelo library only — during a site migration it is empty, so import source-site images with import_media_from_urls instead of this tool.",
   opName: "media.list",
   input: findMediaInput,
   buildOpInput: (
@@ -66,6 +67,10 @@ export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, Me
   label: "media",
   rows: (value) => (value as { assets: MediaRow[] }).assets,
   columns: [
+    // The UUID other media tools (set_theme_asset, set_media_alt, …)
+    // require — issue #411: without it the model had no way to bind
+    // what it found.
+    { key: "id", value: (a) => a.id },
     { key: "name", value: (a) => a.originalName },
     { key: "mime", value: (a) => a.mime },
     { key: "dims", value: (a) => (a.width && a.height ? `${a.width}x${a.height}` : "") },
