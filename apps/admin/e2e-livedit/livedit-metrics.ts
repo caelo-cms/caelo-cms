@@ -14,6 +14,7 @@ import { appendFileSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { ADMIN_LOG_DIR } from "./global-setup.js";
+import type { ScenarioMetrics, ScenarioSummary, ThresholdViolation } from "./lib/metrics-core.js";
 import {
   aggregate,
   buildThresholdWarnings,
@@ -24,7 +25,6 @@ import {
   summarizeScenario,
   THRESHOLDS,
 } from "./lib/metrics-core.js";
-import type { ScenarioMetrics, ScenarioSummary, ThresholdViolation } from "./lib/metrics-core.js";
 
 // Re-export the core surface so scenarios and global-teardown keep a single
 // import site; the split into lib/ is an implementation detail to them.

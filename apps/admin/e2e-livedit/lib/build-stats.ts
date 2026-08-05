@@ -27,9 +27,8 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-
-import { buildThresholdWarnings, k, parseChatLog } from "./metrics-core.js";
 import type { ScenarioSummary } from "./metrics-core.js";
+import { buildThresholdWarnings, k, parseChatLog } from "./metrics-core.js";
 
 const ADMIN_LOG = "apps/admin/test-results/livedit/admin.log";
 const REPORT_JSON = "apps/admin/test-results/livedit/playwright-report.json";

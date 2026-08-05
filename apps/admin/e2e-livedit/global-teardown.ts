@@ -13,9 +13,8 @@
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { buildThresholdWarnings, formatReport, metricsBySession } from "./livedit-metrics.js";
 import type { ScenarioSummary } from "./livedit-metrics.js";
+import { buildThresholdWarnings, formatReport, metricsBySession } from "./livedit-metrics.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIVEDIT_DIR = resolve(HERE, "../test-results/livedit");
