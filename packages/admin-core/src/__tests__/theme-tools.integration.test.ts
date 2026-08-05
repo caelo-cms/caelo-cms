@@ -46,8 +46,6 @@ const toolCtx = () => ({ adapter, registry }) as ToolContext;
 const MEDIA_SHA = `0411f411${"a".repeat(56)}`;
 const MEDIA_NAME = "issue411-bind-regression.png";
 
-/** The design manifest is a site-singleton; capture it so afterAll restores it. */
-
 async function cleanup(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
   try {
