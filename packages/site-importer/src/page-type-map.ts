@@ -20,7 +20,7 @@
  * All scans are string/URL ops — no regex over document text (#113).
  */
 
-import { isPathInScope } from "./crawl-scope.js";
+import { isPathInScope, stripTrailingSlashes } from "./crawl-scope.js";
 import type { LinkLocation } from "./page-facets.js";
 
 /** A homepage link fed to the classifier. Body-located links are ignored
@@ -253,7 +253,8 @@ interface Candidate {
  */
 export function classifyPageTypes(input: ClassifyPageTypesInput): PageTypeMap {
   // issue #425 — normalise the operator scope once; "" = unscoped.
-  const scopePrefix = (input.scopePathPrefix ?? "").replace(/\/+$/, "");
+  // Linear strip, not `/\/+$/` (js/polynomial-redos on slash runs).
+  const scopePrefix = stripTrailingSlashes(input.scopePathPrefix ?? "");
   let host: string;
   let activeLocale = "";
   try {

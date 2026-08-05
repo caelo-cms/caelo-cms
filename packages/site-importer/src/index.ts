@@ -46,6 +46,7 @@ export {
   normalizeCrawlUrl,
   pickLocaleAlternate,
   type SkippedUrl,
+  stripTrailingSlashes,
 } from "./crawl-scope.js";
 export {
   type CrawlCheckpoint,

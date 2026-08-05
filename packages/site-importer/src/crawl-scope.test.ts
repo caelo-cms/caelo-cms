@@ -9,7 +9,27 @@ import {
   isPathInScope,
   normalizeCrawlUrl,
   pickLocaleAlternate,
+  stripTrailingSlashes,
 } from "./crawl-scope.js";
+
+describe("stripTrailingSlashes (#425, js/polynomial-redos)", () => {
+  it("strips every trailing slash and nothing else", () => {
+    expect(stripTrailingSlashes("/a/b///")).toBe("/a/b");
+    expect(stripTrailingSlashes("///")).toBe("");
+    expect(stripTrailingSlashes("/a")).toBe("/a");
+    expect(stripTrailingSlashes("")).toBe("");
+  });
+
+  it("stays linear on adversarial slash runs (the CodeQL finding's input)", () => {
+    // 100k slashes ending in a non-slash: the old `/\/+$/` regex did
+    // quadratic backtracking here (~10^10 steps — an effective hang);
+    // the charCode scan finishes instantly or the suite times out.
+    const hostile = `/de${"/".repeat(100_000)}x`;
+    expect(stripTrailingSlashes(hostile)).toBe(hostile);
+    expect(stripTrailingSlashes(`${hostile}${"/".repeat(100_000)}`)).toBe(hostile);
+    expect(isPathInScope(hostile, "/de/")).toBe(true);
+  });
+});
 
 describe("normalizeCrawlUrl (#425)", () => {
   it("drops the hash and collapses trailing slashes", () => {

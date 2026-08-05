@@ -78,10 +78,15 @@ function parseCrawlCheckpoint(raw: unknown): CrawlCheckpoint | null {
       : [],
     // issue #425 — the skip ledger joined the checkpoint later; an old
     // in-flight checkpoint without it resumes with an empty ledger.
+    // Both fields are checked (PR #435 review): an entry missing its
+    // `reason` must not reach the report claiming to have one.
     skipped: Array.isArray(cp.skipped)
       ? cp.skipped.filter(
           (e): e is { url: string; reason: string } =>
-            typeof e === "object" && e !== null && typeof (e as { url?: unknown }).url === "string",
+            typeof e === "object" &&
+            e !== null &&
+            typeof (e as { url?: unknown }).url === "string" &&
+            typeof (e as { reason?: unknown }).reason === "string",
         )
       : [],
     skippedOutOfScope: typeof cp.skippedOutOfScope === "number" ? cp.skippedOutOfScope : 0,

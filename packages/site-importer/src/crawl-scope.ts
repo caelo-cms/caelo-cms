@@ -49,6 +49,19 @@ export interface SkippedUrl {
 export const MAX_SKIPPED_REPORTED = 200;
 
 /**
+ * Strip ALL trailing slashes in linear time. The obvious `/\/+$/`
+ * regex is quadratic on long slash runs (CodeQL js/polynomial-redos,
+ * the #113 discipline): after `$` fails, the engine retries the greedy
+ * `\/+` at every start position. A charCode scan is O(n) and these
+ * strings are attacker-influenced (crawled hrefs, hreflang alternates).
+ */
+export function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47 /* '/' */) end -= 1;
+  return s.slice(0, end);
+}
+
+/**
  * Normalise a URL for dedupe + comparison: drop the hash, collapse ALL
  * trailing slashes (`/a/`, `/a//`, `/a#top` → `/a`; the root collapses
  * to `/`), KEEP the query string (`?page=2` is a distinct page).
@@ -58,7 +71,7 @@ export const MAX_SKIPPED_REPORTED = 200;
 export function normalizeCrawlUrl(raw: string): string {
   const u = new URL(raw);
   u.hash = "";
-  u.pathname = u.pathname.replace(/\/+$/, "") || "/";
+  u.pathname = stripTrailingSlashes(u.pathname) || "/";
   return u.toString();
 }
 
@@ -68,9 +81,9 @@ export function normalizeCrawlUrl(raw: string): string {
  * (no blind string-slice; see urlToSlug's run #9 regression for why).
  */
 export function isPathInScope(pathname: string, pathPrefix: string): boolean {
-  const prefix = pathPrefix.replace(/\/+$/, "");
+  const prefix = stripTrailingSlashes(pathPrefix);
   if (prefix === "") return true; // "/" scopes everything
-  const path = pathname.replace(/\/+$/, "") || "/";
+  const path = stripTrailingSlashes(pathname) || "/";
   return path === prefix || path.startsWith(`${prefix}/`);
 }
 

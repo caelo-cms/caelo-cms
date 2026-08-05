@@ -10,7 +10,7 @@
  * the design-token schemas in ops/imports.ts).
  */
 
-import { type CrawlScope, isPathInScope } from "@caelo-cms/site-importer";
+import { type CrawlScope, isPathInScope, stripTrailingSlashes } from "@caelo-cms/site-importer";
 import { z } from "zod";
 
 /**
@@ -61,7 +61,8 @@ export function refineCrawlScopeAgainstSourceUrl(
     return; // sourceUrl's own .url() check already reports this
   }
   if (!isPathInScope(path, prefix)) {
-    const p = prefix.replace(/\/+$/, "");
+    // Linear strip, not `/\/+$/` (js/polynomial-redos on slash runs).
+    const p = stripTrailingSlashes(prefix);
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["scope", "pathPrefix"],
