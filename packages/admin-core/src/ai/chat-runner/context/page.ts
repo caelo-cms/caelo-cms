@@ -35,11 +35,10 @@ export async function buildPageContext(
         page: {
           id: string;
           slug: string;
-          locale: string;
           title: string;
           status: string;
           templateId: string;
-          /** 0184 — this page is its locale's designated site root. */
+          /** 0184 — this page is the designated site root. */
           isHomePage: boolean;
           blocks: {
             blockName: string;
@@ -55,10 +54,10 @@ export async function buildPageContext(
       // / add_module_to_page calls reference a real id).
       const lines: string[] = [
         "# Current page",
-        `Page: ${v.page.slug} (locale=${v.page.locale}, status=${v.page.status}, id=${v.page.id})`,
+        `Page: ${v.page.slug} (status=${v.page.status}, id=${v.page.id})`,
         ...(v.page.isHomePage
           ? [
-              "Homepage: YES — this page is the site root and serves at `/` (not at `/<slug>`). It keeps its slug but the designation (set_home_page) makes it the locale root.",
+              "Homepage: YES — this page is the site root and serves at `/` (not at `/<slug>`). It keeps its slug but the designation (set_home_page) makes it the site root.",
             ]
           : []),
         `Template id: ${v.page.templateId}`,

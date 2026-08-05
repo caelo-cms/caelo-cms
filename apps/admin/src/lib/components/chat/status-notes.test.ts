@@ -84,7 +84,7 @@ describe("collapseStatusNotes (issue #303)", () => {
 
 describe("context-note helpers (collapse AI-context plumbing in the transcript)", () => {
   const pagectx =
-    '# Current page\nPage: home (locale=en, status=draft, id=abc)\n<div class="elementor-11">…</div>\n<!--pagectx:1a2b3c-->';
+    '# Current page\nPage: home (status=draft, id=abc)\n<div class="elementor-11">…</div>\n<!--pagectx:1a2b3c-->';
   const statusLine = "Theme: needs setup — call themes.get to inspect.\n<!--status:9z8y-->";
   const nudge = "Approved: crawl proposal 3f9a12bc — the crawler starts within ~10s.";
 

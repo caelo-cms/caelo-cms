@@ -21,7 +21,6 @@ export const load: PageServerLoad = async ({ locals }) => {
           pages: {
             id: string;
             slug: string;
-            locale: string;
             title: string;
             status: string;
             updatedAt: string;
@@ -49,13 +48,11 @@ export const actions: Actions = {
     const slug = String(form.get("slug") ?? "").trim();
     const title = String(form.get("title") ?? "").trim();
     const templateId = String(form.get("templateId") ?? "");
-    const locale = String(form.get("locale") ?? "en");
 
     const result = await execute(registry, adapter, locals.ctx, "pages.create", {
       slug,
       title,
       templateId,
-      locale,
     });
     if (!result.ok) return fail(400, { error: "Could not create page." });
     const pageId = (result.value as { pageId: string }).pageId;

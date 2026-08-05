@@ -75,7 +75,6 @@
                 <input type="checkbox" checked={selected.has(c.id)} onchange={() => toggle(c.id)} />
                 <span class="font-medium">{c.author_name}</span>
                 <Badge variant="outline">page: {c.page_id.slice(0, 8)}</Badge>
-                <Badge variant="outline">{c.locale}</Badge>
                 <span class="text-xs text-muted-foreground">{fmt(c.submitted_at)}</span>
               </label>
               <form method="post" action="?/aiModerate" use:enhance>

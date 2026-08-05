@@ -61,7 +61,7 @@ test("pages.create with no templateId resolves from site_defaults", () => {
       };
 
       const created = await execute(registry, adapter, ctx, "pages.create", {
-        slug: process.env.PAGE_SLUG
+        slug: process.env.PAGE_SLUG,
         title: "Defaults Applied",
         // templateId intentionally omitted — resolver must fall back
         // to site_defaults.default_template_id at create time.

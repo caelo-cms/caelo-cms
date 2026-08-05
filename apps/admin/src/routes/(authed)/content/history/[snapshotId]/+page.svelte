@@ -88,7 +88,7 @@
         <ul class="space-y-2">
           {#each data.pages as p (p.entityId)}
             <li class="flex items-center justify-between gap-2 text-sm">
-              <span><strong>{p.state.slug}</strong> ({p.state.locale}) — {p.state.title}</span>
+              <span><strong>{p.state.slug}</strong> — {p.state.title}</span>
               <form method="post" action="?/revertPage">
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="pageId" value={p.entityId} />
