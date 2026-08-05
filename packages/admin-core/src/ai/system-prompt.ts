@@ -435,21 +435,20 @@ export type PromptSurface = "chat" | "power-mcp";
 // the default path must be in the always-loaded core set.
 //
 // issue #413 — the playbook is built PER SURFACE: the inspect/parallel
-// entry and the closing discovery line reference capabilities that exist
-// only inside the chat-runner (`screenshot_page` rides the operator's
-// browser over the chat SSE stream, `spawn_subagents` needs the runner's
-// loop, and tool-search deferral is a provider-side feature of Caelo's own
-// calls). The power-mcp variant routes to the working alternatives
-// instead. Both variants are precomputed module-level constants — the
-// split adds a static per-surface prompt, never per-turn dynamism
-// (CLAUDE.md §11: the system prompt stays 100% static).
+// entry and the closing discovery line reference capabilities that differ
+// between surfaces (`spawn_subagents` needs the chat-runner's loop, and
+// tool-search deferral is a provider-side feature of Caelo's own calls).
+// `screenshot_page` works on BOTH since issue #412 — in-app it rides the
+// operator's browser over the chat SSE stream; on Power-MCP it renders
+// the session branch's preview in server-side Chromium. Both variants are
+// precomputed module-level constants — the split adds a static
+// per-surface prompt, never per-turn dynamism (CLAUDE.md §11: the system
+// prompt stays 100% static).
 function buildToolPlaybookBlock(surface: PromptSurface): string {
   const inspectAndParallel =
     surface === "chat"
       ? "**Inspect rendered output** → `inspect_page_render`, `screenshot_page`, `inspect_built_page`. **Parallel work** → `spawn_subagents`."
-      : // #412 lifts the screenshot_page exclusion; until it lands this names
-        // the alternatives that DO work on the Power-MCP surface.
-        "**Inspect rendered output** → `inspect_page_render` (composed HTML/CSS of this session's preview, pending edits included), `inspect_built_page` (the built HTML a Stage actually uploaded), `screenshot_external_page` (visual check of a PUBLIC URL — the published site included; it cannot see this session's preview branch, so preview inspection stays with the two tools before it). **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.";
+      : "**Inspect rendered output** → `inspect_page_render` (composed HTML/CSS of this session's preview, pending edits included), `screenshot_page` (real-Chromium screenshot of this session's branch preview, rendered server-side — the image comes back as an MCP image content block), `inspect_built_page` (the built HTML a Stage actually uploaded). **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.";
   const discovery =
     surface === "chat"
       ? 'These are the highlights, NOT the full catalogue — ~125 tools exist (bulk SEO, locales, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Only the core tools carry full schemas up front; the rest load on demand. Use the tool-search tool in your tool list to find and load them — search by the exact names above or by keyword ("redirect", "locale", "revert") — and do so proactively whenever a task needs a capability you don\'t see loaded.'

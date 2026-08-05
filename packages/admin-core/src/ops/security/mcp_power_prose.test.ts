@@ -76,16 +76,18 @@ describe("Power-MCP prompt↔catalog consistency (#413)", () => {
     expect(violations).toEqual([]);
   });
 
-  it("power-mcp playbook names the working visual-inspection alternatives", () => {
-    // Issue #413 acceptance criterion. #412 lifts the screenshot_page
-    // exclusion server-side; once it lands this clause may deliberately
-    // relax back toward the chat wording — update this test with it.
+  it("power-mcp playbook names the working visual-inspection tools incl. server-side screenshot_page", () => {
+    // Issue #413 acceptance criterion, updated by #412: screenshot_page is
+    // no longer excluded on this surface — the playbook now serves it (the
+    // server-side backend renders the session branch's preview), so the
+    // clause routes to it directly instead of the old alternatives.
     const playbook = composeSystemPromptChunks([], {}, "power-mcp").find(
       (c) => c.label === "tool-playbook",
     );
     expect(playbook).toBeDefined();
     expect(playbook?.body).toContain("`inspect_built_page`");
-    expect(playbook?.body).toContain("`screenshot_external_page`");
+    expect(playbook?.body).toContain("`screenshot_page`");
+    expect(playbook?.body).toContain("rendered server-side");
     expect(playbook?.body).toContain("`inspect_page_render`");
     // The chat-only tool-search deferral instruction must not leak here:
     // the MCP tool list already carries every schema.

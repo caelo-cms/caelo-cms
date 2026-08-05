@@ -19,14 +19,16 @@ import { getMediaStorage } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { MEDIA_VARIANT_TAGS, type MediaVariantTag } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
-import { requireUser } from "$lib/server/guards.js";
+import { requireUserOrPreviewScreenshotToken } from "$lib/server/preview-screenshot-auth.js";
 import { getQueryContext } from "$lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
 const VALID_VARIANTS = new Set<string>(MEDIA_VARIANT_TAGS);
 
-export const GET: RequestHandler = async ({ params, locals }) => {
-  requireUser(locals);
+export const GET: RequestHandler = async ({ params, locals, request }) => {
+  // issue #412 — the server-side screenshot browser presents a signed
+  // capture token instead of a session; same read grant either way.
+  const ctx = requireUserOrPreviewScreenshotToken(locals, request);
 
   const { assetId, variant } = params;
   if (!assetId || !variant || !VALID_VARIANTS.has(variant)) {
@@ -34,7 +36,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
   }
 
   const { adapter, registry } = getQueryContext();
-  const res = await execute(registry, adapter, locals.ctx, "media.get", { assetId });
+  const res = await execute(registry, adapter, ctx, "media.get", { assetId });
   if (!res.ok) throw error(404, "not found");
   const asset = (
     res.value as {
