@@ -23,6 +23,7 @@ const input = z
     runId: z.string().uuid(),
     status: z.enum(["pending", "accepted", "rejected"]).optional(),
     search: z.string().min(1).max(200).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
   })
   .strict();
 type Input = z.infer<typeof input>;
@@ -76,6 +77,13 @@ export const listImportPagesTool: ToolDefinitionWithHandler<Input> = {
         minLength: 1,
         maxLength: 200,
         description: "Case-insensitive substring match over source url, proposed slug, and title.",
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 500,
+        description:
+          "Maximum rows returned (default 200, max 500). Raise it for crawls over 200 pages — the result names the matched total, so a shortfall is visible.",
       },
     },
   },

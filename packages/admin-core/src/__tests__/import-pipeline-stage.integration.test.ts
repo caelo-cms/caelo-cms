@@ -350,6 +350,20 @@ describe("imports.list_pages (recorded searchviu crawl, post-compose)", () => {
     });
     expect(miss.ok).toBe(true);
     if (miss.ok) expect((miss.value as { total: number }).total).toBe(0);
+
+    // `limit` caps the rows while `total` still names the full match count,
+    // so truncation is visible (Copilot review on PR #437: the tool exposes
+    // the op's limit for crawls beyond the 200-row default).
+    const capped = await execute(registry, adapter, ctx, "imports.list_pages", {
+      runId,
+      limit: 1,
+    });
+    expect(capped.ok).toBe(true);
+    if (capped.ok) {
+      const v = capped.value as { total: number; pages: unknown[] };
+      expect(v.pages.length).toBe(1);
+      expect(v.total).toBe(FIXTURE.length);
+    }
   });
 
   it("run report's rebuilt counter reflects the linked pages", async () => {
