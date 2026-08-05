@@ -221,6 +221,7 @@ import {
   getRunCostOp,
   getSessionBudgetStateOp,
   listImportPageClustersOp,
+  listImportPagesOp,
   listImportRunsOp,
   listPendingImportProposalsOp,
   logImportRunEventOp,
@@ -792,6 +793,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P14 — Site Import Wizard.
   registry.register(listImportRunsOp);
   registry.register(getImportRunOp);
+  // issue #422 — lean per-run page list (ids + status, no HTML payload);
+  // the AI-facing surface behind list_import_pages.
+  registry.register(listImportPagesOp);
   registry.register(createImportRunOp);
   registry.register(proposeImportRunOp);
   registry.register(listPendingImportProposalsOp);

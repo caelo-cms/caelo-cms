@@ -35,10 +35,15 @@ import {
   type PageDesignTokens,
   type SiteDesignTokens,
 } from "@caelo-cms/site-importer";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { deriveRunCalibration } from "../ai/import-cost-model.js";
 import { recordAudit } from "../audit.js";
+import {
+  loadContentInstanceStateWithBranchOverlay,
+  loadModuleStateWithBranchOverlay,
+  loadPageLayoutStateWithBranchOverlay,
+} from "../snapshots/index.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
@@ -311,6 +316,147 @@ export const getImportRunOp = defineOperation({
             : String(p.rejected_at)
           : null,
         createdAt: p.created_at instanceof Date ? p.created_at.toISOString() : String(p.created_at),
+      })),
+    });
+  },
+});
+
+/**
+ * issue #422 — the AI's lean per-run page list. `imports.get` returns every
+ * page WITH its full `proposed_modules` payload (hundreds of KB of legacy
+ * page-builder HTML per page), which is why no AI tool ever exposed it — and
+ * without a list surface the AI could not obtain the `import_pages.id` that
+ * every follow-up call (build_page linkage, get_import_page, inventory,
+ * notes) needs. This op is the id-bearing projection (CLAUDE.md §11: every
+ * routine domain has a list op with filter + search): run status for crawl
+ * polling, plus per-page id / url / slug / status — never the raw HTML.
+ */
+export const listImportPagesOp = defineOperation({
+  name: "imports.list_pages",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: z.string().uuid(),
+      /** Filter by rebuild status. `accepted` = linked to a built CMS page. */
+      status: z.enum(["pending", "accepted", "rejected"]).optional(),
+      /** Case-insensitive substring over source_url / proposed_slug / proposed_title. */
+      search: z.string().min(1).max(200).optional(),
+      limit: z.number().int().min(1).max(500).default(200),
+    })
+    .strict(),
+  output: z.object({
+    run: z.object({
+      id: z.string(),
+      status: runStatus,
+      sourceUrl: z.string(),
+      pagesSeen: z.number().int(),
+      pagesExtracted: z.number().int(),
+      errorMessage: z.string().nullable(),
+    }),
+    /** Rows matching the filter, before `limit` is applied. */
+    total: z.number().int(),
+    pages: z.array(
+      z.object({
+        /** The staging `import_pages.id` — the id build_page's `importPageId`,
+         *  get_import_page, check_page_inventory and add_page_notes take. */
+        id: z.string(),
+        sourceUrl: z.string(),
+        proposedSlug: z.string(),
+        proposedTitle: z.string().nullable(),
+        status: z.enum(["pending", "accepted", "rejected"]),
+        /** The built CMS page (accepted/composed), when linked. */
+        acceptedPageId: z.string().nullable(),
+        clusterKey: z.string().nullable(),
+        clusterLabel: z.string().nullable(),
+        hasScreenshot: z.boolean(),
+      }),
+    ),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const runs = (await tx.execute(sql`
+      SELECT id::text AS id, status, source_url, pages_seen, pages_extracted, error_message
+      FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
+    `)) as unknown as Array<{
+      id: string;
+      status: z.infer<typeof runStatus>;
+      source_url: string;
+      pages_seen: number;
+      pages_extracted: number;
+      error_message: string | null;
+    }>;
+    const run = runs[0];
+    if (!run) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.list_pages",
+        message:
+          "import run not found — pass the runId returned by propose_site_import's approval (imports.list shows every run for humans)",
+      });
+    }
+    // Status priority mirrors the run report: an accepted link wins over a
+    // stale rejected_at, everything else is pending.
+    const conds: SQL[] = [sql`run_id = ${input.runId}::uuid`];
+    if (input.status === "accepted") {
+      conds.push(sql`accepted_page_id IS NOT NULL`);
+    } else if (input.status === "rejected") {
+      conds.push(sql`accepted_page_id IS NULL AND rejected_at IS NOT NULL`);
+    } else if (input.status === "pending") {
+      conds.push(sql`accepted_page_id IS NULL AND rejected_at IS NULL`);
+    }
+    if (input.search !== undefined) {
+      const like = `%${input.search}%`;
+      conds.push(
+        sql`(source_url ILIKE ${like} OR proposed_slug ILIKE ${like} OR proposed_title ILIKE ${like})`,
+      );
+    }
+    const where = sql.join(conds, sql` AND `);
+    const counted = (await tx.execute(sql`
+      SELECT count(*)::int AS n FROM import_pages WHERE ${where}
+    `)) as unknown as Array<{ n: number }>;
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, source_url, proposed_slug, proposed_title,
+             accepted_page_id::text AS accepted_page_id, rejected_at,
+             cluster_key, cluster_label, screenshot_object_key
+      FROM import_pages
+      WHERE ${where}
+      ORDER BY created_at ASC
+      LIMIT ${input.limit}
+    `)) as unknown as Array<{
+      id: string;
+      source_url: string;
+      proposed_slug: string;
+      proposed_title: string | null;
+      accepted_page_id: string | null;
+      rejected_at: string | Date | null;
+      cluster_key: string | null;
+      cluster_label: string | null;
+      screenshot_object_key: string | null;
+    }>;
+    return ok({
+      run: {
+        id: run.id,
+        status: run.status,
+        sourceUrl: run.source_url,
+        pagesSeen: run.pages_seen,
+        pagesExtracted: run.pages_extracted,
+        errorMessage: run.error_message,
+      },
+      total: counted[0]?.n ?? 0,
+      pages: rows.map((p) => ({
+        id: p.id,
+        sourceUrl: p.source_url,
+        proposedSlug: p.proposed_slug,
+        proposedTitle: p.proposed_title,
+        status: (p.accepted_page_id !== null
+          ? "accepted"
+          : p.rejected_at !== null
+            ? "rejected"
+            : "pending") as "pending" | "accepted" | "rejected",
+        acceptedPageId: p.accepted_page_id,
+        clusterKey: p.cluster_key,
+        clusterLabel: p.cluster_label,
+        hasScreenshot: p.screenshot_object_key !== null,
       })),
     });
   },
@@ -852,7 +998,7 @@ export const setRunDesignTokensOp = defineOperation({
  * auto-GC'd (only Owner-run imports.cleanup_run drops them).
  */
 const IMPORT_PAGE_NOT_FOUND_MSG =
-  "import page not found. Pass EITHER the staging import_pages.id (from get_import_page / imports.get — this ALWAYS resolves) OR the built CMS page id. A built page id resolves only when its slug equals the crawled proposed_slug, or (for the homepage) when it is the locale's designated home page. If you built the page with a custom/translated slug, pass the staging import_pages.id instead. (Import rows do not expire — a miss means an id/slug mismatch, not staleness.)";
+  "import page not found. Pass EITHER the staging import_pages.id (list_import_pages({runId}) shows every page's id — this id ALWAYS resolves) OR the built CMS page id. A built page id resolves only when the import row links to it (build_page was called with importPageId), when its slug equals the crawled proposed_slug, or (for the homepage) when it is the locale's designated home page. If you built the page with a custom/translated slug, pass the staging import_pages.id instead. (Import rows do not expire — a miss means an id/slug mismatch, not staleness.)";
 
 /**
  * Resolve whatever id the AI holds for a crawled page to its owning
@@ -1444,12 +1590,13 @@ const noteCategory = z.enum([
  * so multiple passes (content rebuild, then a11y sweep) accumulate.
  *
  * issue #263 — `importPageId` accepts EITHER the `import_pages.id`
- * (staging row) OR the `import_pages.accepted_page_id` (the composed
- * CMS `pages.id` that accept_page / compose_from_run minted). Both are
- * uuids and the AI naturally reaches for the CMS page id it just built,
- * so the handler resolves both against one row inside the tx rather
- * than forcing the model to round-trip through imports.get (CLAUDE.md
- * §1A — enrich the surface so the AI doesn't have to ask).
+ * (staging row) OR the built CMS `pages.id`. Both are uuids and the AI
+ * naturally reaches for the CMS page id it just built, so the handler
+ * resolves either form via the shared `resolveImportPageRef` (which also
+ * covers the #278 direct-build cases: a built page matched by slug or by
+ * its home-page designation, where `accepted_page_id` was never stamped)
+ * rather than forcing the model to round-trip through list_import_pages
+ * (CLAUDE.md §1A — enrich the surface so the AI doesn't have to ask).
  */
 export const addImportPageNotesOp = defineOperation({
   name: "imports.add_page_notes",
@@ -1478,20 +1625,20 @@ export const addImportPageNotesOp = defineOperation({
     .strict(),
   output: z.object({ totalNotes: z.number().int() }),
   handler: async (ctx, input, tx) => {
-    // #263 — resolve the given id against BOTH the staging id and the
-    // accepted CMS page id, preferring a direct import_pages.id match
-    // (the `ORDER BY … DESC` pins it first when a value could somehow
-    // match both id spaces). One statement keeps the resolve + write in
-    // the same tx.
+    // #263/#422 — shared resolver: staging id / linked CMS page id / #278
+    // slug-matched build / #278 homepage-not-at-root, both directions (see
+    // resolveImportPageRef). The previous inline lookup only knew the first
+    // two forms, so a page built without `importPageId` (no accepted link)
+    // rejected the very CMS page id build_page had just returned.
+    const ref = await resolveImportPageRef(tx, input.importPageId);
+    if (!ref) {
+      return err({
+        kind: "HandlerError",
+        operation: "imports.add_page_notes",
+        message: IMPORT_PAGE_NOT_FOUND_MSG,
+      });
+    }
     const rows = (await tx.execute(sql`
-      WITH target AS (
-        SELECT id
-        FROM import_pages
-        WHERE id = ${input.importPageId}::uuid
-           OR accepted_page_id = ${input.importPageId}::uuid
-        ORDER BY (id = ${input.importPageId}::uuid) DESC
-        LIMIT 1
-      )
       UPDATE import_pages ip
       -- (::text)::jsonb, not ::jsonb: bun-postgres infers a jsonb
       -- parameter type from the direct cast and double-encodes the
@@ -1499,8 +1646,7 @@ export const addImportPageNotesOp = defineOperation({
       -- Forcing the text path keeps it an array. (INSERT targets
       -- coerce via the column type and don't hit this.)
       SET notes = COALESCE(ip.notes, '[]'::jsonb) || (${JSON.stringify(input.notes)}::text)::jsonb
-      FROM target
-      WHERE ip.id = target.id
+      WHERE ip.id = ${ref.importPageId}::uuid
       RETURNING jsonb_array_length(ip.notes) AS total
     `)) as unknown as Array<{ total: number }>;
     const r = rows[0];
@@ -1508,8 +1654,7 @@ export const addImportPageNotesOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "imports.add_page_notes",
-        message:
-          "import page not found — importPageId accepts either the staging import_pages.id OR the composed CMS page id (import_pages.accepted_page_id); list the run with imports.get to see both ids per page",
+        message: IMPORT_PAGE_NOT_FOUND_MSG,
       });
     }
     await recordAudit(tx, {
@@ -1643,21 +1788,39 @@ export const checkImportPageInventoryOp = defineOperation({
     const sourceHtml = sourceModules.map((m) => m.html).join("\n");
     const sourceInventory = extractContentInventory(sourceHtml);
 
-    // Rebuilt content = the composed page's current modules + any
-    // field-carried content on their content_instances.
-    const rebuiltRows = (await tx.execute(sql`
-      SELECT m.html AS html, ci."values" AS values
-      FROM page_modules pm
-      JOIN modules m ON m.id = pm.module_id
-      LEFT JOIN content_instances ci ON ci.id = pm.content_instance_id
-      WHERE pm.page_id = ${row.accepted_page_id}::uuid
-        AND (${input.includeChrome} OR pm.block_name NOT IN ('header', 'footer'))
-    `)) as unknown as Array<{ html: string | null; values: unknown }>;
+    // Rebuilt content = the composed page's modules + any field-carried
+    // content on their content_instances — read through the BRANCH OVERLAY,
+    // never the live tables alone. build_page inside a chat records its
+    // placements/content only as branch snapshots until publish (see the
+    // `if (!branched)` gate in ops/content/build-page.ts), so for exactly
+    // the flow that calls this check — the migrate chat, pre-publish — the
+    // live `page_modules` rows are empty. Reading live-only was the
+    // "54/54 missing on a demonstrably complete page" false negative
+    // (issue #422; #360's bug class). Outside a chat (ctx.chatBranchId
+    // unset) every loader falls through to the live rows unchanged.
+    const branchId = ctx.chatBranchId ?? null;
+    const layout = await loadPageLayoutStateWithBranchOverlay(tx, row.accepted_page_id, branchId);
     const rebuiltParts: string[] = [];
-    for (const r of rebuiltRows) {
-      if (r.html) rebuiltParts.push(r.html);
-      const values = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
-      for (const s of collectStringValues(values)) rebuiltParts.push(s);
+    for (const block of layout.blocks) {
+      if (!input.includeChrome && (block.blockName === "header" || block.blockName === "footer")) {
+        continue;
+      }
+      // v0.12+ producers always set `placements`; pre-v0.12 snapshots only
+      // carry `moduleIds` (html-only coverage — no bound content values).
+      const placements =
+        block.placements ??
+        block.moduleIds.map((moduleId) => ({ moduleId, contentInstanceId: null }));
+      for (const p of placements) {
+        const mod = await loadModuleStateWithBranchOverlay(tx, p.moduleId, branchId);
+        if (mod?.html) rebuiltParts.push(mod.html);
+        if (p.contentInstanceId === null) continue;
+        const ci = await loadContentInstanceStateWithBranchOverlay(
+          tx,
+          p.contentInstanceId,
+          branchId,
+        );
+        for (const s of collectStringValues(ci?.values ?? null)) rebuiltParts.push(s);
+      }
     }
     const rebuiltHtml = rebuiltParts.join("\n");
 
@@ -2709,7 +2872,7 @@ export const composeFromImportRunOp = defineOperation({
       status: z.literal("crawling"),
       /** Which not-ready state the run is in (crawling vs not-yet-started). */
       runStatus: z.enum(["crawling", "proposed"]),
-      /** Suggested wait before the AI re-checks `imports.get`. */
+      /** Suggested wait before the AI re-checks `list_import_pages`. */
       retryAfterMs: z.number().int(),
     }),
     z.object({
