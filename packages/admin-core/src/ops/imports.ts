@@ -1808,12 +1808,17 @@ export const checkImportPageInventoryOp = defineOperation({
       // v0.12+ producers always set `placements`; pre-v0.12 snapshots only
       // carry `moduleIds` (html-only coverage — no bound content values).
       const placements =
-        block.placements ?? block.moduleIds.map((moduleId) => ({ moduleId, contentInstanceId: null }));
+        block.placements ??
+        block.moduleIds.map((moduleId) => ({ moduleId, contentInstanceId: null }));
       for (const p of placements) {
         const mod = await loadModuleStateWithBranchOverlay(tx, p.moduleId, branchId);
         if (mod?.html) rebuiltParts.push(mod.html);
         if (p.contentInstanceId === null) continue;
-        const ci = await loadContentInstanceStateWithBranchOverlay(tx, p.contentInstanceId, branchId);
+        const ci = await loadContentInstanceStateWithBranchOverlay(
+          tx,
+          p.contentInstanceId,
+          branchId,
+        );
         for (const s of collectStringValues(ci?.values ?? null)) rebuiltParts.push(s);
       }
     }
