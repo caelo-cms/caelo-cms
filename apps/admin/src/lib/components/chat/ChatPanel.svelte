@@ -128,6 +128,15 @@
 
   let messages = $state<ChatMessage[]>(initialMessages);
   let composer = $state("");
+  /**
+   * SSR renders the composer disabled; onMount flips it. Until
+   * hydration the keydown/submit handlers don't exist, so a visitor
+   * (or Playwright) typing into the server-rendered textarea would
+   * hit Enter into the void — CI lost exactly that race on every
+   * cold-started run. Disabled-until-hydrated makes readiness visible
+   * to actionability checks instead of a silent no-op window.
+   */
+  let hydrated = $state(false);
   let composerEl = $state<HTMLTextAreaElement | null>(null);
 
   // The /edit canvas empty state ("Chat and build your page") is one
@@ -1116,6 +1125,8 @@
    * user can select N elements then send "make them all green" in one turn.
    */
   onMount(() => {
+    // Hydration gate — see the composer's `disabled` binding.
+    hydrated = true;
     // v0.2.63 — initial fetch of pending proposals scoped to this
     // chat. Subsequent refreshes are triggered by tool-result events
     // (the runner just queued or executed something).
@@ -2228,6 +2239,7 @@
               dragOver && "border-primary ring-2 ring-primary/30",
             )}
             data-testid="chat-composer"
+            disabled={!hydrated}
             oninput={() => {
               autoSizeComposer();
               detectMention();

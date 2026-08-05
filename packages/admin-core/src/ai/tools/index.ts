@@ -68,10 +68,7 @@ import { checkRunBudgetTool, setMigrationBudgetTool } from "./migration-budget.j
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
-import { proposeAddLocaleTool } from "./propose-add-locale.js";
 import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
-import { proposeRemoveLocaleTool } from "./propose-remove-locale.js";
-import { proposeSetDefaultLocaleTool } from "./propose-set-default-locale.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
 import { proposeSkillTool } from "./propose-skill.js";
 import {
@@ -102,7 +99,6 @@ import {
   proposeUserDeleteTool,
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
-import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
 import { queryPageHtmlTool } from "./query-page-html.js";
 import { readContentTool } from "./read-content.js";
 import { readPageMoreTool } from "./read-page-more.js";
@@ -351,11 +347,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // only `published` pages ship to Stage / Production. Bulk variant
   // saves N round-trips when the user asks to flip a batch.
   registry.register(setPagesStatusManyTool);
-  // P9 — locale propose tools (CLAUDE.md §11.A two-step gate).
-  registry.register(proposeAddLocaleTool);
-  registry.register(proposeRemoveLocaleTool);
-  registry.register(proposeSetDefaultLocaleTool);
-  registry.register(proposeUpdateLocaleStrategyTool);
   // P10A — AI proposes a new skill body for Owner review.
   registry.register(proposeSkillTool);
   // P10.5 — AI spawns subagents (single + plural) for parallel

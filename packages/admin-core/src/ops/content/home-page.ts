@@ -67,7 +67,7 @@ export const setHomePageOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "pages.set_home_page",
-        message: `locale "${locale}" is not configured — add it under /security/locales, or pass a locale that exists (list via list_locales)`,
+        message: `locale "${locale}" is not configured — pass a locale that exists (list via list_locales)`,
       });
     }
     await recordAudit(tx, {
