@@ -20,6 +20,8 @@ export const setMediaAltTool: ToolDefinitionWithHandler<
     "(or the user asks you to improve a11y) and the existing alt is missing or unhelpful. " +
     "Doesn't move bytes around — only updates the alt field on `media_assets`. " +
     "If you don't know what an image depicts, do NOT invent alt text — leave it alone. " +
+    "The assetId is the media UUID from a `find_media` row's `id` column (or an " +
+    "`import_media_from_urls` / `generate_image` result). " +
     "Prefer `set_media_alt_many` over multiple `set_media_alt` calls when changing more than one.",
   schema: setMediaAltToolInput,
   inputSchema: {

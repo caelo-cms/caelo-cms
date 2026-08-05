@@ -17,14 +17,17 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultFontsCacheDir } from "@caelo-cms/admin-core";
 import { error } from "@sveltejs/kit";
-import { requireUser } from "$lib/server/guards.js";
+import { requireUserOrPreviewScreenshotToken } from "$lib/server/preview-screenshot-auth.js";
 import type { RequestHandler } from "./$types";
 
 const FAMILY_RE = /^[a-z0-9-]{1,80}$/;
 const FILE_RE = /^[a-f0-9]{16}\.woff2$/;
 
-export const GET: RequestHandler = async ({ params, locals }) => {
-  requireUser(locals);
+export const GET: RequestHandler = async ({ params, locals, request }) => {
+  // issue #412 — the server-side screenshot browser presents a signed
+  // capture token instead of a session; fonts are the same content-
+  // addressed bytes either way.
+  requireUserOrPreviewScreenshotToken(locals, request);
 
   const { family, file } = params;
   if (!family || !file || !FAMILY_RE.test(family) || !FILE_RE.test(file)) {

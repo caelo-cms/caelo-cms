@@ -39,6 +39,13 @@ export {
   normHref,
 } from "./content-inventory.js";
 export {
+  type BoilerplateStripTarget,
+  collapseDuplicateNavs,
+  filterPresetThemeTokens,
+  type StrippedChromeBlock,
+  stripBoilerplateSubtrees,
+} from "./content-only.js";
+export {
   type CrawlScope,
   hreflangMatchesLocale,
   isPathInScope,
@@ -86,7 +93,10 @@ export {
   extractTitle,
   type ModuleExtraction,
   stripCommentThreads,
+  stripConsentNoise,
+  stripConsentSubtrees,
 } from "./extractor.js";
+export { REMOVE_HIDDEN_ELEMENTS_SCRIPT } from "./hidden-elements.js";
 export { htmlToMarkdown } from "./html-to-markdown.js";
 export {
   type ProposedModuleBlock,
@@ -126,6 +136,7 @@ export {
   type RenderedFetchOk,
   type RenderedFetchResult,
 } from "./rendered-fetch.js";
+export { type RepeatedSubtreeStrip, stripRepeatedSubtrees } from "./repeated-strip.js";
 export { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 export {
   assertPublicHttpUrl,

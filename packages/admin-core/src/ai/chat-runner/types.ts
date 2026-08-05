@@ -210,6 +210,15 @@ export interface ChatRunnerOptions {
    * pass nothing and behaviour is unchanged.
    */
   readonly temperature?: number;
+  /**
+   * issue #412 — set to true ONLY by the interactive SSE chat route,
+   * where a real operator browser consumes the event stream and can
+   * service `request-screenshot`. Headless drivers (the MCP send_chat
+   * bridge) leave it unset, and `spawnChildChatTurn` deliberately does
+   * not forward it — subagent children always render screenshots
+   * server-side instead of contending for the operator's browser.
+   */
+  readonly operatorBrowserAttached?: boolean;
 }
 
 /**

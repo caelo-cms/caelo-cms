@@ -145,7 +145,6 @@ import {
   proposeDeployRollbackOp,
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
-import { getDesignManifestOp, setDesignManifestOp } from "./ops/design_manifest.js";
 import {
   executeDomainProposalOp,
   listPendingDomainProposalsOp,
@@ -256,7 +255,6 @@ import {
   mediaGetSettingsOp,
   mediaListOp,
   mediaListUsagesOp,
-  mediaRecentForAiOp,
   mediaRecordUsageOp,
   mediaSetSourceOp,
   mediaUpdateAltOp,
@@ -753,9 +751,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(selectGenesisDraftOp);
   // issue #375 — view-time theme-shell composition for draft previews.
   registry.register(renderDesignDraftOp);
-  // issue #165 — Design Manifest (per-site design language).
-  registry.register(getDesignManifestOp);
-  registry.register(setDesignManifestOp);
   // issue #264 — per-page edit log (durable work history for later chats /
   // subagents that touch the page). Append-only, ungated.
   registry.register(appendPageLogOp);
@@ -907,7 +902,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaDeleteOp);
   registry.register(mediaDeleteManyOp);
   registry.register(mediaRecordUsageOp);
-  registry.register(mediaRecentForAiOp);
   registry.register(mediaListUsagesOp);
   registry.register(mediaGetSettingsOp);
   registry.register(setMediaCdnOp);

@@ -124,6 +124,17 @@ export interface ToolContext {
    */
   readonly pushClientEvent?: (event: unknown) => void;
   /**
+   * issue #412 — true ONLY when a live operator browser consumes this
+   * turn's client events (the interactive SSE chat route sets it on
+   * ChatRunnerOptions; the runner threads it here). `pushClientEvent`
+   * alone cannot distinguish "browser listening" from "events buffered
+   * into a headless collector" (mcp.send_chat) — the runner installs the
+   * sink on every dispatch. `screenshot_page` keys its backend choice on
+   * THIS flag: attached browser → SSE capture; otherwise → server-side
+   * Chromium render of the branch preview.
+   */
+  readonly operatorBrowserAttached?: boolean;
+  /**
    * v0.3.1 — browser-mediated screenshot tool needs to wait for the
    * operator's browser to capture + upload the image. When set, the
    * tool can register itself with this orchestrator: it generates a

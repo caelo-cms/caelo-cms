@@ -48,6 +48,15 @@ export interface NormalizeResult {
     CanonicalPath,
     "color" | "dimension" | "typography" | "shadow" | "duration" | "cubicBezier" | "gradient"
   >;
+  /**
+   * issue #430 — the token's ROLE, per canonical path: what this token
+   * is for and, crucially, where it must NOT be used ("CTAs and links
+   * only — never large background fills"). Lifted off the `$description`
+   * of a DTCG envelope the caller passed in `set`, so a value and its
+   * role land in ONE write instead of a value call plus a prose-metadata
+   * call. The ops layer stores it back on the leaf as `$description`.
+   */
+  readonly descriptions: Record<CanonicalPath, string>;
   /** Echo-back list for the AI tool's result content. */
   readonly canonicalPaths: readonly CanonicalPath[];
 }
@@ -218,6 +227,7 @@ const DEFAULT_TIER = "sm"; // shadowSm / radiusMd default
 export function normalizeTokens(input: Record<string, unknown>): NormalizeResult {
   const set: Record<CanonicalPath, unknown> = {};
   const types: Record<CanonicalPath, NormalizeResult["types"][string]> = {};
+  const descriptions: Record<CanonicalPath, string> = {};
   const paths: CanonicalPath[] = [];
 
   for (const [rawName, rawValueIn] of Object.entries(input)) {
@@ -235,13 +245,35 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
         // Not JSON after all — keep the literal string.
       }
     }
-    if (
-      rawValue !== null &&
-      typeof rawValue === "object" &&
-      !Array.isArray(rawValue) &&
-      "$value" in (rawValue as Record<string, unknown>)
-    ) {
-      rawValue = (rawValue as Record<string, unknown>).$value;
+    // issue #430 — the envelope may also carry `$description` (the token's
+    // role). Lift it BEFORE unwrapping, then re-attach it at the canonical
+    // path so "what this colour is for" survives the same call that sets
+    // the colour. Without this the role is silently dropped on the way in.
+    let envelopeDescription: string | undefined;
+    const isEnvelope =
+      rawValue !== null && typeof rawValue === "object" && !Array.isArray(rawValue);
+    if (isEnvelope && "$value" in (rawValue as Record<string, unknown>)) {
+      const envelope = rawValue as Record<string, unknown>;
+      if (typeof envelope.$description === "string" && envelope.$description.trim().length > 0) {
+        envelopeDescription = envelope.$description;
+      }
+      rawValue = envelope.$value;
+    } else if (isEnvelope && "$description" in (rawValue as Record<string, unknown>)) {
+      // ROLE-ONLY patch: `{$description}` with no `$value`. The anchor-page
+      // design review annotates tokens whose VALUES are already settled, so
+      // it must be able to write the role without restating (and risking
+      // drift on) every value. Resolve the path without the value — which
+      // only canonical / CSS-var names allow, since loose names infer their
+      // category FROM the value — and record no `set` entry, so
+      // applyDtcgWrites patches the leaf's metadata and leaves `$value` alone.
+      const role = (rawValue as Record<string, unknown>).$description;
+      // A blank role is nothing to write — same tolerance the value-carrying
+      // envelope gives it. The tool reports the resulting no-op.
+      if (typeof role !== "string" || role.trim().length === 0) continue;
+      const path = resolvePathWithoutValue(rawName);
+      descriptions[path] = role.trim();
+      if (!paths.includes(path)) paths.push(path);
+      continue;
     }
     const resolved = resolveOne(rawName, rawValue);
     // v0.11.0 fix (#45 review thread on theme-normalize.ts:149) —
@@ -273,10 +305,11 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
     }
     set[resolved.path] = storedValue;
     types[resolved.path] = resolved.inferredType;
+    if (envelopeDescription !== undefined) descriptions[resolved.path] = envelopeDescription;
     paths.push(resolved.path);
   }
 
-  return { set, types, canonicalPaths: paths };
+  return { set, types, descriptions, canonicalPaths: paths };
 }
 
 interface ResolvedToken {
@@ -289,6 +322,35 @@ interface ResolvedToken {
    * categories (color / dimension / shadow / duration / cubicBezier).
    */
   readonly compositeWrap?: string;
+}
+
+/**
+ * issue #430 — resolve a canonical path for a ROLE-ONLY patch, where no
+ * value is supplied to infer the category from.
+ *
+ * Only the two name forms that carry their own category work here:
+ * a canonical DTCG path (`color.primary`) and the CSS-var form
+ * (`--color-primary`) — which is what a caller annotating an existing
+ * theme naturally has, since it just read the document or the module CSS.
+ * A loose name (`primaryColor`) infers its category FROM the value, so
+ * without one it is genuinely unresolvable: say so rather than guess
+ * (CLAUDE.md §2).
+ */
+function resolvePathWithoutValue(rawName: string): CanonicalPath {
+  if (/^[a-z][a-z0-9_-]*(\.[a-z0-9_-]+)+$/i.test(rawName)) return rawName;
+  if (rawName.startsWith("--")) {
+    const stripped = rawName.slice(2);
+    const firstHyphen = stripped.indexOf("-");
+    if (firstHyphen > 0) {
+      const category = stripped.slice(0, firstHyphen);
+      const rest = stripped.slice(firstHyphen + 1);
+      // --font-heading / --text-heading are two emitted vars for ONE
+      // typography composite; a role belongs on the composite.
+      if (category === "font" || category === "text") return `typography.${rest}`;
+      return `${category}.${rest}`;
+    }
+  }
+  throw new UnknownTokenName(rawName, []);
 }
 
 function resolveOne(rawName: string, rawValue: unknown): ResolvedToken {

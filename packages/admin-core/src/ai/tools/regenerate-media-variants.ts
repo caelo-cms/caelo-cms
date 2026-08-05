@@ -23,8 +23,8 @@ export const regenerateMediaVariantsTool: ToolDefinitionWithHandler<
     "to sweep the whole library. Additive only: existing variants are never touched. " +
     "Read each result: status 'regenerated' lists the new variants; 'skipped' explains why the variant " +
     "can NEVER exist (source narrower than the breakpoint, animated GIF, non-raster) — in that case " +
-    "edit the module HTML to use the result's bestUrl (find referencing modules via the ## Media block " +
-    "or media.list_usages) and do not retry regeneration. " +
+    "edit the module HTML to use the result's bestUrl (find referencing modules via media.list_usages) " +
+    "and do not retry regeneration. " +
     "Do NOT use this to create crops or resize images for layout reasons.",
   schema: regenerateMediaVariantsToolInput,
   inputSchema: {

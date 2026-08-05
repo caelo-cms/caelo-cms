@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { buildReport, formatCostSection, parseAiCost } from "./build-stats.js";
+import {
+  buildReport,
+  formatBugSection,
+  formatCostSection,
+  parseAiCost,
+  parseBugReports,
+} from "./build-stats.js";
 
 const FULL = JSON.stringify({
   totalMicrocents: 150_000_000, // $1.50
@@ -132,31 +138,353 @@ describe("buildReport integration", () => {
     ],
   });
 
+  // The CURRENT loop-line shape (incl. tokensCached between tokensIn and
+  // tokensOut — the field whose arrival silently broke the previous
+  // build-stats-local regex into reporting 0 loops; issue #432).
+  const LOOP_LOG = [
+    "[chat-runner] enter {",
+    "[chat-runner] loop {",
+    '  chatSessionId: "s",',
+    "  loop: 0,",
+    '  loopStop: "end_turn",',
+    "  toolCalls: 2,",
+    '  toolNames: [ "build_page", "add_module" ],',
+    "  serverToolCalls: 0,",
+    "  serverToolNames: [],",
+    "  textChars: 1,",
+    "  thinkingBlocks: 0,",
+    "  inThisCall: 1000,",
+    "  cacheRead: 800,",
+    "  cacheWrite: 100,",
+    "  freshIn: 100,",
+    "  cacheHitPct: 80,",
+    "  outThisCall: 50,",
+    "  sentPrefixEstimate: 900,",
+    "  tokensIn: 1000,",
+    "  tokensCached: 800,",
+    "  tokensOut: 50,",
+    "}",
+  ].join("\n");
+
+  it("parses the current loop-line format — tokensCached must not zero the stats (issue #432)", () => {
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "" });
+    expect(md).toContain("**1** tool-call loops");
+    expect(md).toContain("**2** tool calls dispatched");
+    expect(md).toContain("1.0k** tokens in");
+  });
+
   it("leads with the cost section and drops loop-log tokens when cost is present", () => {
-    const log =
-      '[chat-runner] enter {\n[chat-runner] loop {\n  chatSessionId: "s",\n  loop: 1,\n  loopStop: "end_turn",\n  toolCalls: 2,\n  textChars: 1,\n  thinkingBlocks: 0,\n  tokensIn: 1000,\n  tokensOut: 50,\n}';
-    const md = buildReport({ log, reportRaw: REPORT, aiCostRaw: FULL });
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: FULL });
     expect(md.indexOf("Real AI cost")).toBeLessThan(md.indexOf("Chat-runner API stats"));
     expect(md).toContain("see **Real AI cost** above");
     // Loop-log token bullet must NOT appear when real cost is present.
-    expect(md).not.toContain("cumulative per turn");
+    expect(md).not.toContain("per-call sums");
     expect(md).toContain("scenario x");
   });
 
   it("keeps the loop-log token bullet when no cost json is present", () => {
-    const log = [
-      "[chat-runner] enter {",
-      '[chat-runner] loop {\n  chatSessionId: "s",\n  loop: 1,\n  loopStop: "end_turn",\n  toolCalls: 2,\n  textChars: 1,\n  thinkingBlocks: 0,\n  tokensIn: 1000,\n  tokensOut: 50,\n}',
-    ].join("\n");
-    const md = buildReport({ log, reportRaw: REPORT, aiCostRaw: "" });
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "" });
     expect(md).not.toContain("Real AI cost");
     expect(md).toContain("tokens in");
-    expect(md).toContain("cumulative per turn");
+    expect(md).toContain("per-call sums");
   });
 
   it("degrades gracefully with all inputs empty", () => {
     const md = buildReport({ log: "", reportRaw: "", aiCostRaw: "" });
     expect(md).not.toContain("Real AI cost");
     expect(md).toContain("No chat-runner activity recorded");
+  });
+
+  it("renders the input-token breakdown table + breach warning from metrics.json", () => {
+    const metricsRaw = JSON.stringify([
+      {
+        scenario: "homepage",
+        loops: 33,
+        inputTokens: 2_660_400,
+        attribution: { staticPerCallTokens: 52_600, historyEndTokens: 62_400 },
+        violations: [
+          {
+            metric: "inputTokens",
+            actual: 2_660_400,
+            limit: 2_000_000,
+            message: "total input 2660.4k > ceiling 2000.0k",
+          },
+        ],
+      },
+      {
+        scenario: "homepage",
+        loops: 18,
+        inputTokens: 1_200_000,
+        attribution: { staticPerCallTokens: 52_600, historyEndTokens: 40_000 },
+        violations: [],
+      },
+    ]);
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "", metricsRaw });
+    expect(md).toContain("### Input-token breakdown (per scenario attempt)");
+    expect(md).toContain("| homepage | 33 | 2660.4k | 52.6k | 62.4k |");
+    expect(md).toContain("**breached:** total input 2660.4k > ceiling 2000.0k");
+    expect(md).toContain("| homepage (attempt 2) | 18 |");
+    expect(md).toContain("1 attempt(s) breached token/loop thresholds");
+  });
+
+  it("omits the breakdown section when metrics.json is absent", () => {
+    const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "" });
+    expect(md).not.toContain("Input-token breakdown");
+  });
+});
+
+/** One `ai_bug_reports` row as the workflow's psql capture emits it. */
+function bugRow(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "11111111-1111-1111-1111-111111111111",
+    createdAt: "2026-08-05 10:00:00+00",
+    chatSessionId: "22222222-2222-2222-2222-222222222222",
+    title: "create_module drops nested fields",
+    whatHappened: "The nested module-list field came back empty.",
+    expected: "The two child modules should have been persisted.",
+    suspectedTool: "create_module",
+    evidence: null,
+    severity: "degraded",
+    blockedTask: false,
+    status: "new",
+    source: "ai",
+    ...over,
+  };
+}
+
+const BUGS = JSON.stringify([
+  bugRow({ severity: "cosmetic", source: "ai", title: "list_modules description truncated" }),
+  bugRow({
+    severity: "blocking",
+    source: "auto",
+    title: "messages.4: tool_use ids were found without tool_result blocks",
+    suspectedTool: null,
+    blockedTask: true,
+    evidence: "#0 user\n#1 assistant tool_use[toolu_01!UNANSWERED]",
+  }),
+  bugRow({ severity: "degraded", source: "auto", title: "pages.add_module → ValidationFailed" }),
+]);
+
+describe("parseBugReports", () => {
+  it("parses a well-formed row array", () => {
+    const rows = parseBugReports(BUGS);
+    expect(rows).toHaveLength(3);
+    expect(rows?.[0]?.severity).toBe("cosmetic");
+    expect(rows?.[1]?.blockedTask).toBe(true);
+    expect(rows?.[1]?.suspectedTool).toBeNull();
+  });
+
+  it("returns null for a missing file (empty string)", () => {
+    expect(parseBugReports("")).toBeNull();
+    expect(parseBugReports("   \n ")).toBeNull();
+  });
+
+  it("returns null for the {} capture-failure sentinel", () => {
+    // Distinct from `[]` — a failed capture must not look like a clean run.
+    expect(parseBugReports("{}")).toBeNull();
+  });
+
+  it("returns null for malformed JSON", () => {
+    expect(parseBugReports("not json at all")).toBeNull();
+    expect(parseBugReports("[ broken")).toBeNull();
+  });
+
+  it("returns an empty array for a capture that found nothing", () => {
+    expect(parseBugReports("[]")).toEqual([]);
+  });
+
+  it("salvages JSON behind a stray psql command tag", () => {
+    expect(parseBugReports(`SET\n${BUGS}`)).toHaveLength(3);
+  });
+
+  it("coerces missing/nullable columns without throwing", () => {
+    const rows = parseBugReports(JSON.stringify([{}]));
+    expect(rows?.[0]?.title).toBe("");
+    expect(rows?.[0]?.evidence).toBeNull();
+    expect(rows?.[0]?.blockedTask).toBe(false);
+  });
+});
+
+describe("formatBugSection", () => {
+  it("omits the section entirely when the capture is absent", () => {
+    expect(formatBugSection(null)).toEqual([]);
+  });
+
+  it("renders an explicit zero-state for a clean run", () => {
+    const md = formatBugSection([]).join("\n");
+    expect(md).toContain("### Detected bugs (0)");
+    expect(md).toContain("_None filed during this run._");
+  });
+
+  it("orders blocking first, then degraded, then cosmetic", () => {
+    const md = formatBugSection(parseBugReports(BUGS)).join("\n");
+    expect(md).toContain("### Detected bugs (3)");
+    const blocking = md.indexOf("tool_use ids were found");
+    const degraded = md.indexOf("pages.add_module");
+    const cosmetic = md.indexOf("list_modules description");
+    expect(blocking).toBeLessThan(degraded);
+    expect(degraded).toBeLessThan(cosmetic);
+  });
+
+  it("renders the table columns, the source, and the blocked flag", () => {
+    const md = formatBugSection(parseBugReports(BUGS)).join("\n");
+    expect(md).toContain("| Sev | Source | Title | Tool | Blocked |");
+    expect(md).toContain("| blocking | auto |");
+    expect(md).toContain("`create_module`");
+    // A null suspected_tool renders as an em dash, not an empty cell.
+    expect(md).toContain("| — | yes |");
+  });
+
+  it("carries diagnosis in a collapsed details block", () => {
+    const md = formatBugSection(parseBugReports(BUGS)).join("\n");
+    expect(md).toContain("<summary>Bug details (3)</summary>");
+    expect(md).toContain("- What happened:");
+    expect(md).toContain("!UNANSWERED");
+  });
+
+  it("keeps evidence newlines — the provider-error digest is line-oriented", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ evidence: "#0 user\n#1 assistant tool_use[toolu_01!UNANSWERED]" })]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("#0 user\n#1 assistant");
+  });
+
+  it("groups sources within a severity band", () => {
+    const rows = parseBugReports(
+      JSON.stringify([
+        bugRow({ severity: "degraded", source: "auto", title: "auto one" }),
+        bugRow({ severity: "degraded", source: "ai", title: "ai one" }),
+        bugRow({ severity: "degraded", source: "auto", title: "auto two" }),
+      ]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md.indexOf("ai one")).toBeLessThan(md.indexOf("auto one"));
+    expect(md.indexOf("auto one")).toBeLessThan(md.indexOf("auto two"));
+  });
+
+  it("caps the table and says out loud what it dropped", () => {
+    const many = Array.from({ length: 63 }, (_, i) => bugRow({ title: `bug number ${i}` }));
+    const md = formatBugSection(parseBugReports(JSON.stringify(many))).join("\n");
+    // The heading reports the true total even though the table is capped.
+    expect(md).toContain("### Detected bugs (63)");
+    expect(md).toContain("…13 more not shown");
+    expect(md).toContain("e2e-livedit-bugs-<run_id>");
+  });
+
+  it("truncates long titles and evidence to keep the comment under GitHub's limit", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ title: "T".repeat(300), evidence: "E".repeat(2000) })]),
+    );
+    const lines = formatBugSection(rows);
+    // Table cell caps at 80, the details heading at 200, evidence at 600.
+    const tableRow = lines.find((l) => l.startsWith("| degraded |"));
+    expect(tableRow).toBeDefined();
+    expect(tableRow?.match(/T+…/)?.[0]).toHaveLength(80);
+    expect(lines.find((l) => l.startsWith("**1."))?.match(/T+…/)?.[0]).toHaveLength(200);
+    expect(lines.find((l) => l.startsWith("E"))).toHaveLength(600);
+  });
+
+  // Regression: CodeQL js/incomplete-sanitization (alert #134 on PR #440).
+  // A backslash escape has to escape the backslash first; entities don't.
+  it("neutralizes pipes with an entity, leaving no escape character to mishandle", () => {
+    const rows = parseBugReports(JSON.stringify([bugRow({ title: "a | b" })]));
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("a &#124; b");
+    expect(md).not.toContain("\\|");
+  });
+
+  it("keeps a trailing backslash from smuggling a pipe past the escape", () => {
+    // `x \` + `| y` under backslash-escaping renders as `x \\| y` — the escape
+    // escapes the backslash and the pipe splits the row. Entities can't.
+    const rows = parseBugReports(JSON.stringify([bugRow({ title: "x \\| y" })]));
+    const row = formatBugSection(rows).find((l) => l.startsWith("| degraded |"));
+    // Exactly the 5 table columns ⇒ 6 delimiters. No injected extra cell.
+    expect(row?.split("|")).toHaveLength(7);
+  });
+
+  // Regression: the AI security review on PR #440 — evidence containing a
+  // fence as wide as the opener would close it and inject free markdown
+  // (fake tables, fake warnings) into the PR comment body.
+  it("widens the evidence fence past any backtick run in the content", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ evidence: "before\n````\n| Sev | fake row |\n````\nafter" })]),
+    );
+    const lines = formatBugSection(rows);
+    const open = lines.findIndex((l) => /^`{3,}$/.test(l));
+    const fence = lines[open];
+    expect(fence).toBe("`````");
+    // The body sits between a matched pair, so nothing escapes into markdown.
+    expect(lines.lastIndexOf(fence)).toBeGreaterThan(open);
+    expect(lines.filter((l) => l === fence)).toHaveLength(2);
+  });
+
+  it("still uses a plain fence for evidence with no backticks", () => {
+    const rows = parseBugReports(JSON.stringify([bugRow({ evidence: "no fences here" })]));
+    const lines = formatBugSection(rows);
+    expect(lines.filter((l) => l === "```")).toHaveLength(2);
+  });
+
+  it("stops a backtick in suspected_tool from closing its code span", () => {
+    const rows = parseBugReports(JSON.stringify([bugRow({ suspectedTool: "a`b" })]));
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("`a'b`");
+  });
+
+  it("neutralizes a </details> that would break the collapsible block open", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ whatHappened: "then </details> happened" })]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("&lt;/details>");
+    expect(md.match(/<\/details>/g)).toHaveLength(1);
+  });
+
+  it("escapes the ampersand first, so a pre-encoded tag cannot slip through", () => {
+    // Without escaping `&`, this passes through unchanged and the renderer
+    // decodes it back into a real closing tag.
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ whatHappened: "literal &lt;/details> in the text" })]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain("&amp;lt;/details>");
+    expect(md.match(/<\/details>/g)).toHaveLength(1);
+  });
+
+  it("shows module HTML in evidence bullets instead of letting it render as tags", () => {
+    const rows = parseBugReports(
+      JSON.stringify([bugRow({ expected: 'the <section class="hero"> should persist' })]),
+    );
+    const md = formatBugSection(rows).join("\n");
+    expect(md).toContain('&lt;section class="hero">');
+  });
+});
+
+describe("buildReport — detected bugs section", () => {
+  const REPORT = JSON.stringify({
+    stats: { duration: 1000 },
+    suites: [
+      {
+        specs: [
+          { title: "scenario x", tests: [{ results: [{ status: "passed", duration: 500 }] }] },
+        ],
+      },
+    ],
+  });
+
+  it("places detected bugs after the per-scenario verdict they qualify", () => {
+    const md = buildReport({ log: "", reportRaw: REPORT, aiCostRaw: "", bugsRaw: BUGS });
+    expect(md.indexOf("Per-scenario results")).toBeLessThan(md.indexOf("### Detected bugs"));
+    expect(md).toContain("### Detected bugs (3)");
+  });
+
+  it("reports a green run's clean bug slate rather than staying silent", () => {
+    const md = buildReport({ log: "", reportRaw: REPORT, aiCostRaw: "", bugsRaw: "[]" });
+    expect(md).toContain("### Detected bugs (0)");
+  });
+
+  it("omits the section when the capture is absent", () => {
+    const md = buildReport({ log: "", reportRaw: REPORT, aiCostRaw: "" });
+    expect(md).not.toContain("Detected bugs");
   });
 });

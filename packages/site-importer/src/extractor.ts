@@ -173,10 +173,26 @@ const CONSENT_NOISE_PATTERN =
   /(cmplz|cookiebot|onetrust|borlabs|usercentrics|didomi|klaro|iubenda|cookie-?(banner|notice|consent|law|bar)|consent-?(banner|modal|manager|popup)|gdpr-?(banner|popup))/i;
 
 export function stripConsentNoise(html: string): string {
+  return stripConsentSubtrees(html).html;
+}
+
+/**
+ * Counted variant of {@link stripConsentNoise} — same matcher, same engine.
+ *
+ * issue #415's inspect cleanup stage and issue #424's content-only import
+ * read both surface the number of removed consent subtrees in their
+ * counters line (CLAUDE.md §2 — never strip silently); for #424 it is
+ * defense in depth: extraction already strips consent noise, but stored
+ * runs recorded before that stripper — and consent DOM injected by JS
+ * after the static fetch — still carry it. The crawl path keeps the
+ * plain-string form above, whose signature stays stable for external
+ * reuse.
+ */
+export function stripConsentSubtrees(html: string): { html: string; removed: number } {
   return stripMatchingSubtrees(html, (attrs) => {
     const fingerprint = `${attrs.id ?? ""} ${attrs.class ?? ""} ${attrs["data-nosnippet"] ?? ""}`;
     return CONSENT_NOISE_PATTERN.test(fingerprint);
-  }).html;
+  });
 }
 
 /**

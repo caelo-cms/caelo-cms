@@ -22,7 +22,7 @@ export const listStructuredSetsTool = makeListReadTool<
   description:
     "List structured-data sets (nav menus, tags, taxonomies, link-lists) with item counts (TOON rows). " +
     "Optional `kind`, plus the standard list params: `filter`, `limit`/`offset`, `full: true`. " +
-    "The context block inlines nav-menu items at session start; call this after writes or when the listing was truncated.",
+    "Sets are NOT inlined in the system prompt — call this to discover what exists, then `get_structured_set` for one set's items.",
   opName: "structured_sets.list",
   input: listStructuredSetsInput,
   label: "structured_sets",

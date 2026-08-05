@@ -98,9 +98,13 @@ describe("find_media", () => {
     expect(r.ok).toBe(true);
     expect(r.content).toContain("mtcafe-hero.jpg");
     // The URL is the slug form (public), pointing at an existing variant
-    // (webp-800), not a fabricated one — and never the internal uuid id.
+    // (webp-800), not a fabricated one.
     expect(r.content).toContain(`/_caelo/media/${slug}/webp-800`);
-    expect(r.content).not.toContain(assetId);
+    // Issue #411: the row ALSO carries the media UUID — it is what
+    // set_theme_asset / set_media_alt require, and the content string is
+    // the only thing the model ever sees. (Pre-#411 this asserted the id
+    // stayed hidden, which left the AI with no bindable id at all.)
+    expect(r.content).toContain(assetId);
   });
 
   it("returns a clean no-match message (not an error) when nothing hits", async () => {

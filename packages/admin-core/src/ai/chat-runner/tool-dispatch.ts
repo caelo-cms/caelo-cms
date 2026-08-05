@@ -247,6 +247,9 @@ export async function* dispatchToolCall(
           tools,
           humanCtx,
           pushClientEvent,
+          // issue #412 — only the SSE route sets this; screenshot_page
+          // picks its backend (operator browser vs server render) from it.
+          ...(options.operatorBrowserAttached ? { operatorBrowserAttached: true } : {}),
           spawnChildChatTurn: ({
             chatInput,
             aiCtx: childAiCtx,

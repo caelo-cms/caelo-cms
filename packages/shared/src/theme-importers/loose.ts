@@ -46,7 +46,7 @@ export function importLoose(body: string): ThemeDocument {
   // ambiguity, per the v0.11.0 normalizer's failure surface).
   const normalized = normalizeTokens(obj);
   // Apply to an empty document so the result is a complete tokens tree.
-  const written = applyDtcgWrites({}, normalized.set, normalized.types);
+  const written = applyDtcgWrites({}, normalized.set, normalized.types, normalized.descriptions);
   return validateThemeTokens(written);
 }
 

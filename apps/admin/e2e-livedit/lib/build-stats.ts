@@ -6,6 +6,8 @@
  *   apps/admin/test-results/livedit/admin.log          (chat-runner stderr)
  *   apps/admin/test-results/livedit/playwright-report.json
  *   apps/admin/test-results/livedit/ai-cost.json        (real ai_calls totals)
+ *   apps/admin/test-results/livedit/metrics.json        (per-scenario summaries)
+ *   apps/admin/test-results/livedit/bug-reports.json    (ai_bug_reports rows)
  *
  * and writes a self-contained markdown block to stdout. The workflow
  * captures it and splices it into the sticky PR comment alongside the
@@ -14,10 +16,18 @@
  * The ai-cost.json input carries the REAL per-run AI cost aggregated
  * from the `ai_calls` table (a `SET caelo.actor_kind='system'` psql
  * dump in the workflow). It is the authoritative source for tokens +
- * dollars — the loop-log token counts in admin.log are cumulative per
- * turn and would double-count if summed. When ai-cost.json is absent
- * (older runs, DB-only scenarios, a failed capture that fell back to
- * `{}`) the cost section is silently omitted.
+ * dollars. When ai-cost.json is absent (older runs, DB-only scenarios,
+ * a failed capture that fell back to `{}`) the cost section is silently
+ * omitted. metrics.json (written by global-teardown from the
+ * per-scenario jsonl) feeds the issue #432 input-token breakdown table,
+ * including threshold breaches on attempts a retry later masked.
+ *
+ * The bug-reports.json input carries every `ai_bug_reports` row filed
+ * during the run — the model's own `bug_report` calls plus the
+ * chat-runner's auto-capture of failed tool results and turn-fatal
+ * provider errors. It is the signal the pass/fail verdict cannot
+ * carry: a GREEN run whose bug count rose means the AI routed around a
+ * defect rather than failing on it.
  *
  * NOT a Playwright reporter — those run in the test process and would
  * have to share state with the suite. This is a separate post-process
@@ -25,57 +35,17 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import type { ScenarioSummary } from "./metrics-core.js";
+import { buildThresholdWarnings, k, parseChatLog } from "./metrics-core.js";
 
 const ADMIN_LOG = "apps/admin/test-results/livedit/admin.log";
 const REPORT_JSON = "apps/admin/test-results/livedit/playwright-report.json";
 const AI_COST_JSON = "apps/admin/test-results/livedit/ai-cost.json";
+const METRICS_JSON = "apps/admin/test-results/livedit/metrics.json";
+const BUG_REPORTS_JSON = "apps/admin/test-results/livedit/bug-reports.json";
 
 /** 1 USD = 1e8 microcents (cost_estimate_microcents is stored in microcents). */
 const MICROCENTS_PER_USD = 100_000_000;
-
-interface LoopRecord {
-  chatSessionId: string;
-  loopStop: string;
-  toolCalls: number;
-  tokensIn: number;
-  tokensOut: number;
-}
-
-/**
- * Parse the chat-runner's `[chat-runner] loop { ... }` blocks from the
- * admin stderr capture. The format is Node `util.inspect`, not JSON;
- * we scan with regex.
- *
- *   [chat-runner] loop {
- *     chatSessionId: "uuid",
- *     loop: 1,
- *     loopStop: "tool_use",
- *     toolCalls: 4,
- *     textChars: 131,
- *     thinkingBlocks: 0,
- *     tokensIn: 134803,
- *     tokensOut: 717,
- *   }
- */
-function parseChatRunnerLoops(log: string): LoopRecord[] {
-  const re =
-    /\[chat-runner\] loop \{\s*chatSessionId:\s*"([^"]+)",[\s\S]*?loopStop:\s*"([^"]+)",[\s\S]*?toolCalls:\s*(\d+),[\s\S]*?tokensIn:\s*(\d+),\s*tokensOut:\s*(\d+),?\s*\}/g;
-  const out: LoopRecord[] = [];
-  let m: RegExpExecArray | null;
-  m = re.exec(log);
-  while (m !== null) {
-    const [, chatSessionId, loopStop, toolCalls, tokensIn, tokensOut] = m;
-    out.push({
-      chatSessionId: chatSessionId ?? "",
-      loopStop: loopStop ?? "",
-      toolCalls: Number.parseInt(toolCalls ?? "0", 10),
-      tokensIn: Number.parseInt(tokensIn ?? "0", 10),
-      tokensOut: Number.parseInt(tokensOut ?? "0", 10),
-    });
-    m = re.exec(log);
-  }
-  return out;
-}
 
 /**
  * Count `[chat-runner] enter` lines as chat turns. The runner logs
@@ -279,6 +249,307 @@ export function formatCostSection(cost: AiCost | null): string[] {
   return lines;
 }
 
+/** Parse metrics.json (an array of ScenarioSummary rows) defensively. */
+export function parseMetricsRows(raw: string): ScenarioSummary[] {
+  const parsed = tryJson(raw.trim());
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (r): r is ScenarioSummary => !!r && typeof r === "object" && "scenario" in r,
+  );
+}
+
+/**
+ * Render the `### Input-token breakdown` markdown section from the
+ * per-scenario-attempt summary rows (issue #432): where each attempt's
+ * input went (per-call static context vs history) plus a LOUD warning list
+ * for attempts that breached thresholds — even when a retry later passed.
+ * Empty array when there are no rows (older runs without metrics.json).
+ */
+export function formatBreakdownSection(rows: ScenarioSummary[]): string[] {
+  if (rows.length === 0) return [];
+  const lines: string[] = [];
+  lines.push("### Input-token breakdown (per scenario attempt)");
+  lines.push("");
+  lines.push("| Scenario | Loops | Input | Static/call (est) | History end (est) | Thresholds |");
+  lines.push("| --- | --- | --- | --- | --- | --- |");
+  const attemptNo = new Map<string, number>();
+  for (const r of rows) {
+    const n = (attemptNo.get(r.scenario) ?? 0) + 1;
+    attemptNo.set(r.scenario, n);
+    const name = n === 1 ? r.scenario : `${r.scenario} (attempt ${n})`;
+    const a = r.attribution;
+    const staticCall = a ? k(a.staticPerCallTokens) : "—";
+    const histEnd = a ? k(a.historyEndTokens) : "—";
+    const status =
+      Array.isArray(r.violations) && r.violations.length > 0
+        ? `**breached:** ${r.violations.map((v) => v.message).join("; ")}`
+        : "ok";
+    lines.push(
+      `| ${name} | ${r.loops} | ${k(r.inputTokens)} | ${staticCall} | ${histEnd} | ${status} |`,
+    );
+  }
+  lines.push("");
+  const warnings = buildThresholdWarnings(rows);
+  if (warnings.length > 0) {
+    lines.push(
+      `**⚠️ ${warnings.length} attempt(s) breached token/loop thresholds** — visible above and as run annotations, even if a retry turned the check green (issue #432).`,
+    );
+    lines.push("");
+  }
+  return lines;
+}
+
+/**
+ * One `ai_bug_reports` row as captured by the workflow's psql dump.
+ * Mirrors the table (migrations 0165 + 0177); `source` is `'ai'` when the
+ * model filed it via the `bug_report` tool and `'auto'` when the chat-runner
+ * captured it from a failed tool result or a turn-fatal provider error.
+ */
+interface BugReport {
+  id: string;
+  createdAt: string;
+  chatSessionId: string | null;
+  title: string;
+  whatHappened: string;
+  expected: string;
+  suspectedTool: string | null;
+  evidence: string | null;
+  severity: string;
+  blockedTask: boolean;
+  status: string;
+  source: string;
+}
+
+/** Rendered rows are capped so a pathological run can't blow GitHub's 65k comment limit. */
+const BUG_TABLE_MAX_ROWS = 50;
+/** Per-field cap inside the details block. The artifact carries the untruncated text. */
+const BUG_DETAIL_MAX_CHARS = 600;
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+function strOrNull(v: unknown): string | null {
+  return typeof v === "string" ? v : null;
+}
+
+/**
+ * Parse the `bug-reports.json` capture into rows, or `null` when the input
+ * carries no capture data at all.
+ *
+ * The null-vs-empty split is load-bearing and drives {@link formatBugSection}:
+ * `null` (missing file, unparseable content, or the `{}` sentinel the workflow
+ * writes when the psql capture fails) omits the section entirely, while `[]`
+ * (a capture that ran and found nothing) renders the zero-state. Without the
+ * distinction a clean run and a broken capture would look identical.
+ *
+ * Same defensive salvage as {@link parseAiCost}: if a stray psql command tag
+ * leaks in front of the JSON we retry on the `[…]` substring.
+ *
+ * @param raw the file contents (pass "" when the file does not exist).
+ */
+export function parseBugReports(raw: string): BugReport[] | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+
+  let parsed: unknown = tryJson(trimmed);
+  if (parsed === undefined) {
+    const first = trimmed.indexOf("[");
+    const last = trimmed.lastIndexOf("]");
+    if (first !== -1 && last > first) parsed = tryJson(trimmed.slice(first, last + 1));
+  }
+  // The `{}` capture-failure sentinel parses fine but isn't an array — absent.
+  if (!Array.isArray(parsed)) return null;
+
+  return parsed.map((r) => {
+    const row = (r ?? {}) as Record<string, unknown>;
+    return {
+      id: str(row.id),
+      createdAt: str(row.createdAt),
+      chatSessionId: strOrNull(row.chatSessionId),
+      title: str(row.title),
+      whatHappened: str(row.whatHappened),
+      expected: str(row.expected),
+      suspectedTool: strOrNull(row.suspectedTool),
+      evidence: strOrNull(row.evidence),
+      severity: str(row.severity),
+      blockedTask: row.blockedTask === true,
+      status: str(row.status),
+      source: str(row.source),
+    };
+  });
+}
+
+/** Blocking first — the ordering a reader scanning the table wants. */
+const SEVERITY_RANK: Record<string, number> = { blocking: 0, degraded: 1, cosmetic: 2 };
+
+function cap(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * Prepare bug-report text for an INLINE markdown position — a table cell, a
+ * list item, a bold heading. Flattens whitespace (a newline would end the
+ * row/item), caps length, then neutralizes the characters that would change
+ * the document's STRUCTURE rather than its text.
+ *
+ * Deliberately HTML entities, not backslash escapes: a backslash escape has to
+ * escape the escape character first, and getting that wrong is the
+ * incomplete-sanitization class (CodeQL `js/incomplete-sanitization`). Entity
+ * substitution has no such second-order case.
+ *
+ * `<` is neutralized for two reasons that point the same way: a report whose
+ * text contains `</details>` would otherwise close the collapsible block out
+ * from under the remaining rows, and bug evidence routinely carries module
+ * HTML (`<section class="hero">`) that the comment renderer would otherwise
+ * swallow as a tag instead of showing to the reader.
+ *
+ * Backticks are deliberately left alone — real reports quote tool names as
+ * `` `create_module` `` and rendering that as code is what we want. A stray
+ * backtick can at worst open an inline code span; it cannot inject block
+ * structure. Values this function's output gets WRAPPED in backticks go
+ * through {@link codeSpan} instead.
+ */
+function inline(s: string, max: number): string {
+  return (
+    cap(s.replace(/\s+/g, " ").trim(), max)
+      // `&` FIRST — it is the entity-escape character, so a report containing
+      // the literal text `&lt;/details>` would otherwise pass through unchanged
+      // and render as a real closing tag. Ampersand, then `<`, then the pipe
+      // LAST because its replacement introduces an `&` that must not be
+      // re-escaped. Order is the whole correctness argument here.
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/\|/g, "&#124;")
+  );
+}
+
+/**
+ * Prepare freeform text the caller wraps in a backtick code span. Entities are
+ * NOT decoded inside a code span, so {@link inline}'s approach would show
+ * `&#124;` literally; a backtick in the value is the only real hazard here
+ * (it would close the span early), so replace those with an apostrophe.
+ */
+function codeSpan(s: string, max: number): string {
+  return cap(s.replace(/\s+/g, " ").trim(), max).replace(/`/g, "'");
+}
+
+/**
+ * Cap length but KEEP newlines — for text rendered inside a fenced block.
+ * The provider-error digest is line-oriented (`#0 user`, `#1 assistant …`),
+ * so flattening it would destroy the very structure that makes it readable.
+ */
+function truncateBlock(s: string, max: number): string {
+  return cap(s.trim(), max);
+}
+
+/**
+ * Pick a code fence long enough to contain `body`.
+ *
+ * CommonMark closes a fenced block at the first line carrying at least as many
+ * backticks as the opener, so ANY fixed-width fence is escapable by content
+ * that happens to contain one — and `evidence` is exactly that kind of
+ * content: a replayed-history digest or a captured tool argument can carry a
+ * whole ```` ```ts ```` block. Scanning for the longest backtick run and adding
+ * one makes it impossible for the body to terminate its own fence.
+ */
+function fenceFor(body: string): string {
+  let longest = 0;
+  for (const run of body.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
+/**
+ * Render the `### Detected bugs (N)` markdown section from the `ai_bug_reports`
+ * rows filed during the run.
+ *
+ * Returns an empty array when `reports` is `null` (no capture data) so the
+ * caller can splice unconditionally — matching {@link formatCostSection}. An
+ * empty array of reports is NOT the same thing: it renders an explicit
+ * zero-state, because "no bugs were filed" is the result we most want to see
+ * stated out loud.
+ *
+ * Rows sort by severity, then source, then time, so `auto` and `ai` rows
+ * cluster inside each severity band. Sorting lives here rather than in the
+ * capture SQL so it is unit-testable.
+ */
+export function formatBugSection(reports: BugReport[] | null): string[] {
+  if (!reports) return [];
+
+  const lines: string[] = [];
+  if (reports.length === 0) {
+    lines.push("### Detected bugs (0)");
+    lines.push("");
+    lines.push("_None filed during this run._");
+    lines.push("");
+    return lines;
+  }
+
+  const sorted = [...reports].sort((a, b) => {
+    const rank = (SEVERITY_RANK[a.severity] ?? 3) - (SEVERITY_RANK[b.severity] ?? 3);
+    if (rank !== 0) return rank;
+    if (a.source !== b.source) return a.source < b.source ? -1 : 1;
+    return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+  });
+  const shown = sorted.slice(0, BUG_TABLE_MAX_ROWS);
+  const dropped = sorted.length - shown.length;
+
+  lines.push(`### Detected bugs (${sorted.length})`);
+  lines.push("");
+  lines.push("| Sev | Source | Title | Tool | Blocked |");
+  lines.push("| --- | --- | --- | --- | --- |");
+  for (const b of shown) {
+    // `suspected_tool` is freeform text up to 200 chars — the AI sometimes
+    // names several tools at once — so cap it or it stretches the table.
+    const tool = b.suspectedTool ? `\`${codeSpan(b.suspectedTool, 40)}\`` : "—";
+    lines.push(
+      `| ${inline(b.severity, 20) || "—"} | ${inline(b.source, 10) || "—"} | ${inline(
+        b.title,
+        80,
+      )} | ${tool} | ${b.blockedTask ? "yes" : "no"} |`,
+    );
+  }
+  lines.push("");
+  if (dropped > 0) {
+    // Never truncate silently (CLAUDE.md) — say what was dropped and where it lives.
+    lines.push(
+      `_…${dropped} more not shown — see the \`e2e-livedit-bugs-<run_id>\` artifact for the full set._`,
+    );
+    lines.push("");
+  }
+
+  // A title alone isn't actionable and the full rows are artifact-only, so
+  // carry the diagnosis inline — collapsed, to keep the comment scannable.
+  lines.push("<details>");
+  lines.push(`<summary>Bug details (${shown.length})</summary>`);
+  lines.push("");
+  for (const [i, b] of shown.entries()) {
+    lines.push(
+      `**${i + 1}. [${inline(b.severity, 20)} · ${inline(b.source, 10)}] ${inline(b.title, 200)}**`,
+    );
+    lines.push("");
+    if (b.suspectedTool) lines.push(`- Suspected tool: \`${codeSpan(b.suspectedTool, 200)}\``);
+    if (b.chatSessionId) lines.push(`- Chat session: \`${codeSpan(b.chatSessionId, 40)}\``);
+    lines.push(`- What happened: ${inline(b.whatHappened, BUG_DETAIL_MAX_CHARS)}`);
+    lines.push(`- Expected: ${inline(b.expected, BUG_DETAIL_MAX_CHARS)}`);
+    if (b.evidence) {
+      const body = truncateBlock(b.evidence, BUG_DETAIL_MAX_CHARS);
+      // Fence width derived from the body — evidence can itself contain a
+      // fence, and a fixed-width one would let it break out into the comment.
+      const fence = fenceFor(body);
+      lines.push("- Evidence:");
+      lines.push("");
+      lines.push(fence);
+      lines.push(body);
+      lines.push(fence);
+    }
+    lines.push("");
+  }
+  lines.push("</details>");
+  lines.push("");
+  return lines;
+}
+
 function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
@@ -299,20 +570,35 @@ function fmtTokens(n: number): string {
  * drops its (cumulative-per-turn, non-summable) loop-log token bullet in
  * favour of a pointer.
  */
-export function buildReport(inputs: { log: string; reportRaw: string; aiCostRaw: string }): string {
+export function buildReport(inputs: {
+  log: string;
+  reportRaw: string;
+  aiCostRaw: string;
+  /** Raw metrics.json (global-teardown's jsonl consolidation); "" when absent. */
+  metricsRaw?: string;
+  /** Raw bug-reports.json (the workflow's ai_bug_reports dump); "" when absent. */
+  bugsRaw?: string;
+}): string {
   const { log, reportRaw, aiCostRaw } = inputs;
 
-  const loops = parseChatRunnerLoops(log);
+  // Shared parser with the harness (lib/metrics-core.ts) — build-stats used
+  // to keep its own regex over the loop lines and silently reported 0 loops
+  // once the log gained a `tokensCached` field (issue #432).
+  const { loops } = parseChatLog(log);
   const turns = countEnters(log);
   const { results, totalDurationMs } = parsePlaywrightReport(reportRaw);
   const cost = parseAiCost(aiCostRaw);
+  const metricsRows = parseMetricsRows(inputs.metricsRaw ?? "");
+  const bugs = parseBugReports(inputs.bugsRaw ?? "");
 
   const totalLoops = loops.length;
-  const totalToolCalls = loops.reduce((a, l) => a + l.toolCalls, 0);
-  const totalTokensIn = loops.reduce((a, l) => a + l.tokensIn, 0);
-  const totalTokensOut = loops.reduce((a, l) => a + l.tokensOut, 0);
+  // NaN-safe: logs from before a field existed parse that field as NaN.
+  const fin = (n: number): number => (Number.isFinite(n) ? n : 0);
+  const totalToolCalls = loops.reduce((a, l) => a + l.toolNames.length, 0);
+  const totalTokensIn = loops.reduce((a, l) => a + fin(l.inCall), 0);
+  const totalTokensOut = loops.reduce((a, l) => a + fin(l.out), 0);
   const stopReasons = new Map<string, number>();
-  for (const l of loops) stopReasons.set(l.loopStop, (stopReasons.get(l.loopStop) ?? 0) + 1);
+  for (const l of loops) stopReasons.set(l.stop, (stopReasons.get(l.stop) ?? 0) + 1);
   const stopReasonStr =
     [...stopReasons.entries()]
       .sort((a, b) => b[1] - a[1])
@@ -334,18 +620,19 @@ export function buildReport(inputs: { log: string; reportRaw: string; aiCostRaw:
     lines.push(`- **${totalLoops}** tool-call loops (\`[chat-runner] loop\` events)`);
     lines.push(`- **${totalToolCalls}** tool calls dispatched`);
     if (cost) {
-      // Loop-log tokensIn is cumulative per turn (each loop re-sends the
-      // whole conversation), so summing them double-counts. Real totals
-      // live in the Real AI cost section above.
+      // The shared parser reads per-call figures (inThisCall/outThisCall),
+      // so the sums are real — but ai_calls stays the authoritative billing
+      // source (it includes calls outside the chat-runner loop).
       lines.push("- Token + cost totals: see **Real AI cost** above (from `ai_calls`)");
     } else {
       lines.push(
-        `- **${fmtTokens(totalTokensIn)}** tokens in / **${fmtTokens(totalTokensOut)}** tokens out (loop-log, cumulative per turn)`,
+        `- **${fmtTokens(totalTokensIn)}** tokens in / **${fmtTokens(totalTokensOut)}** tokens out (loop-log per-call sums)`,
       );
     }
     lines.push(`- Loop-stop reasons: ${stopReasonStr}`);
   }
   lines.push("");
+  lines.push(...formatBreakdownSection(metricsRows));
   lines.push("### Per-scenario results");
   lines.push("");
   if (results.length === 0) {
@@ -367,6 +654,9 @@ export function buildReport(inputs: { log: string; reportRaw: string; aiCostRaw:
     );
   }
   lines.push("");
+  // Last, because detected bugs QUALIFY the verdict above: a green run that
+  // filed defects means the AI worked around them rather than failing.
+  lines.push(...formatBugSection(bugs));
 
   return lines.join("\n");
 }
@@ -375,7 +665,9 @@ function main(): void {
   const log = existsSync(ADMIN_LOG) ? readFileSync(ADMIN_LOG, "utf8") : "";
   const reportRaw = existsSync(REPORT_JSON) ? readFileSync(REPORT_JSON, "utf8") : "";
   const aiCostRaw = existsSync(AI_COST_JSON) ? readFileSync(AI_COST_JSON, "utf8") : "";
-  process.stdout.write(buildReport({ log, reportRaw, aiCostRaw }));
+  const metricsRaw = existsSync(METRICS_JSON) ? readFileSync(METRICS_JSON, "utf8") : "";
+  const bugsRaw = existsSync(BUG_REPORTS_JSON) ? readFileSync(BUG_REPORTS_JSON, "utf8") : "";
+  process.stdout.write(buildReport({ log, reportRaw, aiCostRaw, metricsRaw, bugsRaw }));
 }
 
 // Only run when invoked directly (not when imported by the unit test).
