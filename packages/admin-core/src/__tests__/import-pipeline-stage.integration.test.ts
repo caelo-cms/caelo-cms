@@ -300,3 +300,78 @@ describe("import pipeline stages (recorded searchviu crawl)", () => {
     }
   });
 });
+
+// issue #422 — the id-bearing list surface. Runs AFTER compose, so every
+// fixture page is accepted and linked; the pending-state + build_page-link
+// paths live in import-id-chain.integration.test.ts.
+describe("imports.list_pages (recorded searchviu crawl, post-compose)", () => {
+  it("lists every page with its staging id, rebuild status, and built-page link", async () => {
+    const r = await execute(registry, adapter, ctx, "imports.list_pages", { runId });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as {
+      run: { id: string; status: string; sourceUrl: string };
+      total: number;
+      pages: { id: string; proposedSlug: string; status: string; acceptedPageId: string | null }[];
+    };
+    expect(v.run.id).toBe(runId);
+    expect(v.total).toBe(FIXTURE.length);
+    expect(v.pages.length).toBe(FIXTURE.length);
+    for (const p of v.pages) {
+      expect(p.id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(p.status).toBe("accepted");
+      expect(p.acceptedPageId).toMatch(/^[0-9a-f-]{36}$/);
+    }
+  });
+
+  it("filters by status and searches by slug/url/title", async () => {
+    const pending = await execute(registry, adapter, ctx, "imports.list_pages", {
+      runId,
+      status: "pending",
+    });
+    expect(pending.ok).toBe(true);
+    if (pending.ok) expect((pending.value as { total: number }).total).toBe(0);
+
+    const first = FIXTURE[0];
+    if (!first) throw new Error("fixture empty");
+    const bySlug = await execute(registry, adapter, ctx, "imports.list_pages", {
+      runId,
+      search: `${PREFIX}${first.proposed_slug}`.slice(0, 60),
+    });
+    expect(bySlug.ok).toBe(true);
+    if (bySlug.ok) {
+      const v = bySlug.value as { pages: { proposedSlug: string }[] };
+      expect(v.pages.length).toBeGreaterThanOrEqual(1);
+    }
+
+    const miss = await execute(registry, adapter, ctx, "imports.list_pages", {
+      runId,
+      search: "no-such-page-zzz",
+    });
+    expect(miss.ok).toBe(true);
+    if (miss.ok) expect((miss.value as { total: number }).total).toBe(0);
+
+    // `limit` caps the rows while `total` still names the full match count,
+    // so truncation is visible (Copilot review on PR #437: the tool exposes
+    // the op's limit for crawls beyond the 200-row default).
+    const capped = await execute(registry, adapter, ctx, "imports.list_pages", {
+      runId,
+      limit: 1,
+    });
+    expect(capped.ok).toBe(true);
+    if (capped.ok) {
+      const v = capped.value as { total: number; pages: unknown[] };
+      expect(v.pages.length).toBe(1);
+      expect(v.total).toBe(FIXTURE.length);
+    }
+  });
+
+  it("run report's rebuilt counter reflects the linked pages", async () => {
+    // The same accepted_page_id linkage list_pages surfaces is what the
+    // report counts — post-compose all fixture pages are rebuilt/linked.
+    const r = await execute(registry, adapter, ctx, "imports.get_run_report", { runId });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect((r.value as { acceptedPages: number }).acceptedPages).toBe(FIXTURE.length);
+  });
+});

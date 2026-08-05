@@ -12,6 +12,13 @@
  * The renderers are pure and exported for tests; `runExport` does the
  * fetching + file I/O.
  *
+ * Surface honesty (issue #413): the context arrives ALREADY adapted to
+ * the Power-MCP surface — `mcp.get_context` composes the "power-mcp"
+ * prompt variant and annotates every mention of an excluded tool in
+ * skill bodies/descriptions with `[not available on this surface — …]`.
+ * The renderers write that content verbatim; do not add a second
+ * filtering pass here, or the two would drift.
+ *
  * Writing fetched content to disk is the feature, not an oversight
  * (CodeQL flags the network→file flow): the source is the operator's OWN
  * admin install, authenticated by their bearer, and the only

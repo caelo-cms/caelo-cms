@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/shared",
-  "version": "0.10.22",
+  "version": "0.10.24",
   "private": false,
   "license": "MPL-2.0",
   "description": "Shared Zod schemas + types + the two-pass HTML composer used by every Caelo CMS workspace package. Stable enough for plugin authors and embedders to depend on directly.",
@@ -35,7 +35,7 @@
     "prepublishOnly": "tsc -b --force"
   },
   "dependencies": {
-    "colorjs.io": "^0.6.1",
+    "colorjs.io": "^0.7.1",
     "htmlparser2": "^12.0.0",
     "mustache": "^4.2.0",
     "zod": "4.4.3"

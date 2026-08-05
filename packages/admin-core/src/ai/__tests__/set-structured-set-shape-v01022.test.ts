@@ -7,7 +7,7 @@
  *  - The AI saw `set_structured_set` (generic) PLUS kind-specific
  *    wrappers `set_nav_menu` and `update_theme`. Three tools touching
  *    the same primitive, with inconsistent ergonomics + a 6th kind
- *    (`language-selector`) unreachable from any tool.
+ *    unreachable from any tool.
  *  - No list/get/delete AI tools — the AI relied on the system-prompt
  *    block (frozen at turn start) and couldn't refresh mid-conversation
  *    or remove a set.
@@ -45,10 +45,10 @@ import { setStructuredSetTool } from "../tools/set-structured-set.js";
 // v0.11.0 (#45) — theme was cut out of the structured-sets primitive
 // and moved to its own `themes` table with DTCG-shaped jsonb. The
 // remaining structured-set kinds are the five list/tag/menu shapes.
-const allKinds = ["nav-menu", "tags", "taxonomy", "link-list", "language-selector"] as const;
+const allKinds = ["nav-menu", "tags", "taxonomy", "link-list"] as const;
 
 describe("v0.10.22 — set_structured_set unified surface + per-kind JSON Schema", () => {
-  it("kind enum covers all 5 structured-set kinds (pre-v0.10.22 missed language-selector; v0.11.0 cut theme)", () => {
+  it("kind enum covers all 4 structured-set kinds (v0.11.0 cut theme; #383 cut language-selector)", () => {
     const schema = setStructuredSetTool.inputSchema as {
       properties: { kind: { enum: string[] } };
     };

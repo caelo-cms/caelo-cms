@@ -614,11 +614,10 @@ export type RemoveModuleFromToolInput = z.infer<typeof removeModuleFromToolInput
 
 export const setStructuredSetToolInput = z
   .object({
-    // v0.10.22 — added "language-selector" to match @caelo-cms/shared
     // structuredSetKind (the 6th kind that was previously unreachable
     // from any AI tool — the kind-specific wrappers covered only
     // nav-menu + theme).
-    kind: z.enum(["nav-menu", "taxonomy", "theme", "tags", "link-list", "language-selector"]),
+    kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list"]),
     slug: slugInputSchema,
     displayName: z.string().min(1).max(200),
     items: z.array(z.unknown()),
@@ -732,11 +731,11 @@ export const reorderModuleToolInput = z
 
 /**
  * P7 — `find_media`. Searches the media library by alt-text /
- * filename / mime. Returns up to `limit` matches with the WebP-800
- * URL pre-resolved (or `orig` for non-image kinds). The system prompt
- * already lists recent + frequently-used media; this tool covers the
- * "search for an image of a sunlit office" case where the asset isn't
- * in the recent slice.
+ * filename / mime. Each row carries the media UUID (what
+ * `set_theme_asset` / `set_media_alt` require) plus a pre-resolved
+ * variant URL. The AI's only media-inventory surface — the `## Media`
+ * system-prompt block was removed by the context diet (#300), so every
+ * asset lookup ("an image of a sunlit office") goes through this tool.
  */
 export const findMediaToolInput = z
   .object({
@@ -979,79 +978,6 @@ export type RepointPageTemplateToolInput = z.infer<typeof repointPageTemplateToo
 export type MoveModuleToolInput = z.infer<typeof moveModuleToolInput>;
 export type ReorderModuleToolInput = z.infer<typeof reorderModuleToolInput>;
 // v0.10.22 — `SetNavMenuToolInput` removed alongside `set_nav_menu` tool.
-
-/**
- * P9 — locales propose tool schemas. Per CLAUDE.md §11.A all four
- * write paths are TWO-STEP (AI proposes → Owner clicks Approve);
- * the AI cannot bypass the click.
- */
-const localeCodeToolSchema = z
-  .string()
-  .min(2)
-  .max(10)
-  .regex(/^[a-z]{2,3}(-[A-Za-z]{2,4})?$/, "BCP-47 like 'en' or 'de-AT'");
-const urlStrategyToolSchema = z.enum(["none", "subdirectory", "subdomain", "domain"]);
-
-export const proposeAddLocaleToolInput = z
-  .object({
-    code: localeCodeToolSchema,
-    displayName: z.string().min(1).max(120),
-    urlStrategy: urlStrategyToolSchema.default("subdirectory"),
-    urlHost: z.string().min(1).max(253).nullable().optional(),
-  })
-  .strict();
-export type ProposeAddLocaleToolInput = z.infer<typeof proposeAddLocaleToolInput>;
-
-export const proposeRemoveLocaleToolInput = z.object({ code: localeCodeToolSchema }).strict();
-export type ProposeRemoveLocaleToolInput = z.infer<typeof proposeRemoveLocaleToolInput>;
-
-export const proposeSetDefaultLocaleToolInput = z.object({ code: localeCodeToolSchema }).strict();
-export type ProposeSetDefaultLocaleToolInput = z.infer<typeof proposeSetDefaultLocaleToolInput>;
-
-export const proposeUpdateLocaleStrategyToolInput = z
-  .object({
-    code: localeCodeToolSchema,
-    urlStrategy: urlStrategyToolSchema,
-    urlHost: z.string().min(1).max(253).nullable().optional(),
-  })
-  .strict();
-export type ProposeUpdateLocaleStrategyToolInput = z.infer<
-  typeof proposeUpdateLocaleStrategyToolInput
->;
-
-/**
- * P10 — translation tool inputs. `translate_page` auto-dispatches
- * Mode 1 / Mode 2 based on the variant's existing status — the AI
- * sees one verb regardless of state. `start_translation_job` queues
- * a bulk run.
- */
-export const translatePageToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    targetLocale: localeCodeToolSchema,
-  })
-  .strict();
-export type TranslatePageToolInput = z.infer<typeof translatePageToolInput>;
-
-const translationJobScopeTool = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("all-stale") }).strict(),
-  z.object({ kind: z.literal("page"), pageId: z.string().uuid() }).strict(),
-  z.object({ kind: z.literal("locale"), code: localeCodeToolSchema }).strict(),
-  z
-    .object({
-      kind: z.literal("pages"),
-      pageIds: z.array(z.string().uuid()).min(1).max(500),
-    })
-    .strict(),
-]);
-
-export const startTranslationJobToolInput = z
-  .object({
-    scope: translationJobScopeTool,
-    capMicrocents: z.number().int().nonnegative().nullable().optional(),
-  })
-  .strict();
-export type StartTranslationJobToolInput = z.infer<typeof startTranslationJobToolInput>;
 
 /**
  * P10A — `propose_skill`. AI drafts a new skill body (or revision) and

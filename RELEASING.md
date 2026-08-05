@@ -20,6 +20,23 @@ Actions → **release-cut** → *Run workflow* → pick `patch` / `minor` /
 that PR merges the workflow tags the merge commit and dispatches
 `release.yml` automatically — identical artifacts to the local flow.
 
+One-time setup: CI needs the Tier-1 manifest signing key (release.ts
+re-signs the plugin manifests). The pair stored here IS the release
+keypair from that point on — every published manifest verifies against
+this public key, so it must be the ONE canonical pair, not an
+arbitrary per-machine dev key. Source it from the team secrets
+manager; extracting from a local `.caelo-dev-key` is only correct when
+that file holds the canonical pair (the historical solo-maintainer
+case, where every release so far was signed from it):
+
+```bash
+jq -r .privateKeyHex .caelo-dev-key | gh secret set CAELO_TIER1_PRIVATE_KEY
+jq -r .publicKeyHex  .caelo-dev-key | gh variable set CAELO_TIER1_PUBLIC_KEY
+```
+
+To rotate: generate a fresh pair, update the secret + variable, and
+ship a release so the manifests re-sign with the new key.
+
 Merging the release PR: PRs opened with the repo `GITHUB_TOKEN` get no
 workflow runs, so its required checks sit pending. Merge with
 `gh pr merge --squash --admin` — safe, because `release.yml` re-runs
@@ -44,7 +61,7 @@ before the first tag.
 
 | Surface | Tags emitted |
 |---|---|
-| **npm** (`@caelo-cms/mcp-server`, `@caelo-cms/provisioning`) | `0.2.1` published with the right [dist-tag](https://docs.npmjs.com/cli/dist-tag) — `latest` for stable, `rc` / `beta` for pre-releases. Auth via [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) — no `NPM_TOKEN` secret, no 2FA bypass, short-lived credential exchanged from GitHub's OIDC token at publish time. Provenance attestation via the same OIDC. |
+| **npm** (`@caelo-cms/shared`, `@caelo-cms/edge-router`, `@caelo-cms/mcp-server`, `@caelo-cms/provisioning`) | `0.2.1` published with the right [dist-tag](https://docs.npmjs.com/cli/dist-tag) — `latest` for stable, `rc` / `beta` for pre-releases. Auth via [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) — no `NPM_TOKEN` secret, no 2FA bypass, short-lived credential exchanged from GitHub's OIDC token at publish time. Provenance attestation via the same OIDC. |
 | **GHCR** (`ghcr.io/caelo-cms/{admin,gateway}`) | `:0.2.1`, `:0.2`, `:latest` — pre-releases get the version-specific tag only (no `:latest`). Each image is signed with cosign (keyless / OIDC) for verifiable provenance. |
 | **GCP Artifact Registry** (`europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/{admin,gateway}`) | Same tags as GHCR, mirrored from GHCR by `release-images.yml`. Cloud Run pulls from here (Cloud Run rejects `ghcr.io` directly). |
 | **GitHub Release** | `v0.2.1` with the `## v0.2.1` stanza from `CHANGELOG.md` as the body. Marked `prerelease: true` when the version contains a hyphen. |
@@ -60,7 +77,8 @@ Before the first tag:
 
 1. **Configure npm Trusted Publishing** for each publishable package
    (one-time per package). No long-lived token, no 2FA bypass.
-   - For each of `@caelo-cms/mcp-server` and `@caelo-cms/provisioning`:
+   - For each of `@caelo-cms/shared`, `@caelo-cms/edge-router`,
+     `@caelo-cms/mcp-server` and `@caelo-cms/provisioning`:
      - Visit <https://www.npmjs.com/package/@caelo-cms/PACKAGE/access>
      - Scroll to **Trusted Publishers** → **Add Trusted Publisher**
      - Subject: **GitHub Actions**
@@ -76,8 +94,16 @@ Before the first tag:
    - First-time publish for a brand-new package needs a one-time
      manual publish (or a temporary token) to create the package
      name; trusted publishing applies from the second release on.
-     Both Caelo packages were already published in `0.1.x`, so this
-     gate is past.
+     `shared`, `mcp-server` and `provisioning` were published in
+     `0.1.x`; `edge-router`'s first publish was the manual
+     `0.10.23` repair (see the v0.10.23 postmortem note below).
+   - A new publishable workspace needs FOUR wire-ups or the release
+     breaks at the verify gate (how v0.10.23 broke: `provisioning`
+     depended on a still-`private` `edge-router`, so the published
+     tarball had an uninstallable dependency): `private: false` +
+     dist build in its package.json, the publish matrix in
+     `release.yml`, the verify loops in `release.yml`, and the npm
+     Trusted Publisher config above.
 
 2. **Generate a Tier-1 plugin signing key** (one per maintainer machine):
    ```bash

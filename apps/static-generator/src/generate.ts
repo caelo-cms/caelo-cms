@@ -35,7 +35,6 @@ import {
   isHomeSlug,
   type ModuleFieldKind,
   pageIsLocaleHome,
-  resolveLocaleUrl,
   type ThemeDocument,
   trimSlashes,
 } from "@caelo-cms/shared";
@@ -191,33 +190,16 @@ export type ProgressCallback = (progress: { pagesDone: number; pagesTotal: numbe
 /**
  * Emits a stable file path for a published page. Slug "/" or "" or "home"
  * become `index.html`; everything else becomes `<slug>/index.html` so the
- * URL looks clean (no `.html` suffix served by static hosts).
- *
- * P9 review pass — when a locale config is supplied, the path is
- * shaped per CMS_REQUIREMENTS §7.2:
- *   - none         → `<slug>/index.html`              (no prefix)
- *   - subdirectory → `<code>/<slug>/index.html`       (`/de/about/`)
- *   - subdomain    → `_hosts/<urlHost>/<slug>/index.html`
- *   - domain       → `_hosts/<urlHost>/<slug>/index.html`
- *
- * The `_hosts/<host>/...` directory is the per-host emission tree the
- * deploy layer (P13/P14/P15) will hand each subdomain/domain its own
- * subtree. Without a locale config (back-compat, no-locale tests) the
- * function returns the original single-locale shape.
+ * URL looks clean (no `.html` suffix served by static hosts). Path
+ * shaping beyond slug + home becomes a plugin contribution on the URL
+ * composition point (#390).
  */
-export interface PageLocaleConfig {
-  readonly code: string;
-  readonly urlStrategy: "none" | "subdirectory" | "subdomain" | "domain";
-  readonly urlHost: string | null;
-}
-
 export function pageOutputPath(
   slug: string,
-  locale?: PageLocaleConfig,
   pageUrlStyle: "directory" | "no-extension" = "directory",
-  // 0184 — explicit homepage designation (`locales.home_page_id`). When
-  // true the page emits at the locale root (`index.html`) regardless of
-  // its slug, so what's SERVED at `/` matches the canonical + hreflang.
+  // 0184 — explicit homepage designation. When true the page emits at
+  // the site root (`index.html`) regardless of its slug, so what's
+  // SERVED at `/` matches the canonical.
   isHomePage?: boolean,
 ): string {
   const trimmed = trimSlashes(slug);
@@ -226,27 +208,11 @@ export function pageOutputPath(
   // root must serve something for `/`, and browsers + GCS expect
   // index.html there. The home page's own canonical link points at
   // `/` so search engines consolidate /index.html → / either way.
-  const file = isHome
+  return isHome
     ? "index.html"
     : pageUrlStyle === "no-extension"
       ? trimmed
       : `${trimmed}/index.html`;
-  if (!locale) return file;
-  switch (locale.urlStrategy) {
-    case "none":
-      return file;
-    case "subdirectory":
-      return `${locale.code}/${file}`;
-    case "subdomain":
-    case "domain": {
-      if (!locale.urlHost) {
-        throw new Error(
-          `pageOutputPath: locale '${locale.code}' urlStrategy='${locale.urlStrategy}' requires url_host`,
-        );
-      }
-      return `_hosts/${locale.urlHost}/${file}`;
-    }
-  }
 }
 
 /**
@@ -289,11 +255,7 @@ export function zeroPageBuildError(args: {
  * Per CLAUDE.md §2 (no fallbacks pre-1.0) this fails loudly with the fix
  * spelled out instead of shipping an unservable root.
  *
- * Scope mirrors `zeroPageBuildError`: full builds on non-dev targets. It
- * only fires when at least one page COULD have claimed the root (a page
- * whose locale has no URL prefix — strategy 'none' or no locale config);
- * an all-subdirectory/subdomain locale setup roots its locales elsewhere
- * and is not this guard's business.
+ * Scope mirrors `zeroPageBuildError`: full builds on non-dev targets.
  *
  * @returns the error message to throw, or null when the build may proceed.
  *   Pure so the guard is unit-testable without a DB.
@@ -301,7 +263,7 @@ export function zeroPageBuildError(args: {
 export function missingRootPageError(args: {
   /** Every emitted page path (relative, e.g. "index.html", "about/index.html"). */
   outputPaths: readonly string[];
-  /** Slugs of pages whose locale would emit at the root level (no prefix). */
+  /** Every built page's slug — any of them could claim the root. */
   rootEligibleSlugs: readonly string[];
   env: DeployTarget["env"];
   incremental: boolean;
@@ -425,46 +387,25 @@ export async function generateSite(args: {
   });
   if (zeroPageError !== null) throw new Error(zeroPageError);
 
-  // P9 review pass — load the locale registry so the emitter can shape
-  // file paths per (slug, locale) instead of slug alone. Otherwise two
-  // pages with the same slug but different locales collide on
-  // index.html. Throws loudly (no-fallbacks) if a page references a
-  // locale that isn't in the registry.
-  const localeRows = (await tx.execute(sql`
-    SELECT code, url_strategy, url_host, home_page_id::text AS home_page_id FROM locales
-  `)) as unknown as {
-    code: string;
-    url_strategy: "none" | "subdirectory" | "subdomain" | "domain";
-    url_host: string | null;
-    home_page_id: string | null;
-  }[];
-  const localeByCode = new Map<string, PageLocaleConfig>(
-    localeRows.map((r) => [
-      r.code,
-      { code: r.code, urlStrategy: r.url_strategy, urlHost: r.url_host },
-    ]),
-  );
-  // 0184 — locale code → its designated homepage id. Drives the emitted
-  // output path (below), the language-selector hrefs, and — via
-  // seo-pass — canonical + hreflang, so all four agree on which page is
-  // the locale root.
-  const homePageByLocale = new Map(localeRows.map((r) => [r.code, r.home_page_id]));
+  // 0184 — the designated homepage id, still parked per locale row
+  // until #384 moves it to site_defaults. Looked up via each page's
+  // own locale so the designation semantics survive the #383 cut.
+  // Drives the emitted output path and — via seo-pass — the canonical,
+  // so both agree on which page is the site root.
+  const homeRows = (await tx.execute(sql`
+    SELECT code, home_page_id::text AS home_page_id FROM locales
+  `)) as unknown as { code: string; home_page_id: string | null }[];
+  const homePageByLocale = new Map(homeRows.map((r) => [r.code, r.home_page_id]));
 
   // issue #302 — fail loudly when no page will land at the bucket root.
   const plannedPaths = pageRows.map((p) =>
     pageOutputPath(
       p.slug,
-      localeByCode.get(p.locale),
       target.pageUrlStyle,
       pageIsLocaleHome(p.page_id, p.slug, homePageByLocale.get(p.locale)),
     ),
   );
-  const rootEligibleSlugs = pageRows
-    .filter((p) => {
-      const cfg = localeByCode.get(p.locale);
-      return cfg === undefined || cfg.urlStrategy === "none";
-    })
-    .map((p) => p.slug);
+  const rootEligibleSlugs = pageRows.map((p) => p.slug);
   const rootError = missingRootPageError({
     outputPaths: plannedPaths,
     rootEligibleSlugs,
@@ -623,29 +564,6 @@ export async function generateSite(args: {
     }
   }
 
-  // P9 — build the per-slug published-locale matrix once so the
-  // language-selector renderer can list cross-locale URLs without a
-  // per-page round-trip. Same shape the seo-pass hreflang block uses.
-  const seoSettings = await readSeoSettings(tx);
-  // v0.9.9 — matches the main-query filter above. Stage ≡ Production
-  // so the hreflang language-selector matrix is also published-only on
-  // both deploy targets. Dev keeps the no-filter shape (debugging).
-  const slugStatusFilter =
-    target.env === "dev" ? sql.raw("") : sql.raw(" AND status = 'published'");
-  const slugLocaleRows = (await tx.execute(sql`
-    SELECT id::text AS id, slug, locale FROM pages
-    WHERE deleted_at IS NULL ${slugStatusFilter}
-  `)) as unknown as { id: string; slug: string; locale: string }[];
-  // Slug → each variant's (locale, pageId). The pageId lets the
-  // language-selector resolve each sibling's home status from its OWN
-  // locale's designation (0184).
-  const localesBySlug = new Map<string, { locale: string; pageId: string }[]>();
-  for (const r of slugLocaleRows) {
-    const arr = localesBySlug.get(r.slug) ?? [];
-    arr.push({ locale: r.locale, pageId: r.id });
-    localesBySlug.set(r.slug, arr);
-  }
-
   let fileCount = 0;
   const variantEntries: VariantManifestEntry[] = [];
   args.onProgress?.({ pagesDone: 0, pagesTotal: pageRows.length });
@@ -703,41 +621,6 @@ export async function generateSite(args: {
     // (e.g. layout HTML missing the required `content` slot). Surface
     // it with the page slug so the deploy operator can locate the
     // offending row, rather than silently emitting a body-less page.
-    // P9 — build the per-page languageSelector context. Lists every
-    // locale that has a published variant of this page's slug; the
-    // composer renders a `<nav>` of `<a>` rows when a module's slug
-    // starts with `language-selector-`. Empty when the page is the
-    // only published variant.
-    const pageLocaleSiblings = localesBySlug.get(page.slug) ?? [];
-    const availableLocales = pageLocaleSiblings
-      .map(({ locale: code, pageId: siblingId }) => {
-        const cfg = localeByCode.get(code);
-        if (!cfg) return null;
-        try {
-          return {
-            code,
-            displayName: cfg.code,
-            href: resolveLocaleUrl(
-              {
-                code: cfg.code,
-                displayName: cfg.code,
-                urlStrategy: cfg.urlStrategy,
-                urlHost: cfg.urlHost,
-                isDefault: false,
-              },
-              page.slug,
-              seoSettings.siteBaseUrl,
-              "directory",
-              pageIsLocaleHome(siblingId, page.slug, homePageByLocale.get(code)),
-            ),
-            isCurrent: code === page.locale,
-          };
-        } catch {
-          return null;
-        }
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
-
     let composed: ReturnType<typeof composePageWithLayout>;
     try {
       composed = composePageWithLayout({
@@ -751,7 +634,6 @@ export async function generateSite(args: {
         layoutCss: page.layout_css,
         layoutBlocks,
         layoutSlug: page.layout_slug,
-        languageSelector: { availableLocales },
       });
     } catch (e) {
       if (e instanceof ComposeError) {
@@ -762,12 +644,6 @@ export async function generateSite(args: {
       throw e;
     }
 
-    const pageLocaleCfg = localeByCode.get(page.locale);
-    if (!pageLocaleCfg) {
-      throw new Error(
-        `static-generator: page slug=${page.slug} references locale='${page.locale}' which is not in the locales registry — deploy aborted (no-fallbacks)`,
-      );
-    }
     composedPages.push({
       html: composed.html,
       pageSlug: page.slug,
@@ -775,7 +651,6 @@ export async function generateSite(args: {
       pageTitle: page.title,
       relPath: pageOutputPath(
         page.slug,
-        pageLocaleCfg,
         target.pageUrlStyle,
         pageIsLocaleHome(page.page_id, page.slug, homePageByLocale.get(page.locale)),
       ),
@@ -843,12 +718,12 @@ export async function generateSite(args: {
   // cdn_manifest.json is always written by runMediaPass.
   fileCount += 1;
 
-  // P8 — SEO pass. Injects per-page <head> meta + canonical + JSON-LD
-  // + hreflang. Emits sitemap.xml when site_defaults.sitemap_enabled
-  // is on AND the env isn't noindex (staging stays out of the
-  // sitemap regardless). Mutates each composedPages[i].html in place,
-  // same pattern as runMediaPass. seoSettings was hoisted earlier so
-  // the language-selector renderer can share the same siteBaseUrl.
+  // P8 — SEO pass. Injects per-page <head> meta + canonical + JSON-LD.
+  // Emits sitemap.xml when site_defaults.sitemap_enabled is on AND the
+  // env isn't noindex (staging stays out of the sitemap regardless).
+  // Mutates each composedPages[i].html in place, same pattern as
+  // runMediaPass.
+  const seoSettings = await readSeoSettings(tx);
   const seoResult = await runSeoPass({
     tx,
     buildDir,
@@ -925,18 +800,8 @@ export async function generateSite(args: {
     for (const e of experimentRows) {
       const cp = pageById.get(e.page_id);
       if (!cp) continue;
-      // P13 audit re-pass — for subdomain/domain locales the relPath
-      // begins with `_hosts/<host>/...`. Emit the variant UNDER the
-      // host root so the client-side `/_variants/...` fetch resolves
-      // against the visitor's host (the script doesn't know about
-      // _hosts/). For no-prefix / subdirectory locales, drop straight
-      // under buildDir/_variants/.
-      const HOSTS_PREFIX = /^_hosts\/([^/]+)\/(.*)$/;
-      const m = HOSTS_PREFIX.exec(cp.relPath);
-      const variantBaseDir = m ? `_hosts/${m[1]}/_variants` : "_variants";
-      const pageRelToHost = m ? (m[2] ?? "") : cp.relPath;
       for (const v of e.variants) {
-        const variantPath = `${variantBaseDir}/${e.slug}__${v.label}/${pageRelToHost}`;
+        const variantPath = `_variants/${e.slug}__${v.label}/${cp.relPath}`;
         const fullPath = join(buildDir, variantPath);
         await mkdir(join(fullPath, ".."), { recursive: true });
         // P13 ideas-pass — apply htmlPatches if present so variants
@@ -975,7 +840,6 @@ export async function generateSite(args: {
       locale: p.locale,
       outputPath: pageOutputPath(
         p.slug,
-        localeByCode.get(p.locale),
         target.pageUrlStyle,
         pageIsLocaleHome(p.page_id, p.slug, homePageByLocale.get(p.locale)),
       ),

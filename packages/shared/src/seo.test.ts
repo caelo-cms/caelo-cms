@@ -17,7 +17,6 @@ describe("resolveCanonicalUrl", () => {
       resolveCanonicalUrl({
         siteBaseUrl: "https://example.com",
         pageSlug: "anything",
-        pageLocale: "en",
         override: "https://canonical.example.com/x",
       }),
     ).toBe("https://canonical.example.com/x");
@@ -28,7 +27,6 @@ describe("resolveCanonicalUrl", () => {
       resolveCanonicalUrl({
         siteBaseUrl: "https://example.com",
         pageSlug: "home",
-        pageLocale: "en",
         override: null,
       }),
     ).toBe("https://example.com/");
@@ -39,7 +37,6 @@ describe("resolveCanonicalUrl", () => {
       resolveCanonicalUrl({
         siteBaseUrl: "https://example.com/",
         pageSlug: "about",
-        pageLocale: "en",
         override: null,
       }),
     ).toBe("https://example.com/about/");
@@ -51,7 +48,6 @@ describe("resolveCanonicalUrl", () => {
         resolveCanonicalUrl({
           siteBaseUrl: "https://example.com",
           pageSlug: "about",
-          pageLocale: "en",
           override: null,
           pageUrlStyle: "no-extension",
         }),
@@ -63,29 +59,10 @@ describe("resolveCanonicalUrl", () => {
         resolveCanonicalUrl({
           siteBaseUrl: "https://example.com",
           pageSlug: "home",
-          pageLocale: "en",
           override: null,
           pageUrlStyle: "no-extension",
         }),
       ).toBe("https://example.com/");
-    });
-
-    it("subdirectory locale strategy keeps the locale prefix, no trailing slash on slug", () => {
-      expect(
-        resolveCanonicalUrl({
-          siteBaseUrl: "https://example.com",
-          pageSlug: "about",
-          pageLocale: "de",
-          override: null,
-          pageUrlStyle: "no-extension",
-          localeConfig: {
-            code: "de",
-            urlStrategy: "subdirectory",
-            urlHost: null,
-            isDefault: false,
-          },
-        }),
-      ).toBe("https://example.com/de/about");
     });
 
     it("default style preserves pre-v0.2.85 trailing-slash behavior", () => {
@@ -93,7 +70,6 @@ describe("resolveCanonicalUrl", () => {
         resolveCanonicalUrl({
           siteBaseUrl: "https://example.com",
           pageSlug: "about",
-          pageLocale: "en",
           override: null,
         }),
       ).toBe("https://example.com/about/");
@@ -108,7 +84,6 @@ describe("renderSeoHead", () => {
     canonical: "https://example.com/",
     noindex: false,
     ogImageUrl: null,
-    hreflang: [] as { locale: string; url: string }[],
     organization: {},
   };
 
@@ -134,21 +109,6 @@ describe("renderSeoHead", () => {
       '<meta property="og:image" content="https://example.com/_assets/x/orig.png" />',
     );
     expect(head).toContain('<meta name="twitter:card" content="summary_large_image" />');
-  });
-
-  it("emits hreflang per row + x-default when any rows are present", () => {
-    const head = renderSeoHead({
-      ...base,
-      hreflang: [
-        { locale: "de", url: "https://example.com/de/" },
-        { locale: "fr", url: "https://example.com/fr/" },
-      ],
-    });
-    expect(head).toContain('<link rel="alternate" hreflang="de" href="https://example.com/de/" />');
-    expect(head).toContain('<link rel="alternate" hreflang="fr" href="https://example.com/fr/" />');
-    expect(head).toContain(
-      '<link rel="alternate" hreflang="x-default" href="https://example.com/" />',
-    );
   });
 
   it("emits a JSON-LD WebPage block; encodes the < character to avoid script-tag breaks", () => {

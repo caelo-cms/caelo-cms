@@ -60,8 +60,9 @@ async function resolveHtmlToAssetIds(
 
 /**
  * Diff media references between two HTML strings and apply usage-count
- * deltas. Called from create / update / delete handlers so the AI's
- * `## Media` system-prompt block surfaces frequently-used assets.
+ * deltas. Called from create / update / delete handlers so AI-facing
+ * surfaces (find_media's `most_used` sort) rank frequently-used assets
+ * first.
  */
 async function applyMediaUsageDelta(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],

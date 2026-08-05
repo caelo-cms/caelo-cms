@@ -8,38 +8,18 @@
  *
  * Used by /edit?/stageAndDeployStaging and /content/pages?/stage to
  * build the "Preview" link in the post-Stage toast. Single source of
- * truth lives in apps/static-generator/src/generate.ts:121, but the
+ * truth lives in apps/static-generator/src/generate.ts, but the
  * admin doesn't import from static-generator's source (the deploy
- * subprocess does); duplicating the small switch here keeps the
- * dep graph tidy.
+ * subprocess does); duplicating the tiny home test here keeps the
+ * dep graph tidy. Path shaping beyond slug + home becomes a plugin
+ * contribution on the URL composition point (#390).
  */
 
-export interface LocaleConfigForPreview {
-  readonly code: string;
-  readonly urlStrategy: string;
-  readonly urlHost: string | null;
-}
-
-export function stagingPreviewPath(slug: string, locale?: LocaleConfigForPreview): string {
+export function stagingPreviewPath(slug: string): string {
   const trimmed = slug.replace(/^\/+|\/+$/g, "");
   const isHome = trimmed === "" || trimmed === "home" || trimmed === "index";
   // Generator emits the home page as just `index.html`. The proxy
   // serves `<runId>/` by appending `index.html`, so the cleanest
   // URL for home is the empty suffix.
-  const dirPath = isHome ? "" : `${trimmed}/`;
-  if (!locale) return dirPath;
-  switch (locale.urlStrategy) {
-    case "none":
-      return dirPath;
-    case "subdirectory":
-      return `${locale.code}/${dirPath}`;
-    case "subdomain":
-    case "domain":
-      // Hosted-locale strategies emit under `_hosts/<host>/`. The
-      // preview proxy can serve that path verbatim — operator sees
-      // the canonical path the live CDN would route.
-      return locale.urlHost ? `_hosts/${locale.urlHost}/${dirPath}` : dirPath;
-    default:
-      return dirPath;
-  }
+  return isHome ? "" : `${trimmed}/`;
 }

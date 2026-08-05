@@ -48,10 +48,16 @@ import {
   isExternalUrlBlockedError,
   type OutboundLink,
   safeExternalFetch,
+  stripConsentSubtrees,
+  stripRepeatedSubtrees,
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { discoverAssetRefs } from "../../media/import-asset-urls.js";
-import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
+import {
+  describeFetchBudgetDenied,
+  externalFetchAllowedHosts,
+  takeExternalFetchBudget,
+} from "./_external-fetch-budget.js";
 import { getExternalScreenshotter } from "./_external-screenshotter.js";
 import { putPageInspection, sliceMarkdown } from "./_page-inspection-cache.js";
 import type { ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
@@ -69,7 +75,17 @@ const facets = z
   })
   .strict();
 
-const input = z.object({ url: z.string().url(), facets: facets.optional() }).strict();
+const input = z
+  .object({
+    url: z.string().url(),
+    facets: facets.optional(),
+    // issue #415 — deliberately TOP-LEVEL, not a facet: `resolveFacets` ORs
+    // every facet key into its "any facet named?" check, so a facets-nested
+    // flag would count as a requested facet and silently disable the
+    // meta+markdown gist default.
+    stripBoilerplate: z.boolean().optional(),
+  })
+  .strict();
 type Input = z.infer<typeof input>;
 
 interface ResolvedFacets {
@@ -259,6 +275,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     "`images` (the TOP ~20 asset URLs — images, CSS backgrounds, video/audio/source — deduped + ranked by prominence, each with its `alt=`; feed the URLs to import_media_from_urls to pull them into the media library; for the COMPLETE searchable list of a crawled site use list_page_assets), " +
     "`screenshot` (rendered FULL-PAGE image on your next turn — the whole page, not just the top fold), " +
     "`tokens` (design token inventory: the RENDERED computed-style tokens when Chromium is available, else a static CSS-derived fallback — ONE section, not both), " +
+    "The READING facets (markdown + meta's headings outline) are CLEANED by default (top-level `stripBoilerplate`, default true): cookie-consent banners, hidden DOM subtrees (mobile-nav clones, offscreen carousel slides — rendered path only) and same-page repeated blocks are stripped BEFORE conversion, and the result reports exact counts of what was removed. Pass `stripBoilerplate: false` (top-level, NOT inside facets) to read the page verbatim; `query_page_html` and the inventory facets (links, altTexts, images, tokens) always see the FULL unstripped DOM either way. " +
     "There is NO raw-HTML/markup facet: for specific structure use `query_page_html` (by selector or a natural-language `describe`), which is bounded — never dump a whole page's HTML into the chat. " +
     "Step 1 understand a page → default (`{}` = meta + markdown) + `{links:true}` on the FIRST/homepage inspect for site structure. Step 3 build a template from a sample → `{screenshot:true, tokens:true, altTexts:true, images:true}` for the visual + design + accessibility + asset URLs, markdown for the content, and `query_page_html` for any specific section. " +
     "To turn a homepage's links into the site's page-type map, use `map_external_page_types` instead. " +
@@ -271,6 +288,11 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     required: ["url"],
     properties: {
       url: { type: "string", description: "Absolute public URL, e.g. https://example.com/" },
+      stripBoilerplate: {
+        type: "boolean",
+        description:
+          "Default true: consent/cookie banners, hidden DOM subtrees (rendered path) and same-page repeated blocks (carousel clones, duplicate navs) are stripped from the READING facets (markdown + meta's headings outline) before conversion, with exact counts reported in the result. TOP-LEVEL flag, deliberately not a facet. Set false to read the page verbatim (e.g. when the cleanup removed something you needed). query_page_html and the inventory facets (links, altTexts, images, tokens) always see the full unstripped DOM either way.",
+      },
       facets: {
         type: "object",
         additionalProperties: false,
@@ -321,11 +343,11 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     if (!budget.ok) {
       return {
         ok: false,
-        content:
-          "External-fetch budget exhausted for this session (12 per 10 minutes). This tool is for a one-page glance — if you need many pages, propose the crawl via `propose_site_import` instead.",
+        content: `${describeFetchBudgetDenied(budget)} This tool is for a one-page glance — if you need many pages, propose the crawl via \`propose_site_import\` instead.`,
       };
     }
     const f = resolveFacets(toolInput.facets);
+    const strip = toolInput.stripBoilerplate ?? true;
     const allowedHosts = externalFetchAllowedHosts();
     const needHtml = f.links || f.markdown || f.altTexts || f.images || f.meta || f.tokens;
     const needRender = needHtml || f.screenshot;
@@ -344,6 +366,12 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     let styleSamples: readonly ElementStyleSample[] | undefined;
     let screenshotBytes: Uint8Array | undefined;
     let screenshotHeight = 800;
+    // issue #415 — the render's hidden-element pass: the DOM minus invisible
+    // subtrees, and how many it removed. Rendered path only (visibility is
+    // layout knowledge); stays undefined on the static fallback, which the
+    // counters line reports loudly.
+    let visibleHtml: string | undefined;
+    let hiddenRemoved: number | undefined;
 
     const screenshotter = needRender ? await getExternalScreenshotter({ allowedHosts }) : null;
 
@@ -356,12 +384,15 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
           fullPage: true,
           sampleStyles: f.tokens,
           captureHtml: true,
+          stripHidden: strip && needHtml,
         });
         html = shot.renderedHtml ?? "";
         finalUrl = shot.finalUrl ?? toolInput.url;
         styleSamples = shot.styleSamples;
         screenshotBytes = shot.bytes;
         screenshotHeight = shot.height;
+        visibleHtml = shot.visibleHtml;
+        hiddenRemoved = shot.hiddenRemoved;
       } catch (e) {
         if (isExternalUrlBlockedError(e)) return { ok: false, content: e.message };
         // Non-blocked capture failure: fall through to fetchRenderedHtml for
@@ -375,6 +406,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
         allowedHosts,
         maxBytes: 2 * 1024 * 1024,
         sampleStyles: f.tokens,
+        stripHidden: strip && needHtml,
       });
       if (!rf.ok) {
         if (rf.blocked) return { ok: false, content: rf.message };
@@ -387,6 +419,39 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
       finalUrl = rf.finalUrl;
       renderNote = rf.note;
       styleSamples = styleSamples ?? rf.styleSamples;
+      visibleHtml = rf.visibleHtml;
+      hiddenRemoved = rf.hiddenRemoved;
+    }
+
+    // ── Cleanup stage (issue #415) — between fetch and htmlToMarkdown ──────
+    // Consent chrome, hidden DOM (mobile-nav clones, offscreen carousel
+    // slides — removed during the render, where visibility is known) and
+    // same-page repeated subtrees are noise for READING a page: on real
+    // homepages they made ~40% of the Markdown redundant and pushed content
+    // behind extra read_page_more turns. The cleaned HTML feeds ONLY the two
+    // READING facets — the Markdown (+ its pageRef cache) and the meta
+    // headings outline (a consent modal's <h2> is not page structure). The
+    // INVENTORY facets (links/altTexts/images/tokens) and the cached HTML
+    // for query_page_html stay comprehensive on the unstripped DOM. Never
+    // silent (CLAUDE.md §2): the counters line always states what was
+    // removed — or that cleanup was off, or that the hidden pass could not
+    // run (static fallback).
+    let markdownHtml = html;
+    let cleanupLine: string | null = null;
+    if (needHtml && html.length > 0) {
+      if (strip) {
+        const consent = stripConsentSubtrees(visibleHtml ?? html);
+        const repeats = stripRepeatedSubtrees(consent.html);
+        markdownHtml = repeats.html;
+        const hiddenPart =
+          hiddenRemoved !== undefined
+            ? `${hiddenRemoved} hidden subtree(s)`
+            : "hidden-element pass skipped (page not rendered)";
+        cleanupLine = `Boilerplate stripped: ${consent.removed} consent block(s), ${hiddenPart}, ${repeats.removed} repeated block(s) — the Markdown + meta outline below (and read_page_more) are cleaned; query_page_html and the inventory facets see the full DOM. Re-run with stripBoilerplate:false for the verbatim text.`;
+      } else {
+        cleanupLine =
+          "Boilerplate cleanup OFF (stripBoilerplate:false) — consent banners, hidden subtrees and repeated blocks appear verbatim.";
+      }
     }
 
     const enabled = Object.entries(f)
@@ -395,11 +460,16 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     const sections: string[] = [
       `# External page inspection — ${finalUrl}`,
       `Facets: ${enabled.join(", ")}`,
+      ...(cleanupLine !== null ? [cleanupLine] : []),
       "",
     ];
 
     if (f.meta) {
-      const meta = extractPageMeta(html, finalUrl);
+      // Cleaned DOM (issue #415): the h1–h3 outline is a reading surface —
+      // consent/hidden/duplicate headings would re-import the stripped noise.
+      // Head-derived fields (title, canonical, hreflang) are untouched by the
+      // strippers, so they are identical either way.
+      const meta = extractPageMeta(markdownHtml, finalUrl);
       const hreflang =
         meta.hreflangAlternates.length > 0
           ? meta.hreflangAlternates.map((a) => `${a.hreflang} → ${a.href}`).join(", ")
@@ -424,7 +494,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     // with the pageRef + cursor for the rest.
     let fullMarkdown: string | null = null;
     if (f.markdown) {
-      fullMarkdown = htmlToMarkdown(html);
+      fullMarkdown = htmlToMarkdown(markdownHtml);
       const { text, nextCursor } = sliceMarkdown(fullMarkdown, 0);
       sections.push(
         "## Page text (Markdown)",
@@ -559,7 +629,10 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
       const pageRef = putPageInspection(toolCtx.chatSessionId ?? "no-session", {
         url: finalUrl,
         html,
-        markdown: fullMarkdown ?? htmlToMarkdown(html),
+        // The STRIPPED Markdown (issue #415) — read_page_more paginates the
+        // cleaned text; the html/renderedHtml stay unstripped so
+        // query_page_html queries the full DOM.
+        markdown: fullMarkdown ?? htmlToMarkdown(markdownHtml),
         // Present only when this inspect rendered the page — query_page_html
         // then queries the JS-applied DOM, not the static fetch.
         ...(renderedHtml !== undefined ? { renderedHtml } : {}),

@@ -10,8 +10,8 @@
  *   2. process.env[envNameFor(name)] — preserves Compose installs that
  *      already wired ANTHROPIC_API_KEY before this refactor.
  *   3. null — caller surfaces "AI provider not configured" through
- *      degraded-mode behaviour (translation worker errors per unit; chat
- *      stream emits SSE error; MCP bridge returns structured error).
+ *      degraded-mode behaviour (chat stream emits SSE error; MCP
+ *      bridge returns structured error).
  *
  * Cache: in-process Map keyed by (name, model, baseUrl, sha256(key)[0..8])
  * with 60s TTL so we don't re-decrypt on every chat turn. `pg_notify`
@@ -443,8 +443,8 @@ async function resolveProvider(
 
 /**
  * Get the currently-active provider (the one with `is_active = true`).
- * Returns null when no provider is configured anywhere — chat / translation
- * / plugin host all surface this as "configure your AI provider."
+ * Returns null when no provider is configured anywhere — chat and the
+ * plugin host both surface this as "configure your AI provider."
  */
 /**
  * v0.2.82 — diagnostic probe for the /security/ai UI. Distinguishes

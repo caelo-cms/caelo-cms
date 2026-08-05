@@ -58,11 +58,7 @@ export const OP_NAME_TO_TOOL_NAMES: Readonly<Record<string, readonly string[]>> 
   "redirects.lookup": ["find_redirects"],
   // Context-served reads — injected into the system prompt by the
   // chat-runner's context blocks, never exposed as tools:
-  //   glossary.list   → the translation glossary block
-  //   style_guide.get → the style-guide / brand-voice block
   //   ai_memory.list  → the site-memory block (persistence.ts)
-  "glossary.list": [],
-  "style_guide.get": [],
   "ai_memory.list": [],
 };
 

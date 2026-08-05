@@ -231,28 +231,28 @@ describe("release-images.yml — issue #54 PR-gate contract", () => {
     expect(onBlock).toMatch(/\n\s+merge_group:\s*(\n|$)/);
   });
 
-  it.each(
-    GATED_STEP_NAMES.map((name) => [name]),
-  )("W2: step `%s` gates its `if:` on the positive publish-event list", (name) => {
-    const body = extractStepBody(workflow, name);
-    // The gate must appear inside an `if:` line specifically (not in a
-    // comment or env-var). Assert the step's `if:` contains the
-    // PUBLISH_EVENT_GATE substring — that excludes BOTH `pull_request`
-    // and `merge_group` and admits only `push` / `workflow_call` /
-    // `workflow_dispatch`.
-    const ifLineRegex = new RegExp(
-      `\\bif:\\s.*${PUBLISH_EVENT_GATE.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}`,
-    );
-    expect(body).toMatch(ifLineRegex);
-    // Also explicitly assert the old negative-form gate is GONE — a
-    // regression that reintroduces `!= 'pull_request'` would silently
-    // publish merge-queue images.
-    expect(body).not.toMatch(/\bif:\s.*github\.event_name\s*!=\s*'pull_request'/);
-  });
+  it.each(GATED_STEP_NAMES.map((name) => [name]))(
+    "W2: step `%s` gates its `if:` on the positive publish-event list",
+    (name) => {
+      const body = extractStepBody(workflow, name);
+      // The gate must appear inside an `if:` line specifically (not in a
+      // comment or env-var). Assert the step's `if:` contains the
+      // PUBLISH_EVENT_GATE substring — that excludes BOTH `pull_request`
+      // and `merge_group` and admits only `push` / `workflow_call` /
+      // `workflow_dispatch`.
+      const ifLineRegex = new RegExp(
+        `\\bif:\\s.*${PUBLISH_EVENT_GATE.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}`,
+      );
+      expect(body).toMatch(ifLineRegex);
+      // Also explicitly assert the old negative-form gate is GONE — a
+      // regression that reintroduces `!= 'pull_request'` would silently
+      // publish merge-queue images.
+      expect(body).not.toMatch(/\bif:\s.*github\.event_name\s*!=\s*'pull_request'/);
+    },
+  );
 
   it("W3: `Build + push` step's `push:` uses the positive publish-event expression", () => {
     const body = extractStepBody(workflow, "Build + push");
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we're matching against
     expect(body).toContain(`push: \${{ ${PUBLISH_EVENT_GATE} }}`);
     // And specifically does NOT carry the old unconditional `push: true`
     // (the pre-#54 shape), a regression to `push: false`, or the older
