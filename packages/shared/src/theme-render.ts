@@ -140,6 +140,41 @@ export function listThemeCssVarNames(tokens: ThemeDocument): readonly string[] {
 }
 
 /**
+ * issue #430 — map every emitted CSS variable name to the ROLE recorded
+ * on its token (`$description`): what the token is for and where it must
+ * not be used. Returns `{}` when no token carries a role.
+ *
+ * This is how a design decision reaches the point of use. The write-time
+ * design guard looks up the vars a module's CSS actually references and
+ * replays their roles back at the author, so "primary is for CTAs, never
+ * for large background fills" is enforced on page nine as firmly as on
+ * page one — without a separate design-system document to maintain.
+ *
+ * A composite (typography) emits several vars from one token; each
+ * inherits the same role, which is what a reader expects.
+ */
+export function listTokenRoles(tokens: ThemeDocument): Record<string, string> {
+  const flat = flattenTokens(tokens);
+  const resolveCache = new Map<string, unknown>();
+  const roles: Record<string, string> = {};
+  for (const { path, token } of flat) {
+    const description = (token as { $description?: unknown }).$description;
+    if (typeof description !== "string" || description.trim().length === 0) continue;
+    const category = path.split(".")[0] ?? "";
+    const value = resolveTokenValue(token, tokens, resolveCache, new Set([path]));
+    const lines: string[] = [];
+    emitTokenLines(category, path, value, lines, []);
+    for (const line of lines) {
+      const colon = line.indexOf(":");
+      if (colon <= 0) continue;
+      const name = line.slice(0, colon).trim();
+      if (name.startsWith("--")) roles[name] = description.trim();
+    }
+  }
+  return roles;
+}
+
+/**
  * Emit a Tailwind 4 `@theme inline { … }` block. The body re-uses the
  * same per-category emission as `renderThemeCss` so the variable names
  * match what `app.css` exposes — feeding this output into the Tailwind

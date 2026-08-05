@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: MPL-2.0
+import { PERMISSIONS } from "@caelo-cms/admin-core";
+import { execute } from "@caelo-cms/query-api";
+import { fail } from "@sveltejs/kit";
+import { assertCsrfToken } from "$lib/server/csrf.js";
+import { requirePermission } from "$lib/server/guards.js";
+import { getQueryContext } from "$lib/server/query.js";
+export const load = async ({ locals }) => {
+    requirePermission(locals, "roles.manage");
+    const { adapter, registry } = getQueryContext();
+    const list = await execute(registry, adapter, locals.ctx, "roles.list", {});
+    const roles = list.ok && list.value
+        ? list.value.roles
+        : [];
+    return {
+        roles,
+        allPermissions: [...PERMISSIONS],
+    };
+};
+export const actions = {
+    create: async ({ request, locals }) => {
+        requirePermission(locals, "roles.manage");
+        const { adapter, registry } = getQueryContext();
+        const form = await request.formData();
+        await assertCsrfToken(form, locals);
+        const name = String(form.get("name") ?? "").trim();
+        const description = String(form.get("description") ?? "").trim();
+        const permissions = form.getAll("permissions").map(String);
+        const result = await execute(registry, adapter, locals.ctx, "roles.create", {
+            name,
+            description,
+            permissions,
+        });
+        if (!result.ok)
+            return fail(400, { error: "Could not create role." });
+        return { ok: true };
+    },
+    delete: async ({ request, locals }) => {
+        requirePermission(locals, "roles.manage");
+        const { adapter, registry } = getQueryContext();
+        const form = await request.formData();
+        await assertCsrfToken(form, locals);
+        const roleId = String(form.get("roleId") ?? "");
+        const result = await execute(registry, adapter, locals.ctx, "roles.delete", { roleId });
+        if (!result.ok)
+            return fail(400, { error: "Could not delete role." });
+        return { ok: true };
+    },
+};

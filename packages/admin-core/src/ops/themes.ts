@@ -381,7 +381,12 @@ export const updateThemeTokensOp = defineOperation({
     if (input.set && Object.keys(input.set).length > 0) {
       try {
         const normalized = normalizeTokens(input.set);
-        nextTokens = applyDtcgWrites(nextTokens, normalized.set, normalized.types);
+        nextTokens = applyDtcgWrites(
+          nextTokens,
+          normalized.set,
+          normalized.types,
+          normalized.descriptions,
+        );
         canonicalPathsWritten = normalized.canonicalPaths;
       } catch (e) {
         // AI-actionable error surface (#45 AC #7). Every typed error

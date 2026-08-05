@@ -73,15 +73,20 @@ export const editModuleTool: ToolDefinitionWithHandler<
       // issue #106 — shared field schema (single source of truth across all
       // module-authoring tools). See `_module-fields-schema.ts`.
       fields: MODULE_FIELDS_JSON_SCHEMA,
-      bindThemeLiterals: { type: "boolean" },
+      bindThemeLiterals: {
+        type: "boolean",
+        description:
+          "Rewrite CSS literals that equal a theme token value into var(--…). DEFAULT true — omit it. Pass false only to keep a deliberate off-palette literal.",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    // issue #164 slice 2 — opt-in mechanical token binding before write.
+    // issue #164 slice 2 — mechanical token binding before write.
+    // issue #430 — on by default; pass `false` to keep a literal.
     let bindingReport = "";
     let opInput: Record<string, unknown> = { ...input };
     delete opInput.bindThemeLiterals;
-    if (input.bindThemeLiterals === true && typeof input.css === "string") {
+    if (input.bindThemeLiterals !== false && typeof input.css === "string") {
       const bound = await bindCssToTheme(ctx, toolCtx, input.css);
       opInput = { ...opInput, css: bound.css };
       bindingReport = bound.report;
@@ -93,8 +98,9 @@ export const editModuleTool: ToolDefinitionWithHandler<
       // drift in the same turn.
       const effectiveCss = (opInput.css as string | undefined) ?? input.css;
       const cssWarn = await cssVarWarningSuffix(ctx, toolCtx, effectiveCss);
-      // issue #166 — static consistency findings against the Design Manifest
-      // (checked on the css as written, i.e. post-binding).
+      // issue #166 / #430 — static consistency findings against the active
+      // theme + the site's module rows (checked on the css as written,
+      // i.e. post-binding).
       const guard = await designGuardSuffix(ctx, toolCtx, { css: effectiveCss });
       // v0.12.2 — surface the extractor's inferred fields when present
       // so the AI's next turn sees the auto-minted names verbatim.

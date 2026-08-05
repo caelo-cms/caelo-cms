@@ -296,7 +296,11 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
       html: { type: "string", minLength: 1, maxLength: 50_000 },
       css: { type: "string", maxLength: 50_000 },
       js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
-      bindThemeLiterals: { type: "boolean" },
+      bindThemeLiterals: {
+        type: "boolean",
+        description:
+          "Rewrite CSS literals that equal a theme token value into var(--…). DEFAULT true — omit it. Pass false only to keep a deliberate off-palette literal.",
+      },
       fields: MODULE_FIELDS_JSON_SCHEMA,
       values: {
         type: "object",

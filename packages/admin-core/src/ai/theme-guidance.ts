@@ -23,7 +23,8 @@ export const THEME_DOCUMENT_SKELETON =
   "secondary-foreground, accent, accent-foreground, muted, muted-foreground, card, " +
   "card-foreground, border, ring, destructive, destructive-foreground, surface, " +
   "surface-alt}, gradient: {hero, subtle}, typography: {body, heading, mono}, " +
-  "spacing: {xs…2xl}, radius: {sm…lg}, shadow: {sm…xl}, motion}`";
+  "spacing: {xs…2xl component steps PLUS section-sm, section, section-lg for vertical " +
+  "band rhythm}, radius: {sm…lg}, shadow: {sm…xl}, motion}`";
 
 /**
  * Palette starting points by industry feel (issue #153: pairs, not
@@ -68,6 +69,40 @@ export const TOKEN_SHAPE_HINTS =
   "`heroGradient` also work — the server routes any `gradient.*`/`*Gradient` name to a gradient " +
   "token). Only `linear-`/`radial-`/`conic-gradient(...)` values are valid; never alias " +
   "({group.token}) unless the target exists.";
+
+/**
+ * issue #430 — the spacing scale must cover the sizes pages actually
+ * use. The dogfood install shipped `xs`…`2xl` (0.25–3rem) and then every
+ * one of 18 modules hardcoded its section padding (3.5–5rem, above the
+ * ceiling) and its control padding (0.6–0.8rem, between the two smallest
+ * steps). `--spacing-*` ended up referenced by zero modules. That is not
+ * the model ignoring an instruction — the vocabulary had no word for the
+ * job, so a literal was the only available answer.
+ */
+export const SPACING_RHYTHM_HINTS =
+  "Compose `spacing` so it covers what pages actually use — otherwise module CSS falls back to " +
+  "literals and the operator can never retune the site's density. A component-only scale " +
+  "(`xs`…`2xl`, 0.25–3rem) does NOT cover it: section bands need 3.5–5rem of vertical air, and " +
+  "controls need 0.6–0.9rem of padding. So ship the component steps PLUS named rhythm tokens — " +
+  "`section-sm` (tight band, ~2.5rem), `section` (standard band, ~4rem), `section-lg` (hero / " +
+  "feature band, ~5rem) — and reference them in module CSS as " +
+  "`padding: var(--spacing-section) var(--spacing-md)`. If you are about to write a padding " +
+  "literal, add the token instead.";
+
+/**
+ * issue #430 — a token's role is a design decision, and it is recorded
+ * in the same call that sets the value. There is no separate design-system
+ * document to write afterwards: the guard replays these roles at the exact
+ * moment module CSS references the var.
+ */
+export const TOKEN_ROLE_HINTS =
+  "Record each token's ROLE in the SAME call that sets its value, via the DTCG envelope's " +
+  "`$description`: e.g. `set: {'color.primary': {$type: 'color', $value: '#4f46e5', " +
+  "$description: 'CTAs, links and selected states — never large background fills or body copy'}}`. " +
+  "Say where the token must NOT be used, not only where it should — the boundary is what keeps " +
+  "page nine on page one's visual line. Roles survive later value-only edits, and every module " +
+  "write replays the roles of the vars its CSS touches back to you, so this is the whole " +
+  "design-system record: there is no separate manifest to write afterwards.";
 
 export const DEPTH_AND_SURFACE_HINTS =
   "Compose DEPTH, not just hue: give `gradient.hero` a real two-stop CSS gradient in the " +

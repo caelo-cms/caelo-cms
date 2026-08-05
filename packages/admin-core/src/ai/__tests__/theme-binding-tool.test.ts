@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #164 slice 2 — tool-level binding wiring: with
- * `bindThemeLiterals: true` the op receives the BOUND css (literals →
- * var(--…)) and the result reports every rewrite; without the flag the
- * css passes through untouched; place mode rejects the flag at the
- * boundary (mode exclusivity).
+ * issue #164 slice 2 — tool-level binding wiring: the op receives the
+ * BOUND css (literals → var(--…)) and the result reports every rewrite;
+ * place mode tolerates the flag at the boundary (mode exclusivity).
+ *
+ * issue #430 — binding is now the DEFAULT. Opting in was a correction
+ * round-trip we asked the AI to make for something we can do ourselves,
+ * and nobody opted in: six modules on the dogfood install hardcoded
+ * exact token values. Only an explicit `false` passes css through.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -67,11 +70,25 @@ describe("bindThemeLiterals (issue #164 slice 2)", () => {
     expect(opInputs[0]?.bindThemeLiterals).toBeUndefined(); // flag never reaches the op
   });
 
-  it("without the flag, css passes through untouched", async () => {
+  it("binds by DEFAULT when the flag is omitted (issue #430)", async () => {
     const opInputs: Record<string, unknown>[] = [];
     await editModuleTool.handler(
       AI,
       { moduleId: "11111111-1111-4111-8111-111111111101", css: ".cta{background:#4f46e5}" },
+      toolCtxRecording(opInputs),
+    );
+    expect(opInputs[0]?.css).toBe(".cta{background:var(--color-primary)}");
+  });
+
+  it("passes css through untouched ONLY on an explicit false", async () => {
+    const opInputs: Record<string, unknown>[] = [];
+    await editModuleTool.handler(
+      AI,
+      {
+        moduleId: "11111111-1111-4111-8111-111111111101",
+        css: ".cta{background:#4f46e5}",
+        bindThemeLiterals: false,
+      },
       toolCtxRecording(opInputs),
     );
     expect(opInputs[0]?.css).toBe(".cta{background:#4f46e5}");

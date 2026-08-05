@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: MPL-2.0
+import { describe, expect, it } from "bun:test";
+import { collapseStatusNotes, contextNoteLabel, isContextNote, noteMarkerKind, statusNoteKey, stripNoteMarker, } from "./status-notes.js";
+let seq = 0;
+function msg(partial) {
+    return { id: `m-${seq++}`, role: "user", content: "x", ...partial };
+}
+function note(content) {
+    return msg({ role: "user", origin: "system", content });
+}
+describe("statusNoteKey", () => {
+    it("normalises digit ticks so progress updates compare equal", () => {
+        expect(statusNoteKey("Crawling… 5/50 pages (10%)")).toBe(statusNoteKey("Crawling… 12/50 pages (24%)"));
+    });
+    it("normalises run-id / proposal-id prefixes", () => {
+        expect(statusNoteKey("Approved: crawl proposal 3f9a12bc — starting")).toBe(statusNoteKey("Approved: crawl proposal a0b1c2d3 — starting"));
+    });
+    it("keeps genuinely different statuses distinct", () => {
+        expect(statusNoteKey("Crawl finished: run 3f9a12bc reached ready_for_review")).not.toBe(statusNoteKey("Crawl failed: run 3f9a12bc — timeout"));
+    });
+});
+describe("collapseStatusNotes (issue #303)", () => {
+    it("passes non-status messages through untouched", () => {
+        const input = [
+            msg({ role: "user", content: "build me a site" }),
+            msg({ role: "assistant", content: "on it" }),
+            msg({ role: "tool", content: "ok", toolName: "edit_module" }),
+        ];
+        expect(collapseStatusNotes(input)).toEqual(input);
+    });
+    it("drops status notes with empty/whitespace bodies (legacy rows)", () => {
+        const keep = note("Crawl finished: 12 pages staged.");
+        const result = collapseStatusNotes([note(""), keep, note("   \n ")]);
+        expect(result).toEqual([keep]);
+    });
+    it("collapses consecutive near-identical crawl ticks to the LAST one", () => {
+        const t1 = note("Crawling… 5/50 pages");
+        const t2 = note("Crawling… 12/50 pages");
+        const t3 = note("Crawling… 31/50 pages");
+        expect(collapseStatusNotes([t1, t2, t3])).toEqual([t3]);
+    });
+    it("does not collapse distinct consecutive statuses", () => {
+        const a = note("Crawling… 31/50 pages");
+        const b = note("Crawl finished: run 3f9a12bc reached ready_for_review (31 pages staged).");
+        expect(collapseStatusNotes([a, b])).toEqual([a, b]);
+    });
+    it("a non-status message between ticks breaks the run", () => {
+        const t1 = note("Crawling… 5/50 pages");
+        const reply = msg({ role: "assistant", content: "still waiting on the crawler" });
+        const t2 = note("Crawling… 12/50 pages");
+        expect(collapseStatusNotes([t1, reply, t2])).toEqual([t1, reply, t2]);
+    });
+    it("operator-typed user messages are never treated as status notes", () => {
+        const a = msg({ role: "user", content: "same text" });
+        const b = msg({ role: "user", content: "same text" });
+        expect(collapseStatusNotes([a, b])).toEqual([a, b]);
+    });
+});
+describe("context-note helpers (collapse AI-context plumbing in the transcript)", () => {
+    const pagectx = '# Current page\nPage: home (locale=en, status=draft, id=abc)\n<div class="elementor-11">…</div>\n<!--pagectx:1a2b3c-->';
+    const statusLine = "Theme: needs setup — call themes.get to inspect.\n<!--status:9z8y-->";
+    const nudge = "Approved: crawl proposal 3f9a12bc — the crawler starts within ~10s.";
+    it("recognises the marker-bearing current-page + status-line notes as context notes", () => {
+        expect(noteMarkerKind(pagectx)).toBe("pagectx");
+        expect(noteMarkerKind(statusLine)).toBe("status");
+        expect(isContextNote(pagectx)).toBe(true);
+        expect(isContextNote(statusLine)).toBe(true);
+    });
+    it("does NOT treat marker-less operator-relevant nudges as context notes", () => {
+        expect(noteMarkerKind(nudge)).toBeNull();
+        expect(isContextNote(nudge)).toBe(false);
+    });
+    it("strips the trailing injected marker so it never shows to the operator", () => {
+        expect(stripNoteMarker(pagectx)).not.toContain("<!--pagectx:");
+        expect(stripNoteMarker(pagectx).endsWith("</div>")).toBe(true);
+        expect(stripNoteMarker(statusLine)).toBe("Theme: needs setup — call themes.get to inspect.");
+        // A nudge without a marker is returned unchanged (aside from trailing ws).
+        expect(stripNoteMarker(nudge)).toBe(nudge);
+    });
+    it("labels the collapsed summary by note kind", () => {
+        expect(contextNoteLabel(pagectx)).toBe("Page context");
+        expect(contextNoteLabel(statusLine)).toBe("Site status");
+    });
+});

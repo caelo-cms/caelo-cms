@@ -25,8 +25,49 @@ category**: inside `color`/`gradient`/`typography`/… any object carrying
 leaf silently validated as a metadata-only "group" but was still emitted
 into CSS — the silent-acceptance shape CLAUDE.md §2 forbids). Unknown
 root categories stay open-vocabulary for Figma / Tokens Studio imports.
-The AI guidance (skeleton, palette pairs, depth hints) is single-sourced
-in `packages/admin-core/src/ai/theme-guidance.ts`.
+The AI guidance (skeleton, palette pairs, depth hints, spacing rhythm,
+token roles) is single-sourced in
+`packages/admin-core/src/ai/theme-guidance.ts`.
+
+## Token roles — the design system IS the theme (#430)
+
+Every leaf may carry a `$description`: the token's **role** — what it is
+for and, load-bearing, where it must NOT be used (*"CTAs and links only —
+never large background fills"*). It is written **in the same call as the
+value**, inside the DTCG envelope:
+
+```
+set_theme_tokens({set: {'color.primary': {
+  $type: 'color', $value: '#4f46e5',
+  $description: 'CTAs, links and selected states — never large background fills'
+}}})
+```
+
+Two guarantees make that worth doing:
+
+- **Roles survive value-only edits.** `applyDtcgWrites` preserves an
+  existing `$description` unless a new one is supplied. (Before #430 it
+  rebuilt each leaf as `{$value, $type}` and dropped the role, so
+  recording one was pointless — the next edit erased it.)
+- **Roles are replayed at the point of use.** Every module write runs the
+  design guard, which looks up the roles of the vars that module's CSS
+  actually references (`listTokenRoles`) and appends them to the tool
+  result. Role misuse is visible while the AI is writing, not three pages
+  later.
+
+There is no separate design-system document. `design_manifests` and
+`set_design_manifest` were retired in #430 (migration 0209): the manifest
+was an end-of-session bookkeeping call that never happened on any real
+install, and while it was absent the guard disabled itself — including
+the literal-duplicates check, which only ever needed the theme. Page
+patterns come from the module rows, which already carry `displayName`,
+`kind`, `type` and `description`.
+
+**Spacing must cover what pages use.** The scale is component steps
+(`xs`…`2xl`) **plus** named band rhythm (`section-sm` / `section` /
+`section-lg`, ~2.5/4/5rem). A component-only scale is why the dogfood
+install hardcoded section padding in all 18 modules: 3.5–5rem sat above
+its 3rem ceiling, so a literal was the only available answer.
 
 Creating a theme requires the **caller to author the complete document**:
 
@@ -94,7 +135,10 @@ active theme's bound assets at render time. Unbound slots stay loud-raw
 
 - Unit: `packages/admin-core/src/ai/__tests__/cold-start-gate.test.ts`
   (gate state matrix), `propose-create-theme-tool.test.ts` (no-preset
-  boundary pins).
+  boundary pins), `packages/shared/src/theme-token-roles.test.ts` (role
+  round-trip + preserve-across-value-edit),
+  `packages/admin-core/src/ai/__tests__/design-guard.test.ts` (guard
+  fires with nothing captured up front).
 - Integration: `packages/admin-core/src/__tests__/themes-pending.integration.test.ts`
   (propose/execute round-trip, ramp, dedup, real-DB gate clearing).
 - E2E: `apps/admin/e2e/design-themes-create.browser.ts` (Owner dialog);

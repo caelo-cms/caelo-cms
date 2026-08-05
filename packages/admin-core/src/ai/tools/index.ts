@@ -115,7 +115,6 @@ import { screenshotExternalPageTool } from "./screenshot-external-page.js";
 import { screenshotPageTool } from "./screenshot-page.js";
 import { setContentInstanceValuesTool } from "./set-content-instance-values.js";
 import { setContentInstanceValuesManyTool } from "./set-content-instance-values-many.js";
-import { setDesignManifestTool } from "./set-design-manifest.js";
 import { setHomePageTool } from "./set-home-page.js";
 import { setMediaAltTool } from "./set-media-alt.js";
 import { setMediaAltManyTool } from "./set-media-alt-many.js";
@@ -136,7 +135,6 @@ import { setThemeMetaTool } from "./set-theme-meta.js";
 import { siteMemoryProposeTool } from "./site-memory-propose.js";
 import { spawnSubagentsTool, spawnSubagentTool } from "./spawn-subagent.js";
 import {
-  getDesignManifestTool,
   getSiteDefaultsTool,
   listAiProvidersTool,
   listDomainsTool,
@@ -206,7 +204,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #164 — compiler stage 1: draft fact base for materialisation.
   registry.register(inspectGenesisDraftTool);
   // issue #165 — per-site design language writer.
-  registry.register(setDesignManifestTool);
   // issue #189 / #278 — single-page external-site sensing (facet-selectable
   // glance) + homepage-driven page-type mapping for the migration flow.
   registry.register(inspectExternalPageTool);
@@ -252,7 +249,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // these fetch CURRENT state so the AI never repeats a confirmed write
   // because a stale chunk still shows the old value.
   registry.register(getSiteDefaultsTool);
-  registry.register(getDesignManifestTool);
   registry.register(listLocalesTool);
   registry.register(listPendingProposalsTool);
   registry.register(listEntityLocksTool);

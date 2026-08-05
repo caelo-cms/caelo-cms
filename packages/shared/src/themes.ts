@@ -728,11 +728,18 @@ function pluralise(category: string, n: number): string {
  * use this same logic — extracted so the dotted-path merge lives in
  * one place and v0.11.1's OKLCH auto-ramp can extend it without
  * forking.
+ *
+ * issue #430 — `$description` (the token's ROLE: what it is for and
+ * where it must not be used) is preserved across value-only edits and
+ * overwritten only when `descriptions` supplies a new one. Before this,
+ * every routine value edit silently erased the role, so recording a
+ * role at all was pointless: the next `set_theme_tokens` wiped it.
  */
 export function applyDtcgWrites(
   current: ThemeDocument,
   writes: Record<string, unknown>,
   types: Record<string, string>,
+  descriptions: Record<string, string> = {},
 ): ThemeDocument {
   const out: ThemeDocument = JSON.parse(JSON.stringify(current));
   for (const [path, value] of Object.entries(writes)) {
@@ -759,9 +766,20 @@ export function applyDtcgWrites(
         ...(value as Record<string, unknown>),
       };
     }
+    // Role precedence: an explicitly supplied description wins; otherwise
+    // the leaf keeps the one it already carries. Only a token that never
+    // had a role ends up without one.
+    const existingDescription =
+      existing && typeof existing === "object"
+        ? (existing as { $description?: unknown }).$description
+        : undefined;
+    const nextDescription =
+      descriptions[path] ??
+      (typeof existingDescription === "string" ? existingDescription : undefined);
     setLeafAtPath(out, path, {
       $value: nextValue,
       ...(inferredType ? { $type: inferredType } : {}),
+      ...(nextDescription !== undefined ? { $description: nextDescription } : {}),
     });
   }
   return out;

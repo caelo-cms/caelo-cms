@@ -48,6 +48,15 @@ export interface NormalizeResult {
     CanonicalPath,
     "color" | "dimension" | "typography" | "shadow" | "duration" | "cubicBezier" | "gradient"
   >;
+  /**
+   * issue #430 — the token's ROLE, per canonical path: what this token
+   * is for and, crucially, where it must NOT be used ("CTAs and links
+   * only — never large background fills"). Lifted off the `$description`
+   * of a DTCG envelope the caller passed in `set`, so a value and its
+   * role land in ONE write instead of a value call plus a prose-metadata
+   * call. The ops layer stores it back on the leaf as `$description`.
+   */
+  readonly descriptions: Record<CanonicalPath, string>;
   /** Echo-back list for the AI tool's result content. */
   readonly canonicalPaths: readonly CanonicalPath[];
 }
@@ -218,6 +227,7 @@ const DEFAULT_TIER = "sm"; // shadowSm / radiusMd default
 export function normalizeTokens(input: Record<string, unknown>): NormalizeResult {
   const set: Record<CanonicalPath, unknown> = {};
   const types: Record<CanonicalPath, NormalizeResult["types"][string]> = {};
+  const descriptions: Record<CanonicalPath, string> = {};
   const paths: CanonicalPath[] = [];
 
   for (const [rawName, rawValueIn] of Object.entries(input)) {
@@ -235,13 +245,22 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
         // Not JSON after all — keep the literal string.
       }
     }
+    // issue #430 — the envelope may also carry `$description` (the token's
+    // role). Lift it BEFORE unwrapping, then re-attach it at the canonical
+    // path so "what this colour is for" survives the same call that sets
+    // the colour. Without this the role is silently dropped on the way in.
+    let envelopeDescription: string | undefined;
     if (
       rawValue !== null &&
       typeof rawValue === "object" &&
       !Array.isArray(rawValue) &&
       "$value" in (rawValue as Record<string, unknown>)
     ) {
-      rawValue = (rawValue as Record<string, unknown>).$value;
+      const envelope = rawValue as Record<string, unknown>;
+      if (typeof envelope.$description === "string" && envelope.$description.trim().length > 0) {
+        envelopeDescription = envelope.$description;
+      }
+      rawValue = envelope.$value;
     }
     const resolved = resolveOne(rawName, rawValue);
     // v0.11.0 fix (#45 review thread on theme-normalize.ts:149) —
@@ -273,10 +292,11 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
     }
     set[resolved.path] = storedValue;
     types[resolved.path] = resolved.inferredType;
+    if (envelopeDescription !== undefined) descriptions[resolved.path] = envelopeDescription;
     paths.push(resolved.path);
   }
 
-  return { set, types, canonicalPaths: paths };
+  return { set, types, descriptions, canonicalPaths: paths };
 }
 
 interface ResolvedToken {
