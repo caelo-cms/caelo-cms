@@ -36,6 +36,7 @@ import {
   type Screenshotter,
 } from "@caelo-cms/site-importer";
 import { sql } from "drizzle-orm";
+import { parseCrawlScope } from "./crawl-scope.js";
 import { parseExplicitUrls } from "./explicit-urls.js";
 
 /** issue #423 — deterministic per-URL storage suffix so re-captures and
@@ -82,6 +83,20 @@ function parseCrawlCheckpoint(raw: unknown): CrawlCheckpoint | null {
             typeof e === "object" && e !== null && typeof (e as { url?: unknown }).url === "string",
         )
       : [],
+    // issue #425 — the skip ledger joined the checkpoint later; an old
+    // in-flight checkpoint without it resumes with an empty ledger.
+    // Both fields are checked (PR #435 review): an entry missing its
+    // `reason` must not reach the report claiming to have one.
+    skipped: Array.isArray(cp.skipped)
+      ? cp.skipped.filter(
+          (e): e is { url: string; reason: string } =>
+            typeof e === "object" &&
+            e !== null &&
+            typeof (e as { url?: unknown }).url === "string" &&
+            typeof (e as { reason?: unknown }).reason === "string",
+        )
+      : [],
+    skippedOutOfScope: typeof cp.skippedOutOfScope === "number" ? cp.skippedOutOfScope : 0,
   };
 }
 
@@ -354,7 +369,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       //     fetch timeout ≈ 8 min).
       const rows = await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
         const claim = (await tx.execute(sql`
-            SELECT id::text AS id, source_url, depth, max_pages, explicit_urls, crawl_state
+            SELECT id::text AS id, source_url, depth, max_pages, explicit_urls, crawl_scope, crawl_state
             FROM import_runs
             WHERE status = 'crawling'
               AND (
@@ -370,6 +385,7 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           depth: number;
           max_pages: number;
           explicit_urls: unknown;
+          crawl_scope: unknown;
           crawl_state: unknown;
         }>;
         if (claim.length > 0) {
@@ -393,6 +409,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       // the Owner approved an exact set, not a depth crawl (§2
       // no-fallbacks). Only SQL NULL means depth mode.
       const explicitUrls = parseExplicitUrls(r.explicit_urls);
+      // issue #425 — same loudness contract as explicit_urls: SQL NULL =
+      // unscoped; a present-but-malformed scope THROWS (run goes 'failed')
+      // instead of silently crawling outside the Owner-approved scope.
+      const crawlScope = parseCrawlScope(r.crawl_scope);
       const resumeFrom = parseCrawlCheckpoint(r.crawl_state);
       const claimedRunId = runId;
       // issue #423 — crawl-time ground truth. The crawler streams each
@@ -414,7 +434,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "imports.write_extracted_pages", {
           runId: claimedRunId,
           pages: pages.map((p) => ({
+            // issue #425 — `p.url` is the FINAL post-redirect URL; the
+            // requested URL rides along as provenance when they differ.
             sourceUrl: p.url,
+            ...(p.requestedUrl !== undefined ? { requestedUrl: p.requestedUrl } : {}),
             proposedSlug: p.proposedSlug,
             proposedTitle: p.title,
             proposedModules: p.modules.map((m) => ({
@@ -451,6 +474,8 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         // BFS and fetches exactly these + the source origin). Non-null is
         // guaranteed non-empty by parseExplicitUrls.
         ...(explicitUrls ? { urls: explicitUrls } : {}),
+        // issue #425 — the Owner-approved language/section scope.
+        ...(crawlScope ? { scope: crawlScope } : {}),
         throttleMs: 100,
         // issue #191 — explicit, visible exemption list for the SSRF
         // guard (e2e fixture servers, deliberate private crawls).
@@ -503,12 +528,17 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         pagesExtracted: result.pagesCrawled,
       });
       // Frontier no longer needed once the run left 'crawling'; keep
-      // the error list queryable for the migration report (#197) by
-      // storing only that slice.
+      // the error list queryable for the migration report (#197) — and
+      // the #425 skip ledger + scope, so the report states what the
+      // scope declined, loudly.
       await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
         await tx.execute(sql`
           UPDATE import_runs
-          SET crawl_state = (${JSON.stringify({ errors: result.errors })}::text)::jsonb,
+          SET crawl_state = (${JSON.stringify({
+            errors: result.errors,
+            skipped: result.skipped,
+            skippedOutOfScope: result.skippedOutOfScope,
+          })}::text)::jsonb,
               heartbeat_at = NULL
           WHERE id = ${claimedRunId}::uuid
         `);

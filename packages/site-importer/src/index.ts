@@ -46,8 +46,19 @@ export {
   stripBoilerplateSubtrees,
 } from "./content-only.js";
 export {
+  type CrawlScope,
+  hreflangMatchesLocale,
+  isPathInScope,
+  MAX_SKIPPED_REPORTED,
+  normalizeCrawlUrl,
+  pickLocaleAlternate,
+  type SkippedUrl,
+  stripTrailingSlashes,
+} from "./crawl-scope.js";
+export {
   type CrawlCheckpoint,
   type CrawledPage,
+  type CrawlFetchResult,
   type CrawlOptions,
   type CrawlResult,
   crawlSite,
