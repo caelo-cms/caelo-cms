@@ -39,7 +39,7 @@ interface Gist {
 export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
   name: "get_import_page",
   description:
-    "Read ONE page's captured content from a completed crawl run as the GIST — the page text as Markdown, the crawled design tokens, and a source-screenshot handle — so you can rebuild it with build_page WITHOUT re-fetching the live site. It NEVER returns the source's raw page-builder HTML (that div-soup is context bloat, and you author fresh semantic modules regardless). Returns: proposed slug + title; the text as Markdown (truncated with a cursor — call read_page_more for the rest); the crawled design tokens (colors/fonts — cite THESE, don't guess); and a `pageRef` so query_page_html can pull ONE specific section of the stored HTML on demand. For the visual, call get_import_page_screenshot. Pass the staging import_pages id, the built page id, or a built page whose slug matches the crawl. Use this in the mass-import step to rebuild each crawled page; for a live URL not in a crawl use inspect_external_page instead.",
+    "Read ONE page's captured content from a completed crawl run as the GIST — the page text as Markdown, the crawled design tokens, and a source-screenshot handle — so you can rebuild it with build_page WITHOUT re-fetching the live site. It NEVER returns the source's raw page-builder HTML (that div-soup is context bloat, and you author fresh semantic modules regardless). Returns: proposed slug + title; the text as Markdown (truncated with a cursor — call read_page_more for the rest); the crawled design tokens (colors/fonts — cite THESE, don't guess); and a `pageRef` so query_page_html can pull ONE specific section of the stored HTML on demand. For the visual, call get_import_page_screenshot. Pass the staging import_pages id (from list_import_pages), the built page id, or a built page whose slug matches the crawl; the result always echoes the resolved staging id for the follow-up calls. Use this in the mass-import step to rebuild each crawled page; for a live URL not in a crawl use inspect_external_page instead.",
   schema: input,
   inputSchema: {
     type: "object",
@@ -74,6 +74,11 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
     const tokens = g.sampledDesignTokens ?? g.themeTokens ?? null;
     const sections = [
       `# Imported page — ${g.sourceUrl ?? g.importPageId}`,
+      // issue #422 — always emit the RESOLVED staging id (even when the
+      // caller passed a built page id): it is the one id every follow-up
+      // call takes (build_page.importPageId, check_page_content_inventory,
+      // add_import_page_notes, get_import_page_screenshot).
+      `Import page id: ${g.importPageId} (run ${g.runId}) — pass this as build_page's page.importPageId and to the verification/notes tools.`,
       `Page handle: ${pageRef} — reuse with read_page_more({ pageRef, cursor }) / query_page_html({ pageRef, ... }); no re-fetch.`,
       `Proposed slug: ${g.proposedSlug ?? "(none)"}`,
       `Proposed title: ${g.proposedTitle ?? "(none)"}`,
