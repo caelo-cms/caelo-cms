@@ -17,7 +17,6 @@ import { ADMIN_LOG_DIR } from "./global-setup.js";
 import type { ScenarioMetrics, ScenarioSummary, ThresholdViolation } from "./lib/metrics-core.js";
 import {
   aggregate,
-  buildThresholdWarnings,
   checkThresholds,
   formatReport,
   metricsBySessionText,
@@ -66,8 +65,8 @@ export const SCENARIO_METRICS_JSONL = resolve(ADMIN_LOG_DIR, "scenario-metrics.j
 /**
  * Scenario-facing entry point: print the per-turn/loop + attribution +
  * per-tool report, append the summary (INCLUDING any threshold violations,
- * so a breach on a retried attempt stays visible to
- * {@link buildThresholdWarnings}) to {@link SCENARIO_METRICS_JSONL}, and
+ * so a breach on a retried attempt stays visible to global-teardown's
+ * `buildThresholdWarnings` pass) to {@link SCENARIO_METRICS_JSONL}, and
  * return the violations. The scenario asserts the returned array is empty,
  * so a caching/token regression fails that scenario's e2e.
  */
