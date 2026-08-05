@@ -161,6 +161,17 @@ describe("imports.set_page_captures_by_url (#423)", () => {
     expect(row?.sampledDesignTokens).not.toBeNull();
   });
 
+  it("rejects a capture carrying neither a key nor tokens (silent-no-op guard)", async () => {
+    const home = "https://svfx423-e.example/";
+    const runId = await makeRun(home, [home]);
+    const r = await execute(registry, adapter, SYSTEM, "imports.set_page_captures_by_url", {
+      runId,
+      captures: [{ sourceUrl: home }],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(JSON.stringify(r.error)).toContain("silent no-op");
+  });
+
   it("reports unknown sourceUrls in `unmatched` instead of silently dropping them", async () => {
     const home = "https://svfx423-c.example/";
     const runId = await makeRun(home, [home]);

@@ -416,7 +416,9 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       } catch (e) {
         errors.push({
           url: next.url,
-          reason: `screenshot persistence failed: ${(e as Error).message}`,
+          // Coerce non-Error throws too — an empty "failed:" reason in the
+          // run report would defeat the loud-marker purpose.
+          reason: `screenshot persistence failed: ${e instanceof Error ? e.message : String(e)}`,
         });
       }
     }

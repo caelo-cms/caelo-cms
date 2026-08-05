@@ -837,7 +837,16 @@ export const setPageCapturesByUrlOp = defineOperation({
               screenshotObjectKey: z.string().max(500).optional(),
               sampledDesignTokens: pageDesignTokensSchema.optional(),
             })
-            .strict(),
+            .strict()
+            // A bare sourceUrl would COALESCE both columns to themselves —
+            // a silent no-op UPDATE that hides an orchestrator bug (§2).
+            .refine(
+              (c) => c.screenshotObjectKey !== undefined || c.sampledDesignTokens !== undefined,
+              {
+                message:
+                  "each capture must carry screenshotObjectKey and/or sampledDesignTokens — a bare sourceUrl is a silent no-op; filter such rows out before calling",
+              },
+            ),
         )
         .min(1)
         .max(500),

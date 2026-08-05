@@ -209,6 +209,26 @@ describe("capture-first crawl (#423)", () => {
     ]);
   });
 
+  it("coerces a non-Error sink throw into a readable persistence error", async () => {
+    const mock = mockScreenshotter({ "/": page("Home") });
+    const result = await crawlSite({
+      sourceUrl: "https://site.example/",
+      depth: 0,
+      screenshotter: mock.screenshotter,
+      onPageCapture: async () => {
+        // eslint-style string throw — the reason must still name the cause.
+        throw "bucket offline (string throw)";
+      },
+      ...HERMETIC,
+    });
+    expect(result.errors).toEqual([
+      {
+        url: "https://site.example/",
+        reason: "screenshot persistence failed: bucket offline (string throw)",
+      },
+    ]);
+  });
+
   it("an injected screenshotter is NOT disposed by the crawl (caller owns it)", async () => {
     const mock = mockScreenshotter({ "/": page("Home") });
     await crawlSite({
