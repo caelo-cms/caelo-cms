@@ -99,8 +99,39 @@ export const TEMPLATE_HTML_MAX = 512 * 1024;
 export const TEMPLATE_CSS_MAX = 128 * 1024;
 
 const moduleHtml = z.string().max(MODULE_HTML_MAX, `html exceeds ${MODULE_HTML_MAX} bytes`);
-const moduleCss = z.string().max(MODULE_CSS_MAX, `css exceeds ${MODULE_CSS_MAX} bytes`);
-const moduleJs = z.string().max(MODULE_JS_MAX, `js exceeds ${MODULE_JS_MAX} bytes`);
+
+/**
+ * issue #432 root-cause guard — reject XML CDATA wrappers in module css/js.
+ *
+ * Module css/js is stored and served VERBATIM, so a `<![CDATA[ … ]]>`
+ * wrapper (an XHTML-era idiom the AI occasionally reaches for when
+ * "protecting" inline code) reaches the browser unparsed: the stylesheet
+ * fails to apply and the script throws `SyntaxError: Unexpected token '<'`.
+ * On e2e runs 31000584991 / 31000699422 (2026-08-05) exactly this landed
+ * silently, the page rendered broken, and the model burned ~15–20 extra
+ * loops (~+1.2M input tokens) discovering and repairing it via
+ * screenshot/inspect/edit cycles. Rejecting at the write boundary with an
+ * actionable message turns that repair spiral into a single corrected call
+ * (CLAUDE.md §11 — failure surfaces are AI-actionable; §2 — fail loudly).
+ *
+ * css/js only: CDATA is never valid CSS or JS, while an html body may
+ * legitimately carry CDATA inside inline `<svg>`/`<math>` foreign content.
+ */
+const CDATA_OPEN = "<![CDATA[";
+const noCdata = (value: string): boolean => !value.includes(CDATA_OPEN);
+const cdataMessage = (field: "css" | "js"): string =>
+  `${field} contains an XML CDATA marker (${CDATA_OPEN}) — module ${field} is stored and served ` +
+  `verbatim, so CDATA wrappers reach the browser unparsed and break rendering. ` +
+  `Remove the wrapper and resend plain ${field === "css" ? "CSS" : "JavaScript"}.`;
+
+const moduleCss = z
+  .string()
+  .max(MODULE_CSS_MAX, `css exceeds ${MODULE_CSS_MAX} bytes`)
+  .refine(noCdata, cdataMessage("css"));
+const moduleJs = z
+  .string()
+  .max(MODULE_JS_MAX, `js exceeds ${MODULE_JS_MAX} bytes`)
+  .refine(noCdata, cdataMessage("js"));
 
 /**
  * v0.4.0 — module field schema. Each field declares one substitution slot in
