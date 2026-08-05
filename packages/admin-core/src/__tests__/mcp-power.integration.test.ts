@@ -472,11 +472,12 @@ describe("Power-MCP surface (admin token)", () => {
     expect(v.systemContext).toContain("## Module model");
     expect(v.systemContext).not.toContain("## Subagents");
     expect(v.systemContext).not.toContain("## Finishing a turn");
-    // #413 — the playbook variant names the visual-inspection tools that DO
-    // work here instead of the excluded chat-browser screenshot tool (#412
-    // lifts that exclusion later; this may then relax to the chat wording).
+    // #413 — the playbook variant names the visual-inspection tools that
+    // work here; since #412 that includes screenshot_page itself (the
+    // server-side backend renders the session branch's preview).
     expect(v.systemContext).toContain("`inspect_built_page`");
-    expect(v.systemContext).toContain("`screenshot_external_page`");
+    expect(v.systemContext).toContain("`screenshot_page`");
+    expect(v.systemContext).toContain("rendered server-side");
     for (const s of v.skills) expect(s.body).toBeUndefined();
 
     const withBodies = await execute(registry, adapter, systemCtx, "mcp.get_context", {
