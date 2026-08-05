@@ -96,13 +96,16 @@ export const SPACING_RHYTHM_HINTS =
  * moment module CSS references the var.
  */
 export const TOKEN_ROLE_HINTS =
-  "Record each token's ROLE in the SAME call that sets its value, via the DTCG envelope's " +
-  "`$description`: e.g. `set: {'color.primary': {$type: 'color', $value: '#4f46e5', " +
-  "$description: 'CTAs, links and selected states — never large background fills or body copy'}}`. " +
-  "Say where the token must NOT be used, not only where it should — the boundary is what keeps " +
-  "page nine on page one's visual line. Roles survive later value-only edits, and every module " +
-  "write replays the roles of the vars its CSS touches back to you, so this is the whole " +
-  "design-system record: there is no separate manifest to write afterwards.";
+  "Record each token's ROLE via the DTCG envelope's `$description`, in either form: WITH the value " +
+  "when you already know it — `set: {'color.primary': {$type: 'color', $value: '#4f46e5', " +
+  "$description: 'CTAs, links and selected states — never large background fills'}}` — or as a " +
+  "value-LESS patch when the value is already settled and you are annotating it afterwards: " +
+  "`set: {'color.primary': {$description: '…'}}` (leaves `$value` untouched, so you never restate " +
+  "— and risk drifting — a value; needs the canonical path or the `--css-var` name, since a loose " +
+  "name infers its category from the value). Say where the token must NOT be used, not only where " +
+  "it should — the boundary is what keeps page nine on page one's visual line. Roles survive later " +
+  "value-only edits, and every module write replays the roles of the vars its CSS touches back to " +
+  "you, so this is the whole design-system record: there is no separate manifest to write.";
 
 export const DEPTH_AND_SURFACE_HINTS =
   "Compose DEPTH, not just hue: give `gradient.hero` a real two-stop CSS gradient in the " +

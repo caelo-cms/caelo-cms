@@ -43,6 +43,19 @@ set_theme_tokens({set: {'color.primary': {
 }}})
 ```
 
+A role can also be attached **after** the value is settled, with a
+value-less patch — this is what the anchor-page design review uses, so it
+never restates (and never risks drifting) a value it did not mean to touch:
+
+```
+set_theme_tokens({set: {'color.primary': {$description: 'CTAs and the link hover — never a section background'}}})
+```
+
+Value-less patches need the canonical path or the `--css-var` name: a
+loose name (`primaryColor`) infers its category from the value, so without
+one it is genuinely unresolvable and is rejected rather than guessed.
+Annotating a token that does not exist is rejected too.
+
 Two guarantees make that worth doing:
 
 - **Roles survive value-only edits.** `applyDtcgWrites` preserves an
@@ -62,6 +75,33 @@ install, and while it was absent the guard disabled itself — including
 the literal-duplicates check, which only ever needed the theme. Page
 patterns come from the module rows, which already carry `displayName`,
 `kind`, `type` and `description`.
+
+## Where the design layer gets captured (#430)
+
+Both site-building flows compose the theme **before any page exists** —
+genesis from the selected draft, migrate from the crawl — so a role
+recorded at that moment is a guess. It becomes a fact only once the
+anchor page exists and you can see what `--color-primary` was actually
+used for.
+
+So the capture point is a **design review on the anchor page**, added by
+migration 0209 to `site-genesis` (materialise step (c)) and `site-migrate`
+(step 2, before the homepage checkpoint). It does two things:
+
+1. **Promote** what the page repeated into tokens — section padding into
+   `spacing.section*`, any literal recurring across two modules — and
+   rewrite those declarations to `var(--…)`.
+2. **Record** each token's role from observed usage, as a value-less
+   `{$description}` patch.
+
+On the migrate path this is deliberately **direction-aware**: it records
+what was *built*, never what was *measured*. Under AUFFRISCHEN or
+OPTIMIERTER VORSCHLAG the crawled rhythm is exactly what the operator
+asked to move away from, so tokenising the source's spacing would fight
+the chosen direction.
+
+Everything built after the anchor page is checked against that layer at
+write time by the design guard.
 
 **Spacing must cover what pages use.** The scale is component steps
 (`xs`…`2xl`) **plus** named band rhythm (`section-sm` / `section` /

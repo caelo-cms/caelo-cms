@@ -62,4 +62,40 @@ SET body = replace(
     )
 WHERE slug = 'theme-branding';
 
+-- ---------------------------------------------------------------------
+-- Capture the design layer where the decisions become REAL: right after
+-- the anchor page is built.
+--
+-- Both site-building flows compose the theme BEFORE any page exists
+-- (genesis from the selected draft, migrate from the crawl), so a role
+-- recorded at that moment is a guess — "primary is probably for CTAs".
+-- It is only a fact once the anchor page exists and you can see what
+-- primary was actually used for. Hence a review step at the anchor page,
+-- not at theme-composition time.
+--
+-- This also has to be direction-aware on the migrate path: under
+-- AUFFRISCHEN / OPTIMIERTER VORSCHLAG the crawled rhythm is precisely
+-- what the operator asked to move away from, so the step records what
+-- was BUILT, never what was measured.
+-- ---------------------------------------------------------------------
+
+UPDATE skills
+SET body = replace(
+  body,
+  '   - `log_page_edit` for the homepage: what you built and the decisive design choices (palette, type, chrome). Future subagents and later work read this for context.',
+  '   - DESIGN LAYER — the homepage is the design anchor, so settle the design system ON it now, before any other page is built. Read back what you actually authored, then: (a) PROMOTE what you repeated into tokens — section padding into `spacing.section-sm/section/section-lg`, any literal recurring across two modules into the token it should have been — with `set_theme_tokens`, and rewrite those declarations to `var(--…)` via `edit_content`; (b) RECORD each token''s ROLE as a value-less `{$description}` patch describing how you USED it here ("CTAs and the link hover — never a section background"), which never restates a value. Record what you BUILT, not what the original had: under AUFFRISCHEN / OPTIMIERTER VORSCHLAG the source''s rhythm is exactly what you moved away from. Every later page is checked against this layer at write time, so a decision you leave unrecorded is one the next page will not follow.
+   - `log_page_edit` for the homepage: what you built and the decisive design choices (palette, type, chrome). Future subagents and later work read this for context.'
+)
+WHERE slug = 'site-migrate'
+  AND body NOT LIKE '%DESIGN LAYER%';
+
+UPDATE skills
+SET body = replace(
+  body,
+  'whose module CSS references the theme vars you just created.',
+  'whose module CSS references the theme vars you just created; (c) DESIGN REVIEW — with the anchor page built, settle the design layer before anything else is built on it: PROMOTE what you repeated into tokens (section padding into `spacing.section-sm/section/section-lg`, any literal recurring across two modules) and rewrite those declarations to `var(--…)` via `edit_content`, then RECORD each token''s ROLE as a value-less `{$description}` patch describing how you actually USED it ("CTAs and the link hover — never a section background"), which never restates a value. Every later page is checked against this layer at write time, so a decision you leave unrecorded is one the next page will not follow.'
+)
+WHERE slug = 'site-genesis'
+  AND body NOT LIKE '%DESIGN REVIEW%';
+
 COMMIT;
