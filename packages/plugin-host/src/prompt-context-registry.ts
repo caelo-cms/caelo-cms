@@ -5,11 +5,11 @@
  * blocks. The chat-runner queries this on every turn and folds non-empty
  * renderer outputs into the volatile chunk array.
  *
- * Why this exists: P11 had translation's prompt block hard-coded as inline
- * text in `chat-runner.ts`. P11.5 moves it to the plugin so each Tier-1 plugin
- * owns its own context (translation → "pending jobs"; comments → "pending
- * moderation"; newsletter → "subscribers per locale"; etc.). chat-runner just
- * iterates this registry, no plugin-specific code paths.
+ * Why this exists: P11 had a plugin's prompt block hard-coded as inline
+ * text in `chat-runner.ts`. P11.5 moved it to the plugin so each Tier-1 plugin
+ * owns its own context (comments → "pending moderation"; newsletter →
+ * "subscribers per locale"; etc.). chat-runner just iterates this
+ * registry, no plugin-specific code paths.
  *
  * Renderers are async — they may hit the DB to count pending rows. Failure
  * isolation: if a renderer throws, its block is omitted (caller logs); other

@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/admin-core",
-  "version": "0.10.22",
+  "version": "0.10.24",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
@@ -15,9 +15,9 @@
     "lint:spdx": "bun run scripts/check-spdx-headers.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.15",
-    "@ai-sdk/google": "^4.0.16",
-    "@ai-sdk/openai": "^4.0.14",
+    "@ai-sdk/anthropic": "^4.0.25",
+    "@ai-sdk/google": "^4.0.29",
+    "@ai-sdk/openai": "^4.0.25",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
@@ -25,7 +25,7 @@
     "@caelo-cms/site-importer": "workspace:*",
     "@caelo-cms/static-generator": "workspace:*",
     "@google-cloud/storage": "^7.21.0",
-    "ai": "^7.0.28",
+    "ai": "^7.0.44",
     "drizzle-orm": "0.45.2",
     "google-auth-library": "^10.9.0",
     "htmlparser2": "^12.0.0",
@@ -39,7 +39,6 @@
     "@caelo-cms/plugin-forms": "workspace:*",
     "@caelo-cms/plugin-newsletter": "workspace:*",
     "@caelo-cms/plugin-ratings": "workspace:*",
-    "@caelo-cms/plugin-sdk": "workspace:*",
-    "@caelo-cms/plugin-translation": "workspace:*"
+    "@caelo-cms/plugin-sdk": "workspace:*"
   }
 }

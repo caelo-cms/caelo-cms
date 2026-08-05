@@ -130,7 +130,6 @@ import {
   setTemplateLayoutOp,
   updateTemplateOp,
 } from "./ops/content/templates.js";
-import { translationStatusMatrixOp } from "./ops/content/translation_status.js";
 import {
   listDeployRunsOp,
   listDeployTargetsOp,
@@ -197,7 +196,12 @@ import {
   setRateLimitOverrideOp,
   setRateLimitProfileOp,
 } from "./ops/gateway.js";
-import { addGenesisDraftOp, listGenesisDraftsOp, selectGenesisDraftOp } from "./ops/genesis.js";
+import {
+  addGenesisDraftOp,
+  listGenesisDraftsOp,
+  renderDesignDraftOp,
+  selectGenesisDraftOp,
+} from "./ops/genesis.js";
 import { importMediaUrlsOp, listPageAssetsOp } from "./ops/import_media.js";
 import {
   acceptImportedPageOp,
@@ -217,6 +221,7 @@ import {
   getRunCostOp,
   getSessionBudgetStateOp,
   listImportPageClustersOp,
+  listImportPagesOp,
   listImportRunsOp,
   listPendingImportProposalsOp,
   logImportRunEventOp,
@@ -225,22 +230,13 @@ import {
   recordBudgetGateEventOp,
   rejectImportProposalOp,
   setCostCeilingOp,
+  setPageCapturesByUrlOp,
   setRunDesignTokensOp,
   updateImportRunStatusOp,
   updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
-import {
-  executeLocaleProposalOp,
-  getLocaleOp,
-  listLocalesOp,
-  listPendingLocaleProposalsOp,
-  proposeCreateLocaleOp,
-  proposeDeleteLocaleOp,
-  proposeSetDefaultLocaleOp,
-  proposeUpdateStrategyOp,
-  rejectLocaleProposalOp,
-} from "./ops/locales.js";
+import { getLocaleOp, listLocalesOp } from "./ops/locales.js";
 import {
   executeMcpTokenProposalOp,
   listPendingMcpTokenProposalsOp,
@@ -367,7 +363,6 @@ import {
 } from "./ops/seo.js";
 import { pagesSeoSetManyOp } from "./ops/seo-bulk.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/site_defaults.js";
-import { getSiteSettingsOp, setSiteSettingsOp } from "./ops/site_settings.js";
 import {
   listPinDefaultsOp,
   setEngagedSkillsOp,
@@ -438,29 +433,6 @@ import {
   readToolApprovalForExecuteOp,
   rejectToolApprovalOp,
 } from "./ops/tool_approvals.js";
-import {
-  deleteGlossaryEntryOp,
-  listGlossaryOp,
-  setGlossaryEntryOp,
-} from "./ops/translation/glossary.js";
-import {
-  aggregateActiveTranslationJobsOp,
-  cancelTranslationJobOp,
-  createTranslationJobOp,
-  getTranslationJobOp,
-  listTranslationJobsOp,
-  publishCompletedTranslationJobOp,
-  revertTranslationJobOp,
-  updateTranslationJobCapOp,
-} from "./ops/translation/jobs.js";
-import { translationModeOneOp } from "./ops/translation/mode_1.js";
-import { translationDiffOp, translationModeTwoOp } from "./ops/translation/mode_2.js";
-import {
-  deleteStyleGuideOp,
-  getStyleGuideOp,
-  listStyleGuidesOp,
-  setStyleGuideOp,
-} from "./ops/translation/style_guide.js";
 import {
   executeUserProposalOp,
   listPendingUserProposalsOp,
@@ -779,6 +751,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(addGenesisDraftOp);
   registry.register(listGenesisDraftsOp);
   registry.register(selectGenesisDraftOp);
+  // issue #375 — view-time theme-shell composition for draft previews.
+  registry.register(renderDesignDraftOp);
   // issue #165 — Design Manifest (per-site design language).
   registry.register(getDesignManifestOp);
   registry.register(setDesignManifestOp);
@@ -820,6 +794,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P14 — Site Import Wizard.
   registry.register(listImportRunsOp);
   registry.register(getImportRunOp);
+  // issue #422 — lean per-run page list (ids + status, no HTML payload);
+  // the AI-facing surface behind list_import_pages.
+  registry.register(listImportPagesOp);
   registry.register(createImportRunOp);
   registry.register(proposeImportRunOp);
   registry.register(listPendingImportProposalsOp);
@@ -849,6 +826,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);
   registry.register(updatePageCaptureOp);
+  // issue #423 — crawl-time bulk capture persistence (screenshot keys +
+  // sampled tokens per batch, keyed by run_id + source_url).
+  registry.register(setPageCapturesByUrlOp);
   // issue #28 — run-scoped error/warning ledger.
   registry.register(logImportRunEventOp);
   registry.register(logImportRunEventsOp);
@@ -955,38 +935,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(siteDefaultsSetSeoOp);
   registry.register(lookupLinksInModulesOp);
   registry.register(rewriteModuleLinksOp);
-  // P9 — locale registry + propose/execute split + site_settings toggle.
+  // Locale registry reads — survive until the page-identity cut (#384).
   registry.register(listLocalesOp);
   registry.register(getLocaleOp);
-  registry.register(proposeCreateLocaleOp);
-  registry.register(proposeDeleteLocaleOp);
-  registry.register(proposeSetDefaultLocaleOp);
-  registry.register(proposeUpdateStrategyOp);
-  registry.register(listPendingLocaleProposalsOp);
-  registry.register(executeLocaleProposalOp);
-  registry.register(rejectLocaleProposalOp);
-  registry.register(getSiteSettingsOp);
-  registry.register(setSiteSettingsOp);
-  registry.register(translationStatusMatrixOp);
-  // P10 — translation surface (glossary + style guide + Mode 1/2 + bulk jobs).
-  registry.register(listGlossaryOp);
-  registry.register(setGlossaryEntryOp);
-  registry.register(deleteGlossaryEntryOp);
-  registry.register(listStyleGuidesOp);
-  registry.register(getStyleGuideOp);
-  registry.register(setStyleGuideOp);
-  registry.register(deleteStyleGuideOp);
-  registry.register(translationModeOneOp);
-  registry.register(translationModeTwoOp);
-  registry.register(translationDiffOp);
-  registry.register(createTranslationJobOp);
-  registry.register(listTranslationJobsOp);
-  registry.register(getTranslationJobOp);
-  registry.register(aggregateActiveTranslationJobsOp);
-  registry.register(cancelTranslationJobOp);
-  registry.register(updateTranslationJobCapOp);
-  registry.register(revertTranslationJobOp);
-  registry.register(publishCompletedTranslationJobOp);
   // P10A — skills system.
   registry.register(listSkillsOp);
   registry.register(getSkillOp);

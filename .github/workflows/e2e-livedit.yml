@@ -194,6 +194,16 @@ jobs:
         run: bun x playwright install chromium --with-deps
         working-directory: apps/admin
 
+      # Token/loop regression guards (issue #432): the per-scenario ceilings
+      # this step gates on live in `apps/admin/e2e-livedit/lib/metrics-core.ts`
+      # THRESHOLDS. Re-derived 2026-08-05 from measured baselines: healthy
+      # homepage first attempts run ~1.0–1.65M input / 16–21 loops (design-
+      # quality self-review + tool-search + skill-routing era); the stored-
+      # corruption repair spirals the ceilings exist to catch measured
+      # 2.18–2.66M / 27–33 loops. Ceilings: 2.0M input (≈1.2× worst healthy,
+      # below the spiral floor) and 26 loops. Attempt-level breaches surface
+      # as `::warning` annotations from global-teardown EVEN when a Playwright
+      # retry turns this step green — never let a retry hide a breach again.
       - name: Run e2e-livedit (Scenario 1)
         env:
           ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
@@ -464,8 +474,9 @@ jobs:
           ERR_CONTEXT_MDS=("${ERR_CONTEXT_DIR}"/*.md)
 
           # PR #61 follow-up — `build-stats.ts` parses admin.log +
-          # playwright-report.json + ai-cost.json and emits a Real-AI-cost
-          # block, an API-stats block, and a per-scenario results table.
+          # playwright-report.json + ai-cost.json + metrics.json and emits a
+          # Real-AI-cost block, an API-stats block, the issue #432 per-attempt
+          # input-token breakdown table, and a per-scenario results table.
           # We splice it in between the screenshots and the error details.
           # Falls through silently if the script errors so a bug here
           # can't block the rest of the comment.

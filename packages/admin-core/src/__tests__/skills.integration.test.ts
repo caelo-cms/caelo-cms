@@ -475,7 +475,7 @@ describe("skill allowlist validation (issue #301)", () => {
       slug: "test-p10a-opnames",
       displayName: "Op notation",
       body: "Body",
-      allowlistedTools: ["pages.list", "structured_sets.get", "edit_module", "glossary.list"],
+      allowlistedTools: ["pages.list", "structured_sets.get", "edit_module", "ai_memory.list"],
     });
     expect(r.ok).toBe(true);
     const get = await execute(registry, adapter, systemCtx, "skills.get", {
@@ -483,7 +483,7 @@ describe("skill allowlist validation (issue #301)", () => {
     });
     if (!get.ok) return;
     const skill = (get.value as { skill: { allowlistedTools: string[] } | null }).skill;
-    // Translated + deduped; the context-served glossary read drops.
+    // Translated + deduped; the context-served memory read drops.
     expect(skill?.allowlistedTools).toEqual(["list_pages", "get_structured_set", "edit_module"]);
   });
 
@@ -528,6 +528,28 @@ describe("skill allowlist validation (issue #301)", () => {
       for (const entry of s.allowlistedTools) {
         expect(entry).not.toContain(".");
       }
+    }
+  });
+});
+
+// Issue #417 — migration 0208 appended the field-naming subsection to the
+// authoring skills ADDITIVELY (append + sentinel guard, no replacement of
+// existing text — so it cannot conflict with parallel skill migrations).
+describe("field-naming guidance appended to authoring skills (#417)", () => {
+  const SENTINEL = "FIELD NAMES DESCRIBE THE ROLE, NEVER THE CONTENT";
+
+  it("manage-module and compose-page carry the role-naming + list-field subsection", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+    if (!r.ok) throw new Error("skills.list failed");
+    const skills = (r.value as { skills: { slug: string; body: string }[] }).skills;
+    for (const slug of ["manage-module", "compose-page"]) {
+      const skill = skills.find((s) => s.slug === slug);
+      expect(skill).toBeDefined();
+      expect(skill?.body).toContain(SENTINEL);
+      // The three rules the subsection must teach (issue #417 scope).
+      expect(skill?.body).toContain("module-list");
+      expect(skill?.body).toContain("never numbered scalars");
+      expect(skill?.body).toContain("prefer `text-list`/`link-list`");
     }
   });
 });

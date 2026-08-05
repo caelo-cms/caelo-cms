@@ -104,7 +104,7 @@ jobs:
 
       - name: Log in to GHCR
         if: github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -194,6 +194,10 @@ jobs:
         if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         run: gcloud auth configure-docker ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}-docker.pkg.dev --quiet
 
+      - name: Install oras (referrer-aware registry copy)
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
       - name: Mirror image (+ signatures) to GCP public AR
         if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         env:
@@ -202,15 +206,42 @@ jobs:
           AR_REGION: ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}
           AR_PROJECT: ${{ vars.GCP_PUBLIC_REGISTRY_PROJECT || 'caelo-website' }}
           AR_REPO: ${{ vars.GCP_PUBLIC_REGISTRY_REPO || 'caelo-cms-images' }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # `cosign copy` (NOT `docker pull/tag/push`) so the cosign
-          # signature OCI artifact at the source's `<digest>.sig` tag
-          # comes along too. The earlier docker-only mirror left the
-          # AR images unsigned even though GHCR's copies were signed,
-          # which broke `cms-provision upgrade --verify` for end users
-          # whose installs pull from AR.
+          # `oras copy -r` (NOT `cosign copy`, NOT `docker pull/tag/push`)
+          # so the signature travels with the image. cosign 3.x attaches
+          # signatures as OCI *referrers* rather than the legacy
+          # `<digest>.sig` tag, and `cosign copy` — deprecated in 3.x —
+          # only moves the legacy tag scheme. It exits 0 while leaving
+          # the AR copy unsigned, which is exactly how v0.10.23/24
+          # shipped mirror images that `cms-provision upgrade` then
+          # refused (`no signatures found`). `oras copy -r` walks the
+          # referrer graph, so it is correct for both schemes.
           AR_BASE="${AR_REGION}-docker.pkg.dev/${AR_PROJECT}/${AR_REPO}/${{ matrix.service }}"
+          # oras keeps its own credential store — the docker/gcloud
+          # logins above don't cover it.
+          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          gcloud auth print-access-token \
+            | oras login "${AR_REGION}-docker.pkg.dev" -u oauth2accesstoken --password-stdin
           for tag in $(echo "${{ steps.meta.outputs.tags }}" | tr ',' ' '); do
             short_tag="${tag##*:}"
-            cosign copy --force "${GHCR_IMAGE}@${DIGEST}" "${AR_BASE}:${short_tag}"
+            oras copy -r "${GHCR_IMAGE}@${DIGEST}" "${AR_BASE}:${short_tag}"
           done
+
+      - name: Verify the mirrored image is signed (gate)
+        # The bug this guards against is silent: a mirror step that
+        # copies the image but drops the signature exits 0, and nobody
+        # finds out until an operator's `cms-provision upgrade` refuses
+        # to roll days later. Verify the AR copy with the same identity
+        # check operators run, and fail the release here instead.
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          AR_REGION: ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}
+          AR_PROJECT: ${{ vars.GCP_PUBLIC_REGISTRY_PROJECT || 'caelo-website' }}
+          AR_REPO: ${{ vars.GCP_PUBLIC_REGISTRY_REPO || 'caelo-cms-images' }}
+        run: |
+          AR_BASE="${AR_REGION}-docker.pkg.dev/${AR_PROJECT}/${AR_REPO}/${{ matrix.service }}"
+          cosign verify "${AR_BASE}@${DIGEST}" \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/release-images.yml@.*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"

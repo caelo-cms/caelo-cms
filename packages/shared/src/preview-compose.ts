@@ -34,7 +34,6 @@ import {
   listSlotNames,
 } from "./preview-scanner.js";
 import { stripCdataGuards } from "./strip-cdata.js";
-import { type LanguageSelectorOverride, renderLanguageSelector } from "./structured-sets.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
 import { renderThemeCss as renderThemeCssFromTokens } from "./theme-render.js";
 import type { ThemeDocument } from "./themes.js";
@@ -91,21 +90,6 @@ export interface ComposeStructuredSets {
 }
 
 /**
- * P9 — language-selector context. The caller (preview op + static
- * generator) resolves the current page's per-locale URLs once and
- * threads them in. The composer renders the selector when a module
- * slug starts with `language-selector-`.
- */
-export interface ComposeLanguageSelector {
-  readonly availableLocales: ReadonlyArray<{
-    code: string;
-    displayName: string;
-    href: string;
-    isCurrent: boolean;
-  }>;
-}
-
-/**
  * v0.11.0 — Theme context resolved by the preview op + static generator
  * (#45 Phase 3). Carries the active theme's DTCG tokens jsonb plus the
  * four asset URL resolutions (logo / logo-dark / favicon / social-share).
@@ -147,7 +131,6 @@ export interface ComposeInput {
   readonly templateCss: string;
   readonly blocks: readonly ComposeBlock[];
   readonly structuredSets?: ComposeStructuredSets;
-  readonly languageSelector?: ComposeLanguageSelector;
   /**
    * v0.11.0 — active theme threaded through from the preview op + static
    * generator. Undefined when no theme row exists OR when the caller
@@ -180,8 +163,10 @@ function injectBefore(source: string, marker: RegExp, fragment: string): string 
  * `crossorigin` attribute is REQUIRED for font preloads even same-origin,
  * per the fetch spec's font-destination CORS rule) + the @font-face
  * block. Empty css with no preloads → null (system-stack-only theme).
+ * Exported for the design-draft theme shell (#375) so draft previews
+ * load the identical fonts as the page preview.
  */
-function fontsHeadFragment(fonts: ComposeFonts | undefined): string | null {
+export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | null {
   if (fonts === undefined) return null;
   const links = fonts.preloads
     .map((href) => `<link rel="preload" as="font" type="font/woff2" crossorigin href="${href}">`)
@@ -214,13 +199,10 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     // module HTML.
     const renderedModuleHtml = block.modules.map((m) => {
       const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-      const langSelector = lookupLanguageSelector(m.slug, input);
       let baseHtml: string;
       if (navMenuItems !== null) {
         navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
-      } else if (langSelector !== null) {
-        baseHtml = langSelector;
       } else {
         baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
       }
@@ -312,35 +294,6 @@ function lookupNavMenuItems(
   const setSlug = moduleSlug.slice(prefix.length);
   const items = sets.byKindSlug[`nav-menu/${setSlug}`];
   return items ?? null;
-}
-
-/**
- * P9 — return rendered language-selector HTML when a module's slug
- * starts with `language-selector-`. The set's items act as overrides
- * (relabel a locale, hide one); the available-locale list comes from
- * the caller via `input.languageSelector`. Returns null when the
- * module is not a language selector.
- *
- * Convention: a module slug `language-selector-header` resolves to
- * structuredSets[`language-selector/header`] for overrides, and the
- * rendered HTML lists every locale that has a published variant of
- * the current page.
- */
-function lookupLanguageSelector(moduleSlug: string, input: ComposeInput): string | null {
-  const prefix = "language-selector-";
-  if (!moduleSlug.startsWith(prefix)) return null;
-  if (!input.languageSelector || input.languageSelector.availableLocales.length === 0) {
-    return null;
-  }
-  const setSlug = moduleSlug.slice(prefix.length);
-  const overridesUnknown = input.structuredSets?.byKindSlug[`language-selector/${setSlug}`];
-  const overrides = Array.isArray(overridesUnknown)
-    ? (overridesUnknown as LanguageSelectorOverride[])
-    : undefined;
-  return renderLanguageSelector({
-    availableLocales: input.languageSelector.availableLocales,
-    overrides,
-  });
 }
 
 interface NavMenuItem {
@@ -593,13 +546,10 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   for (const block of input.blocks) {
     const renderedModuleHtml = block.modules.map((m) => {
       const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-      const langSelector = lookupLanguageSelector(m.slug, input);
       let baseHtml: string;
       if (navMenuItems !== null) {
         navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
-      } else if (langSelector !== null) {
-        baseHtml = langSelector;
       } else {
         baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
       }
@@ -628,13 +578,10 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     if (block.blockName === "content") continue; // reserved for the page body
     const renderedModuleHtml = block.modules.map((m) => {
       const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-      const langSelector = lookupLanguageSelector(m.slug, input);
       let baseHtml: string;
       if (navMenuItems !== null) {
         navRendered = true;
         baseHtml = renderNavMenuHtml(navMenuItems);
-      } else if (langSelector !== null) {
-        baseHtml = langSelector;
       } else {
         baseHtml = applyFieldSubstitution(m.html, m.fields, m.contentValues, input.theme);
       }

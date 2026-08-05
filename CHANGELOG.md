@@ -1,5 +1,261 @@
 # Changelog
 
+## v0.10.24
+
+### Features
+- 13016b2f growth-time design variants — draft → present → select → materialise (#375) (#378)
+
+### Fixes
+- eedb9a7f edge-router must ship — provisioning depends on it (#408)
+- 555c6bfd claude mcp add snippets use the current CLI syntax
+
+### Chores
+- 3b022e6c batch the safe minor/patch dependabot updates (#374)
+- e18bab65 remove the translation feature end-to-end (#381) (#401)
+
+## v0.10.23
+
+### Features
+- 3c5ecc87 Power-MCP — admin-scoped surface exposing the chat-runner tool catalogue to external agents (#376)
+- f6017683 one-button release from the Actions UI
+- 5e226ad7 images live in the chat history until compaction (#356)
+- d6541c89 per-loop prompt trace so a cache miss can be located
+- 384b1a97 load_skill takes a list of slugs
+- 518c1891 rendered-first import tooling, tolerant build_page, draft-safe chips
+- 2385f0c6 auto-capture every failed tool result into Detected Bugs + source badge
+- ffbff51b Stop button to abort the AI's current action mid-stream
+- 7d3d6cc0 ask the design direction (1:1 / refresh / optimize) up front
+- 1d37424a password change, self-service reset, owner reset + strength policy
+- 49d48bf5 subagent controls, inspect redesign, caching+compaction, e2e token metrics, detected-bugs UI, image-gen coverage (#348)
+- d11b2908 progressive-disclosure skills + per-workflow skill catalogue
+- 9bee65e0 production in-chat approval resume + Approve/Reject card (plan B, slice 1c)
+- ac27d162 fan out SDK approval gate to all propose_* tools (plan B, slice 2)
+- 5a19ddd6 SDK tool-approval gate — chat-runner + layouts end-to-end (plan B, slice 1b)
+- 485ac78a SDK tool-approval gate — provider layer (plan B, slice 1a)
+- 6dec13d2 structured output via SDK generateObject, retire forced-tool pattern (option, plan A)
+- 32f3be3e persist + replay the SDK's canonical turn messages as history (option C, stage 2)
+- ab9cbcb7 provider emits the SDK's canonical turn messages (option C, stage 1)
+- 22f27b93 live-e2e forensics hardening — branch overlays, static tool defs, minimal seed layout, bug_report, e2e auto-approve (#335)
+- 2654de4e Tool Search on by default — defer the long tail, add the tool playbook (#334)
+- e052ac7c Epic #307 wave 2 — budget-derived subagent caps + multi-model tier routing (#311)
+- b01b58e8 Epic #307 wave 1 — cost gate auto-arm, calibrated estimator, bulk build_page, context diet, allowlist fix, media forensics, empty-status fix, mock-pollution fix (#309)
+- d47fa2d1 migration cost gate — operator budget + live spend roll-up (#280) (#294)
+- 8db37c81 per-entity task leases guard concurrent same-branch subagent writers (#264, #268) (#295)
+- 3abe6641 durable per-page edit log — engine (refs #264) (#293)
+- 9bcae3a6 parallel fan-out with batch cost cap + n-of-m progress (#268) (#291)
+- 479773d4 rebuild-quality checks — content inventory + boilerplate detection (refs #248 #252) (#287)
+- 5d719921 homepage-first, fail-fast site-migrate flow (#278) (#292)
+- 8bd161af list-mode site import — fetch an exact URL set, no BFS (#229) (#296)
+- e9b58d62 migration verification gate — source-vs-rebuilt fidelity diff + verdict tool (#250, #244) (#285)
+- e706d238 facet-selectable inspect_external_page + page-type map (#278) (#284)
+- e7ac82e9 add_module_to_template places an existing module (refs #243) (#282)
+- 108c9347 site-migrate rebuilds fan out to subagents (#264) (#266)
+- 308ae5ac site-migrate calls migrate_media right after compose (#249) (#259)
+- 5b6caea3 WS3 media migration — download crawled assets into the media library, rewrite URLs, report the unmigratable (#249) (#258)
+- adb4aebf always-on source screenshots + computed-style design tokens (WS1, #247) (#257)
+- 75040f9b WS2 — rebuild contract replaces the body-freeze (#248) (#256)
+- 4707ffa5 default Anthropic model is claude-sonnet-5, thinking maps to adaptive on Claude 4.6+ (#246)
+- 1561ef28 live crawl progress strip + AI continues on its own (#228) (#230)
+- 31ecb7b7 clickable choice buttons + URL-only migrate opener (#227)
+- 642e0838 first-run AI wizard — pick provider, paste key, land in chat (#222)
+- c9c7e84b login lands in the live editor (#216)
+- 03c33302 bring-your-own-design — mockup image or HTML becomes a draft (#199) (#213)
+- 1409bad4 migration report — rebuild notes + run rollup (#197) (#212)
+- a6b42126 preserve old URLs — source_url → 301 redirects in the compose tx (#196) (#211)
+- 959dffdd compose_from_run v2 — per-cluster templates, real chrome, preserved css, design inventory (#195) (#210)
+- 623ff187 persist crawl screenshots + side-by-side review + model-visible pixels (#198) (#209)
+- 45888bc9 page-type clustering — deterministic signatures, cluster ops + tools (#194) (#208)
+- 81e25d26 scope + cost estimate in the crawl proposal preview (#193) (#207)
+- d52fb6b4 crawler hardening — sitemap, robots.txt, resumable checkpointed crawls, 1000+ pages (#192) (#206)
+- d967594a true image attachments — uploads reach the model as image parts (#190) (#204)
+- 49ca1bbb site-migrate — chat-driven migration workflow with keep-design fork (#188) (#205)
+- 35062ff0 single-page external-site sensing — inspect + screenshot (#189) (#203)
+- 09fa44e5 first-run chat welcome + entry-point routing (#187) (#202)
+- 64d4a95d compiler slice 3 — the screenshot-parity gate (#164) (#184)
+- 42cb14d9 responsive nav menu with vetted toggle behaviour (#160) (#180)
+- 3bac30a7 growth-time consistency gate, static tier (#166) (#181)
+- 7b722da7 invisible technical baseline (#151, re-scoped) (#178)
+- cab8e1ef production-parity responsive image markup (#162) (#179)
+- 3d833834 compiler slice 2 — mechanical token binding (#164) (#176)
+- dc5baf50 Design Manifest — per-site design language as first-class context (#165) (#175)
+- 61a3d26b compiler stage 1 — deterministic draft inventory + inspect_genesis_draft (#164) (#174)
+- 9f424728 design-quality base skill + screenshot self-review loop (#154, #155) (#173)
+- dc6f4e89 Site Genesis slice 1 — design brief, freeform draft storage, selection surface (#163) (#172)
+- 524fc871 first-class gradients, elevation ramp, surface roles + per-category leaf enforcement (#153) (#171)
+- 9d8c13e1 validate var() references against the active theme at write time (#156) (#170)
+- 78c3623b self-hosted web-font delivery for theme typography (#150) (#169)
+- a321a6d7 AI composes the theme itself — remove predefined theme presets (#123)
+- 695682a1 enforce coverage thresholds per CLAUDE.md §6 (#99)
+- d2c435db v0.11.1+ admin UI + AI ergonomics + OKLCh ramp + default seed (closes #76) (#79)
+- e9cb6e32 theme as a first-class primitive — v0.11.0 slice (#45) (#77)
+- 4781f577 shared Mustache template engine (closes #71) (#72)
+- 5bbd8bb6 separate module structure from content — content instances + nested modules (#61)
+- b832bb91 real-AI e2e Live Edit suite (issue #47, v0.13.0) (#60)
+- 4a91de89 run release-images on PRs and make it a required check (#57)
+- ba5eab42 add AI security review on every PR (#24) (#50)
+- 6653a431 protect main branch via GitHub ruleset (#23) (#48)
+
+### Fixes
+- 1922849a inject the signing key via env, not run-block interpolation
+- 3824a3b2 release-cut needs the Tier-1 signing key in CI
+- 69039f97 address PR #379 review findings
+- fda22116 fresh installs deploy the latest release, not a dev image
+- 8aa9d1b2 clear both open Dependabot advisories
+- 7bba155a validate a gated payload before spending the operator's click
+- f46d1512 label what each spend figure counts, so they stop contradicting
+- 0fc41a13 put the migration budget behind an operator click
+- b7c476f0 stream the price actually billed, not a cache-blind estimate
+- 8c736bbc give the check job real headroom (10 -> 20 min)
+- aa23f83e a preference is not a reason to end a turn
+- e70417c1 keep the AI spend readout current without a server round-trip
+- 875e12b9 return the argument structure on rejection, not just key names
+- 1708945d the finishing-a-turn block prescribes no tool
+- 783d9eae recover a narration that ran no tools — the originally reported shape
+- d95a2490 judge turn completeness with a small model before forcing a tool call
+- ead9b4ca author the off-page inspect module explicitly + widen its wipe
+- 29952fda seed gated-misc actors + track the bulk-build call model
+- 96df01b1 same-block move reorders in place instead of erroring
+- 73cc46bf resolve a moduleId that lives on the layout/template (or is reusable)
+- c3eaf113 make edit-content-tool seedModule idempotent (dup-slug)
+- 6b2883a2 protect `pages` from cascade-truncate in test-preload (#0184 FK)
+- 730463c2 clear CodeQL clear-text-logging + 2 latent test failures
+- d1f07b4b drop dead direct-build loaders (knip) + redact session id in chat-runner logs (codeql)
+- 9b2632a6 get_import_page_screenshot resolves composed/#278 page ids + de-dupe error prefix
+- 93194941 calibrate cost estimate to the bulk-build path + ceiling = the max
+- cc4c57b8 password field says min 10 (matches the strength policy)
+- dcc30e33 teach moduleize Caelo's list-iteration syntax (was emitting Handlebars {{this}})
+- 17c04460 link-list default schema — concrete {label,href} shape (was [{}], lost nav values)
+- c37ab0e0 moduleize — drop the unused `type` field + vary retry temperature (root cause)
+- 606d0915 log the real NoObjectGenerated cause in generateObject (diagnose moduleize misses)
+- 3e341079 warn the model that html2canvas screenshots mis-render text spacing + flex-wrap
+- f701a7a9 moduleize schema — replace empty {} default with a concrete union (plan A regression)
+- b79b2dc9 finish the tool-rename cleanup — skill allowlists + update_modules_many parity (#331)
+- 23765c75 locale proposals never rendered an Approve card — migrate 5 tools onto makeProposeTool (#328)
+- 66b42025 cap AI substring-deletes — matches:'/' could wipe every 301 (#329)
+- 70cb8c25 slug changes always redirect + fold page setters into update_pages_many (audit #3, #B) (#323)
+- b9a1471c streamed cost uses the active model's ai_pricing rate, not the Opus default (#320)
+- b0ce4031 stabilize CI + real-AI e2e — green main, kill screenshot-thrash, publish bootstrap homepage (#319)
+- ebec3969 retire compose_page_from_spec for build_page + accept literal CSS shadow tokens (#313)
+- 7853b41b run-15 session fixes rollup — zero-red error classes, media direct-build, error ledger, test-preload guard (#308)
+- f3541474 don't send temperature to Claude 4.6+ models — they 400 on it (#289)
+- 421d2dd4 make page-facets extractors linear (js/polynomial-redos) (#288)
+- 0a393cb3 root-cause #245 SDK arg stringification + generate inputSchema from zod (#251 WS5) (#286)
+- 12b6647c stop bun:SQL jsonb double-encoding — systemic write-site audit (#68) (#283)
+- 0b4d7f2c add_page_notes accepts the composed CMS page id, not only the staging id (#281)
+- f5a4f07a run #10 D1/D2/D5 — orphan tool_result wedge, forced subagent results, first-turn timing (#273)
+- 4afe156f run #10 D3/D4/D6 — strip WP comment threads, regenerate media variants, publish no-op (#274)
+- 56ee8d33 staging pipeline no longer success-lies — serve verification, zero-page guard, bulk publish (run #9 R10) (#272)
+- 1c95871d run #9 blockers — orchestrator keeps spawn tools, slug-safe crawl, all-or-nothing compose, deletes read back (R7-R9) (#271)
+- e8e4d660 run #8 chat-runner + subagent regressions — schema drift, blind reads, empty turns (#270)
+- 94736c86 failed staging builds no longer consume the chat branch + run #8 hardening (#269)
+- fc87794c Stage no longer 200-no-ops in dev + pre-run foreign-lock guard (#262) (#267)
+- 3fdbcf11 history compaction so the runner survives the model token ceiling (#265)
+- d1437d53 drop empty Sonnet-5 thinking blocks — they 400 on replay and kill the session (#260)
+- 551fc2fd tolerant tool-arg boundary — schema-guided coercion at dispatch + DTCG envelope unwrap (#251, #242) (#255)
+- bea9a406 WS0 — chrome binds at the layout, imported pages are content-only (#253) (#254)
+- 7c14c7b9 set_theme_tokens carries the composite token shapes too (F10) (#240)
+- da1ef451 strip approvals pass the raw proposal kind — import auto-continue arms again (#239)
+- e1674917 strip cookie-consent banners at extraction (#238)
+- 44d27e7a light refresh gets a contract — theme + chrome only, bodies stay (#237)
+- 7f35f809 the migrate chip actually engages the site-migrate skill (#234)
+- 33ff7115 composite token shapes in the shared theme guidance (#235)
+- bc340750 sticky per-chat auto-engagement — mid-flow answers keep the skill (#233)
+- bed7bed1 crawl proposals join the pending inbox so the chat strip shows them (#232)
+- a088e200 junk crawl vars dropped, not mis-binned — compose_from_run no longer aborts (#231)
+- d4b8ffa4 loading state for every POST submit button via one global observer (#226)
+- 00b5900e pending strip pinned above the composer + migrate skill asks one plan question (#225)
+- 335db4cb inviting empty states — canvas points at the chat, chips on every empty chat (#224)
+- 6f472671 signed-in visits to /login and /setup no longer strand on the setup form (#223)
+- ce53a0bd label the owner name field "Your name", not "Display name" (#221)
+- 5c387ec9 crawl approval happens ON the chat card — no admin-page detour (#220)
+- 0be431f1 collapse long tool results; honest chromium install hint (#219)
+- 72a234c7 first-contact UX — one scroller, real lists, quick replies, side-column default (#218)
+- 22a7c8dc keep the playwright import dynamic for bundlers (#215)
+- 3b12e07a SSRF guard for operator/AI-supplied external URLs (#191) (#201)
+- 2ac20400 cold-start gate checks the primary's CHROMA, not just origin+description (#183)
+- bc5eb848 dedupe module CSS/JS by moduleId in both compose paths (#158) (#177)
+- e7af6537 register list_modules, add place-existing mode to add_module_to_page, pin prompt-registry drift (#159) (#167)
+- d98b5b95 seed layout CSS bound chrome to nonexistent theme vars (#157) (#168)
+- f54d0aee resolve the 55 open CodeQL code-scanning alerts on main (#114)
+- 279279db stable module type + generation-time block enum — stop invalid live-edit tool calls (#106) (#107)
+- 97c8a557 restore release-images admin Docker build via inlined oxc-parser dispatcher (#53) (#56)
+- ebc93b76 build @caelo-cms/shared before e2e Playwright smoke (#36, partial — AC #3 deferred to #52) (#51)
+
+### Refactors
+- cb1d3be5 report the canonical spend, stop deriving it in the client
+- 6839af15 state the missing definition, don't instruct the model
+- 92abee02 replace the prose-matching passive nudge with a three-layer guard
+- d669e481 stop computing dropped blocks; static subagents; §11 rewrite
+- 47457063 static system prompt; current page rides the user message
+- 345e7f8a consolidate page creation into build_page, remove create_page (dedup)
+- 5b030830 unify status/remove pairs + tests for the untested write tools (#332)
+- c0362f59 fold delete_page into delete_pages_many + move dead-URL redirect into the op (audit #4) (#330)
+- d29bdbde consolidate add_module_to_{page,layout,template} into one add_module (audit #2) (#322)
+- f67f9b62 split chat-runner.ts into a chat-runner/ directory (#15) (#120)
+- 07fae19d centralize ProposalStatus enum + describeError in @caelo-cms/shared (#20) (#115)
+
+### Docs
+- c501ae7d SDK in-chat approval is the gate; propose/execute is the engine (plan B, slices 3-4)
+- 20ae2bbf CLAUDE.md §12 — the AI provider SDK is the boundary, use its shapes
+- 97534d83 point the publicPathFor FIXME at issue #326, not PR #323 (#327)
+
+### Chores
+- 7dedad99 bump marked from 14.1.4 to 18.0.7
+- 796b8b61 prune per-merge dev images after 7 days; releases live forever
+- 48c543d4 git-ignore local e2e-livedit run-logs
+- f4fff895 bump the minor-and-patch group across 1 directory with 2 updates
+- 24fb9e17 green the Lint/Test CI job — format 16 files, retire a stale test (#324)
+- b3e0132b upgrade ai 6→7 + @ai-sdk/{anthropic,openai,google} 3→4 (latest) (#321)
+- 86602eb7 bump license-checker-rseidelsohn from 4.4.2 to 5.0.1 (#130)
+- 6b161959 bump the minor-and-patch group across 10 directories with 34 updates (#148)
+- 4602edb6 bump js-yaml from 4.1.1 to 4.2.0 (#146)
+- d429a406 bump vite from 8.0.10 to 8.0.16 in /apps/admin (#125)
+- 56d3c006 bump the minor-and-patch group across 1 directory with 5 updates (#147)
+- 57faceb9 bump actions/checkout from 6 to 7 (#127)
+- e54465a3 bump sigstore/cosign-installer from 3.9.1 to 4.1.2 (#119)
+- 385e9cdb bump svelte from 5.55.5 to 5.55.7 in /apps/admin (#102)
+- 72b27fb5 bump @sveltejs/kit from 2.58.0 to 2.60.1 in /apps/admin (#101)
+- d1882ca1 bump github/codeql-action from 3 to 4 (#111)
+- d8d482a9 bump actions/upload-artifact from 4 to 7 (#110)
+- f24e7df9 bump docker/login-action from 3 to 4 (#88)
+- c9d7375a bump docker/metadata-action from 5 to 6 (#87)
+- 039c89f4 bump actions/setup-node from 4 to 6 (#89)
+- c776a87e bump softprops/action-gh-release from 2 to 3 (#90)
+- 7eb6b43e bump docker/setup-buildx-action from 3 to 4 (#91)
+- dd2ed77a bump google-github-actions/auth from 2 to 3 (#92)
+- dacb7a2d bump the minor-and-patch group across 2 directories with 1 update (#86)
+- ae714a73 bump actions/upload-artifact from 4 to 7 (#93)
+- 60f97573 bump docker/build-push-action from 6 to 7 (#94)
+- 6927118d bump actions/checkout from 4 to 6 (#95)
+- 3315d4e4 add project-scoped Playwright MCP server config (#58)
+
+### Tests
+- 89dc132c footer smoke uses add_module (target=layout), not the removed alias
+- 5c812afc cover the 22 red-flagged AI tools (#333)
+- 4cf6b66b run the real-AI suite against claude-sonnet-5 (#279)
+- bb862feb stage harness — recorded searchviu crawl through the real pipeline in <1s (#236)
+- 6313e1fa onboarding routing + keep-design migration scenarios, opt-in (#200) (#214)
+- c6be13ae Genesis scenario — divergent drafts + selection (#163) (#185)
+- 15ab787e design-floor assertion + design-report warnings (#161) (#182)
+
+### Other
+- c06e758f apply the repo formatter to the spend read-back
+- cc514a3e cache the conversation history — rolling last-message breakpoint
+- 065aed5e biome import-order autofix in chat-runner/index (plan B)
+- 41107ffe stop gating PRs on the real-AI suite (temporary) (#325)
+- 3d887147 base prompt steers multi-section page creation to build_page, not add_module chains (#315)
+- 6c19218d capture real AI cost per run as an optimization metric (#310)
+- 1f5400dd remove the auto-integration-branch workflow (#290)
+- b63d683c set -e-safe reporting (branch push already worked) (#277)
+- 5aadc690 only fold fix/** + feat/** PRs, pin workflows to main (#276)
+- 8a1b2e9f auto-rebuilt integration branch (main + open non-draft PRs) (#275)
+- c32a9d9f Extract shared Query API op boilerplate helpers and apply to high-churn ops (#124)
+- 859f656d Enable CodeQL + secret scanning + push protection (#103)
+- f7b01780 add madge gate for circular-dependency detection (#98)
+- 33634b2b Add knip dead-code gate to CI (unused exports / files / deps) (#96)
+- d733d730 enable Dependabot auto-PRs for workspace JS, Actions, and Docker (closes #25) (#84)
+- a1fabb8c add admin-prod-image boot smoke gate to PR CI (closes #55) (#59)
+
 ## v0.10.22
 
 ### Refactors

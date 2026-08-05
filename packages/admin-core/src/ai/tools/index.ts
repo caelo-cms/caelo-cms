@@ -22,6 +22,12 @@ import { createTemplateTool } from "./create-template.js";
 import { deleteContentInstanceTool } from "./delete-content-instance.js";
 import { deleteContentInstancesTool } from "./delete-content-instances.js";
 import { deleteStructuredSetTool } from "./delete-structured-set.js";
+import {
+  listDesignDraftsTool,
+  presentDesignVariantsTool,
+  saveDesignDraftTool,
+  selectDesignDraftTool,
+} from "./design-draft-tools.js";
 import { ToolRegistry } from "./dispatch.js";
 import { duplicatePageTool } from "./duplicate-page.js";
 import { duplicateThemeTool } from "./duplicate-theme.js";
@@ -32,11 +38,6 @@ import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
 import { forkPlacementContentTool } from "./fork-placement-content.js";
 import { generateImageTool } from "./generate-image.js";
-import {
-  listGenesisDraftsTool,
-  saveGenesisDraftTool,
-  selectGenesisDraftTool,
-} from "./genesis-tools.js";
 import { getContentInstanceTool } from "./get-content-instance.js";
 import { getImportPageTool } from "./get-import-page.js";
 import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
@@ -48,10 +49,11 @@ import { importMediaFromUrlsTool } from "./import-media-from-urls.js";
 import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
+import { inspectDesignDraftTool } from "./inspect-design-draft.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
-import { inspectGenesisDraftTool } from "./inspect-genesis-draft.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
+import { listImportPagesTool } from "./list-import-pages.js";
 import { listLayoutsTool } from "./list-layouts.js";
 import { listModulesTool } from "./list-modules.js";
 import { listPageAssetsTool } from "./list-page-assets.js";
@@ -67,10 +69,7 @@ import { checkRunBudgetTool, setMigrationBudgetTool } from "./migration-budget.j
 import { moveModuleTool } from "./move-module.js";
 import { offerChoicesTool } from "./offer-choices.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
-import { proposeAddLocaleTool } from "./propose-add-locale.js";
 import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
-import { proposeRemoveLocaleTool } from "./propose-remove-locale.js";
-import { proposeSetDefaultLocaleTool } from "./propose-set-default-locale.js";
 import { proposeSiteImportTool } from "./propose-site-import.js";
 import { proposeSkillTool } from "./propose-skill.js";
 import {
@@ -101,7 +100,6 @@ import {
   proposeUserDeleteTool,
   proposeUserSetRolesTool,
 } from "./propose-tools-batch.js";
-import { proposeUpdateLocaleStrategyTool } from "./propose-update-locale-strategy.js";
 import { queryPageHtmlTool } from "./query-page-html.js";
 import { readContentTool } from "./read-content.js";
 import { readPageMoreTool } from "./read-page-more.js";
@@ -148,9 +146,6 @@ import {
 } from "./state-read-tools.js";
 import { submitPluginTool } from "./submit-plugin.js";
 import { submitResultTool } from "./submit-result.js";
-// P11.5 — translate_page + start_translation_job moved to the translation
-// Tier-1 plugin (`packages/plugins/translation/`). The chat-runner discovers
-// them via @caelo-cms/plugin-host's pluginToolsRegistry on each turn.
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
 
@@ -199,12 +194,15 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listModulesTool);
   // 2026-07-12 — clickable multiple-choice questions in the chat.
   registry.register(offerChoicesTool);
-  // issue #163 — Site Genesis draft storage (workflow lives in the site-genesis skill).
-  registry.register(saveGenesisDraftTool);
-  registry.register(listGenesisDraftsTool);
-  registry.register(selectGenesisDraftTool);
+  // issue #163 — design-draft storage, generalised to growth-time variants
+  // by #375 (workflows live in the site-genesis + design-preview skills).
+  registry.register(saveDesignDraftTool);
+  registry.register(listDesignDraftsTool);
+  registry.register(selectDesignDraftTool);
+  // issue #375 — inline chat presentation of one variant set.
+  registry.register(presentDesignVariantsTool);
   // issue #164 — compiler stage 1: draft fact base for materialisation.
-  registry.register(inspectGenesisDraftTool);
+  registry.register(inspectDesignDraftTool);
   // issue #165 — per-site design language writer.
   registry.register(setDesignManifestTool);
   // issue #189 / #278 — single-page external-site sensing (facet-selectable
@@ -227,6 +225,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // handle (never raw HTML) so the mass-import rebuild uses the stored crawl
   // instead of re-fetching the live site. Mirrors inspect_external_page.
   registry.register(getImportPageTool);
+  // issue #422 — run-status polling + the id-bearing per-run page list;
+  // every per-page import tool's importPageId comes from here.
+  registry.register(listImportPagesTool);
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);
@@ -350,15 +351,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // only `published` pages ship to Stage / Production. Bulk variant
   // saves N round-trips when the user asks to flip a batch.
   registry.register(setPagesStatusManyTool);
-  // P9 — locale propose tools (CLAUDE.md §11.A two-step gate).
-  registry.register(proposeAddLocaleTool);
-  registry.register(proposeRemoveLocaleTool);
-  registry.register(proposeSetDefaultLocaleTool);
-  registry.register(proposeUpdateLocaleStrategyTool);
-  // P10 — AI translation surface MOVED to the translation Tier-1 plugin
-  // (P11.5 commit 2). The plugin's `tools[]` declaration registers
-  // `translate_page` + `start_translation_job` into pluginToolsRegistry at
-  // bootstrap; chat-runner folds them into its catalogue per turn.
   // P10A — AI proposes a new skill body for Owner review.
   registry.register(proposeSkillTool);
   // P10.5 — AI spawns subagents (single + plural) for parallel

@@ -41,15 +41,19 @@
 
   // Admin-scoped tokens wire the Power-MCP binary (full tool catalogue,
   // external agent drives the loop); chat tokens wire the caelo_chat shim.
+  // `claude mcp add` syntax: options first, the server command after `--`
+  // (there is no --command flag in the Claude Code CLI).
   const claudeMcpAddSnippet = $derived(
     form?.ok && form?.plaintextToken
       ? form?.scope === "admin"
-        ? `claude mcp add caelo-admin --command "bunx --package @caelo-cms/mcp-server caelo-admin-mcp" \\
+        ? `claude mcp add caelo-admin \\
   --env CAELO_ADMIN_URL=${data.adminUrl} \\
-  --env CAELO_MCP_TOKEN=${form.plaintextToken}`
-        : `claude mcp add caelo --command "bunx @caelo-cms/mcp-server" \\
+  --env CAELO_MCP_TOKEN=${form.plaintextToken} \\
+  -- bunx --package @caelo-cms/mcp-server caelo-admin-mcp`
+        : `claude mcp add caelo \\
   --env CAELO_ADMIN_URL=${data.adminUrl} \\
-  --env CAELO_MCP_TOKEN=${form.plaintextToken}`
+  --env CAELO_MCP_TOKEN=${form.plaintextToken} \\
+  -- bunx @caelo-cms/mcp-server`
       : null,
   );
 </script>
