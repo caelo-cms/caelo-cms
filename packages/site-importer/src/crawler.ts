@@ -21,14 +21,33 @@
  *     UNIQUE(run_id, source_url) makes replayed batches idempotent)
  *   - bounded concurrency: N parallel fetches sharing one polite
  *     request-start gate (same-host politeness stays intact)
+ *
+ * issue #425 — locale-aware + redirect-honest:
+ *   - the FINAL post-redirect URL is what a page is stored under
+ *     (`CrawledPage.url`); the originally requested URL survives as
+ *     provenance (`requestedUrl`) when a redirect changed it
+ *   - an optional `scope` ({pathPrefix?, locale?} — see crawl-scope.ts)
+ *     confines the crawl to one language/section: out-of-scope URLs are
+ *     recorded in `skipped`, never fetched (prefix rule) or fetched-but-
+ *     never-stored (redirect landed outside / hreflang names another URL
+ *     as the scope-locale version, which is then crawled instead)
  */
 
+import {
+  type CrawlScope,
+  isPathInScope,
+  MAX_SKIPPED_REPORTED,
+  normalizeCrawlUrl,
+  pickLocaleAlternate,
+  type SkippedUrl,
+} from "./crawl-scope.js";
 import {
   extractModulesFromHtml,
   extractPageCss,
   extractThemeTokens,
   extractTitle,
 } from "./extractor.js";
+import { extractPageMeta } from "./page-facets.js";
 import { computePageSignature } from "./page-signature.js";
 import { fetchRenderedHtml } from "./rendered-fetch.js";
 import { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
@@ -41,6 +60,25 @@ export interface CrawlCheckpoint {
   readonly seen: readonly string[];
   readonly pagesCrawled: number;
   readonly errors: ReadonlyArray<{ url: string; reason: string }>;
+  /** issue #425 — skipped URLs (out-of-scope, redirect duplicates) ride
+   *  the checkpoint so a resumed crawl keeps its full report. */
+  readonly skipped: ReadonlyArray<SkippedUrl>;
+  /** Total out-of-scope count — kept separately because `skipped` is
+   *  capped for reporting. */
+  readonly skippedOutOfScope: number;
+}
+
+/**
+ * issue #425 — what a crawl fetcher returns. The default fetchers always
+ * set `finalUrl` (the post-redirect URL the page was actually served
+ * from); an injected test fetcher may omit it, which asserts "no
+ * redirect happened" (finalUrl == requested URL).
+ */
+export interface CrawlFetchResult {
+  readonly ok: boolean;
+  readonly html: string;
+  readonly contentType: string;
+  readonly finalUrl?: string;
 }
 
 export interface CrawlOptions {
@@ -60,11 +98,21 @@ export interface CrawlOptions {
    * propose boundary; here a present `urls` simply wins.
    */
   readonly urls?: readonly string[];
+  /**
+   * issue #425 — language/section scope. `pathPrefix` rules out-of-scope
+   * URLs pre-fetch (frontier, sitemap seeds, LIST entries and the crawl
+   * root alike) AND post-redirect (a fetch that lands outside the prefix
+   * is dropped); `locale` adds hreflang awareness — a fetched page whose
+   * own alternates name a different URL as the scope-locale version is
+   * skipped and that alternate crawled instead. Everything declined is
+   * recorded in `CrawlResult.skipped`, never silently dropped.
+   */
+  readonly scope?: CrawlScope;
   /** Minimum ms between request STARTS. Default 100; robots.txt
    *  Crawl-delay raises it. */
   readonly throttleMs?: number;
   /** Optional fetch override for tests. */
-  readonly fetcher?: (url: string) => Promise<{ ok: boolean; html: string; contentType: string }>;
+  readonly fetcher?: (url: string) => Promise<CrawlFetchResult>;
   /** issue #192 — raw-text fetch for robots.txt + sitemap XML
    *  (injectable for tests; defaults to the guarded fetch). */
   readonly textFetcher?: TextFetcher;
@@ -93,7 +141,13 @@ export interface CrawlOptions {
 }
 
 export interface CrawledPage {
+  /** issue #425 — the FINAL post-redirect URL (normalised). Slugs and
+   *  downstream redirect planning start from the page that actually
+   *  exists, not the URL that happened to be requested. */
   readonly url: string;
+  /** issue #425 — provenance: the originally requested URL, present only
+   *  when a redirect changed it. */
+  readonly requestedUrl?: string;
   readonly proposedSlug: string;
   readonly title: string;
   readonly modules: ReturnType<typeof extractModulesFromHtml>["modules"];
@@ -117,6 +171,15 @@ export interface CrawlResult {
   readonly seenCount: number;
   readonly pagesCrawled: number;
   readonly errors: ReadonlyArray<{ url: string; reason: string }>;
+  /** issue #425 — URLs the crawl declined, with why (out-of-scope,
+   *  wrong-locale, redirect duplicates). Capped at
+   *  MAX_SKIPPED_REPORTED entries; `skippedOutOfScope` keeps the full
+   *  out-of-scope count regardless. */
+  readonly skipped: ReadonlyArray<SkippedUrl>;
+  readonly skippedOutOfScope: number;
+  /** Echo of the active scope so the run report states it verbatim
+   *  (CLAUDE.md §2 loud reporting); null = unscoped crawl. */
+  readonly scope: CrawlScope | null;
 }
 
 // ASCII ONLY: header values reject non-Latin-1 at the socket layer —
@@ -139,17 +202,6 @@ export interface ListModeResolution {
   readonly skipped: Array<{ url: string; reason: string }>;
 }
 
-/** Strip the hash + ALL trailing slashes so `/a/`, `/a//` and `/a#top`
- *  dedupe to one key (the root collapses to `/`); query strings are
- *  PRESERVED (an explicit `?page=2` pick is a distinct page the AI chose
- *  on purpose). */
-function normalizeListUrl(raw: string): string {
-  const u = new URL(raw);
-  u.hash = "";
-  u.pathname = u.pathname.replace(/\/+$/, "") || "/";
-  return u.toString();
-}
-
 /**
  * Pure resolver for LIST mode: normalise + dedupe the chosen URLs, drop
  * anything not on the source origin (or unparseable) into `skipped`, and
@@ -163,7 +215,10 @@ export function resolveListModeUrls(
   sourceUrl: string,
   urls: readonly string[],
 ): ListModeResolution {
-  const sourceNorm = normalizeListUrl(sourceUrl);
+  // Hash + trailing-slash normalisation lives in crawl-scope.ts (#425)
+  // so the frontier, LIST resolution, and final-URL comparison share one
+  // identity rule; behaviour is unchanged from the #229 original.
+  const sourceNorm = normalizeCrawlUrl(sourceUrl);
   const sourceOrigin = new URL(sourceNorm).origin;
   const out: string[] = [sourceNorm];
   const seen = new Set<string>([sourceNorm]);
@@ -171,7 +226,7 @@ export function resolveListModeUrls(
   for (const raw of urls) {
     let norm: string;
     try {
-      norm = normalizeListUrl(raw);
+      norm = normalizeCrawlUrl(raw);
     } catch {
       skipped.push({ url: raw, reason: "list-mode: unparseable URL" });
       continue;
@@ -241,6 +296,19 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   ];
   let pagesCrawled = opts.resumeFrom?.pagesCrawled ?? 0;
 
+  // ── issue #425 — scope + skipped accounting ──────────────────────────
+  const scope = opts.scope ?? null;
+  const scopePrefix = scope?.pathPrefix ?? null;
+  const skipped: SkippedUrl[] = [...(opts.resumeFrom?.skipped ?? [])];
+  let skippedOutOfScope = opts.resumeFrom?.skippedOutOfScope ?? 0;
+  const skippedSeen = new Set<string>(skipped.map((s) => s.url));
+  const recordSkip = (url: string, reason: string, outOfScope: boolean): void => {
+    if (skippedSeen.has(url)) return;
+    skippedSeen.add(url);
+    if (outOfScope) skippedOutOfScope += 1;
+    if (skipped.length < MAX_SKIPPED_REPORTED) skipped.push({ url, reason });
+  };
+
   // ── Politeness rules (fetched fresh even on resume — cheap, and the
   //    rules may have changed while the run sat crashed) ─────────────
   let robots: RobotsRules | null = null;
@@ -289,6 +357,8 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
         seen: [...seen],
         pagesCrawled,
         errors: [...errors],
+        skipped: [...skipped],
+        skippedOutOfScope,
       });
     }
     sinceFlush = 0;
@@ -306,6 +376,14 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   };
 
   const processOne = async (next: { url: string; depth: number }): Promise<void> => {
+    // issue #425 — the scope's path-prefix rule decides PRE-fetch, at the
+    // single point every URL passes through (crawl root, frontier links,
+    // sitemap seeds, LIST entries alike): out-of-scope URLs are recorded
+    // as skipped and never fetched.
+    if (scopePrefix !== null && !isPathInScope(new URL(next.url).pathname, scopePrefix)) {
+      recordSkip(next.url, `out-of-scope: outside path prefix ${scopePrefix}`, true);
+      return;
+    }
     if (robots) {
       const path = new URL(next.url).pathname;
       if (!isPathAllowed(robots, path)) {
@@ -314,7 +392,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       }
     }
     await politeWait();
-    let res: { ok: boolean; html: string; contentType: string };
+    let res: CrawlFetchResult;
     try {
       res = await fetcher(next.url);
     } catch (e) {
@@ -333,15 +411,83 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       errors.push({ url: next.url, reason: `skipped non-html (${res.contentType})` });
       return;
     }
+
+    // issue #425 — the fetchers follow same-host redirects; the page is
+    // stored under the URL the server actually served (finalUrl), with
+    // the requested URL kept as provenance. An omitted finalUrl (test
+    // fetchers) asserts "no redirect happened".
+    const requestedNorm = normalizeCrawlUrl(next.url);
+    const finalUrl = res.finalUrl !== undefined ? normalizeCrawlUrl(res.finalUrl) : requestedNorm;
+    const redirected = finalUrl !== requestedNorm;
+    if (redirected) {
+      if (scopePrefix !== null && !isPathInScope(new URL(finalUrl).pathname, scopePrefix)) {
+        recordSkip(
+          next.url,
+          `out-of-scope: redirected to ${finalUrl}, outside path prefix ${scopePrefix}`,
+          true,
+        );
+        return;
+      }
+      if (seen.has(finalUrl)) {
+        recordSkip(next.url, `redirect-duplicate: final URL ${finalUrl} already crawled`, false);
+        return;
+      }
+      // The final URL is the page's identity from here on — mark it seen
+      // so a later direct link to it isn't fetched twice.
+      seen.add(finalUrl);
+    }
+
+    // issue #425 — hreflang awareness (positive signal ONLY): when the
+    // page's own markup names a DIFFERENT URL as the scope-locale
+    // version, the fetched page is the wrong-language one — skip it and
+    // crawl the named alternate instead (same host only). Pages exposing
+    // no matching alternate are KEPT: partial hreflang markup must never
+    // false-skip an in-scope page; pathPrefix stays the hard filter.
+    if (scope?.locale) {
+      const alt = pickLocaleAlternate(
+        extractPageMeta(res.html, finalUrl).hreflangAlternates,
+        scope.locale,
+      );
+      if (alt !== null) {
+        let altNorm: string | null = null;
+        try {
+          altNorm = normalizeCrawlUrl(alt);
+        } catch {
+          // unparseable alternate href — no usable signal, keep the page
+        }
+        if (altNorm !== null && altNorm !== finalUrl) {
+          recordSkip(
+            next.url,
+            `wrong-locale: hreflang names ${altNorm} as the ${scope.locale} version`,
+            true,
+          );
+          if (new URL(altNorm).host === sourceParsed.host && !seen.has(altNorm)) {
+            // Substitute, don't expand: the alternate inherits the depth
+            // of the wrong-language page it replaces.
+            queue.push({ url: altNorm, depth: next.depth });
+          }
+          return;
+        }
+      }
+    }
+
     const extraction = extractModulesFromHtml(res.html);
+    // The crawl ROOT stays the homepage ("home" slug + signature) even
+    // when the source redirects (site.com -> site.com/de/): the
+    // operator's entry URL is the design anchor. Every other page keys
+    // off its FINAL URL — both routes go through the hardened urlToSlug
+    // prefix strip (run #9 regression stays covered; no new slicing).
+    const isRoot = requestedNorm === normalizeCrawlUrl(opts.sourceUrl);
+    const keyUrl = isRoot ? next.url : finalUrl;
     const page: CrawledPage = {
-      url: next.url,
-      proposedSlug: urlToSlug(next.url, opts.sourceUrl),
+      url: finalUrl,
+      ...(redirected ? { requestedUrl: next.url } : {}),
+      proposedSlug: urlToSlug(keyUrl, opts.sourceUrl),
       title: extractTitle(res.html),
       modules: extraction.modules,
       commentsStripped: extraction.commentsStripped,
       themeTokens: extractThemeTokens(res.html),
-      signature: computePageSignature({ url: next.url, sourceUrl: opts.sourceUrl, html: res.html }),
+      signature: computePageSignature({ url: keyUrl, sourceUrl: opts.sourceUrl, html: res.html }),
       pageCss: extractPageCss(res.html),
     };
     pagesCrawled += 1;
@@ -353,7 +499,9 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     if (next.depth < depth) {
       for (const href of extractLinks(res.html)) {
         try {
-          const abs = new URL(href, next.url).toString();
+          // Relative links resolve against the FINAL URL — the base a
+          // browser would use after the redirect (#425).
+          const abs = new URL(href, finalUrl).toString();
           const u = new URL(abs);
           if (u.host !== sourceParsed.host) continue;
           // Strip hash + trailing slash for de-dupe.
@@ -394,7 +542,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
     await flush();
 
-    return { pages, seenCount: seen.size, pagesCrawled, errors };
+    return { pages, seenCount: seen.size, pagesCrawled, errors, skipped, skippedOutOfScope, scope };
   } finally {
     // Release the shared Chromium (only launched when we render — i.e. no
     // injected fetcher). Best-effort: a dispose failure must not mask a
@@ -411,7 +559,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
  */
 function makeDefaultFetcher(
   allowedHosts: readonly string[],
-): (url: string) => Promise<{ ok: boolean; html: string; contentType: string }> {
+): (url: string) => Promise<CrawlFetchResult> {
   return async (url: string) => {
     const res = await safeExternalFetch(url, {
       allowedHosts,
@@ -422,9 +570,9 @@ function makeDefaultFetcher(
       return { ok: false, html: "", contentType: "redirected-off-host" };
     }
     if (!res.ok || !res.contentType.includes("text/html")) {
-      return { ok: res.ok, html: "", contentType: res.contentType };
+      return { ok: res.ok, html: "", contentType: res.contentType, finalUrl: res.finalUrl };
     }
-    return { ok: true, html: res.bodyText, contentType: res.contentType };
+    return { ok: true, html: res.bodyText, contentType: res.contentType, finalUrl: res.finalUrl };
   };
 }
 
@@ -439,7 +587,7 @@ function makeDefaultFetcher(
 function makeRenderedFetcher(
   screenshotter: Screenshotter | null,
   allowedHosts: readonly string[],
-): (url: string) => Promise<{ ok: boolean; html: string; contentType: string }> {
+): (url: string) => Promise<CrawlFetchResult> {
   // No Chromium → the plain SSRF-guarded static fetcher (keeps the crawler
   // User-Agent + same-host policy). This is the loud, expected degrade.
   const staticFetcher = makeDefaultFetcher(allowedHosts);
@@ -456,7 +604,7 @@ function makeRenderedFetcher(
     if (new URL(rf.finalUrl).host !== new URL(url).host) {
       return { ok: false, html: "", contentType: "redirected-off-host" };
     }
-    return { ok: true, html: rf.html, contentType: "text/html" };
+    return { ok: true, html: rf.html, contentType: "text/html", finalUrl: rf.finalUrl };
   };
 }
 

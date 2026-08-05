@@ -53,6 +53,11 @@ import {
   majorUnitsToMicrocents,
   roundsToZeroMicrocents,
 } from "./imports-cost.js";
+import {
+  importCrawlScopeSchema,
+  normalizeStoredCrawlScope,
+  refineCrawlScopeAgainstSourceUrl,
+} from "./imports-crawl-scope.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
@@ -130,13 +135,21 @@ const runRow = z.object({
    *  classic depth/BFS mode. Surfaced so the pending inbox + proposal
    *  preview show the exact pages the crawl will fetch. */
   explicitUrls: z.array(z.string()).nullable(),
+  /** issue #425 — the operator's language/section scope
+   *  ({pathPrefix?, locale?}); null = unscoped crawl. Surfaced so the
+   *  proposal preview names the scope the Owner is approving. */
+  crawlScope: z.object({ pathPrefix: z.string(), locale: z.string() }).partial().nullable(),
   createdAt: z.string(),
 });
 
 const pageRow = z.object({
   id: z.string(),
   runId: z.string(),
+  /** issue #425 — the FINAL post-redirect URL the page was served from. */
   sourceUrl: z.string(),
+  /** issue #425 — redirect provenance: the originally requested URL;
+   *  null = no redirect (requested == final). */
+  requestedUrl: z.string().nullable(),
   proposedSlug: z.string(),
   proposedTitle: z.string(),
   proposedModules: z.array(
@@ -182,6 +195,7 @@ interface RunDb {
   chat_session_id?: string | null;
   estimate: unknown;
   explicit_urls: unknown;
+  crawl_scope: unknown;
   created_at: string | Date;
 }
 
@@ -203,6 +217,7 @@ function toRunApi(r: RunDb): z.infer<typeof runRow> {
     chatSessionId: row.chat_session_id ?? null,
     estimate: typeof row.estimate === "string" ? JSON.parse(row.estimate) : (row.estimate ?? null),
     explicitUrls: normalizeExplicitUrls(row.explicit_urls),
+    crawlScope: normalizeStoredCrawlScope(row.crawl_scope),
     createdAt: toIsoRequired(row.created_at, "import_runs.created_at"),
   }));
 }
@@ -222,7 +237,7 @@ export const listImportRunsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, chat_session_id::text AS chat_session_id,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, crawl_scope, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs
       ${filter}
@@ -246,13 +261,13 @@ export const getImportRunOp = defineOperation({
     const runs = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, chat_session_id::text AS chat_session_id,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, crawl_scope, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as RunDb[];
     const run = runs[0] ? toRunApi(runs[0]) : null;
     const pageRows = (await tx.execute(sql`
-      SELECT id::text AS id, run_id::text AS run_id, source_url,
+      SELECT id::text AS id, run_id::text AS run_id, source_url, requested_url,
              proposed_slug, proposed_title, proposed_modules, proposed_theme_tokens,
              structural_signature, cluster_key, cluster_label,
              screenshot_object_key,
@@ -265,6 +280,7 @@ export const getImportRunOp = defineOperation({
       id: string;
       run_id: string;
       source_url: string;
+      requested_url: string | null;
       proposed_slug: string;
       proposed_title: string;
       proposed_modules: Array<{
@@ -290,6 +306,7 @@ export const getImportRunOp = defineOperation({
         id: p.id,
         runId: p.run_id,
         sourceUrl: p.source_url,
+        requestedUrl: p.requested_url,
         proposedSlug: p.proposed_slug,
         proposedTitle: p.proposed_title,
         proposedModules: p.proposed_modules ?? [],
@@ -325,15 +342,19 @@ export const createImportRunOp = defineOperation({
       sourceUrl: z.string().url(),
       depth: z.number().int().min(1).max(5).default(2),
       maxPages: z.number().int().min(1).max(2000).default(50),
+      /** issue #425 — optional language/section scope; see propose_run. */
+      scope: importCrawlScopeSchema.optional(),
     })
-    .strict(),
+    .strict()
+    .superRefine(refineCrawlScopeAgainstSourceUrl),
   output: z.object({ runId: z.string() }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, approved_by, approved_at)
+      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, approved_by, approved_at, crawl_scope)
       VALUES (
         ${input.sourceUrl}, ${input.depth}, ${input.maxPages}, 'crawling',
-        ${ctx.actorId}::uuid, ${ctx.actorId}::uuid, now()
+        ${ctx.actorId}::uuid, ${ctx.actorId}::uuid, now(),
+        ${jsonbParam(input.scope ?? null)}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -404,6 +425,11 @@ export const proposeImportRunInput = z
      *  (network work stays out of the DB tx). Stored verbatim for the
      *  Owner queue; {failed, reason} is a valid value. */
     estimate: crawlEstimateSchema,
+    /** issue #425 — language/section scope ({pathPrefix?, locale?}).
+     *  Valid in BOTH modes: it confines a depth crawl's discovery and
+     *  guards LIST samples against redirects/hreflang pointing outside
+     *  the operator's requested language. */
+    scope: importCrawlScopeSchema.optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -415,6 +441,7 @@ export const proposeImportRunInput = z
         path: ["urls"],
       });
     }
+    refineCrawlScopeAgainstSourceUrl(v, ctx);
   });
 
 export const proposeImportRunOp = defineOperation({
@@ -436,10 +463,11 @@ export const proposeImportRunOp = defineOperation({
     const depth = input.depth ?? 2;
     const maxPages = listMode ? (input.urls?.length ?? 0) : (input.maxPages ?? 50);
     const rows = (await tx.execute(sql`
-      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate, explicit_urls, chat_session_id)
+      INSERT INTO import_runs (source_url, depth, max_pages, status, proposed_by, estimate, explicit_urls, crawl_scope, chat_session_id)
       VALUES (${input.sourceUrl}, ${depth}, ${maxPages}, 'proposed', ${ctx.actorId}::uuid,
               ${jsonbParam(input.estimate ? input.estimate : null)},
               ${jsonbParam(listMode ? input.urls : null)},
+              ${jsonbParam(input.scope ?? null)},
               ${chatSessionId === null ? null : sql`${chatSessionId}::uuid`})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -473,7 +501,7 @@ export const listPendingImportProposalsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, source_url, depth, max_pages, status,
              proposed_by::text AS proposed_by, approved_by::text AS approved_by,
-             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, chat_session_id::text AS chat_session_id,
+             approved_at, started_at, finished_at, pages_seen, pages_extracted, estimate, explicit_urls, crawl_scope, chat_session_id::text AS chat_session_id,
              error_message, created_at
       FROM import_runs
       WHERE status = 'proposed'
@@ -1070,7 +1098,12 @@ export const writeExtractedPagesOp = defineOperation({
       pages: z
         .array(
           z.object({
+            /** issue #425 — the FINAL post-redirect URL (the crawler's
+             *  `CrawledPage.url`); the row's identity + dedupe key. */
             sourceUrl: z.string().url(),
+            /** issue #425 — redirect provenance: the originally requested
+             *  URL, present only when a redirect changed it. */
+            requestedUrl: z.string().url().optional(),
             proposedSlug: z.string().min(1).max(120),
             proposedTitle: z.string().max(500),
             proposedModules: z.array(
@@ -1113,11 +1146,11 @@ export const writeExtractedPagesOp = defineOperation({
           : null;
       const r = (await tx.execute(sql`
         INSERT INTO import_pages (
-          run_id, source_url, proposed_slug, proposed_title,
+          run_id, source_url, requested_url, proposed_slug, proposed_title,
           proposed_modules, proposed_theme_tokens,
           structural_signature, cluster_key, page_css, notes
         ) VALUES (
-          ${input.runId}::uuid, ${p.sourceUrl}, ${p.proposedSlug}, ${p.proposedTitle},
+          ${input.runId}::uuid, ${p.sourceUrl}, ${p.requestedUrl ?? null}, ${p.proposedSlug}, ${p.proposedTitle},
           ${jsonbParam(p.proposedModules)},
           ${jsonbParam(p.proposedThemeTokens)},
           ${p.signature ?? null}, ${p.signature ?? null}, ${p.pageCss ?? null},
@@ -1860,6 +1893,16 @@ export const getImportRunReportOp = defineOperation({
     ),
     redirectsCreated: z.number(),
     crawlErrors: z.array(z.object({ url: z.string(), reason: z.string() })),
+    /** issue #425 — the language/section scope the crawl ran under
+     *  ({pathPrefix?, locale?}); null = unscoped. Stated in every report
+     *  (CLAUDE.md §2 loud reporting), even when nothing was skipped. */
+    crawlScope: z.object({ pathPrefix: z.string(), locale: z.string() }).partial().nullable(),
+    /** issue #425 — TOTAL out-of-scope URLs the crawl declined; exact
+     *  even beyond the capped `crawlSkipped` sample below. */
+    skippedOutOfScope: z.number(),
+    /** issue #425 — skipped URLs with why (out-of-scope, wrong-locale,
+     *  redirect duplicates), capped like `crawlErrors`. */
+    crawlSkipped: z.array(z.object({ url: z.string(), reason: z.string() })),
     /** issue #247 — pages with NO source screenshot. Each also carries
      *  a screenshot_missing note; downstream verification (WS4) treats
      *  them as UNVERIFIED. */
@@ -1907,8 +1950,8 @@ export const getImportRunReportOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
-      SELECT source_url, status, pages_seen, pages_extracted, crawl_state, site_design_tokens,
-             boilerplate_summary
+      SELECT source_url, status, pages_seen, pages_extracted, crawl_state, crawl_scope,
+             site_design_tokens, boilerplate_summary
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as Array<{
       source_url: string;
@@ -1916,6 +1959,7 @@ export const getImportRunReportOp = defineOperation({
       pages_seen: number;
       pages_extracted: number;
       crawl_state: unknown;
+      crawl_scope: unknown;
       site_design_tokens: unknown;
       boilerplate_summary: unknown;
     }>;
@@ -1965,20 +2009,33 @@ export const getImportRunReportOp = defineOperation({
       }
     }
 
-    // Crawl errors from the #192 checkpoint slice.
+    // Crawl errors + skipped from the #192/#425 checkpoint slice.
     const state =
       typeof run.crawl_state === "string"
-        ? (JSON.parse(run.crawl_state) as { errors?: unknown })
-        : ((run.crawl_state ?? {}) as { errors?: unknown });
+        ? (JSON.parse(run.crawl_state) as {
+            errors?: unknown;
+            skipped?: unknown;
+            skippedOutOfScope?: unknown;
+          })
+        : ((run.crawl_state ?? {}) as {
+            errors?: unknown;
+            skipped?: unknown;
+            skippedOutOfScope?: unknown;
+          });
+    const isUrlReason = (e: unknown): e is { url: string; reason: string } =>
+      typeof e === "object" &&
+      e !== null &&
+      typeof (e as { url?: unknown }).url === "string" &&
+      typeof (e as { reason?: unknown }).reason === "string";
     const crawlErrors = (Array.isArray(state.errors) ? state.errors : [])
-      .filter(
-        (e): e is { url: string; reason: string } =>
-          typeof e === "object" &&
-          e !== null &&
-          typeof (e as { url?: unknown }).url === "string" &&
-          typeof (e as { reason?: unknown }).reason === "string",
-      )
+      .filter(isUrlReason)
       .slice(0, 50);
+    // issue #425 — the skip ledger: what the scope declined, with why.
+    const crawlSkipped = (Array.isArray(state.skipped) ? state.skipped : [])
+      .filter(isUrlReason)
+      .slice(0, 50);
+    const skippedOutOfScope =
+      typeof state.skippedOutOfScope === "number" ? state.skippedOutOfScope : 0;
 
     // Notes grouped by category, applied/suggested split, ≤5 samples.
     type Note = { category: z.infer<typeof noteCategory>; note: string; applied: boolean };
@@ -2052,6 +2109,9 @@ export const getImportRunReportOp = defineOperation({
       })),
       redirectsCreated,
       crawlErrors,
+      crawlScope: normalizeStoredCrawlScope(run.crawl_scope),
+      skippedOutOfScope,
+      crawlSkipped,
       pagesMissingScreenshot: pages.filter((p) => p.screenshot_object_key === null).length,
       siteDesignTokens: parseJsonbColumn(run.site_design_tokens),
       boilerplate: parseJsonbColumn(run.boilerplate_summary),

@@ -39,8 +39,18 @@ export {
   normHref,
 } from "./content-inventory.js";
 export {
+  type CrawlScope,
+  hreflangMatchesLocale,
+  isPathInScope,
+  MAX_SKIPPED_REPORTED,
+  normalizeCrawlUrl,
+  pickLocaleAlternate,
+  type SkippedUrl,
+} from "./crawl-scope.js";
+export {
   type CrawlCheckpoint,
   type CrawledPage,
+  type CrawlFetchResult,
   type CrawlOptions,
   type CrawlResult,
   crawlSite,

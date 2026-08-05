@@ -20,6 +20,7 @@
  * All scans are string/URL ops — no regex over document text (#113).
  */
 
+import { isPathInScope } from "./crawl-scope.js";
 import type { LinkLocation } from "./page-facets.js";
 
 /** A homepage link fed to the classifier. Body-located links are ignored
@@ -66,11 +67,14 @@ export interface PageTypeMap {
    *  then sitemap-only; discovery order within each band. */
   readonly types: readonly PageType[];
   /** Noise dropped by pattern (archives/tags/dates/authors/pagination,
-   *  other-locale prefixes), capped for reporting. */
+   *  other-locale prefixes, out-of-scope paths), capped for reporting. */
   readonly filtered: readonly FilteredUrl[];
   /** The locale prefix the map was scoped to (from the site URL), or ""
    *  when the migrated URL carries no locale segment. */
   readonly activeLocale: string;
+  /** issue #425 — the operator's path-prefix scope the map honoured
+   *  (trailing slash normalised away), or "" when unscoped. */
+  readonly scopePathPrefix: string;
 }
 
 export interface ClassifyPageTypesInput {
@@ -82,6 +86,11 @@ export interface ClassifyPageTypesInput {
   /** Optional sitemap.xml sample (already sampled — pass tens, not
    *  thousands). Absolute URLs. */
   readonly sitemapUrls?: readonly string[];
+  /** issue #425 — operator scope: only URLs under this path prefix
+   *  ("/de/") become types/samples; the rest land in `filtered` with an
+   *  out-of-scope reason so the #278 flow never samples the wrong
+   *  language/section. Trailing slash optional. */
+  readonly scopePathPrefix?: string;
 }
 
 const MAX_FILTERED_REPORTED = 60;
@@ -243,6 +252,8 @@ interface Candidate {
  * with a representative sample and a WHY the AI can rename.
  */
 export function classifyPageTypes(input: ClassifyPageTypesInput): PageTypeMap {
+  // issue #425 — normalise the operator scope once; "" = unscoped.
+  const scopePrefix = (input.scopePathPrefix ?? "").replace(/\/+$/, "");
   let host: string;
   let activeLocale = "";
   try {
@@ -251,7 +262,7 @@ export function classifyPageTypes(input: ClassifyPageTypesInput): PageTypeMap {
     const first = segmentsOf(site.pathname)[0];
     if (first && isLocaleSegment(first)) activeLocale = first.toLowerCase();
   } catch {
-    return { types: [], filtered: [], activeLocale: "" };
+    return { types: [], filtered: [], activeLocale: "", scopePathPrefix: scopePrefix };
   }
 
   const filtered: FilteredUrl[] = [];
@@ -284,6 +295,15 @@ export function classifyPageTypes(input: ClassifyPageTypesInput): PageTypeMap {
     const normalized = `${u.origin}${u.pathname.replace(/\/$/, "") || "/"}`;
     if (seenUrls.has(normalized)) continue;
     seenUrls.add(normalized);
+
+    // issue #425 — the operator's scope is a hard filter: out-of-scope
+    // URLs never become types/samples, but they are reported (never
+    // silently dropped). Segment-aware match via isPathInScope — no
+    // blind prefix slicing.
+    if (scopePrefix !== "" && !isPathInScope(u.pathname, scopePrefix)) {
+      pushFiltered(normalized, `out-of-scope: outside ${scopePrefix}/`);
+      continue;
+    }
 
     let segs = segmentsOf(u.pathname);
     if (segs.length === 0) continue; // homepage itself — it's the anchor
@@ -364,7 +384,7 @@ export function classifyPageTypes(input: ClassifyPageTypesInput): PageTypeMap {
     });
   }
 
-  return { types, filtered, activeLocale };
+  return { types, filtered, activeLocale, scopePathPrefix: scopePrefix };
 }
 
 function buildEvidence(

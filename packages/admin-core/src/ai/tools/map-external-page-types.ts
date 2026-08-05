@@ -34,6 +34,14 @@ const input = z
     url: z.string().url(),
     includeSitemap: z.boolean().optional(),
     sitemapSampleSize: z.number().int().min(1).max(200).optional(),
+    /** issue #425 — only URLs under this path prefix become types/
+     *  samples; the rest are reported as out-of-scope noise. */
+    scopePathPrefix: z
+      .string()
+      .min(1)
+      .max(300)
+      .regex(/^\//, "scopePathPrefix must start with '/' (a URL path prefix like /de/)")
+      .optional(),
   })
   .strict();
 type Input = z.infer<typeof input>;
@@ -47,7 +55,7 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
     "Turn an EXTERNAL site's HOMEPAGE into its page-type map: the distinct page types it exposes (pricing, blog-article, use-cases, …), each with ONE representative sample URL to build a template from, plus WHY it was classified so you can name it to the operator. " +
     "Use this in migration step 1 (understand structure) right after glancing the homepage — it is the cheap alternative to crawling the whole origin. Sources: homepage nav + footer links + a sampled sitemap.xml. " +
     "It FILTERS noise automatically: other-locale prefixes (/de when you migrate /en), /tag, /category, date archives (/2023/05/…), /author, and pagination — those never become types. Many /blog/* collapse into ONE 'blog-article' type with one sample. " +
-    "Pass the exact base you are migrating (e.g. https://example.com/en) so the active locale is scoped correctly. Then sample each returned type with `inspect_external_page` and build its template. " +
+    'Pass the exact base you are migrating (e.g. https://example.com/en) so the active locale is scoped correctly. When the operator asked for one language/section of the site, ALSO pass `scopePathPrefix` (e.g. "/de/") — samples then come only from inside that scope and everything else is reported as out-of-scope, never sampled (issue #425). Then sample each returned type with `inspect_external_page` and build its template. ' +
     "Do NOT crawl the whole site (`propose_site_import`) before this — that is what #278 removes. Only public http(s) URLs; private addresses are refused.",
   schema: input,
   inputSchema: {
@@ -68,6 +76,11 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
       sitemapSampleSize: {
         type: "number",
         description: "How many sitemap URLs to sample (not enumerate). Default 40, max 200.",
+      },
+      scopePathPrefix: {
+        type: "string",
+        description:
+          'issue #425 — path prefix ("/de/") when the operator migrates one language/section: only URLs under it become types/samples; the rest are reported as out-of-scope.',
       },
     },
   },
@@ -130,7 +143,14 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
       }
     }
 
-    const map = classifyPageTypes({ siteUrl: rf.finalUrl, links, sitemapUrls });
+    const map = classifyPageTypes({
+      siteUrl: rf.finalUrl,
+      links,
+      sitemapUrls,
+      ...(toolInput.scopePathPrefix !== undefined
+        ? { scopePathPrefix: toolInput.scopePathPrefix }
+        : {}),
+    });
 
     if (map.types.length === 0) {
       return {
@@ -139,9 +159,15 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
       };
     }
 
+    // issue #425 — the scope is stated loudly, with the out-of-scope
+    // count, so a scoped sampling pass is auditable at a glance.
+    const outOfScopeCount = map.filtered.filter((f) => f.reason.startsWith("out-of-scope")).length;
     const lines: string[] = [
       `# Page-type map — ${rf.finalUrl}`,
       map.activeLocale ? `Active locale: /${map.activeLocale}` : "No locale prefix on this URL.",
+      map.scopePathPrefix !== ""
+        ? `Scope: only ${map.scopePathPrefix}/ — ${outOfScopeCount} out-of-scope URL(s) filtered (listed below).`
+        : "Scope: none (whole site considered).",
       `Sitemap: ${sitemapNote}.`,
       "",
       "## Page types (ordered by importance — build templates for these)",

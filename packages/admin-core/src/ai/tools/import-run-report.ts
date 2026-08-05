@@ -103,6 +103,10 @@ interface Report {
   clusters: { clusterKey: string; label: string | null; count: number }[];
   redirectsCreated: number;
   crawlErrors: { url: string; reason: string }[];
+  // issue #425 — the language/section scope + what it declined.
+  crawlScope: { pathPrefix?: string; locale?: string } | null;
+  skippedOutOfScope: number;
+  crawlSkipped: { url: string; reason: string }[];
   pagesMissingScreenshot: number;
   siteDesignTokens: unknown;
   boilerplate: {
@@ -247,6 +251,22 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
             .map((e) => `${e.url} (${e.reason})`)
             .join("; ")}${v.crawlErrors.length > 8 ? "; …" : ""}`
         : "Crawl errors: none.",
+      // issue #425 — the active scope and the skipped-out-of-scope count
+      // are ALWAYS stated (CLAUDE.md §2 loud reporting), even at zero.
+      v.crawlScope
+        ? `Crawl scope: ${[
+            v.crawlScope.pathPrefix !== undefined ? `path ${v.crawlScope.pathPrefix}` : null,
+            v.crawlScope.locale !== undefined ? `locale ${v.crawlScope.locale}` : null,
+          ]
+            .filter((s) => s !== null)
+            .join(" + ")} — ${v.skippedOutOfScope} out-of-scope URL(s) skipped (never crawled).`
+        : "Crawl scope: none (full-site crawl).",
+      v.crawlSkipped.length > 0
+        ? `Skipped URLs (${v.crawlSkipped.length} recorded): ${v.crawlSkipped
+            .slice(0, 8)
+            .map((s) => `${s.url} (${s.reason})`)
+            .join("; ")}${v.crawlSkipped.length > 8 ? "; …" : ""}`
+        : "",
       // issue #247 — design ground truth status. Screenshot gaps are
       // UNVERIFIED pages the operator must hear about; sampled tokens
       // are what the model should base theme statements on.
