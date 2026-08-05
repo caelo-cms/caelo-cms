@@ -184,20 +184,20 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
       // every scenario helper that queries WHERE slug='home').
       //
       // Atomic upsert keyed by the same expression-based unique index
-      // (pages_slug_locale_branch_uidx) the DB enforces. Without the
+      // (pages_slug_branch_uidx) the DB enforces. Without the
       // atomic upsert, a prior scenario's still-running chat-runner
       // can sneak an INSERT between our DELETE and our INSERT under
       // READ COMMITTED isolation (each statement takes a fresh
       // snapshot, so the unique constraint on the second statement
       // fires even though the first deleted the conflicting row).
-      // Symptom: \`pages_slug_locale_branch_uidx\` violation that
+      // Symptom: \`pages_slug_branch_uidx\` violation that
       // tripped half the AI scenarios in the full-suite run at
       // retries=1. ON CONFLICT DO UPDATE makes seedMinimalSite
       // idempotent across the race.
       const pg = await tx\`
         INSERT INTO pages (slug, name, title, template_id, status)
         VALUES ('home', 'Home', 'Home', \${templateId}::uuid, 'draft')
-        ON CONFLICT (slug, locale, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
+        ON CONFLICT (slug, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
           WHERE deleted_at IS NULL
           DO UPDATE SET
             name = EXCLUDED.name,

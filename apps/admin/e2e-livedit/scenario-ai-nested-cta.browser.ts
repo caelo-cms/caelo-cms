@@ -97,7 +97,7 @@ function snapshotNestedAuthoring(): DbSnap {
           const buttonCi = await ci(buttonModuleId);
 
           // Find a placement on the homepage referencing the CTA module.
-          const hp = await tx\`SELECT id::text AS id FROM pages WHERE slug='home' AND locale='en' AND deleted_at IS NULL LIMIT 1\`;
+          const hp = await tx\`SELECT id::text AS id FROM pages WHERE slug='home' AND deleted_at IS NULL LIMIT 1\`;
           let homepagePlacement = null;
           if (hp[0] && ctaModuleId) {
             const pm = await tx\`
