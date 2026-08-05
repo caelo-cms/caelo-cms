@@ -21,7 +21,7 @@
  *     pointing at what's missing).
  */
 
-/** How long the runner should wait before re-checking `imports.get`. */
+/** How long the runner should wait before re-checking `list_import_pages`. */
 export const COMPOSE_CRAWL_RETRY_MS = 5_000;
 
 /**
@@ -57,7 +57,7 @@ export function classifyComposeRunStatus(status: string, runId: string): Compose
     kind: "error",
     message:
       `import run ${runId} is '${status}', not composable — the crawl did not reach ready_for_review. ` +
-      `Check imports.get for the failure reason and re-run propose_site_import if it failed.`,
+      `Check list_import_pages({runId}) for the run status + failure reason and re-run propose_site_import if it failed.`,
   };
 }
 

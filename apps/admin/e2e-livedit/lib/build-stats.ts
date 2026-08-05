@@ -6,6 +6,7 @@
  *   apps/admin/test-results/livedit/admin.log          (chat-runner stderr)
  *   apps/admin/test-results/livedit/playwright-report.json
  *   apps/admin/test-results/livedit/ai-cost.json        (real ai_calls totals)
+ *   apps/admin/test-results/livedit/metrics.json        (per-scenario summaries)
  *
  * and writes a self-contained markdown block to stdout. The workflow
  * captures it and splices it into the sticky PR comment alongside the
@@ -14,10 +15,11 @@
  * The ai-cost.json input carries the REAL per-run AI cost aggregated
  * from the `ai_calls` table (a `SET caelo.actor_kind='system'` psql
  * dump in the workflow). It is the authoritative source for tokens +
- * dollars — the loop-log token counts in admin.log are cumulative per
- * turn and would double-count if summed. When ai-cost.json is absent
- * (older runs, DB-only scenarios, a failed capture that fell back to
- * `{}`) the cost section is silently omitted.
+ * dollars. When ai-cost.json is absent (older runs, DB-only scenarios,
+ * a failed capture that fell back to `{}`) the cost section is silently
+ * omitted. metrics.json (written by global-teardown from the
+ * per-scenario jsonl) feeds the issue #432 input-token breakdown table,
+ * including threshold breaches on attempts a retry later masked.
  *
  * NOT a Playwright reporter — those run in the test process and would
  * have to share state with the suite. This is a separate post-process
@@ -25,57 +27,16 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import type { ScenarioSummary } from "./metrics-core.js";
+import { buildThresholdWarnings, k, parseChatLog } from "./metrics-core.js";
 
 const ADMIN_LOG = "apps/admin/test-results/livedit/admin.log";
 const REPORT_JSON = "apps/admin/test-results/livedit/playwright-report.json";
 const AI_COST_JSON = "apps/admin/test-results/livedit/ai-cost.json";
+const METRICS_JSON = "apps/admin/test-results/livedit/metrics.json";
 
 /** 1 USD = 1e8 microcents (cost_estimate_microcents is stored in microcents). */
 const MICROCENTS_PER_USD = 100_000_000;
-
-interface LoopRecord {
-  chatSessionId: string;
-  loopStop: string;
-  toolCalls: number;
-  tokensIn: number;
-  tokensOut: number;
-}
-
-/**
- * Parse the chat-runner's `[chat-runner] loop { ... }` blocks from the
- * admin stderr capture. The format is Node `util.inspect`, not JSON;
- * we scan with regex.
- *
- *   [chat-runner] loop {
- *     chatSessionId: "uuid",
- *     loop: 1,
- *     loopStop: "tool_use",
- *     toolCalls: 4,
- *     textChars: 131,
- *     thinkingBlocks: 0,
- *     tokensIn: 134803,
- *     tokensOut: 717,
- *   }
- */
-function parseChatRunnerLoops(log: string): LoopRecord[] {
-  const re =
-    /\[chat-runner\] loop \{\s*chatSessionId:\s*"([^"]+)",[\s\S]*?loopStop:\s*"([^"]+)",[\s\S]*?toolCalls:\s*(\d+),[\s\S]*?tokensIn:\s*(\d+),\s*tokensOut:\s*(\d+),?\s*\}/g;
-  const out: LoopRecord[] = [];
-  let m: RegExpExecArray | null;
-  m = re.exec(log);
-  while (m !== null) {
-    const [, chatSessionId, loopStop, toolCalls, tokensIn, tokensOut] = m;
-    out.push({
-      chatSessionId: chatSessionId ?? "",
-      loopStop: loopStop ?? "",
-      toolCalls: Number.parseInt(toolCalls ?? "0", 10),
-      tokensIn: Number.parseInt(tokensIn ?? "0", 10),
-      tokensOut: Number.parseInt(tokensOut ?? "0", 10),
-    });
-    m = re.exec(log);
-  }
-  return out;
-}
 
 /**
  * Count `[chat-runner] enter` lines as chat turns. The runner logs
@@ -279,6 +240,56 @@ export function formatCostSection(cost: AiCost | null): string[] {
   return lines;
 }
 
+/** Parse metrics.json (an array of ScenarioSummary rows) defensively. */
+export function parseMetricsRows(raw: string): ScenarioSummary[] {
+  const parsed = tryJson(raw.trim());
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (r): r is ScenarioSummary => !!r && typeof r === "object" && "scenario" in r,
+  );
+}
+
+/**
+ * Render the `### Input-token breakdown` markdown section from the
+ * per-scenario-attempt summary rows (issue #432): where each attempt's
+ * input went (per-call static context vs history) plus a LOUD warning list
+ * for attempts that breached thresholds — even when a retry later passed.
+ * Empty array when there are no rows (older runs without metrics.json).
+ */
+export function formatBreakdownSection(rows: ScenarioSummary[]): string[] {
+  if (rows.length === 0) return [];
+  const lines: string[] = [];
+  lines.push("### Input-token breakdown (per scenario attempt)");
+  lines.push("");
+  lines.push("| Scenario | Loops | Input | Static/call (est) | History end (est) | Thresholds |");
+  lines.push("| --- | --- | --- | --- | --- | --- |");
+  const attemptNo = new Map<string, number>();
+  for (const r of rows) {
+    const n = (attemptNo.get(r.scenario) ?? 0) + 1;
+    attemptNo.set(r.scenario, n);
+    const name = n === 1 ? r.scenario : `${r.scenario} (attempt ${n})`;
+    const a = r.attribution;
+    const staticCall = a ? k(a.staticPerCallTokens) : "—";
+    const histEnd = a ? k(a.historyEndTokens) : "—";
+    const status =
+      Array.isArray(r.violations) && r.violations.length > 0
+        ? `**breached:** ${r.violations.map((v) => v.message).join("; ")}`
+        : "ok";
+    lines.push(
+      `| ${name} | ${r.loops} | ${k(r.inputTokens)} | ${staticCall} | ${histEnd} | ${status} |`,
+    );
+  }
+  lines.push("");
+  const warnings = buildThresholdWarnings(rows);
+  if (warnings.length > 0) {
+    lines.push(
+      `**⚠️ ${warnings.length} attempt(s) breached token/loop thresholds** — visible above and as run annotations, even if a retry turned the check green (issue #432).`,
+    );
+    lines.push("");
+  }
+  return lines;
+}
+
 function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
@@ -299,20 +310,32 @@ function fmtTokens(n: number): string {
  * drops its (cumulative-per-turn, non-summable) loop-log token bullet in
  * favour of a pointer.
  */
-export function buildReport(inputs: { log: string; reportRaw: string; aiCostRaw: string }): string {
+export function buildReport(inputs: {
+  log: string;
+  reportRaw: string;
+  aiCostRaw: string;
+  /** Raw metrics.json (global-teardown's jsonl consolidation); "" when absent. */
+  metricsRaw?: string;
+}): string {
   const { log, reportRaw, aiCostRaw } = inputs;
 
-  const loops = parseChatRunnerLoops(log);
+  // Shared parser with the harness (lib/metrics-core.ts) — build-stats used
+  // to keep its own regex over the loop lines and silently reported 0 loops
+  // once the log gained a `tokensCached` field (issue #432).
+  const { loops } = parseChatLog(log);
   const turns = countEnters(log);
   const { results, totalDurationMs } = parsePlaywrightReport(reportRaw);
   const cost = parseAiCost(aiCostRaw);
+  const metricsRows = parseMetricsRows(inputs.metricsRaw ?? "");
 
   const totalLoops = loops.length;
-  const totalToolCalls = loops.reduce((a, l) => a + l.toolCalls, 0);
-  const totalTokensIn = loops.reduce((a, l) => a + l.tokensIn, 0);
-  const totalTokensOut = loops.reduce((a, l) => a + l.tokensOut, 0);
+  // NaN-safe: logs from before a field existed parse that field as NaN.
+  const fin = (n: number): number => (Number.isFinite(n) ? n : 0);
+  const totalToolCalls = loops.reduce((a, l) => a + l.toolNames.length, 0);
+  const totalTokensIn = loops.reduce((a, l) => a + fin(l.inCall), 0);
+  const totalTokensOut = loops.reduce((a, l) => a + fin(l.out), 0);
   const stopReasons = new Map<string, number>();
-  for (const l of loops) stopReasons.set(l.loopStop, (stopReasons.get(l.loopStop) ?? 0) + 1);
+  for (const l of loops) stopReasons.set(l.stop, (stopReasons.get(l.stop) ?? 0) + 1);
   const stopReasonStr =
     [...stopReasons.entries()]
       .sort((a, b) => b[1] - a[1])
@@ -334,18 +357,19 @@ export function buildReport(inputs: { log: string; reportRaw: string; aiCostRaw:
     lines.push(`- **${totalLoops}** tool-call loops (\`[chat-runner] loop\` events)`);
     lines.push(`- **${totalToolCalls}** tool calls dispatched`);
     if (cost) {
-      // Loop-log tokensIn is cumulative per turn (each loop re-sends the
-      // whole conversation), so summing them double-counts. Real totals
-      // live in the Real AI cost section above.
+      // The shared parser reads per-call figures (inThisCall/outThisCall),
+      // so the sums are real — but ai_calls stays the authoritative billing
+      // source (it includes calls outside the chat-runner loop).
       lines.push("- Token + cost totals: see **Real AI cost** above (from `ai_calls`)");
     } else {
       lines.push(
-        `- **${fmtTokens(totalTokensIn)}** tokens in / **${fmtTokens(totalTokensOut)}** tokens out (loop-log, cumulative per turn)`,
+        `- **${fmtTokens(totalTokensIn)}** tokens in / **${fmtTokens(totalTokensOut)}** tokens out (loop-log per-call sums)`,
       );
     }
     lines.push(`- Loop-stop reasons: ${stopReasonStr}`);
   }
   lines.push("");
+  lines.push(...formatBreakdownSection(metricsRows));
   lines.push("### Per-scenario results");
   lines.push("");
   if (results.length === 0) {
@@ -375,7 +399,8 @@ function main(): void {
   const log = existsSync(ADMIN_LOG) ? readFileSync(ADMIN_LOG, "utf8") : "";
   const reportRaw = existsSync(REPORT_JSON) ? readFileSync(REPORT_JSON, "utf8") : "";
   const aiCostRaw = existsSync(AI_COST_JSON) ? readFileSync(AI_COST_JSON, "utf8") : "";
-  process.stdout.write(buildReport({ log, reportRaw, aiCostRaw }));
+  const metricsRaw = existsSync(METRICS_JSON) ? readFileSync(METRICS_JSON, "utf8") : "";
+  process.stdout.write(buildReport({ log, reportRaw, aiCostRaw, metricsRaw }));
 }
 
 // Only run when invoked directly (not when imported by the unit test).

@@ -10,11 +10,11 @@
  * stdout/stderr remain in `test-results/livedit/admin.log` for triage.
  */
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { formatReport, metricsBySession } from "./livedit-metrics.js";
+import type { ScenarioSummary } from "./livedit-metrics.js";
+import { buildThresholdWarnings, formatReport, metricsBySession } from "./livedit-metrics.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIVEDIT_DIR = resolve(HERE, "../test-results/livedit");
@@ -70,8 +70,8 @@ function writeMetricsArtifact(): void {
     "e2e-livedit token & cache metrics",
     "=".repeat(78),
     "",
-    "scenario        | loops | input   | read    | hit% | fresh%  | output  | img | cost$",
-    "-".repeat(90),
+    "scenario        | loops | input   | read    | hit% | fresh%  | output  | img | static/call | hist-end | cost$",
+    "-".repeat(114),
   ];
   if (rows.length === 0) {
     lines.push("(no scenario recorded a named summary — see per-session detail below)");
@@ -80,21 +80,52 @@ function writeMetricsArtifact(): void {
   for (const r of rows) {
     const n = (key: string): number =>
       typeof r[key] === "number" ? (r[key] as number) : Number.NaN;
+    // issue #432 — the input-attribution columns (chars/4 estimates from
+    // the context-split trace); "?" on rows from logs without the trace.
+    const attribution = (r.attribution ?? {}) as Record<string, unknown>;
+    const a = (key: string): number =>
+      typeof attribution[key] === "number" ? (attribution[key] as number) : Number.NaN;
     totalCost += Number.isFinite(n("costTotalUsd")) ? n("costTotalUsd") : 0;
     lines.push(
       `${String(r.scenario ?? "?").padEnd(15)} | ${String(n("loops")).padStart(5)} | ` +
         `${k(n("inputTokens")).padStart(7)} | ${k(n("cacheRead")).padStart(7)} | ` +
         `${String(n("cacheHitPct")).padStart(4)} | ${String(n("freshPct")).padStart(6)}% | ` +
         `${k(n("output")).padStart(7)} | ${String(n("imageCalls")).padStart(3)} | ` +
+        `${k(a("staticPerCallTokens")).padStart(11)} | ${k(a("historyEndTokens")).padStart(8)} | ` +
         `$${(Number.isFinite(n("costTotalUsd")) ? n("costTotalUsd") : 0).toFixed(3)}`,
     );
   }
   if (rows.length > 0) {
-    lines.push("-".repeat(90));
+    lines.push("-".repeat(114));
     lines.push(
       `${"TOTAL".padEnd(15)} | ${" ".repeat(5)} | ${" ".repeat(7)} | ${" ".repeat(7)} | ` +
-        `${" ".repeat(4)} | ${" ".repeat(6)}  | ${" ".repeat(7)} | ${" ".repeat(3)} | $${totalCost.toFixed(3)} (est; authoritative: CI ai_calls)`,
+        `${" ".repeat(4)} | ${" ".repeat(6)}  | ${" ".repeat(7)} | ${" ".repeat(3)} | ` +
+        `${" ".repeat(11)} | ${" ".repeat(8)} | $${totalCost.toFixed(3)} (est; authoritative: CI ai_calls)`,
     );
+  }
+
+  // issue #432 — attempt-level threshold breaches must be LOUD even when a
+  // Playwright retry turned the check green. Each jsonl row carries its own
+  // attempt's violations; `::warning` lines printed here surface as GitHub
+  // annotations on the run (workflow commands are parsed from any step
+  // output) and are mirrored into the step summary when available.
+  const warnings = buildThresholdWarnings(rows as unknown as ScenarioSummary[]);
+  for (const w of warnings) {
+    // eslint-disable-next-line no-console -- GitHub workflow command, must go to stdout.
+    console.log(w);
+  }
+  const stepSummary = process.env.GITHUB_STEP_SUMMARY;
+  if (warnings.length > 0 && stepSummary) {
+    try {
+      appendFileSync(
+        stepSummary,
+        `\n### e2e-livedit threshold breaches (incl. retried attempts)\n\n${warnings
+          .map((w) => `- ${w.replace(/^::warning[^:]*::/, "")}`)
+          .join("\n")}\n`,
+      );
+    } catch {
+      // Annotation already emitted; the summary mirror is best-effort.
+    }
   }
 
   const report = [

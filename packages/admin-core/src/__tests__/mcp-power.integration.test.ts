@@ -24,6 +24,7 @@ import { setExternalScreenshotterForTests } from "../ai/tools/_external-screensh
 import { resetPreviewScreenshotBudgetForTests } from "../ai/tools/_preview-screenshot-budget.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { POWER_MCP_EXCLUDED_TOOLS, powerToolCatalogue } from "../ops/security/mcp_power.js";
+import { findExcludedToolMentions } from "../ops/security/mcp_power_prose.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
 
@@ -471,6 +472,11 @@ describe("Power-MCP surface (admin token)", () => {
     expect(v.systemContext).toContain("## Module model");
     expect(v.systemContext).not.toContain("## Subagents");
     expect(v.systemContext).not.toContain("## Finishing a turn");
+    // #413 — the playbook variant names the visual-inspection tools that DO
+    // work here instead of the excluded chat-browser screenshot tool (#412
+    // lifts that exclusion later; this may then relax to the chat wording).
+    expect(v.systemContext).toContain("`inspect_built_page`");
+    expect(v.systemContext).toContain("`screenshot_external_page`");
     for (const s of v.skills) expect(s.body).toBeUndefined();
 
     const withBodies = await execute(registry, adapter, systemCtx, "mcp.get_context", {
@@ -481,6 +487,82 @@ describe("Power-MCP surface (admin token)", () => {
     if (!withBodies.ok) return;
     for (const s of (withBodies.value as { skills: Array<{ body?: string }> }).skills) {
       expect(typeof s.body).toBe("string");
+    }
+  });
+
+  // ── issue #413 — prompt↔catalog consistency ────────────────────────
+  // The 2026-08-03 dogfood run probed for tools this surface refuses
+  // because the served prose recommended them. These tests cover the
+  // CLASS: every text the surface serves is scanned against the LIVE
+  // exclusion map, so they keep passing when #412 removes
+  // screenshot_page from POWER_MCP_EXCLUDED_TOOLS (its mentions simply
+  // stop being violations) and keep biting for whatever stays excluded.
+
+  it("serves no prose that recommends an excluded tool (#413)", async () => {
+    const excluded = [...POWER_MCP_EXCLUDED_TOOLS.keys()];
+    const r = await execute(registry, adapter, systemCtx, "mcp.get_context", {
+      plaintextToken: adminToken,
+      includeSkillBodies: true,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as {
+      systemContext: string;
+      statusLine: string | null;
+      skills: Array<{ slug: string; description: string; body?: string }>;
+    };
+    const served: Array<readonly [string, string]> = [
+      ["systemContext", v.systemContext],
+      ["statusLine", v.statusLine ?? ""],
+      ...powerToolCatalogue(createDefaultToolRegistry()).map(
+        (t) => [`tool:${t.name}`, t.description] as const,
+      ),
+      ...v.skills.flatMap((s) => [
+        [`skill:${s.slug}:description`, s.description] as const,
+        [`skill:${s.slug}:body`, s.body ?? ""] as const,
+      ]),
+    ];
+    const violations = served
+      .map(([where, text]) => [where, findExcludedToolMentions(text, excluded)] as const)
+      .filter(([, names]) => names.length > 0);
+    expect(violations).toEqual([]);
+  });
+
+  it("annotates seeded skill bodies instead of dropping or rewriting skills (#413)", async () => {
+    const excluded = [...POWER_MCP_EXCLUDED_TOOLS.keys()];
+    // Raw bodies straight from the op the surface reads — the DB-seeded
+    // skills mandate chat-only tools (design-quality: "call
+    // screenshot_page for BOTH viewports"), which is exactly what the
+    // serve-time annotation must neutralise without editing the rows.
+    const raw = await execute(registry, adapter, ownerCtx, "skills.list", { status: "active" });
+    expect(raw.ok).toBe(true);
+    if (!raw.ok) return;
+    const rawSkills = (raw.value as { skills: Array<{ slug: string; body: string }> }).skills;
+
+    const servedR = await execute(registry, adapter, systemCtx, "mcp.get_context", {
+      plaintextToken: adminToken,
+      includeSkillBodies: true,
+    });
+    expect(servedR.ok).toBe(true);
+    if (!servedR.ok) return;
+    const servedBySlug = new Map(
+      (servedR.value as { skills: Array<{ slug: string; body?: string }> }).skills.map(
+        (s) => [s.slug, s.body ?? ""] as const,
+      ),
+    );
+
+    // Same skill set — the surface annotates; it never filters skills away.
+    expect([...servedBySlug.keys()].sort()).toEqual(rawSkills.map((s) => s.slug).sort());
+
+    for (const s of rawSkills) {
+      const mentioned = findExcludedToolMentions(s.body, excluded);
+      if (mentioned.length === 0) continue;
+      const servedBody = servedBySlug.get(s.slug) ?? "";
+      // Every mention still present (content honest, not censored) …
+      for (const name of mentioned) expect(servedBody).toContain(name);
+      // … but none left as a bare recommendation.
+      expect(findExcludedToolMentions(servedBody, excluded)).toEqual([]);
+      expect(servedBody).toContain("[not available on this surface — ");
     }
   });
 });

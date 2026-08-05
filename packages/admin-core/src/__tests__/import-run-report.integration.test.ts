@@ -172,8 +172,11 @@ describe("migration report (#197)", () => {
     });
     expect(missing.ok).toBe(false);
     const message = missing.ok ? "" : String((missing.error as { message?: string }).message ?? "");
+    // #422 — the op now shares the resolver + message with the other
+    // per-page reads: both id forms named, plus the tool that lists ids.
     expect(message).toContain("import_pages.id");
-    expect(message).toContain("accepted_page_id");
+    expect(message).toContain("built CMS page id");
+    expect(message).toContain("list_import_pages");
   });
 
   it("report rolls up clusters, redirects, crawl errors, and the applied/suggested split", async () => {
