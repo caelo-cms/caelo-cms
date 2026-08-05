@@ -230,6 +230,7 @@ import {
   recordBudgetGateEventOp,
   rejectImportProposalOp,
   setCostCeilingOp,
+  setPageCapturesByUrlOp,
   setRunDesignTokensOp,
   updateImportRunStatusOp,
   updatePageCaptureOp,
@@ -825,6 +826,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectImportProposalOp);
   registry.register(updateImportRunStatusOp);
   registry.register(updatePageCaptureOp);
+  // issue #423 — crawl-time bulk capture persistence (screenshot keys +
+  // sampled tokens per batch, keyed by run_id + source_url).
+  registry.register(setPageCapturesByUrlOp);
   // issue #28 — run-scoped error/warning ledger.
   registry.register(logImportRunEventOp);
   registry.register(logImportRunEventsOp);
