@@ -53,6 +53,7 @@ import { inspectDesignDraftTool } from "./inspect-design-draft.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
+import { listImportPagesTool } from "./list-import-pages.js";
 import { listLayoutsTool } from "./list-layouts.js";
 import { listModulesTool } from "./list-modules.js";
 import { listPageAssetsTool } from "./list-page-assets.js";
@@ -224,6 +225,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // handle (never raw HTML) so the mass-import rebuild uses the stored crawl
   // instead of re-fetching the live site. Mirrors inspect_external_page.
   registry.register(getImportPageTool);
+  // issue #422 — run-status polling + the id-bearing per-run page list;
+  // every per-page import tool's importPageId comes from here.
+  registry.register(listImportPagesTool);
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);

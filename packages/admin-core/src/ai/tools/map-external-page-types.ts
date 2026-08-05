@@ -25,7 +25,11 @@ import {
   type TextFetcher,
 } from "@caelo-cms/site-importer";
 import { z } from "zod";
-import { externalFetchAllowedHosts, takeExternalFetchBudget } from "./_external-fetch-budget.js";
+import {
+  describeFetchBudgetDenied,
+  externalFetchAllowedHosts,
+  takeExternalFetchBudget,
+} from "./_external-fetch-budget.js";
 import { getExternalScreenshotter } from "./_external-screenshotter.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -89,8 +93,7 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
     if (!budget.ok) {
       return {
         ok: false,
-        content:
-          "External-fetch budget exhausted for this session (12 per 10 minutes). Wait for the window to roll over, then map the page types again.",
+        content: `${describeFetchBudgetDenied(budget)} Then map the page types again.`,
       };
     }
     const allowedHosts = externalFetchAllowedHosts();

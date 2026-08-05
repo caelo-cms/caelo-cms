@@ -41,6 +41,7 @@ import {
   pickLocaleAlternate,
   type SkippedUrl,
 } from "./crawl-scope.js";
+import type { ElementStyleSample } from "./design-tokens.js";
 import {
   extractModulesFromHtml,
   extractPageCss,
@@ -52,7 +53,11 @@ import { computePageSignature } from "./page-signature.js";
 import { fetchRenderedHtml } from "./rendered-fetch.js";
 import { isPathAllowed, parseRobotsTxt, type RobotsRules } from "./robots.js";
 import { assertPublicHttpUrl, isExternalUrlBlockedError, safeExternalFetch } from "./safe-fetch.js";
-import { createPlaywrightScreenshotter, type Screenshotter } from "./screenshot.js";
+import {
+  createPlaywrightScreenshotter,
+  type Screenshot,
+  type Screenshotter,
+} from "./screenshot.js";
 import { discoverSitemapUrls, type TextFetcher } from "./sitemap.js";
 
 export interface CrawlCheckpoint {
@@ -113,6 +118,23 @@ export interface CrawlOptions {
   readonly throttleMs?: number;
   /** Optional fetch override for tests. */
   readonly fetcher?: (url: string) => Promise<CrawlFetchResult>;
+  /**
+   * issue #423 — injectable browser seam. When set, the crawler renders +
+   * captures through THIS screenshotter instead of launching its own
+   * Playwright (the caller owns disposal). `null` forces the static
+   * fetch-only path. Ignored when a custom `fetcher` is injected.
+   */
+  readonly screenshotter?: Screenshotter | null;
+  /**
+   * issue #423 — per-page visual ground truth, streamed OUT as soon as
+   * each page is accepted so PNG bytes are never accumulated across a
+   * batch. Fired only for pages that actually enter the crawl result
+   * (after the HTML/robots/origin gates). `url` is the page's FINAL
+   * post-redirect URL (#425) — the CrawledPage identity the persistence
+   * pass matches keys against. A throwing sink is recorded in
+   * `errors` — loud, but it never blocks the crawl (epic #252 ruling).
+   */
+  readonly onPageCapture?: (item: { url: string; screenshot: Screenshot }) => Promise<void>;
   /** issue #192 — raw-text fetch for robots.txt + sitemap XML
    *  (injectable for tests; defaults to the guarded fetch). */
   readonly textFetcher?: TextFetcher;
@@ -163,6 +185,11 @@ export interface CrawledPage {
   /** issue #195 — the page's <style> contents; compose attaches it to
    *  the cluster template so imported pages keep their design. */
   readonly pageCss: string;
+  /** issue #423 — computed-style samples from the SAME render session
+   *  that produced the page's HTML (and its `onPageCapture` screenshot).
+   *  Absent on fetch-only crawls and when the capture attempt failed —
+   *  the post-crawl ground-truth pass then retries + notes loudly. */
+  readonly styleSamples?: readonly ElementStyleSample[];
 }
 
 export interface CrawlResult {
@@ -180,6 +207,21 @@ export interface CrawlResult {
   /** Echo of the active scope so the run report states it verbatim
    *  (CLAUDE.md §2 loud reporting); null = unscoped crawl. */
   readonly scope: CrawlScope | null;
+}
+
+/**
+ * issue #423 — internal per-page fetch result. A superset of the public
+ * `opts.fetcher` shape (`CrawlFetchResult`, incl. the #425 `finalUrl`) so
+ * injected test fetchers keep working unchanged; the capture-first
+ * rendered path additionally carries the visual ground truth from the
+ * SAME render session.
+ */
+interface PageFetchResult extends CrawlFetchResult {
+  /** Computed-style samples (#247 ground truth) from the render session. */
+  readonly styleSamples?: readonly ElementStyleSample[];
+  /** Source screenshot from the render session — handed straight to
+   *  `onPageCapture`, never buffered across a batch. */
+  readonly screenshot?: Screenshot;
 }
 
 // ASCII ONLY: header values reject non-Latin-1 at the socket layer —
@@ -263,14 +305,29 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   // whole crawl (contexts are per-page); it is disposed in the finally below.
   // Falls back to a static fetch per page (with a loud note in the fetcher)
   // when Chromium is unavailable. Tests inject `opts.fetcher` and never render.
+  //
+  // issue #423 — the render is now CAPTURE-FIRST: the same session that
+  // yields the page's rendered HTML also takes the source screenshot and
+  // samples computed styles (the #247 ground truth), so LIST-mode and
+  // discovery crawls stop re-rendering every page in a second pass.
   let screenshotter: Screenshotter | null = null;
-  let fetcher = opts.fetcher;
+  // Only a crawler-launched browser is disposed here — an injected one
+  // belongs to the caller (it may span several crawls).
+  let ownsScreenshotter = false;
+  let fetcher: ((url: string) => Promise<PageFetchResult>) | undefined = opts.fetcher;
   if (!fetcher) {
     // Loud-abort a blocked SOURCE before spending a Chromium launch on it —
     // the crawler's "root-blocked crawls fail loudly" contract, kept fast.
     assertPublicHttpUrl(opts.sourceUrl, { allowedHosts: opts.allowedHosts ?? [] });
-    screenshotter = await createPlaywrightScreenshotter({ allowedHosts: opts.allowedHosts ?? [] });
-    fetcher = makeRenderedFetcher(screenshotter, opts.allowedHosts ?? []);
+    if (opts.screenshotter !== undefined) {
+      screenshotter = opts.screenshotter;
+    } else {
+      screenshotter = await createPlaywrightScreenshotter({
+        allowedHosts: opts.allowedHosts ?? [],
+      });
+      ownsScreenshotter = true;
+    }
+    fetcher = makeCaptureFetcher(screenshotter, opts.allowedHosts ?? []);
   }
   // A custom HTML fetcher without a matching text fetcher means a
   // hermetic test harness — don't reach for the real network for
@@ -375,6 +432,10 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   };
 
+  // Definite after the setup above; a const alias keeps the closure's type
+  // narrow without relying on flow analysis across the worker closures.
+  const pageFetcher = fetcher;
+
   const processOne = async (next: { url: string; depth: number }): Promise<void> => {
     // issue #425 — the scope's path-prefix rule decides PRE-fetch, at the
     // single point every URL passes through (crawl root, frontier links,
@@ -392,9 +453,9 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       }
     }
     await politeWait();
-    let res: CrawlFetchResult;
+    let res: PageFetchResult;
     try {
-      res = await fetcher(next.url);
+      res = await pageFetcher(next.url);
     } catch (e) {
       // A blocked ROOT URL means the whole crawl is pointless — fail the
       // run loudly (no-fallbacks pre-1.0) instead of returning an empty
@@ -489,7 +550,26 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       themeTokens: extractThemeTokens(res.html),
       signature: computePageSignature({ url: keyUrl, sourceUrl: opts.sourceUrl, html: res.html }),
       pageCss: extractPageCss(res.html),
+      ...(res.styleSamples ? { styleSamples: res.styleSamples } : {}),
     };
+    // issue #423 — hand the pixels to the sink NOW (bytes must not sit in
+    // the batch buffer). A failing sink is a persistence problem, not a
+    // crawl problem: record it loudly and keep going — the page stays
+    // keyless, so the post-crawl ground-truth pass re-attempts + notes it.
+    if (res.screenshot && opts.onPageCapture) {
+      try {
+        // issue #425 — keyed by the FINAL URL: persistBatchCapture matches
+        // keys against CrawledPage.url, which is the post-redirect URL.
+        await opts.onPageCapture({ url: finalUrl, screenshot: res.screenshot });
+      } catch (e) {
+        errors.push({
+          url: next.url,
+          // Coerce non-Error throws too — an empty "failed:" reason in the
+          // run report would defeat the loud-marker purpose.
+          reason: `screenshot persistence failed: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    }
     pagesCrawled += 1;
     sinceFlush += 1;
     if (opts.onBatch) batch.push(page);
@@ -544,10 +624,11 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
 
     return { pages, seenCount: seen.size, pagesCrawled, errors, skipped, skippedOutOfScope, scope };
   } finally {
-    // Release the shared Chromium (only launched when we render — i.e. no
-    // injected fetcher). Best-effort: a dispose failure must not mask a
-    // crawl result or a real error.
-    await screenshotter?.dispose().catch(() => undefined);
+    // Release the shared Chromium — but only when THIS crawl launched it.
+    // An injected screenshotter (issue #423 test seam / a caller reusing
+    // one browser across crawls) is the caller's to dispose. Best-effort:
+    // a dispose failure must not mask a crawl result or a real error.
+    if (ownsScreenshotter) await screenshotter?.dispose().catch(() => undefined);
   }
 }
 
@@ -577,26 +658,81 @@ function makeDefaultFetcher(
 }
 
 /**
- * Render-first crawl fetcher: runs each page's JS via the shared
- * screenshotter (reused across the crawl) so the extracted content is the
- * DOM the browser built, not the pre-JS source. `fetchRenderedHtml` falls
- * back to a static fetch — with a note it swallows here — when the render
- * fails or `screenshotter` is null (Chromium unavailable). Preserves the
- * default fetcher's contract: same-origin redirects only, non-HTML gated.
+ * Capture-first crawl fetcher (issue #423, supersedes the render-only
+ * fetcher): ONE Playwright session per page yields the rendered HTML the
+ * extractors consume AND the #247 visual ground truth (source screenshot +
+ * computed-style samples) — LIST-mode and discovery crawls no longer need a
+ * second render pass for capture.
+ *
+ * Failure ladder (ratified: epic #252, operator ruling 2026-07-12 — a
+ * screenshot failure must never block the run):
+ *   1. `capture` throws → fall back to `fetchRenderedHtml` for CONTENT
+ *      (itself render-then-static). The page crawls without pixels; the
+ *      post-crawl ground-truth pass retries capture + notes it loudly.
+ *   2. `screenshotter` null (Chromium unavailable) → the plain SSRF-guarded
+ *      static fetcher — the loud, expected fetch-only degrade.
+ * Preserves the default fetcher's contract: same-origin redirects only,
+ * non-HTML gated (via the capture's navigation `contentType`).
  */
-function makeRenderedFetcher(
+function makeCaptureFetcher(
   screenshotter: Screenshotter | null,
   allowedHosts: readonly string[],
-): (url: string) => Promise<CrawlFetchResult> {
+): (url: string) => Promise<PageFetchResult> {
   // No Chromium → the plain SSRF-guarded static fetcher (keeps the crawler
   // User-Agent + same-host policy). This is the loud, expected degrade.
   const staticFetcher = makeDefaultFetcher(allowedHosts);
   return async (url: string) => {
     if (!screenshotter) return staticFetcher(url);
+
+    let shot: Screenshot | null = null;
+    try {
+      shot = await screenshotter.capture(url, {
+        external: true,
+        sampleStyles: true,
+        captureHtml: true,
+      });
+    } catch (e) {
+      // A blocked URL is a hard stop — the same SSRF policy would reject it
+      // on the fallback path too, less clearly. Everything else degrades to
+      // the content-only fallback below.
+      if (isExternalUrlBlockedError(e)) throw e;
+      shot = null;
+    }
+
+    if (shot && shot.renderedHtml !== undefined) {
+      // Non-HTML gate, same policy as `fetchRenderedHtml`: only gate when
+      // the response actually reported a type (undefined = trust it) — a
+      // PDF/image navigates into a viewer whose DOM is not the resource.
+      // `ok: true` on purpose: the navigation succeeded, so the crawler's
+      // content-type check reports the informative "skipped non-html
+      // (<type>)" instead of a misleading "non-OK status".
+      if (shot.contentType !== undefined && !shot.contentType.includes("text/html")) {
+        return { ok: true, html: "", contentType: shot.contentType };
+      }
+      if (shot.finalUrl && new URL(shot.finalUrl).host !== new URL(url).host) {
+        return { ok: false, html: "", contentType: "redirected-off-host" };
+      }
+      return {
+        ok: true,
+        html: shot.renderedHtml,
+        contentType: "text/html",
+        screenshot: shot,
+        // issue #425 — the render session's post-redirect URL, when the
+        // capture reported one (same contract as fetchRenderedHtml).
+        ...(shot.finalUrl ? { finalUrl: shot.finalUrl } : {}),
+        ...(shot.styleSamples ? { styleSamples: shot.styleSamples } : {}),
+      };
+    }
+
+    // Capture failed — content still crawls (render-then-static), and when
+    // the fallback render succeeds we keep its style samples: tokens
+    // without pixels beat no ground truth at all (mirrors the after-pass's
+    // "upload failed but tokens still written" behaviour).
     const rf = await fetchRenderedHtml(url, {
       screenshotter,
       allowedHosts,
       maxBytes: 2 * 1024 * 1024,
+      sampleStyles: true,
     });
     if (!rf.ok) {
       return { ok: false, html: "", contentType: rf.contentType ?? "fetch-error" };
@@ -604,7 +740,13 @@ function makeRenderedFetcher(
     if (new URL(rf.finalUrl).host !== new URL(url).host) {
       return { ok: false, html: "", contentType: "redirected-off-host" };
     }
-    return { ok: true, html: rf.html, contentType: "text/html", finalUrl: rf.finalUrl };
+    return {
+      ok: true,
+      html: rf.html,
+      contentType: "text/html",
+      finalUrl: rf.finalUrl,
+      ...(rf.styleSamples ? { styleSamples: rf.styleSamples } : {}),
+    };
   };
 }
 

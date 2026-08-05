@@ -51,6 +51,12 @@ export interface Screenshot {
    *  pageRef cache hold the rendered DOM so query_page_html's selectors run
    *  against it instead of the static fetched HTML. */
   readonly renderedHtml?: string;
+  /** issue #423 — `Content-Type` from the navigation response, so callers
+   *  using `capture` as their PRIMARY fetch (the crawl's capture-first
+   *  path) can gate non-HTML the same way `renderHtml` does. Undefined
+   *  when the response exposed no headers (callers treat that as HTML,
+   *  matching `fetchRenderedHtml`). */
+  readonly contentType?: string;
 }
 
 /**
@@ -241,12 +247,26 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     }
   }
 
+  /** Content-type from the navigation response so callers can gate
+   *  non-HTML (a PDF/image renders in a viewer, not usable HTML). Shared
+   *  by `capture` and `renderHtml`; best-effort — undefined means the
+   *  response exposed no headers. */
+  // biome-ignore lint/suspicious/noExplicitAny: Playwright response handle (dynamic import, no @types)
+  async function contentTypeOf(gotoResponse: any): Promise<string | undefined> {
+    try {
+      const headers = (await gotoResponse?.headers?.()) as Record<string, string> | undefined;
+      return headers?.["content-type"];
+    } catch {
+      return undefined;
+    }
+  }
+
   return {
     async capture(url, opts) {
       return withGuardedPage(
         url,
         { external: opts?.external, width: opts?.width, height: opts?.height },
-        async (page) => {
+        async (page, gotoResponse) => {
           const png = await page.screenshot({ fullPage: opts?.fullPage ?? true, type: "png" });
           // issue #247 — sample AFTER the screenshot so the pixels are
           // captured even if the evaluate throws mid-flight; the throw still
@@ -262,6 +282,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           const renderedHtml: string | undefined = opts?.captureHtml
             ? ((await page.content()) as string)
             : undefined;
+          const contentType = await contentTypeOf(gotoResponse);
           return {
             bytes: new Uint8Array(png),
             width: opts?.width ?? 1280,
@@ -269,6 +290,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             finalUrl: page.url() as string,
             ...(styleSamples ? { styleSamples } : {}),
             ...(renderedHtml !== undefined ? { renderedHtml } : {}),
+            ...(contentType !== undefined ? { contentType } : {}),
           };
         },
       );

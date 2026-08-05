@@ -192,8 +192,9 @@ export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportI
     "This QUEUES the proposal; the chat renders it as a card with an APPROVE button — tell the " +
     "operator to click Approve right there (the /security/import/pending page works too). The " +
     "crawler only runs after that click. DO NOT claim the crawl ran. After approval you receive " +
-    "an automatic 'Approved' message; the crawl runs in the BACKGROUND — check `imports.get` for " +
-    "status, and if it is still 'crawling', say so and continue when it is ready_for_review. " +
+    "an automatic 'Approved' message; the crawl runs in the BACKGROUND — check `list_import_pages({runId})` for " +
+    "status, and if it is still 'crawling', say so and continue when it is ready_for_review (it also " +
+    "lists every crawled page's importPageId for the rebuild). " +
     "Use this when the user asks to bring an existing site into Caelo. " +
     "TWO MODES — pick one, never both:\n" +
     "• LIST mode — pass `urls` (array of absolute URL strings): the crawl fetches EXACTLY those " +

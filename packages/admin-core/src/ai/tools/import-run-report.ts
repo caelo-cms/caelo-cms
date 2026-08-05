@@ -108,6 +108,8 @@ interface Report {
   skippedOutOfScope: number;
   crawlSkipped: { url: string; reason: string }[];
   pagesMissingScreenshot: number;
+  // issue #423 — visual-ground-truth ledger (see imports.get_run_report).
+  captureStats: { captured: number; failed: number; skipped: number };
   siteDesignTokens: unknown;
   boilerplate: {
     pagesAnalyzed?: number;
@@ -267,9 +269,16 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
             .map((s) => `${s.url} (${s.reason})`)
             .join("; ")}${v.crawlSkipped.length > 8 ? "; …" : ""}`
         : "",
-      // issue #247 — design ground truth status. Screenshot gaps are
-      // UNVERIFIED pages the operator must hear about; sampled tokens
-      // are what the model should base theme statements on.
+      // issue #247/#423 — design ground truth status. The capture ledger
+      // is always reported (n captured / n failed / n skipped — CLAUDE.md
+      // §2 no silent degradation); screenshot gaps are UNVERIFIED pages
+      // the operator must hear about; sampled tokens are what the model
+      // should base theme statements on.
+      `Visual capture: ${v.captureStats.captured} captured, ${v.captureStats.failed} failed, ${v.captureStats.skipped} skipped (source screenshots per page).${
+        v.captureStats.skipped > 0
+          ? " WARNING: skipped pages carry NO screenshot_missing note — that is silent degradation; tell the operator to file it as a bug."
+          : ""
+      }`,
       v.pagesMissingScreenshot > 0
         ? `WARNING: ${v.pagesMissingScreenshot} page(s) have NO stored source screenshot (see notes/screenshot_missing) — they are UNVERIFIED: nothing confirms their rebuild matches the original. Tell the operator plainly.`
         : "Source screenshots: every page has one.",

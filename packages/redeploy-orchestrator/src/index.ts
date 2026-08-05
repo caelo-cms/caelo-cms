@@ -21,6 +21,7 @@
  *   - DELETE FROM pow_challenges WHERE expires_at < now() - '1 hour'.
  */
 
+import { createHash } from "node:crypto";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import {
@@ -37,6 +38,12 @@ import {
 import { sql } from "drizzle-orm";
 import { parseCrawlScope } from "./crawl-scope.js";
 import { parseExplicitUrls } from "./explicit-urls.js";
+
+/** issue #423 — deterministic per-URL storage suffix so re-captures and
+ *  resume replays overwrite the same object instead of accumulating. */
+function urlKeyFragment(url: string): string {
+  return createHash("sha256").update(url).digest("hex").slice(0, 16);
+}
 
 /**
  * issue #191 — hostnames the importer's SSRF guard exempts. Set
@@ -408,6 +415,21 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       const crawlScope = parseCrawlScope(r.crawl_scope);
       const resumeFrom = parseCrawlCheckpoint(r.crawl_state);
       const claimedRunId = runId;
+      // issue #423 — crawl-time ground truth. The crawler streams each
+      // page's screenshot out the moment the page is accepted (PNG bytes
+      // never buffer across a batch); we upload immediately and remember
+      // only url → object key. A throwing sink lands in the run's error
+      // list via the crawler (loud), and the page stays keyless so the
+      // post-crawl pass below re-attempts + notes it.
+      const storage = cfg.screenshotStorage;
+      const screenshotKeyByUrl = new Map<string, string>();
+      const onPageCapture = storage
+        ? async ({ url, screenshot }: { url: string; screenshot: Screenshot }): Promise<void> => {
+            const key = `import-screenshots/${claimedRunId}/src-${urlKeyFragment(url)}.png`;
+            await storage.put(key, screenshot.bytes, "image/png");
+            screenshotKeyByUrl.set(url, key);
+          }
+        : undefined;
       const flushBatch = async (pages: CrawledPage[]): Promise<void> => {
         await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "imports.write_extracted_pages", {
           runId: claimedRunId,
@@ -433,6 +455,16 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
             commentsStripped: p.commentsStripped,
           })),
         });
+        // issue #423 — land the batch's visual ground truth (screenshot
+        // keys uploaded by onPageCapture + tokens derived from the SAME
+        // render session's style samples) right after the rows exist.
+        await persistBatchCapture({
+          runId: claimedRunId,
+          registry: cfg.registry,
+          adapter: cfg.adapter,
+          pages,
+          screenshotKeyByUrl,
+        });
       };
       const result = await crawlSite({
         sourceUrl,
@@ -453,6 +485,8 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         // frontier so a crash resumes instead of restarting.
         ...(resumeFrom ? { resumeFrom } : {}),
         onBatch: flushBatch,
+        // issue #423 — pixels stream out per page; see onPageCapture above.
+        ...(onPageCapture ? { onPageCapture } : {}),
         onCheckpoint: async (cp) => {
           await cfg.adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
             await tx.execute(sql`
@@ -463,19 +497,29 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           });
         },
       });
-      // issue #247 (WS1) — ground-truth pass, ALWAYS on. For every
-      // page we just staged: source screenshot + computed-style token
-      // sampling in one render session. The pre-#247
-      // CAELO_IMPORTER_SCREENSHOTS opt-in is gone: it silently produced
-      // runs with zero screenshots (findings ledger F9) and the AI later
-      // rebuilt pages blind. When capture cannot happen (no Playwright,
-      // dead page, no storage) every affected page gets a loud
-      // `screenshot_missing` note instead of a silent NULL.
+      // issue #247 (WS1) — ground-truth pass, ALWAYS on. issue #423 —
+      // now scoped to pages that STILL lack a stored screenshot after the
+      // crawl-time capture above (fetch-only crawls, resumed runs, pages
+      // whose capture failed mid-crawl): those get the retry-once →
+      // loud-note treatment (epic #252 ruling); pages already captured
+      // are skipped, so the happy path renders each page exactly once.
+      // When capture cannot happen at all (no Playwright, dead page, no
+      // storage) every affected page still gets a loud
+      // `screenshot_missing` note instead of a silent NULL (F9).
       await captureImportGroundTruth({
         runId,
         adapter: cfg.adapter,
         registry: cfg.registry,
+        onlyPagesMissingScreenshot: true,
         ...(cfg.screenshotStorage ? { screenshotStorage: cfg.screenshotStorage } : {}),
+      });
+      // issue #423 — run-level token aggregate from ALL pages' sampled
+      // tokens (crawl-time + after-pass), read back from the rows so
+      // neither pass clobbers the other's contribution.
+      await writeRunDesignTokenAggregate({
+        runId,
+        adapter: cfg.adapter,
+        registry: cfg.registry,
       });
       await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "imports.update_run_status", {
         runId,
@@ -563,6 +607,135 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
 }
 
 /**
+ * issue #423 — persist one crawl batch's visual ground truth: screenshot
+ * object keys (uploaded by the crawl's onPageCapture sink) + design
+ * tokens derived from the same render session's style samples, in ONE
+ * bulk op call. Pages with a stored screenshot but ZERO style samples get
+ * the loud `design_tokens_missing` note here, because the post-crawl
+ * ground-truth pass only touches keyless pages and would never see them.
+ *
+ * Exported for the integration tests to drive directly without standing
+ * up the polling orchestrator.
+ */
+export async function persistBatchCapture(args: {
+  readonly runId: string;
+  readonly adapter: DatabaseAdapter;
+  readonly registry: OperationRegistry;
+  readonly pages: readonly CrawledPage[];
+  /** url → uploaded screenshot object key (absent = no stored pixels). */
+  readonly screenshotKeyByUrl: ReadonlyMap<string, string>;
+}): Promise<void> {
+  const captures = args.pages.flatMap((p) => {
+    const key = args.screenshotKeyByUrl.get(p.url);
+    const tokens =
+      p.styleSamples && p.styleSamples.length > 0 ? deriveDesignTokens(p.styleSamples) : null;
+    if (!key && !tokens) return [];
+    return [
+      {
+        sourceUrl: p.url,
+        ...(key ? { screenshotObjectKey: key } : {}),
+        ...(tokens ? { sampledDesignTokens: tokens } : {}),
+      },
+    ];
+  });
+  if (captures.length === 0) return;
+
+  const wrote = await execute(
+    args.registry,
+    args.adapter,
+    SYSTEM_CTX,
+    "imports.set_page_captures_by_url",
+    { runId: args.runId, captures },
+  );
+  if (!wrote.ok) {
+    // System-scoped op fed by our own crawl output — a rejection is a real
+    // bug (schema drift), not an environment quirk (no-fallbacks pre-1.0).
+    throw new Error(`imports.set_page_captures_by_url rejected: ${JSON.stringify(wrote.error)}`);
+  }
+  const w = wrote.value as {
+    updated: Array<{ importPageId: string; sourceUrl: string }>;
+    unmatched: string[];
+  };
+  if (w.unmatched.length > 0) {
+    // The batch's rows were written by write_extracted_pages moments ago
+    // (ON CONFLICT keeps replayed rows), so an unmatched URL means the
+    // linkage is broken — fail the run loudly rather than staging pages
+    // whose ground truth silently went nowhere.
+    throw new Error(
+      `imports.set_page_captures_by_url matched no import_pages row for: ${w.unmatched.join(", ")}`,
+    );
+  }
+
+  // Loud design_tokens_missing markers for captured-but-sampleless pages
+  // (same wording as the ground-truth pass). Note-write failures log
+  // instead of throwing — a lost note must not mask the batch's data.
+  const idByUrl = new Map(w.updated.map((u) => [u.sourceUrl, u.importPageId]));
+  for (const p of args.pages) {
+    if (!args.screenshotKeyByUrl.has(p.url)) continue; // keyless → after-pass owns notes
+    if (p.styleSamples && p.styleSamples.length > 0) continue;
+    const importPageId = idByUrl.get(p.url);
+    if (!importPageId) continue;
+    const noted = await execute(args.registry, args.adapter, SYSTEM_CTX, "imports.add_page_notes", {
+      importPageId,
+      notes: [
+        {
+          category: "design_tokens_missing",
+          note:
+            "Rendered page returned zero computed-style samples — no design tokens for this page. " +
+            "Theme decisions fall back to the run's other pages / extractor tokens.",
+          applied: false,
+        },
+      ],
+    }).catch((e) => ({ ok: false as const, error: e }));
+    if (!noted.ok) {
+      console.error(
+        `[redeploy-orchestrator] failed to record design_tokens_missing note on import_page ${importPageId}:`,
+        noted.error,
+      );
+    }
+  }
+}
+
+/**
+ * issue #423 — write the run-level design-token aggregate from EVERY
+ * page's stored `sampled_design_tokens` (crawl-time captures + the
+ * post-crawl pass), so neither pass clobbers the other's contribution.
+ * No tokens anywhere = nothing written; the run report then says loudly
+ * that theme values came from the extractor only.
+ *
+ * Exported for the integration tests to drive directly.
+ */
+export async function writeRunDesignTokenAggregate(args: {
+  readonly runId: string;
+  readonly adapter: DatabaseAdapter;
+  readonly registry: OperationRegistry;
+}): Promise<void> {
+  const g = await execute(args.registry, args.adapter, SYSTEM_CTX, "imports.get", {
+    runId: args.runId,
+  });
+  if (!g.ok) {
+    throw new Error(`imports.get rejected while aggregating tokens: ${JSON.stringify(g.error)}`);
+  }
+  const pages = (g.value as { pages: Array<{ sampledDesignTokens: unknown }> }).pages;
+  // Rows were written through pageDesignTokensSchema-validated ops, so the
+  // cast back is sound; junk would have been rejected at write time.
+  const pageTokens = pages
+    .map((p) => p.sampledDesignTokens)
+    .filter((t): t is PageDesignTokens => t !== null && typeof t === "object");
+  if (pageTokens.length === 0) return;
+  const wrote = await execute(
+    args.registry,
+    args.adapter,
+    SYSTEM_CTX,
+    "imports.set_run_design_tokens",
+    { runId: args.runId, siteDesignTokens: aggregateSiteDesignTokens(pageTokens) },
+  );
+  if (!wrote.ok) {
+    throw new Error(`imports.set_run_design_tokens rejected: ${JSON.stringify(wrote.error)}`);
+  }
+}
+
+/**
  * issue #247 (WS1) — design ground truth for every import_pages row in
  * `runId`: ONE Playwright render session per source page produces the
  * source screenshot AND the computed-style token samples. Per-page
@@ -577,6 +750,15 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
  * so downstream verification treats it as UNVERIFIED. There is no code
  * path that skips capture wholesale without notes.
  *
+ * issue #423 — the crawl itself now captures in the same session that
+ * renders each page, so the orchestrator calls this with
+ * `onlyPagesMissingScreenshot: true`: a second-chance + fallback pass
+ * (fetch-only crawls, resumed runs, mid-crawl capture failures) instead
+ * of a whole-run re-render. In that mode the run-level token aggregate is
+ * NOT written here — the caller aggregates from row state afterwards
+ * (`writeRunDesignTokenAggregate`), so the scoped pass cannot clobber the
+ * crawl-time captures' contribution.
+ *
  * Exported for the integration tests to drive directly without standing
  * up the polling orchestrator.
  */
@@ -586,6 +768,9 @@ export async function captureImportGroundTruth(args: {
   readonly registry: OperationRegistry;
   /** Optional override for tests; defaults to Playwright via dynamic import. */
   readonly screenshotter?: Screenshotter | null;
+  /** issue #423 — capture only pages whose screenshot_object_key is still
+   *  NULL (and skip the run-level aggregate write; see above). */
+  readonly onlyPagesMissingScreenshot?: boolean;
   /** issue #198 — when present, the source screenshot is uploaded and its
    *  key lands on the import_pages row. */
   readonly screenshotStorage?: {
@@ -622,10 +807,31 @@ export async function captureImportGroundTruth(args: {
   const get = await execute(args.registry, args.adapter, SYSTEM_CTX, "imports.get", {
     runId: args.runId,
   });
-  if (!get.ok) return { captured: 0, failed: 0 };
-  const v = get.value as {
-    pages: Array<{ id: string; sourceUrl: string; proposedSlug: string }>;
-  };
+  if (!get.ok) {
+    // issue #423 — this used to return {0,0} silently, which is exactly
+    // the "run looks done with zero ground truth" failure class this
+    // whole pass exists to prevent. A system op rejecting its own run id
+    // is schema drift — fail the run loudly (no-fallbacks pre-1.0).
+    throw new Error(`imports.get rejected in ground-truth pass: ${JSON.stringify(get.error)}`);
+  }
+  const all = (
+    get.value as {
+      pages: Array<{
+        id: string;
+        sourceUrl: string;
+        proposedSlug: string;
+        screenshotObjectKey: string | null;
+      }>;
+    }
+  ).pages;
+  // issue #423 — scoped mode: pages captured during the crawl are done;
+  // only the still-keyless ones get the retry + loud-note treatment.
+  const targets = args.onlyPagesMissingScreenshot
+    ? all.filter((p) => p.screenshotObjectKey === null)
+    : all;
+  const v = { pages: targets };
+  // Nothing to do → do not launch a browser for it.
+  if (v.pages.length === 0) return { captured: 0, failed: 0 };
 
   const screenshotter =
     args.screenshotter !== undefined
@@ -735,6 +941,11 @@ export async function captureImportGroundTruth(args: {
   // Run-level aggregate — what the theme proposal consumes. Written
   // even for partial captures: N sampled pages beat zero ground truth,
   // and pageCount tells the AI how much of the site it represents.
+  // issue #423 — SKIPPED in scoped mode: this pass then saw only the
+  // pages that were still keyless, and an aggregate over that subset
+  // would clobber the crawl-time captures' contribution. The caller
+  // aggregates from row state instead (writeRunDesignTokenAggregate).
+  if (args.onlyPagesMissingScreenshot) return { captured, failed };
   if (pageTokens.length > 0) {
     const wrote = await execute(
       args.registry,
