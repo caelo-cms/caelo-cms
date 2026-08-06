@@ -23,7 +23,14 @@
  * verifies against the dev key, the plugin dir is left untouched.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
   canonicalManifestBytes,
@@ -80,6 +87,15 @@ export interface DevSignReport {
  * `dist/index.js`. Returns the dev public key hex the caller passes to
  * `bootstrap({ publicKeyHex })` so verification uses the matching root.
  */
+
+/** Write via a same-directory temp file + rename — atomic on POSIX, so a
+ *  concurrently booting process never observes a torn file. */
+function atomicWrite(path: string, content: string): void {
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, content);
+  renameSync(tmp, path);
+}
+
 export async function ensureDevSignedManifests(opts: {
   pluginsRoot: string;
   keyPath: string;
@@ -155,15 +171,19 @@ export async function ensureDevSignedManifests(opts: {
         manifest,
         privateKeyHex: devKey.privateKeyHex,
       });
-      writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-      writeFileSync(sigPath, `${signatureHex}\n`);
+      // Atomic replace (write temp + rename): admin and api-gateway boot
+      // concurrently in compose and both re-sign stale manifests — a plain
+      // write lets one process read the other's half-written file (the
+      // check-then-write race CodeQL flags here).
+      atomicWrite(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      atomicWrite(sigPath, `${signatureHex}\n`);
       reports.push({ slug: manifest.slug, status: "signed" });
     } catch (e) {
       reports.push({ slug: entry, status: "failed", reason: (e as Error).message });
     }
   }
 
-  writeFileSync(resolvePath(opts.pluginsRoot, TRUST_ROOT_FILENAME), `${devKey.publicKeyHex}\n`);
+  atomicWrite(resolvePath(opts.pluginsRoot, TRUST_ROOT_FILENAME), `${devKey.publicKeyHex}\n`);
 
   return { publicKeyHex: devKey.publicKeyHex, reports };
 }

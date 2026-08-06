@@ -39,7 +39,12 @@ export default defineConfig({
     // an explicit value SvelteKit's cross-site Origin check 403s every form
     // POST (login, setup, role creation). Behind a real reverse proxy this is
     // the public URL; for the smoke server it's the loopback baseURL.
-    command: "bun run build && PORT=4173 ORIGIN=http://localhost:4173 bun run build/index.js",
+    // #400 — the disk loader needs every release-signed plugin's dist/
+    // at boot; CI checkouts have none (locally they exist as tsc side
+    // effects, which is how this went unnoticed until the first plugin
+    // E2E). Build them before the admin build.
+    command:
+      "bun run plugins:build && bun run build && PORT=4173 ORIGIN=http://localhost:4173 bun run build/index.js",
     url: "http://localhost:4173",
     reuseExistingServer: !process.env.CI,
     // Cold builds on first run can take longer than 120s when node_modules has

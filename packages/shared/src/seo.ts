@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { trimSlashes } from "./url.js";
 
 export const CHANGEFREQ_VALUES = [
   "always",
@@ -127,8 +128,8 @@ export function resolveCanonicalUrl(args: {
   pageUrlStyle?: "directory" | "no-extension";
 }): string {
   if (args.override && args.override.length > 0) return args.override;
-  const base = args.siteBaseUrl.replace(/\/$/, "");
-  const trimmed = args.pagePath.replace(/^\/+|\/+$/g, "");
+  const base = args.siteBaseUrl.endsWith("/") ? args.siteBaseUrl.slice(0, -1) : args.siteBaseUrl;
+  const trimmed = trimSlashes(args.pagePath);
   if (trimmed.length === 0) return `${base}/`;
   const style = args.pageUrlStyle ?? "directory";
   return style === "no-extension" ? `${base}/${trimmed}` : `${base}/${trimmed}/`;

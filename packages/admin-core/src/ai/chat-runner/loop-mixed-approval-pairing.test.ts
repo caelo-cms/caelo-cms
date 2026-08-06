@@ -28,7 +28,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider, ProviderEvent } from "../provider.js";
+import type { AIProvider } from "../provider.js";
 import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";

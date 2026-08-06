@@ -11,20 +11,14 @@
     {
       "slug": "doc-page",
       "displayName": "Documentation page",
-      "blocks": [
-        "content"
-      ],
+      "blocks": ["content"],
       "html": "<article class=\"prose\"><caelo-slot name=\"content\"></caelo-slot></article>",
       "css": ".prose { max-width: 72ch; margin: 2rem auto; padding: 0 1.5rem; }"
     },
     {
       "slug": "landing",
       "displayName": "Landing page",
-      "blocks": [
-        "hero",
-        "content",
-        "cta"
-      ],
+      "blocks": ["hero", "content", "cta"],
       "html": "<main><caelo-slot name=\"hero\"></caelo-slot><caelo-slot name=\"content\"></caelo-slot><caelo-slot name=\"cta\"></caelo-slot></main>",
       "css": ""
     }

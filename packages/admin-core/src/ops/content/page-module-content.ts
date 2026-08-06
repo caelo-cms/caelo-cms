@@ -320,7 +320,7 @@ export const setPageModuleContentManyOp = defineOperation({
 
 /**
  * #397 — every placement of a page with its EFFECTIVE content values
- * (from the bound content_instance) + module slug, in render order.
+ * (from the bound content_instance) + module slug, ordered by (blockName, position) — deterministic and identical to the preview composer's per-block ordering, though template/layout slot layout decides actual on-page visual order.
  * The read surface the international-site translator builds its
  * whole-page prompt from; open to plugin actors like the other reads.
  */

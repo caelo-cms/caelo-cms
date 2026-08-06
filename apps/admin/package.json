@@ -12,9 +12,10 @@
     "preview": "bun --bun vite preview",
     "seed:dev": "bun --env-file=../../.env run scripts/seed-dev-owner.ts",
     "e2e": "playwright test",
-    "e2e-livedit": "svelte-kit sync && bun --bun vite build && playwright test --config playwright.livedit.config.ts",
-    "e2e-livedit:headed": "svelte-kit sync && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed",
-    "e2e-livedit:debug": "svelte-kit sync && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed --debug --workers=1"
+    "e2e-livedit": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts",
+    "e2e-livedit:headed": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed",
+    "e2e-livedit:debug": "svelte-kit sync && bun run plugins:build && bun --bun vite build && playwright test --config playwright.livedit.config.ts --headed --debug --workers=1",
+    "plugins:build": "tsc -b --force ../../packages/plugins/forms ../../packages/plugins/comments ../../packages/plugins/newsletter ../../packages/plugins/ratings ../../packages/plugins/auth ../../packages/plugins/international-site"
   },
   "dependencies": {
     "@caelo-cms/admin-core": "workspace:*",

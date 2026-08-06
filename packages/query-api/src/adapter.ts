@@ -272,7 +272,7 @@ export class DatabaseAdapter {
     if (!this.#skipVerify) await this.verifyRoles();
     await this.#public.transaction(async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
-      await tx.execute(sql.raw(`SELECT set_config('caelo.plugin_id', '${opts.pluginId}', true)`));
+      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${opts.pluginId}, true)`);
       // The emitted SQL is constructed entirely from validated identifiers
       // (slug regex `^[a-z][a-z0-9-]*$`, table names regex `^[a-z_][a-z0-9_]*$`)
       // and the plugin id is a UUID column from cms_admin.plugins, never user-provided

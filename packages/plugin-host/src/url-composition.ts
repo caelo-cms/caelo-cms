@@ -29,6 +29,7 @@
  */
 
 import type { UrlComposePage, UrlContributionDef, UrlSlot } from "@caelo-cms/plugin-sdk";
+import { trimSlashes } from "@caelo-cms/shared";
 import type { PluginHostInfra } from "./dispatch.js";
 import { isPluginDisabled, runPluginOperation } from "./dispatch.js";
 
@@ -202,7 +203,7 @@ export interface DecodedPagePath {
  * throws instead of guessing.
  */
 export function decodePagePath(path: string): DecodedPagePath {
-  const trimmed = path.replace(/^\/+|\/+$/g, "");
+  const trimmed = trimSlashes(path);
 
   const full = urlContributionsRegistry.bySlot("full-path");
   if (full && full.contribution.slot === "full-path") {
