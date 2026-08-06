@@ -1,7 +1,6 @@
 ---
 slug: admin-live-edit
 template: doc-page
-locale: en
 status: published
 seo:
   title: Live-edit overlay — Caelo CMS

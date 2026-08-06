@@ -1,18 +1,17 @@
 ---
 slug: home
 template: landing
-locale: en
 status: published
 seo:
   title: Caelo CMS — AI-first, open-source CMS
-  description: Talk to your site. The AI agent edits modules, drafts pages, translates copy. You review, you publish. MPL 2.0. Self-hostable.
+  description: Talk to your site. The AI agent edits modules, drafts pages, optimises SEO. You review, you publish. MPL 2.0. Self-hostable.
   ogTitle: Caelo CMS
   ogDescription: AI-first, open-source CMS. MPL 2.0. Self-hostable on a single VM or one-click deploy to GCP / AWS / Azure.
 ---
 
 ::: hero
 # Talk to your site.
-The AI edits modules, drafts pages, translates copy, moderates comments. **You review, you publish.** Every action is a snapshot you can revert with one click.
+The AI edits modules, drafts pages, optimises SEO, moderates comments. **You review, you publish.** Every action is a snapshot you can revert with one click.
 
 [Quickstart →](/quickstart) · [GitHub →](https://github.com/caelo-cms/caelo-cms)
 :::

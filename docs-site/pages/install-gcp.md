@@ -1,7 +1,6 @@
 ---
 slug: install-gcp
 template: doc-page
-locale: en
 status: published
 seo:
   title: Install on Google Cloud — Caelo CMS

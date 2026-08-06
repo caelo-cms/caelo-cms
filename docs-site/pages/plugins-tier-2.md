@@ -1,7 +1,6 @@
 ---
 slug: plugins-tier-2
 template: doc-page
-locale: en
 status: published
 seo:
   title: Tier 2 plugins — Caelo CMS
@@ -56,11 +55,11 @@ ctx.api.list(table, filter) → row[]   // visitor-side public read
 ctx.api.get(table, id) → row | null
 
 ctx.theme.tokens                       // read-only CSS vars
-ctx.theme.locale
+ctx.theme.tokens
 
 ctx.visitor.id                         // visitor cookie id
 ctx.visitor.publicUserId               // when logged in via auth plugin
-ctx.visitor.locale
+ctx.visitor.id
 ctx.visitor.sessionToken
 ctx.visitor.setSession({...})          // mutator (auth plugin uses)
 
@@ -112,7 +111,6 @@ Validation failures return structured errors the AI can auto-fix and re-submit:
 Every table in `manifest.schema`:
 
 - Must declare `id: 'uuid'` (primary key)
-- If it declares `page_id: 'string'`, **must also declare `locale: 'string'`** (per-page data is locale-aware by default; visitor sees the right locale's data via the `locale` filter)
 - Cannot redeclare `caelo_plugin_id` (the host adds it for the RLS policy)
 
 The validator runs schema rules before the SQL emitter; bad shapes fail at submit time with a clear error.

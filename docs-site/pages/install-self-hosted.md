@@ -1,7 +1,6 @@
 ---
 slug: install-self-hosted
 template: doc-page
-locale: en
 status: published
 seo:
   title: Install — self-hosted — Caelo CMS

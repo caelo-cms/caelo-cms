@@ -58,7 +58,6 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 | `mcp_tokens` | `propose_create`, `propose_revoke` | `settings.write` |
 | `templates` | `propose_update`, `propose_delete` | `content.write` |
 | `domains` | `propose_add`, `propose_remove` | `settings.write` |
-| `locales` | `propose_create`, `_delete`, `_set_default`, `_update_strategy` | `settings.write` |
 | `gateway` | `propose_rate_limit` | `settings.write` |
 | `themes` (v0.11.0, #45; create reshaped by #112 — see [themes.md](./themes.md)) | `propose_create`, `propose_activate`, `propose_delete` | `roles.manage` |
 

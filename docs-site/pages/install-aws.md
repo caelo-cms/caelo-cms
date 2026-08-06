@@ -1,7 +1,6 @@
 ---
 slug: install-aws
 template: doc-page
-locale: en
 status: published
 seo:
   title: Install on AWS — Caelo CMS

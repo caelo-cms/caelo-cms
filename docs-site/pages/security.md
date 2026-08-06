@@ -1,7 +1,6 @@
 ---
 slug: security
 template: doc-page
-locale: en
 status: published
 seo:
   title: Security policy — Caelo CMS

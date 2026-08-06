@@ -1,7 +1,6 @@
 ---
 slug: architecture
 template: doc-page
-locale: en
 status: published
 seo:
   title: Architecture — Caelo CMS
@@ -14,7 +13,7 @@ This page is the public version of `ARCHITECTURE.md` from the source repo — th
 
 ## The four anchors
 
-1. **Layered permission model** — Module / Template / Page / Layout / Content / SEO / Redirect / Plugin / Skill / Media / i18n / Security / Deployment. Each layer constrains what the AI can do without your click.
+1. **Layered permission model** — Module / Template / Page / Layout / Content / SEO / Redirect / Plugin / Skill / Media / Security / Deployment (i18n is plugin-provided since the plugin-system-v2 cleanup). Each layer constrains what the AI can do without your click.
 2. **Two-database split** — `cms_admin` (authoring) + `cms_public` (visitor + plugin data) with two isolated Postgres roles. **Row-Level Security forced on every table both ways.**
 3. **Module / snapshot architecture** — pages assemble modules by *live reference*, not by raw HTML. Every Query API write emits a snapshot. Reverting one click in chat restores the page.
 4. **Two-tier plugin host** — Tier 1 plugins ship with core (signed, in-process, full SDK). Tier 2 plugins are AI-authored at runtime and run in a Deno subprocess with `--no-read --no-write --no-net` and access to ONLY their own `cms_public.<slug>` schema.
@@ -35,7 +34,7 @@ Postgres
   └ cms_public (public_role + per-plugin scope) ← plugin data, visitor sessions
 
 Plugin host (packages/plugin-host)              ← bootstraps Tier 1 in-process
-  ├ Tier 1 plugins (signed, in-process)         ← translation, forms, comments, ...
+  ├ Tier 1 plugins (signed, in-process)         ← forms, comments, newsletter, ...
   └ Tier 2 plugins (Deno subprocess, sandboxed) ← AI-authored at runtime
 
 Static generator (apps/static-generator)        ← runs at deploy; emits dist/

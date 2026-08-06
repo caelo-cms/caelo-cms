@@ -23,7 +23,7 @@ An open-source, AI-first Content Management System that enables users to design,
 - Generate clean, static HTML at deployment for maximum SEO and LLM discoverability
 - Pre-render plugin data (comments, ratings, etc.) into static HTML at deploy time — only fetch deltas live
 - Support multiple AI providers interchangeably (Claude, Google, OpenAI, custom/local models)
-- Support full i18n with language and country/language targeting, mixed URL strategies, AI-assisted translation
+- Support full i18n — language and country/language targeting, mixed URL strategies, AI-assisted translation — via the first-party `international-site` plugin on a locale-agnostic core (§7)
 - Be simple to set up — one-click provisioning on AWS, GCP, Azure, or self-hosted
 - Be fully open source (MPL 2.0) and avoid vendor lock-in
 - Let the AI grow with the site through a Claude-style Skills system — named, versioned, revertible AI behaviours the AI itself can author, with human Owner confirmation for activation
@@ -47,7 +47,7 @@ An open-source, AI-first Content Management System that enables users to design,
 | Plugin Layer | SDK-only, submit-for-activation | AI builds plugins using Plugin SDK only — no direct DB or SQL access; activation always requires human Owner confirmation |
 | Skill Layer | Author + propose | AI can draft/update skills and submit behaviour-learned proposals; activation of new skills requires human Owner confirmation |
 | Media Layer | Upload + reference | AI can upload to media library and reference assets — no direct storage access |
-| i18n Layer | Structured translation | AI can create and update locale variants via translation modes — no structural changes between locales; cannot modify locale/URL-strategy config |
+| i18n Layer | Structured translation (plugin-provided, §7) | Provided by the `international-site` plugin. AI can create and update language variants via translation modes — no structural changes between variants; locale/URL-strategy config is §11.A-gated |
 | Security Layer | None | Authentication, user management, access control, custom roles, AI provider config — no AI access |
 | Deployment Layer | Trigger-only | AI can request a deploy via admin panel — cannot modify deployment logic, scripts, or targets |
 
@@ -112,7 +112,7 @@ Site snapshot #42
 - Media library: browse, upload, manage assets; **usage tracking + optional deploy-time CDN copy** toggle
 - Redirect manager: create, edit, delete URL redirects
 - SEO manager: per-page meta titles, descriptions, Open Graph tags — AI fills once before first publish and never silently overwrites afterwards; a dedicated "Optimize SEO" AI action takes user-supplied context (e.g. keyword analysis) and proposes changes across one or many pages with preview + confirm
-- Translation dashboard: per-page, per-locale status — **one primary "Bring up to date" button per row** (dispatches to Mode 1 or Mode 2 based on status), plus a single top-level "Auto-translate everything stale" for bulk. Granular controls in an Advanced actions drawer
+- Translation dashboard (provided by the `international-site` plugin, §7): per-page, per-locale status — **one primary "Bring up to date" button per row** (dispatches to Mode 1 or Mode 2 based on status), plus a single top-level "Auto-translate everything stale" for bulk. Granular controls in an Advanced actions drawer
 - AI usage dashboard: token usage and estimated cost per provider over time, with independent text / image series
 - Form submissions and plugin data viewable in admin — AI can summarize and analyze on request (via the `summarize-plugin-data` skill → `analyze_plugin_data` tool with per-plugin field redaction)
 - **Per-site AI memory panel (Owner-only):** brand voice, tone, banned phrases, recurring instructions — prepended to every AI call across sessions
@@ -152,13 +152,13 @@ Site snapshot #42
 ## 6. Deployment & Hosting
 
 At deploy time the static generator:
-- Renders one HTML file per page per locale
+- Renders one HTML file per page (slug-only paths; plugins reshape URLs via the §7.1 URL composition point)
 - Fetches all approved plugin data from cms_public and bakes it into HTML as plain static markup
 - Injects a `since` timestamp into Web Components — components only fetch delta data after this point
 - Generates redirect files in provider-appropriate format from the redirects table
-- Generates locale-aware sitemap.xml with hreflang entries for all published locale variants
+- Generates sitemap.xml from all published pages; hreflang entries and per-language sitemap additions arrive via the §7.1 head/sitemap contribution points
 - Generates robots.txt from admin settings (staging always noindexed by default)
-- Uploads all static files to provider-appropriate hosting, respecting per-locale URL strategy
+- Uploads all static files to provider-appropriate hosting, respecting the composed URL shape
 
 ### 6.1 Static + Delta Pattern
 
@@ -198,163 +198,86 @@ Auto-redeploy is optional — configurable toggle in admin settings.
 
 ## 7. Internationalisation (i18n)
 
-### 7.1 Locale Targeting
+> **Status (epic #380, v0.12):** i18n is **not a core capability**. The former core
+> implementation — locale registry, per-locale URL strategies, translation modes, hreflang
+> emitter, language-selector set — was removed in the v0.12 plugin-system cleanup
+> (#381–#385). It returns as the first-party **`international-site` plugin** built on the
+> §14 composition-point SDK. This section therefore specifies two things: the small set of
+> locale-agnostic **core guarantees** the plugin builds on, and the **behavioural
+> requirements** the plugin must satisfy. The behavioural bar is unchanged from v1.x —
+> what moved is who implements it.
 
-Two levels of targeting supported, both can coexist in the same site:
+### 7.1 Core guarantees (what the kernel provides)
 
-| Type | Code examples | Use case |
-|---|---|---|
-| Language only | `en`, `de`, `fr` | Single market, one variant per language |
-| Country + language | `en-US`, `en-GB`, `de-DE`, `de-AT` | Different content for same language in different markets |
+Core is locale-agnostic. It ships exactly the primitives an i18n plugin composes:
 
-### 7.2 URL Strategy
+- **Global-slug page identity.** A page is identified by its slug alone (unique per
+  branch); core has no locale column. Language variants of a page are plugin data — the
+  plugin groups pages into variant sets in its own schema (§14).
+- **Homepage designation in `site_defaults.home_page_id`.** One designated site root; the
+  static generator, preview composer, and SEO pass all resolve the root from this single
+  pointer.
+- **URL composition point** (§14). Plugins contribute declarative, typed URL-shape
+  contributions (e.g. a `/de/` path prefix). Core owns the single resolver; slot conflicts
+  between plugins fail at activation, never silently at runtime. Any contribution-set
+  change (activate / deactivate / reconfigure) is a **migration event**: core materialises
+  `pages.current_path`, diffs old vs new URLs, and routes the change through a §11.A
+  proposal with blast-radius preview and redirect fan-out — the diff works even after the
+  causing plugin is gone.
+- **Head + sitemap contribution points** (§14). hreflang link tags and per-language
+  sitemap entries are plugin contributions composed by core at deploy time.
+- **Generic redirect engine** (§8). Source path → destination path, no locale awareness;
+  the plugin creates redirect rows through the same Query API ops as every other actor.
 
-Each locale is configured independently — different locales on the same site can use different URL patterns:
+### 7.2 Plugin requirements (behavioural bar for `international-site`)
 
-| Strategy | Example | Notes |
-|---|---|---|
-| No prefix (default locale) | `site.com/about` | Default locale served without prefix |
-| Subdirectory | `site.com/de/about` | Recommended default — clean, SEO-friendly |
-| Subdomain | `de.site.com/about` | Supported — provisioning handles SSL automatically |
-| Separate domain | `site.de/about` | Supported — separate deployment per domain |
+These requirements bound the plugin, not core. They are the acceptance criteria the v1.x
+spec demanded of core i18n and remain non-negotiable:
 
-**Default behaviour:** the site-wide default is subdirectory (with the default locale on no-prefix). Subdomain and separate-domain strategies are gated behind an explicit **"Advanced URL routing"** toggle in the security control panel, surfaced with their SSL, CDN, and hreflang implications. A linter flags ambiguous or mixed configurations. Mixed strategies remain fully supported when the toggle is on — a single site can use subdirectory for some locales and separate domains for others. The provisioning layer handles SSL and CDN configuration per locale automatically.
+- **Locale targeting** — language-only (`en`, `de`) and language + country (`de-AT`,
+  `en-GB`) variants, coexisting on one site.
+- **URL strategy per locale** — subdirectory is the recommended default (`site.com/de/…`),
+  with the default locale served bare (no prefix). Subdomain and separate-domain
+  strategies are advanced options that must surface their SSL/CDN/hreflang implications
+  before activation. Mixed configurations are allowed but linted.
+- **hreflang** — generated across all published language variants of a page with absolute
+  URLs respecting the active URL strategy; only locales with a published variant appear.
+- **Missing translations = clean 404, never a fallback.** No file is emitted for an
+  unpublished variant URL, the URL stays out of that locale’s sitemap, and there are no
+  `noindex` placeholder pages. Google must never find untranslated content under a locale
+  URL. (This is the §2-invariant "no fallbacks" applied to i18n — it survives the move
+  into the plugin unchanged.)
+- **Context-aware translation — never sentence-by-sentence.** New translations (Mode 1)
+  receive the full source page, target-locale context, site glossary, and tone guide.
+  Updates (Mode 2) receive the full current source, the full existing translation, and a
+  structured block-level diff of what changed — only changed blocks are retranslated, so
+  existing translation quality is preserved.
+- **Translation-status visibility** — hash-based staleness tracking (source change flags
+  dependent variants as needing update) surfaced per page × locale, with bulk
+  "bring up to date" actions.
+- **Linking between variants** — the plugin maintains the variant grouping and exposes it
+  to the AI (which page is the `de` counterpart of `/about`) and to the language-selector
+  surface it renders.
+- **Review-gated publication** — AI translations go through the standard preview →
+  confirm → snapshot path and are fully revertible.
+- **Retrofit as a migration** — activating the plugin on an existing single-language site
+  moves URLs through the §11.A proposal + redirect fan-out described in §7.1; no page may
+  silently change its URL.
 
-Example mixed configuration:
-```
-en        → site.com/about          (default, no prefix)
-de        → site.com/de/about       (subdirectory)
-de-AT     → at.site.com/about       (subdomain)
-fr        → site.fr/about           (separate domain)
-en-GB     → site.co.uk/about        (separate domain)
-```
+### 7.3 AI boundaries in i18n
 
-### 7.3 hreflang Generation
-
-hreflang tags are automatically generated at deploy time across all locale variants of every page, using absolute URLs respecting the mixed URL strategy:
-
-```html
-<link rel="alternate" hreflang="en"      href="https://site.com/about" />
-<link rel="alternate" hreflang="de"      href="https://site.com/de/about" />
-<link rel="alternate" hreflang="de-AT"   href="https://at.site.com/about" />
-<link rel="alternate" hreflang="fr"      href="https://site.fr/about" />
-<link rel="alternate" hreflang="en-GB"   href="https://site.co.uk/about" />
-<link rel="alternate" hreflang="x-default" href="https://site.com/about" />
-```
-
-Only locales with a published translation for that page are included in hreflang tags.
-
-### 7.4 Missing Translations — 404
-
-If a locale variant of a page does not exist or is not published:
-- The static generator outputs no file for that URL — clean 404, no fallback to another locale
-- The URL is excluded from the sitemap for that locale
-- No `noindex` fallback pages — missing translations simply do not exist as URLs
-
-This is correct SEO behavior — Google should never find untranslated content under a locale URL.
-
-### 7.5 Content Structure
-
-Each page in cms_admin has a `locale` field and a `slug`. The combination is unique:
-
-```
-page_id | slug    | locale | content_hash | last_changed_at | translated_from_hash | translation_status
---------|---------|--------|-------------|-----------------|---------------------|-------------------
-1       | about   | en     | abc123      | 2026-04-11      | —                   | source
-2       | about   | de     | —           | 2026-04-10      | abc123              | up_to_date
-3       | about   | de-AT  | —           | 2026-03-01      | xyz789              | needs_update
-4       | about   | fr     | —           | —               | —                   | not_started
-```
-
-**Translation status fields:**
-- `content_hash` — hash of the current source content (set on source page only)
-- `last_changed_at` — timestamp of the last content change on source
-- `translated_from_hash` — the source hash this translation was based on
-- `translation_status` — `enum: source, up_to_date, needs_update, not_started`
-
-When the source page changes, the system compares hashes. Any locale variant whose `translated_from_hash` no longer matches the current source `content_hash` is automatically flagged as `needs_update`.
-
-### 7.6 AI Translation — Two Modes
-
-**Mode 1 — New Translation**
-
-Source page has no variant in the target locale yet. AI receives:
-- Full source page content (all structured blocks)
-- Target locale and country-specific context if applicable
-- Site glossary (consistent terminology across the site) if defined
-- Tone and style guide if defined
-
-**Mode 2 — Update Translation**
-
-Source page changed, existing translation needs updating. AI receives:
-- Full current source article
-- Full existing translation (complete context, not just the diff)
-- Structured diff of exactly what changed at the content block level:
-
-```typescript
-{
-  mode: "update",
-  source_current: "Full updated source article...",
-  translation_existing: "Full existing translation...",
-  diff: [
-    { type: "changed", section: "intro",        before: "old intro text",    after: "new intro text" },
-    { type: "added",   section: "pricing",      content: "new pricing paragraph" },
-    { type: "removed", section: "beta-notice",  content: "removed beta warning" }
-  ],
-  locale: "de-AT",
-  context: "Austrian market, formal tone",
-  glossary: { "CMS": "CMS", "plugin": "Plugin" }
-}
-```
-
-The diff is generated at the structured content block level — not raw character diffs — giving the AI clean, meaningful context. Only changed blocks are updated; the existing translation quality is preserved for unchanged sections.
-
-### 7.7 Translation Workflow in Admin
-
-The translation dashboard shows per-page, per-locale status:
-
-```
-Page: /about
-├── en (source)     ✓ up to date
-├── de              ✓ up to date
-├── de-AT           ⚠ needs update  (3 sections changed)
-├── fr              ○ not started
-└── en-GB           ⚠ needs update  (1 section changed)
-
-[ Translate fr ]  [ Update de-AT ]  [ Update en-GB ]  [ Auto-translate all ]
-```
-
-Available actions:
-- Translate single page to single locale
-- Update single outdated locale variant
-- Bulk: auto-translate all `not_started` locales for a page
-- Bulk: auto-update all `needs_update` locales for a page
-- Bulk: auto-translate / auto-update across all pages
-
-All AI translation actions go through the standard preview flow — user reviews the translation before it is published. Translations are included in the version snapshot system and fully reversible.
-
-### 7.8 Language Selector Module
-
-A built-in module that renders a language/country switcher. AI can place it in the template like any other module. At deploy time it is hydrated with the available locale URLs for the current page. Locales with no translation for the current page are excluded from the switcher.
-
-### 7.9 What AI Can and Cannot Do in i18n
-
-**AI can:**
-- Create new locale variants of existing pages (Mode 1)
-- Update outdated locale variants with structured diff context (Mode 2)
-- Set locale-specific SEO fields (meta title, description in the target language)
-- Manage the site glossary and style guide for consistent translations
-
-**AI cannot:**
-- Change page structure between locales — modules are shared, only content fields differ
-- Modify the URL strategy configuration — this is in the security control panel
-- Publish a translation without user review and confirmation
+- Locale/URL-strategy configuration is **hard-to-revert** and follows §11.A: the AI
+  drafts the proposal (locale row, URL strategy, fan-out preview); a human Owner approves
+  each instance in chat. The AI can never apply locale config directly.
+- The AI cannot change page structure between language variants — modules are shared,
+  only content fields differ.
+- The AI cannot publish a translation without user review and confirmation.
 
 ---
 
 ## 8. Redirects
 
-- Redirect rules stored as a table in cms_admin: source path, destination path, status code (301/302), locale scope
+- Redirect rules stored as a table in cms_admin: source path, destination path, status code (301/302)
 - AI can manage redirects via Query API
 - At deploy time, static generator outputs the provider-appropriate redirect file:
 
@@ -366,7 +289,7 @@ A built-in module that renders a language/country switcher. AI can place it in t
 | Self-hosted (Caddy) | Caddy redirect rules |
 
 - Redirects included in site snapshots and fully reversible
-- Default locale prefix redirects handled automatically (e.g. `/about` → `/en/about` if configured)
+- URL-shape migrations (slug changes, plugin contribution changes per §7.1) create their redirect fan-out automatically
 
 ---
 
@@ -379,7 +302,7 @@ Managed entirely in the security control panel — completely isolated from AI.
 | Role | Permissions |
 |---|---|
 | Owner | Full access — settings, deploy, content, user management, skill activation, custom-role definition |
-| Editor | Create and edit content, manage modules, manage translations — cannot deploy or change settings |
+| Editor | Create and edit content, manage modules — cannot deploy or change settings |
 | Reviewer | Approve plugin items (comments, submissions) — cannot edit content or deploy |
 
 Additional custom roles can be defined by the Owner over a **fixed permission catalog**. Routes check permissions (not role names) so custom roles integrate uniformly. Built-in roles cannot be deleted. A dedicated `ops_view` permission unlocks the Ops view that exposes the underlying dev / staging / production environments and promote controls (see §16.5); without it, users see only the editor Draft → Live abstraction.
@@ -409,13 +332,13 @@ Handled by the pre-built, hardened **Authentication Plugin**:
 
 ## 11. SEO Management
 
-- Per-page, per-locale structured SEO fields in cms_admin: meta title, meta description, Open Graph title/description/image, canonical URL, robots directives
+- Per-page structured SEO fields in cms_admin: meta title, meta description, Open Graph title/description/image, canonical URL, robots directives
 - AI can set these fields via Query API — cannot inject raw HTML into `<head>`
 - **Fill-once, never auto-overwrite:** AI populates every SEO field automatically **before the first publish of a page** (via the `seo-autofill` skill). After that point the AI never silently changes an SEO field — even when the page content changes. This protects user-curated SEO from being clobbered by unrelated edits
 - **Explicit "Optimize SEO" action:** the Owner/Editor can ask the AI to (re-)optimize SEO for one or many pages at any time via the `seo-optimize` skill. The request carries user-supplied context — for example *"here is a keyword analysis for these 5 t-shirt pages, optimize titles and descriptions"* — and the AI produces a cross-page preview batched in the Publish pill for one-shot confirm
 - No per-field override flag is exposed; the model is simply: AI writes the initial value, the user (or the AI via an explicit optimize request) rewrites it, and it stays written until someone rewrites it again
 - Fields rendered into static HTML `<head>` by the static generator at deploy time
-- Sitemap.xml auto-generated at deploy from all published pages and locale variants with hreflang entries
+- Sitemap.xml auto-generated at deploy from all published pages; language variants + hreflang are plugin contributions (§7.1)
 - robots.txt generated from admin settings (staging always noindexed, enforced at the provisioning layer via `X-Robots-Tag: noindex` on the staging vhost)
 
 ---
@@ -434,7 +357,7 @@ PostgreSQL Instance
 
 | | cms_admin | cms_public |
 |---|---|---|
-| Stores | Content, modules, templates, snapshots, redirects, SEO fields, media metadata, admin users, i18n locale config, translation status, glossary, config | Form submissions, comments, plugin data, public user sessions |
+| Stores | Content, modules, templates, snapshots, redirects, SEO fields, media metadata, admin users, plugin schemas (`plugin_<slug>`, e.g. locale config + translation status for `international-site`), config | Form submissions, comments, plugin data, public user sessions |
 | AI access | Read + structured write via Query API | Insert + approved reads via Query API |
 | Public access | None — never reachable from internet | Via API endpoints only |
 | Direct SQL | Never | Never |
@@ -488,7 +411,7 @@ Full primary/replica with automatic failover. Opt-in, documented as upgrade path
 
 Caelo is a **plugin host**. Almost every feature beyond the irreducible kernel — translation, SEO, media, scheduled publish, comments, forms, kits, typed content, analytics, even authentication — is a plugin built against the same SDK. The kernel is small on purpose: auth state machine, RLS, the Query API chokepoint, the snapshot system, the chat-runner, the deploy trigger, the plugin host itself. Everything else lives in `packages/plugins/<slug>/`.
 
-The benefit is uniformity: when the AI authors a plugin at runtime, it follows the same shape that ships in core. The AI's mental model has no "core vs. plugin" cliff. The cost is that the SDK has to be honest enough to host a real, complex feature (translation) — which is exactly what we want it to be.
+The benefit is uniformity: when the AI authors a plugin at runtime, it follows the same shape that ships in core. The AI's mental model has no "core vs. plugin" cliff. The cost is that the SDK has to be honest enough to host a real, complex feature (i18n — the `international-site` plugin, §7) — which is exactly what we want it to be.
 
 There is **no external plugin marketplace**. Plugins are either (a) shipped with the Caelo release as core software, or (b) AI-authored at runtime against the SDK and Owner-activated.
 
@@ -498,16 +421,16 @@ Plugins ship in one of two tiers. They use the same `definePlugin` / `defineComp
 
 #### Tier 1 — Core plugins
 
-Shipped with the Caelo release. Audited. Live in `packages/plugins/<slug>/`. Examples: `translation`, `seo`, `media`, `scheduled-publish`, `kits`, `typed-content`, `edge-analytics`, `comments`, `forms`, `newsletter`, `ratings`, `auth`.
+Shipped with the Caelo release. Audited. Live in `packages/plugins/<slug>/`. Shipped today: `comments`, `forms`, `newsletter`, `ratings`, `auth`. Planned on the same shape: `international-site` (§7), `seo`, `media`, `scheduled-publish`, `kits`, `typed-content`, `edge-analytics`.
 
 - **Activation:** auto-activated on Caelo install via signed manifest (Ed25519 signature shipped with the release). Owner can disable from `/security/plugins` but does not need to click Approve on first run.
 - **Runtime:** **in-process** within the Bun host. No Deno subprocess. Zero cold-start tax. Acceptable because the source is audited and shipped with the release.
 - **SDK capabilities (full):**
-  - Cross-table writes inside `cms_admin` (e.g. translation writes `pages` + `page_modules` + `modules`).
+  - Cross-table writes inside `cms_admin` (e.g. `international-site` writing translated content into `pages` + `page_modules` + `modules`).
   - Snapshot emission (every write goes through the existing snapshot path).
   - Chat-runner tool registration — the plugin's `operations` automatically become AI tools, with descriptions sourced from the plugin's manifest.
-  - AI provider access — Tier 1 plugins can call the Provider Abstraction Layer (translation needs this for Mode 1/Mode 2 prompts).
-  - Background workers (translation jobs, scheduled-publish cron).
+  - AI provider access — Tier 1 plugins can call the Provider Abstraction Layer (`international-site` needs this for Mode 1/Mode 2 translation prompts).
+  - Background workers (translation jobs in `international-site`, scheduled-publish cron).
 - **Validator still runs** as defense-in-depth (catches forbidden patterns introduced by a future audit miss); it does NOT gate startup.
 - **Updates:** ship with Caelo release upgrades. Pinned to the Caelo version in source control.
 
@@ -568,24 +491,23 @@ export default definePlugin({
     comments: {
       id: "uuid",
       page_id: "string",
-      locale: "string",                 // required because of page_id (§14.6)
       content: "string",
       status: "enum:pending,approved,rejected"
     }
   },
   operations: {
     submit: async ({ query }, data) => query.insert("comments", data),
-    list: async ({ query }, { page_id, locale, since }) =>
-      query.list("comments", { page_id, locale, status: "approved", since })
+    list: async ({ query }, { page_id, since }) =>
+      query.list("comments", { page_id, status: "approved", since })
   },
   component: defineComponent({
     tag: "cms-comments-delta",
     async mounted({ api, theme }) {
-      const newComments = await api.list({ page_id: this.pageId, locale: this.locale, since: this.since })
+      const newComments = await api.list({ page_id: this.pageId, since: this.since })
     }
   }),
-  staticRender: async ({ query }, { page_id, locale }) => {
-    const comments = await query.list("comments", { page_id, locale, status: "approved" })
+  staticRender: async ({ query }, { page_id }) => {
+    const comments = await query.list("comments", { page_id, status: "approved" })
     return comments.map(c =>
       `<div class="comment"><strong>${c.author}</strong><p>${c.content}</p></div>`
     ).join("")
@@ -607,8 +529,7 @@ For Tier 2 the validator gates activation (rejection ⇒ status stays `draft`). 
 - **Shadow DOM is mandatory** on every plugin Web Component — plugin CSS can never leak into the host page, and host CSS never leaks into the plugin. Open mode by default, closed mode configurable per plugin.
 - Theme tokens injected as CSS custom properties on the shadow root.
 - API client injected by SDK — cannot construct arbitrary HTTP calls.
-- Receives site theme tokens and current page locale.
-- Plugin schemas with per-page data **must declare a `locale` column** — the Validator rejects schemas that reference `page_id` without `locale`.
+- Receives site theme tokens.
 
 The frontend rules are tier-agnostic: a Tier 1 plugin's component runs in the browser the same way a Tier 2 plugin's does.
 
@@ -630,20 +551,20 @@ Browser    — Plugin frontend Web Components (both tiers)
 
 Required for a working CMS. Auto-activated on install.
 
-- **`translation`** — Mode 1 + Mode 2, glossary, style guide, translation jobs. AI tools (`translate_page`, `start_translation_job`) registered automatically from the plugin's `operations`.
+- **`international-site`** (planned — epic #380) — the i18n feature of §7: locale registry, URL-shape contributions, variant grouping, Mode 1 + Mode 2 translation, glossary, style guide, translation jobs. AI tools registered automatically from the plugin's `operations`; locale-config writes are §11.A-gated.
 - **`seo`** — fill-once + cross-page optimize.
 - **`media`** — uploads, sharp variants, optional CDN copy.
 - **`scheduled-publish`** — `scheduled_at` on snapshots; cron promoter.
 - **`kits`** — named module collections; enable/disable/swap.
 - **`typed-content`** — Author / Product / Event types with references.
-- **`edge-analytics`** — privacy-preserving pageview/referrer/locale dashboard from CDN logs; feeds A/B experiment results.
+- **`edge-analytics`** — privacy-preserving pageview/referrer dashboard from CDN logs; feeds A/B experiment results.
 - **`contact`** — generic forms.
-- **`comments`** — moderation + static pre-render (locale-aware).
+- **`comments`** — moderation + static pre-render.
 - **`newsletter`** — signups.
 - **`ratings`** — likes with static average pre-render.
 - **`auth`** — pre-built, hardened. **AI cannot regenerate core logic.** OAuth2 providers added via config entries + secrets, not code changes.
 
-Each ships with a companion skill for natural-language invocation (`translate-page`, `seo-optimize`, `schedule-publish`, `apply-kit`, `model-content`, `analyse-traffic`, `ab-analyze`, etc.). Companion skills are the AI's "this is how you ask the plugin to do its job" entry point.
+Each ships with a companion skill for natural-language invocation (`seo-optimize`, `schedule-publish`, `apply-kit`, `model-content`, `analyse-traffic`, `ab-analyze`, and the `international-site` translation skills, etc.). Companion skills are the AI's "this is how you ask the plugin to do its job" entry point.
 
 ### 14.10 Tier-1 plugin source location and upgrade path
 
@@ -672,7 +593,7 @@ Caelo upgrades pull in new versions via the standard package upgrade path. Plugi
 bunx cms-provision --provider gcp   # or aws, azure, self-hosted
 ```
 
-Provisions in a single command: PostgreSQL with HA, API Gateway, static hosting + CDN per locale domain/subdomain, secrets manager, object storage, SSL/TLS per domain, custom domain configuration.
+Provisions in a single command: PostgreSQL with HA, API Gateway, static hosting + CDN per domain/subdomain, secrets manager, object storage, SSL/TLS per domain, custom domain configuration.
 
 ### 15.3 Provider Adapters
 
@@ -711,9 +632,9 @@ All services via Docker Compose. Single command, no cloud account required.
 
 ### 15.5 Custom Domain & SSL
 
-- Domain and subdomain/locale domain configured during provisioning or via admin settings
+- Domains and subdomains configured during provisioning or via admin settings
 - SSL/TLS provisioned automatically per domain (Let's Encrypt for self-hosted, provider-native for cloud)
-- DNS configuration guidance provided in admin panel per locale domain
+- DNS configuration guidance provided in admin panel per domain
 
 ---
 
@@ -793,8 +714,8 @@ A `site_ai_memory` table stores Owner-curated system-prompt snippets — brand v
 - AI cannot auto-apply behaviour-learned skill proposals — every proposal sits in the Owner's review queue
 - AI cannot modify its own provider configuration or cost controls
 - AI cannot access media storage directly — only via upload endpoint
-- AI cannot modify URL strategy or locale configuration
-- AI cannot publish translations without user review and confirmation
+- AI cannot apply plugin-owned config whose blast radius spans the site (locale/URL strategy in `international-site`) — such changes are §11.A proposals: AI drafts, a human Owner approves each instance
+- AI cannot publish translations without user review and confirmation (behavioural requirement on the `international-site` plugin, §7.3)
 - All AI actions are logged and reversible
 
 ---
@@ -827,7 +748,7 @@ Terminology is precise because both levels exist:
 **AI automatically engages skills when contextually needed** — there is no need for the user to know which skill to pick. Examples:
 - User says "create a new pricing page" → AI engages `compose-page`
 - User says "why is this page slow?" → AI engages `explain-page`
-- User starts editing a translated variant → AI engages `translation-mode-2` and `brand-voice-guard`
+- User asks to improve search rankings across pages → AI engages `seo-optimize` and `brand-voice-guard`
 
 The matcher runs on every AI call against the site-active skill set, using `trigger_hints` + lightweight semantic scoring on the current user message + chat context. Top-K matches become *engaged*; their `system_prompt_body` is concatenated into the system prompt and the union of their `tool_allowlist` restricts tool availability. Engagements are tracked per chat session so the user can see why the AI is behaving a certain way.
 
@@ -860,7 +781,6 @@ So the AI is useful from day one without hand-authored prompt scaffolding:
 - `compose-page` — prompt-first page creation; orchestrates module picks, copy writes, SEO auto-fill, and image requests
 - `explain-page` — a11y / SEO / readability audit of any page, returning a structured report
 - `brand-voice-guard` — hard-checks AI output against the per-site AI memory (§17.1a); rewrites or flags violations
-- `translation-mode-1` / `translation-mode-2` — reify the i18n translation flows (§7.6) as skills
 - `seo-autofill` — fills SEO fields once before the first publish of a page (§11); never auto-overwrites afterwards
 - `seo-optimize` — explicit cross-page SEO optimization; takes user-supplied context (e.g. keyword analysis) and `page_ids[]`, produces batched preview
 - `summarize-plugin-data` — front-ends the `analyze_plugin_data` tool (§4) with redacted data flows
@@ -884,13 +804,13 @@ Extended built-in plugins (§14.9) each ship matching companion skills (`schedul
 | Plugin static analysis | oxc-parser with custom rule walker | Decided |
 | Static + delta rendering | staticRender at deploy + Web Component delta fetch | Decided |
 | Module versioning | Live references + site snapshots include module state | Decided |
-| i18n URL strategy | Mixed subdirectory / subdomain / domain per locale | Decided |
-| i18n translation | AI two-mode (new / update with structured diff) | Decided |
-| hreflang | Auto-generated at deploy from locale URL map | Decided |
-| Missing translations | Clean 404 — no fallback | Decided |
+| i18n URL strategy | Mixed subdirectory / subdomain / domain per locale — plugin-provided (§7.2) | Decided |
+| i18n translation | AI two-mode (new / update with structured diff) — plugin-provided (§7.2) | Decided |
+| hreflang | Head/sitemap contribution points; emitted by `international-site` (§7.1) | Decided |
+| Missing translations | Clean 404 — no fallback (requirement on `international-site`, §7.2) | Decided |
 | Redirect generation | Provider-appropriate file generated at deploy time | Decided |
-| SEO fields | Structured fields per page per locale, rendered at deploy | Decided |
-| Sitemap / robots.txt | Auto-generated at deploy, locale-aware with hreflang | Decided |
+| SEO fields | Structured fields per page, rendered at deploy | Decided |
+| Sitemap / robots.txt | Auto-generated at deploy; language entries + hreflang via contribution points (§7.1) | Decided |
 | Media storage | Provider-appropriate object storage via upload endpoint | Decided |
 | Image optimization | Auto on upload (resize, compress, WebP) | Decided |
 | Database | PostgreSQL — single instance, cms_admin + cms_public | Decided |
@@ -923,14 +843,14 @@ Extended built-in plugins (§14.9) each ship matching companion skills (`schedul
 
 - **Security:** AI and plugin layers fully sandboxed — Deno subprocess, injected API client, oxc-parser validation, auth plugin locked from AI modification
 - **Performance:** Static HTML first, delta fetches only, managed PostgreSQL with HA, image optimization on upload
-- **SEO:** All content and plugin data pre-rendered as static HTML. Locale-aware sitemap, hreflang auto-generated, robots.txt auto-generated. Missing translations return clean 404
+- **SEO:** All content and plugin data pre-rendered as static HTML. Sitemap and robots.txt auto-generated; hreflang and language sitemap entries contributed by `international-site` (§7.1). Missing translations return clean 404 (§7.2)
 - **Portability:** No lock-in to any cloud provider, database variant, or AI vendor
-- **Ease of setup:** Single provisioning command, SSL auto-provisioned per domain, custom and locale domains supported
+- **Ease of setup:** Single provisioning command, SSL auto-provisioned per domain, custom domains supported
 - **Open Source:** Licensed under **MPL 2.0**. All dependencies must be MPL-2.0-compatible (MPL-2.0, Apache-2.0, MIT, BSD, ISC). GPL/AGPL/SSPL/proprietary dependencies are blockers. Community-friendly, modular codebase
 - **Auditability:** All AI actions and database operations logged through single choke points
 - **Reliability:** Staging always separate from production, auto-redeploy debounced, cloud deployments HA by default
 - **Cost control:** Per-user AI token budgets and daily spend caps configurable in admin settings
-- **i18n:** Language and country/language targeting, mixed URL strategies, AI-assisted translation with change tracking, no untranslated fallbacks
+- **i18n:** Language and country/language targeting, mixed URL strategies, AI-assisted translation with change tracking, no untranslated fallbacks — provided by the `international-site` plugin (§7)
 
 ---
 

@@ -32,7 +32,7 @@ This principle is older than v0.12 but v0.12 is where it becomes load-bearing �
 
 Caelo is an AI-first, open-source CMS, MPL 2.0 licensed. Key architectural anchors (see `CMS_REQUIREMENTS.md` for depth):
 
-- **Layered permission model** (§3.1) — Module, Template, Page, Content, SEO, Redirect, Plugin, Skill, Media, i18n, Security, Deployment. Each layer constrains what AI can do.
+- **Layered permission model** (§3.1) — Module, Template, Page, Content, SEO, Redirect, Plugin, Skill, Media, Security, Deployment (the i18n layer is plugin-provided since epic #380 — see CMS_REQUIREMENTS §7). Each layer constrains what AI can do.
 - **Two-database split** (§12) — `cms_admin` (authoring) and `cms_public` (plugin data + visitor sessions), two isolated Postgres roles, RLS on every table.
 - **Module / snapshot architecture** (§3.2, §5) — pages assemble modules by live reference; every write emits a snapshot; snapshots group by chat task; chat-keyed Undo is the primary history surface.
 - **Skills system** (§17A) — Claude-style skills extend AI behaviour; auto-engaged per call; user can override per chat; new skills require human Owner site-wide activation.
@@ -59,10 +59,10 @@ These cannot be violated by any change, AI-generated or human:
 - **Two levels of skill activation — never conflate them.** Site-wide activation (human Owner) promotes a skill from `awaiting_activation` to `active`. Per-chat engagement (AI auto-matcher or user manual toggle) decides which active skills augment the current AI call. User manual disengagement in a chat always overrides the matcher for that chat.
 - **`admin_role` and `public_role` are isolated.** Never grant cross-database privileges. Never let the API Gateway hold `admin_role` credentials.
 - **Auth plugin core logic is locked from AI regeneration.** AI can configure it (protected routes, roles, OAuth provider entries where a human-approved secret exists) — not rewrite it.
-- **Locale & URL strategy config is admin-only.** Every locale-config Query API op rejects AI actors at the Validator.
+- **i18n is plugin-owned (epic #380).** Core has no locale registry, no locale column on pages, no translation machinery — the `international-site` plugin provides them (CMS_REQUIREMENTS §7). Locale/URL-strategy config remains hard-to-revert: the plugin routes it through the §11.A proposal gate (AI drafts, Owner approves), never through a direct AI write.
 - **Deployment logic is locked from AI.** AI can *request* a deploy via the fixed Deploy op; it cannot modify the generator, deploy scripts, or deploy targets.
 - **Every write emits a snapshot.** Reverting a site snapshot must restore both pages and modules.
-- **Missing translations = clean 404**, never a fallback. This is correct SEO behaviour.
+- **Missing translations = clean 404**, never a fallback. This is correct SEO behaviour — the requirement now binds the `international-site` plugin (CMS_REQUIREMENTS §7.2), not core; core simply emits no file for a page that doesn't exist.
 - **Staging is always `noindex` by default.** Three environments — dev / staging / production — are a first-class part of every deployment, but editors see only Draft → Live; the third environment lives in the Ops view.
 - **AI provider brand never surfaces in the editor chat UI.** Editors see "AI"; brand only appears in the Owner security panel and the cost dashboard.
 - **SEO fill-once, never auto-overwrite.** AI fills SEO fields before first publish via `seo-autofill`; after first publish, content edits never silently rewrite SEO. (Re)optimization happens through the explicit `seo-optimize` skill with user-supplied context.
@@ -182,12 +182,11 @@ Caelo is AI-first not just in branding — **the AI agent is the primary user of
 - **Default `actorScope` is `["human", "ai", "system"]`.** Narrower scopes need a `// Why human-only:` justification at the op definition. Examples that legitimately stay narrower:
   - Auth + role mutations (humans only by definition).
   - Plugin activation, layout creation, site_defaults writes (Owner gate per requirements).
-  - Locale + URL strategy config (admin-only per §17.4 of CMS_REQUIREMENTS).
   - System-only utilities like `pages.rewrite_module_links` that the AI calls indirectly through a parent tool — these don't add a separate AI tool.
 - **Every routine domain ships a bulk variant alongside the singular form.** `redirects.create_many`, `pages_seo.set_many`, `media.delete_many`. The AI plans a multi-row change and posts it in one tool call; saves token cycles + tool-call rounds + a wall of `tool-call → tool-result` events in chat. The bulk handler validates + writes inside one transaction so partial-failure is impossible.
 - **Read surfaces are powerful.** Every domain has a list op with filter + free-text search + sort. AI calls `redirects.list({ matches: '/old/*' })` to find what to update without paginating through everything. List ops should be open to all actor kinds (`["human", "ai", "system"]`) — the AI needs broad read to plan good writes.
 - **AI tool descriptions optimise for the AI, not for human reviewers.** Each tool's `description` field carries: when to use, when NOT to use (which other tool wins), and the typical input shape. Bulk variants explicitly tell the AI to prefer them: *"Prefer `redirects.create_many` over multiple `redirects.create` calls when the user asks for >1 redirect."*
-- **The system prompt is 100% static — no dynamic context blocks.** (Superseded the earlier "context blocks save tool calls" rule.) Nothing that changes turn-to-turn may go in the system prompt: a changing block busts the prompt cache from that point on every turn, and the loss dwarfs the round-trip it saved. So the system prompt is only the static core (identity, tool playbook, module model, staging, subagents, memory, and the static `## Skills` index) and stays fully cached. Live site state (pages, modules, theme, structured sets, content library, layouts, redirects, locales, users/roles, …) is NOT dumped into the prompt — the AI fetches exactly what it needs on-demand via the `list_`/`get_` tools, and each result lands in the append-only, cache-friendly message history. New domains do NOT ship a context block; they ship (or reuse) a `list_`/`get_` tool. The two exceptions ride on the **user message**, never the system prompt, and only on the first turn + when they change (a djb2 signature vs the last `<!--marker:-->` in history): the **current-page context** ("where am I") and the **cold-start status line** ("Theme: needs setup", …).
+- **The system prompt is 100% static — no dynamic context blocks.** (Superseded the earlier "context blocks save tool calls" rule.) Nothing that changes turn-to-turn may go in the system prompt: a changing block busts the prompt cache from that point on every turn, and the loss dwarfs the round-trip it saved. So the system prompt is only the static core (identity, tool playbook, module model, staging, subagents, memory, and the static `## Skills` index) and stays fully cached. Live site state (pages, modules, theme, structured sets, content library, layouts, redirects, users/roles, …) is NOT dumped into the prompt — the AI fetches exactly what it needs on-demand via the `list_`/`get_` tools, and each result lands in the append-only, cache-friendly message history. New domains do NOT ship a context block; they ship (or reuse) a `list_`/`get_` tool. The two exceptions ride on the **user message**, never the system prompt, and only on the first turn + when they change (a djb2 signature vs the last `<!--marker:-->` in history): the **current-page context** ("where am I") and the **cold-start status line** ("Theme: needs setup", …).
 - **Bulk doesn't mean "1 + bulk".** Don't ship the singular op then bolt on a bulk variant a phase later. Singular is a special-case-of-bulk for n=1; just ship `set_many` with a 1-element array as the smallest case if the singular variant doesn't carry distinct semantics.
 - **Cross-page / cross-domain patches that span >1 op call belong inside one op.** When you find yourself documenting "AI: call X, then Y, then Z in this order" — that's three round-trips of latency + token spend. Wrap it in a single op whose handler runs the chain in one tx (e.g., `change_page_slug` already does this — it does the slug update + redirect insert + structured-set rewrite + module-body rewrite in one boundary).
 - **Failure surfaces are AI-actionable.** Errors include the *next step the AI should try* in the message body — not just "validation failed." Example: `pages_seo.autofill`'s `AlreadyAutofilled` error suggests using `pages_seo.optimize` instead.
@@ -196,7 +195,7 @@ When an audit finds an op that's "AI could call this but doesn't have a tool" or
 
 ### 11.A. Human-confirmation gate (for hard-to-revert ops)
 
-§11 says "default actorScope is `human + ai + system`" and "the AI is the primary user." Most writes follow that and are immediately applied. But a small set of ops are **hard or impossible to revert cleanly** — adding/deleting a locale fans out URL changes across the entire site, deleting a layout cascades through every page on every template that binds to it, activating a plugin runs untrusted code. Those don't go human-only. **They go AI-proposable + human-approve-by-click.**
+§11 says "default actorScope is `human + ai + system`" and "the AI is the primary user." Most writes follow that and are immediately applied. But a small set of ops are **hard or impossible to revert cleanly** — deleting a layout cascades through every page on every template that binds to it, activating a plugin runs untrusted code, a URL-shape change (e.g. the `international-site` plugin's locale config) fans out across every page on the site. Those don't go human-only. **They go AI-proposable + human-approve-by-click.**
 
 > **The click now happens IN THE CHAT (Plan B, 2026-07, [CLAUDE.md §12]).** The gate is the Vercel AI SDK's native tool-approval: a gated tool is marked `approvalMode: "user-approval"`, the SDK PAUSES the turn on a `tool-approval-request` before running the tool, the operator clicks Approve/Reject on an inline card in the chat, and the turn resumes (the paused state rides `response.messages`/Option C; resume = appending the SDK `tool-approval-response`). There is no separate `/security/<domain>/pending` round-trip for these domains. **The invariant is unchanged** — the AI cannot bypass the click; each instance gets its own; no auto-approve (the e2e-only `CAELO_E2E_AUTO_APPROVE_PROPOSALS` auto-grants in autonomous test runs so they don't stall, never in production). What changed is only the mechanism + surface.
 >
@@ -209,7 +208,7 @@ When an audit finds an op that's "AI could call this but doesn't have a tool" or
 The propose/execute engine each gated tool drives, per domain:
 
 1. **AI calls `<domain>.propose_<action>`** with the full inputs. The handler writes a row to a per-domain `<domain>_pending_actions` table with `status='pending'`, computes a `preview` jsonb (blast-radius summary — affected page count, redirects to be created, etc.), records audit, returns `{proposalId, preview}`. AI scope is `human + ai + system`.
-2. **AI tells the user**: *"I prepared a proposal to add German. Click Approve at /security/locales/pending to apply."* The proposal renders in a small Owner queue with the AI-supplied payload + the computed preview + Approve / Reject / Edit-before-approving buttons.
+2. **AI tells the user**: *"I prepared a proposal to create the layout. Click Approve to apply."* The proposal renders in a small Owner queue with the AI-supplied payload + the computed preview + Approve / Reject / Edit-before-approving buttons.
 3. **The Approve action calls `<domain>.execute_proposal({ proposalId })`** which is `human + system` only. Handler reads the row, runs the real op inside one tx, marks the row `status='applied'`. The Reject path stamps `status='rejected'` + the actor + an optional reason.
 4. **The AI cannot bypass step 2.** No "auto-approve after 60 seconds." No "skip if the user said yes once before." Each instance gets its own click. The Owner panel shows the diff and the preview side-by-side.
 
@@ -217,17 +216,18 @@ The propose/execute engine each gated tool drives, per domain:
 
 | Domain | Op family | Why a click is required |
 |---|---|---|
-| locales | create, delete, set_default, update_strategy | URL-strategy change cascades; redirects required for every existing page in the affected locale. |
 | layouts | create, delete | Site-wide chrome change; affects every bound template's pages. |
-| plugins | activate | Per CMS_REQUIREMENTS §17.4 — already required; restated here for the unified pattern. |
+| plugins | activate | Per CMS_REQUIREMENTS §14.2 (restated in the §17.4 AI-restrictions list) — already required; restated here for the unified pattern. |
 | site_defaults | set_seo (when site_base_url changes) | Base URL change rewrites every canonical at next deploy. NOTE: `site_defaults.set` (default layout/template) is deliberately NOT gated — it's AI-writable because existing content is unaffected, the change is snapshot-revertable, and first-run UX requires it. The justification lives at the op. |
 | snapshots | revert_site | Atomic site-wide rewind; one click rewinds hours of editor work. (Only `revert_site`. The granular `revert_page` / `revert_module` / `revert_template` are gated today too — whether they need to be is open: each is undoable by another revert, which by the test below argues routine.) |
 | redirects | delete_many with `matches` substring matching ≥10 rows | Hard to predict the blast radius of a regex-style match; every deleted 301 strands an inbound link. Implemented as an AI-actor cap at the op (`AI_MATCHES_DELETE_LIMIT`), not a propose/execute pair: the AI is told to enumerate via `find_redirects` and delete by explicit `redirectIds`, which makes the blast radius visible instead of guessed. A human running the same call is unaffected — they ARE the decision the gate exists to obtain. |
 | deploy | promote, rollback | Production-affecting. DOES get the propose/execute split (`propose_deploy_promote` / `propose_deploy_rollback` → `deploy.execute_proposal`). An earlier revision of this table said deploy was human-only with no split; the split shipped deliberately (commit b4126607) so the AI can draft the promote and the Owner just clicks. |
 
+A `locales` row used to sit in this table; the domain was deleted with the core i18n cut (epic #380, #381–#385). Plugin-owned domains join the same gate: the `international-site` plugin's locale config (create/delete/set_default/update_strategy) is the canonical example — URL-shape contributions change every affected page's URL, so each change is a §11.A proposal with a redirect fan-out preview.
+
 Routine ops — content edits, structured-sets writes, single-redirect tweaks, page slug changes, SEO field updates, media writes, alt proposals, role-list reads — stay `human + ai + system` *without* the gate. The AI proceeds on the routine 95% and asks for one click on the dangerous 5%.
 
-**Why a button-click instead of a separate scope?** Excluding the AI from `locales.create` forces a human round-trip every time. The button-gate lets the AI:
+**Why a button-click instead of a separate scope?** Take the `international-site` plugin's locale config as the illustration: excluding the AI from `locales.create` entirely would force a human round-trip every time. The button-gate lets the AI:
 - draft the locale row + display name + URL strategy with sensible defaults,
 - compute the URL fan-out preview ("creating `de` will require 14 redirect rows for existing pages once they're translated"),
 - queue the proposal,
@@ -301,10 +301,10 @@ Postgres MUST live on a private network IP that the public internet cannot reach
 
 ### Tier 5 — Background workers
 
-Background workers (translation, redeploy orchestrator, runner) **share the admin's Cloud Run / Lambda** — they're already long-running async loops inside the admin process. Spinning up separate compute for them adds idle cost without adding capability.
+Background workers (redeploy orchestrator, plugin host, MCP bridge, GC loops) **share the admin's Cloud Run / Lambda** — they're already long-running async loops inside the admin process. Spinning up separate compute for them adds idle cost without adding capability.
 
 - Don't provision separate `orchestrator` / `runner` Cloud Run services.
-- The admin's `apps/admin/src/hooks.server.ts` bootstraps these inline (`bootstrapTranslationWorker`, `bootstrapRedeploy`, `bootstrapMcpBridge`, `bootstrapPlugins`).
+- The admin's `apps/admin/src/hooks.server.ts` bootstraps these inline (`bootstrapPlugins`, `bootstrapRedeploy`, `bootstrapMcpBridge`, `bootstrapReleaseCheck`, `bootstrapProposalGc`, `bootstrapChatImageGc`).
 
 ### Cross-cutting standards
 

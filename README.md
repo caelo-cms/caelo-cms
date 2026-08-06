@@ -10,7 +10,7 @@
 
 ## What it does
 
-You talk to your site. The AI agent edits modules, drafts pages, translates copy, moderates comments, proposes layout changes — every action lands as a draft snapshot, you review, you publish. The architecture is layered so the AI can't ship a page without your click; the chat surface drives every routine task; the live-edit overlay shows your real site while you work.
+You talk to your site. The AI agent edits modules, drafts pages, optimises SEO, moderates comments, proposes layout changes — every action lands as a draft snapshot, you review, you publish. The architecture is layered so the AI can't ship a page without your click; the chat surface drives every routine task; the live-edit overlay shows your real site while you work.
 
 ```
 talk → preview → publish.
@@ -56,8 +56,7 @@ For contributors: read **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** and **[`CLAUDE
 - **Two-database split** — `cms_admin` (authoring) + `cms_public` (visitor + plugin data) with RLS forced on every table.
 - **Live-edit overlay** — your real site in a chrome-less iframe + a floating chat overlay; click any element, ask the AI, watch it change in place.
 - **Snapshot versioning + chat-keyed Undo** — every write emits a snapshot; every revert is one click.
-- **Multi-locale + URL strategies** — subdirectory / subdomain / separate domain, mixed within one site.
-- **AI translation** (Mode 1 + Mode 2) with per-locale glossary + style guide.
+- **i18n as a plugin** — core is locale-agnostic (globally unique slugs, one designated homepage); multi-language sites arrive with the first-party `international-site` plugin (epic #380).
 - **Skills system** — Claude-style skill bodies the AI engages per turn, Owner-curated, AI-proposable.
 - **Subagents** — the AI spawns parallel reasoning loops (QA, brand-voice, legal-check) on demand.
 - **Two-tier plugin host** — Tier 1 plugins ship with core (signed, in-process, full SDK); Tier 2 plugins are AI-authored at runtime + sandboxed in Deno (locked SDK, only their own `cms_public` schema).

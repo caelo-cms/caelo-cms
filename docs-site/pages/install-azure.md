@@ -1,7 +1,6 @@
 ---
 slug: install-azure
 template: doc-page
-locale: en
 status: published
 seo:
   title: Install on Azure — Caelo CMS
