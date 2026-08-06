@@ -20,6 +20,7 @@ import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
 import type { AIProvider, ChatMessageInput, GenerateInput, ProviderEvent } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
 import type { UsageAccumulator } from "./streaming.js";
@@ -34,23 +35,30 @@ const RUN_7_ERROR = "prompt is too long: 1202876 tokens > 1000000 maximum";
  * the messages of every call so tests can assert the retry went out
  * with a compacted history.
  */
-class OverflowingProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-overflow";
+class OverflowingProvider extends FixtureProvider {
+  /** Per-RUN history snapshot — the retry is an outer re-invocation. */
   readonly seenMessages: (readonly ChatMessageInput[])[] = [];
+  #failing = true;
 
-  constructor(private readonly failCount: number) {}
+  constructor(private readonly failCount: number) {
+    super([], "fixture-overflow");
+  }
 
-  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+  override async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
     this.seenMessages.push(input.messages);
-    if (this.seenMessages.length <= this.failCount) {
-      yield { kind: "error", message: RUN_7_ERROR };
-      yield { kind: "done", stopReason: "error" };
-      return;
+    this.#failing = this.seenMessages.length <= this.failCount;
+    yield* super.generate(input);
+  }
+
+  protected override nextStepEvents(): readonly ProviderEvent[] {
+    if (this.#failing) {
+      return [{ kind: "error", message: RUN_7_ERROR }];
     }
-    yield { kind: "text-delta", text: "recovered after compaction" };
-    yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "end_turn" };
+    return [
+      { kind: "text-delta", text: "recovered after compaction" },
+      { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
   }
 }
 

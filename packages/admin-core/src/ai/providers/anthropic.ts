@@ -741,16 +741,18 @@ function scriptedStepToParts(events: readonly ProviderEvent[]): unknown[] {
       }
       case "done": {
         closeText();
+        // LanguageModelV3 finish reasons are {unified, raw} objects.
+        const unified =
+          ev.stopReason === "end_turn"
+            ? ("stop" as const)
+            : ev.stopReason === "tool_use"
+              ? ("tool-calls" as const)
+              : ev.stopReason === "max_tokens"
+                ? ("length" as const)
+                : ("error" as const);
         parts.push({
           type: "finish",
-          finishReason:
-            ev.stopReason === "end_turn"
-              ? "stop"
-              : ev.stopReason === "tool_use"
-                ? "tool-calls"
-                : ev.stopReason === "max_tokens"
-                  ? "length"
-                  : "error",
+          finishReason: { unified, raw: ev.stopReason },
           usage,
         });
         break;
@@ -792,6 +794,19 @@ export class FixtureProvider implements AIProvider {
   readonly name: ProviderName = "anthropic";
   readonly model: string;
   readonly #stepEvents: () => readonly ProviderEvent[];
+  /**
+   * Per-STEP toolChoice the mock model observed, normalized to the
+   * chat-runner's contract: `undefined` for the default ("auto") so tests
+   * can assert that only a RECOVER-forced step carries `"required"` (the
+   * prompt-cache byte-parity invariant).
+   */
+  readonly stepToolChoices: (string | undefined)[] = [];
+  /**
+   * Per-STEP prompt (the LanguageModel-level message array) the mock model
+   * observed — what each step's request actually carried, for tests that
+   * assert per-step history content (compaction, image ordering).
+   */
+  readonly seenPrompts: readonly unknown[][] = [];
 
   constructor(events: readonly ProviderEvent[], model = "claude-opus-4-7") {
     this.#stepEvents = () => events;
@@ -803,14 +818,35 @@ export class FixtureProvider implements AIProvider {
     return this.#stepEvents();
   }
 
+  /**
+   * Subclass hook — RAW stream override for the next model step, for tests
+   * scripting wire-level behavior the event shape cannot express (a hung
+   * request that never emits, a mid-stream delay). Return null to use
+   * {@link nextStepEvents}.
+   */
+  protected nextStepStream(_options: {
+    abortSignal?: AbortSignal;
+  }): ReadableStream<unknown> | null {
+    return null;
+  }
+
   async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
     const { MockLanguageModelV3 } = await import("ai/test");
     const model = new MockLanguageModelV3({
-      doStream: async () => ({
-        stream: partsToStream(
-          scriptedStepToParts(this.nextStepEvents()),
-        ) as ReadableStream<never>,
-      }),
+      doStream: async (options: {
+        toolChoice?: { type?: string };
+        abortSignal?: AbortSignal;
+        prompt?: readonly unknown[];
+      }) => {
+        const type = options.toolChoice?.type;
+        this.stepToolChoices.push(type === undefined || type === "auto" ? undefined : type);
+        (this.seenPrompts as unknown[][]).push([...(options.prompt ?? [])]);
+        const custom = this.nextStepStream(options);
+        return {
+          stream: (custom ??
+            partsToStream(scriptedStepToParts(this.nextStepEvents()))) as ReadableStream<never>,
+        };
+      },
     });
     const system =
       typeof input.systemPrompt === "string"

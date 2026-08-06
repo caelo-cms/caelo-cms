@@ -309,6 +309,27 @@ export async function* runToolLoop(
   };
 
   /**
+   * Emit + persist the budget-pause notice (`trip.budgetNotice`). Shared by
+   * the pre-run trip (no provider call started) and the post-run trip (the
+   * stopWhen policy paused mid-turn).
+   */
+  async function* yieldBudgetPause(): AsyncGenerator<ClientEvent, void> {
+    const notice = trip.budgetNotice;
+    if (notice === null) return;
+    yield { kind: "text-delta", text: notice };
+    const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
+      chatSessionId,
+      role: "assistant",
+      content: notice,
+      status: "complete",
+    });
+    if (noticeSave.ok) {
+      lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
+      yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
+    }
+  }
+
+  /**
    * Pre-call injections shared by the run prologue (first call of a run)
    * and `prepareStep` (every continuation step): proactive tool-result
    * compaction (#300), the subagent cost-cap wrap-up nudge (#304), and the
@@ -318,7 +339,10 @@ export async function* runToolLoop(
   const runPreCallInjections = async (): Promise<void> => {
     if (args.proactiveCompaction === true && toolResultOrigins.size > 0) {
       const proactive = compactOldToolResults(history.messages, {
-        currentLoop: stepCounter.value,
+        // Origins record the 1-based step that dispatched a result; the pass
+        // runs BEFORE the next step, so its reference point is the step
+        // ABOUT to run — stepCounter still holds the last begun step.
+        currentLoop: stepCounter.value + 1,
         origins: toolResultOrigins,
       });
       if (proactive.compacted > 0) {
@@ -430,6 +454,14 @@ export async function* runToolLoop(
         trip.maxLoops = true;
         return true;
       }
+      // Pre-#442 parity: only an explicit tool_use stop continues the loop.
+      // The SDK's default would continue after ANY step whose client calls
+      // executed — but a `max_tokens` stop right after a turn-ending ask
+      // (the offer_choices class) must end the turn with the pairing
+      // complete, not hand the model a continuation to answer its own
+      // question. A deferred tool-search continuation is unaffected: the
+      // deferring step always stops on tool_use ("tool-calls").
+      if (last && last.finishReason !== "tool-calls") return true;
       return false;
     },
     prepareStep: async () => {
@@ -457,7 +489,11 @@ export async function* runToolLoop(
     if (attempts === 1 || budgetGate !== null) {
       budgetGate = await fetchBudgetGate(registry, adapter, humanCtx, chatSessionId);
     }
-    if (await enforceBudgetGate("pre-run")) break;
+    if (await enforceBudgetGate("pre-run")) {
+      yield* yieldBudgetPause();
+      stopReason = "cost_ceiling";
+      break;
+    }
     await runPreCallInjections();
     if (aborted()) break;
 
@@ -649,17 +685,7 @@ export async function* runToolLoop(
 
     // issue #297 — the stopWhen policy tripped the budget gate mid-run.
     if (trip.budgetNotice !== null) {
-      yield { kind: "text-delta", text: trip.budgetNotice };
-      const noticeSave = await execute(registry, adapter, humanCtx, "chat.append_message", {
-        chatSessionId,
-        role: "assistant",
-        content: trip.budgetNotice,
-        status: "complete",
-      });
-      if (noticeSave.ok) {
-        lastAssistantMessageId = (noticeSave.value as { messageId: string }).messageId;
-        yield { kind: "assistant-message-saved", messageId: lastAssistantMessageId };
-      }
+      yield* yieldBudgetPause();
       stopReason = "cost_ceiling";
       break;
     }
@@ -870,7 +896,7 @@ export async function* runToolLoop(
     if (trip.maxLoops) {
       stopReason = "max_loops";
       const notice =
-        `Paused at the tool-loop limit (${args.maxLoops} steps). The build was still in progress — ` +
+        `Paused at the tool-loop limit (${args.maxLoops} iterations). The build was still in progress — ` +
         `reply "continue" to resume, or tell me what to change.`;
       console.error("[chat-runner] max_loops cap hit", { chatSessionId, maxLoops: args.maxLoops });
       yield { kind: "text-delta", text: notice };

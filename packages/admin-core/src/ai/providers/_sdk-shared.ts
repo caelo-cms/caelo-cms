@@ -366,6 +366,20 @@ export async function* translateSDKStream(
           yieldedDone = true;
           break;
         }
+        case "abort": {
+          // issue #442 — the SDK emits a dedicated `abort` part (operator
+          // abort OR an SDK-native timeout: the reason string carries e.g.
+          // "First chunk timeout of Nms exceeded"). Surface it as an error
+          // event so consumers can classify (the chat-runner's watchdog
+          // retry keys off the reason; operator aborts are ignored there).
+          const reason = typeof e.reason === "string" && e.reason.length > 0
+            ? e.reason
+            : "provider call aborted";
+          yield { kind: "error", message: reason };
+          yield { kind: "done", stopReason: "error" };
+          yieldedDone = true;
+          break;
+        }
       }
     }
   } finally {

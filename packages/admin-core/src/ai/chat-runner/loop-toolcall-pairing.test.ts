@@ -27,7 +27,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider, GenerateInput, ProviderEvent } from "../provider.js";
+import type { AIProvider } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
 import type { UsageAccumulator } from "./streaming.js";
@@ -37,28 +38,26 @@ import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn } from "./types.js";
  * Emits two `offer_choices` tool-calls, then a usage event at the output
  * cap, then `done: max_tokens` — the live wedge shape. `offer_choices` is a
  * turn-ending ask whose handler returns synchronously, so both calls are
- * fully-formed by the time the cap is hit.
+ * fully-formed by the time the cap is hit. issue #442 — the script drives a
+ * MockLanguageModelV3 under the REAL SDK loop via FixtureProvider.
  */
-class OfferChoicesAtCapProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-offer-choices-at-cap";
-
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
-    yield {
+function offerChoicesAtCapProvider(): AIProvider {
+  return new FixtureProvider([
+    {
       kind: "tool-call",
       id: "toolu_014TWADPKDFAs31Ya6XnRHoW",
       name: "offer_choices",
       arguments: { question: "Bold or minimal hero?", options: [] },
-    };
-    yield {
+    },
+    {
       kind: "tool-call",
       id: "toolu_01WJ2BZfArG452qnnz17MhE1",
       name: "offer_choices",
       arguments: { question: "Bold or minimal hero?", options: [] },
-    };
-    yield { kind: "usage", inputTokens: 2000, outputTokens: 16384, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "max_tokens" };
-  }
+    },
+    { kind: "usage", inputTokens: 2000, outputTokens: 16384, cachedTokens: 0 },
+    { kind: "done", stopReason: "max_tokens" },
+  ]);
 }
 
 interface AppendedMessage {
@@ -102,6 +101,16 @@ function buildFixtureQueryApi(): {
       input: z.looseObject({}),
       output: z.looseObject({}),
       handler: async () => ok({ cached: null }),
+    }),
+  );
+  registry.register(
+    defineOperation({
+      name: "chat.set_response_messages",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({}),
+      output: z.looseObject({}),
+      handler: async () => ok({ updated: true }),
     }),
   );
   registry.register(
@@ -152,7 +161,13 @@ async function runLoop(
     chatBranchId: "cb-1",
     abortSignal: undefined,
     systemChunks: "",
-    filteredTools: [],
+    filteredTools: [
+      {
+        name: "offer_choices",
+        description: "Offer the operator a choice card.",
+        inputSchema: { type: "object" },
+      },
+    ],
     initialMessages: [{ role: "user", content: "design the homepage hero" }],
     compactionThresholdTokens: 600_000,
     maxLoops: 5,
@@ -175,7 +190,7 @@ async function runLoop(
 describe("runToolLoop — tool_use/tool_result pairing at a non-tool_use stop", () => {
   it("dispatches every accumulated tool call at a max_tokens stop (no dangling tool_use)", async () => {
     const fixture = buildFixtureQueryApi();
-    const { events, result } = await runLoop(new OfferChoicesAtCapProvider(), fixture);
+    const { events, result } = await runLoop(offerChoicesAtCapProvider(), fixture);
 
     const assistant = fixture.appended.filter((m) => m.role === "assistant");
     const toolResults = fixture.appended.filter((m) => m.role === "tool");

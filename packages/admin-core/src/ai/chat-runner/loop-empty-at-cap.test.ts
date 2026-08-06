@@ -26,6 +26,7 @@ import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
 import type { AIProvider, GenerateInput, ProviderEvent } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
 import type { UsageAccumulator } from "./streaming.js";
@@ -37,25 +38,35 @@ import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn } from "./types.js";
  * a normal text turn. Records each call's maxTokens so tests can assert
  * the retry ceiling was raised.
  */
-class EmptyAtCapProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-empty-at-cap";
+class EmptyAtCapProvider extends FixtureProvider {
   readonly seenMaxTokens: (number | undefined)[] = [];
+  #steps = 0;
 
-  constructor(private readonly emptyCount: number) {}
+  constructor(private readonly emptyCount: number) {
+    super([], "fixture-empty-at-cap");
+  }
 
-  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+  override async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+    // Per-RUN ceiling — the retry re-invokes the run with a doubled cap.
     this.seenMaxTokens.push(input.maxTokens);
-    if (this.seenMaxTokens.length <= this.emptyCount) {
+    yield* super.generate(input);
+  }
+
+  protected override nextStepEvents(): readonly ProviderEvent[] {
+    this.#steps++;
+    if (this.#steps <= this.emptyCount) {
       // Thinking burned the whole budget: usage reports the full cap
       // spent, but no text-delta / tool-call events ever arrived.
-      yield { kind: "usage", inputTokens: 1000, outputTokens: 16384, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "max_tokens" };
-      return;
+      return [
+        { kind: "usage", inputTokens: 1000, outputTokens: 16384, cachedTokens: 0 },
+        { kind: "done", stopReason: "max_tokens" },
+      ];
     }
-    yield { kind: "text-delta", text: "recovered with a larger budget" };
-    yield { kind: "usage", inputTokens: 1000, outputTokens: 50, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "end_turn" };
+    return [
+      { kind: "text-delta", text: "recovered with a larger budget" },
+      { kind: "usage", inputTokens: 1000, outputTokens: 50, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
   }
 }
 

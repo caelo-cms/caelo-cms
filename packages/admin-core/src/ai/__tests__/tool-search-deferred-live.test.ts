@@ -23,23 +23,25 @@
  * 400s.
  *
  * This suite drives the REAL Anthropic API (operator-sanctioned for this
- * repro — hand-crafted SSE mocks were explicitly rejected as conjecture):
+ * repro — hand-crafted SSE mocks were explicitly rejected as conjecture).
+ * issue #442 ACCEPTANCE (flipped): provider.generate now runs the SDK's own
+ * multi-step loop and every chat-runner tool ships an execute, so the
+ * deferred continuation is consumed IN-TURN.
  *
  *   run A — the exact chat-runner path (AnthropicProvider with
- *           toolSearch:"bm25" + deferLoading transform). Prompts the model
- *           into the defective shape: a bm25 search whose query matches
- *           nothing in the catalogue ("map external page types") plus a
- *           client tool call in the same turn. Asserts the Option C
- *           invariant (every providerExecuted call paired) and that the
- *           continuation replay does not 400. BOTH assertions are EXPECTED
- *           TO FAIL on the current SDK when the deferred shape reproduces —
- *           that failure is the proof.
+ *           toolSearch:"bm25" + deferLoading transform; the client tool
+ *           carries an execute exactly as the chat-runner's wrappers do).
+ *           Prompts the model into the deferred wire shape: a bm25 search
+ *           whose query matches nothing in the catalogue ("map external
+ *           page types") plus a client tool call in the same turn. Asserts
+ *           the Option C invariant (every providerExecuted call paired in
+ *           the run's assembly — the deferred result arrives in a
+ *           continuation STEP) and that a next-turn replay of the persisted
+ *           assembly is accepted.
  *
- *   run B — the SDK-native loop (plain streamText, client tool WITH
- *           execute, stopWhen stepCountIs(3)). Informative: records what a
- *           continuation looks like when the SDK's own deferred-result
- *           machinery drives it, so run A's rejected request can be diffed
- *           against a working (or equally broken) upstream shape.
+ *   run B — the SDK-native loop driven directly (plain streamText, client
+ *           tool WITH execute, stopWhen stepCountIs(3)). Informative
+ *           cross-check against run A's provider-boundary path.
  *
  * Raw wire traffic (verbatim request bodies + SSE) is recorded through the
  * existing CAELO_DEBUG_AI_WIRE tap (run A) and a local recorder (run B)
@@ -159,6 +161,10 @@ const GRAB_TOOL: ToolDefinition = {
     required: ["address"],
   },
   alwaysLoaded: true,
+  // issue #442 — the chat-runner ships an execute for EVERY tool; without
+  // one the SDK loop cannot continue past the client call and the deferred
+  // search result could never be consumed.
+  execute: async () => "grab completed: 1024x768 png stored",
 };
 
 const TOOLS: ToolDefinition[] = [GRAB_TOOL, ...junkTools()];
@@ -342,7 +348,6 @@ liveDescribe("LIVE — tool-search deferred result wedge (real Anthropic API)", 
         const serverCall = turnEvents.find(
           (e) => e.kind === "server-tool-call" && e.name.startsWith("tool_search_tool"),
         );
-        const serverResult = turnEvents.find((e) => e.kind === "server-tool-result");
         const clientCall = turnEvents.find(
           (e) => e.kind === "tool-call" && e.name === GRAB_TOOL.name,
         );
@@ -350,26 +355,30 @@ liveDescribe("LIVE — tool-search deferred result wedge (real Anthropic API)", 
         S.turnMessages =
           turnMessagesEvent?.kind === "turn-messages" ? turnMessagesEvent.messages : undefined;
         S.clientCallId = clientCall?.kind === "tool-call" ? clientCall.id : undefined;
-        if (serverCall && clientCall && !serverResult) {
+        // issue #442 — under the SDK loop the deferred wire shape manifests
+        // as a MULTI-STEP run: the search result is absent from step 0 and
+        // arrives after the continuation step begins.
+        const secondStepAt = turnEvents.findIndex(
+          (e) => e.kind === "step-start" && e.stepIndex === 1,
+        );
+        const serverResultAt = turnEvents.findIndex((e) => e.kind === "server-tool-result");
+        if (serverCall && clientCall && secondStepAt !== -1 && serverResultAt > secondStepAt) {
           S.turnShape = "deferred";
           break;
         }
-        S.turnShape = serverCall && serverResult ? "in-turn" : "other";
+        S.turnShape = serverCall && serverResultAt !== -1 ? "in-turn" : "other";
       }
       S.dangling = S.turnMessages ? danglingProviderCallIds(S.turnMessages) : [];
 
-      /* ---- run A, turn 2: the chat-runner-shaped continuation ---- */
-      if (S.turnMessages && S.clientCallId) {
+      /* ---- run A, turn 2: the chat-runner-shaped next-turn replay ---- */
+      if (S.turnMessages) {
+        // The run's assembly is self-contained now (it includes the client
+        // tool result the SDK executed in-turn), so the next-turn history is
+        // just the Option-C passthrough row.
         const rows: ChatMessageInput[] = [
           { role: "user", content: USER_MESSAGE },
-          // Exactly what the chat-runner persists + replays (Option C
-          // passthrough; loop.ts:795 / attachments.ts:156-159).
           { role: "assistant", content: "", sdkMessages: S.turnMessages },
-          {
-            role: "tool",
-            content: "grab completed: 1024x768 png stored",
-            toolCallId: S.clientCallId,
-          },
+          { role: "user", content: "Thanks — reply DONE and nothing else." },
         ];
         const contEvents = await drain(
           provider.generate({ ...baseInput, messages: rows, maxTokens: 400 }),
@@ -470,7 +479,7 @@ liveDescribe("LIVE — tool-search deferred result wedge (real Anthropic API)", 
     });
   });
 
-  it("elicited the defective wire shape (search + client call, same turn)", () => {
+  it("elicited the deferred wire shape (search + client call, same turn; result in a continuation step)", () => {
     expect(S.fatal).toBeUndefined();
     // If this fails with "in-turn", the API inserted the search result in
     // the same response on every attempt — the deferred shape did not
@@ -479,26 +488,26 @@ liveDescribe("LIVE — tool-search deferred result wedge (real Anthropic API)", 
     expect(S.turnShape).toBe("deferred");
   });
 
-  it("Option C invariant: every providerExecuted tool-search call in responseMessages is paired with its result [EXPECTED FAIL on current SDK]", () => {
+  it("Option C invariant: every providerExecuted tool-search call in responseMessages is paired with its result (#442 flipped)", () => {
     expect(S.fatal).toBeUndefined();
     expect(S.turnMessages).toBeDefined();
-    // PROOF ASSERTION #1 — on the current SDK the deferred turn's
-    // assembly carries the dangling call, so this fails, reproducing the
-    // persisted defective row from the wedged session.
+    // ACCEPTANCE — the SDK loop consumed the deferred continuation
+    // in-turn, so the persisted assembly is fully paired (pre-#442 this
+    // carried the dangling call that wedged session 57c2f0f5).
     expect(S.dangling).toEqual([]);
   });
 
-  it("replaying the persisted turn + client tool result does not 400 [EXPECTED FAIL on current SDK]", () => {
+  it("replaying the persisted turn on the next turn does not 400 (#442 flipped)", () => {
     expect(S.fatal).toBeUndefined();
-    // PROOF ASSERTION #2 — the loop-continuation request built from the
-    // verbatim Option C passthrough is rejected by the live API with the
-    // exact production error ("… was found without a corresponding
+    // ACCEPTANCE — the next-turn request built from the verbatim Option C
+    // passthrough is accepted by the live API (pre-#442 it was rejected
+    // with "… was found without a corresponding
     // tool_search_tool_bm25_tool_result block").
     expect(S.continuationErrors ?? []).toEqual([]);
     expect(S.continuationStop).not.toBe("error");
   });
 
-  it("history repair leaves the defective passthrough row untouched (documents the wedge's permanence)", async () => {
+  it("history repair keeps the HEALTHY paired assembly verbatim (#442 strip must not fire)", async () => {
     expect(S.fatal).toBeUndefined();
     expect(S.turnMessages).toBeDefined();
     const history: HistoryMessage[] = [
@@ -511,20 +520,17 @@ liveDescribe("LIVE — tool-search deferred result wedge (real Anthropic API)", 
         thinkingBlocks: null,
         responseMessages: [...(S.turnMessages as unknown[])],
       },
-      {
-        role: "tool",
-        content: "grab completed: 1024x768 png stored",
-        toolCalls: null,
-        thinkingBlocks: null,
-        toolCallId: S.clientCallId ?? "missing",
-      },
     ];
     const noImages = async () => ({ failed: "no loader in this test" }) as const;
-    const out = await buildProviderHistory(history, noImages);
-    // history-repair.ts:127-130 — passthrough rows replay verbatim; the
-    // dangling providerExecuted call inside is invisible to the repair.
-    // This is WHY the wedge is permanent: no later turn can heal it.
-    expect(out).toHaveLength(3);
+    let healed: string[] = [];
+    const out = await buildProviderHistory(history, noImages, (repair) => {
+      healed = repair.strippedServerToolCallIds;
+    });
+    // The #442 replay-time strip targets DANGLING providerExecuted calls
+    // only; a live-produced, fully-paired assembly must replay verbatim —
+    // the global-pairing safety the unwedge depends on.
+    expect(out).toHaveLength(2);
     expect(out[1]?.sdkMessages).toEqual([...(S.turnMessages as unknown[])]);
+    expect(healed).toEqual([]);
   });
 });
