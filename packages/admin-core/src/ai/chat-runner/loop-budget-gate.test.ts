@@ -22,7 +22,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider, GenerateInput, ProviderEvent } from "../provider.js";
+import type { AIProvider, ProviderEvent } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import type { BudgetGateState } from "./budget-gate.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
@@ -46,17 +47,28 @@ function gateFixture(spentMicrocents: number): BudgetGateState {
   };
 }
 
-/** One text-only turn; records whether the provider was called at all. */
-class OneTurnProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-budget-gate";
+/** issue #442 — step-scripted over the real SDK loop; `calls` counts model
+ *  steps, so a pre-run pause registers as zero calls. */
+class ScriptedStepsProvider extends FixtureProvider {
   calls = 0;
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
-    this.calls++;
-    yield { kind: "text-delta", text: "working" };
-    yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "end_turn" };
+  readonly #script: (call: number) => ProviderEvent[];
+  constructor(script: (call: number) => ProviderEvent[]) {
+    super([]);
+    this.#script = script;
   }
+  protected override nextStepEvents(): readonly ProviderEvent[] {
+    this.calls++;
+    return this.#script(this.calls);
+  }
+}
+
+/** One text-only turn; records whether the provider was called at all. */
+function oneTurnProvider(): ScriptedStepsProvider {
+  return new ScriptedStepsProvider(() => [
+    { kind: "text-delta", text: "working" },
+    { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+    { kind: "done", stopReason: "end_turn" },
+  ]);
 }
 
 /**
@@ -67,23 +79,19 @@ class OneTurnProvider implements AIProvider {
  * closing the turn), so the OLD top-of-loop-only gate deferred the pause to
  * the NEXT turn; the post-dispatch check must pause THIS turn instead.
  */
-class ExpensiveToolCallProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-budget-overshoot";
-  calls = 0;
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
-    this.calls++;
-    yield {
+function expensiveToolCallProvider(): ScriptedStepsProvider {
+  return new ScriptedStepsProvider(() => [
+    {
       kind: "tool-call",
       id: "toolu_build_page_1",
       name: "build_page",
       arguments: { page: { slug: "pricing" }, modules: [] },
-    };
+    },
     // 60k output tokens at $75/MTok ≈ $4.50 — over the $4.20 fixture ceiling
-    // in a single call, from a standing start (spent=0 at the loop-0 top).
-    yield { kind: "usage", inputTokens: 500, outputTokens: 60_000, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "end_turn" };
-  }
+    // in a single call, from a standing start (spent=0 at the pre-run check).
+    { kind: "usage", inputTokens: 500, outputTokens: 60_000, cachedTokens: 0 },
+    { kind: "done", stopReason: "end_turn" },
+  ]);
 }
 
 interface AppendedMessage {
@@ -153,6 +161,16 @@ function buildFixtureQueryApi(gate: BudgetGateState | null): {
   );
   registry.register(
     defineOperation({
+      name: "chat.set_response_messages",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({}),
+      output: z.looseObject({}),
+      handler: async () => ok({ updated: true }),
+    }),
+  );
+  registry.register(
+    defineOperation({
       name: "imports.record_budget_gate_event",
       actorScope: ["human", "system"],
       database: "cms_admin",
@@ -200,7 +218,9 @@ async function runLoop(
     chatBranchId: "cb-1",
     abortSignal: undefined,
     systemChunks: "",
-    filteredTools: [],
+    filteredTools: [
+      { name: "build_page", description: "fixture build_page", inputSchema: { type: "object" } },
+    ],
     initialMessages: [{ role: "user", content: "continue the migration" }],
     compactionThresholdTokens: 600_000,
     maxLoops: 5,
@@ -222,7 +242,7 @@ async function runLoop(
 
 describe("runToolLoop — live budget gate (#297)", () => {
   it("pauses BEFORE any provider call when spend has reached the ceiling", async () => {
-    const provider = new OneTurnProvider();
+    const provider = oneTurnProvider();
     const fixture = buildFixtureQueryApi(gateFixture(4.2 * USD)); // exactly at ceiling
     const { events, result } = await runLoop(provider, fixture);
 
@@ -248,7 +268,7 @@ describe("runToolLoop — live budget gate (#297)", () => {
     // call is dispatched (pairing), then the post-dispatch check trips. The
     // OLD top-of-loop-only gate returned stopReason "end_turn" here, deferring
     // the pause to a whole new turn; the fix pauses this turn.
-    const provider = new ExpensiveToolCallProvider();
+    const provider = expensiveToolCallProvider();
     const fixture = buildFixtureQueryApi(gateFixture(0));
     const { events, result } = await runLoop(provider, fixture);
 
@@ -277,7 +297,7 @@ describe("runToolLoop — live budget gate (#297)", () => {
   });
 
   it("emits ONE system-origin warning at >=80% and lets the turn proceed", async () => {
-    const provider = new OneTurnProvider();
+    const provider = oneTurnProvider();
     const fixture = buildFixtureQueryApi(gateFixture(3.5 * USD)); // ~83%
     const { result } = await runLoop(provider, fixture);
 
@@ -292,7 +312,7 @@ describe("runToolLoop — live budget gate (#297)", () => {
   });
 
   it("stays out of the way when the session has no gate", async () => {
-    const provider = new OneTurnProvider();
+    const provider = oneTurnProvider();
     const fixture = buildFixtureQueryApi(null);
     const { result } = await runLoop(provider, fixture);
 

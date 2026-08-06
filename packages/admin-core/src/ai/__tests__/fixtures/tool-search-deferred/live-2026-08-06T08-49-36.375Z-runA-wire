@@ -1,0 +1,38 @@
+
+
+=================== >>> REQUEST 2026-08-06T08:49:36.376Z  model=claude-haiku-4-5 ===================
+----- SYSTEM PROMPT (469 chars) -----
+You are a wire-format test driver. Follow these instructions EXACTLY.
+In your first response, emit exactly two tool calls TOGETHER in the same
+assistant turn, and nothing else (no prose, no explanations):
+1. tool_search_tool_bm25 with input {"query": "map external page types"}
+2. capture_screen_grab with input {"address": "https://example.com/"}
+Emit both calls in parallel. Do NOT wait for the search result before
+calling capture_screen_grab. Do not write any text.
+----- MESSAGES (1) -----
+[user] Run the two calls now, exactly as instructed.
+----- TOOLS (12): 1 loaded, 11 deferred -----
+loaded:   capture_screen_grab
+deferred: ledger_entry_sum, invoice_draft_create, warehouse_bin_count, payroll_run_start, shipment_label_print, vendor_contact_merge, tax_rate_lookup, budget_line_adjust, receipt_ocr_queue, timesheet_week_close, expense_policy_check
+----- RESPONSE 2026-08-06T08:49:37.583Z stop=tool_use elapsed=1.2s -----
+[tool-call] [server] tool_search_tool_bm25({"query":"map external page types"})
+[tool-call] capture_screen_grab({"address":"https://example.com/"})
+
+
+=================== >>> REQUEST 2026-08-06T08:49:37.585Z  model=claude-haiku-4-5 ===================
+----- SYSTEM PROMPT (469 chars) -----
+You are a wire-format test driver. Follow these instructions EXACTLY.
+In your first response, emit exactly two tool calls TOGETHER in the same
+assistant turn, and nothing else (no prose, no explanations):
+1. tool_search_tool_bm25 with input {"query": "map external page types"}
+2. capture_screen_grab with input {"address": "https://example.com/"}
+Emit both calls in parallel. Do NOT wait for the search result before
+calling capture_screen_grab. Do not write any text.
+----- MESSAGES (3) -----
+[user] Run the two calls now, exactly as instructed.
+[assistant] 
+[tool_result toolu_01FLoh1e2EE5v1CqMVP5F2cv] grab completed: 1024x768 png stored
+----- TOOLS (12): 1 loaded, 11 deferred -----
+loaded:   capture_screen_grab
+deferred: ledger_entry_sum, invoice_draft_create, warehouse_bin_count, payroll_run_start, shipment_label_print, vendor_contact_merge, tax_rate_lookup, budget_line_adjust, receipt_ocr_queue, timesheet_week_close, expense_policy_check
+----- RESPONSE 2026-08-06T08:49:39.104Z stop=end_turn elapsed=1.5s -----

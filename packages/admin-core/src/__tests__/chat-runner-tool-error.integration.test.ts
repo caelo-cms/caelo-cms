@@ -24,7 +24,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { z } from "zod";
 import { runChatTurn } from "../ai/chat-runner.js";
-import type { AIProvider, GenerateInput, ProviderEvent, ProviderName } from "../ai/provider.js";
+import type { ProviderEvent } from "../ai/provider.js";
+import { FixtureProvider } from "../ai/providers/anthropic.js";
 import { ToolRegistry } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
 
@@ -52,22 +53,26 @@ const AI: ExecutionContext = {
  * turn with text + end_turn. Mirrors what the real Anthropic provider
  * does when the runner re-prompts after a tool dispatch.
  */
-class TwoLoopProvider implements AIProvider {
-  readonly name: ProviderName = "anthropic";
-  readonly model = "claude-test-1";
+class TwoLoopProvider extends FixtureProvider {
   #loop = 0;
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
+  constructor() {
+    super([], "claude-test-1");
+  }
+  protected override nextStepEvents(): readonly ProviderEvent[] {
     if (this.#loop === 0) {
       this.#loop++;
-      yield { kind: "text-delta", text: "trying the throwing tool" };
-      yield { kind: "tool-call", id: "tc-1", name: "throwing_tool", arguments: {} };
-      yield { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "tool_use" };
-    } else {
-      yield { kind: "text-delta", text: "got it; giving up gracefully" };
-      yield { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "end_turn" };
+      return [
+        { kind: "text-delta", text: "trying the throwing tool" },
+        { kind: "tool-call", id: "tc-1", name: "throwing_tool", arguments: {} },
+        { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+        { kind: "done", stopReason: "tool_use" },
+      ];
     }
+    return [
+      { kind: "text-delta", text: "got it; giving up gracefully" },
+      { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
   }
 }
 

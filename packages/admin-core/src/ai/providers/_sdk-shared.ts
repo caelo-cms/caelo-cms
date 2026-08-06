@@ -32,6 +32,7 @@ import type {
   GenerateInput,
   GenerateObjectResult,
   ProviderEvent,
+  ProviderStepSummary,
 } from "../provider.js";
 import { normalizeToolArgs } from "../tools/normalize-args.js";
 
@@ -176,6 +177,8 @@ export async function* translateSDKStream(
   };
   // Reasoning text accumulates across deltas; emit at reasoning-end.
   const reasoningById = new Map<string, string>();
+  // issue #442 — 0-based SDK-loop step counter, driven by `start-step` parts.
+  let stepIndex = -1;
 
   // v0.5.9 — track whether a terminal `done` event was yielded. If the
   // underlying SDK stream ends without a `finish` or `error` part
@@ -274,11 +277,24 @@ export async function* translateSDKStream(
           };
           break;
         }
+        case "start-step": {
+          // issue #442 — a new SDK-loop step. Consumers reset per-step
+          // accumulators on this boundary; 0-based within one run.
+          stepIndex += 1;
+          yield { kind: "step-start", stepIndex };
+          break;
+        }
         case "finish-step": {
           // SDK 6 LanguageModelUsage shape: flat inputTokens/outputTokens
           // counters with cache info nested under inputTokenDetails.
           // (SDK 5 had a flat `cachedInputTokens` field.) Read both for
           // forward-compat with future shape changes.
+          //
+          // issue #442 — under the multi-step loop the `usage` event is
+          // PER-STEP (this step's spend, emitted here); the terminal
+          // `finish` part carries a cumulative total we deliberately do NOT
+          // re-emit (consumers accumulate usage events, and double-emitting
+          // would double-count every step).
           const u = e.usage as
             | {
                 inputTokens?: number;
@@ -289,41 +305,16 @@ export async function* translateSDKStream(
             | undefined;
           if (u) {
             usage = {
-              inputTokens: u.inputTokens ?? usage.inputTokens,
-              outputTokens: u.outputTokens ?? usage.outputTokens,
-              cachedTokens:
-                u.inputTokenDetails?.cacheReadTokens ?? u.cachedInputTokens ?? usage.cachedTokens,
-              cacheCreationTokens:
-                u.inputTokenDetails?.cacheWriteTokens ?? usage.cacheCreationTokens,
+              inputTokens: u.inputTokens ?? 0,
+              outputTokens: u.outputTokens ?? 0,
+              cachedTokens: u.inputTokenDetails?.cacheReadTokens ?? u.cachedInputTokens ?? 0,
+              cacheCreationTokens: u.inputTokenDetails?.cacheWriteTokens ?? 0,
             };
+            yield { kind: "usage", ...usage };
           }
           break;
         }
         case "finish": {
-          const tu = (e.totalUsage ?? e.usage) as
-            | {
-                inputTokens?: number;
-                outputTokens?: number;
-                cachedInputTokens?: number;
-                inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
-              }
-            | undefined;
-          // The cache WRITE count lives on the flat usage as
-          // `inputTokenDetails.cacheWriteTokens` (@ai-sdk/anthropic 4.x,
-          // present on both finish-step `usage` and finish `totalUsage`).
-          // providerMetadata is undefined on the finish event, so do NOT
-          // rely on it here.
-          if (tu) {
-            usage = {
-              inputTokens: tu.inputTokens ?? usage.inputTokens,
-              outputTokens: tu.outputTokens ?? usage.outputTokens,
-              cachedTokens:
-                tu.inputTokenDetails?.cacheReadTokens ?? tu.cachedInputTokens ?? usage.cachedTokens,
-              cacheCreationTokens:
-                tu.inputTokenDetails?.cacheWriteTokens ?? usage.cacheCreationTokens,
-            };
-          }
-          yield { kind: "usage", ...usage };
           const reason = e.finishReason as string | undefined;
           // v0.10.17 — diagnostic capture for empty-response root-cause
           // hunt. When the model emits 0 text + 0 tools + 0 thinking
@@ -375,6 +366,21 @@ export async function* translateSDKStream(
           yieldedDone = true;
           break;
         }
+        case "abort": {
+          // issue #442 — the SDK emits a dedicated `abort` part (operator
+          // abort OR an SDK-native timeout: the reason string carries e.g.
+          // "First chunk timeout of Nms exceeded"). Surface it as an error
+          // event so consumers can classify (the chat-runner's watchdog
+          // retry keys off the reason; operator aborts are ignored there).
+          const reason =
+            typeof e.reason === "string" && e.reason.length > 0
+              ? e.reason
+              : "provider call aborted";
+          yield { kind: "error", message: reason };
+          yield { kind: "done", stopReason: "error" };
+          yieldedDone = true;
+          break;
+        }
       }
     }
   } finally {
@@ -408,8 +414,11 @@ function safeJsonParse(s: string): unknown {
 
 /**
  * Build the streamText({tools}) parameter from Caelo's tool catalog.
- * Schema-only (no execute) — chat-runner dispatches via its own
- * `tools.dispatch` so the SDK doesn't run the tool loop.
+ * issue #442 — every chat-runner tool now ships an `execute` (a dispatch
+ * wrapper for routine tools, the propose→execute_proposal chain for gated
+ * ones), so the SDK's own multi-step loop drives dispatch and provider-
+ * deferred tool results get consumed in-turn. Schema-only entries (no
+ * execute) remain valid for simple callers whose tools end the run.
  *
  * issue #245 root cause — each tool schema carries a `validate` callback.
  * The AI SDK parses a tool call's raw argument text via `safeParseJSON`,
@@ -429,22 +438,14 @@ function safeJsonParse(s: string): unknown {
  * so it still produces the AI-actionable error message on genuinely invalid
  * input.
  */
-export function buildSDKTools(tools: GenerateInput["tools"]): Record<
-  string,
-  {
-    description: string;
-    inputSchema: ReturnType<typeof jsonSchema>;
-    execute?: (input: unknown) => Promise<unknown>;
-  }
-> {
-  const out: Record<
-    string,
-    {
-      description: string;
-      inputSchema: ReturnType<typeof jsonSchema>;
-      execute?: (input: unknown) => Promise<unknown>;
-    }
-  > = {};
+type BuiltSDKTool = {
+  description: string;
+  inputSchema: ReturnType<typeof jsonSchema>;
+  execute?: (input: unknown, options?: { toolCallId?: string }) => Promise<unknown>;
+};
+
+export function buildSDKTools(tools: GenerateInput["tools"]): Record<string, BuiltSDKTool> {
+  const out: Record<string, BuiltSDKTool> = {};
   for (const t of tools) {
     const schema = t.inputSchema;
     out[t.name] = {
@@ -455,22 +456,101 @@ export function buildSDKTools(tools: GenerateInput["tools"]): Record<
           value: normalizeToolArgs(value, schema).args,
         }),
       }),
-      // Slice 1 — gated tools are SDK-executed so `toolApproval` can pause
-      // before the execute. Routine tools omit execute and come back as
-      // client tool-calls for our loop to dispatch.
+      // issue #442 — the execute rides through verbatim: dispatch wrappers
+      // for routine tools, the gated propose→execute chain for approval-
+      // gated ones (the SDK pauses those on `toolApproval` before execute).
       ...(t.execute ? { execute: t.execute } : {}),
     };
   }
   return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* issue #442 — SDK-loop wiring helpers                                */
+/* ------------------------------------------------------------------ */
+
 /**
- * Run a streamText call configured for ONE provider call (no
- * auto-loop). All four SDK-backed providers funnel through this
- * helper for the actual streaming + translation. The
- * `extraOptions` argument carries provider-specific bits
- * (Anthropic's `providerOptions.anthropic.thinking`, OpenAI's
- * `providerOptions.openai.*`, etc.).
+ * Structural view of the SDK's StepResult, narrowed to the fields the loop
+ * wiring reads. Kept structural (not imported from `ai`) so the summary
+ * mapping stays robust across SDK type refactors; the fields used are the
+ * documented public StepResult surface.
+ */
+interface SDKStepLike {
+  stepNumber?: number;
+  finishReason?: string;
+  content?: readonly unknown[];
+  response?: { messages?: readonly unknown[] };
+}
+
+interface SDKStepContentPartLike {
+  type?: string;
+  toolCallId?: string;
+  toolName?: string;
+  providerExecuted?: boolean;
+}
+
+/** Map SDK StepResults → the boundary's lightweight per-step summaries. */
+function summarizeSteps(steps: readonly SDKStepLike[]): ProviderStepSummary[] {
+  return steps.map((s, i) => {
+    const parts = (s.content ?? []) as readonly SDKStepContentPartLike[];
+    return {
+      stepIndex: s.stepNumber ?? i,
+      finishReason: s.finishReason ?? "unknown",
+      clientToolNames: parts
+        .filter((p) => p.type === "tool-call" && p.providerExecuted !== true)
+        .map((p) => p.toolName ?? ""),
+      hasApprovalRequests: parts.some((p) => p.type === "tool-approval-request"),
+    };
+  });
+}
+
+/**
+ * Default stop condition when the caller passes no `loop` config: end after
+ * one step — the pre-#442 single-step contract — UNLESS a provider-deferred
+ * tool result is still outstanding. The Anthropic API defers a tool-search
+ * result to the NEXT response when the model pairs the search call with a
+ * client tool call in the same turn (issue #442's proven root cause); only
+ * continuing the loop can ever consume that continuation, so stopping on a
+ * dangling providerExecuted call would persist the exact poison that wedged
+ * session 57c2f0f5. Two guards bound the continuation: it never proceeds
+ * past unresolved client calls (the request would 400 on client pairing),
+ * and a hard ceiling stops a pathological defer-forever chain loudly rather
+ * than silently spending (CLAUDE.md §2 — the resulting dangling call then
+ * fails loudly at the replay strip, not silently mid-loop).
+ */
+const MAX_DEFERRED_ONLY_CONTINUATIONS = 4;
+
+function defaultDeferredAwareStop({ steps }: { steps: readonly SDKStepLike[] }): boolean {
+  const providerCallIds = new Set<string>();
+  const clientCallIds = new Set<string>();
+  const resultIds = new Set<string>();
+  for (const s of steps) {
+    for (const raw of s.content ?? []) {
+      const p = raw as SDKStepContentPartLike;
+      if (p.type === "tool-call" && p.toolCallId) {
+        (p.providerExecuted === true ? providerCallIds : clientCallIds).add(p.toolCallId);
+      } else if ((p.type === "tool-result" || p.type === "tool-error") && p.toolCallId) {
+        resultIds.add(p.toolCallId);
+      }
+    }
+  }
+  const unresolvedClient = [...clientCallIds].some((id) => !resultIds.has(id));
+  if (unresolvedClient) return true;
+  const dangling = [...providerCallIds].some((id) => !resultIds.has(id));
+  if (!dangling) return true;
+  return steps.length >= MAX_DEFERRED_ONLY_CONTINUATIONS;
+}
+
+/**
+ * Run one `streamText` call. issue #442 — this is now the AI SDK's own
+ * MULTI-STEP loop: with `input.loop` set (the chat-runner), the caller's
+ * stopWhen/prepareStep/onStepFinish own the between-step policy and every
+ * tool ships an `execute`; without it, a default stop condition preserves
+ * single-step behavior but still consumes provider-deferred tool-search
+ * continuations (see `defaultDeferredAwareStop`). All four SDK-backed
+ * providers funnel through this helper for the streaming + translation.
+ * The `extraOptions` argument carries provider-specific bits (Anthropic's
+ * `providerOptions.anthropic.thinking`, OpenAI's `providerOptions.openai.*`).
  *
  * v0.6.0 W2 — `toolsTransform` lets a provider rewrite the tools
  * dictionary before it ships to streamText. Anthropic uses this to
@@ -498,8 +578,26 @@ export async function* runSDKStream(args: {
    * Anthropic's `toolSearch`).
    */
   toolsTransform?: (built: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * issue #442 — encode a chat-runner messages override (prepareStep) into
+   * the FULL per-step ModelMessage array, INCLUDING the provider's system
+   * encoding. Anthropic passes its chunked system messages + rolling
+   * cache-breakpoint tagging here so an overridden step's request bytes are
+   * identical to what a fresh cross-turn call would send (prompt-cache
+   * parity); simpler providers default to a bare `toSDKMessages`.
+   */
+  loopMessages?: (msgs: readonly ChatMessageInput[]) => ModelMessage[];
 }): AsyncIterable<ProviderEvent> {
   const { model, input, systemAndMessages, extraOptions, toolsTransform } = args;
+  const loop = input.loop;
+  const encodeLoopMessages = args.loopMessages ?? ((msgs) => toSDKMessages(msgs));
+  // Approval-resume runs execute the approved gated tool BEFORE step 0 and
+  // deliver its tool_result as leading "initial" response messages that
+  // belong to no step. `prepareStep(stepNumber=0)` receives exactly them in
+  // its accumulated `responseMessages` (public contract; verified against
+  // the installed ai@7.0.55) — captured here so `onStepFinish(0)` can hand
+  // them to the caller for persistence alongside step 0's slice.
+  let initialResponseMessages: readonly unknown[] = [];
   const builtTools = buildSDKTools(input.tools) as Record<string, unknown>;
   const sdkTools = toolsTransform ? toolsTransform(builtTools) : builtTools;
   // Slice 1 (SDK approval gate) — derive the toolApproval map from the tools
@@ -531,8 +629,11 @@ export async function* runSDKStream(args: {
     // single bounded re-run after a narrate-then-stop turn; `"required"` is the
     // SDK spelling of Anthropic's `tool_choice: {"type":"any"}`. Omitted (not
     // sent as "auto") on every normal call so the request bytes — and the
-    // prompt cache — stay byte-identical to before this landed.
-    ...(input.toolChoice === "required" && Object.keys(sdkTools).length > 0
+    // prompt cache — stay byte-identical to before this landed. Under a loop
+    // config the caller forces the choice per-step via prepareStep instead —
+    // a top-level "required" would force EVERY step into a tool call and the
+    // run could never end.
+    ...(input.toolChoice === "required" && !loop && Object.keys(sdkTools).length > 0
       ? { toolChoice: "required" as const }
       : {}),
     ...(Object.keys(toolApproval).length > 0
@@ -546,8 +647,56 @@ export async function* runSDKStream(args: {
     maxOutputTokens: input.maxTokens ?? 32768,
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    // issue #442 — SDK-native per-step first-chunk watchdog; replaces the
+    // chat-runner's hand-rolled first-event timer. A trip aborts the run
+    // with a "First chunk timeout of Nms exceeded" TimeoutError the caller
+    // classifies and retries once (streaming.ts).
+    ...(input.firstChunkTimeoutMs !== undefined
+      ? { timeout: { firstChunkMs: input.firstChunkTimeoutMs } }
+      : {}),
+    // issue #442 — the multi-step loop contract. Without a caller loop
+    // config the default condition preserves single-step semantics while
+    // still consuming provider-deferred continuations. With one, the
+    // caller's policy owns continuation entirely (a policy stop with a
+    // pending deferral is healed by the replay-time strip on the next turn).
+    stopWhen: loop
+      ? async ({ steps }: { steps: readonly SDKStepLike[] }) =>
+          await loop.stopWhen({ steps: summarizeSteps(steps) })
+      : defaultDeferredAwareStop,
+    prepareStep: async (opts: {
+      stepNumber: number;
+      steps: readonly SDKStepLike[];
+      responseMessages?: readonly unknown[];
+    }) => {
+      if (opts.stepNumber === 0) initialResponseMessages = opts.responseMessages ?? [];
+      if (!loop) return undefined;
+      const override = await loop.prepareStep({
+        stepIndex: opts.stepNumber,
+        steps: summarizeSteps(opts.steps),
+      });
+      if (!override) return undefined;
+      return {
+        ...(override.messages ? { messages: encodeLoopMessages(override.messages) } : {}),
+        ...(override.toolChoice ? { toolChoice: override.toolChoice } : {}),
+      };
+    },
+    ...(loop
+      ? {
+          // The SDK awaits onStepFinish before evaluating stopWhen /
+          // starting the next step, so the caller's per-step persistence is
+          // strictly ordered before the next model call.
+          onStepFinish: async (step: SDKStepLike) => {
+            await loop.onStepFinish({
+              stepIndex: step.stepNumber ?? 0,
+              finishReason: step.finishReason ?? "unknown",
+              responseMessages: step.response?.messages ?? [],
+              initialResponseMessages: (step.stepNumber ?? 0) === 0 ? initialResponseMessages : [],
+            });
+          },
+        }
+      : {}),
     ...(extraOptions ?? {}),
-  });
+  } as Parameters<typeof streamText>[0]);
   yield* translateSDKStream(result.fullStream);
   // Option C (2026-07) — after the stream drains, emit the SDK's canonical
   // messages for this turn. The SDK assembles these with provider-executed

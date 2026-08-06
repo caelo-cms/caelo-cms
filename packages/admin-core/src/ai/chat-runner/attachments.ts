@@ -131,10 +131,17 @@ export interface HistoryMessage {
  * Map persisted chat history into provider messages, inlining the most
  * recent user message's attachments as image parts (see file header
  * for the inline-vs-marker policy).
+ *
+ * `onRepair` (issue #442) fires when the pairing repair changed anything —
+ * in particular when it healed a dangling providerExecuted tool-search call
+ * (`strippedServerToolCallIds`), which the caller must surface as a
+ * bug-report row: a heal means the session WAS wedged, and that must never
+ * pass silently (CLAUDE.md §2).
  */
 export async function buildProviderHistory(
   messages: readonly HistoryMessage[],
   loadImage: AttachmentImageLoader,
+  onRepair?: (repair: import("./history-repair.js").HistoryRepairResult) => Promise<void> | void,
 ): Promise<ChatMessageInput[]> {
   const out: ChatMessageInput[] = [];
   // Option C — an assistant row that carries the SDK's canonical assembly
@@ -206,19 +213,23 @@ export async function buildProviderHistory(
   }
   // Run #10 D1 — tool_use/tool_result pairing repair. Heals sessions
   // already poisoned by orphan tool_results (the `approval-<uuid>` ack
-  // class) or unanswered tool_uses, which otherwise 400 every future
-  // turn permanently. See history-repair.ts for the fault taxonomy.
+  // class), unanswered tool_uses, or issue #442's dangling providerExecuted
+  // tool-search calls, which otherwise 400 every future turn permanently.
+  // See history-repair.ts for the fault taxonomy.
   const repaired = repairToolCallPairing(out);
   if (
     repaired.droppedToolResultIds.length > 0 ||
     repaired.strippedToolCallIds.length > 0 ||
-    repaired.droppedEmptyAssistantMessages > 0
+    repaired.droppedEmptyAssistantMessages > 0 ||
+    repaired.strippedServerToolCallIds.length > 0
   ) {
     console.error("[chat-runner] history-repaired", {
       droppedToolResultIds: repaired.droppedToolResultIds,
       strippedToolCallIds: repaired.strippedToolCallIds,
       droppedEmptyAssistantMessages: repaired.droppedEmptyAssistantMessages,
+      strippedServerToolCallIds: repaired.strippedServerToolCallIds,
     });
+    await onRepair?.(repaired);
   }
   return repaired.messages;
 }

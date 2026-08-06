@@ -21,7 +21,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider, GenerateInput, ProviderEvent } from "../provider.js";
+import type { AIProvider, ProviderEvent } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
 import type { UsageAccumulator } from "./streaming.js";
@@ -32,31 +33,46 @@ import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn } from "./types.js";
  * spend already booked). Turn 2: plain end_turn. inputCost is 15 $/MTok
  * in the harness, so 1M input tokens ≈ $15 ≈ 1.5e9 µ¢ of billable spend.
  */
-class TwoTurnToolProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-cap-wrapup";
+class TwoTurnToolProvider extends FixtureProvider {
   calls = 0;
-  /** messages snapshot per generate() call, for asserting the nudge reached the model. */
-  seenMessages: string[][] = [];
 
-  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+  constructor() {
+    super([], "fixture-cap-wrapup");
+  }
+
+  protected override nextStepEvents(): readonly ProviderEvent[] {
     this.calls++;
-    this.seenMessages.push(input.messages.map((m) => m.content));
     if (this.calls === 1) {
-      yield {
-        kind: "tool-call",
-        id: "toolu_wrapup_1",
-        name: "list_pages",
-        arguments: {},
-      };
-      yield { kind: "usage", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "tool_use" };
-    } else {
-      yield { kind: "text-delta", text: "submitting result" };
-      yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "end_turn" };
+      return [
+        { kind: "tool-call", id: "toolu_wrapup_1", name: "list_pages", arguments: {} },
+        { kind: "usage", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0 },
+        { kind: "done", stopReason: "tool_use" },
+      ];
+    }
+    return [
+      { kind: "text-delta", text: "submitting result" },
+      { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
+  }
+}
+
+/** All text contents in one step's model-level prompt (seenPrompts entry). */
+function promptTexts(prompt: readonly unknown[] | undefined): string[] {
+  const out: string[] = [];
+  for (const msg of prompt ?? []) {
+    const m = msg as { content?: unknown };
+    if (typeof m.content === "string") {
+      out.push(m.content);
+      continue;
+    }
+    if (!Array.isArray(m.content)) continue;
+    for (const part of m.content) {
+      const pt = part as { type?: string; text?: string };
+      if (pt.type === "text" && typeof pt.text === "string") out.push(pt.text);
     }
   }
+  return out;
 }
 
 interface AppendedMessage {
@@ -97,6 +113,16 @@ function buildFixtureQueryApi(): {
       input: z.looseObject({}),
       output: z.looseObject({}),
       handler: async () => ok({ gate: null }),
+    }),
+  );
+  registry.register(
+    defineOperation({
+      name: "chat.set_response_messages",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({}),
+      output: z.looseObject({}),
+      handler: async () => ok({ updated: true }),
     }),
   );
   registry.register(
@@ -153,7 +179,9 @@ async function runLoop(
     chatBranchId: "cb-1",
     abortSignal: undefined,
     systemChunks: "",
-    filteredTools: [],
+    filteredTools: [
+      { name: "list_pages", description: "fixture list_pages", inputSchema: { type: "object" } },
+    ],
     initialMessages: [{ role: "user", content: "rebuild the pricing cluster" }],
     compactionThresholdTokens: 600_000,
     maxLoops: 5,
@@ -191,9 +219,9 @@ describe("runToolLoop — cost-cap wrap-up nudge (#304)", () => {
     expect(nudges[0]?.content).toContain("submit_result");
     expect(nudges[0]?.content).toContain("not reached: cost cap");
 
-    // The nudge reached the MODEL on the second provider call, not just
+    // The nudge reached the MODEL on the second step's request, not just
     // the transcript.
-    const secondCall = provider.seenMessages[1] ?? [];
+    const secondCall = promptTexts(provider.seenPrompts[1]);
     expect(secondCall.some((c) => c.includes("Cost checkpoint"))).toBe(true);
   });
 

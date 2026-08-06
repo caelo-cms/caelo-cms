@@ -23,24 +23,38 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider, GenerateInput, ProviderEvent } from "../provider.js";
+import type { AIProvider, ProviderEvent } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, SAME_TOOL_RUNAWAY_LIMIT, type ToolLoopResult } from "./loop.js";
 import type { UsageAccumulator } from "./streaming.js";
 import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn } from "./types.js";
 
-/** Emits the SAME tool name on every turn — the stuck retry-loop shape. */
-class StuckToolProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-stuck-tool";
+/**
+ * issue #442 — per-STEP scripting over the real SDK loop: `script(call)`
+ * returns the model step's events; `calls` counts model steps (the pre-#442
+ * per-provider-call semantics map 1:1 onto steps).
+ */
+class ScriptedStepsProvider extends FixtureProvider {
   calls = 0;
-  constructor(private readonly toolName = "build_page") {}
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
-    this.calls++;
-    yield { kind: "tool-call", id: `toolu_${this.calls}`, name: this.toolName, arguments: {} };
-    yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "tool_use" };
+  readonly #script: (call: number) => ProviderEvent[];
+  constructor(script: (call: number) => ProviderEvent[]) {
+    super([]);
+    this.#script = script;
   }
+  protected override nextStepEvents(): readonly ProviderEvent[] {
+    this.calls++;
+    return this.#script(this.calls);
+  }
+}
+
+/** Emits the SAME tool name on every step — the stuck retry-loop shape. */
+function stuckToolProvider(toolName = "build_page"): ScriptedStepsProvider {
+  return new ScriptedStepsProvider((call) => [
+    { kind: "tool-call", id: `toolu_${call}`, name: toolName, arguments: {} },
+    { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+    { kind: "done", stopReason: "tool_use" },
+  ]);
 }
 
 /**
@@ -48,63 +62,53 @@ class StuckToolProvider implements AIProvider {
  * repeats on consecutive iterations. Ends the turn cleanly after `stopAfter`
  * calls (model-stop), the way a productive migration eventually does.
  */
-class VariedToolProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-varied-tool";
-  calls = 0;
-  constructor(private readonly stopAfter: number) {}
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
-    this.calls++;
-    if (this.calls > this.stopAfter) {
-      yield { kind: "text-delta", text: "all done" };
-      yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "end_turn" };
-      return;
+function variedToolProvider(stopAfter: number): ScriptedStepsProvider {
+  return new ScriptedStepsProvider((call) => {
+    if (call > stopAfter) {
+      return [
+        { kind: "text-delta", text: "all done" },
+        { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+        { kind: "done", stopReason: "end_turn" },
+      ];
     }
-    // Cycle through 4 distinct names so consecutive iterations always differ.
-    const name = `tool_${this.calls % 4}`;
-    yield { kind: "tool-call", id: `toolu_${this.calls}`, name, arguments: {} };
-    yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "tool_use" };
-  }
+    // Cycle through 4 distinct names so consecutive steps always differ.
+    return [
+      { kind: "tool-call", id: `toolu_${call}`, name: `tool_${call % 4}`, arguments: {} },
+      { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+      { kind: "done", stopReason: "tool_use" },
+    ];
+  });
 }
 
 /** Emits a DIFFERENT tool every turn and NEVER stops — bounded only by the
  *  absolute ceiling (maxLoops). Verifies varied work isn't caught by the
  *  same-tool guard; it falls through to the ceiling backstop instead. */
-class EndlessVariedProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-endless-varied";
-  calls = 0;
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
-    this.calls++;
-    const name = `tool_${this.calls % 4}`;
-    yield { kind: "tool-call", id: `toolu_${this.calls}`, name, arguments: {} };
-    yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "tool_use" };
-  }
+function endlessVariedProvider(): ScriptedStepsProvider {
+  return new ScriptedStepsProvider((call) => [
+    { kind: "tool-call", id: `toolu_${call}`, name: `tool_${call % 4}`, arguments: {} },
+    { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+    { kind: "done", stopReason: "tool_use" },
+  ]);
 }
 
 /** Emits TWO different tools in ONE iteration, repeatedly — a mixed set, which
  *  must reset the streak and never trip the guard. Stops after `stopAfter`. */
-class MixedSetProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-mixed-set";
-  calls = 0;
-  constructor(private readonly stopAfter: number) {}
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
-    this.calls++;
-    if (this.calls > this.stopAfter) {
-      yield { kind: "text-delta", text: "all done" };
-      yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "end_turn" };
-      return;
+function mixedSetProvider(stopAfter: number): ScriptedStepsProvider {
+  return new ScriptedStepsProvider((call) => {
+    if (call > stopAfter) {
+      return [
+        { kind: "text-delta", text: "all done" },
+        { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+        { kind: "done", stopReason: "end_turn" },
+      ];
     }
-    yield { kind: "tool-call", id: `toolu_a_${this.calls}`, name: "tool_a", arguments: {} };
-    yield { kind: "tool-call", id: `toolu_b_${this.calls}`, name: "tool_b", arguments: {} };
-    yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "tool_use" };
-  }
+    return [
+      { kind: "tool-call", id: `toolu_a_${call}`, name: "tool_a", arguments: {} },
+      { kind: "tool-call", id: `toolu_b_${call}`, name: "tool_b", arguments: {} },
+      { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+      { kind: "done", stopReason: "tool_use" },
+    ];
+  });
 }
 
 interface AppendedMessage {
@@ -157,6 +161,16 @@ function buildFixtureQueryApi(): {
   );
   registry.register(
     defineOperation({
+      name: "chat.set_response_messages",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({}),
+      output: z.looseObject({}),
+      handler: async () => ok({ updated: true }),
+    }),
+  );
+  registry.register(
+    defineOperation({
       name: "chat.cache_tool_result",
       actorScope: ["human", "ai", "system"],
       database: "cms_admin",
@@ -199,7 +213,11 @@ async function runLoop(
     chatBranchId: "cb-1",
     abortSignal: undefined,
     systemChunks: "",
-    filteredTools: [],
+    // Every scripted tool name ships a schema so the SDK loop executes it
+    // through the dispatch wrapper (an unknown tool would be dropped).
+    filteredTools: ["build_page", "tool_0", "tool_1", "tool_2", "tool_3", "tool_a", "tool_b"].map(
+      (name) => ({ name, description: `fixture tool ${name}`, inputSchema: { type: "object" } }),
+    ),
     initialMessages: [{ role: "user", content: "continue the migration" }],
     compactionThresholdTokens: 600_000,
     maxLoops,
@@ -221,7 +239,7 @@ async function runLoop(
 
 describe("runToolLoop — same-tool runaway guard", () => {
   it("stops when the SAME tool is called SAME_TOOL_RUNAWAY_LIMIT times in a row", async () => {
-    const provider = new StuckToolProvider("build_page");
+    const provider = stuckToolProvider("build_page");
     const fixture = buildFixtureQueryApi();
     // maxLoops well above the runaway limit so the guard — not the ceiling — fires.
     const { result } = await runLoop(provider, fixture, 200);
@@ -246,7 +264,7 @@ describe("runToolLoop — same-tool runaway guard", () => {
   });
 
   it("does NOT trip on a long VARIED tool sequence — runs to model-stop", async () => {
-    const provider = new VariedToolProvider(30); // 30 varied tool iterations, then end_turn
+    const provider = variedToolProvider(30); // 30 varied tool steps, then end_turn
     const fixture = buildFixtureQueryApi();
     const { result } = await runLoop(provider, fixture, 200);
 
@@ -262,7 +280,7 @@ describe("runToolLoop — same-tool runaway guard", () => {
   });
 
   it("bounds endless VARIED work by the absolute ceiling, not the runaway guard", async () => {
-    const provider = new EndlessVariedProvider();
+    const provider = endlessVariedProvider();
     const fixture = buildFixtureQueryApi();
     // Small ceiling stands in for ABSOLUTE_LOOP_CEILING to keep the test fast.
     const { result } = await runLoop(provider, fixture, 15);
@@ -283,7 +301,7 @@ describe("runToolLoop — same-tool runaway guard", () => {
     // 12 iterations, each emitting tool_a + tool_b together — a mixed set that
     // resets the streak every iteration, so it never trips despite exceeding
     // SAME_TOOL_RUNAWAY_LIMIT iterations.
-    const provider = new MixedSetProvider(12);
+    const provider = mixedSetProvider(12);
     const fixture = buildFixtureQueryApi();
     const { result } = await runLoop(provider, fixture, 200);
 

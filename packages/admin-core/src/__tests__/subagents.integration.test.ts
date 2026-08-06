@@ -259,12 +259,14 @@ describe("subagent ops", () => {
       constructor() {
         super([], "claude-test-p264");
       }
-      override async *generate(): AsyncIterable<ProviderEvent> {
+      protected override nextStepEvents(): readonly ProviderEvent[] {
+        // issue #442 — the queue advances once per MODEL STEP of the real
+        // SDK loop (one pre-#442 provider call maps 1:1 onto one step).
         const events = this.#queue[this.#idx] ?? [
           { kind: "done" as const, stopReason: "end_turn" as const },
         ];
         this.#idx += 1;
-        for (const e of events) yield e;
+        return events;
       }
     }
 
@@ -367,12 +369,14 @@ describe("subagent ops", () => {
       constructor() {
         super([], "claude-test-d2");
       }
-      override async *generate(): AsyncIterable<ProviderEvent> {
+      protected override nextStepEvents(): readonly ProviderEvent[] {
+        // issue #442 — the queue advances once per MODEL STEP of the real
+        // SDK loop (one pre-#442 provider call maps 1:1 onto one step).
         const events = this.#queue[this.#idx] ?? [
           { kind: "done" as const, stopReason: "end_turn" as const },
         ];
         this.#idx += 1;
-        for (const e of events) yield e;
+        return events;
       }
     }
 
@@ -472,12 +476,14 @@ describe("subagent ops", () => {
       constructor() {
         super([], "claude-test-d2-err");
       }
-      override async *generate(): AsyncIterable<ProviderEvent> {
+      protected override nextStepEvents(): readonly ProviderEvent[] {
+        // issue #442 — the queue advances once per MODEL STEP of the real
+        // SDK loop (one pre-#442 provider call maps 1:1 onto one step).
         const events = this.#queue[this.#idx] ?? [
           { kind: "done" as const, stopReason: "end_turn" as const },
         ];
         this.#idx += 1;
-        for (const e of events) yield e;
+        return events;
       }
     }
 

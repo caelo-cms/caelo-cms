@@ -93,7 +93,19 @@ export const appendChatMessageOp = defineOperation({
         return;
       }
       const isToolCallShell = Array.isArray(val.toolCalls) && val.toolCalls.length > 0;
-      if (val.role === "assistant" && !isToolCallShell && val.status !== "interrupted") {
+      // issue #442 — a deferred-tool-search continuation step can complete
+      // with NO visible text and NO client tool calls: its whole payload is
+      // the SDK per-step assembly carrying the deferred
+      // tool_search_tool_result. Dropping that row would strand the search
+      // call's pairing on replay (the exact wedge class), so a
+      // responseMessages-bearing row is a legitimate shell too.
+      const isReplayShell = Array.isArray(val.responseMessages) && val.responseMessages.length > 0;
+      if (
+        val.role === "assistant" &&
+        !isToolCallShell &&
+        !isReplayShell &&
+        val.status !== "interrupted"
+      ) {
         ctx.addIssue({
           code: "custom",
           path: ["content"],
@@ -174,6 +186,44 @@ export const appendChatMessageOp = defineOperation({
       WHERE id = ${input.chatSessionId}::uuid
     `);
     return ok({ messageId: id });
+  },
+});
+
+/**
+ * issue #442 — stamp the SDK's per-step canonical assembly onto an existing
+ * assistant row. Under the SDK-loop chat-runner the assistant anchor row
+ * persists BEFORE the step's tool executions (crash-safety ordering), while
+ * the SDK assembles the step's `response.messages` only after they settle —
+ * this second write closes that gap. Only assistant rows accept it; a row
+ * that already carries response_messages is overwritten deliberately
+ * (idempotent re-stamp after a retry).
+ */
+export const setResponseMessagesOp = defineOperation({
+  name: "chat.set_response_messages",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      messageId: z.string().uuid(),
+      responseMessages: z.array(z.unknown()).min(1),
+    })
+    .strict(),
+  output: z.object({ updated: z.boolean() }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE chat_messages
+      SET response_messages = ${jsonbParam(input.responseMessages)}
+      WHERE id = ${input.messageId}::uuid AND role = 'assistant'
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    if (!rows[0]?.id) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.set_response_messages",
+        message: `assistant message ${input.messageId} not found`,
+      });
+    }
+    return ok({ updated: true });
   },
 });
 

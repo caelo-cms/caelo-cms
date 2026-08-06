@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Single tool-call dispatch for the chat-runner loop. Extracted verbatim from
- * the pre-split `chat-runner.ts` (P5.2 dedup, P10.5 subagent event streaming,
- * P11.5 Tier-1 plugin routing, v0.6.0 auto-recovery, v0.3.0 multimodal image).
+ * Single tool-call dispatch for the chat-runner (P5.2 dedup, P10.5 subagent
+ * event streaming, P11.5 Tier-1 plugin routing, v0.6.0 auto-recovery, v0.3.0
+ * multimodal image).
  *
- * Yielded as `yield*` from the loop in `index.ts`; it mutates the provider
- * `messages` array in place (tool result + optional screenshot user message)
- * exactly as the inline loop did.
+ * issue #442 — no longer an async generator: dispatch now runs INSIDE the AI
+ * SDK's tool `execute` (the SDK owns the multi-step loop), which cannot
+ * yield into the chat-runner's event stream. Events flow through the `emit`
+ * sink into the run's ordered EventQueue instead; the old dispatch-local
+ * buffer + waker machinery is gone because the queue IS that buffer. Tool
+ * rows and deferred image messages land in per-step buffers the step-finish
+ * handler appends to the in-memory history in canonical order (assistant →
+ * tool rows → image user messages).
  */
 
 import { createHash } from "node:crypto";
@@ -146,37 +151,46 @@ async function persistToolImage(
   }
 }
 
-export async function* dispatchToolCall(
+export async function dispatchToolCall(
   call: AccumulatedToolCall,
-  messages: ChatMessageInput[],
   deps: DispatchDeps,
-  /**
-   * Run #8 live-edit CI — image follow-up messages are DEFERRED here
-   * instead of pushed into `messages` inline. With two image-returning
-   * tool calls in one assistant turn (e.g. parallel `screenshot_page`
-   * for desktop + mobile), the inline push produced
-   * [assistant(tool_use A,B), tool A, user(image A), tool B, …] and the
-   * provider SDK rejected the history with AI_MissingToolResultsError:
-   * a user message may not appear before every tool call of the turn
-   * has its result. The loop appends this array AFTER all of the
-   * turn's tool results.
-   */
-  deferredImageMessages: ChatMessageInput[],
-  /**
-   * The loop appends this call's outcome here so the
-   * repeated-identical-failure breaker can count exact (tool + args + error)
-   * repeats. Optional so out-of-loop callers (tests) can omit it.
-   */
-  outcomes?: ToolCallOutcome[],
-): AsyncGenerator<ClientEvent, void> {
+  sinks: {
+    /** Ordered ClientEvent sink — the run's EventQueue (see file header). */
+    emit: (event: ClientEvent) => void;
+    /**
+     * Per-step tool-row buffer. The step-finish handler appends these to the
+     * in-memory provider history AFTER the step's assistant entry, in
+     * dispatch order — the same [assistant, tool…] shape the DB replay
+     * produces.
+     */
+    stepToolRows: ChatMessageInput[];
+    /**
+     * Run #8 live-edit CI — image follow-up messages are DEFERRED here
+     * instead of appended inline. With two image-returning tool calls in one
+     * assistant turn (e.g. parallel `screenshot_page` for desktop + mobile),
+     * an inline append produced [assistant(tool_use A,B), tool A,
+     * user(image A), tool B, …] and the provider SDK rejected the history
+     * with AI_MissingToolResultsError: a user message may not appear before
+     * every tool call of the turn has its result. The step-finish handler
+     * appends this array AFTER all of the step's tool rows.
+     */
+    deferredImageMessages: ChatMessageInput[];
+    /**
+     * This call's outcome, appended so the repeated-identical-failure
+     * breaker can count exact (tool + args + error) repeats.
+     */
+    outcomes: ToolCallOutcome[];
+  },
+): Promise<void> {
   const { registry, adapter, humanCtx, aiCtxWithBranch, provider, tools, options } = deps;
+  const { emit, stepToolRows, deferredImageMessages, outcomes } = sinks;
 
-  yield {
+  emit({
     kind: "tool-start",
     toolCallId: call.id,
     name: call.name,
     arguments: call.arguments,
-  };
+  });
 
   const cachedLookup = await execute(registry, adapter, humanCtx, "chat.lookup_tool_result", {
     chatSessionId: deps.chatSessionId,
@@ -192,22 +206,15 @@ export async function* dispatchToolCall(
       ok: cachedHit.ok,
       content: cachedHit.content,
     };
-    yield { kind: "tool-result-cached", toolCallId: call.id };
+    emit({ kind: "tool-result-cached", toolCallId: call.id });
   } else {
-    // P10.5 #1 — buffer + waker so the spawn handler can stream
-    // child events to the parent's generator while its dispatch is
-    // still in flight. Tool handlers that don't push events leave
-    // the queue empty and the loop is a no-op.
-    const eventBuffer: ClientEvent[] = [];
-    let resolveWaker: (() => void) | null = null;
-    const wakeReader = (): void => {
-      const r = resolveWaker;
-      resolveWaker = null;
-      r?.();
-    };
+    // P10.5 #1 — the spawn handler streams child events to the parent
+    // through this sink while its dispatch is still in flight. issue #442 —
+    // the sink IS the run's EventQueue now (no dispatch-local buffer): child
+    // events interleave into the parent SSE in arrival order exactly as the
+    // buffered drain used to deliver them.
     const pushClientEvent = (event: unknown): void => {
-      eventBuffer.push(event as ClientEvent);
-      wakeReader();
+      emit(event as ClientEvent);
     };
 
     // P11.5 commit 2 — Tier-1 plugin tools route through plugin-host's
@@ -296,33 +303,10 @@ export async function* dispatchToolCall(
               chatInput,
             ),
         });
-    let dispatchDone = false;
-    const finalDispatch = dispatchPromise.then(
-      (r) => {
-        dispatchDone = true;
-        wakeReader();
-        return { ok: true as const, value: r };
-      },
-      (e: unknown) => {
-        dispatchDone = true;
-        wakeReader();
-        return { ok: false as const, error: e };
-      },
+    const settled = await dispatchPromise.then(
+      (r) => ({ ok: true as const, value: r }),
+      (e: unknown) => ({ ok: false as const, error: e }),
     );
-
-    // Drain the event buffer concurrently with the dispatch.
-    while (!dispatchDone || eventBuffer.length > 0) {
-      while (eventBuffer.length > 0) {
-        const ev = eventBuffer.shift();
-        if (ev) yield ev;
-      }
-      if (!dispatchDone) {
-        await new Promise<void>((resolve) => {
-          resolveWaker = resolve;
-        });
-      }
-    }
-    const settled = await finalDispatch;
     if (settled.ok) {
       result = settled.value;
       // v0.6.0 W3 — auto-recover from structured failures. When a
@@ -429,7 +413,7 @@ export async function* dispatchToolCall(
     }).catch(() => undefined);
   }
 
-  outcomes?.push({
+  outcomes.push({
     toolCallId: call.id,
     name: call.name,
     arguments: call.arguments,
@@ -437,7 +421,7 @@ export async function* dispatchToolCall(
     content: result.content,
   });
 
-  yield {
+  emit({
     kind: "tool-result",
     toolCallId: call.id,
     ok: result.ok,
@@ -447,7 +431,7 @@ export async function* dispatchToolCall(
     // whole event (full passthrough), so no endpoint change is needed. This
     // is the operator's copy; the AI's copy is deferred below into messages.
     ...(result.image ? { image: result.image } : {}),
-  };
+  });
   // issue #356 — an image the AI produced is conversation content, so it is
   // stored and referenced from the persisted tool row rather than living only
   // for the current turn. Content-addressed: re-shooting an unchanged page
@@ -463,7 +447,7 @@ export async function* dispatchToolCall(
     // issue #303 — producer hint for the empty-content diagnostics.
     source: `tool result (${call.name})`,
   });
-  messages.push({ role: "tool", content: result.content, toolCallId: call.id });
+  stepToolRows.push({ role: "tool", content: result.content, toolCallId: call.id });
   // v0.3.0 — when the tool returned an image (screenshot_page is
   // the only producer today), build a multimodal user message so the
   // AI sees the image alongside the text result on its next provider

@@ -46,13 +46,18 @@ function isPassthroughRow(m: ChatMessageInput): boolean {
  * reconstruction tool_result answering a passthrough tool_use (the NORMAL
  * Option-C shape: passthrough assistant emits the tool_use, the result is a
  * separate reconstruction tool-role row) would look like an orphan and be
- * wrongly dropped. Defensive: `ProviderResponseMessage` is `unknown`, so we
- * only read the SDK's documented `{ content: [{ type, toolCallId }] }` shape.
+ * wrongly dropped. Provider-executed calls (Anthropic tool search) are
+ * tracked separately: their pairing lives entirely INSIDE the assemblies
+ * (the API pairs them; no tool-role row ever answers one), and a dangling
+ * one is the issue-#442 session-wedging poison the strip below heals.
+ * Defensive: `ProviderResponseMessage` is `unknown`, so we only read the
+ * SDK's documented `{ content: [{ type, toolCallId }] }` shape.
  */
 function harvestSdkPairIds(
   sdkMessages: readonly unknown[],
   toolUseIds: Set<string>,
   toolResultIds: Set<string>,
+  providerExecutedCallIds: Set<string>,
 ): void {
   for (const msg of sdkMessages) {
     if (msg === null || typeof msg !== "object") continue;
@@ -60,10 +65,19 @@ function harvestSdkPairIds(
     if (!Array.isArray(content)) continue;
     for (const part of content) {
       if (part === null || typeof part !== "object") continue;
-      const p = part as { type?: unknown; toolCallId?: unknown };
+      const p = part as { type?: unknown; toolCallId?: unknown; providerExecuted?: unknown };
       if (typeof p.toolCallId !== "string") continue;
-      if (p.type === "tool-call") toolUseIds.add(p.toolCallId);
-      else if (p.type === "tool-result") toolResultIds.add(p.toolCallId);
+      if (p.type === "tool-call") {
+        toolUseIds.add(p.toolCallId);
+        if (p.providerExecuted === true) providerExecutedCallIds.add(p.toolCallId);
+      } else if (p.type === "tool-result" || p.type === "tool-error") {
+        // "tool-error" is defensive: the SDK's toResponseMessages maps
+        // errored executions into `tool-result` parts (verified against
+        // ai@7.0.55), so persisted assemblies never carry it today — but an
+        // errored result is an ANSWERED call either way, and treating it as
+        // dangling would wrongly strip a paired call.
+        toolResultIds.add(p.toolCallId);
+      }
     }
   }
 }
@@ -77,6 +91,58 @@ export interface HistoryRepairResult {
   strippedToolCallIds: string[];
   /** Assistant messages dropped because stripping left them with no content at all. */
   droppedEmptyAssistantMessages: number;
+  /**
+   * issue #442 (unwedge) — providerExecuted (tool-search) calls stripped
+   * from INSIDE passthrough assemblies because no result answers them
+   * anywhere in the history. A dangling one is poison: the provider rejects
+   * every replay carrying it ("server_tool_use … without a corresponding
+   * tool_search_tool_result block"), permanently wedging the session.
+   * Non-empty means a poisoned session was HEALED this turn — callers must
+   * surface that loudly (bug-report row), never silently.
+   */
+  strippedServerToolCallIds: string[];
+}
+
+/**
+ * issue #442 (unwedge) — rewrite one passthrough assembly with its dangling
+ * providerExecuted tool-calls removed. Deterministic and byte-stable across
+ * turns (the stored row is immutable, so the strip yields identical output
+ * every replay — no prompt-cache churn). Messages left with empty content
+ * are dropped (an empty assistant message is itself a provider rejection).
+ */
+function stripDanglingServerCalls(
+  sdkMessages: readonly unknown[],
+  danglingIds: ReadonlySet<string>,
+): unknown[] {
+  const out: unknown[] = [];
+  for (const msg of sdkMessages) {
+    if (msg === null || typeof msg !== "object") {
+      out.push(msg);
+      continue;
+    }
+    const content = (msg as { content?: unknown }).content;
+    if (!Array.isArray(content)) {
+      out.push(msg);
+      continue;
+    }
+    const kept = content.filter((part) => {
+      if (part === null || typeof part !== "object") return true;
+      const p = part as { type?: unknown; toolCallId?: unknown; providerExecuted?: unknown };
+      return !(
+        p.type === "tool-call" &&
+        p.providerExecuted === true &&
+        typeof p.toolCallId === "string" &&
+        danglingIds.has(p.toolCallId)
+      );
+    });
+    if (kept.length === content.length) {
+      out.push(msg);
+    } else if (kept.length > 0) {
+      out.push({ ...(msg as Record<string, unknown>), content: kept });
+    }
+    // kept.length === 0 → drop the whole message.
+  }
+  return out;
 }
 
 /**
@@ -91,12 +157,16 @@ export interface HistoryRepairResult {
  * Passthrough (Option-C `sdkMessages`) rows are treated as opaque,
  * already-paired units: their nested ids feed the inventory so a
  * reconstruction row can pair ACROSS a passthrough row (the normal shape:
- * passthrough assistant tool_use ↔ reconstruction tool-role result), but the
- * passthrough rows themselves are replayed verbatim, never stripped. This is
- * what lets the repair run over a mixed history — the interrupt hole where an
- * aborted turn persisted a `tool_use` with no `tool_result` while earlier
- * turns carried passthrough rows (which previously forced the whole repair to
- * be skipped, so the orphan survived into the replay and 400'd).
+ * passthrough assistant tool_use ↔ reconstruction tool-role result), and the
+ * passthrough rows replay verbatim with ONE exception — issue #442's
+ * unwedge: a providerExecuted (tool-search) call whose result exists NOWHERE
+ * in the history is stripped from inside the assembly. That dangling call is
+ * the deferred-result poison that permanently wedged session 57c2f0f5
+ * (Anthropic rejects every replay carrying it); post-#442 the SDK loop
+ * consumes deferred continuations in-turn, so any persisted dangling call is
+ * either pre-migration poison or an interrupted turn's residue — both
+ * correctly healed here. Callers surface a heal loudly via
+ * `strippedServerToolCallIds` (bug-report row), never silently.
  */
 export function repairToolCallPairing(messages: readonly ChatMessageInput[]): HistoryRepairResult {
   // Pass 1 — global id inventory. Results virtually always follow their
@@ -104,11 +174,13 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
   // never turn one wedged-session shape into another 400.
   const toolUseIds = new Set<string>();
   const toolResultIds = new Set<string>();
+  const providerExecutedCallIds = new Set<string>();
   for (const m of messages) {
     // Passthrough rows are opaque + SDK-paired: harvest their nested ids into
-    // the inventory (so cross-row pairs survive) but never strip/modify them.
+    // the inventory (so cross-row pairs survive) but never strip/modify them —
+    // EXCEPT the issue-#442 dangling providerExecuted calls (below).
     if (isPassthroughRow(m)) {
-      harvestSdkPairIds(m.sdkMessages ?? [], toolUseIds, toolResultIds);
+      harvestSdkPairIds(m.sdkMessages ?? [], toolUseIds, toolResultIds, providerExecutedCallIds);
     } else if (m.role === "assistant") {
       for (const tc of m.toolCalls ?? []) toolUseIds.add(tc.id);
     } else if (m.role === "tool" && m.toolCallId) {
@@ -116,16 +188,44 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
     }
   }
 
+  // issue #442 (unwedge) — providerExecuted calls with NO result anywhere in
+  // the history. GLOBAL inventory on purpose: under the SDK loop a healthy
+  // deferred pair spans TWO rows (the call in step N's slice, the deferred
+  // result in step N+1's), so a per-row check would strip healthy history.
+  // A call unmatched across the WHOLE history is unconsumable poison — the
+  // deferred-resume tolerance the API grants at the in-turn boundary never
+  // applies to a replay that has since grown more turns.
+  const danglingServerCallIds = new Set(
+    [...providerExecutedCallIds].filter((id) => !toolResultIds.has(id)),
+  );
+
   const out: ChatMessageInput[] = [];
   const droppedToolResultIds: string[] = [];
   const strippedToolCallIds: string[] = [];
+  const strippedServerToolCallIds: string[] = [];
   let droppedEmptyAssistantMessages = 0;
   const emittedResultIds = new Set<string>();
 
   for (const m of messages) {
-    // Passthrough rows replay verbatim — opaque + already correctly paired.
+    // Passthrough rows replay verbatim — opaque + already correctly paired —
+    // except that a dangling providerExecuted call nested inside is stripped
+    // (the issue-#442 heal; deterministic + byte-stable, see the helper).
     if (isPassthroughRow(m)) {
-      out.push(m);
+      const sdkMessages = m.sdkMessages ?? [];
+      const rowDangling = new Set<string>();
+      harvestSdkPairIds(sdkMessages, new Set(), new Set(), rowDangling);
+      const toStrip = [...rowDangling].filter((id) => danglingServerCallIds.has(id));
+      if (toStrip.length === 0) {
+        out.push(m);
+        continue;
+      }
+      strippedServerToolCallIds.push(...toStrip);
+      const healed = stripDanglingServerCalls(sdkMessages, danglingServerCallIds);
+      if (healed.length > 0) {
+        out.push({ ...m, sdkMessages: healed });
+      } else {
+        droppedEmptyAssistantMessages += 1;
+      }
       continue;
     }
     if (m.role === "tool") {
@@ -176,5 +276,6 @@ export function repairToolCallPairing(messages: readonly ChatMessageInput[]): Hi
     droppedToolResultIds,
     strippedToolCallIds,
     droppedEmptyAssistantMessages,
+    strippedServerToolCallIds,
   };
 }

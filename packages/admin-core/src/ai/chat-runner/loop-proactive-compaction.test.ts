@@ -25,7 +25,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider, ChatMessageInput, GenerateInput, ProviderEvent } from "../provider.js";
+import type { AIProvider, ChatMessageInput, ProviderEvent } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
 import type { UsageAccumulator } from "./streaming.js";
@@ -44,35 +45,32 @@ function bigErrContent(n: number): string {
 }
 
 /**
- * Emits one `build_page` tool call per provider call for `toolLoops`
- * loops, then a closing text turn. Records the messages of every call
- * so tests can assert what the provider actually saw per loop.
+ * Emits one `build_page` tool call per model STEP for `toolLoops` steps,
+ * then a closing text step. issue #442 — the per-step request histories are
+ * observed at the mock-model boundary (`seenPrompts`), since the SDK loop
+ * builds each step's messages from the chat-runner's prepareStep override.
  */
-class ToolLoopingProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-tool-looping";
-  readonly seenMessages: (readonly ChatMessageInput[])[] = [];
+class ToolLoopingProvider extends FixtureProvider {
   private calls = 0;
 
-  constructor(private readonly toolLoops: number) {}
+  constructor(private readonly toolLoops: number) {
+    super([], "fixture-tool-looping");
+  }
 
-  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
-    this.seenMessages.push(input.messages);
+  protected override nextStepEvents(): readonly ProviderEvent[] {
     const n = this.calls++;
     if (n < this.toolLoops) {
-      yield {
-        kind: "tool-call",
-        id: `t-${n}`,
-        name: "build_page",
-        arguments: { n },
-      };
-      yield { kind: "usage", inputTokens: 100, outputTokens: 50, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "tool_use" };
-      return;
+      return [
+        { kind: "tool-call", id: `t-${n}`, name: "build_page", arguments: { n } },
+        { kind: "usage", inputTokens: 100, outputTokens: 50, cachedTokens: 0 },
+        { kind: "done", stopReason: "tool_use" },
+      ];
     }
-    yield { kind: "text-delta", text: "all pages built" };
-    yield { kind: "usage", inputTokens: 100, outputTokens: 10, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "end_turn" };
+    return [
+      { kind: "text-delta", text: "all pages built" },
+      { kind: "usage", inputTokens: 100, outputTokens: 10, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
   }
 }
 
@@ -98,6 +96,16 @@ function buildFixtureQueryApi(): {
         });
         return ok({ messageId: `msg-${appended.length}` });
       },
+    }),
+  );
+  registry.register(
+    defineOperation({
+      name: "chat.set_response_messages",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({}),
+      output: z.looseObject({}),
+      handler: async () => ok({ updated: true }),
     }),
   );
   registry.register(
@@ -165,7 +173,9 @@ async function runLoop(args: {
     chatBranchId: "cb-1",
     abortSignal: undefined,
     systemChunks: "",
-    filteredTools: [],
+    filteredTools: [
+      { name: "build_page", description: "fixture build_page", inputSchema: { type: "object" } },
+    ],
     initialMessages: args.initialMessages ?? [{ role: "user", content: "migrate all pages" }],
     compactionThresholdTokens: args.compactionThresholdTokens ?? 600_000,
     ...(args.compactionTargetTokens !== undefined
@@ -194,12 +204,29 @@ async function runLoop(args: {
   }
 }
 
-/** The tool-result message for a given toolCallId in one provider call's history. */
-function toolResult(
-  history: readonly ChatMessageInput[] | undefined,
-  toolCallId: string,
-): ChatMessageInput | undefined {
-  return history?.find((m) => m.role === "tool" && m.toolCallId === toolCallId);
+/**
+ * The tool-result CONTENT for a given toolCallId in one STEP's model-level
+ * prompt (FixtureProvider.seenPrompts). Tool rows convert to role:"tool"
+ * messages whose tool-result parts carry the text in `output.value`.
+ */
+function toolResultText(prompt: readonly unknown[] | undefined, toolCallId: string): string | null {
+  for (const msg of prompt ?? []) {
+    const m = msg as { role?: string; content?: unknown };
+    if (m.role !== "tool" || !Array.isArray(m.content)) continue;
+    for (const part of m.content) {
+      const pt = part as {
+        type?: string;
+        toolCallId?: string;
+        output?: { value?: unknown };
+        result?: unknown;
+      };
+      if (pt.type === "tool-result" && pt.toolCallId === toolCallId) {
+        const v = pt.output?.value ?? pt.result;
+        return typeof v === "string" ? v : JSON.stringify(v);
+      }
+    }
+  }
+  return null;
 }
 
 describe("runToolLoop — proactive tool-result compaction (issue #300)", () => {
@@ -216,37 +243,36 @@ describe("runToolLoop — proactive tool-result compaction (issue #300)", () => 
     expect(result.stopReason).toBe("end_turn");
     expect(result.succeeded).toBe(true);
     expect(events.filter((e) => e.kind === "error")).toEqual([]);
-    // 6 tool loops + 1 closing text turn.
-    expect(provider.seenMessages.length).toBe(7);
+    // 6 tool steps + 1 closing text step.
+    expect(provider.seenPrompts.length).toBe(7);
 
-    // Loop 3's call: t-0 (age 3) is NOT yet compacted going INTO loop 3?
-    // No — the pass runs at the TOP of loop 3, so the loop-3 call is the
-    // first to see t-0 summarized. Ages at loop 3: t-0=3 (cut), t-1=2,
+    // Step 3's call: the pass runs in prepareStep(3), so the step-3 call is
+    // the first to see t-0 summarized. Ages at step 3: t-0=3 (cut), t-1=2,
     // t-2=1 (both verbatim).
-    const atLoop3 = provider.seenMessages[3];
-    expect(toolResult(atLoop3, "t-0")?.content).toMatch(/\[truncated: \d+ chars\]/);
-    expect(toolResult(atLoop3, "t-2")?.content).toBe(bigOkContent(2));
+    const atLoop3 = provider.seenPrompts[3];
+    expect(toolResultText(atLoop3, "t-0")).toMatch(/\[truncated: \d+ chars\]/);
+    expect(toolResultText(atLoop3, "t-2")).toBe(bigOkContent(2));
 
     // The summary keeps the ok line + the page id buried in the body.
-    const summarized = toolResult(provider.seenMessages[6], "t-0")?.content ?? "";
+    const summarized = toolResultText(provider.seenPrompts[6], "t-0") ?? "";
     expect(summarized.startsWith("ok: built page /page-0")).toBe(true);
     expect(summarized).toContain(PAGE_UUID);
     expect(summarized.length).toBeLessThan(600);
 
-    // Loop 2's call: nothing is old enough yet — everything verbatim.
-    const atLoop2 = provider.seenMessages[2];
-    expect(toolResult(atLoop2, "t-0")?.content).toBe(bigOkContent(0));
+    // Step 2's call: nothing is old enough yet — everything verbatim.
+    const atLoop2 = provider.seenPrompts[2];
+    expect(toolResultText(atLoop2, "t-0")).toBe(bigOkContent(0));
 
-    // The FAILED loop-1 result stays verbatim through the LAST call,
+    // The FAILED step-1 result stays verbatim through the LAST call,
     // long past the age threshold.
-    const lastCall = provider.seenMessages[6];
-    expect(toolResult(lastCall, "t-1")?.content).toBe(bigErrContent(1));
+    const lastCall = provider.seenPrompts[6];
+    expect(toolResultText(lastCall, "t-1")).toBe(bigErrContent(1));
     // While old successful ones (t-0..t-3 minus the failure) are summaries.
-    expect(toolResult(lastCall, "t-2")?.content).toMatch(/\[truncated: \d+ chars\]/);
-    expect(toolResult(lastCall, "t-3")?.content).toMatch(/\[truncated: \d+ chars\]/);
+    expect(toolResultText(lastCall, "t-2")).toMatch(/\[truncated: \d+ chars\]/);
+    expect(toolResultText(lastCall, "t-3")).toMatch(/\[truncated: \d+ chars\]/);
     // And the two most recent stay verbatim.
-    expect(toolResult(lastCall, "t-4")?.content).toBe(bigOkContent(4));
-    expect(toolResult(lastCall, "t-5")?.content).toBe(bigOkContent(5));
+    expect(toolResultText(lastCall, "t-4")).toBe(bigOkContent(4));
+    expect(toolResultText(lastCall, "t-5")).toBe(bigOkContent(5));
 
     // Persistence: every tool row in the transcript carries the FULL
     // body — the proactive pass never rewrites stored records.
@@ -280,9 +306,9 @@ describe("runToolLoop — proactive tool-result compaction (issue #300)", () => 
     expect(result.succeeded).toBe(true);
     // Ceiling never hit (600K threshold) → the prior-turn 40KB dump
     // rides verbatim into every call; only current-turn results shrink.
-    const lastCall = provider.seenMessages[provider.seenMessages.length - 1];
-    expect(toolResult(lastCall, "t-prior")?.content).toBe(preTurnDump);
-    expect(toolResult(lastCall, "t-0")?.content).toMatch(/\[truncated: \d+ chars\]/);
+    const lastCall = provider.seenPrompts[provider.seenPrompts.length - 1];
+    expect(toolResultText(lastCall, "t-prior")).toBe(preTurnDump);
+    expect(toolResultText(lastCall, "t-0")).toMatch(/\[truncated: \d+ chars\]/);
   });
 
   it("composes with the #261 ceiling pass: both fire, neither re-cuts the other's output", async () => {
@@ -316,14 +342,14 @@ describe("runToolLoop — proactive tool-result compaction (issue #300)", () => 
     expect(result.succeeded).toBe(true);
     expect(events.filter((e) => e.kind === "error")).toEqual([]);
 
-    const lastCall = provider.seenMessages[provider.seenMessages.length - 1];
+    const lastCall = provider.seenPrompts[provider.seenPrompts.length - 1];
     // #261 truncated the pre-turn dump (500-char head + marker).
-    const prior = toolResult(lastCall, "t-prior")?.content ?? "";
+    const prior = toolResultText(lastCall, "t-prior") ?? "";
     expect(prior).toContain("[truncated:");
     expect(prior.length).toBeLessThan(1000);
     // The proactive pass summarized the old current-turn result, and the
     // marker appears exactly once — the #261 pass did not re-cut it.
-    const t0 = toolResult(lastCall, "t-0")?.content ?? "";
+    const t0 = toolResultText(lastCall, "t-0") ?? "";
     expect(t0.startsWith("ok: built page /page-0")).toBe(true);
     expect(t0.match(/\[truncated:/g)?.length).toBe(1);
   });

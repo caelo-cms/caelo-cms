@@ -28,7 +28,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider, GenerateInput, ProviderEvent } from "../provider.js";
+import type { AIProvider, ProviderEvent } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
 import type { UsageAccumulator } from "./streaming.js";
@@ -38,31 +39,32 @@ const NONGATED_ID = "toolu_nongated_site_import";
 const GATED_ID = "toolu_gated_create_theme";
 
 /**
- * One turn: a non-gated `propose_site_import` tool-call PLUS a gated
- * `propose_create_theme` surfaced as a tool-approval-request, then a
- * tool_use stop. The mixed-turn shape thinking produced.
+ * One step: a non-gated `propose_site_import` tool-call PLUS a gated
+ * `propose_create_theme` tool-call, then a tool_use stop — the mixed-turn
+ * shape thinking produced. issue #442 — the approval pause is produced by
+ * the REAL SDK machinery now: the gated tool ships `approvalMode`, so the
+ * loop's `toolApproval` map pauses it and emits the tool-approval-request.
  */
-class MixedGatedTurnProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-mixed-gated-turn";
-
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
-    yield {
-      kind: "tool-call",
-      id: NONGATED_ID,
-      name: "propose_site_import",
-      arguments: { sourceUrl: "https://example.com" },
-    };
-    yield {
-      kind: "tool-approval-request",
-      approvalId: "appr-theme-1",
-      toolCallId: GATED_ID,
-      name: "propose_create_theme",
-      arguments: { name: "Brandy" },
-    };
-    yield { kind: "usage", inputTokens: 1500, outputTokens: 400, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "tool_use" };
-  }
+function mixedGatedTurnProvider(): AIProvider {
+  return new FixtureProvider(
+    [
+      {
+        kind: "tool-call",
+        id: NONGATED_ID,
+        name: "propose_site_import",
+        arguments: { sourceUrl: "https://example.com" },
+      },
+      {
+        kind: "tool-call",
+        id: GATED_ID,
+        name: "propose_create_theme",
+        arguments: { name: "Brandy" },
+      },
+      { kind: "usage", inputTokens: 1500, outputTokens: 400, cachedTokens: 0 },
+      { kind: "done", stopReason: "tool_use" },
+    ],
+    "fixture-mixed-gated-turn",
+  );
 }
 
 interface AppendedMessage {
@@ -93,6 +95,16 @@ function buildFixtureQueryApi(): {
         });
         return ok({ messageId: `msg-${appended.length}` });
       },
+    }),
+  );
+  registry.register(
+    defineOperation({
+      name: "chat.set_response_messages",
+      actorScope: ["human", "ai", "system"],
+      database: "cms_admin",
+      input: z.looseObject({}),
+      output: z.looseObject({}),
+      handler: async () => ok({ updated: true }),
     }),
   );
   registry.register(
@@ -152,7 +164,23 @@ async function runLoop(
     chatBranchId: "cb-1",
     abortSignal: undefined,
     systemChunks: "",
-    filteredTools: [],
+    filteredTools: [
+      {
+        name: "propose_site_import",
+        description: "non-gated DB-propose",
+        inputSchema: { type: "object" },
+      },
+      {
+        name: "propose_create_theme",
+        description: "gated theme proposal",
+        inputSchema: { type: "object" },
+        approvalMode: "user-approval",
+        // The SDK pauses BEFORE execute; it must never run in this test.
+        execute: async () => {
+          throw new Error("gated execute must not run without an approval");
+        },
+      },
+    ],
     initialMessages: [{ role: "user", content: "migrate my site + set a brand theme" }],
     compactionThresholdTokens: 600_000,
     maxLoops: 5,
@@ -182,7 +210,7 @@ describe("runToolLoop — mixed gated + non-gated turn pairing", () => {
     delete process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS;
     try {
       const fixture = buildFixtureQueryApi();
-      const { events, result, dispatched } = await runLoop(new MixedGatedTurnProvider(), fixture);
+      const { events, result, dispatched } = await runLoop(mixedGatedTurnProvider(), fixture);
 
       // The non-gated call was actually dispatched (not skipped by the
       // approval short-circuit) — this is the regression guard.
