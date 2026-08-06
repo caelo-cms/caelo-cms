@@ -11,15 +11,11 @@
  *   - published variants cross-link via hreflang (incl. x-default) in
  *     the rendered page head — the #391 contribution path end-to-end
  *
- * Fixture-provider boundary: the FixtureProvider scripts provider
- * EVENTS and bypasses the SDK wrapper (_sdk-shared.ts) that both
- * derives approval-requests from gated calls and executes the approved
- * tool on resume. So this spec scripts the `tool-approval-request`
- * event directly (the loop-mixed-approval-pairing convention) and
- * seeds the locale registry as the stand-in for the approved execute.
- * The REAL approve→execute chain is covered by the propose/execute
- * integration suites and end-to-end (real SDK path) by
- * e2e-livedit/scenario-international-site.browser.ts.
+ * Since issue #442 the FixtureProvider replays scripted events through
+ * a MockLanguageModelV3 under the REAL SDK multi-step loop — so a
+ * plain scripted `tool-call` on the gated `set_locales` exercises the
+ * genuine needsApproval pause AND the genuine post-Approve execute.
+ * This is the full production approval cycle, mock model only.
  */
 
 import { spawnSync } from "node:child_process";
@@ -116,12 +112,12 @@ test("gated set_locales pauses for the in-chat click; create_variant lands /de/;
   const seed = seedSourcePage();
 
   await registerTestProvider(BASE, PROVIDER, [
-    // Turn 1 — the gated locale change pauses on the approval card.
+    // Turn 1 — the gated locale change: a plain tool-call; the SDK
+    // derives the approval pause from the tool's approvalMode.
     [
       {
-        kind: "tool-approval-request",
-        approvalId: "appr-intl-locales-1",
-        toolCallId: "tu_locales",
+        kind: "tool-call",
+        id: "tu_locales",
         name: "set_locales",
         arguments: {
           locales: [
@@ -196,19 +192,20 @@ test("gated set_locales pauses for the in-chat click; create_variant lands /de/;
   await approveButton.click();
   await expect(page.getByText(/Locale change approved/i)).toBeVisible({ timeout: 30_000 });
 
-  // Stand-in for the approved execute (see the header comment): register
-  // the locales the Owner just approved, then drive the ungated arc.
+  // The Approve click ran the REAL execute (SDK-owned): the registry
+  // now holds exactly the two approved locales.
   runBunInline(`
     import { SQL } from "bun";
     const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-    await sql.begin(async (tx) => {
+    const rows = await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const plug = await tx\`SELECT id FROM plugins WHERE slug = 'international-site'\`;
       await tx.unsafe(\`SET LOCAL caelo.plugin_id = '\${plug[0].id}'\`);
-      await tx.unsafe(\`INSERT INTO plugin_international_site.locales (code, display_name, url_strategy, is_default)
-        VALUES ('en', 'English', 'none', true), ('de', 'Deutsch', 'subdirectory', false)\`);
+      return tx.unsafe("SELECT code FROM plugin_international_site.locales ORDER BY code");
     });
     await sql.end();
+    const codes = rows.map((r) => r.code).join(",");
+    if (codes !== "de,en") throw new Error("approved execute did not apply the locales: " + codes);
   `);
 
   await page.locator("textarea").fill("now create the German pricing page");
