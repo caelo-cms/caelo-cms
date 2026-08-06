@@ -13,6 +13,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
+    "@caelo-cms/plugin-component-kit": "workspace:*",
     "@caelo-cms/plugin-sdk": "workspace:*"
   }
 }

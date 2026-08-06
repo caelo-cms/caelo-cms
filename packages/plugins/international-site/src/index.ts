@@ -33,6 +33,7 @@
  * standalone decode consumers).
  */
 
+import { escapeHtml } from "@caelo-cms/plugin-component-kit";
 import {
   definePlugin,
   type PluginAdminQuery,
@@ -398,6 +399,81 @@ async function linkPageIntoGroup(
     pageId,
   });
   return { groupId, path: refreshed.path, pathMoved: refreshed.moved };
+}
+
+interface PublishedVariant {
+  pageId: string;
+  localeCode: string;
+  isDefault: boolean;
+  href: string;
+}
+
+/** Absolute URL for a variant. Path-strategy locales ride on the site
+ *  base URL; host-strategy locales swap in their own host (scheme
+ *  inherited from the base URL). */
+function absoluteVariantUrl(siteBaseUrl: string, locale: LocaleRow, path: string): string {
+  const base = new URL(siteBaseUrl);
+  if (locale.url_host) return `${base.protocol}//${locale.url_host}${path}`;
+  return `${base.origin}${path}`;
+}
+
+/**
+ * #398 — per requested page: every PUBLISHED variant of its group with
+ * its absolute URL. Pages outside any group, groups with fewer than
+ * two published variants, and unpublished sole survivors contribute
+ * nothing — hreflang only makes sense between real alternates.
+ */
+async function publishedVariantMatrix(
+  ctx: unknown,
+  pageIds: readonly string[],
+  siteBaseUrl: string,
+): Promise<Map<string, PublishedVariant[]>> {
+  const q = adminQueryOf(ctx);
+  const cms = cmsOf(ctx);
+  await refreshLocaleCache(q);
+  const out = new Map<string, PublishedVariant[]>();
+  if (localeCache.size === 0) return out;
+
+  const requested = new Set(pageIds);
+  const allVariants = (await q.list("page_variants", {
+    limit: 1000,
+  })) as unknown as PageVariantRow[];
+  const byGroup = new Map<string, PageVariantRow[]>();
+  for (const v of allVariants) {
+    const list = byGroup.get(v.group_id) ?? [];
+    list.push(v);
+    byGroup.set(v.group_id, list);
+  }
+  const pagesResult = await cms.call<{
+    pages: { id: string; status: string; currentPath: string }[];
+  }>("pages.list", {});
+  const pageById = new Map(pagesResult.pages.map((p) => [p.id, p]));
+
+  for (const group of byGroup.values()) {
+    if (!group.some((v) => requested.has(v.page_id))) continue;
+    const published: PublishedVariant[] = [];
+    for (const v of group) {
+      const page = pageById.get(v.page_id);
+      if (!page || page.status !== "published") continue;
+      const locale = localeCache.get(v.locale_code);
+      if (!locale) {
+        throw new Error(
+          `international-site: variant group ${v.group_id} references unregistered locale "${v.locale_code}"`,
+        );
+      }
+      published.push({
+        pageId: v.page_id,
+        localeCode: locale.code,
+        isDefault: locale.is_default,
+        href: absoluteVariantUrl(siteBaseUrl, locale, page.currentPath),
+      });
+    }
+    if (published.length < 2) continue;
+    for (const v of group) {
+      if (requested.has(v.page_id)) out.set(v.page_id, published);
+    }
+  }
+  return out;
 }
 
 export default definePlugin<PluginContextTier1>({
@@ -789,6 +865,41 @@ export default definePlugin<PluginContextTier1>({
     },
 
     /**
+     * #398 — head + sitemap contributions (#391 points). Per published
+     * page in a multi-variant group: `<link rel="alternate" hreflang>`
+     * for EVERY published variant including itself, plus x-default on
+     * the default locale's variant; sitemap alternates mirror the same
+     * set (byte-parity between generator and preview comes free — both
+     * consume collectContributions).
+     */
+    head_contributions: async (ctx, args) => {
+      const { pageIds, siteBaseUrl } = args as { pageIds: string[]; siteBaseUrl: string };
+      const matrix = await publishedVariantMatrix(ctx, pageIds, siteBaseUrl);
+      const head: Record<string, unknown[]> = {};
+      const sitemap: Record<string, unknown> = {};
+      for (const [pageId, variants] of matrix) {
+        const entries: unknown[] = variants.map((v) => ({
+          kind: "link",
+          rel: "alternate",
+          hreflang: v.localeCode,
+          href: v.href,
+        }));
+        const def = variants.find((v) => v.isDefault);
+        if (def) {
+          entries.push({ kind: "link", rel: "alternate", hreflang: "x-default", href: def.href });
+        }
+        head[pageId] = entries;
+        sitemap[pageId] = {
+          alternates: [
+            ...variants.map((v) => ({ hreflang: v.localeCode, href: v.href })),
+            ...(def ? [{ hreflang: "x-default", href: def.href }] : []),
+          ],
+        };
+      }
+      return { head, sitemap };
+    },
+
+    /**
      * #397 worker tick — consume the domain-event outbox and mark
      * sibling variants of edited SOURCE pages needs_update. Branch
      * writes (payload.chatBranchId) are skipped: staleness starts when
@@ -1012,6 +1123,30 @@ export default definePlugin<PluginContextTier1>({
       },
     },
   ],
+  /**
+   * #398 — the language selector. Pure build-time HTML (no client JS):
+   * a nav of links to every published variant of the page's group.
+   * Placed by dropping the plugin placeholder into a module; pages
+   * with fewer than two published variants render nothing.
+   */
+  staticRender: async (ctx, { pageId }) => {
+    const cms = cmsOf(ctx);
+    const seo = await cms.call<{ siteBaseUrl: string }>("site_defaults.get_seo", {});
+    const matrix = await publishedVariantMatrix(ctx, [pageId], seo.siteBaseUrl);
+    const variants = matrix.get(pageId);
+    if (!variants) return "";
+    const items = variants
+      .map((v) => {
+        const locale = localeCache.get(v.localeCode);
+        const label = escapeHtml(locale?.display_name ?? v.localeCode);
+        const current = v.pageId === pageId ? ' aria-current="page"' : "";
+        return `<li><a href="${escapeHtml(v.href)}" hreflang="${escapeHtml(v.localeCode)}"${current}>${label}</a></li>`;
+      })
+      .join("");
+    return `<nav class="caelo-language-selector" aria-label="Language"><ul>${items}</ul></nav>`;
+  },
+  contributes: ["head", "sitemap"],
+  contributionsOperation: "head_contributions",
   urlAnnotationsOperation: "url_annotations",
   urlContributions: [
     {

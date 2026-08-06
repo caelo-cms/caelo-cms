@@ -222,6 +222,7 @@
       "name": "@caelo-cms/plugin-international-site",
       "version": "0.10.24",
       "dependencies": {
+        "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
     },

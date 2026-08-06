@@ -356,7 +356,9 @@ export const siteDefaultsSetSeoOp = defineOperation({
 
 export const siteDefaultsGetSeoOp = defineOperation({
   name: "site_defaults.get_seo",
-  actorScope: ["human", "ai", "system"],
+  // #398 — plugin actors read the base URL to build absolute hreflang
+  // targets for host-strategy locales (§11: read surfaces are open).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
   output: z.object({
