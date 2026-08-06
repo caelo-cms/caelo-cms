@@ -5,9 +5,11 @@
  *
  * Bootstrap walks `packages/plugins/<slug>/` directories, verifies each
  * manifest's Ed25519 signature, runs the validator over the plugin's source,
- * applies pending plugin-owned migrations to cms_public, registers the
- * plugin's tools + workers + prompt-context renderers, and upserts a
- * `plugins` row at `tier=1, status='active'`.
+ * provisions the plugin's declared cms_public schema (idempotent DDL),
+ * registers the plugin's tools + workers + prompt-context renderers, and
+ * upserts a `plugins` row at `tier=1, status='active'`. There is NO
+ * unverified load path (#387): the in-memory test override runs the same
+ * validator + signature pipeline against an ephemeral trust root.
  *
  * Failure isolation per plugin: a corrupted signature, missing migration,
  * or thrown definePlugin call leaves a `plugins` row at `status='failed'`
@@ -18,17 +20,22 @@
  * mutating the DB. Disable / re-enable goes through the lifecycle ops.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
+  generateManifestKeyPair,
+  schemaFromSpec,
+  signManifest,
   validateManifest,
   validateSource,
   verifyManifestSignature,
 } from "@caelo-cms/plugin-sandbox";
 import {
+  manifestFromDefinition,
   type PluginContext,
   type PluginContextTier1,
   type PluginDefinition,
+  type PluginManifest,
   pluginManifest,
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
@@ -53,14 +60,23 @@ export interface BootstrapOpts {
    *  subdirs that contain a `manifest.json`. */
   readonly pluginsRoot: string;
   /** Override for tests — supplies plugin definitions directly instead
-   *  of reading from disk. Each entry is treated as a pre-validated
-   *  Tier-1 spec; signature verification + validator are skipped. */
+   *  of reading from disk. NOT a verification skip (#387): each entry's
+   *  manifest is derived from the definition, validated, signed with an
+   *  ephemeral in-process key, and signature-verified — the same code
+   *  path production uses, with a per-bootstrap trust root instead of
+   *  the release key. When `sourcePath` points at a dir with
+   *  `dist/index.js`, the source validator runs too. */
   readonly testPlugins?: ReadonlyArray<{
     readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
     readonly sourcePath?: string;
   }>;
   /** System actor id used as `submitted_by` on host-loaded plugin rows. */
   readonly systemActorId: string;
+  /** Trust root for manifest signature verification. Precedence:
+   *  this option → `CAELO_TIER1_PUBLIC_KEY` env → the embedded release
+   *  key. Dev hosts pass the `.caelo-dev-key` public half here (see
+   *  `ensureDevSignedManifests`). */
+  readonly publicKeyHex?: string;
 }
 
 export interface LoadReport {
@@ -76,12 +92,59 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   const failed: Array<{ slug: string; reason: string }> = [];
 
   if (opts.testPlugins) {
+    // #387 one-trust-path: in-memory plugins get the SAME verification
+    // pipeline as disk plugins — manifest derived from the definition,
+    // validator run, Tier-1 manifests signed with an ephemeral key and
+    // signature-verified. Only the trust root differs (per-bootstrap
+    // key instead of the release/dev key), never the checks.
+    const ephemeral = await generateManifestKeyPair();
     for (const tp of opts.testPlugins) {
       try {
+        let manifest: PluginManifest;
+        try {
+          manifest = manifestFromDefinition(tp.definition);
+        } catch (e) {
+          throw new Error(
+            `manifest projection failed for "${tp.definition.slug}": ${(e as Error).message}`,
+          );
+        }
+        const manifestCheck = validateManifest(manifest);
+        if (manifestCheck.failures.length > 0) {
+          throw new Error(
+            `validator rejected manifest: ${manifestCheck.failures.map((f) => f.kind).join(", ")}`,
+          );
+        }
+        let signatureHex = "unsigned-tier2";
+        if (manifest.tier === 1) {
+          signatureHex = (await signManifest({ manifest, privateKeyHex: ephemeral.privateKeyHex }))
+            .signatureHex;
+          const sig = await verifyManifestSignature({
+            manifest,
+            signatureHex,
+            publicKeyHex: ephemeral.publicKeyHex,
+          });
+          if (!sig.ok) throw new Error(`signature verification failed: ${sig.reason}`);
+        }
+        if (tp.sourcePath) {
+          const distPath = resolvePath(tp.sourcePath, "dist", "index.js");
+          if (existsSync(distPath)) {
+            const source = readFileSync(distPath, "utf8");
+            const sourceFailures = validateSource({
+              filename: `${tp.definition.slug}/dist/index.js`,
+              source,
+            });
+            if (sourceFailures.length > 0) {
+              throw new Error(
+                `validator rejected source: ${sourceFailures.map((f) => f.kind).join(", ")}`,
+              );
+            }
+          }
+        }
         const lp = await registerLoadedPlugin({
           definition: tp.definition,
+          manifest,
           sourcePath: tp.sourcePath ?? null,
-          manifestSignatureHex: "test-mode",
+          manifestSignatureHex: signatureHex,
           infra: opts.infra,
           systemActorId: opts.systemActorId,
         });
@@ -99,6 +162,24 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   } catch (e) {
     // No plugins directory at all — fine on a fresh dev install.
     return { loaded, failed: [{ slug: "<root>", reason: (e as Error).message }] };
+  }
+
+  // Trust-root resolution (#387): explicit option → env override → the
+  // `.tier1-trust-root` drop file written by the signer next to the
+  // plugins it signed → the embedded release key inside
+  // verifyManifestSignature. The drop file makes dev checkouts and
+  // container images self-contained (the key travels with the manifests
+  // it covers; image provenance is cosign's job).
+  let publicKeyHex = opts.publicKeyHex ?? process.env.CAELO_TIER1_PUBLIC_KEY;
+  if (!publicKeyHex) {
+    try {
+      publicKeyHex = readFileSync(
+        resolvePath(opts.pluginsRoot, ".tier1-trust-root"),
+        "utf8",
+      ).trim();
+    } catch {
+      // no drop file — the embedded release key is the trust root
+    }
   }
 
   for (const entry of entries) {
@@ -133,6 +214,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
         rawManifest,
         infra: opts.infra,
         systemActorId: opts.systemActorId,
+        publicKeyHex,
       });
       loaded.push({ slug: lp.slug, version: lp.version, tier: lp.tier });
     } catch (e) {
@@ -282,6 +364,7 @@ interface LoadOpts {
   readonly rawManifest: unknown;
   readonly infra: PluginHostInfra;
   readonly systemActorId: string;
+  readonly publicKeyHex?: string;
 }
 
 async function loadOnePlugin(opts: LoadOpts): Promise<LoadedPlugin> {
@@ -305,12 +388,13 @@ async function loadOnePlugin(opts: LoadOpts): Promise<LoadedPlugin> {
   } catch {
     throw new Error("missing manifest.sig (Tier 1 requires a signed manifest)");
   }
-  // Honour CAELO_TIER1_PUBLIC_KEY env override so the dev signing script
-  // (`scripts/sign-tier1-manifest.ts`) can sign with a fresh key pair without
-  // requiring the embedded production key. Production deployments leave this
-  // unset and the signed Caelo public key wins.
-  const publicKeyHex = process.env.CAELO_TIER1_PUBLIC_KEY;
-  const sig = await verifyManifestSignature({ manifest, signatureHex, publicKeyHex });
+  // Trust root resolved by bootstrap() (option → env → drop file);
+  // undefined ⇒ verifyManifestSignature uses the embedded release key.
+  const sig = await verifyManifestSignature({
+    manifest,
+    signatureHex,
+    publicKeyHex: opts.publicKeyHex,
+  });
   if (!sig.ok) throw new Error(`signature verification failed: ${sig.reason}`);
 
   // 4. Validator (defense-in-depth on Tier 1).
@@ -347,6 +431,7 @@ async function loadOnePlugin(opts: LoadOpts): Promise<LoadedPlugin> {
 
   return registerLoadedPlugin({
     definition,
+    manifest,
     sourcePath: opts.pluginDir,
     manifestSignatureHex: signatureHex,
     infra: opts.infra,
@@ -356,6 +441,10 @@ async function loadOnePlugin(opts: LoadOpts): Promise<LoadedPlugin> {
 
 interface RegisterOpts {
   readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
+  /** The VERIFIED manifest — parsed from disk (disk path) or derived
+   *  via `manifestFromDefinition` (test path). Persisted verbatim so the
+   *  `plugins` row records exactly what the signature covered. */
+  readonly manifest: PluginManifest;
   readonly sourcePath: string | null;
   readonly manifestSignatureHex: string;
   readonly infra: PluginHostInfra;
@@ -378,7 +467,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
           manifest_json, source_path, manifest_signature, submitted_by
         ) VALUES (
           ${def.slug}, ${def.version}, ${def.tier}, 'active',
-          (${JSON.stringify(buildManifestJson(def))}::text)::jsonb,
+          (${JSON.stringify(opts.manifest)}::text)::jsonb,
           ${opts.sourcePath},
           ${opts.manifestSignatureHex},
           ${opts.systemActorId}::uuid
@@ -409,6 +498,18 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
       return { pluginId: id, pluginActorId: actorId };
     },
   );
+
+  // #387 — provision the plugin's declared cms_public schema at load.
+  // Before this, only the sandboxed activation path ran `schemaFromSpec`,
+  // so release-signed plugins booted `active` with `ctx.query` pointing
+  // at tables that did not exist ("relation does not exist" on first
+  // use, i.e. a fresh-install break). The emitted DDL is fully
+  // IF-NOT-EXISTS guarded, so re-provisioning on every boot is an
+  // idempotent no-op for an already-provisioned schema.
+  if (Object.keys(def.schema).length > 0) {
+    const emitted = schemaFromSpec({ pluginId, slug: def.slug, schema: def.schema });
+    await opts.infra.adapter.provisionPluginPublicSchema({ pluginId, sql: emitted.sql });
+  }
 
   const lp: LoadedPlugin = {
     pluginId,
@@ -445,25 +546,6 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
   }
 
   return lp;
-}
-
-function buildManifestJson(
-  def: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>,
-): unknown {
-  return {
-    slug: def.slug,
-    version: def.version,
-    tier: def.tier,
-    schema: def.schema,
-    operations: Object.keys(def.operations),
-    component: def.component
-      ? { tag: def.component.tag, shadowMode: def.component.shadowMode ?? "open" }
-      : undefined,
-    hasStaticRender: !!def.staticRender,
-    requestedCapabilities: def.requestedCapabilities,
-    workers: def.workers,
-    tools: def.tools,
-  };
 }
 
 async function markPluginFailed(opts: {

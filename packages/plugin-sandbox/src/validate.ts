@@ -13,17 +13,17 @@
  * to load + a clear error surfaces in /security/plugins).
  *
  * Forbidden patterns (rejected):
- *   - ImportDeclaration of any module other than @caelo-cms/plugin-sdk.
+ *   - ImportDeclaration of any module outside the audited surface
+ *     (@caelo-cms/plugin-sdk, @caelo-cms/plugin-component-kit).
  *   - CallExpression of fetch / XMLHttpRequest / WebSocket / globalThis.fetch.
  *   - Reference to Deno.* (any property access).
  *   - Dynamic import() calls.
- *   - Template literals containing SQL keywords (SELECT/INSERT/UPDATE/
- *     DELETE/DROP/CREATE) — plugins go through query.* helpers.
+ *   - Template/string literals containing SQL *statements* (SELECT…FROM,
+ *     INSERT INTO, DROP TABLE, …) — plugins go through query.* helpers.
  *   - eval / Function / new Function.
  *   - Top-level globalThis writes.
  *
- * Plus the schema invariants (CMS_REQUIREMENTS §14.6):
- *   - Any table with `page_id` MUST also declare `locale`.
+ * Plus the manifest invariants (CMS_REQUIREMENTS §14):
  *   - Tier 2 manifests MUST NOT declare `requestedCapabilities`,
  *     `workers`, or `tools`.
  *   - Tier 2 manifests MUST declare `tier: 2`.
@@ -128,11 +128,27 @@ export function validateManifest(rawManifest: unknown): {
 // Source validation — oxc-parser walk.
 // ---------------------------------------------------------------------------
 
-/** SQL keywords flagged inside template literals + string literals. */
-const SQL_KEYWORD_RE = /\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\b/i;
+/**
+ * SQL *statements* flagged inside template literals + string literals.
+ * Matches statement shapes (keyword + its mandatory companion), not lone
+ * keywords: a lone `INSERT`/`DELETE`/`SELECT` word appears in legitimate
+ * plugin strings (operation names like "comment_archive.insert", tool
+ * descriptions like "Delete a comment") and cannot execute as SQL anyway
+ * — issue #387 root-caused the gateway marking every shipped plugin
+ * `failed` partly on this false positive. A payload that WOULD execute
+ * (SELECT…FROM, INSERT INTO, DROP TABLE, …) still trips the rule.
+ */
+const SQL_STATEMENT_RE =
+  /\b(SELECT\s+[\s\S]{0,200}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b|TRUNCATE\s+(TABLE\s+)?\S+|(DROP|CREATE|ALTER)\s+(TABLE|SCHEMA|POLICY|ROLE|INDEX|FUNCTION|TRIGGER|VIEW|DATABASE|EXTENSION)\b|GRANT\s+[\s\S]{0,80}?\bON\b)/i;
 
-/** Allowed import sources. Plugins may ONLY import from this list. */
-const ALLOWED_IMPORTS = new Set<string>(["@caelo-cms/plugin-sdk"]);
+/** Allowed import sources. Plugins may ONLY import from this list.
+ *  `plugin-component-kit` is the shared frontend kit (escapeHtml, honeypot,
+ *  PoW, delta-fetch helpers) every shipped component uses — it is part of
+ *  the audited plugin surface, same trust domain as the SDK. */
+const ALLOWED_IMPORTS = new Set<string>([
+  "@caelo-cms/plugin-sdk",
+  "@caelo-cms/plugin-component-kit",
+]);
 
 /**
  * Walk the AST and collect failures. Called for both Tier 1 (defense
@@ -282,13 +298,13 @@ export function validateSource(opts: { filename: string; source: string }): Vali
       const quasis = (node as { quasis?: Array<{ value?: { raw?: string } }> }).quasis ?? [];
       for (const q of quasis) {
         const raw = q.value?.raw ?? "";
-        if (SQL_KEYWORD_RE.test(raw)) {
+        if (SQL_STATEMENT_RE.test(raw)) {
           failures.push({
             kind: "forbidden-sql-template",
             nodeType: type,
             snippet: raw.slice(0, 80),
             location: locOf(node),
-            hint: "Template literals containing SQL keywords are not allowed. Use ctx.query.insert/list/update/delete instead of raw SQL.",
+            hint: "Template literals containing SQL statements are not allowed. Use ctx.query.insert/list/update/delete instead of raw SQL.",
           });
           return;
         }
@@ -296,13 +312,13 @@ export function validateSource(opts: { filename: string; source: string }): Vali
     }
     if (type === "Literal" || type === "StringLiteral") {
       const v = (node as { value?: unknown }).value;
-      if (typeof v === "string" && SQL_KEYWORD_RE.test(v)) {
+      if (typeof v === "string" && SQL_STATEMENT_RE.test(v)) {
         failures.push({
           kind: "forbidden-sql-template",
           nodeType: type,
           snippet: v.slice(0, 80),
           location: locOf(node),
-          hint: "String literals containing SQL keywords are not allowed. Use ctx.query.* helpers.",
+          hint: "String literals containing SQL statements are not allowed. Use ctx.query.* helpers.",
         });
         return;
       }

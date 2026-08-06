@@ -391,6 +391,44 @@ export function definePlugin<C extends PluginContext = PluginContext>(
 }
 
 /**
+ * Project a plugin definition onto its signable/persistable manifest.
+ * ONE projection for every consumer — the host loader's `plugins` row,
+ * the release/dev signing tooling, and the boot-time dev auto-signer all
+ * derive the manifest from the built definition through this function,
+ * so what gets signed is exactly what gets verified and persisted
+ * (issue #387: three hand-kept copies had already drifted on optional
+ * fields). Function bodies (operations, staticRender, …) never enter
+ * the manifest — only their names/flags do.
+ */
+export function manifestFromDefinition(def: {
+  readonly slug: string;
+  readonly version: string;
+  readonly tier: 1 | 2;
+  readonly schema: PluginSchemaMap;
+  readonly operations: Readonly<Record<string, unknown>>;
+  readonly component?: PluginComponent;
+  readonly staticRender?: unknown;
+  readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  readonly workers?: ReadonlyArray<PluginWorkerSpec>;
+  readonly tools?: ReadonlyArray<PluginToolSpec>;
+}): PluginManifest {
+  return pluginManifest.parse({
+    slug: def.slug,
+    version: def.version,
+    tier: def.tier,
+    schema: def.schema,
+    operations: Object.keys(def.operations),
+    component: def.component
+      ? { tag: def.component.tag, shadowMode: def.component.shadowMode ?? "open" }
+      : undefined,
+    hasStaticRender: Boolean(def.staticRender),
+    ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
+    ...(def.workers ? { workers: [...def.workers] } : {}),
+    ...(def.tools ? { tools: [...def.tools] } : {}),
+  });
+}
+
+/**
  * Define a Web Component. Open Shadow DOM by default; closed mode
  * configurable. Theme tokens injected as CSS custom properties on the
  * shadow root automatically.

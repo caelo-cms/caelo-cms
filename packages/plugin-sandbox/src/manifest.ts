@@ -64,19 +64,23 @@ export function bytesToHex(bytes: Uint8Array): string {
 export const CAELO_TIER1_PUBLIC_KEY_HEX =
   "30d77adfdc8c2c9e91a48bcab1c39ed4ee54d04e7e0c7b6c1c93cce1f8aacd9b";
 
-let cachedPublicKey: CryptoKey | null = null;
+// Keyed by hex so a process that verifies against BOTH the embedded
+// release key and a dev/env override key (or rotates keys) resolves each
+// verification against the key it was asked for. The previous single-slot
+// cache was first-key-wins: after the first import, every later
+// verification silently used that first key regardless of the
+// `publicKeyHex` argument (issue #387).
+const cachedPublicKeys = new Map<string, CryptoKey>();
 
 async function getPublicKey(rawHex: string): Promise<CryptoKey> {
-  if (cachedPublicKey) return cachedPublicKey;
+  const cached = cachedPublicKeys.get(rawHex);
+  if (cached) return cached;
   const raw = hexToBytes(rawHex);
-  cachedPublicKey = await crypto.subtle.importKey(
-    "raw",
-    asArrayBuffer(raw),
-    { name: "Ed25519" },
-    false,
-    ["verify"],
-  );
-  return cachedPublicKey;
+  const key = await crypto.subtle.importKey("raw", asArrayBuffer(raw), { name: "Ed25519" }, false, [
+    "verify",
+  ]);
+  cachedPublicKeys.set(rawHex, key);
+  return key;
 }
 
 /** Coerce Uint8Array to a strict ArrayBuffer slice. WebCrypto's TS

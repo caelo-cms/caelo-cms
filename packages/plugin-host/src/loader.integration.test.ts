@@ -251,14 +251,16 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
 
   it("failure isolation: one bad plugin doesn't block the rest", async () => {
     const goodDef = definePlugin({ ...helloPluginDef, slug: "test-p115-good" });
-    // Bad: definePlugin freezes shape, but we can supply a deliberately-broken
-    // ops handler that throws on registration via missing required field.
+    // Bad: zero operations violates the manifest schema (`operations`
+    // min(1)). Since #387 the testPlugins path runs the REAL manifest
+    // validator, so this must land in `failed` — not silently load like
+    // the pre-#387 fast path allowed.
     const badDef = definePlugin({
       slug: "test-p115-bad",
       version: "0.1.0",
       tier: 1,
       schema: {},
-      operations: {} as never, // empty; loader doesn't enforce min(1) on the in-memory shape, so this loads fine
+      operations: {} as never,
       requestedCapabilities: [],
     });
     const report = await bootstrap({
@@ -267,10 +269,10 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
       systemActorId: SYSTEM_ACTOR_ID,
       testPlugins: [{ definition: badDef }, { definition: goodDef }],
     });
-    // Both registered (the testPlugins fast path skips deep validation).
-    expect(report.loaded.map((p) => p.slug).sort()).toEqual(
-      ["test-p115-bad", "test-p115-good"].sort(),
-    );
+    // The bad plugin fails verification; the good one loads regardless.
+    expect(report.loaded.map((p) => p.slug)).toEqual(["test-p115-good"]);
+    expect(report.failed.map((p) => p.slug)).toEqual(["test-p115-bad"]);
+    expect(report.failed[0]?.reason).toContain("manifest");
     // Direct dispatch on the good one still works.
     const r = await runPluginOperation({
       pluginSlug: "test-p115-good",
@@ -279,5 +281,6 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
     });
     expect(r.ok).toBe(true);
     expect(loadedPlugins.bySlug("test-p115-good")).toBeDefined();
+    expect(loadedPlugins.bySlug("test-p115-bad")).toBeUndefined();
   });
 });

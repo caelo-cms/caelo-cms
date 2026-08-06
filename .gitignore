@@ -58,6 +58,7 @@ output/production/
 .caelo-dev-key
 packages/plugins/*/manifest.sig
 packages/plugins/*/manifest.json
+packages/plugins/.tier1-trust-root
 
 # Downloaded webfont cache (apps/static-generator/src/fonts-resolver.ts writes
 # the woff2 binaries + manifest here at build time). Generated, never authored:

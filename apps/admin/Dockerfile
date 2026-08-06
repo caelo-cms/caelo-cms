@@ -136,6 +136,17 @@ RUN bunx tsc -b \
   packages/plugins/ratings \
   packages/plugins/auth
 
+# #387 one-trust-path — sign the plugin manifests this image ships with a
+# throwaway build key and bake the matching public key as
+# packages/plugins/.tier1-trust-root. The runtime loader verifies every
+# manifest against it (NODE_ENV=production skips the boot-time re-sign),
+# so the image never loads an unverified plugin. Provenance of the image
+# as a whole is attested by cosign at the registry layer; the in-image
+# signature proves the manifests match the dists they were built from.
+# The private half never reaches the runtime stage (deleted here, and the
+# runtime stage copies /repo/packages, not /repo).
+RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-dev-key
+
 # Build with `bun x vite build` (Node-style invocation, no Bun JIT).
 # Bun's JIT under Docker amd64 here SIGILLs the same way it does on
 # GitHub Actions runners — same Bun binary, same CPU baseline. Going

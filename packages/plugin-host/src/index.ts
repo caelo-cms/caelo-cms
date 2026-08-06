@@ -11,6 +11,13 @@
  */
 
 export {
+  type DevKeyPair,
+  type DevSignReport,
+  ensureDevSignedManifests,
+  loadOrCreateDevKey,
+  TRUST_ROOT_FILENAME,
+} from "./dev-signing.js";
+export {
   type EmailTransport,
   isPluginDisabled,
   type LoadedPlugin,

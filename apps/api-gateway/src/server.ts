@@ -26,6 +26,7 @@
 import { resolve } from "node:path";
 import {
   bootstrap as bootstrapPluginHost,
+  ensureDevSignedManifests,
   loadedPlugins,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
@@ -691,11 +692,34 @@ if (import.meta.main) {
       // best-effort; 5s TTL on cachedSettings covers the gap.
     }
   })();
-  await bootstrapPluginHost({
+  // #387 one-trust-path: same dev auto-signing + verified disk load as
+  // the admin host. Non-production boots regenerate stale manifests
+  // with the repo dev key; the loader verifies via the trust-root drop
+  // file (or the embedded release key in production).
+  if (process.env.NODE_ENV !== "production") {
+    const signed = await ensureDevSignedManifests({
+      pluginsRoot: PLUGINS_ROOT,
+      keyPath: resolve(PLUGINS_ROOT, "../../.caelo-dev-key"),
+    });
+    for (const r of signed.reports) {
+      if (r.status === "failed" || r.status === "skipped") {
+        console.warn(`[api-gateway] plugin dev-sign ${r.status}: ${r.slug} — ${r.reason}`);
+      }
+    }
+  }
+  const report = await bootstrapPluginHost({
     infra: { adapter, registry },
     pluginsRoot: PLUGINS_ROOT,
     systemActorId: SYSTEM_ACTOR_ID,
   });
+  // #387 — a discarded LoadReport hid the "5/6 plugins failed" class of
+  // boot problem entirely. Failures are operator-relevant; log loudly.
+  console.log(
+    `[api-gateway] plugin host: ${report.loaded.length} loaded${report.loaded.length > 0 ? ` (${report.loaded.map((l) => l.slug).join(", ")})` : ""}`,
+  );
+  for (const f of report.failed) {
+    console.error(`[api-gateway] plugin FAILED to load: ${f.slug} — ${f.reason}`);
+  }
   const server = Bun.serve({
     port: PORT,
     fetch: handleRequest,
