@@ -20,13 +20,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { z } from "zod";
 import { runChatTurn } from "../ai/chat-runner.js";
-import type {
-  AIProvider,
-  ChatMessageInput,
-  GenerateInput,
-  ProviderEvent,
-  ProviderName,
-} from "../ai/provider.js";
+import type { GenerateInput, ProviderEvent } from "../ai/provider.js";
+import { FixtureProvider } from "../ai/providers/anthropic.js";
 import { ToolRegistry } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
 
@@ -56,31 +51,33 @@ const AI: ExecutionContext = {
  * Loop 2: emits text + done(end_turn) — but only after the runner has
  *         dispatched the tool and re-prompted us.
  */
-class ThinkingProvider implements AIProvider {
-  readonly name: ProviderName = "anthropic";
-  readonly model = "claude-test-1";
-  readonly seenInputs: ReadonlyArray<ChatMessageInput>[] = [];
+class ThinkingProvider extends FixtureProvider {
   #loop = 0;
-  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
-    (this.seenInputs as ChatMessageInput[][]).push([...input.messages]);
+  constructor() {
+    super([], "claude-test-1");
+  }
+  protected override nextStepEvents(): readonly ProviderEvent[] {
     if (this.#loop === 0) {
       this.#loop++;
-      yield { kind: "thinking-delta", text: "let me think… " };
-      yield { kind: "thinking-delta", text: "yes, I should call the tool." };
-      yield {
-        kind: "thinking-stop",
-        thinking: "let me think… yes, I should call the tool.",
-        signature: "sig-loop1-abc",
-      };
-      yield { kind: "text-delta", text: "Trying the tool now." };
-      yield { kind: "tool-call", id: "tc-1", name: "noop_tool", arguments: {} };
-      yield { kind: "usage", inputTokens: 5, outputTokens: 10, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "tool_use" };
-    } else {
-      yield { kind: "text-delta", text: "Done." };
-      yield { kind: "usage", inputTokens: 3, outputTokens: 1, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "end_turn" };
+      return [
+        { kind: "thinking-delta", text: "let me think… " },
+        { kind: "thinking-delta", text: "yes, I should call the tool." },
+        {
+          kind: "thinking-stop",
+          thinking: "let me think… yes, I should call the tool.",
+          signature: "sig-loop1-abc",
+        },
+        { kind: "text-delta", text: "Trying the tool now." },
+        { kind: "tool-call", id: "tc-1", name: "noop_tool", arguments: {} },
+        { kind: "usage", inputTokens: 5, outputTokens: 10, cachedTokens: 0 },
+        { kind: "done", stopReason: "tool_use" },
+      ];
     }
+    return [
+      { kind: "text-delta", text: "Done." },
+      { kind: "usage", inputTokens: 3, outputTokens: 1, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
   }
 }
 
@@ -166,16 +163,16 @@ describe("chat-runner extended thinking (v0.2.54)", () => {
     expect(thinkingStops.length).toBe(1);
     expect(thinkingStops[0]?.thinking).toContain("let me think");
 
-    // 3. The provider's SECOND call (loop 2) received the prior turn's
-    //    thinking blocks in its messages array. The first call has only
-    //    the user message; the second call has user + assistant
-    //    (with thinkingBlocks) + tool_result.
-    expect(provider.seenInputs.length).toBe(2);
-    const loop2Messages = provider.seenInputs[1];
-    expect(loop2Messages).toBeDefined();
-    const assistant = loop2Messages?.find((m) => m.role === "assistant");
-    expect(assistant?.thinkingBlocks).toBeDefined();
-    expect(assistant?.thinkingBlocks?.[0]?.signature).toBe("sig-loop1-abc");
+    // 3. The SECOND model step's request carried the prior step's thinking
+    //    (a reasoning part with the Anthropic signature) — issue #442: the
+    //    step history is the Option-C recomposition of the step-1 slice, so
+    //    the signature rides the SDK's own reasoning-part shape, observed at
+    //    the mock-model boundary.
+    expect(provider.seenPrompts.length).toBe(2);
+    const loop2Prompt = provider.seenPrompts[1];
+    expect(loop2Prompt).toBeDefined();
+    expect(JSON.stringify(loop2Prompt)).toContain("sig-loop1-abc");
+    expect(JSON.stringify(loop2Prompt)).toContain("let me think");
 
     // 4. chat_messages.thinking_blocks is populated for the assistant
     //    turn that carried the thinking. (Stored as JSON; read back as
@@ -229,14 +226,20 @@ describe("chat-runner extended thinking (v0.2.54)", () => {
      * If the session toggle is off, `input.thinking` MUST be undefined.
      */
     let observedThinking: GenerateInput["thinking"] | undefined;
-    class NoThinkProvider implements AIProvider {
-      readonly name: ProviderName = "anthropic";
-      readonly model = "claude-test-1";
-      async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+    class NoThinkProvider extends FixtureProvider {
+      constructor() {
+        super(
+          [
+            { kind: "text-delta", text: "ok" },
+            { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+            { kind: "done", stopReason: "end_turn" },
+          ],
+          "claude-test-1",
+        );
+      }
+      override async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
         observedThinking = input.thinking;
-        yield { kind: "text-delta", text: "ok" };
-        yield { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
-        yield { kind: "done", stopReason: "end_turn" };
+        yield* super.generate(input);
       }
     }
 

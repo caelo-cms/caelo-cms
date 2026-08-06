@@ -25,6 +25,7 @@ import {
   lookupToolResultOp,
   markChatMessageInterruptedOp,
   recordAiCallOp,
+  setResponseMessagesOp,
 } from "./ops/chat/messages.js";
 import { finalizeStageOp, mergeChatToMainOp, publishChatSessionOp } from "./ops/chat/publish.js";
 import {
@@ -607,6 +608,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(archiveChatSessionOp);
   registry.register(appendChatMessageOp);
   registry.register(markChatMessageInterruptedOp);
+  registry.register(setResponseMessagesOp);
   registry.register(cacheToolResultOp);
   registry.register(lookupToolResultOp);
   registry.register(recordAiCallOp);

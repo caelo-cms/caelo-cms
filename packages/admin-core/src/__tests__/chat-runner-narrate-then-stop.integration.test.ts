@@ -31,7 +31,8 @@ import { SQL } from "bun";
 import { z } from "zod";
 import type { JudgeTurnCompleteness } from "../ai/chat-runner/turn-completeness-judge.js";
 import { runChatTurn } from "../ai/chat-runner.js";
-import type { AIProvider, GenerateInput, ProviderEvent, ProviderName } from "../ai/provider.js";
+import type { ProviderEvent } from "../ai/provider.js";
+import { FixtureProvider } from "../ai/providers/anthropic.js";
 import { ToolRegistry } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
 
@@ -59,42 +60,52 @@ const AI: ExecutionContext = {
  * emit the tool call. Loop 2: end. `calls` records how many times
  * generate() ran so the control test can assert "no retry".
  */
-class AnnouncedThenToolProvider implements AIProvider {
-  readonly name: ProviderName = "anthropic";
-  readonly model = "claude-test-1";
+class AnnouncedThenToolProvider extends FixtureProvider {
   calls = 0;
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
+  constructor() {
+    super([], "claude-test-1");
+  }
+  protected override nextStepEvents(): readonly ProviderEvent[] {
     const loop = this.calls;
     this.calls += 1;
     if (loop === 0) {
-      yield { kind: "text-delta", text: "Adding the footer to the layout now." };
-      yield { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "end_turn" };
-    } else if (loop === 1) {
-      yield { kind: "tool-call", id: "tc-footer", name: "record_footer", arguments: {} };
-      yield { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "tool_use" };
-    } else {
-      yield { kind: "text-delta", text: "Footer added." };
-      yield { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "end_turn" };
+      return [
+        { kind: "text-delta", text: "Adding the footer to the layout now." },
+        { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+        { kind: "done", stopReason: "end_turn" },
+      ];
     }
+    if (loop === 1) {
+      return [
+        { kind: "tool-call", id: "tc-footer", name: "record_footer", arguments: {} },
+        { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+        { kind: "done", stopReason: "tool_use" },
+      ];
+    }
+    return [
+      { kind: "text-delta", text: "Footer added." },
+      { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
   }
 }
 
 /** Loop 0: a clarifying QUESTION + end_turn, no tool. Must NOT be retried. */
-class ClarifyingQuestionProvider implements AIProvider {
-  readonly name: ProviderName = "anthropic";
-  readonly model = "claude-test-1";
+class ClarifyingQuestionProvider extends FixtureProvider {
   calls = 0;
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
+  constructor() {
+    super([], "claude-test-1");
+  }
+  protected override nextStepEvents(): readonly ProviderEvent[] {
     this.calls += 1;
-    yield {
-      kind: "text-delta",
-      text: "Want me to add a footer with Home, About, and Contact links?",
-    };
-    yield { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "end_turn" };
+    return [
+      {
+        kind: "text-delta",
+        text: "Want me to add a footer with Home, About, and Contact links?",
+      },
+      { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
   }
 }
 

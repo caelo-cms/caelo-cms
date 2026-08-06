@@ -17,7 +17,8 @@
       "!**/test-results",
       "!**/output",
       "!claude-workflow",
-      "!**/data/fonts"
+      "!**/data/fonts",
+      "!**/__tests__/fixtures"
     ]
   },
   "formatter": {

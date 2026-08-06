@@ -115,6 +115,8 @@ describe("AnthropicProvider — SDK-event translation", () => {
       events.push(e);
     }
     expect(events).toEqual([
+      // issue #442 — the SDK loop marks each step; single-step runs carry one.
+      { kind: "step-start", stepIndex: 0 },
       { kind: "text-delta", text: "Hello" },
       { kind: "text-delta", text: " world" },
       { kind: "usage", inputTokens: 50, outputTokens: 12, cachedTokens: 0, cacheCreationTokens: 0 },
@@ -316,13 +318,15 @@ describe("AnthropicProvider — SDK-event translation", () => {
     })) {
       events.push(e);
     }
-    expect(events[0]?.kind).toBe("error");
-    expect(events[1]?.kind).toBe("done");
+    // issue #442 — a step-start precedes every step's parts, error included.
+    expect(events[0]?.kind).toBe("step-start");
+    expect(events[1]?.kind).toBe("error");
+    expect(events[2]?.kind).toBe("done");
   });
 });
 
 describe("FixtureProvider", () => {
-  it("yields the canned event list", async () => {
+  it("replays the scripted step through the REAL SDK loop (issue #442)", async () => {
     const canned: ProviderEvent[] = [
       { kind: "text-delta", text: "ok" },
       { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
@@ -330,9 +334,21 @@ describe("FixtureProvider", () => {
     ];
     const provider = new FixtureProvider(canned);
     const events: ProviderEvent[] = [];
-    for await (const e of provider.generate({ systemPrompt: "", messages: [], tools: [] })) {
+    for await (const e of provider.generate({
+      systemPrompt: "",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+    })) {
       events.push(e);
     }
-    expect(events).toEqual(canned);
+    // The script rides a MockLanguageModelV3 under streamText now, so the
+    // stream carries the loop's step boundary + the Option-C tail.
+    expect(events).toEqual([
+      { kind: "step-start", stepIndex: 0 },
+      { kind: "text-delta", text: "ok" },
+      { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0, cacheCreationTokens: 0 },
+      expect.objectContaining({ kind: "done", stopReason: "end_turn" }),
+      expect.objectContaining({ kind: "turn-messages" }),
+    ]);
   });
 });

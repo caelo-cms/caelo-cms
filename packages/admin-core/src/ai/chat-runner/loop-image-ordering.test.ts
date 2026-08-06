@@ -27,7 +27,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider, ChatMessageInput, GenerateInput, ProviderEvent } from "../provider.js";
+import type { ProviderEvent } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import { type ToolDefinitionWithHandler, ToolRegistry } from "../tools/dispatch.js";
 import { runToolLoop } from "./loop.js";
 import type { UsageAccumulator } from "./streaming.js";
@@ -52,28 +53,33 @@ function imageTool(): ToolDefinitionWithHandler<Record<string, never>> {
 }
 
 /**
- * First call: TWO parallel image-tool calls. Second call: records the
- * history it was handed (the assertion surface) and ends the turn.
+ * First step: TWO parallel image-tool calls. Second step ends the turn;
+ * issue #442 — its request history is observed at the mock-model boundary
+ * (FixtureProvider.seenPrompts), where the chat-runner's prepareStep
+ * override lands.
  */
-class ParallelImageToolProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-parallel-images";
-  secondCallMessages: readonly ChatMessageInput[] | null = null;
-  #calls = 0;
+class ParallelImageToolProvider extends FixtureProvider {
+  #steps = 0;
 
-  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
-    this.#calls += 1;
-    if (this.#calls === 1) {
-      yield { kind: "tool-call", id: "call-a", name: "fake_screenshot", arguments: {} };
-      yield { kind: "tool-call", id: "call-b", name: "fake_screenshot", arguments: {} };
-      yield { kind: "usage", inputTokens: 10, outputTokens: 10, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "tool_use" };
-      return;
+  constructor() {
+    super([], "fixture-parallel-images");
+  }
+
+  protected override nextStepEvents(): readonly ProviderEvent[] {
+    this.#steps += 1;
+    if (this.#steps === 1) {
+      return [
+        { kind: "tool-call", id: "call-a", name: "fake_screenshot", arguments: {} },
+        { kind: "tool-call", id: "call-b", name: "fake_screenshot", arguments: {} },
+        { kind: "usage", inputTokens: 10, outputTokens: 10, cachedTokens: 0 },
+        { kind: "done", stopReason: "tool_use" },
+      ];
     }
-    this.secondCallMessages = input.messages;
-    yield { kind: "text-delta", text: "both screenshots reviewed" };
-    yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "end_turn" };
+    return [
+      { kind: "text-delta", text: "both screenshots reviewed" },
+      { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
   }
 }
 
@@ -143,7 +149,13 @@ describe("runToolLoop — parallel image tool results stay ahead of image messag
       chatBranchId: "cb-1",
       abortSignal: undefined,
       systemChunks: "",
-      filteredTools: [],
+      filteredTools: [
+        {
+          name: "fake_screenshot",
+          description: "returns an image",
+          inputSchema: { type: "object" },
+        },
+      ],
       initialMessages: [{ role: "user", content: "screenshot desktop and mobile" }],
       compactionThresholdTokens: 600_000,
       maxLoops: 5,
@@ -162,18 +174,30 @@ describe("runToolLoop — parallel image tool results stay ahead of image messag
       events.push(step.value);
     }
 
-    const history = provider.secondCallMessages;
-    expect(history).not.toBeNull();
-    const roleTrace = (history ?? []).map((m) =>
-      m.role === "tool" ? `tool:${m.toolCallId}` : m.role,
-    );
+    const history = provider.seenPrompts[1];
+    expect(history).toBeDefined();
+    // The LanguageModel-level prompt coalesces adjacent tool messages into
+    // one message with multiple tool-result parts — expand per part so the
+    // ordering invariant stays assertable, and skip the system message.
+    const roleTrace = (history ?? []).flatMap((raw) => {
+      const m = raw as { role?: string; content?: unknown };
+      if (m.role === "system") return [];
+      if (m.role !== "tool" || !Array.isArray(m.content)) return [m.role];
+      return m.content.map((part) => `tool:${(part as { toolCallId?: string }).toolCallId}`);
+    });
     // The invariant the provider SDK enforces: every tool result of the
     // turn precedes the first (image) user message.
     expect(roleTrace).toEqual(["user", "assistant", "tool:call-a", "tool:call-b", "user", "user"]);
-    // Both image messages actually carry their image payload.
-    const imageMessages = (history ?? []).filter(
-      (m) => m.role === "user" && (m.additionalContent?.length ?? 0) > 0,
-    );
+    // Both image messages actually carry their image payload (a non-text
+    // part — the SDK converts image attachments to file parts).
+    const imageMessages = (history ?? []).filter((raw) => {
+      const m = raw as { role?: string; content?: unknown };
+      return (
+        m.role === "user" &&
+        Array.isArray(m.content) &&
+        m.content.some((part) => (part as { type?: string }).type !== "text")
+      );
+    });
     expect(imageMessages.length).toBe(2);
   });
 });

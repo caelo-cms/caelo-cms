@@ -304,13 +304,19 @@ describe("AnthropicProvider tool-search transform (W2)", () => {
         tools: fakeTools(15),
       }),
     );
-    const toolCalls = events.filter((e) => e.kind === "tool-call") as Array<{
+    // issue #442 — the SDK loop re-runs the scripted step while the
+    // (unresolvable, scripted) deferred search call is outstanding, so
+    // assert on the FIRST step's slice: the translation contract is
+    // per-step.
+    const secondStepAt = events.findIndex((e) => e.kind === "step-start" && e.stepIndex === 1);
+    const stepZero = secondStepAt === -1 ? events : events.slice(0, secondStepAt);
+    const toolCalls = stepZero.filter((e) => e.kind === "tool-call") as Array<{
       kind: "tool-call";
       name: string;
     }>;
     expect(toolCalls.map((c) => c.name)).toEqual(["list_pages"]);
     // Both server calls surface as recordable (not dispatchable) events.
-    const serverCalls = events.filter((e) => e.kind === "server-tool-call") as Array<{
+    const serverCalls = stepZero.filter((e) => e.kind === "server-tool-call") as Array<{
       kind: "server-tool-call";
       name: string;
     }>;

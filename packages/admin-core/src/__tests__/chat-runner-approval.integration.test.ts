@@ -22,16 +22,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { z } from "zod";
 import { runChatTurn } from "../ai/chat-runner.js";
-import type {
-  AIProvider,
-  ChatMessageInput,
-  GenerateInput,
-  GenerateObjectInput,
-  GenerateObjectResult,
-  ProviderEvent,
-  ProviderName,
-} from "../ai/provider.js";
+import type { ChatMessageInput, GenerateInput, ProviderEvent } from "../ai/provider.js";
+import { FixtureProvider } from "../ai/providers/anthropic.js";
 import { ToolRegistry } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
 
@@ -54,39 +48,54 @@ const AI: ExecutionContext = {
 };
 
 /**
- * Loop 0: model calls the gated tool → SDK pauses → a tool-approval-request
- *   rides the stream (plus the plain tool-call the SDK emits alongside it).
- * Loop 1 (resume): the continuation after the approval — final text.
+ * Run 1, step 0: the model calls the gated tool → the REAL SDK toolApproval
+ *   machinery pauses it and emits the tool-approval-request (issue #442 —
+ *   the request is no longer a scriptable provider event).
+ * Run 2 (resume): the continuation after the approval — final text.
  */
-class ApprovalProvider implements AIProvider {
-  readonly name: ProviderName = "anthropic";
-  readonly model = "claude-test-1";
+class ApprovalProvider extends FixtureProvider {
   readonly seenInputs: ReadonlyArray<ChatMessageInput>[] = [];
   #loop = 0;
-  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+  constructor() {
+    super([], "claude-test-1");
+  }
+  override async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
     (this.seenInputs as ChatMessageInput[][]).push([...input.messages]);
+    yield* super.generate(input);
+  }
+  protected override nextStepEvents(): readonly ProviderEvent[] {
     if (this.#loop === 0) {
       this.#loop++;
-      yield { kind: "text-delta", text: "I'll update the layout." };
-      yield { kind: "tool-call", id: "c1", name: "update_layout", arguments: { layoutId: "x" } };
-      yield {
-        kind: "tool-approval-request",
-        approvalId: "ap-1",
-        toolCallId: "c1",
-        name: "update_layout",
-        arguments: { layoutId: "x" },
-      };
-      yield { kind: "usage", inputTokens: 5, outputTokens: 4, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "tool_use" };
-    } else {
-      yield { kind: "text-delta", text: "Done — layout updated." };
-      yield { kind: "usage", inputTokens: 3, outputTokens: 2, cachedTokens: 0 };
-      yield { kind: "done", stopReason: "end_turn" };
+      return [
+        { kind: "text-delta", text: "I'll update the layout." },
+        { kind: "tool-call", id: "c1", name: "update_layout", arguments: { layoutId: "x" } },
+        { kind: "usage", inputTokens: 5, outputTokens: 4, cachedTokens: 0 },
+        { kind: "done", stopReason: "tool_use" },
+      ];
     }
+    return [
+      { kind: "text-delta", text: "Done — layout updated." },
+      { kind: "usage", inputTokens: 3, outputTokens: 2, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
   }
-  async generateObject(_input: GenerateObjectInput): Promise<GenerateObjectResult> {
-    throw new Error("not used");
-  }
+}
+
+/** A gated `update_layout` catalogue entry: the chat-runner attaches the SDK
+ *  approvalMode + execute from the `gated` marker (the propose/execute ops
+ *  are absent from this fixture registry — the chained apply fails, which is
+ *  irrelevant to the pause/resume orchestration under test). */
+function gatedToolRegistry(): ToolRegistry {
+  const tools = new ToolRegistry();
+  tools.register({
+    name: "update_layout",
+    description: "update the site layout",
+    schema: z.object({ layoutId: z.string() }),
+    inputSchema: { type: "object", properties: { layoutId: { type: "string" } } },
+    gated: { proposeOp: "layouts_test.propose_update", executeOp: "layouts_test.execute_proposal" },
+    handler: async () => ({ ok: true, content: "unused (SDK-gated)" }),
+  });
+  return tools;
 }
 
 async function wipe(): Promise<void> {
@@ -131,7 +140,7 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
     const provider = new ApprovalProvider();
     const events: { kind: string; preview?: string; name?: string }[] = [];
     for await (const ev of runChatTurn(
-      { adapter, registry, provider, tools: new ToolRegistry(), aiCtx: AI, humanCtx: HUMAN },
+      { adapter, registry, provider, tools: gatedToolRegistry(), aiCtx: AI, humanCtx: HUMAN },
       { chatSessionId, content: "make the header sticky", chips: [] },
     )) {
       events.push({
@@ -175,7 +184,7 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
     const provider = new ApprovalProvider();
     const events: { kind: string }[] = [];
     for await (const ev of runChatTurn(
-      { adapter, registry, provider, tools: new ToolRegistry(), aiCtx: AI, humanCtx: HUMAN },
+      { adapter, registry, provider, tools: gatedToolRegistry(), aiCtx: AI, humanCtx: HUMAN },
       { chatSessionId, content: "make the header sticky", chips: [] },
     )) {
       events.push({ kind: ev.kind });
@@ -194,21 +203,55 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
     if (!session.ok) throw new Error("session create failed");
     const { chatSessionId } = session.value as { chatSessionId: string };
 
+    // issue #442 — the resume history must carry the COMPLETE paused state:
+    // the SDK's collectToolApprovals rejects an approval-response whose
+    // request is absent from history (pre-#442 the fabricated response-only
+    // history slipped through only because the hand-rolled fixture provider
+    // never touched the SDK). Persist the paused assistant turn the way the
+    // chat-runner does: the Option-C slice with the gated tool-call + its
+    // tool-approval-request part.
+    const paused = await execute(registry, adapter, HUMAN, "chat.append_message", {
+      chatSessionId,
+      role: "assistant",
+      content: "I'll update the layout.",
+      toolCalls: [{ id: "c1", name: "update_layout", arguments: { layoutId: "x" } }],
+      responseMessages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "I'll update the layout." },
+            {
+              type: "tool-call",
+              toolCallId: "c1",
+              toolName: "update_layout",
+              input: { layoutId: "x" },
+            },
+            { type: "tool-approval-request", approvalId: "ap-1", toolCallId: "c1" },
+          ],
+        },
+      ],
+      status: "complete",
+    });
+    if (!paused.ok) throw new Error("paused turn seed failed");
+
     // A resume turn carries NO content — just the Owner's decision. The
     // provider only needs to produce the continuation text. It CAPTURES its
     // input messages so we can assert the SDK-approval invariant below.
-    class ResumeProvider implements AIProvider {
-      readonly name: ProviderName = "anthropic";
-      readonly model = "claude-test-1";
+    class ResumeProvider extends FixtureProvider {
       readonly seenInputs: ReadonlyArray<ChatMessageInput>[] = [];
-      async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
-        (this.seenInputs as ChatMessageInput[][]).push([...input.messages]);
-        yield { kind: "text-delta", text: "Applied." };
-        yield { kind: "usage", inputTokens: 2, outputTokens: 1, cachedTokens: 0 };
-        yield { kind: "done", stopReason: "end_turn" };
+      constructor() {
+        super(
+          [
+            { kind: "text-delta", text: "Applied." },
+            { kind: "usage", inputTokens: 2, outputTokens: 1, cachedTokens: 0 },
+            { kind: "done", stopReason: "end_turn" },
+          ],
+          "claude-test-1",
+        );
       }
-      async generateObject(): Promise<GenerateObjectResult> {
-        throw new Error("not used");
+      override async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+        (this.seenInputs as ChatMessageInput[][]).push([...input.messages]);
+        yield* super.generate(input);
       }
     }
 
@@ -218,7 +261,7 @@ describe("chat-runner SDK approval gate (Plan B, Slice 1)", () => {
         adapter,
         registry,
         provider: resumeProvider,
-        tools: new ToolRegistry(),
+        tools: gatedToolRegistry(),
         aiCtx: AI,
         humanCtx: HUMAN,
       },

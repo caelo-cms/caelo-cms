@@ -64,8 +64,9 @@ packages/plugins/.tier1-trust-root
 # the woff2 binaries + manifest here at build time). Generated, never authored:
 # leaving it untracked-but-unignored let a `git add -A` sweep font binaries into
 # a commit, and made `biome check .` fail on the generated manifests.
-# Runtime self-hosted-font cache — written by the font worker wherever
-# the process' cwd lands (repo root, apps/admin, package dirs in tests).
+# The cache lands wherever the writing process' cwd is (repo root,
+# apps/admin, package dirs when a local `bun test` runs from a package) —
+# one recursive pattern covers every cwd.
 **/data/fonts/
 
 # Local debug/analysis artifacts from e2e-livedit runs (wire logs, A/B rounds,

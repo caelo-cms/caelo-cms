@@ -30,7 +30,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider, GenerateInput, ProviderEvent } from "../provider.js";
+import type { AIProvider, ProviderEvent } from "../provider.js";
+import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
 import type { UsageAccumulator } from "./streaming.js";
@@ -38,22 +39,36 @@ import type { FilteredTool } from "./tool-catalogue.js";
 import type { JudgeTurnCompleteness, TurnCompletenessInput } from "./turn-completeness-judge.js";
 import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn } from "./types.js";
 
-/** Records the `toolChoice` the loop sent on each provider call. */
-abstract class RecordingProvider implements AIProvider {
-  readonly name = "anthropic" as const;
-  readonly model = "fixture-narrate";
+/**
+ * issue #442 — per-STEP scripting over the real SDK loop. `calls` counts
+ * model STEPS (pre-#442 provider calls map 1:1 onto steps); the per-step
+ * `toolChoice` the loop sent is observed at the mock-model boundary via
+ * FixtureProvider.stepToolChoices.
+ */
+abstract class RecordingProvider extends FixtureProvider {
   calls = 0;
-  readonly toolChoices: (GenerateInput["toolChoice"] | undefined)[] = [];
-  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+  get toolChoices(): (string | undefined)[] {
+    return this.stepToolChoices;
+  }
+  constructor() {
+    super([], "fixture-narrate");
+  }
+  protected override nextStepEvents(): readonly ProviderEvent[] {
     this.calls++;
-    this.toolChoices.push(input.toolChoice);
-    yield* this.script(this.calls);
-    yield { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 };
+    const events = [...this.script(this.calls)];
+    // Fold the usage in BEFORE the terminal done so the converter attaches
+    // it to the step's finish part (pre-#442 the loop summed it either way).
+    const doneAt = events.findIndex((e) => e.kind === "done");
+    const usage: ProviderEvent = {
+      kind: "usage",
+      inputTokens: 10,
+      outputTokens: 5,
+      cachedTokens: 0,
+    };
+    if (doneAt === -1) return [...events, usage];
+    return [...events.slice(0, doneAt), usage, ...events.slice(doneAt)];
   }
   protected abstract script(call: number): Iterable<ProviderEvent>;
-  generateObject(): never {
-    throw new Error("the fixture provider never serves the judge — inject a stub");
-  }
 }
 
 /** load_skill (meta) → narrates and stops → on the forced re-run, does the work. */
@@ -204,6 +219,7 @@ function buildFixtureQueryApi(): { registry: OperationRegistry; adapter: Databas
   passthrough("imports.get_session_budget_state", { gate: null });
   passthrough("chat.lookup_tool_result", { cached: null });
   passthrough("chat.cache_tool_result", {});
+  passthrough("chat.set_response_messages", { updated: true });
   passthrough("chat.record_ai_call", {});
   const adapter = {
     runOperation: (
