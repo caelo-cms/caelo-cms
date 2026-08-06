@@ -848,7 +848,6 @@ export const listOpenChatsWithPendingOp = defineOperation({
           title: z.string(),
           anchorPageId: z.string().nullable(),
           anchorPageSlug: z.string().nullable(),
-          anchorPageLocale: z.string().nullable(),
           pendingCount: z.number().int().nonnegative(),
         })
         .strict(),
@@ -863,7 +862,6 @@ export const listOpenChatsWithPendingOp = defineOperation({
           cs.title     AS title,
           cs.page_id::text AS page_id,
           p.slug       AS page_slug,
-          p.locale     AS page_locale,
           (
             -- v0.10.15 — only snapshots since each chat's last Stage.
             -- v0.10.8 fixed branch_change_count + branch_edited_entities
@@ -901,7 +899,7 @@ export const listOpenChatsWithPendingOp = defineOperation({
           AND cs.archived_at IS NULL
           AND (${exclude}::uuid IS NULL OR cs.id <> ${exclude}::uuid)
       )
-      SELECT chat_session_id, title, page_id, page_slug, page_locale, pending_count
+      SELECT chat_session_id, title, page_id, page_slug, pending_count
       FROM counts
       WHERE pending_count > 0
       ORDER BY pending_count DESC, title ASC
@@ -910,7 +908,6 @@ export const listOpenChatsWithPendingOp = defineOperation({
       title: string;
       page_id: string | null;
       page_slug: string | null;
-      page_locale: string | null;
       pending_count: number;
     }[];
     return ok({
@@ -919,7 +916,6 @@ export const listOpenChatsWithPendingOp = defineOperation({
         title: r.title,
         anchorPageId: r.page_id,
         anchorPageSlug: r.page_slug,
-        anchorPageLocale: r.page_locale,
         pendingCount: r.pending_count,
       })),
     });

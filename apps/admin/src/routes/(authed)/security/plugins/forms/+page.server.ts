@@ -15,7 +15,6 @@ interface SubmissionRow {
   id: string;
   form_slug: string;
   page_id: string | null;
-  locale: string;
   visitor_id: string;
   data: Record<string, unknown>;
   status: string;

@@ -117,7 +117,6 @@ async function seedPage(): Promise<string> {
     slug: PAGE_SLUG,
     title: "About",
     templateId,
-    locale: "en",
   });
   if (!p.ok) throw new Error("page seed");
   const pageId = (p.value as { pageId: string }).pageId;
@@ -140,7 +139,6 @@ async function seedPage(): Promise<string> {
     slug: HOME_SLUG,
     title: "Home",
     templateId,
-    locale: "en",
   });
   if (!hp.ok) throw new Error("home page seed");
   const homePageId = (hp.value as { pageId: string }).pageId;

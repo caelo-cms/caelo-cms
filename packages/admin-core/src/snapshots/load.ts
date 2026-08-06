@@ -137,11 +137,10 @@ export async function loadPageState(
   pageId: string,
 ): Promise<PageState | null> {
   const rows = (await tx.execute(sql`
-    SELECT slug, locale, title, template_id, status, version, deleted_at
+    SELECT slug, title, template_id, status, version, deleted_at
     FROM pages WHERE id = ${pageId}::uuid LIMIT 1
   `)) as unknown as {
     slug: string;
-    locale: string;
     title: string;
     template_id: string;
     status: "draft" | "published";
@@ -153,7 +152,6 @@ export async function loadPageState(
   return {
     schemaVersion: 1,
     slug: r.slug,
-    locale: r.locale,
     title: r.title,
     templateId: r.template_id,
     status: r.status,

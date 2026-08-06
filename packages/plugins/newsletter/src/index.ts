@@ -8,7 +8,7 @@
  * worker dispatches per-recipient emails.
  *
  * Schema (cms_public.plugin_newsletter.*):
- *   subscribers   — email_hash, locale, confirm_token, confirmed_at, unsub_token, unsubscribed_at
+ *   subscribers   — email_hash, confirm_token, confirmed_at, unsub_token, unsubscribed_at
  *   campaigns     — slug, subject, body_html, status (draft/queued/sending/sent), sent_at
  *   sends         — campaign_id, subscriber_id, sent_at, status (pending/sent/failed)
  */
@@ -44,7 +44,6 @@ export default definePlugin<PluginContextTier1>({
       id: "uuid",
       email: "string",
       email_hash: "string",
-      locale: "string",
       confirm_token: "string",
       confirmed_at: "timestamp_nullable",
       unsub_token: "string",
@@ -73,7 +72,7 @@ export default definePlugin<PluginContextTier1>({
   requestedCapabilities: ["ai_provider", "email", "background_workers"],
   operations: {
     subscribe: async (ctx, args) => {
-      const input = args as { email: string; locale: string };
+      const input = args as { email: string };
       if (!input.email.includes("@")) throw new Error("subscribe: invalid email");
       const hash = hashEmail(input.email);
       const existing = await ctx.query.list<
@@ -89,7 +88,6 @@ export default definePlugin<PluginContextTier1>({
       const r = await ctx.query.insert("subscribers", {
         email: input.email,
         email_hash: hash,
-        locale: input.locale,
         confirm_token: confirmToken,
         unsub_token: unsubToken,
       });
@@ -223,7 +221,7 @@ export default definePlugin<PluginContextTier1>({
   /**
    * Web Component `<caelo-newsletter-form>` — visitor signup form.
    *
-   * Attributes: locale.
+   * Attributes: none.
    * Posts email to /api/plugin/newsletter/subscribe; user receives a
    * confirmation email (when ctx.email transport is configured).
    */
@@ -232,7 +230,6 @@ export default definePlugin<PluginContextTier1>({
     shadowMode: "open",
     mounted: async (host) => {
       const root = host.shadowRoot ?? host.attachShadow({ mode: "open" });
-      const locale = host.getAttribute("locale") ?? "en";
       const extraCss = `
         form { grid-template-columns: 1fr auto; gap: 0.5rem; max-width: 24rem; }
       `;
@@ -260,7 +257,6 @@ export default definePlugin<PluginContextTier1>({
           const captcha = await attachCaptchaProof().catch(() => null);
           const json = await postPluginJson("newsletter", "subscribe", {
             email: fd.get("email"),
-            locale,
             ...(captcha ? { _caelo_captcha: captcha } : {}),
           });
           if (json.ok) {

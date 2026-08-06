@@ -683,7 +683,6 @@ export const duplicatePageToolInput = z
     newName: z.string().min(1).max(256).optional(),
     newTitle: z.string().min(1).max(256).optional(),
     targetTemplateId: z.string().uuid().optional(),
-    locale: z.string().min(2).max(10).optional(),
   })
   .strict();
 
@@ -790,16 +789,11 @@ export const setMediaAltToolInput = z
 export type SetMediaAltToolInput = z.infer<typeof setMediaAltToolInput>;
 
 /**
- * 0184 — `set_home_page`. AI designates a page as the site homepage (per
- * locale, the locale root). Records `locales.home_page_id`; the page keeps
- * its own slug but resolves to `/`.
+ * 0184 — `set_home_page`. AI designates a page as the site homepage.
+ * Records `site_defaults.home_page_id`; the page keeps its own slug but
+ * resolves to `/`.
  */
-export const setHomePageToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    locale: z.string().min(2).max(10).optional(),
-  })
-  .strict();
+export const setHomePageToolInput = z.object({ pageId: z.string().uuid() }).strict();
 export type SetHomePageToolInput = z.infer<typeof setHomePageToolInput>;
 
 /**

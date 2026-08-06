@@ -68,7 +68,6 @@ export const revertPageOp = defineOperation({
       await tx.execute(sql`
         UPDATE pages SET
           slug = ${target.slug},
-          locale = ${target.locale},
           title = ${target.title},
           template_id = ${target.templateId}::uuid,
           status = ${target.status},

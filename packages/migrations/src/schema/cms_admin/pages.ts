@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { bigint, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { bigint, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { templates } from "./templates.js";
 
 /**
@@ -8,16 +8,15 @@ import { templates } from "./templates.js";
  * page itself never stores raw HTML, enforcing the Page Layer invariant
  * (CMS_REQUIREMENTS §3.1, CLAUDE.md §2).
  *
- * `(slug, locale)` is the public identity of a page; locale defaults to `'en'`
- * here and full multi-locale config (URL strategy, hreflang, translation
- * status) lands in P9. SEO fields land in P8 in a separate `page_seo` table.
+ * `slug` is the globally unique public identity of a page (epic #380
+ * #384 — locale left page identity; variant grouping is explicit
+ * plugin data). SEO fields live in the separate `page_seo` table.
  */
 export const pages = pgTable(
   "pages",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     slug: text("slug").notNull(),
-    locale: text("locale").notNull().default("en"),
     title: text("title").notNull(),
     templateId: uuid("template_id")
       .notNull()
@@ -36,5 +35,8 @@ export const pages = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
-  (t) => [unique("pages_slug_locale_unique").on(t.slug, t.locale)],
+  // Global slug uniqueness lives in SQL as the partial, branch-aware
+  // pages_slug_branch_uidx (0201) — not expressible as a drizzle
+  // `unique()`, so the table callback is empty.
+  (_t) => [],
 );

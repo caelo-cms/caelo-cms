@@ -29,7 +29,7 @@ import {
 } from "./_propose-helpers.js";
 import { addDomainOp, removeDomainOp } from "./domains.js";
 
-const domainKind = z.enum(["admin", "public", "locale-public"]);
+const domainKind = z.enum(["admin", "public"]);
 const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
 
 // ─── propose_add ─────────────────────────────────────────────────────
@@ -43,7 +43,6 @@ const proposeAddInput = z
       .transform((s) => s.toLowerCase().trim())
       .refine((s) => HOSTNAME_RE.test(s), "must be a valid hostname"),
     kind: domainKind,
-    localeCode: z.string().min(2).max(20).optional(),
   })
   .strict();
 
@@ -57,13 +56,6 @@ export const proposeDomainAddOp = defineOperation({
     preview: z.record(z.string(), z.unknown()),
   }),
   handler: async (ctx, input, tx) => {
-    if (input.kind === "locale-public" && !input.localeCode) {
-      return err({
-        kind: "HandlerError",
-        operation: "domains.propose_add",
-        message: "locale-public domains require localeCode",
-      });
-    }
     // Reject duplicates at propose time so a typoed proposal doesn't
     // sit in the queue waiting to fail.
     const dup = (await tx.execute(sql`
@@ -80,7 +72,6 @@ export const proposeDomainAddOp = defineOperation({
       kind: "add",
       hostname: input.hostname,
       domainKind: input.kind,
-      localeCode: input.localeCode ?? null,
       // Always-true reminder for the Owner: applying this triggers
       // cms-provision regenerate-caddy on next deploy.
       effect: "next-deploy regenerates Caddy vhost; ACME issues TLS cert",
@@ -104,13 +95,12 @@ export const proposeDomainRemoveOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, hostname, kind, locale_code, tls_status, last_verified_at
+      SELECT id::text AS id, hostname, kind, tls_status, last_verified_at
       FROM domains WHERE id = ${input.domainId}::uuid LIMIT 1
     `)) as unknown as Array<{
       id: string;
       hostname: string;
       kind: string;
-      locale_code: string | null;
       tls_status: string;
       last_verified_at: Date | string | null;
     }>;
@@ -127,7 +117,6 @@ export const proposeDomainRemoveOp = defineOperation({
       domainId: d.id,
       hostname: d.hostname,
       domainKind: d.kind,
-      localeCode: d.locale_code,
       tlsStatus: d.tls_status,
       effect: "next-deploy drops Caddy vhost; visitors hit 404 until DNS is repointed",
     };

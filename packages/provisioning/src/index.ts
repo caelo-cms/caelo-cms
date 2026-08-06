@@ -21,8 +21,6 @@ export type {
   CloudAdapterOutputs,
   DnsRecord,
   Environment,
-  LocaleConfig,
-  LocaleStrategy,
   ProvisioningOutputsJson,
   SupportedProvider,
 } from "./adapter.js";

@@ -37,7 +37,6 @@ const greetingsSchema = {
   greetings: {
     id: "uuid",
     page_id: "string",
-    locale: "string",
     message: "string",
     created_at: "timestamp",
   },
@@ -51,10 +50,9 @@ function makePlugin(slug: string) {
     schema: greetingsSchema,
     operations: {
       add: async (ctx, args) => {
-        const a = args as { pageId: string; locale: string; message: string };
+        const a = args as { pageId: string; message: string };
         return ctx.query.insert("greetings", {
           page_id: a.pageId,
-          locale: a.locale,
           message: a.message,
         });
       },
@@ -167,7 +165,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     const add = await runPluginOperation({
       pluginSlug: PLUGIN_A,
       operationName: "add",
-      args: { pageId: "page-1", locale: "en", message: "hello" },
+      args: { pageId: "page-1", message: "hello" },
     });
     expect(add.ok).toBe(true);
 
@@ -178,7 +176,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     });
     expect(list.ok).toBe(true);
     if (!list.ok) return;
-    const rows = list.value as Array<{ message: string; locale: string }>;
+    const rows = list.value as Array<{ message: string }>;
     expect(rows).toHaveLength(1);
     expect(rows[0]?.message).toBe("hello");
   });
@@ -194,7 +192,7 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     const add = await runPluginOperation({
       pluginSlug: PLUGIN_A,
       operationName: "add",
-      args: { pageId: "p", locale: "en", message: "v1" },
+      args: { pageId: "p", message: "v1" },
     });
     if (!add.ok) throw new Error("add failed");
     const id = (add.value as { id: string }).id;
@@ -275,13 +273,13 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     const aAdd = await runPluginOperation({
       pluginSlug: PLUGIN_A,
       operationName: "add",
-      args: { pageId: "p", locale: "en", message: "from-A" },
+      args: { pageId: "p", message: "from-A" },
     });
     expect(aAdd.ok).toBe(true);
     const bAdd = await runPluginOperation({
       pluginSlug: PLUGIN_B,
       operationName: "add",
-      args: { pageId: "p", locale: "en", message: "from-B" },
+      args: { pageId: "p", message: "from-B" },
     });
     expect(bAdd.ok).toBe(true);
 

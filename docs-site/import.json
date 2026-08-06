@@ -2,9 +2,7 @@
   "$schema": "https://schemas.caelo-cms.com/docs-site/import.json",
   "version": "0.1.0",
   "site": {
-    "displayName": "Caelo CMS — docs",
-    "baseLocale": "en",
-    "additionalLocales": [],
+    "displayName": "Caelo CMS \u2014 docs",
     "themeSlug": "site",
     "headerMenuSlug": "header-main",
     "footerMenuSlug": "footer-main"
@@ -37,7 +35,7 @@
       "slug": "home",
       "template": "landing",
       "name": "Home",
-      "title": "Caelo CMS — AI-first, open-source CMS"
+      "title": "Caelo CMS \u2014 AI-first, open-source CMS"
     },
     {
       "source": "pages/quickstart.md",
@@ -57,29 +55,29 @@
       "source": "pages/install-self-hosted.md",
       "slug": "install-self-hosted",
       "template": "doc-page",
-      "name": "Install — self-hosted",
-      "title": "Install — self-hosted"
+      "name": "Install \u2014 self-hosted",
+      "title": "Install \u2014 self-hosted"
     },
     {
       "source": "pages/install-gcp.md",
       "slug": "install-gcp",
       "template": "doc-page",
-      "name": "Install — GCP",
-      "title": "Install — Google Cloud"
+      "name": "Install \u2014 GCP",
+      "title": "Install \u2014 Google Cloud"
     },
     {
       "source": "pages/install-aws.md",
       "slug": "install-aws",
       "template": "doc-page",
-      "name": "Install — AWS",
-      "title": "Install — Amazon Web Services"
+      "name": "Install \u2014 AWS",
+      "title": "Install \u2014 Amazon Web Services"
     },
     {
       "source": "pages/install-azure.md",
       "slug": "install-azure",
       "template": "doc-page",
-      "name": "Install — Azure",
-      "title": "Install — Microsoft Azure"
+      "name": "Install \u2014 Azure",
+      "title": "Install \u2014 Microsoft Azure"
     },
     {
       "source": "pages/admin-walkthrough.md",
@@ -114,7 +112,7 @@
       "slug": "mcp",
       "template": "doc-page",
       "name": "MCP integration",
-      "title": "Talk to Caelo from your IDE — MCP server"
+      "title": "Talk to Caelo from your IDE \u2014 MCP server"
     },
     {
       "source": "pages/security.md",

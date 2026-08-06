@@ -22,7 +22,7 @@
   } from "$lib/components/ui/table/index.js";
 
   let { data, form } = $props();
-  let kind = $state<"admin" | "public" | "locale-public">("public");
+  let kind = $state<"admin" | "public">("public");
 </script>
 
 <div class="space-y-6">
@@ -65,15 +65,8 @@
           <select bind:value={kind} name="kind" class="rounded border px-3 py-2 text-sm">
             <option value="public">Public site</option>
             <option value="admin">Admin app</option>
-            <option value="locale-public">Per-locale public site</option>
           </select>
         </label>
-        {#if kind === "locale-public"}
-          <label class="grid gap-1 text-sm md:col-span-3">
-            <span>Locale code</span>
-            <Input name="localeCode" placeholder="de" required />
-          </label>
-        {/if}
         <div class="md:col-span-3"><Button type="submit">Add</Button></div>
       </form>
     </CardContent>
@@ -106,7 +99,6 @@
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline">{d.kind}</Badge>
-                  {#if d.localeCode}<Badge>{d.localeCode}</Badge>{/if}
                 </TableCell>
                 <TableCell>
                   {#if d.tlsStatus === "active"}

@@ -65,7 +65,7 @@
 
   const previewSrc = $derived(
     data.previewDefault
-      ? `/edit/preview-by-path/${data.previewDefault.locale}/${data.previewDefault.slug}?branch=${data.session.chatBranchId}`
+      ? `/edit/preview-by-path/${data.previewDefault.slug}?branch=${data.session.chatBranchId}`
       : null,
   );
 

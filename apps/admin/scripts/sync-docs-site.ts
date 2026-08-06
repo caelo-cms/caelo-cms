@@ -55,8 +55,6 @@ interface Manifest {
   version: string;
   site: {
     displayName: string;
-    baseLocale: string;
-    additionalLocales: string[];
     themeSlug: string;
     headerMenuSlug: string;
     footerMenuSlug: string;
@@ -81,7 +79,6 @@ interface Manifest {
 interface PageFrontmatter {
   slug: string;
   template: string;
-  locale?: string;
   status?: "draft" | "published";
   seo?: { title?: string; description?: string; ogTitle?: string; ogDescription?: string };
 }
@@ -173,7 +170,6 @@ async function main(): Promise<void> {
     const sourcePath = join(docsRoot, p.source);
     const source = await readFile(sourcePath, "utf-8");
     const { frontmatter, body } = parseFrontmatter(source);
-    const locale = frontmatter.locale ?? manifest.site.baseLocale;
     const status = frontmatter.status ?? "published";
     const blocks = parseBlocks(body);
 
@@ -187,14 +183,13 @@ async function main(): Promise<void> {
     const pages = await execute(registry, adapter, ctx, "pages.list", {});
     let pageId: string | undefined;
     if (pages.ok) {
-      const v = pages.value as { pages: Array<{ id: string; slug: string; locale: string }> };
-      const found = v.pages.find((x) => x.slug === p.slug && x.locale === locale);
+      const v = pages.value as { pages: Array<{ id: string; slug: string }> };
+      const found = v.pages.find((x) => x.slug === p.slug);
       pageId = found?.id;
     }
     if (!pageId) {
       const r = await execute(registry, adapter, ctx, "pages.create", {
         slug: p.slug,
-        locale,
         name: p.name,
         title: p.title,
         templateId,

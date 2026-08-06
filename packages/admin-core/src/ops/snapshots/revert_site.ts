@@ -137,7 +137,7 @@ export const revertSiteOp = defineOperation({
       const t = r.state;
       await tx.execute(sql`
         UPDATE pages SET
-          slug = ${t.slug}, locale = ${t.locale}, title = ${t.title},
+          slug = ${t.slug}, title = ${t.title},
           template_id = ${t.templateId}::uuid, status = ${t.status},
           deleted_at = ${t.deletedAt}, updated_at = now(), version = version + 1
         WHERE id = ${r.entity_id}::uuid

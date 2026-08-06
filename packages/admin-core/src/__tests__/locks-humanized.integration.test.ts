@@ -70,7 +70,6 @@ describe("lockedError humanization (v0.8.0)", () => {
     // assert appears in the humanized Locked message.
     const pageRes = await execute(registry, adapter, sysCtx, "pages.create", {
       slug: `${PFX}home`,
-      locale: "en",
       title: "Home",
     });
     if (!pageRes.ok) throw new Error("seed page");

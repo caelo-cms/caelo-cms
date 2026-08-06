@@ -17,7 +17,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     snapshot: { id: string; description: string; createdAt: string; revertOf: string | null };
     modules: { entityId: string; state: { slug: string; displayName: string } }[];
     templates: { entityId: string; state: { slug: string; displayName: string } }[];
-    pages: { entityId: string; state: { slug: string; locale: string; title: string } }[];
+    pages: { entityId: string; state: { slug: string; title: string } }[];
     pageLayouts: { entityId: string; state: unknown }[];
   };
 };

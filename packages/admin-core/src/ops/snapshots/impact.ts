@@ -9,7 +9,6 @@ import { classifySeverity, defaultTemplateBlockIsHeader } from "../../snapshots/
 const affectedPageSchema = z.object({
   pageId: z.string(),
   pageSlug: z.string(),
-  pageLocale: z.string(),
   templateId: z.string(),
   templateSlug: z.string(),
   blockName: z.string(),
@@ -47,18 +46,17 @@ export const moduleImpactOp = defineOperation({
     }
 
     const rows = (await tx.execute(sql`
-      SELECT p.id::text AS page_id, p.slug AS page_slug, p.locale AS page_locale,
+      SELECT p.id::text AS page_id, p.slug AS page_slug,
              t.id::text AS template_id, t.slug AS template_slug,
              pm.block_name AS block_name
       FROM page_modules pm
       JOIN pages p ON p.id = pm.page_id AND p.deleted_at IS NULL
       JOIN templates t ON t.id = p.template_id
       WHERE pm.module_id = ${input.moduleId}::uuid
-      ORDER BY p.slug, p.locale, pm.block_name
+      ORDER BY p.slug, pm.block_name
     `)) as unknown as {
       page_id: string;
       page_slug: string;
-      page_locale: string;
       template_id: string;
       template_slug: string;
       block_name: string;
@@ -67,7 +65,6 @@ export const moduleImpactOp = defineOperation({
     const affectedPages = rows.map((r) => ({
       pageId: r.page_id,
       pageSlug: r.page_slug,
-      pageLocale: r.page_locale,
       templateId: r.template_id,
       templateSlug: r.template_slug,
       blockName: r.block_name,

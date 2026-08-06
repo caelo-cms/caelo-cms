@@ -3,7 +3,7 @@
 /**
  * Pages + page_modules integration. Verifies:
  *   - pages CRUD + soft delete
- *   - (slug, locale) uniqueness
+ *   - global slug uniqueness
  *   - pages.set_modules atomic replace + structured failures for unknown
  *     blocks / deleted modules
  *   - pages.get_with_modules returns the joined view
@@ -154,7 +154,7 @@ describe("pages CRUD", () => {
     ).toBe(false);
   });
 
-  it("enforces (slug, locale) uniqueness across active pages", async () => {
+  it("enforces global slug uniqueness across active pages", async () => {
     const a = await execute(registry, adapter, systemCtx, "pages.create", {
       slug: PAGE_SLUGS[1],
       title: "About EN",
@@ -168,18 +168,6 @@ describe("pages CRUD", () => {
     });
     expect(b.ok).toBe(false);
 
-    // Same slug different locale is allowed.
-    const c = await execute(registry, adapter, systemCtx, "pages.create", {
-      slug: PAGE_SLUGS[1],
-      locale: "de",
-      title: "About DE",
-      templateId,
-    });
-    expect(c.ok).toBe(true);
-    if (!c.ok) return;
-    await execute(registry, adapter, systemCtx, "pages.delete", {
-      pageId: (c.value as { pageId: string }).pageId,
-    });
     if (a.ok) {
       await execute(registry, adapter, systemCtx, "pages.delete", {
         pageId: (a.value as { pageId: string }).pageId,

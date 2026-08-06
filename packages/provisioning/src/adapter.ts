@@ -19,16 +19,6 @@
  */
 
 export type Environment = "dev" | "staging" | "production";
-export type LocaleStrategy = "subdirectory" | "subdomain" | "domain";
-
-export interface LocaleConfig {
-  /** ISO code, e.g. "en", "de", "fr-CA". */
-  readonly code: string;
-  /** URL strategy. Mixed strategies in one install are explicitly supported. */
-  readonly strategy: LocaleStrategy;
-  /** Required when strategy is "subdomain" or "domain"; ignored for "subdirectory". */
-  readonly host?: string;
-}
 
 export interface CloudAdapterInputs {
   /** Primary domain (e.g. example.com). Admin + production public both bind here. */
@@ -37,8 +27,6 @@ export interface CloudAdapterInputs {
   readonly ownerEmail: string;
   /** Three-env model (CMS_REQUIREMENTS §16.5). Cloud installs always provision all three. */
   readonly environments: ReadonlyArray<Environment>;
-  /** Per-locale routing config — drives per-domain cert + DNS guidance + edge routing. */
-  readonly locales: ReadonlyArray<LocaleConfig>;
   /** Optional pre-existing secret references (e.g. from a CI secrets manager). */
   readonly preProvisionedSecrets?: {
     readonly anthropicApiKey?: string;

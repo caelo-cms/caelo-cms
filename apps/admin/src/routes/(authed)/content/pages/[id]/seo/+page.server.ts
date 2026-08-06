@@ -12,9 +12,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
   const { adapter, registry } = getQueryContext();
   const pageR = await execute(registry, adapter, locals.ctx, "pages.get", { pageId: params.id });
   if (!pageR.ok) throw error(404, "page not found");
-  const page = (
-    pageR.value as { page: { id: string; slug: string; title: string; locale: string } }
-  ).page;
+  const page = (pageR.value as { page: { id: string; slug: string; title: string } }).page;
   const seoR = await execute(registry, adapter, locals.ctx, "pages_seo.get", {
     pageId: params.id,
   });

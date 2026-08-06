@@ -9,7 +9,7 @@
  * `POST /api/plugin/forms/submit`, and chat-runner tool registration.
  *
  * Schema (cms_public.plugin_forms.*):
- *   forms              — form definitions (slug, fields, locale)
+ *   forms              — form definitions (slug, fields)
  *   form_submissions   — visitor-supplied data, status, visitor id
  *
  * Operations:
@@ -41,7 +41,6 @@ const SLUG = "forms";
 interface SubmitInput {
   formSlug: string;
   pageId?: string;
-  locale: string;
   data: Record<string, unknown>;
   /** Honeypot — hidden field auto-injected by &lt;caelo-form&gt;. Bots fill this; humans don't. */
   honeypot?: string | null;
@@ -58,7 +57,6 @@ interface SubmissionRow {
   id: string;
   form_slug: string;
   page_id: string | null;
-  locale: string;
   visitor_id: string;
   data: Record<string, unknown>;
   status: string;
@@ -75,14 +73,12 @@ export default definePlugin<PluginContextTier1>({
       slug: "string",
       display_name: "string",
       schema_json: "jsonb",
-      locale: "string",
       created_at: "timestamp",
     },
     form_submissions: {
       id: "uuid",
       form_slug: "string",
       page_id: "string",
-      locale: "string",
       visitor_id: "string",
       data: "jsonb",
       status: "enum:new,read,archived,spam",
@@ -94,7 +90,7 @@ export default definePlugin<PluginContextTier1>({
     /**
      * `submit` — PUBLIC visitor write. Routes through the gateway:
      *   POST /api/plugin/forms/submit
-     *   { formSlug, pageId?, locale, data: {...}, captchaToken? }
+     *   { formSlug, pageId?, data: {...}, captchaToken? }
      *
      * 1. Captcha gate (P12 stub passes everything in dev; P13 hardens).
      * 2. Verify the form definition exists.
@@ -102,8 +98,8 @@ export default definePlugin<PluginContextTier1>({
      */
     submit: async (ctx, args) => {
       const input = args as SubmitInput;
-      if (!input.formSlug || !input.locale || !input.data) {
-        throw new Error("submit: formSlug, locale, data are required");
+      if (!input.formSlug || !input.data) {
+        throw new Error("submit: formSlug, data are required");
       }
       // Honeypot — bots fill the hidden field; mark spam silently and
       // return success so the bot doesn't retry. Real users never trip this.
@@ -123,7 +119,6 @@ export default definePlugin<PluginContextTier1>({
       const r = await ctx.query.insert("form_submissions", {
         form_slug: input.formSlug,
         page_id: input.pageId ?? "",
-        locale: input.locale,
         visitor_id: ctx.visitor.id,
         data: input.data,
         status: honeypotTripped ? "spam" : "new",
@@ -166,13 +161,11 @@ export default definePlugin<PluginContextTier1>({
         slug: string;
         displayName: string;
         schemaJson: Record<string, unknown>;
-        locale: string;
       };
       const r = await ctx.query.insert("forms", {
         slug: input.slug,
         display_name: input.displayName,
         schema_json: input.schemaJson,
-        locale: input.locale,
       });
       return { formId: r.id };
     },
@@ -254,7 +247,6 @@ export default definePlugin<PluginContextTier1>({
    * Attributes:
    *   slug      — the form's slug (matches a row in `forms`).
    *   page-id?  — optional page id to attribute the submission.
-   *   locale    — visitor locale.
    *
    * Reads `forms.schema_json` shape: `{ fields: [{name, label, type, required?}] }`.
    * Emits a hidden honeypot field (`hp_address`) and rejects locally if filled.
@@ -267,7 +259,6 @@ export default definePlugin<PluginContextTier1>({
       const root = host.shadowRoot ?? host.attachShadow({ mode: "open" });
       const slug = host.getAttribute("slug") ?? "";
       const pageId = host.getAttribute("page-id") ?? "";
-      const locale = host.getAttribute("locale") ?? "en";
 
       // Default fields if no schema metadata is supplied via attribute.
       // P13 will fetch the form schema from a public read endpoint.
@@ -324,7 +315,6 @@ export default definePlugin<PluginContextTier1>({
           const json = await postPluginJson(SLUG, "submit", {
             formSlug: slug,
             pageId: pageId || undefined,
-            locale,
             data,
             honeypot: (fd.get(HONEYPOT_FIELD_NAME) as string | null) ?? "",
             captchaToken: "dev",

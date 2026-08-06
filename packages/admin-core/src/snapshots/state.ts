@@ -60,7 +60,6 @@ export interface TemplateState {
 export interface PageState {
   readonly schemaVersion: StateSchemaVersion;
   readonly slug: string;
-  readonly locale: string;
   readonly title: string;
   readonly templateId: string;
   readonly status: "draft" | "published";

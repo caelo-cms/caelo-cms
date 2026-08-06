@@ -2,7 +2,6 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-  localeSchema,
   MODULE_HTML_MAX,
   moduleCreateSchema,
   moduleUpdateSchema,
@@ -27,21 +26,6 @@ describe("slugSchema", () => {
     expect(slugSchema.safeParse("Hero").success).toBe(false);
     expect(slugSchema.safeParse("").success).toBe(false);
     expect(slugSchema.safeParse("a".repeat(65)).success).toBe(false);
-  });
-});
-
-describe("localeSchema", () => {
-  it("accepts language and language-region", () => {
-    expect(localeSchema.safeParse("en").success).toBe(true);
-    expect(localeSchema.safeParse("de").success).toBe(true);
-    expect(localeSchema.safeParse("de-AT").success).toBe(true);
-  });
-
-  it("rejects malformed locales", () => {
-    expect(localeSchema.safeParse("EN").success).toBe(false);
-    expect(localeSchema.safeParse("en-us").success).toBe(false);
-    expect(localeSchema.safeParse("eng").success).toBe(false);
-    expect(localeSchema.safeParse("").success).toBe(false);
   });
 });
 
@@ -183,7 +167,6 @@ describe("pageCreateSchema (no raw HTML invariant)", () => {
     });
     expect(r.success).toBe(true);
     if (!r.success) return;
-    expect(r.data.locale).toBe("en");
     // status is intentionally OPTIONAL (no schema default): pages.create
     // resolves it at write time — published on a bootstrap site, else draft.
     // Omitting it here leaves it undefined for the handler to resolve.

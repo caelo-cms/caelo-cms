@@ -451,8 +451,8 @@ function buildToolPlaybookBlock(surface: PromptSurface): string {
       : "**Inspect rendered output** → `inspect_page_render` (composed HTML/CSS of this session's preview, pending edits included), `screenshot_page` (real-Chromium screenshot of this session's branch preview, rendered server-side — the image comes back as an MCP image content block), `inspect_built_page` (the built HTML a Stage actually uploaded). **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.";
   const discovery =
     surface === "chat"
-      ? 'These are the highlights, NOT the full catalogue — ~125 tools exist (bulk SEO, locales, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Only the core tools carry full schemas up front; the rest load on demand. Use the tool-search tool in your tool list to find and load them — search by the exact names above or by keyword ("redirect", "locale", "revert") — and do so proactively whenever a task needs a capability you don\'t see loaded.'
-      : "These are the highlights, NOT the full catalogue — ~125 tools exist (bulk SEO, locales, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Your MCP tool list carries every available tool with its full schema — scan it whenever a task needs a capability not named above.";
+      ? 'These are the highlights, NOT the full catalogue — ~120 tools exist (bulk SEO, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Only the core tools carry full schemas up front; the rest load on demand. Use the tool-search tool in your tool list to find and load them — search by the exact names above or by keyword ("redirect", "domain", "revert") — and do so proactively whenever a task needs a capability you don\'t see loaded.'
+      : "These are the highlights, NOT the full catalogue — ~120 tools exist (bulk SEO, users/roles, plugins, design drafts, theme history, snapshot reverts, …). Your MCP tool list carries every available tool with its full schema — scan it whenever a task needs a capability not named above.";
   return [
     "## How Caelo fits together (tool playbook)",
     "",

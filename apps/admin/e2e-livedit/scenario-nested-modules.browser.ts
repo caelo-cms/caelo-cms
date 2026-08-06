@@ -52,7 +52,7 @@ function renderHomepagePreview(): PreviewSnapshot {
           // of the e2e seeds.
           await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
           const rows = await tx\`
-            SELECT id::text AS id FROM pages WHERE slug='home' AND locale='en' AND deleted_at IS NULL LIMIT 1
+            SELECT id::text AS id FROM pages WHERE slug='home' AND deleted_at IS NULL LIMIT 1
           \`;
           pageId = rows[0]?.id ?? null;
         });

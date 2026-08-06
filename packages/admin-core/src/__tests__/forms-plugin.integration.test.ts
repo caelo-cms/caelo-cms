@@ -142,7 +142,6 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
             { name: "message", type: "text" },
           ],
         },
-        locale: "en",
       },
     });
     expect(create.ok).toBe(true);
@@ -154,7 +153,6 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
       body: JSON.stringify({
         formSlug: FORM_SLUG,
         pageId: "00000000-0000-0000-0000-000000000001",
-        locale: "en",
         data: { email: "alice@example.com", message: "hello!" },
       }),
     });
@@ -202,12 +200,12 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     await runPluginOperation({
       pluginSlug: "forms",
       operationName: "create_form",
-      args: { slug: FORM_SLUG, displayName: "C", schemaJson: {}, locale: "en" },
+      args: { slug: FORM_SLUG, displayName: "C", schemaJson: {} },
     });
     const sub = await runPluginOperation({
       pluginSlug: "forms",
       operationName: "submit",
-      args: { formSlug: FORM_SLUG, locale: "en", data: { x: 1 } },
+      args: { formSlug: FORM_SLUG, data: { x: 1 } },
     });
     if (!sub.ok) throw new Error("submit failed");
     const id = (sub.value as { submissionId: string }).submissionId;
@@ -253,7 +251,6 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           formSlug: "no-such-form",
-          locale: "en",
           data: { x: 1 },
         }),
       }),
@@ -298,12 +295,12 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     await runPluginOperation({
       pluginSlug: "forms",
       operationName: "create_form",
-      args: { slug: FORM_SLUG, displayName: "C", schemaJson: {}, locale: "en" },
+      args: { slug: FORM_SLUG, displayName: "C", schemaJson: {} },
     });
     await runPluginOperation({
       pluginSlug: "forms",
       operationName: "submit",
-      args: { formSlug: FORM_SLUG, locale: "en", data: { secret: "value" } },
+      args: { formSlug: FORM_SLUG, data: { secret: "value" } },
     });
 
     // Other plugin reading its own form_submissions table sees nothing.

@@ -26,10 +26,10 @@ import {
   extractMediaRefs,
   fontUnresolvableMarker,
   injectSeoIntoHead,
+  isDesignatedHomePage,
   listThemeCssVarNames,
   type ModuleFieldKind,
   ok,
-  pageIsLocaleHome,
   renderSeoHead,
   resolveCanonicalUrl,
   type SiteSeoSettings,
@@ -115,7 +115,6 @@ export const renderPagePreviewOp = defineOperation({
     replacedSlots: z.array(z.string()),
     missingSlots: z.array(z.string()),
     pageSlug: z.string(),
-    pageLocale: z.string(),
   }),
   handler: async (ctx, input, tx) => {
     // Run #8 live-edit CI — ONE effective branch for the whole render.
@@ -140,7 +139,7 @@ export const renderPagePreviewOp = defineOperation({
             AND (l.chat_branch_id IS NULL OR l.chat_branch_id = ${chatBranchId}::uuid)`
       : sql`AND p.chat_branch_id IS NULL AND t.chat_branch_id IS NULL AND l.chat_branch_id IS NULL`;
     const pageRows = (await tx.execute(sql`
-      SELECT p.id::text AS page_id, p.slug AS slug, p.locale AS locale, p.title AS title,
+      SELECT p.id::text AS page_id, p.slug AS slug, p.title AS title,
              t.html AS template_html, t.css AS template_css,
              l.id::text AS layout_id, l.slug AS layout_slug,
              l.html AS layout_html, l.css AS layout_css
@@ -152,7 +151,6 @@ export const renderPagePreviewOp = defineOperation({
     `)) as unknown as {
       page_id: string;
       slug: string;
-      locale: string;
       title: string;
       template_html: string;
       template_css: string;
@@ -1093,11 +1091,9 @@ export const renderPagePreviewOp = defineOperation({
         ogImageUrl = buildMediaUrl(v.slug, v.variant);
       }
     }
-    // 0184 — the designated homepage id, still parked per locale row
-    // until #384 moves it to site_defaults. Looked up via the page's
-    // own locale so the designation semantics survive the #383 cut.
+    // 0184 — the designated homepage id (site_defaults since #384).
     const homeRows = (await tx.execute(sql`
-      SELECT home_page_id::text AS home_page_id FROM locales WHERE code = ${pageRow.locale} LIMIT 1
+      SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
     `)) as unknown as { home_page_id: string | null }[];
     const designatedHomePageId = homeRows[0]?.home_page_id ?? null;
     const canonical = resolveCanonicalUrl({
@@ -1107,7 +1103,7 @@ export const renderPagePreviewOp = defineOperation({
       // 0184 — this page is the site root when it's the designated
       // home_page_id (or carries a magic slug). input.pageId is this
       // page's own id.
-      isHomePage: pageIsLocaleHome(input.pageId, pageRow.slug, designatedHomePageId),
+      isHomePage: isDesignatedHomePage(input.pageId, pageRow.slug, designatedHomePageId),
     });
     const headBlock = renderSeoHead({
       title: pageRow.title,
@@ -1150,7 +1146,6 @@ export const renderPagePreviewOp = defineOperation({
       // `unknown-css-var:`), same convention as theme-asset-unbound.
       missingSlots: [...composed.missingSlots, ...fontMarkers, ...cssVarMarkers],
       pageSlug: pageRow.slug,
-      pageLocale: pageRow.locale,
     });
   },
 });

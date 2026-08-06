@@ -22,7 +22,6 @@
 import { z } from "zod";
 import {
   contentInstanceCreateSchema,
-  localeSchema,
   MODULE_CSS_MAX,
   MODULE_HTML_MAX,
   MODULE_JS_MAX,
@@ -194,7 +193,6 @@ export const buildPageTargetSchema = z
     slug: slugSchema.optional(),
     title: z.string().min(1).max(256).optional(),
     name: z.string().min(1).max(256).optional(),
-    locale: localeSchema.optional(),
     templateId: z.string().uuid().optional(),
     status: pageStatusSchema.optional(),
     /**
@@ -210,9 +208,9 @@ export const buildPageTargetSchema = z
   })
   .strict()
   .superRefine((page, ctx) => {
-    const createKeys = (
-      ["slug", "title", "name", "locale", "templateId", "status"] as const
-    ).filter((k) => page[k] !== undefined);
+    const createKeys = (["slug", "title", "name", "templateId", "status"] as const).filter(
+      (k) => page[k] !== undefined,
+    );
     if (page.pageId !== undefined) {
       if (createKeys.length > 0) {
         ctx.addIssue({

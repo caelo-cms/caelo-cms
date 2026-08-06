@@ -74,8 +74,8 @@ function seedThreePagesSynced(): SeedResult {
           const pageIds = {};
           for (const slug of ['toggle-a','toggle-b','toggle-c']) {
             const p = await tx\`
-              INSERT INTO pages (slug, locale, name, title, template_id, status)
-              VALUES (\${slug}, 'en', \${slug}, \${slug}, \${templateId}::uuid, 'published')
+              INSERT INTO pages (slug, name, title, template_id, status)
+              VALUES (\${slug}, \${slug}, \${slug}, \${templateId}::uuid, 'published')
               RETURNING id::text AS id
             \`;
             pageIds[slug.slice(-1)] = p[0].id;

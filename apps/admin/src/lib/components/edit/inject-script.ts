@@ -5,7 +5,7 @@
  * (and the legacy `/edit/preview/[pageId]`) response. Jobs:
  *
  *   1. `postMessage({kind: "caelo:ready"})` to the parent on first paint.
- *   2. `postMessage({kind: "caelo:navigated", pageId, locale, slug})` on
+ *   2. `postMessage({kind: "caelo:navigated", pageId, slug})` on
  *      every load — covers initial mount + click-through navigation so
  *      the parent's activePageId/URL/chat-branch context follows.
  *   3. **Edit mode toggle** — the parent posts
@@ -42,7 +42,6 @@ export const INJECT_SCRIPT = `
         {
           kind: "caelo:navigated",
           pageId: ctx.pageId,
-          locale: ctx.locale || "",
           slug: ctx.slug || "",
         },
         origin(),
@@ -140,8 +139,6 @@ export const INJECT_SCRIPT = `
       }
       if (!href.startsWith("/")) return;
       if (href.startsWith("/edit/")) return;
-      var ctx = window.__caelo || {};
-      var locale = ctx.locale || "en";
       var path = href === "/" ? "/home" : href;
       ev.preventDefault();
       // v0.9.7 — preserve the iframe's own ?branch=<uuid> across
@@ -151,7 +148,7 @@ export const INJECT_SCRIPT = `
       // URLSearchParams handles the rare case where \`path\` itself
       // already carries a query string (preserved from the original
       // link's u.search above).
-      var newUrl = "/edit/preview-by-path/" + locale + path;
+      var newUrl = "/edit/preview-by-path" + path;
       var current = new URLSearchParams(location.search);
       var branch = current.get("branch");
       if (branch) {

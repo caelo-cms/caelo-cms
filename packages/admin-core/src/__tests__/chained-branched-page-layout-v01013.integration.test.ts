@@ -92,7 +92,6 @@ describe("v0.10.13 branched page-layout overlay", () => {
 
     const page = await execute(registry, adapter, HUMAN, "pages.create", {
       slug: PAGE_SLUG,
-      locale: "en",
       title: "P",
       templateId,
       status: "draft",

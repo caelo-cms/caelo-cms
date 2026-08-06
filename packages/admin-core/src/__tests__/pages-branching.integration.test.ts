@@ -73,7 +73,6 @@ describe("pages branched writes (v0.5.3)", () => {
 
     const page = await execute(registry, adapter, HUMAN, "pages.create", {
       slug: PAGE_SLUG,
-      locale: "en",
       title: "Original Title",
       templateId,
       status: "draft",

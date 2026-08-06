@@ -50,7 +50,6 @@ export type ValidationFailureKind =
   | "manifest-shape"
   | "manifest-tier-mismatch"
   | "manifest-tier2-cap-leak"
-  | "schema-missing-locale"
   | "schema-shape"
   | "forbidden-import"
   | "forbidden-call"
@@ -115,17 +114,6 @@ export function validateManifest(rawManifest: unknown): {
       failures.push({
         kind: "manifest-tier2-cap-leak",
         hint: "Tier 2 plugins cannot declare `tools` (chat-runner tool registration is Tier 1 only).",
-      });
-    }
-  }
-
-  // Schema invariant: page_id ⇒ locale.
-  for (const [tableName, columns] of Object.entries(m.schema)) {
-    const colNames = Object.keys(columns);
-    if (colNames.includes("page_id") && !colNames.includes("locale")) {
-      failures.push({
-        kind: "schema-missing-locale",
-        hint: `Table "${tableName}" declares page_id but no locale column. Plugin schemas with per-page data must declare locale (CMS_REQUIREMENTS §14.6).`,
       });
     }
   }

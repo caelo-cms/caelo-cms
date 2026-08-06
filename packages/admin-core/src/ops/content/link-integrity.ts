@@ -17,7 +17,7 @@
  * (and the AI) see dead links BEFORE they reach production, rather than
  * silently letting them through OR hard-failing a publish over them.
  *
- * Bounded by design: exactly two queries (page slugs + locales, then one
+ * Bounded by design: exactly two queries (page slugs + home flag, then one
  * pass over placed modules) regardless of site size.
  */
 
@@ -110,9 +110,8 @@ export async function scanBranchInternalLinks(
     ? sql`AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${chatBranchId}::uuid)`
     : sql`AND p.chat_branch_id IS NULL`;
 
-  // (1) The slug + locale universe every link resolves against. Pages
-  // visible to the branch, plus locale codes (to strip a `/de/…` prefix)
-  // and whether any locale has a homepage (so a bare `/` resolves).
+  // (1) The slug universe every link resolves against: pages visible
+  // to the branch, plus whether a homepage exists (so `/` resolves).
   const pageRows = (await tx.execute(sql`
     SELECT DISTINCT p.slug AS slug
     FROM pages p
@@ -120,11 +119,10 @@ export async function scanBranchInternalLinks(
   `)) as unknown as { slug: string }[];
   const validSlugs = new Set(pageRows.map((r) => normalizePath(`/${r.slug}`)));
 
-  const localeRows = (await tx.execute(sql`
-    SELECT code, home_page_id::text AS home_page_id FROM locales
-  `)) as unknown as { code: string; home_page_id: string | null }[];
-  const localeCodes = new Set(localeRows.map((r) => r.code));
-  const hasHomepage = localeRows.some((r) => r.home_page_id !== null);
+  const homeRows = (await tx.execute(sql`
+    SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
+  `)) as unknown as { home_page_id: string | null }[];
+  const hasHomepage = (homeRows[0]?.home_page_id ?? null) !== null;
 
   // (2) One pass over placed modules: raw module HTML + the bound
   // content_instance values, for every placement on a visible page.
@@ -150,21 +148,14 @@ export async function scanBranchInternalLinks(
   }
 
   /**
-   * A path resolves if it's a known slug, the site root (when a homepage
-   * exists), or a locale-prefixed variant of either. Leniency is
-   * deliberate — this warns, it doesn't block, so a false positive is
-   * worse than missing an edge case (CLAUDE.md §2 loud-but-honest).
+   * A path resolves if it's a known slug or the site root (when a
+   * homepage exists). Leniency is deliberate — this warns, it doesn't
+   * block, so a false positive is worse than missing an edge case
+   * (CLAUDE.md §2 loud-but-honest).
    */
   const resolves = (path: string): boolean => {
     if (path === "") return hasHomepage; // bare `/`
-    if (validSlugs.has(path)) return true;
-    const firstSeg = path.split("/", 1)[0] ?? "";
-    if (localeCodes.has(firstSeg)) {
-      const rest = path.slice(firstSeg.length + 1);
-      if (rest === "") return hasHomepage; // `/de/`
-      if (validSlugs.has(rest)) return true;
-    }
-    return false;
+    return validSlugs.has(path);
   };
 
   const broken: string[] = [];

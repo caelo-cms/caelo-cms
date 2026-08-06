@@ -7,7 +7,6 @@ import type { Actions, PageServerLoad } from "./$types";
 
 interface AggregateRow {
   page_id: string;
-  locale: string;
   count: number;
   sum: number;
   average: number;

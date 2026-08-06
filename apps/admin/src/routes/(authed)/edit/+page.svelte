@@ -8,7 +8,7 @@
    * top. AppShell sidebar/topbar are absent here (handled by the
    * (authed)/+layout.svelte pathname branch).
    *
-   * The iframe loads /edit/preview-by-path/<locale>/<slug> so a relative
+   * The iframe loads /edit/preview-by-path/<slug> so a relative
    * <a href> inside the iframe naturally navigates within the same
    * preview surface. The injected runtime posts caelo:navigated on
    * every load — the parent updates activePageId/URL/chat-branch
@@ -79,12 +79,12 @@
   const activePage = $derived(data.pages.find((p) => p.id === activePageId) ?? null);
   // The path the iframe is currently showing (covers click-through nav
   // inside the iframe; updated by `caelo:navigated` postMessage). Falls
-  // back to the active page's locale + slug on first load.
-  let displayPath = $state<{ locale: string; slug: string } | null>(null);
+  // back to the active page's slug on first load.
+  let displayPath = $state<{ slug: string } | null>(null);
   const urlText = $derived.by(() => {
-    const cur = displayPath ?? (activePage ? { locale: activePage.locale, slug: activePage.slug } : null);
+    const cur = displayPath ?? (activePage ? { slug: activePage.slug } : null);
     if (!cur) return "—";
-    return cur.locale === "en" ? `/${cur.slug}` : `/${cur.locale}/${cur.slug}`;
+    return `/${cur.slug}`;
   });
 
   const stagedPreviewUrl = $derived(
@@ -94,7 +94,7 @@
   );
   const previewSrc = $derived(
     activePage
-      ? `/edit/preview-by-path/${activePage.locale}/${activePage.slug}?branch=${data.activeChat.chatBranchId}`
+      ? `/edit/preview-by-path/${activePage.slug}?branch=${data.activeChat.chatBranchId}`
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);
@@ -203,7 +203,7 @@
           );
         }
       } else if (msg.kind === "caelo:navigated") {
-        displayPath = { locale: msg.locale, slug: msg.slug };
+        displayPath = { slug: msg.slug };
         // Click-through navigation inside the iframe — sync activePageId
         // (and the parent URL) so the chat-branch context follows. We
         // skip if the iframe is just confirming the current page on
@@ -246,7 +246,7 @@
       // Fresh-install "no active page yet" — pick the home (or first)
       // so the iframe gets a src instead of staying blank.
       if (activePageId === "" && data.pages.length > 0) {
-        const home = data.pages.find((p) => p.slug === "home" && p.locale === "en");
+        const home = data.pages.find((p) => p.slug === "home");
         const pick = home ?? data.pages[0];
         if (pick) activePageId = pick.id;
       }
@@ -256,7 +256,7 @@
     const newIds = [...currentIds].filter((id) => !seenPageIds.has(id));
     if (newIds.length === 0) return;
     const newPages = data.pages.filter((p) => newIds.includes(p.id));
-    const newHome = newPages.find((p) => p.slug === "home" && p.locale === "en");
+    const newHome = newPages.find((p) => p.slug === "home");
     if (newHome) {
       const cur = data.pages.find((p) => p.id === activePageId);
       if (!cur || cur.slug === "home" || activePageId === "") {
@@ -554,7 +554,6 @@
   {#if activePage && data.activeChat}
     <DiffPanel
       open={diffOpen}
-      locale={activePage.locale}
       slug={activePage.slug}
       chatBranchId={data.activeChat.chatBranchId}
       editedModules={editedModules}

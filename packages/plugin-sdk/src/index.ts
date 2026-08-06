@@ -57,9 +57,7 @@ export const pluginColumnSpec = z
     message: "must be one of uuid|string|text|int|bool|timestamp|jsonb or enum:a,b,c",
   });
 
-/** Per-table column map. Special semantic invariant in §14.6: any table
- *  with `page_id` MUST also declare `locale`. The validator rejects
- *  schemas that violate this rule. */
+/** Per-table column map. */
 export const pluginTableSchema = z.record(z.string(), pluginColumnSpec);
 
 export type PluginTableSchema = z.infer<typeof pluginTableSchema>;
@@ -200,10 +198,9 @@ export interface PluginApi {
   get<T = unknown>(args: object): Promise<T | null>;
 }
 
-/** Site theme tokens + current page locale. Read-only. Same both tiers. */
+/** Site theme tokens. Read-only. Same both tiers. */
 export interface PluginTheme {
   readonly tokens: Readonly<Record<string, string>>;
-  readonly locale: string;
 }
 
 /**
@@ -220,8 +217,6 @@ export interface PluginVisitor {
   readonly publicUserId: string | null;
   /** Bcrypt-hashed IP for analytics + rate-limiting without storing PII. */
   readonly ipHash: string;
-  /** Locale resolved from URL strategy + Accept-Language. */
-  readonly locale: string;
   /** P12 review-pass #2 — opaque session token, set on signup/login by
    *  the auth plugin via `setSession()` and surfaced back to the
    *  gateway through the response envelope. NULL when the visitor is
@@ -346,13 +341,10 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly component?: PluginComponent & {
     readonly mounted?: (host: HTMLElement, ctx: PluginFrontendContext) => Promise<void> | void;
   };
-  readonly staticRender?: (
-    ctx: C,
-    args: { pageId: string; locale: string },
-  ) => Promise<string> | string;
+  readonly staticRender?: (ctx: C, args: { pageId: string }) => Promise<string> | string;
   /**
    * P13 audit fix #4 — optional cheap signature of the plugin's data
-   * for this (page, locale) pair. Folded into the static_bakes
+   * for this page. Folded into the static_bakes
    * cache key so the bake refreshes when plugin data changes even
    * though the page itself didn't change. Recommended shape:
    *   `${count}:${max(updated_at).toISOString()}` — one COUNT/MAX query.
@@ -363,19 +355,16 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * sites with many pages — that variant lets the static-generator
    * fold N per-page lookups into one query.
    */
-  readonly metaSignature?: (
-    ctx: C,
-    args: { pageId: string; locale: string },
-  ) => Promise<string> | string;
+  readonly metaSignature?: (ctx: C, args: { pageId: string }) => Promise<string> | string;
   /**
    * P13 perf-pass — batch variant of `metaSignature`. Called once per
-   * (slug, locale) per build with the full pageId list; returns a
-   * Map keyed by pageId. The plugin-pass prefers this when present so
-   * a 1000-page site does ONE SQL roundtrip instead of 1000.
+   * build with the full pageId list; returns a Map keyed by pageId.
+   * The plugin-pass prefers this when present so a 1000-page site does
+   * ONE SQL roundtrip instead of 1000.
    */
   readonly metaSignatureBatch?: (
     ctx: C,
-    args: { locale: string; pageIds: ReadonlyArray<string> },
+    args: { pageIds: ReadonlyArray<string> },
   ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
   /** Tier 1 only. */
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;

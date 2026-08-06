@@ -12,7 +12,6 @@ import {
   type ExecutionContext,
   err,
   extractMediaRefs,
-  localeSchema,
   ok,
   pageCreateSchema,
   pageSetModulesSchema,
@@ -40,12 +39,10 @@ import { createRedirectOp } from "../redirects.js";
 import { rewriteModuleLinksOp } from "../seo.js";
 import { readSiteDefaults } from "../site_defaults.js";
 import { listStructuredSetsOp, setStructuredSetOp } from "../structured_sets.js";
-import { recomputePageContentHash } from "./content_hash.js";
 
 const pageRowSchema = z.object({
   id: z.string(),
   slug: z.string(),
-  locale: z.string(),
   /** P6.7.5 — internal editor label, distinct from `title` and `slug`. */
   name: z.string(),
   title: z.string(),
@@ -58,8 +55,6 @@ const pageRowSchema = z.object({
    */
   kind: z.enum(["home", "landing", "product", "blog", "doc", "content", "utility"]).optional(),
   status: z.enum(["draft", "published"]),
-  /** P9 — populated for source rows; tracks variant freshness. */
-  translationStatus: z.enum(["source", "up_to_date", "needs_update", "not_started"]),
   version: z.number().int().nonnegative(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -68,10 +63,10 @@ const pageRowSchema = z.object({
 
 const pageWithModulesSchema = pageRowSchema.extend({
   /**
-   * 0184 — true when this page is its locale's designated
-   * `home_page_id` (the site root, served at `/`). Surfaced so the
-   * current-page context can tell the AI the designation explicitly
-   * instead of it guessing from the slug.
+   * 0184 — true when this page is the designated
+   * `site_defaults.home_page_id` (the site root, served at `/`).
+   * Surfaced so the current-page context can tell the AI the
+   * designation explicitly instead of it guessing from the slug.
    */
   isHomePage: z.boolean(),
   blocks: z.array(
@@ -104,14 +99,12 @@ const pageWithModulesSchema = pageRowSchema.extend({
 type RawPageRow = {
   id: string;
   slug: string;
-  locale: string;
   name: string | null;
   title: string;
   template_id: string;
   /** v0.12.0 — joined from `templates.kind`. */
   template_kind?: string | null;
   status: "draft" | "published";
-  translation_status: "source" | "up_to_date" | "needs_update" | "not_started";
   version: number | string;
   created_at: string | Date;
   updated_at: string | Date;
@@ -143,7 +136,6 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
   return {
     id: r.id,
     slug: r.slug,
-    locale: r.locale,
     // P6.7.5 — legacy rows + raw INSERTs may leave `name` null. The
     // rest of the codebase treats name as a non-null friendly label,
     // so we fall back to title here so the editor never shows a blank
@@ -153,7 +145,6 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
     templateId: r.template_id,
     ...(kind !== undefined ? { kind } : {}),
     status: r.status,
-    translationStatus: r.translation_status,
     version,
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
@@ -169,7 +160,6 @@ export const listPagesOp = defineOperation({
   database: "cms_admin",
   input: z.object({
     includeDeleted: z.boolean().default(false),
-    locale: z.string().optional(),
   }),
   output: z.object({ pages: z.array(pageRowSchema) }),
   handler: async (ctx, input, tx) => {
@@ -178,7 +168,6 @@ export const listPagesOp = defineOperation({
     // adds template_kind for the AI's `## Pages` block.
     const filters = [];
     if (!input.includeDeleted) filters.push(sql`pages.deleted_at IS NULL`);
-    if (input.locale !== undefined) filters.push(sql`pages.locale = ${input.locale}`);
     if (ctx.chatBranchId) {
       filters.push(
         sql`(pages.chat_branch_id IS NULL OR pages.chat_branch_id = ${ctx.chatBranchId}::uuid)`,
@@ -187,10 +176,10 @@ export const listPagesOp = defineOperation({
       filters.push(sql`pages.chat_branch_id IS NULL`);
     }
     const rows = (await tx.execute(sql`
-      SELECT pages.id::text AS id, pages.slug, pages.locale, pages.name, pages.title,
+      SELECT pages.id::text AS id, pages.slug, pages.name, pages.title,
              pages.template_id::text AS template_id,
              templates.kind AS template_kind,
-             pages.status, pages.translation_status, pages.version,
+             pages.status, pages.version,
              pages.created_at, pages.updated_at, pages.deleted_at
       FROM pages
       LEFT JOIN templates ON templates.id = pages.template_id
@@ -260,8 +249,8 @@ export const getPageOp = defineOperation({
     // (re-enables the v0.5.7 workflow that was reverted in v0.5.19).
     const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
-             status, translation_status, version, created_at, updated_at, deleted_at
+      SELECT id::text AS id, slug, name, title, template_id::text AS template_id,
+             status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
     const row = rows[0];
@@ -290,8 +279,8 @@ export const getPageWithModulesOp = defineOperation({
     // works inside the same chat without waiting for merge.
     const branchFilter = branchVisibilityFilter(ctx);
     const pageRows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, locale, name, title, template_id::text AS template_id,
-             status, translation_status, version, created_at, updated_at, deleted_at
+      SELECT id::text AS id, slug, name, title, template_id::text AS template_id,
+             status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
     const pageRow = pageRows[0];
@@ -511,10 +500,10 @@ export const getPageWithModulesOp = defineOperation({
         if (pageState.title) pageRow.title = pageState.title;
       }
     }
-    // 0184 — is this page its locale's designated homepage (site root)?
+    // 0184 — is this page the designated homepage (site root)?
     const homeRows = (await tx.execute(sql`
-      SELECT 1 AS is_home FROM locales
-      WHERE code = ${pageRow.locale} AND home_page_id = ${input.pageId}::uuid
+      SELECT 1 AS is_home FROM site_defaults
+      WHERE id = 1 AND home_page_id = ${input.pageId}::uuid
       LIMIT 1
     `)) as unknown as { is_home: number }[];
     const isHomePage = homeRows.length > 0;
@@ -529,11 +518,11 @@ export const getPageWithModulesOp = defineOperation({
 });
 
 /**
- * A page's slug is "root-equivalent" (serves at the locale root `/`) when
+ * A page's slug is "root-equivalent" (serves at the site root `/`) when
  * it is the magic sentinel (""/`home`/`index`) — the back-compat path — OR
- * when it is the locale's explicitly designated `home_page_id` (0184). The
- * duplicate-URL backstop treats every root-equivalent page as occupying
- * the same `/`, so a locale can only ever have ONE homepage.
+ * when it is the explicitly designated `site_defaults.home_page_id`
+ * (0184). The duplicate-URL backstop treats every root-equivalent page
+ * as occupying the same `/`, so the site can only ever have ONE homepage.
  */
 function isRootSlug(slug: string): boolean {
   const s = trimSlashes(slug);
@@ -658,8 +647,8 @@ export const createPageOp = defineOperation({
     // v0.9.0 + 1b/2b — same-branch public-URL uniqueness with
     // root-equivalence + branch-delete awareness. This subsumes the old
     // exact-slug check AND adds the structural "two homepages" guard: a
-    // magic slug (""/`home`/`index`) and the locale's designated
-    // `home_page_id` ALL resolve to `/`, so a second page that also
+    // magic slug (""/`home`/`index`) and the designated
+    // `site_defaults.home_page_id` ALL resolve to `/`, so a second page that also
     // resolves to `/` is rejected with a pointer at the existing one
     // (1b). Branches keep their own slug namespace (migration 0089), so
     // the check is scoped to the caller's branch namespace; a page the
@@ -667,13 +656,12 @@ export const createPageOp = defineOperation({
     // slug/URL, so the slug can be reclaimed (2b).
     const pageDupNamespace = ctx.chatBranchId ?? "00000000-0000-0000-0000-000000000000";
     const homeRows = (await tx.execute(sql`
-      SELECT home_page_id::text AS home_page_id FROM locales WHERE code = ${input.locale} LIMIT 1
+      SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
     `)) as unknown as { home_page_id: string | null }[];
     const homePageId = homeRows[0]?.home_page_id ?? null;
     const candidates = (await tx.execute(sql`
       SELECT id::text AS id, slug FROM pages
-      WHERE locale = ${input.locale}
-        AND deleted_at IS NULL
+      WHERE deleted_at IS NULL
         AND COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid) = ${pageDupNamespace}::uuid
     `)) as unknown as { id: string; slug: string }[];
     const branchDeleted = ctx.chatBranchId
@@ -684,7 +672,7 @@ export const createPageOp = defineOperation({
         )
       : new Set<string>();
     // A NEW page can only be root-equivalent via a magic slug — it has no
-    // row yet, so it can't be a locale's home_page_id.
+    // row yet, so it can't be the designated home_page_id.
     const newIsRoot = isRootSlug(input.slug);
     const newSlugKey = trimSlashes(input.slug);
     const conflict = candidates.find((c) => {
@@ -703,14 +691,14 @@ export const createPageOp = defineOperation({
         operation: "pages.create",
         input,
         succeeded: false,
-        resultSummary: bothRoot ? "root-url-conflict" : "slug-locale-conflict",
+        resultSummary: bothRoot ? "root-url-conflict" : "slug-conflict",
       });
       return err({
         kind: "HandlerError",
         operation: "pages.create",
         message: bothRoot
-          ? `the site root (/) for locale ${input.locale} is already served by page ${conflict.id} (slug="${conflict.slug}") — a locale has exactly ONE homepage. Edit that page instead (build_page with its pageId), or give this page a non-root slug.`
-          : `page already exists at (slug="${input.slug}", locale=${input.locale}) — it is page ${conflict.id}. Edit it (build_page with its pageId) instead of creating a duplicate.`,
+          ? `the site root (/) is already served by page ${conflict.id} (slug="${conflict.slug}") — the site has exactly ONE homepage. Edit that page instead (build_page with its pageId), or give this page a non-root slug.`
+          : `page already exists at slug="${input.slug}" — it is page ${conflict.id}. Edit it (build_page with its pageId) instead of creating a duplicate.`,
       });
     }
     // v0.5.19 — pages.create writes LIVE unconditionally (reverts the
@@ -763,10 +751,9 @@ export const createPageOp = defineOperation({
       resolvedStatus = pub[0]?.has_published ? "draft" : "published";
     }
     const rows = (await tx.execute(sql`
-      INSERT INTO pages (slug, locale, name, title, template_id, status, chat_branch_id)
+      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id)
       VALUES (
         ${input.slug},
-        ${input.locale},
         ${input.name ?? input.title},
         ${input.title},
         ${templateId}::uuid,
@@ -786,23 +773,19 @@ export const createPageOp = defineOperation({
       input,
       succeeded: true,
       entityId: pageId,
-      resultSummary: `slug=${input.slug},locale=${input.locale}`,
+      resultSummary: `slug=${input.slug}`,
     });
     const state = await loadPageState(tx, pageId);
     if (state) {
       await emitSnapshot(tx, {
         actorId: ctx.actorId,
         opKind: "pages.create",
-        description: `pages.create slug=${input.slug} locale=${input.locale}`,
+        description: `pages.create slug=${input.slug}`,
         chatTaskId: ctx.chatTaskId ?? null,
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: pageId, state }],
       });
     }
-    // P9 — initial content_hash so list/get queries don't NULL-out the
-    // column on a freshly-created page. recomputes after set_modules
-    // attaches its first module.
-    await recomputePageContentHash(tx, pageId);
     return ok({ pageId });
   },
 });
@@ -828,12 +811,11 @@ async function applySlugChangeSideEffects(
   args: {
     oldSlug: string;
     newSlug: string;
-    locale: string;
     redirectFromOld: "auto" | "skip";
   },
 ): Promise<{ rewrittenSets: number; rewrittenModules: number }> {
-  const oldPath = publicPathFor(args.oldSlug, args.locale);
-  const newPath = publicPathFor(args.newSlug, args.locale);
+  const oldPath = publicPathFor(args.oldSlug);
+  const newPath = publicPathFor(args.newSlug);
 
   // Rewrite nav-menu / link-list hrefs (recursing into nav-menu children).
   // Queried per-kind rather than listing everything and filtering here: these
@@ -890,16 +872,13 @@ async function applySlugChangeSideEffects(
 }
 
 /**
- * Public URL for a page. Mirrors the historical `change_page_slug` behaviour
- * (default locale is unprefixed).
- *
- * FIXME(issue #326): "en" is hardcoded as the default locale here, matching
- * the tool this logic came from. The default locale is admin-configurable
- * (CMS_REQUIREMENTS §17.4), so this should read the locale config instead.
- * Kept behaviour-preserving in the move; tracked separately.
+ * Public URL for a page: `/<slug>`. URL shape beyond base + slug
+ * becomes a plugin contribution on the URL composition point (#390).
+ * (Resolves the old FIXME #326 — the hardcoded default-locale prefix
+ * died with page-locale identity, epic #380 #384.)
  */
-function publicPathFor(slug: string, locale: string): string {
-  return locale === "en" ? `/${slug}` : `/${locale}/${slug}`;
+function publicPathFor(slug: string): string {
+  return `/${slug}`;
 }
 
 interface HrefRewriteResult {
@@ -958,12 +937,11 @@ export const updatePageOp = defineOperation({
     // post-patch state, mirroring modules.update's v0.5.1 pattern.
     const branched = !!ctx.chatBranchId;
     const existingRows = (await tx.execute(sql`
-      SELECT version, slug, locale, title, template_id::text AS template_id, status, deleted_at
+      SELECT version, slug, title, template_id::text AS template_id, status, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as {
       version: number | string;
       slug: string;
-      locale: string;
       title: string;
       template_id: string;
       status: "draft" | "published";
@@ -1082,7 +1060,6 @@ export const updatePageOp = defineOperation({
         await applySlugChangeSideEffects(ctx, tx, {
           oldSlug: existing.slug,
           newSlug: input.slug,
-          locale: existing.locale,
           redirectFromOld: input.redirectFromOld ?? "auto",
         });
       }
@@ -1575,12 +1552,6 @@ export const setPageModulesOp = defineOperation({
       chatBranchId: ctx.chatBranchId ?? null,
       entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
     });
-    // P9 — content changed; refresh content_hash + recompute
-    // translation_status for any variants of this page. Skip when
-    // branched — live content is unchanged.
-    if (!branched) {
-      await recomputePageContentHash(tx, input.pageId);
-    }
     return ok({});
   },
 });
@@ -1649,12 +1620,11 @@ export const deletePageOp = defineOperation({
     let state: import("../../snapshots/state.js").PageState | null;
     if (branched) {
       const prev = (await tx.execute(sql`
-        SELECT slug, locale, title, template_id::text AS template_id, status, version,
+        SELECT slug, title, template_id::text AS template_id, status, version,
                chat_branch_id::text AS chat_branch_id
         FROM pages WHERE id = ${input.pageId}::uuid LIMIT 1
       `)) as unknown as {
         slug: string;
-        locale: string;
         title: string;
         template_id: string;
         status: "draft" | "published";
@@ -1666,7 +1636,6 @@ export const deletePageOp = defineOperation({
         ? {
             schemaVersion: 1,
             slug: p.slug,
-            locale: p.locale,
             title: p.title,
             templateId: p.template_id,
             status: p.status,
@@ -1677,8 +1646,8 @@ export const deletePageOp = defineOperation({
       // 2b — a page CREATED on THIS branch (its live row is branch-owned:
       // invisible to other chats + to static-gen) frees its slug/URL
       // immediately by soft-deleting the live row too. Without this the
-      // (slug, locale, branch) partial UNIQUE INDEX
-      // (`pages_slug_locale_branch_uidx`, migration 0089) — which only
+      // (slug, branch) partial UNIQUE INDEX
+      // (`pages_slug_branch_uidx`, migration 0201) — which only
       // ignores rows WHERE deleted_at IS NULL — keeps counting the still-
       // live row, so the same chat can't reclaim the slug it just deleted.
       // A MAIN page (chat_branch_id NULL) deleted on a branch is left
@@ -1710,11 +1679,11 @@ export const deletePageOp = defineOperation({
         entities: [{ kind: "page", entityId: input.pageId, state }],
       });
     }
-    // Dead-URL redirect, on this tx. `state` carries the page's slug + locale
-    // (delete doesn't change them). A failed 301 aborts the delete rather than
+    // Dead-URL redirect, on this tx. `state` carries the page's slug
+    // (delete doesn't change it). A failed 301 aborts the delete rather than
     // leaving the URL silently unredirected (§2 no-fallbacks).
     if (input.disposition === "redirect" && state) {
-      const oldPath = publicPathFor(state.slug, state.locale);
+      const oldPath = publicPathFor(state.slug);
       const red = await createRedirectOp.handler(
         ctx,
         { fromPath: oldPath, toPath: input.redirectTo as string, statusCode: 301 },
@@ -1747,19 +1716,17 @@ export const duplicatePageOp = defineOperation({
       newName: z.string().min(1).max(256).optional(),
       newTitle: z.string().min(1).max(256).optional(),
       targetTemplateId: z.string().uuid().optional(),
-      locale: localeSchema.optional(),
     })
     .strict(),
   output: z.object({ pageId: z.string() }),
   handler: async (ctx, input, tx) => {
     const sourceRows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, locale, name, title,
+      SELECT id::text AS id, slug, name, title,
              template_id::text AS template_id
       FROM pages WHERE id = ${input.sourcePageId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as {
       id: string;
       slug: string;
-      locale: string;
       name: string | null;
       title: string;
       template_id: string;
@@ -1772,7 +1739,6 @@ export const duplicatePageOp = defineOperation({
         message: "source page not found",
       });
     }
-    const locale = input.locale ?? source.locale;
     const targetTemplateId = input.targetTemplateId ?? source.template_id;
     if (input.targetTemplateId !== undefined) {
       const tplOk = (await tx.execute(sql`
@@ -1789,21 +1755,21 @@ export const duplicatePageOp = defineOperation({
     }
     const dup = (await tx.execute(sql`
       SELECT 1 FROM pages
-      WHERE slug = ${input.newSlug} AND locale = ${locale} AND deleted_at IS NULL LIMIT 1
+      WHERE slug = ${input.newSlug} AND deleted_at IS NULL LIMIT 1
     `)) as unknown as { exists: number }[];
     if (dup.length > 0) {
       return err({
         kind: "HandlerError",
         operation: "pages.duplicate",
-        message: `page already exists for (slug=${input.newSlug}, locale=${locale})`,
+        message: `page already exists for slug=${input.newSlug}`,
       });
     }
     const title = input.newTitle ?? source.title;
     const name = input.newName ?? title;
     const inserted = (await tx.execute(sql`
-      INSERT INTO pages (slug, locale, name, title, template_id, status)
+      INSERT INTO pages (slug, name, title, template_id, status)
       VALUES (
-        ${input.newSlug}, ${locale}, ${name}, ${title},
+        ${input.newSlug}, ${name}, ${title},
         ${targetTemplateId}::uuid, 'draft'
       )
       RETURNING id::text AS id
@@ -1961,8 +1927,6 @@ export const duplicatePageOp = defineOperation({
       description: `pages.duplicate layout from=${source.slug}`,
       entities: [{ kind: "pageLayout", entityId: newPageId, state: layoutState }],
     });
-    // P9 — populate the clone's content_hash now that its modules are linked.
-    await recomputePageContentHash(tx, newPageId);
     return ok({ pageId: newPageId });
   },
 });

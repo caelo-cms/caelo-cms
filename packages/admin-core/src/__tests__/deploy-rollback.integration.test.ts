@@ -100,7 +100,6 @@ describe("deploy.rollback", () => {
       slug: PAGE_SLUG,
       title: "RB",
       templateId: tplId,
-      locale: "en",
     });
     if (!p.ok) throw new Error("seed");
     const pageId = (p.value as { pageId: string }).pageId;
@@ -116,7 +115,6 @@ describe("deploy.rollback", () => {
       slug: HOME_SLUG,
       title: "Home",
       templateId: tplId,
-      locale: "en",
     });
     if (!hp.ok) throw new Error("home seed");
     const homePageId = (hp.value as { pageId: string }).pageId;

@@ -53,7 +53,6 @@
   const page = data.page as {
     id: string;
     slug: string;
-    locale: string;
     title: string;
     status: "draft" | "published";
     templateId: string;
@@ -144,7 +143,6 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">
       {page.slug}
-      <span class="text-base text-muted-foreground">({page.locale})</span>
     </h1>
     <div class="mt-1 flex gap-3 text-sm text-muted-foreground">
       <a class="underline" href={`/content/pages/${page.id}/preview`} target="_blank" rel="noopener"

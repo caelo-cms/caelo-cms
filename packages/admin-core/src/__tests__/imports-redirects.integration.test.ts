@@ -140,8 +140,8 @@ describe("compose redirects (#196)", () => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const tpl = await tx`SELECT id FROM templates WHERE deleted_at IS NULL LIMIT 1`;
       await tx`
-        INSERT INTO pages (slug, locale, title, name, status, template_id, version)
-        VALUES ('issue196-besetzt', 'en', 'Besetzt', 'Besetzt', 'draft', ${(tpl as unknown as { id: string }[])[0]?.id}::uuid, 1)
+        INSERT INTO pages (slug, title, name, status, template_id, version)
+        VALUES ('issue196-besetzt', 'Besetzt', 'Besetzt', 'draft', ${(tpl as unknown as { id: string }[])[0]?.id}::uuid, 1)
         ON CONFLICT DO NOTHING
       `;
     });

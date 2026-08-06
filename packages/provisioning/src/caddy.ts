@@ -12,7 +12,6 @@
  *   <hostname> {
  *     # admin   → reverse_proxy localhost:5173
  *     # public  → root + try_files (static), with /api/* → gateway
- *     # locale  → same as public, scoped to a per-locale dist dir
  *     tls <ownerEmail>
  *   }
  *
@@ -21,8 +20,7 @@
 
 export interface CaddyDomainSpec {
   readonly hostname: string;
-  readonly kind: "admin" | "public" | "locale-public";
-  readonly localeCode?: string;
+  readonly kind: "admin" | "public";
   readonly env: "production" | "staging";
 }
 
@@ -70,13 +68,11 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
 }
 `;
   }
-  // public / locale-public — same shape: API routes go to the gateway,
+  // public — API routes go to the gateway,
   // the rest serves static files. Locale variants serve from a
-  // per-locale subdirectory.
   const root = d.env === "staging" ? spec.stagingSiteRoot : spec.publicSiteRoot;
-  const localeSubdir = d.kind === "locale-public" && d.localeCode ? `/${d.localeCode}` : "";
   return `${d.hostname} {${noindex}
-  root * ${root}${localeSubdir}
+  root * ${root}
   handle /api/* {
     reverse_proxy localhost:${spec.gatewayPort}
   }

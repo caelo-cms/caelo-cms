@@ -60,18 +60,29 @@ const templateStateV1 = z
   })
   .strict();
 
-const pageStateV1 = z
-  .object({
-    schemaVersion: z.literal(1),
-    slug: z.string(),
-    locale: z.string(),
-    title: z.string(),
-    templateId: z.string().uuid(),
-    status: z.enum(["draft", "published"]),
-    version: z.number().int().nonnegative(),
-    deletedAt: z.string().nullable(),
-  })
-  .strict();
+const pageStateV1 = z.preprocess(
+  // #384 — pre-cut snapshot rows carry a `locale` key; strip it at the
+  // boundary (input normalisation of a legacy encoding, not a fallback)
+  // so strict() keeps rejecting genuinely unknown keys.
+  (raw) => {
+    if (raw && typeof raw === "object" && "locale" in raw) {
+      const { locale: _legacy, ...rest } = raw as Record<string, unknown>;
+      return rest;
+    }
+    return raw;
+  },
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      slug: z.string(),
+      title: z.string(),
+      templateId: z.string().uuid(),
+      status: z.enum(["draft", "published"]),
+      version: z.number().int().nonnegative(),
+      deletedAt: z.string().nullable(),
+    })
+    .strict(),
+);
 
 const pageLayoutStateV1 = z
   .object({

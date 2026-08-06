@@ -112,7 +112,6 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
     const rendered = renderR.value as {
       html: string;
       pageSlug: string;
-      pageLocale: string;
       replacedSlots: string[];
       missingSlots: string[];
     };

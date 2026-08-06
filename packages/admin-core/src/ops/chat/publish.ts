@@ -533,11 +533,10 @@ export async function mergeBranchSnapshotsToMain(
       // v0.9.0 — pages.create now branches; merge UPSERTs the live row
       // AND clears chat_branch_id to graduate to main.
       await tx.execute(sql`
-        INSERT INTO pages (id, slug, locale, name, title, template_id, status, deleted_at, version, chat_branch_id)
+        INSERT INTO pages (id, slug, name, title, template_id, status, deleted_at, version, chat_branch_id)
         VALUES (
           ${e.entityId}::uuid,
           ${e.state.slug},
-          ${e.state.locale},
           ${e.state.title},
           ${e.state.title},
           ${e.state.templateId}::uuid,

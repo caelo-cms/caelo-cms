@@ -64,16 +64,14 @@
           <TableHeader>
             <TableRow>
               <TableHead>Page</TableHead>
-              <TableHead>Locale</TableHead>
-              <TableHead class="text-right">Votes</TableHead>
+                            <TableHead class="text-right">Votes</TableHead>
               <TableHead class="text-right">Average</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {#each data.aggregates as a (`${a.page_id}-${a.locale}`)}
+            {#each data.aggregates as a (a.page_id)}
               <TableRow>
                 <TableCell class="font-mono text-xs">{a.page_id}</TableCell>
-                <TableCell>{a.locale}</TableCell>
                 <TableCell class="text-right">{a.count}</TableCell>
                 <TableCell class="text-right">{(a.average / 100).toFixed(2)}</TableCell>
               </TableRow>

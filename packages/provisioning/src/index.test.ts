@@ -51,20 +51,6 @@ describe("Caddyfile generator", () => {
     expect(out).toContain(":8081 {");
     expect(out).toContain("reverse_proxy localhost:5173");
   });
-
-  it("scopes locale-public vhosts to the per-locale dist subdir", () => {
-    const out = generateCaddyfile({
-      ownerEmail: "x@y.z",
-      publicSiteRoot: "/srv/caelo/output/production/current",
-      stagingSiteRoot: "/srv/caelo/output/staging/current",
-      adminPort: 5173,
-      gatewayPort: 8090,
-      domains: [
-        { hostname: "de.example.com", kind: "locale-public", localeCode: "de", env: "production" },
-      ],
-    });
-    expect(out).toContain("root * /srv/caelo/output/production/current/de");
-  });
 });
 
 describe("docker-compose generator", () => {

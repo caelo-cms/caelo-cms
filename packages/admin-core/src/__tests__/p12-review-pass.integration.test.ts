@@ -302,7 +302,7 @@ describe("forms plugin: honeypot lands as spam", () => {
     const c = await runPluginOperation({
       pluginSlug: "forms",
       operationName: "create_form",
-      args: { slug: "contact", displayName: "Contact us", schemaJson: {}, locale: "en" },
+      args: { slug: "contact", displayName: "Contact us", schemaJson: {} },
     });
     expect(c.ok).toBe(true);
     const submit = await runPluginOperation({
@@ -310,7 +310,6 @@ describe("forms plugin: honeypot lands as spam", () => {
       operationName: "submit",
       args: {
         formSlug: "contact",
-        locale: "en",
         data: { email: "a@b.c" },
         honeypot: "bot-fill",
         captchaToken: "dev",
@@ -340,7 +339,6 @@ describe("forms plugin: honeypot lands as spam", () => {
       operationName: "submit",
       args: {
         formSlug: "contact",
-        locale: "en",
         data: { email: "real@user.com" },
         honeypot: "",
         captchaToken: "dev",

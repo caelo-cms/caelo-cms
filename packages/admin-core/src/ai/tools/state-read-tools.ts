@@ -50,38 +50,6 @@ export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
   },
 });
 
-/** locales chunk — renders from locales.list. */
-export const listLocalesTool = makeListReadTool<
-  Record<string, never>,
-  {
-    code: string;
-    displayName: string;
-    urlStrategy: string;
-    isDefault: boolean;
-  }
->({
-  name: "list_locales",
-  description:
-    "List the site's locales (code, display name, URL strategy, default flag). " +
-    "Call this when you need the current registry (e.g. before creating a page in a specific locale).",
-  opName: "locales.list",
-  input: noInput,
-  label: "locales",
-  rows: (value) =>
-    (
-      value as {
-        locales: { code: string; displayName: string; urlStrategy: string; isDefault: boolean }[];
-      }
-    ).locales,
-  columns: [
-    { key: "code", value: (l) => l.code },
-    { key: "displayName", value: (l) => l.displayName },
-    { key: "urlStrategy", value: (l) => l.urlStrategy },
-    { key: "default", value: (l) => (l.isDefault ? "yes" : "") },
-  ],
-  emptyMessage: "No locales configured.",
-});
-
 /** pending_proposals chunk — renders from pending_proposals.list. */
 export const listPendingProposalsTool = makeListReadTool<
   Record<string, never>,
@@ -94,7 +62,7 @@ export const listPendingProposalsTool = makeListReadTool<
 >({
   name: "list_pending_proposals",
   description:
-    "List every proposal currently awaiting Owner approval, across all gated domains (locales, layouts, users, roles, reverts, themes, deploys, …). " +
+    "List every proposal currently awaiting Owner approval, across all gated domains (layouts, users, roles, reverts, themes, deploys, …). " +
     "The `## Pending proposals` context block is a snapshot from turn start — call this BEFORE queueing a proposal you may already have filed this turn (a duplicate is rejected), and after the user says they approved something.",
   opName: "pending_proposals.list",
   input: noInput,
@@ -237,13 +205,12 @@ export const listDomainsTool = makeListReadTool<
   {
     hostname: string;
     kind: string;
-    localeCode: string | null;
     tlsStatus: string;
   }
 >({
   name: "list_domains",
   description:
-    "List the site's domains (hostname, kind, locale, TLS status). Domain changes go through propose_add_domain / propose_remove_domain (Owner-approved). " +
+    "List the site's domains (hostname, kind, TLS status). Domain changes go through propose_add_domain / propose_remove_domain (Owner-approved). " +
     "The `## Domains` context block is a snapshot from turn start.",
   opName: "domains.list",
   input: noInput,
@@ -251,13 +218,12 @@ export const listDomainsTool = makeListReadTool<
   rows: (value) =>
     (
       value as {
-        domains: { hostname: string; kind: string; localeCode: string | null; tlsStatus: string }[];
+        domains: { hostname: string; kind: string; tlsStatus: string }[];
       }
     ).domains,
   columns: [
     { key: "hostname", value: (d) => d.hostname },
     { key: "kind", value: (d) => d.kind },
-    { key: "locale", value: (d) => d.localeCode ?? "" },
     { key: "tls", value: (d) => d.tlsStatus },
   ],
   emptyMessage: "No domains configured.",

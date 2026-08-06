@@ -1097,7 +1097,7 @@ export const setRunDesignTokensOp = defineOperation({
  * auto-GC'd (only Owner-run imports.cleanup_run drops them).
  */
 const IMPORT_PAGE_NOT_FOUND_MSG =
-  "import page not found. Pass EITHER the staging import_pages.id (list_import_pages({runId}) shows every page's id — this id ALWAYS resolves) OR the built CMS page id. A built page id resolves only when the import row links to it (build_page was called with importPageId), when its slug equals the crawled proposed_slug, or (for the homepage) when it is the locale's designated home page. If you built the page with a custom/translated slug, pass the staging import_pages.id instead. (Import rows do not expire — a miss means an id/slug mismatch, not staleness.)";
+  "import page not found. Pass EITHER the staging import_pages.id (list_import_pages({runId}) shows every page's id — this id ALWAYS resolves) OR the built CMS page id. A built page id resolves only when the import row links to it (build_page was called with importPageId), when its slug equals the crawled proposed_slug, or (for the homepage) when it is the designated home page. If you built the page with a custom/translated slug, pass the staging import_pages.id instead. (Import rows do not expire — a miss means an id/slug mismatch, not staleness.)";
 
 /**
  * Resolve whatever id the AI holds for a crawled page to its owning
@@ -1107,7 +1107,7 @@ const IMPORT_PAGE_NOT_FOUND_MSG =
  *   3. a directly-built (#278) page whose slug equals the crawled
  *      `proposed_slug`,
  *   4. a directly-built (#278) HOMEPAGE — issue 0184 lets ANY page be the site
- *      root via `locales.home_page_id`, so the built home's slug rarely equals
+ *      root via `site_defaults.home_page_id`, so the built home's slug rarely equals
  *      the crawler's fixed `home` slug ("homepage not at root"); match it
  *      through `home_page_id` ↔ `proposed_slug='home'`.
  * When given the staging id for a #278 page (no `accepted_page_id`), the built
@@ -1142,7 +1142,7 @@ async function resolveImportPageRef(
           AND (
             p.slug = ip.proposed_slug
             OR (ip.proposed_slug = 'home'
-                AND EXISTS (SELECT 1 FROM locales l WHERE l.home_page_id = p.id))
+                AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
           )
         LIMIT 1
       `)) as unknown as Array<{ id: string }>;
@@ -1158,7 +1158,7 @@ async function resolveImportPageRef(
     JOIN import_pages ip
       ON ip.proposed_slug = p.slug
       OR (ip.proposed_slug = 'home'
-          AND EXISTS (SELECT 1 FROM locales l WHERE l.home_page_id = p.id))
+          AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
     WHERE p.id = ${inputId}::uuid AND p.deleted_at IS NULL
     ORDER BY ip.created_at DESC
     LIMIT 1
@@ -1442,7 +1442,7 @@ export const acceptImportedPageOp = defineOperation({
       // jsonb may come back as an already-decoded array OR a JSON
       // string depending on the underlying SQL client + the way the
       // column was written. Normalise via the same conditional idiom
-      // locales.ts uses for its preview/payload jsonb columns.
+      // several jsonb-writing ops use for preview/payload columns.
       proposed_modules: unknown;
       accepted_page_id: string | null;
     }>;
@@ -1471,9 +1471,9 @@ export const acceptImportedPageOp = defineOperation({
     }>;
     // Insert the page row.
     const pageRows = (await tx.execute(sql`
-      INSERT INTO pages (slug, locale, title, name, status, template_id, version)
+      INSERT INTO pages (slug, title, name, status, template_id, version)
       VALUES (
-        ${r.proposed_slug}, 'en',
+        ${r.proposed_slug},
         ${r.proposed_title || r.proposed_slug},
         ${r.proposed_title || r.proposed_slug},
         'draft', ${input.templateId}::uuid, 1
@@ -3514,14 +3514,14 @@ export const composeFromImportRunOp = defineOperation({
       for (const r of members) {
         const proposedModules = parseModules(r.proposed_modules);
         const pageInsert = (await tx.execute(sql`
-          INSERT INTO pages (slug, locale, title, name, status, template_id, version)
+          INSERT INTO pages (slug, title, name, status, template_id, version)
           VALUES (
-            ${r.proposed_slug}, 'en',
+            ${r.proposed_slug},
             ${r.proposed_title || r.proposed_slug},
             ${r.proposed_title || r.proposed_slug},
             'draft', ${templateIdForCluster}::uuid, 1
           )
-          ON CONFLICT (slug, locale, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
+          ON CONFLICT (slug, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
             WHERE deleted_at IS NULL
             DO UPDATE SET title = EXCLUDED.title, name = EXCLUDED.name,
                           template_id = EXCLUDED.template_id
@@ -3633,7 +3633,7 @@ export const composeFromImportRunOp = defineOperation({
           // not a silent skip or overwrite (no-fallbacks pre-1.0).
           const shadow = (await tx.execute(sql`
             SELECT id::text AS id FROM pages
-            WHERE slug = ${sourcePath.slice(1)} AND locale = 'en'
+            WHERE slug = ${sourcePath.slice(1)}
               AND deleted_at IS NULL AND id <> ${pageId}::uuid
             LIMIT 1
           `)) as unknown as { id: string }[];

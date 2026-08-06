@@ -32,9 +32,9 @@ import {
   type ComposeTheme,
   composePageWithLayout,
   fontUnresolvableMarker,
+  isDesignatedHomePage,
   isHomeSlug,
   type ModuleFieldKind,
-  pageIsLocaleHome,
   type ThemeDocument,
   trimSlashes,
 } from "@caelo-cms/shared";
@@ -92,7 +92,6 @@ function uuidArrayLiteral(ids: ReadonlyArray<string>): string {
 interface PageRow {
   page_id: string;
   slug: string;
-  locale: string;
   title: string;
   status: "draft" | "published";
   template_html: string;
@@ -178,7 +177,6 @@ function parseContentValues(raw: string | null): Record<string, unknown> | undef
 
 interface VariantManifestEntry {
   pageSlug: string;
-  locale: string;
   experimentId: string;
   variantLabel: string;
   outputPath: string;
@@ -353,8 +351,7 @@ export async function generateSite(args: {
   const statusFilter = target.env === "dev" ? sql.raw("") : sql.raw(" AND p.status = 'published'");
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id,
-           p.slug, p.locale, p.title, p.status,
-           p.content_hash AS content_hash,
+           p.slug, p.title, p.status,
            t.html AS template_html,
            t.css  AS template_css,
            l.id::text AS layout_id,
@@ -378,7 +375,7 @@ export async function generateSite(args: {
       AND l.chat_branch_id IS NULL
       ${incrementalFilter}
     ORDER BY p.slug ASC
-  `)) as unknown as Array<PageRow & { content_hash: string | null }>;
+  `)) as unknown as PageRow[];
 
   const zeroPageError = zeroPageBuildError({
     pageCount: pageRows.length,
@@ -387,22 +384,20 @@ export async function generateSite(args: {
   });
   if (zeroPageError !== null) throw new Error(zeroPageError);
 
-  // 0184 — the designated homepage id, still parked per locale row
-  // until #384 moves it to site_defaults. Looked up via each page's
-  // own locale so the designation semantics survive the #383 cut.
+  // 0184 — the designated homepage id (site_defaults since #384).
   // Drives the emitted output path and — via seo-pass — the canonical,
   // so both agree on which page is the site root.
   const homeRows = (await tx.execute(sql`
-    SELECT code, home_page_id::text AS home_page_id FROM locales
-  `)) as unknown as { code: string; home_page_id: string | null }[];
-  const homePageByLocale = new Map(homeRows.map((r) => [r.code, r.home_page_id]));
+    SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
+  `)) as unknown as { home_page_id: string | null }[];
+  const designatedHomePageId = homeRows[0]?.home_page_id ?? null;
 
   // issue #302 — fail loudly when no page will land at the bucket root.
   const plannedPaths = pageRows.map((p) =>
     pageOutputPath(
       p.slug,
       target.pageUrlStyle,
-      pageIsLocaleHome(p.page_id, p.slug, homePageByLocale.get(p.locale)),
+      isDesignatedHomePage(p.page_id, p.slug, designatedHomePageId),
     ),
   );
   const rootEligibleSlugs = pageRows.map((p) => p.slug);
@@ -576,11 +571,10 @@ export async function generateSite(args: {
   const composedPages: {
     html: string;
     pageSlug: string;
-    pageLocale: string;
     pageTitle: string;
     relPath: string;
   }[] = [];
-  // P13 — per-(slug, locale) bake target for the plugin render pass.
+  // P13 — per-slug bake target for the plugin render pass.
   const bakeTargets = new Map<string, BakeTarget>();
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
@@ -637,9 +631,7 @@ export async function generateSite(args: {
       });
     } catch (e) {
       if (e instanceof ComposeError) {
-        throw new Error(
-          `static-generator: page slug=${page.slug} locale=${page.locale}: ${e.message}`,
-        );
+        throw new Error(`static-generator: page slug=${page.slug}: ${e.message}`);
       }
       throw e;
     }
@@ -647,20 +639,17 @@ export async function generateSite(args: {
     composedPages.push({
       html: composed.html,
       pageSlug: page.slug,
-      pageLocale: page.locale,
       pageTitle: page.title,
       relPath: pageOutputPath(
         page.slug,
         target.pageUrlStyle,
-        pageIsLocaleHome(page.page_id, page.slug, homePageByLocale.get(page.locale)),
+        isDesignatedHomePage(page.page_id, page.slug, designatedHomePageId),
       ),
     });
     // P13 — record per-page bake target for the plugin render pass.
-    bakeTargets.set(`${page.slug}:${page.locale}`, {
+    bakeTargets.set(page.slug, {
       pageId: page.page_id,
       slug: page.slug,
-      locale: page.locale,
-      contentHash: page.content_hash ?? "",
     });
 
     // A/B variant emission hook: when modules carry experiment_id +
@@ -677,7 +666,6 @@ export async function generateSite(args: {
         fileCount += 1;
         variantEntries.push({
           pageSlug: page.slug,
-          locale: page.locale,
           experimentId: m.experiment_id,
           variantLabel: m.variant_label,
           outputPath: variantPath,
@@ -734,7 +722,7 @@ export async function generateSite(args: {
   });
   if (seoResult.sitemapEmitted) fileCount += 1;
 
-  // P13 — plugin render pass: per (page, locale) call each active
+  // P13 — plugin render pass: per page call each active
   // Tier-1 plugin's `staticRender(...)`, splice into the page body at
   // the matching `<div data-caelo-plugin="<slug>" ...>` placeholder.
   // Cache hits via static_bakes.cache_key skip the render entirely.
@@ -794,7 +782,7 @@ export async function generateSite(args: {
     // Build a lookup: page_id → composed page (the source of variant HTML).
     const pageById = new Map<string, (typeof composedPages)[number]>();
     for (const cp of composedPages) {
-      const t = bakeTargets.get(`${cp.pageSlug}:${cp.pageLocale}`);
+      const t = bakeTargets.get(cp.pageSlug);
       if (t) pageById.set(t.pageId, cp);
     }
     for (const e of experimentRows) {
@@ -837,11 +825,10 @@ export async function generateSite(args: {
     pageCount: pageRows.length,
     pages: pageRows.map((p) => ({
       slug: p.slug,
-      locale: p.locale,
       outputPath: pageOutputPath(
         p.slug,
         target.pageUrlStyle,
-        pageIsLocaleHome(p.page_id, p.slug, homePageByLocale.get(p.locale)),
+        isDesignatedHomePage(p.page_id, p.slug, designatedHomePageId),
       ),
     })),
     variants: variantEntries,
@@ -867,7 +854,7 @@ export async function generateSite(args: {
   // routers' rewrite targets actually resolve.
   const pageSlugById = new Map<string, string>();
   for (const cp of composedPages) {
-    const t = bakeTargets.get(`${cp.pageSlug}:${cp.pageLocale}`);
+    const t = bakeTargets.get(cp.pageSlug);
     if (t) pageSlugById.set(t.pageId, cp.pageSlug);
   }
   const abExperiments: Array<{

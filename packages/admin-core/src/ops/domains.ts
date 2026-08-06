@@ -5,7 +5,7 @@
  *
  *  domains.list                   read-only — open to all actor kinds
  *  domains.add                    Owner-only — creates a row, kind in
- *                                 admin / public / locale-public; the
+ *                                 admin / public; the
  *                                 cms-provision regenerate-caddy step
  *                                 reads the table at deploy.
  *  domains.remove                 Owner-only — soft-removes by deleting
@@ -26,14 +26,13 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 
-const domainKind = z.enum(["admin", "public", "locale-public"]);
+const domainKind = z.enum(["admin", "public"]);
 const tlsStatus = z.enum(["pending", "active", "failed", "unknown"]);
 
 const domainRow = z.object({
   id: z.string(),
   hostname: z.string(),
   kind: domainKind,
-  localeCode: z.string().nullable(),
   tlsStatus,
   tlsExpiresAt: z.string().nullable(),
   tlsError: z.string().nullable(),
@@ -44,8 +43,7 @@ const domainRow = z.object({
 interface DomainRow {
   id: string;
   hostname: string;
-  kind: "admin" | "public" | "locale-public";
-  locale_code: string | null;
+  kind: "admin" | "public";
   tls_status: "pending" | "active" | "failed" | "unknown";
   tls_expires_at: string | Date | null;
   tls_error: string | null;
@@ -58,7 +56,6 @@ function toApi(r: DomainRow): z.infer<typeof domainRow> {
     id: r.id,
     hostname: r.hostname,
     kind: r.kind,
-    localeCode: r.locale_code,
     tlsStatus: r.tls_status,
     tlsExpiresAt: r.tls_expires_at
       ? r.tls_expires_at instanceof Date
@@ -85,7 +82,7 @@ export const listDomainsOp = defineOperation({
   output: z.object({ domains: z.array(domainRow) }),
   handler: async (_ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, hostname, kind, locale_code, tls_status,
+      SELECT id::text AS id, hostname, kind, tls_status,
              tls_expires_at, tls_error, last_verified_at, created_at
       FROM domains
       ORDER BY created_at DESC
@@ -107,21 +104,13 @@ export const addDomainOp = defineOperation({
         .transform((s) => s.toLowerCase().trim())
         .refine((s) => HOSTNAME_RE.test(s), "must be a valid hostname"),
       kind: domainKind,
-      localeCode: z.string().min(2).max(20).optional(),
     })
     .strict(),
   output: z.object({ domainId: z.string() }),
   handler: async (ctx, input, tx) => {
-    if (input.kind === "locale-public" && !input.localeCode) {
-      return err({
-        kind: "HandlerError",
-        operation: "domains.add",
-        message: "locale-public domains require localeCode",
-      });
-    }
     const rows = (await tx.execute(sql`
-      INSERT INTO domains (hostname, kind, locale_code, created_by)
-      VALUES (${input.hostname}, ${input.kind}, ${input.localeCode ?? null}, ${ctx.actorId}::uuid)
+      INSERT INTO domains (hostname, kind, created_by)
+      VALUES (${input.hostname}, ${input.kind}, ${ctx.actorId}::uuid)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const id = rows[0]?.id;

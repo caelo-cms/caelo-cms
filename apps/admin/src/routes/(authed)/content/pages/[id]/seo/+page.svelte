@@ -26,7 +26,7 @@
   import { Textarea } from "$lib/components/ui/textarea/index.js";
 
   let { data, form } = $props();
-  const page = data.page as { id: string; slug: string; title: string; locale: string };
+  const page = data.page as { id: string; slug: string; title: string };
   const seoData = data.seo as {
     metaDescription: string;
     ogImageAssetId: string | null;

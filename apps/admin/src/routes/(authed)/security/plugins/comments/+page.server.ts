@@ -8,7 +8,6 @@ import type { Actions, PageServerLoad } from "./$types";
 interface CommentRow {
   id: string;
   page_id: string;
-  locale: string;
   parent_id: string | null;
   author_name: string;
   content: string;

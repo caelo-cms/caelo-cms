@@ -36,7 +36,6 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
       newName: { type: "string", minLength: 1, maxLength: 256 },
       newTitle: { type: "string", minLength: 1, maxLength: 256 },
       targetTemplateId: { type: "string", format: "uuid" },
-      locale: { type: "string", minLength: 2, maxLength: 10 },
     },
   },
   handler: async (ctx, input, toolCtx) => {

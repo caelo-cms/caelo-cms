@@ -33,7 +33,7 @@
   // server enforces, so the user sees per-field errors as they type.
   // Slug uniqueness still requires a server round-trip; that error
   // surfaces via the `form?.error` Alert above.
-  const createForm = bindZodForm(pageCreateSchema, { locale: "en", status: "draft" });
+  const createForm = bindZodForm(pageCreateSchema, { status: "draft" });
 
   // Run #9 R10 (issue #262) — bulk publish. Drafts never ship to
   // staging/production; a migration's 30-150 draft pages need one
@@ -123,7 +123,6 @@
           <TableHeader>
             <TableRow>
               <TableHead>Slug</TableHead>
-              <TableHead>Locale</TableHead>
               <TableHead>Title</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Updated</TableHead>
@@ -138,7 +137,6 @@
                     {p.slug}
                   </a>
                 </TableCell>
-                <TableCell>{p.locale}</TableCell>
                 <TableCell>{p.title}</TableCell>
                 <TableCell>
                   <Badge variant={p.status === "published" ? "success" : "secondary"}>
@@ -200,24 +198,6 @@
             />
             {#if createForm.errors.slug}
               <p id="slug-err" class="text-xs text-destructive">{createForm.errors.slug}</p>
-            {/if}
-          </div>
-          <div class="space-y-2">
-            <Label for="locale">Locale</Label>
-            <Input
-              id="locale"
-              name="locale"
-              type="text"
-              value="en"
-              pattern="[a-z]{'{2}'}(-[A-Z]{'{2}'})?"
-              required
-              aria-invalid={createForm.errors.locale ? "true" : undefined}
-              aria-describedby={createForm.errors.locale ? "locale-err" : undefined}
-              oninput={(e) =>
-                createForm.update("locale", (e.currentTarget as HTMLInputElement).value)}
-            />
-            {#if createForm.errors.locale}
-              <p id="locale-err" class="text-xs text-destructive">{createForm.errors.locale}</p>
             {/if}
           </div>
           <div class="space-y-2">

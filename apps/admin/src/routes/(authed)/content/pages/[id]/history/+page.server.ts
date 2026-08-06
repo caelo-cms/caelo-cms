@@ -17,7 +17,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     }),
   ]);
   const pageRow = pageResult.ok
-    ? (pageResult.value as { page: { slug: string; locale: string; title: string } }).page
+    ? (pageResult.value as { page: { slug: string; title: string } }).page
     : null;
   const snapshots = snapshotsResult.ok
     ? (

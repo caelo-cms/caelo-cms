@@ -137,7 +137,6 @@ import {
   listAiProvidersTool,
   listDomainsTool,
   listEntityLocksTool,
-  listLocalesTool,
   listPendingProposalsTool,
   listRolesTool,
   listUsersTool,
@@ -250,7 +249,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // these fetch CURRENT state so the AI never repeats a confirmed write
   // because a stale chunk still shows the old value.
   registry.register(getSiteDefaultsTool);
-  registry.register(listLocalesTool);
   registry.register(listPendingProposalsTool);
   registry.register(listEntityLocksTool);
   registry.register(listUsersTool);

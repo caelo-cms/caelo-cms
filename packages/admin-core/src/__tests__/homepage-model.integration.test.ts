@@ -4,8 +4,8 @@
  * 0184 — explicit HOMEPAGE model + build_page import-linkage & idempotency.
  *
  * Covers:
- *  (a) `pages.set_home_page` writes `locales.home_page_id`; resolveCanonicalUrl
- *      with `isHomePage:true` returns the locale root.
+ *  (a) `pages.set_home_page` writes `site_defaults.home_page_id`;
+ *      resolveCanonicalUrl with `isHomePage:true` returns the site root.
  *  (b) build_page with `importPageId` stamps `import_pages.accepted_page_id`;
  *      a SECOND build with the same importPageId REBUILDS the same page (no
  *      duplicate).
@@ -13,8 +13,9 @@
  *      (root-equivalence of magic slugs / designated home_page_id).
  *  (d) a slug soft-deleted ON THE CURRENT CHAT BRANCH can be reclaimed (2b).
  *
- * Runs against a real Postgres in the compose stack (CLAUDE.md §6). Uses a
- * dedicated `zz` locale so the shared `en` default is never mutated.
+ * Runs against a real Postgres in the compose stack (CLAUDE.md §6).
+ * The designation is a site-wide singleton since #384; the suite saves
+ * and restores the pre-test value.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -39,11 +40,6 @@ const sysCtx: ExecutionContext = {
 
 const TS = Date.now().toString(36);
 const TPL_SLUG = `hp-tpl-${TS}`;
-const LOCALE = "zz";
-// A second, pristine locale for the backstop test — test (a) designates a
-// homepage in `zz`, so (c) needs a locale with no prior root to isolate the
-// magic-slug root-equivalence assertion.
-const LOCALE_C = "zy";
 const PFX = `hp-${TS}`;
 
 let templateId = "";
@@ -59,11 +55,11 @@ async function wipe(): Promise<void> {
       await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${PFX}%`}`;
       await tx`DELETE FROM import_pages WHERE source_url LIKE ${`https://${PFX}%`}`;
       await tx`DELETE FROM import_runs WHERE source_url LIKE ${`https://${PFX}%`}`;
-      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`} OR locale IN (${LOCALE}, ${LOCALE_C}))`;
-      await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}%`} OR locale IN (${LOCALE}, ${LOCALE_C})`;
+      await tx`UPDATE site_defaults SET home_page_id = NULL WHERE id = 1 AND home_page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`})`;
+      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`})`;
+      await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}%`}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
       await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
-      await tx`DELETE FROM locales WHERE code IN (${LOCALE}, ${LOCALE_C})`;
     });
   } finally {
     await sql.end();
@@ -76,14 +72,10 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
 
-  // Dedicated locale so we never touch the shared `en` default.
   const sql = new SQL(ADMIN_URL!);
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx`INSERT INTO locales (code, display_name, url_strategy, is_default)
-               VALUES (${LOCALE}, 'Test ZZ', 'none', false), (${LOCALE_C}, 'Test ZY', 'none', false)
-               ON CONFLICT (code) DO NOTHING`;
       const run = await tx`INSERT INTO import_runs (source_url, proposed_by, status)
                VALUES (${`https://${PFX}.example.com`}, ${SYS}::uuid, 'ready_for_review')
                RETURNING id::text AS id`;
@@ -139,12 +131,24 @@ async function acceptedPageIdFor(importPageId: string): Promise<string | null> {
   }
 }
 
-async function homePageIdFor(locale: string): Promise<string | null> {
+async function clearDesignation(): Promise<void> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE site_defaults SET home_page_id = NULL WHERE id = 1`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+async function designatedHomePageId(): Promise<string | null> {
   const sql = new SQL(ADMIN_URL!);
   try {
     const rows = await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      return await tx`SELECT home_page_id::text AS hid FROM locales WHERE code = ${locale}`;
+      return await tx`SELECT home_page_id::text AS hid FROM site_defaults WHERE id = 1`;
     });
     return (rows as unknown as { hid: string | null }[])[0]?.hid ?? null;
   } finally {
@@ -173,9 +177,9 @@ describe("0184 (a) set_home_page + resolver", () => {
     ).toBe("https://example.com/");
   });
 
-  it("pages.set_home_page writes locales.home_page_id", async () => {
+  it("pages.set_home_page writes site_defaults.home_page_id", async () => {
     const created = await execute(registry, adapter, sysCtx, "pages.build_page", {
-      page: { slug: `${PFX}-welcome`, title: "Welcome", locale: LOCALE, templateId },
+      page: { slug: `${PFX}-welcome`, title: "Welcome", templateId },
       modules: [],
     });
     if (!created.ok) throw new Error(JSON.stringify(created.error));
@@ -183,27 +187,21 @@ describe("0184 (a) set_home_page + resolver", () => {
 
     const set = await execute(registry, adapter, sysCtx, "pages.set_home_page", { pageId });
     expect(set.ok).toBe(true);
-    if (set.ok) {
-      expect((set.value as { locale: string }).locale).toBe(LOCALE);
-    }
-    expect(await homePageIdFor(LOCALE)).toBe(pageId);
+    expect(await designatedHomePageId()).toBe(pageId);
 
     // get_with_modules surfaces the flag so the page-context can show it.
     const got = await execute(registry, adapter, sysCtx, "pages.get_with_modules", { pageId });
     if (!got.ok) throw new Error(JSON.stringify(got.error));
     expect((got.value as { page: { isHomePage: boolean } }).page.isHomePage).toBe(true);
+    // #384 — the designation is a site-wide singleton now; release it
+    // immediately so parallel test files creating 'home'-slug pages
+    // don't collide with this file's designation.
+    await clearDesignation();
   });
 
-  it("set_home_page fails loudly for an unknown locale", async () => {
-    const created = await execute(registry, adapter, sysCtx, "pages.build_page", {
-      page: { slug: `${PFX}-badloc`, title: "Bad", locale: LOCALE, templateId },
-      modules: [],
-    });
-    if (!created.ok) throw new Error(JSON.stringify(created.error));
-    const pageId = (created.value as { pageId: string }).pageId;
+  it("set_home_page fails loudly for an unknown page id", async () => {
     const set = await execute(registry, adapter, sysCtx, "pages.set_home_page", {
-      pageId,
-      locale: "qq",
+      pageId: "00000000-0000-0000-0000-0000000000bb",
     });
     expect(set.ok).toBe(false);
   });
@@ -214,7 +212,7 @@ describe("0184 (b) build_page import linkage + idempotency", () => {
     const importPageId = await insertImportPage("/about", `${PFX}-about`);
 
     const first = await execute(registry, adapter, sysCtx, "pages.build_page", {
-      page: { slug: `${PFX}-about`, title: "About", locale: LOCALE, templateId, importPageId },
+      page: { slug: `${PFX}-about`, title: "About", templateId, importPageId },
       modules: [],
     });
     if (!first.ok) throw new Error(JSON.stringify(first.error));
@@ -228,7 +226,6 @@ describe("0184 (b) build_page import linkage + idempotency", () => {
       page: {
         slug: `${PFX}-about-again`,
         title: "About v2",
-        locale: LOCALE,
         templateId,
         importPageId,
       },
@@ -256,7 +253,6 @@ describe("0184 (b) build_page import linkage + idempotency", () => {
       page: {
         slug: `${PFX}-orphan`,
         title: "Orphan",
-        locale: LOCALE,
         templateId,
         importPageId: "00000000-0000-0000-0000-0000000000aa",
       },
@@ -267,21 +263,33 @@ describe("0184 (b) build_page import linkage + idempotency", () => {
 });
 
 describe("0184 (c) duplicate-URL backstop", () => {
-  it("rejects a second page that also resolves to the locale root", async () => {
+  it("rejects a second page that also resolves to the site root", async () => {
+    // #384 — slug uniqueness is global, so this test avoids minting a
+    // bare 'home' row (parallel test files own that namespace). Instead
+    // it designates a PFX-scoped page as the root and asserts that a
+    // magic-slug create is rejected as root-equivalent.
     const first = await execute(registry, adapter, sysCtx, "pages.build_page", {
-      page: { slug: "home", title: "Home", locale: LOCALE_C, templateId },
+      page: { slug: `${PFX}-rootholder`, title: "Root", templateId },
       modules: [],
     });
     if (!first.ok) throw new Error(JSON.stringify(first.error));
-
-    // `index` is root-equivalent to `home` — both map to `/`.
-    const second = await execute(registry, adapter, sysCtx, "pages.build_page", {
-      page: { slug: "index", title: "Index", locale: LOCALE_C, templateId },
-      modules: [],
+    const rootId = (first.value as { pageId: string }).pageId;
+    const set = await execute(registry, adapter, sysCtx, "pages.set_home_page", {
+      pageId: rootId,
     });
-    expect(second.ok).toBe(false);
-    if (!second.ok) {
-      expect(JSON.stringify(second.error)).toContain("site root");
+    expect(set.ok).toBe(true);
+    try {
+      // `index` is magic-slug root-equivalent — both map to `/`.
+      const second = await execute(registry, adapter, sysCtx, "pages.build_page", {
+        page: { slug: "index", title: "Index", templateId },
+        modules: [],
+      });
+      expect(second.ok).toBe(false);
+      if (!second.ok) {
+        expect(JSON.stringify(second.error)).toContain("site root");
+      }
+    } finally {
+      await clearDesignation();
     }
   });
 });
@@ -295,10 +303,10 @@ describe("0184 (e) preview canonical honours the designation end-to-end", () => 
   }
   const CANONICAL = /<link rel="canonical" href="([^"]+)"/;
 
-  it("a page designated home on a NON-magic slug canonicalizes at the locale root", async () => {
+  it("a page designated home on a NON-magic slug canonicalizes at the site root", async () => {
     const slug = `${PFX}-lander`;
     const created = await execute(registry, adapter, sysCtx, "pages.build_page", {
-      page: { slug, title: "Lander", locale: LOCALE, templateId },
+      page: { slug, title: "Lander", templateId },
       modules: [],
     });
     if (!created.ok) throw new Error(JSON.stringify(created.error));
@@ -311,11 +319,12 @@ describe("0184 (e) preview canonical honours the designation end-to-end", () => 
     });
     expect(pub.ok).toBe(true);
 
-    // Designate it as the locale's homepage despite its non-magic slug.
+    // Designate it as the homepage despite its non-magic slug.
     const set = await execute(registry, adapter, sysCtx, "pages.set_home_page", { pageId });
     expect(set.ok).toBe(true);
 
     const preview = await execute(registry, adapter, sysCtx, "pages.render_preview", { pageId });
+    await clearDesignation();
     if (!preview.ok) throw new Error(JSON.stringify(preview.error));
     const html = (preview.value as { html: string }).html;
 
@@ -325,7 +334,7 @@ describe("0184 (e) preview canonical honours the designation end-to-end", () => 
   it("a normal (non-designated) page keeps its slug path in canonical", async () => {
     const slug = `${PFX}-plain`;
     const created = await execute(registry, adapter, sysCtx, "pages.build_page", {
-      page: { slug, title: "Plain", locale: LOCALE, templateId },
+      page: { slug, title: "Plain", templateId },
       modules: [],
     });
     if (!created.ok) throw new Error(JSON.stringify(created.error));
@@ -361,7 +370,6 @@ describe("0184 (d) branch-aware slug reclaim (2b)", () => {
     const created = await execute(registry, adapter, branchCtx, "pages.create", {
       slug,
       title: "Reclaim",
-      locale: LOCALE,
       templateId,
     });
     if (!created.ok) throw new Error(JSON.stringify(created.error));
@@ -380,7 +388,6 @@ describe("0184 (d) branch-aware slug reclaim (2b)", () => {
     const recreated = await execute(registry, adapter, branchCtx, "pages.create", {
       slug,
       title: "Reclaimed",
-      locale: LOCALE,
       templateId,
     });
     expect(recreated.ok).toBe(true);

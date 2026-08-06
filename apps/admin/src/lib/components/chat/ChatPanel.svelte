@@ -617,7 +617,7 @@
    * server-side `awaitScreenshot` Promise so the AI's
    * `screenshot_page` tool returns the image bytes.
    *
-   * Iframe source: `/edit/preview-by-path/<locale>/<slug>?branch=<chatBranchId>`
+   * Iframe source: `/edit/preview-by-path/<slug>?branch=<chatBranchId>`
    * — same URL the live-edit overlay uses. Capture is same-origin
    * (admin-served), so html2canvas can read the contentDocument.
    *
@@ -649,7 +649,7 @@
     iframe.style.height = `${height}px`;
     iframe.style.border = "0";
     iframe.style.visibility = "hidden";
-    // The preview path needs locale + slug. We don't know them from
+    // The preview path needs the slug. We don't know it from
     // the SSE event (only pageId + chatBranchId), so use the
     // pages/preview pageId-based route which the editor iframe also
     // uses. Builds the right URL server-side based on pageId.
