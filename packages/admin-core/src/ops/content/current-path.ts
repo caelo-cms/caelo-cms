@@ -18,8 +18,12 @@
 
 import { collectUrlAnnotations, resolvePageUrl } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import { isHomeSlug } from "@caelo-cms/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, isHomeSlug, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { recordAudit } from "../../audit.js";
+import { createRedirectOp } from "../redirects.js";
 
 interface PageRowForPath {
   id: string;
@@ -120,3 +124,75 @@ export async function resolveCurrentPathsDryRun(
   }
   return out;
 }
+
+/**
+ * #396 — refresh one page's composed path after PLUGIN DATA changed its
+ * URL shape (a variant link/unlink changes the locale annotation and
+ * with it the prefix). Bounded to ONE page, undoable by the inverse
+ * data change, so it stays routine (§11.A test) — unlike a
+ * contribution-SET change, which fans out site-wide and goes through
+ * propose_url_migration. When the path moves, the old URL gets the
+ * same 301 treatment a slug change gets.
+ */
+export const refreshCurrentPathOp = defineOperation({
+  name: "pages.refresh_current_path",
+  // Plugins call this after writing variant rows; the AI/system may
+  // call it when repairing drift. Never destructive: recompute + 301.
+  actorScope: ["human", "ai", "plugin", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      pageId: z.string().uuid(),
+      redirectFromOld: z.enum(["auto", "skip"]).default("auto"),
+    })
+    .strict(),
+  output: z.object({
+    path: z.string(),
+    moved: z.boolean(),
+  }),
+  handler: async (ctx, input, tx) => {
+    const before = (await tx.execute(sql`
+      SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL
+    `)) as unknown as { current_path: string }[];
+    const oldPath = before[0]?.current_path;
+    if (oldPath === undefined) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.refresh_current_path",
+        message: "page not found or deleted",
+      });
+    }
+    const recomputed = await recomputeCurrentPaths(tx, [input.pageId]);
+    const newPath = recomputed.get(input.pageId);
+    if (!newPath) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.refresh_current_path",
+        message: "recompute returned no path — page vanished mid-transaction",
+      });
+    }
+    const moved = newPath !== oldPath;
+    if (moved && input.redirectFromOld !== "skip") {
+      const red = await createRedirectOp.handler(
+        ctx,
+        { fromPath: oldPath, toPath: newPath, statusCode: 301 },
+        tx,
+      );
+      if (!red.ok) {
+        throw new Error(
+          `refresh_current_path aborted — redirect ${oldPath} → ${newPath} failed to land`,
+        );
+      }
+    }
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "pages.refresh_current_path",
+      input,
+      succeeded: true,
+      entityId: input.pageId,
+      resultSummary: moved ? `${oldPath} → ${newPath}` : "unchanged",
+    });
+    return ok({ path: newPath, moved });
+  },
+});

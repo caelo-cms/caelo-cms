@@ -162,7 +162,10 @@ export const listPagesOp = defineOperation({
   name: "pages.list",
   // P6.7.3 — AI lists pages from add_module_to_template to fan a new
   // module out to every page sharing a template. Read-only.
-  actorScope: ["human", "ai", "system"],
+  // #396 — plugin actors read too: deep plugins (international-site's
+  // status matrix) plan against the same list surface (§11: list ops
+  // are open reads).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({
     includeDeleted: z.boolean().default(false),
@@ -1791,7 +1794,10 @@ export const deletePageOp = defineOperation({
  */
 export const duplicatePageOp = defineOperation({
   name: "pages.duplicate",
-  actorScope: ["human", "ai", "system"],
+  // #396 — plugin actors duplicate too: international-site's
+  // create_variant mints the counterpart page through this op (epic
+  // #380 decision 3 — release-signed plugins hold cms_admin writes).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z
     .object({

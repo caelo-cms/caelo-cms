@@ -63,6 +63,7 @@ import {
   deleteContentInstancesManyOp,
   setContentInstanceValuesManyOp,
 } from "./ops/content/content-instances-bulk.js";
+import { refreshCurrentPathOp } from "./ops/content/current-path.js";
 import { setHomePageOp } from "./ops/content/home-page.js";
 import {
   executeLayoutProposalOp,
@@ -536,6 +537,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(buildPageOp);
   // 0184 — explicit homepage designation (site_defaults.home_page_id).
   registry.register(setHomePageOp);
+  registry.register(refreshCurrentPathOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(proposeUninstallPluginOp);
