@@ -454,7 +454,7 @@ async function publishedVariantMatrix(
     const published: PublishedVariant[] = [];
     for (const v of group) {
       const page = pageById.get(v.page_id);
-      if (!page || page.status !== "published") continue;
+      if (page?.status !== "published") continue;
       const locale = localeCache.get(v.locale_code);
       if (!locale) {
         throw new Error(
@@ -1147,6 +1147,79 @@ export default definePlugin<PluginContextTier1>({
   },
   contributes: ["head", "sitemap"],
   contributionsOperation: "head_contributions",
+  /**
+   * #399 — companion skills (CLAUDE.md §2: skills are the official way
+   * to teach AI behaviour; no prompt scaffolding in tool handlers).
+   * Registered at awaiting_activation; the Owner's site-wide click and
+   * per-chat engagement follow the standard two-level model.
+   */
+  skills: [
+    {
+      slug: "translate-page",
+      displayName: "Translate a page",
+      description:
+        "How to translate pages between the site's languages: variant groups, the one-call context-aware translation flow, and capturing the operator's terminology corrections.",
+      body: [
+        "You are translating pages on a multilingual Caelo site. The operator speaks in outcomes ('translate the pricing page into German') — never ask them about modules, variants, or groups.",
+        "",
+        "Flow:",
+        "1. Call intl_status FIRST. It answers every 'is X translated / what is missing' question.",
+        "2. If the target-language counterpart does not exist yet: create_variant with a LOCALIZED slug ('preise' for 'pricing', not 'pricing-de'). The draft still carries the source language.",
+        "3. Call translate_variant on the counterpart. It translates the WHOLE page in one context-aware pass — title and every content field — honouring the site glossary and style guide. Never translate field-by-field yourself, and never edit shared module HTML to translate it: module code is shared across pages, content lives in per-page values.",
+        "4. The result stays a DRAFT. Summarise what was translated and let the operator review before publishing.",
+        "5. When intl_status shows stale variants (source pages changed after translation), prefer ONE translate_all_stale call over repeated translate_variant calls.",
+        "",
+        "When the operator corrects a translated word ('we say Kasse, not Checkout') or names brand terms, persist it with set_glossary_term so every future translation uses it. Tone preferences ('use informal du') go to set_style_guide. Apply the correction to already-translated pages by re-running translate_variant afterwards.",
+      ].join("\n"),
+      autoEngagementHints: {
+        keywords: ["translate", "translation", "übersetze", "übersetzen", "language", "sprache"],
+      },
+    },
+    {
+      slug: "add-language",
+      displayName: "Add a language to the site",
+      description:
+        "How to introduce a new locale end-to-end: the approval-gated locale registry, the separately approved URL migration, and seeding translated variants.",
+      body: [
+        "You are adding a language to a Caelo site. This is a TWO-APPROVAL flow — never claim a step is applied before the operator clicked.",
+        "",
+        "1. Call intl_status to see the current registry.",
+        "2. Call set_locales with the FULL desired list (existing locales + the new one; exactly one isDefault). The turn pauses for the Owner's in-chat Approve. Pick the URL strategy from what the operator wants: subdirectory (/de/...) is the safe default; subdomain/domain need urlHost.",
+        "3. If existing pages' URLs are affected by the change, call propose_url_migration next — it previews the URL fan-out and the 301 redirects, and the Owner approves it SEPARATELY.",
+        "4. Seed the language: for each core page the operator cares about, create_variant with a localized slug, then translate_variant. Do not mass-create variants for every page unprompted — ask which pages matter, or start with the pages the operator named.",
+        "5. hreflang links and sitemap alternates appear automatically once variants are PUBLISHED (drafts are invisible to search engines by design — a missing translation is a clean 404, never a fallback).",
+        "6. To offer visitors a language switcher, place the international-site plugin placeholder in a suitable chrome module — it renders as static HTML at deploy.",
+      ].join("\n"),
+      autoEngagementHints: {
+        keywords: [
+          "add language",
+          "new language",
+          "neue sprache",
+          "locale",
+          "multilingual",
+          "mehrsprachig",
+          "international",
+        ],
+      },
+    },
+    {
+      slug: "localize-slugs",
+      displayName: "Localize page URLs",
+      description:
+        "How to give translated pages native-language URLs: slugs are freely localizable because variant linkage is by group, never derived from the slug.",
+      body: [
+        "You are localizing page URLs on a multilingual Caelo site. Linkage between language counterparts is an explicit group — NEVER derived from matching slugs — so every variant's slug can (and should) be in its own language.",
+        "",
+        "1. Call intl_status. Variants whose slug still matches the source language ('/de/pricing' instead of '/de/preise') are the work list.",
+        "2. For each, change the slug with the standard page-slug tool. The 301 redirect from the old path is created automatically, and the variant group linkage is untouched by slug changes.",
+        "3. Translate the slug meaningfully — a native speaker's word, lowercase, dash-separated. Reuse the glossary's terminology where it applies.",
+        "4. Do NOT rename the source page's slug as part of this task, and do not unlink/relink variants to 'fix' URLs — the group is already correct.",
+      ].join("\n"),
+      autoEngagementHints: {
+        keywords: ["slug", "localize url", "url übersetzen", "localized urls", "pretty urls"],
+      },
+    },
+  ],
   urlAnnotationsOperation: "url_annotations",
   urlContributions: [
     {
