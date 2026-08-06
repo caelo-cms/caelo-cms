@@ -97,11 +97,30 @@ export function validateManifest(rawManifest: unknown): {
   }
   const m = parsed.data;
 
+  // #389 — `ref:` FK columns are an adminSchema-only vocabulary:
+  // cms_public tables cannot FK across databases into cms_admin.
+  for (const [table, cols] of Object.entries(m.schema)) {
+    for (const [col, spec] of Object.entries(cols)) {
+      if (typeof spec === "string" && spec.startsWith("ref:")) {
+        failures.push({
+          kind: "schema-shape",
+          hint: `schema.${table}.${col}: \`ref:\` columns are only valid in \`adminSchema\` (cms_public cannot FK into cms_admin). Store the id as a plain \`uuid\` column instead.`,
+        });
+      }
+    }
+  }
+
   // #388 — every capability is enforced, starting at the manifest:
   // declaring tools[] / workers[] without holding the matching
   // capability is a validation failure, not a silently-honoured extra.
   if (m.tier === 1) {
     const caps = new Set(m.requestedCapabilities ?? []);
+    if (m.adminSchema && Object.keys(m.adminSchema).length > 0 && !caps.has("cms_admin_schema")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `adminSchema` but does not request the `cms_admin_schema` capability. Add it to `requestedCapabilities` (or drop the adminSchema).",
+      });
+    }
     if (m.tools && m.tools.length > 0 && !caps.has("chat_runner_tools")) {
       failures.push({
         kind: "manifest-cap-missing",
@@ -117,8 +136,15 @@ export function validateManifest(rawManifest: unknown): {
   }
 
   // Tier 2 (runtime-authored) cannot reach over the grantability
-  // ceiling: no capabilities, no workers, no chat tools.
+  // ceiling: no capabilities, no workers, no chat tools, no cms_admin
+  // schema.
   if (m.tier === 2) {
+    if (m.adminSchema && Object.keys(m.adminSchema).length > 0) {
+      failures.push({
+        kind: "manifest-tier2-cap-leak",
+        hint: "Runtime-authored plugins cannot declare `adminSchema` — a plugin-owned cms_admin schema is release-signed only (#389).",
+      });
+    }
     if (m.requestedCapabilities && m.requestedCapabilities.length > 0) {
       failures.push({
         kind: "manifest-tier2-cap-leak",

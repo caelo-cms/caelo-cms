@@ -23,6 +23,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
+  adminSchemaFromSpec,
   generateManifestKeyPair,
   schemaFromSpec,
   signManifest,
@@ -527,6 +528,21 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
   if (Object.keys(def.schema).length > 0) {
     const emitted = schemaFromSpec({ pluginId, slug: def.slug, schema: def.schema });
     await opts.infra.adapter.provisionPluginPublicSchema({ pluginId, sql: emitted.sql });
+  }
+
+  // #389 — provision the plugin's OWN cms_admin schema (release-signed
+  // only; the validator rejects runtime-authored adminSchema and
+  // requires the cms_admin_schema capability). ADD COLUMN IF NOT EXISTS
+  // in the emitted DDL makes a version bump with new columns an
+  // additive evolution; destructive changes are drop-and-recreate
+  // (pre-1.0, #393 uninstall drops the schema).
+  if (def.adminSchema && Object.keys(def.adminSchema).length > 0) {
+    const emitted = adminSchemaFromSpec({
+      pluginId,
+      slug: def.slug,
+      adminSchema: def.adminSchema,
+    });
+    await opts.infra.adapter.provisionPluginAdminSchema({ pluginId, sql: emitted.sql });
   }
 
   const lp: LoadedPlugin = {

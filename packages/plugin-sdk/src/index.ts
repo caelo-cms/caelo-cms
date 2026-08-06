@@ -47,15 +47,22 @@ export const pluginColumnType = z.enum([
 export type PluginColumnType = z.infer<typeof pluginColumnType>;
 
 /**
- * Per-column declaration. Either a primitive type or an enum:value,value.
- * The validator parses the leading `enum:` prefix; everything else must
- * match `pluginColumnType`.
+ * Per-column declaration. A primitive type, an enum:value,value, or —
+ * in `adminSchema` ONLY (#389) — a foreign key onto an allowlisted core
+ * table: `ref:<table>` / `ref:<table>:cascade` (uuid REFERENCES
+ * <table>(id), ON DELETE CASCADE with the suffix). The validator rejects
+ * `ref:` columns in the cms_public `schema` (cross-database FKs are
+ * impossible) and outside the allowlist.
  */
 export const pluginColumnSpec = z
   .string()
-  .refine((v) => v.startsWith("enum:") || pluginColumnType.safeParse(v).success, {
-    message: "must be one of uuid|string|text|int|bool|timestamp|jsonb or enum:a,b,c",
-  });
+  .refine(
+    (v) => v.startsWith("enum:") || v.startsWith("ref:") || pluginColumnType.safeParse(v).success,
+    {
+      message:
+        "must be one of uuid|string|text|int|bool|timestamp|jsonb, enum:a,b,c, or ref:<core-table>[:cascade]",
+    },
+  );
 
 /** Per-table column map. */
 export const pluginTableSchema = z.record(z.string(), pluginColumnSpec);
@@ -74,6 +81,7 @@ export type PluginSchemaMap = z.infer<typeof pluginSchemaMap>;
  *  ceiling. */
 export const pluginCapability = z.enum([
   "cms_admin",
+  "cms_admin_schema",
   "ai_provider",
   "snapshots",
   "chat_runner_tools",
@@ -158,6 +166,12 @@ export const pluginManifest = z
       .regex(/^\d+\.\d+\.\d+(-[a-z0-9.]+)?$/, "must be semver"),
     tier: z.union([z.literal(1), z.literal(2)]),
     schema: pluginSchemaMap,
+    /** #389 — release-signed only: the plugin's own authoring-DB schema,
+     *  provisioned as `plugin_<slug>` in cms_admin (FORCE RLS, scoped to
+     *  the plugin's id). Same declarative table spec as `schema`; `ref:`
+     *  columns may FK onto allowlisted core tables. Requires the
+     *  `cms_admin_schema` capability. */
+    adminSchema: pluginSchemaMap.optional(),
     /** Operation names. Bodies live in source — the manifest just lists names. */
     operations: z.array(z.string().min(1).max(120)).min(1),
     component: pluginComponent.optional(),
@@ -214,6 +228,18 @@ export interface PluginQuery {
   ): Promise<void>;
   delete<TableName extends string>(table: TableName, id: string): Promise<void>;
 }
+
+/**
+ * #389 — typed access to the plugin's OWN cms_admin schema
+ * (`plugin_<slug>`), masked by the `cms_admin_schema` capability.
+ * Identical surface to `PluginQuery`; the host routes it through the
+ * admin pool with the plugin's actor + plugin id session vars so the
+ * per-plugin RLS policy scopes every row. Direct writes to core tables
+ * stay impossible — this handle only reaches tables the plugin declared
+ * in `adminSchema` (FKs to core tables are declared as `ref:` columns,
+ * enforced by Postgres, never written through this handle).
+ */
+export interface PluginAdminQuery extends PluginQuery {}
 
 /** Public-facing API client (cms_public role; rate-limited at the gateway). */
 export interface PluginApi {
@@ -324,6 +350,8 @@ export interface PluginContext {
  *  ONLY constructs the handles a plugin's `requestedCapabilities`
  *  asked for; unrequested fields are absent. */
 export interface PluginContextTier1 extends PluginContext {
+  /** #389 — attached when the manifest holds `cms_admin_schema`. */
+  readonly adminQuery?: PluginAdminQuery;
   readonly cms?: PluginCms;
   readonly ai?: PluginAi;
   readonly snapshots?: PluginSnapshots;
@@ -360,6 +388,8 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly version: string;
   readonly tier: 1 | 2;
   readonly schema: PluginSchemaMap;
+  /** #389 — see `pluginManifest.adminSchema`. */
+  readonly adminSchema?: PluginSchemaMap;
   readonly operations: Readonly<Record<string, PluginOperation<C>>>;
   readonly component?: PluginComponent & {
     readonly mounted?: (host: HTMLElement, ctx: PluginFrontendContext) => Promise<void> | void;
@@ -428,6 +458,7 @@ export function manifestFromDefinition(def: {
   readonly version: string;
   readonly tier: 1 | 2;
   readonly schema: PluginSchemaMap;
+  readonly adminSchema?: PluginSchemaMap;
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
   readonly staticRender?: unknown;
@@ -440,6 +471,7 @@ export function manifestFromDefinition(def: {
     version: def.version,
     tier: def.tier,
     schema: def.schema,
+    ...(def.adminSchema ? { adminSchema: def.adminSchema } : {}),
     operations: Object.keys(def.operations),
     component: def.component
       ? { tag: def.component.tag, shadowMode: def.component.shadowMode ?? "open" }

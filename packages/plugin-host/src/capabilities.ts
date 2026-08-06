@@ -16,6 +16,7 @@
  */
 
 import type {
+  PluginAdminQuery,
   PluginAi,
   PluginCapability,
   PluginCaptcha,
@@ -88,6 +89,9 @@ export async function makePluginContext(
   if (requested.has("cms_admin")) {
     tier1.cms = makePluginCms(plugin, infra);
   }
+  if (requested.has("cms_admin_schema")) {
+    tier1.adminQuery = makePluginAdminQuery(plugin, infra);
+  }
   if (requested.has("ai_provider") && infra.aiProvider) {
     tier1.ai = makePluginAi(plugin, infra);
   }
@@ -119,8 +123,11 @@ function pluginSchemaName(slug: string): string {
   return `plugin_${slug.replace(/-/g, "_")}`;
 }
 
-function declaredColumnsOf(plugin: LoadedPlugin, table: string): Set<string> | null {
-  const tableSpec = plugin.definition.schema[table];
+function declaredColumnsIn(
+  schemaMap: Readonly<Record<string, Readonly<Record<string, string>>>>,
+  table: string,
+): Set<string> | null {
+  const tableSpec = schemaMap[table];
   if (!tableSpec) return null;
   return new Set(Object.keys(tableSpec));
 }
@@ -141,7 +148,20 @@ function assertUuid(value: string, label: string): void {
   }
 }
 
-function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQuery {
+interface QueryScope {
+  /** Error-message prefix — "ctx.query" | "ctx.adminQuery". */
+  readonly label: string;
+  /** Which manifest map declares the reachable tables. */
+  readonly schemaLabel: "schema" | "adminSchema";
+  readonly schemaMap: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  readonly pool: "public" | "admin";
+}
+
+function makeScopedQuery(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  scope: QueryScope,
+): PluginQuery {
   const schemaName = pluginSchemaName(plugin.slug);
   validateIdent(schemaName, "schema");
   // P12 review-pass #1 — UUIDs are validated at construction time so we
@@ -154,7 +174,8 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
   async function withPluginTx<T>(
     fn: (tx: Parameters<Parameters<typeof infra.adapter.public.transaction>[0]>[0]) => Promise<T>,
   ): Promise<T> {
-    return infra.adapter.public.transaction(async (tx) => {
+    const pool = scope.pool === "admin" ? infra.adapter.admin : infra.adapter.public;
+    return pool.transaction(async (tx) => {
       // P12 review-pass #1 — set_config takes parameterised values; the
       // SETTING NAME is a literal (Postgres doesn't parameterise it).
       // Guards above make sure the *values* are UUIDs, and `set_config`'s
@@ -170,10 +191,10 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
     insert: async (table, data) => {
       const tableStr = table as string;
       validateIdent(tableStr, "table");
-      const declared = declaredColumnsOf(plugin, tableStr);
+      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
       if (!declared) {
         throw new Error(
-          `ctx.query.insert: table "${tableStr}" not declared in plugin "${plugin.slug}".schema`,
+          `${scope.label}.insert: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
         );
       }
       const cols: string[] = [];
@@ -181,7 +202,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
       for (const [k, v] of Object.entries(data)) {
         if (!declared.has(k)) {
           throw new Error(
-            `ctx.query.insert: column "${k}" not declared in plugin "${plugin.slug}".schema.${tableStr}`,
+            `${scope.label}.insert: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${tableStr}`,
           );
         }
         validateIdent(k, "column");
@@ -189,7 +210,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
         valueFragments.push(sql`${v}`);
       }
       if (cols.length === 0) {
-        throw new Error("ctx.query.insert: data must include at least one declared column");
+        throw new Error("${scope.label}.insert: data must include at least one declared column");
       }
       const colsSql = sql.raw(cols.join(", "));
       const valuesSql = sql.join(valueFragments, sql`, `);
@@ -199,7 +220,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
           sql`INSERT INTO ${fqTable} (${colsSql}) VALUES (${valuesSql}) RETURNING id::text AS id`,
         )) as unknown as { id: string }[];
         const id = rows[0]?.id;
-        if (!id) throw new Error("ctx.query.insert: no id returned");
+        if (!id) throw new Error("${scope.label}.insert: no id returned");
         return { id };
       });
     },
@@ -209,10 +230,10 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
       filter?: PluginQueryFilter,
     ): Promise<T[]> => {
       validateIdent(table, "table");
-      const declared = declaredColumnsOf(plugin, table);
+      const declared = declaredColumnsIn(scope.schemaMap, table);
       if (!declared) {
         throw new Error(
-          `ctx.query.list: table "${table}" not declared in plugin "${plugin.slug}".schema`,
+          `${scope.label}.list: table "${table}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
         );
       }
       const wheres: ReturnType<typeof sql>[] = [];
@@ -223,15 +244,15 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
       for (const [k, v] of Object.entries(filter ?? {})) {
         if (k === "limit") {
           if (typeof v !== "number" || v <= 0 || v > 1000) {
-            throw new Error("ctx.query.list: limit must be 1..1000");
+            throw new Error("${scope.label}.list: limit must be 1..1000");
           }
           limit = v;
           continue;
         }
         if (k === "orderBy") {
-          if (typeof v !== "string") throw new Error("ctx.query.list: orderBy must be string");
+          if (typeof v !== "string") throw new Error("${scope.label}.list: orderBy must be string");
           if (!declared.has(v)) {
-            throw new Error(`ctx.query.list: orderBy "${v}" not declared in schema`);
+            throw new Error(`${scope.label}.list: orderBy "${v}" not declared in schema`);
           }
           validateIdent(v, "column");
           orderBy = v;
@@ -239,19 +260,19 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
         }
         if (k === "orderDir") {
           if (v !== "asc" && v !== "desc")
-            throw new Error("ctx.query.list: orderDir must be asc|desc");
+            throw new Error("${scope.label}.list: orderDir must be asc|desc");
           orderDir = v;
           continue;
         }
         if (k === "since") {
           if (typeof v !== "string")
-            throw new Error("ctx.query.list: since must be ISO timestamp string");
+            throw new Error("${scope.label}.list: since must be ISO timestamp string");
           since = v;
           continue;
         }
         if (!declared.has(k)) {
           throw new Error(
-            `ctx.query.list: column "${k}" not declared in plugin "${plugin.slug}".schema.${table}`,
+            `${scope.label}.list: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${table}`,
           );
         }
         validateIdent(k, "column");
@@ -260,7 +281,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
       }
       if (since !== null) {
         if (!declared.has("created_at")) {
-          throw new Error("ctx.query.list: `since` requires a created_at column");
+          throw new Error("${scope.label}.list: `since` requires a created_at column");
         }
         wheres.push(sql`"created_at" > ${since}`);
       }
@@ -282,10 +303,10 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
     update: async (table, id, patch) => {
       const tableStr = table as string;
       validateIdent(tableStr, "table");
-      const declared = declaredColumnsOf(plugin, tableStr);
+      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
       if (!declared) {
         throw new Error(
-          `ctx.query.update: table "${tableStr}" not declared in plugin "${plugin.slug}".schema`,
+          `${scope.label}.update: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
         );
       }
       const sets: ReturnType<typeof sql>[] = [];
@@ -293,7 +314,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
         if (k === "id") continue; // never update id
         if (!declared.has(k)) {
           throw new Error(
-            `ctx.query.update: column "${k}" not declared in plugin "${plugin.slug}".schema.${tableStr}`,
+            `${scope.label}.update: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${tableStr}`,
           );
         }
         validateIdent(k, "column");
@@ -301,7 +322,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
         sets.push(sql`${colSql} = ${v}`);
       }
       if (sets.length === 0) {
-        throw new Error("ctx.query.update: patch must include at least one declared column");
+        throw new Error("${scope.label}.update: patch must include at least one declared column");
       }
       const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
       const setsSql = sql.join(sets, sql`, `);
@@ -313,10 +334,10 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
     delete: async (table, id) => {
       const tableStr = table as string;
       validateIdent(tableStr, "table");
-      const declared = declaredColumnsOf(plugin, tableStr);
+      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
       if (!declared) {
         throw new Error(
-          `ctx.query.delete: table "${tableStr}" not declared in plugin "${plugin.slug}".schema`,
+          `${scope.label}.delete: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
         );
       }
       const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
@@ -325,6 +346,31 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
       });
     },
   };
+}
+
+function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQuery {
+  return makeScopedQuery(plugin, infra, {
+    label: "ctx.query",
+    schemaLabel: "schema",
+    schemaMap: plugin.definition.schema,
+    pool: "public",
+  });
+}
+
+/**
+ * #389 — the plugin's OWN cms_admin schema handle. Identical surface to
+ * ctx.query, routed through the ADMIN pool with the same per-plugin
+ * session vars, reaching only tables declared in `adminSchema` (their
+ * RLS policies scope rows to this plugin's id). Attached by
+ * makePluginContext only when the manifest holds `cms_admin_schema`.
+ */
+function makePluginAdminQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginAdminQuery {
+  return makeScopedQuery(plugin, infra, {
+    label: "ctx.adminQuery",
+    schemaLabel: "adminSchema",
+    schemaMap: plugin.definition.adminSchema ?? {},
+    pool: "admin",
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -24,7 +24,12 @@ export {
   verifyManifestSignature,
 } from "./manifest.js";
 
-export { type EmittedSchema, schemaFromSpec } from "./schema.js";
+export {
+  ADMIN_REF_ALLOWLIST,
+  adminSchemaFromSpec,
+  type EmittedSchema,
+  schemaFromSpec,
+} from "./schema.js";
 export {
   type ValidationFailure,
   type ValidationFailureKind,
