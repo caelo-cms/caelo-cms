@@ -23,7 +23,9 @@ import type {
   PluginCms,
   PluginContext,
   PluginContextTier1,
+  PluginDomainEvent,
   PluginEmail,
+  PluginEvents,
   PluginQuery,
   PluginQueryFilter,
   PluginSnapshots,
@@ -91,6 +93,9 @@ export async function makePluginContext(
   }
   if (requested.has("cms_admin_schema")) {
     tier1.adminQuery = makePluginAdminQuery(plugin, infra);
+  }
+  if (requested.has("domain_events")) {
+    tier1.events = makePluginEvents(plugin, infra);
   }
   if (requested.has("ai_provider") && infra.aiProvider) {
     tier1.ai = makePluginAi(plugin, infra);
@@ -371,6 +376,106 @@ function makePluginAdminQuery(plugin: LoadedPlugin, infra: PluginHostInfra): Plu
     schemaMap: plugin.definition.adminSchema ?? {},
     pool: "admin",
   });
+}
+
+// ---------------------------------------------------------------------------
+// PluginEvents (#392) — polling access to the domain-event outbox with
+// per-plugin cursor persistence. Runs on the ADMIN pool under the
+// plugin's session vars; the outbox RLS policy admits actor_kind
+// 'plugin' for SELECT and the cursor table is scoped to caelo.plugin_id.
+// At-least-once: poll() reads past the cursor, commit() advances it.
+// ---------------------------------------------------------------------------
+
+const EVENT_KINDS = new Set([
+  "page.created",
+  "page.updated",
+  "page.deleted",
+  "page.published",
+  "module.updated",
+]);
+
+function makePluginEvents(plugin: LoadedPlugin, infra: PluginHostInfra): PluginEvents {
+  assertUuid(plugin.pluginActorId, "caelo.actor_id");
+  assertUuid(plugin.pluginId, "caelo.plugin_id");
+
+  async function withPluginAdminTx<T>(
+    fn: (tx: Parameters<Parameters<typeof infra.adapter.admin.transaction>[0]>[0]) => Promise<T>,
+  ): Promise<T> {
+    return infra.adapter.admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('caelo.actor_kind', 'plugin', true)`);
+      await tx.execute(sql`SELECT set_config('caelo.actor_id', ${plugin.pluginActorId}, true)`);
+      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${plugin.pluginId}, true)`);
+      return fn(tx);
+    });
+  }
+
+  return {
+    poll: async (opts) => {
+      const limit = opts?.limit ?? 100;
+      if (limit <= 0 || limit > 1000) {
+        throw new Error("ctx.events.poll: limit must be 1..1000");
+      }
+      const kinds = opts?.kinds ?? [];
+      for (const k of kinds) {
+        if (!EVENT_KINDS.has(k)) throw new Error(`ctx.events.poll: unknown kind "${k}"`);
+      }
+      return withPluginAdminTx(async (tx) => {
+        let cursor = opts?.cursor;
+        if (cursor === undefined) {
+          const rows = (await tx.execute(sql`
+            SELECT cursor_id::text AS cursor_id FROM plugin_event_cursors
+            WHERE plugin_id = ${plugin.pluginId}::uuid
+          `)) as unknown as { cursor_id: string }[];
+          cursor = rows[0] ? Number(rows[0].cursor_id) : 0;
+        }
+        const kindFilter =
+          kinds.length > 0
+            ? sql`AND kind IN (${sql.join(
+                kinds.map((k) => sql`${k}`),
+                sql`, `,
+              )})`
+            : sql``;
+        const events = (await tx.execute(sql`
+          SELECT id::text AS id, kind, entity_id::text AS entity_id,
+                 payload, created_at::text AS created_at
+          FROM domain_events
+          WHERE id > ${cursor} ${kindFilter}
+          ORDER BY id ASC
+          LIMIT ${limit}
+        `)) as unknown as {
+          id: string;
+          kind: string;
+          entity_id: string;
+          payload: Record<string, unknown>;
+          created_at: string;
+        }[];
+        const mapped: PluginDomainEvent[] = events.map((e) => ({
+          id: Number(e.id),
+          kind: e.kind as PluginDomainEvent["kind"],
+          entityId: e.entity_id,
+          payload: e.payload ?? {},
+          createdAt: e.created_at,
+        }));
+        const nextCursor = mapped.length > 0 ? (mapped.at(-1)?.id ?? cursor) : cursor;
+        return { events: mapped, nextCursor };
+      });
+    },
+
+    commit: async (cursor) => {
+      if (!Number.isInteger(cursor) || cursor < 0) {
+        throw new Error("ctx.events.commit: cursor must be a non-negative integer");
+      }
+      await withPluginAdminTx(async (tx) => {
+        await tx.execute(sql`
+          INSERT INTO plugin_event_cursors (plugin_id, cursor_id, updated_at)
+          VALUES (${plugin.pluginId}::uuid, ${cursor}, now())
+          ON CONFLICT (plugin_id) DO UPDATE SET
+            cursor_id = GREATEST(plugin_event_cursors.cursor_id, EXCLUDED.cursor_id),
+            updated_at = now()
+        `);
+      });
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

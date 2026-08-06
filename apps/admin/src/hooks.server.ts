@@ -26,6 +26,7 @@ import {
   getActiveProvider,
   getMediaStorage,
   startChatImageGcWorker,
+  startDomainEventGcWorker,
   startProposalGcWorker,
   startReleaseCheckWorker,
 } from "@caelo-cms/admin-core";
@@ -295,6 +296,11 @@ function bootstrapReleaseCheck(): void {
 // days → 'superseded' once per day across all *_pending_actions
 // tables. Keeps the bell badge meaningful.
 let proposalGcBootstrapped = false;
+function bootstrapDomainEventGc(): void {
+  const { adapter } = getQueryContext();
+  startDomainEventGcWorker({ adapter });
+}
+
 function bootstrapProposalGc(): void {
   if (proposalGcBootstrapped) return;
   proposalGcBootstrapped = true;
@@ -361,6 +367,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapProposalGc();
   bootstrapChatImageGc();
   bootstrapMcpBridge();
+  bootstrapDomainEventGc();
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   const { adapter, registry } = getQueryContext();

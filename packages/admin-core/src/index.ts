@@ -59,6 +59,13 @@ export {
   sweepChatImagesOnce,
 } from "./chat-image-gc-worker.js";
 export * from "./csrf.js";
+// P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
+export {
+  _domainEventGcOnceForTests,
+  startDomainEventGcWorker,
+  stopDomainEventGcWorker,
+} from "./domain-event-gc-worker.js";
+export { type DomainEventInput, type DomainEventKind, emitDomainEvent } from "./domain-events.js";
 export {
   type DeliverResetEmailArgs,
   deliverPasswordResetEmail,
@@ -97,6 +104,5 @@ export {
   generateKekHex,
   kekFingerprint,
 } from "./security/secret-box.js";
-// P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
 export { emitSnapshot } from "./snapshots/emit.js";
 export * from "./tokens.js";

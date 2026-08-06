@@ -86,6 +86,7 @@ export const pluginCapability = z.enum([
   "snapshots",
   "chat_runner_tools",
   "background_workers",
+  "domain_events",
   "email",
 ]);
 
@@ -241,6 +242,46 @@ export interface PluginQuery {
  */
 export interface PluginAdminQuery extends PluginQuery {}
 
+/**
+ * #392 — one row from the transactional domain-event outbox. Events are
+ * ephemeral SIGNALS ("this page changed"), not state: the consumer
+ * re-reads current state through its normal handles; snapshots remain
+ * the durable history.
+ */
+export interface PluginDomainEvent {
+  readonly id: number;
+  readonly kind:
+    | "page.created"
+    | "page.updated"
+    | "page.deleted"
+    | "page.published"
+    | "module.updated";
+  readonly entityId: string;
+  /** Emitter-supplied context (slug at event time; `chatBranchId` when
+   *  the write was branch-scoped — absent means a live write). */
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
+}
+
+/**
+ * #392 — polling access to the domain-event outbox, masked by the
+ * release-signed-only `domain_events` capability. Deliberately NOT an
+ * in-process event bus: workers poll on their existing cron schedule.
+ *
+ * Cursor contract: `poll()` without an explicit cursor resumes from the
+ * plugin's persisted position; `commit(cursor)` advances it AFTER the
+ * worker has fully processed a batch (at-least-once semantics — a crash
+ * between poll and commit re-delivers).
+ */
+export interface PluginEvents {
+  poll(opts?: {
+    readonly cursor?: number;
+    readonly kinds?: ReadonlyArray<PluginDomainEvent["kind"]>;
+    readonly limit?: number;
+  }): Promise<{ events: PluginDomainEvent[]; nextCursor: number }>;
+  commit(cursor: number): Promise<void>;
+}
+
 /** Public-facing API client (cms_public role; rate-limited at the gateway). */
 export interface PluginApi {
   list<T = unknown>(args: object): Promise<T[]>;
@@ -352,6 +393,8 @@ export interface PluginContext {
 export interface PluginContextTier1 extends PluginContext {
   /** #389 — attached when the manifest holds `cms_admin_schema`. */
   readonly adminQuery?: PluginAdminQuery;
+  /** #392 — attached when the manifest holds `domain_events`. */
+  readonly events?: PluginEvents;
   readonly cms?: PluginCms;
   readonly ai?: PluginAi;
   readonly snapshots?: PluginSnapshots;

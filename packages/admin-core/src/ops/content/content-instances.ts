@@ -39,6 +39,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
+import { emitDomainEvent } from "../../domain-events.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -910,6 +911,26 @@ export const setContentInstanceValuesOp = defineOperation({
       });
     }
 
+    // #392 — a value edit on a (possibly shared) instance is a content
+    // change on EVERY page bound to it. One page.updated per bound page,
+    // in this same tx, so staleness workers see the real blast radius —
+    // exactly the case the deleted content-hash hooks never covered.
+    const boundPages = (await tx.execute(sql`
+      SELECT DISTINCT page_id::text AS page_id
+      FROM page_modules
+      WHERE content_instance_id = ${input.id}::uuid
+    `)) as unknown as { page_id: string }[];
+    for (const bp of boundPages) {
+      await emitDomainEvent(tx, {
+        kind: "page.updated",
+        entityId: bp.page_id,
+        payload: {
+          contentInstanceId: input.id,
+          ...(branchId ? { chatBranchId: branchId } : {}),
+        },
+      });
+    }
+
     return ok({ placementCount, version: nextVersion });
   },
 });
@@ -1206,6 +1227,11 @@ export const setPlacementContentOp = defineOperation({
       chatTaskId: ctx.chatTaskId ?? null,
       chatBranchId: null,
       entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
+    });
+    await emitDomainEvent(tx, {
+      kind: "page.updated",
+      entityId: input.pageId,
+      payload: { blockName: input.blockName },
     });
 
     return ok({ contentInstanceId: input.contentInstanceId });

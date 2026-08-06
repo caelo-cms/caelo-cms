@@ -30,7 +30,7 @@ function makeLoaded(overrides: Partial<LoadedPlugin>): LoadedPlugin {
     schema: {},
     operations: { noop: async () => ({}) },
     // The over-reach under test: every elevated capability requested.
-    requestedCapabilities: ["cms_admin", "ai_provider", "snapshots", "email"],
+    requestedCapabilities: ["cms_admin", "ai_provider", "snapshots", "email", "domain_events"],
   } as unknown as PluginDefinition<PluginContextTier1>;
   return {
     pluginId: "11111111-1111-4111-8111-111111111111",
@@ -54,6 +54,7 @@ describe("#388 — provenance grantability ceiling at the capability factory", (
     expect(ctx.ai).toBeDefined();
     expect(ctx.snapshots).toBeDefined();
     expect(ctx.email).toBeDefined();
+    expect(ctx.events).toBeDefined();
   });
 
   it("runtime-authored: the SAME definition gets the sandbox base only", async () => {
@@ -67,6 +68,7 @@ describe("#388 — provenance grantability ceiling at the capability factory", (
     expect(ctx.ai).toBeUndefined();
     expect(ctx.snapshots).toBeUndefined();
     expect(ctx.email).toBeUndefined();
+    expect(ctx.events).toBeUndefined();
   });
 
   it("runtime-authored provenance wins even when tier says 1 (defense in depth)", async () => {

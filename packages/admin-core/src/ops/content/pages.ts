@@ -23,6 +23,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
+import { emitDomainEvent } from "../../domain-events.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -785,6 +786,14 @@ export const createPageOp = defineOperation({
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: pageId, state }],
       });
+      await emitDomainEvent(tx, {
+        kind: "page.created",
+        entityId: pageId,
+        payload: {
+          slug: input.slug,
+          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+        },
+      });
     }
     return ok({ pageId });
   },
@@ -1083,6 +1092,14 @@ export const updatePageOp = defineOperation({
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: input.pageId, state }],
       });
+      await emitDomainEvent(tx, {
+        kind: "page.updated",
+        entityId: input.pageId,
+        payload: {
+          slug: state.slug,
+          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+        },
+      });
     }
     return ok({});
   },
@@ -1185,6 +1202,15 @@ export const setPageStatusOp = defineOperation({
       entityId: input.pageId,
     });
 
+    await emitDomainEvent(tx, {
+      kind: input.status === "published" ? "page.published" : "page.updated",
+      entityId: input.pageId,
+      payload: {
+        status: input.status,
+        ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+      },
+    });
+
     return ok({});
   },
 });
@@ -1266,6 +1292,17 @@ export const setPagesStatusManyOp = defineOperation({
       succeeded: true,
       resultSummary: `updated=${updated.length}`,
     });
+
+    for (const row of updated) {
+      await emitDomainEvent(tx, {
+        kind: input.status === "published" ? "page.published" : "page.updated",
+        entityId: (row as { id: string }).id,
+        payload: {
+          status: input.status,
+          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+        },
+      });
+    }
 
     return ok({ updatedCount: updated.length });
   },
@@ -1552,6 +1589,11 @@ export const setPageModulesOp = defineOperation({
       chatBranchId: ctx.chatBranchId ?? null,
       entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
     });
+    await emitDomainEvent(tx, {
+      kind: "page.updated",
+      entityId: input.pageId,
+      payload: ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {},
+    });
     return ok({});
   },
 });
@@ -1677,6 +1719,14 @@ export const deletePageOp = defineOperation({
         chatTaskId: ctx.chatTaskId ?? null,
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: input.pageId, state }],
+      });
+      await emitDomainEvent(tx, {
+        kind: "page.deleted",
+        entityId: input.pageId,
+        payload: {
+          slug: state.slug,
+          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+        },
       });
     }
     // Dead-URL redirect, on this tx. `state` carries the page's slug
@@ -1919,6 +1969,11 @@ export const duplicatePageOp = defineOperation({
         description: `pages.duplicate from=${source.slug} to=${input.newSlug}`,
         entities: [{ kind: "page", entityId: newPageId, state }],
       });
+      await emitDomainEvent(tx, {
+        kind: "page.created",
+        entityId: newPageId,
+        payload: { slug: input.newSlug, duplicatedFrom: input.sourcePageId },
+      });
     }
     const layoutState = await loadPageLayoutState(tx, newPageId);
     await emitSnapshot(tx, {
@@ -2099,6 +2154,11 @@ export const changeTemplateOp = defineOperation({
         opKind: "pages.update",
         description: `pages.change_template slug=${pageRow.slug}`,
         entities: [{ kind: "page", entityId: input.pageId, state }],
+      });
+      await emitDomainEvent(tx, {
+        kind: "page.updated",
+        entityId: input.pageId,
+        payload: { slug: pageRow.slug, templateChanged: true },
       });
     }
     const layoutState = await loadPageLayoutState(tx, input.pageId);
