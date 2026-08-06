@@ -60,9 +60,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-
-import { anthropic as anthropicGlobal } from "@ai-sdk/anthropic";
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { anthropic as anthropicGlobal, createAnthropic } from "@ai-sdk/anthropic";
 import { stepCountIs, streamText } from "ai";
 
 import { buildProviderHistory, type HistoryMessage } from "../chat-runner/attachments.js";
@@ -284,7 +282,11 @@ function recordingFetch(rawPath: string): typeof fetch {
           /* best-effort */
         }
       })();
-      return new Response(b, { status: res.status, statusText: res.statusText, headers: res.headers });
+      return new Response(b, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+      });
     }
     return res;
   }) as typeof fetch;
@@ -511,7 +513,13 @@ liveDescribe("LIVE — tool-search deferred result wedge (real Anthropic API)", 
     expect(S.fatal).toBeUndefined();
     expect(S.turnMessages).toBeDefined();
     const history: HistoryMessage[] = [
-      { role: "user", content: USER_MESSAGE, toolCalls: null, toolCallId: null, thinkingBlocks: null },
+      {
+        role: "user",
+        content: USER_MESSAGE,
+        toolCalls: null,
+        toolCallId: null,
+        thinkingBlocks: null,
+      },
       {
         role: "assistant",
         content: "",

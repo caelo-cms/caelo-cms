@@ -150,7 +150,11 @@ describe("runToolLoop — parallel image tool results stay ahead of image messag
       abortSignal: undefined,
       systemChunks: "",
       filteredTools: [
-        { name: "fake_screenshot", description: "returns an image", inputSchema: { type: "object" } },
+        {
+          name: "fake_screenshot",
+          description: "returns an image",
+          inputSchema: { type: "object" },
+        },
       ],
       initialMessages: [{ role: "user", content: "screenshot desktop and mobile" }],
       compactionThresholdTokens: 600_000,

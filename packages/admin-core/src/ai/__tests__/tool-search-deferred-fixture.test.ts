@@ -72,10 +72,12 @@ function readRecording(): WireLine[] {
 
 /** The recorded SSE responses, in request order (turn 1, continuation). */
 function recordedResponses(lines: WireLine[]): string[] {
-  return lines.filter((l) => l.dir === "response" && typeof l.sse === "string").map((l) => {
-    if (!l.sse) throw new Error("recording line lost its SSE");
-    return l.sse;
-  });
+  return lines
+    .filter((l) => l.dir === "response" && typeof l.sse === "string")
+    .map((l) => {
+      if (!l.sse) throw new Error("recording line lost its SSE");
+      return l.sse;
+    });
 }
 
 const TOOLS: ToolDefinition[] = [
@@ -119,7 +121,9 @@ async function replayRecordedRun(): Promise<ProviderEvent[]> {
       headers: { "content-type": "text/event-stream" },
     });
   }) as unknown as typeof fetch;
-  const model = createAnthropic({ apiKey: "offline-fixture", fetch: stubFetch })("claude-haiku-4-5");
+  const model = createAnthropic({ apiKey: "offline-fixture", fetch: stubFetch })(
+    "claude-haiku-4-5",
+  );
   const provider = new AnthropicProvider({
     apiKey: "offline-fixture",
     model: "claude-haiku-4-5",

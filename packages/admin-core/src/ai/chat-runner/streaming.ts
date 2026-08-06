@@ -42,8 +42,8 @@ import type { ToolRegistry } from "../tools/index.js";
 import { estimateTextTokens, isPromptTooLongError } from "./compaction.js";
 import { buildContextSplitEstimate } from "./context-split.js";
 import { EventQueue, PumpQuiescence } from "./event-queue.js";
-import { appendLoopTrace, fingerprintMessages, hashOf, loopTracePath } from "./loop-trace.js";
 import { resolveFirstEventTimeoutMs } from "./limits.js";
+import { appendLoopTrace, fingerprintMessages, hashOf, loopTracePath } from "./loop-trace.js";
 import { persistAssistantTurn, setResponseMessages } from "./persistence.js";
 import type { ToolResultOrigin } from "./proactive-compaction.js";
 import {
@@ -86,10 +86,7 @@ export interface UsageAccumulator {
  * history (byte-identical to a fresh cross-turn call — cache parity).
  */
 export interface RunPolicy {
-  prepareStep(info: {
-    stepIndex: number;
-    steps: readonly ProviderStepSummary[];
-  }): Promise<void>;
+  prepareStep(info: { stepIndex: number; steps: readonly ProviderStepSummary[] }): Promise<void>;
   stopWhen(info: { steps: readonly ProviderStepSummary[] }): Promise<boolean> | boolean;
 }
 

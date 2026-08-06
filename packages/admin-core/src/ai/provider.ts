@@ -49,10 +49,7 @@ export interface ToolDefinition {
    * argument carries the SDK-assigned `toolCallId` the wrapper needs for
    * tool-row persistence + dedup; implementations may ignore it.
    */
-  readonly execute?: (
-    input: unknown,
-    options?: ProviderToolExecuteOptions,
-  ) => Promise<unknown>;
+  readonly execute?: (input: unknown, options?: ProviderToolExecuteOptions) => Promise<unknown>;
 }
 
 /**

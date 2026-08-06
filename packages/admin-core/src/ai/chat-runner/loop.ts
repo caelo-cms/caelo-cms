@@ -473,7 +473,7 @@ export async function* runToolLoop(
   // (bounded by their one-shot guards + the attempts backstop); everything
   // else breaks with a terminal stopReason.
   let attempts = 0;
-  outer: for (;;) {
+  for (;;) {
     if (aborted()) break;
     attempts += 1;
     if (attempts > args.maxLoops) {
@@ -957,7 +957,7 @@ export async function* runToolLoop(
             judgeReason: verdict.reason,
             rawFinishReason: run.stoppingDiagnostics?.rawFinishReason ?? null,
           });
-          continue outer;
+          continue;
         }
       }
       stopReason = run.loopStop;

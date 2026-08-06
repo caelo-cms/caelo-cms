@@ -308,9 +308,7 @@ describe("AnthropicProvider tool-search transform (W2)", () => {
     // (unresolvable, scripted) deferred search call is outstanding, so
     // assert on the FIRST step's slice: the translation contract is
     // per-step.
-    const secondStepAt = events.findIndex(
-      (e) => e.kind === "step-start" && e.stepIndex === 1,
-    );
+    const secondStepAt = events.findIndex((e) => e.kind === "step-start" && e.stepIndex === 1);
     const stepZero = secondStepAt === -1 ? events : events.slice(0, secondStepAt);
     const toolCalls = stepZero.filter((e) => e.kind === "tool-call") as Array<{
       kind: "tool-call";
