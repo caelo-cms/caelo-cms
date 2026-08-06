@@ -902,7 +902,12 @@ export async function* runToolLoop(
 
     if (aborted()) break;
     lastLoopStop = loopStop;
-    if (accumulatedToolCalls.length === 0) {
+    // #400 — approval-requests count as work: a pure gated turn (one
+    // needsApproval call, no co-emitted tool-call, no text — the
+    // international-site `set_locales` shape) carries zero
+    // accumulatedToolCalls, and breaking here would end the turn before
+    // the approval section below ever surfaces the card.
+    if (accumulatedToolCalls.length === 0 && accumulatedApprovalRequests.length === 0) {
       // issue #106 (redesign) — RECOVER layer. The model may have narrated an
       // action and ended the turn without emitting the tool call, so nothing
       // happened. Two stages, because neither alone is correct:
