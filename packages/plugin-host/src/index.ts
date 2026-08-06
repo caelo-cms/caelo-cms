@@ -41,7 +41,7 @@ export {
   composeHeadBlock,
   renderHeadEntries,
 } from "./head-composition.js";
-export { applyPluginLifecycle } from "./lifecycle.js";
+export { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
 export { type BootstrapOpts, bootstrap, type LoadReport, resetPluginHost } from "./loader.js";
 export {
   type PromptContextRenderer,

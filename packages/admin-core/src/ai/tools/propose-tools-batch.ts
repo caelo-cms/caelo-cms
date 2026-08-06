@@ -139,6 +139,37 @@ export const proposeLayoutDeleteTool = makeProposeTool({
  * MATERIALIZED current_path column, so this works even when the plugin
  * that caused the change is already gone.
  */
+
+/**
+ * #393 — the gated uninstall. Data loss is explicit in the preview
+ * (both plugin schemas are DROPPED); the Owner approves in-chat.
+ */
+export const proposeUninstallPluginTool = makeProposeTool({
+  toolName: "propose_uninstall_plugin",
+  opName: "plugins.propose_uninstall",
+  pendingQueuePath: "/security/pending",
+  when:
+    "Propose PERMANENTLY uninstalling a plugin: its cms_public AND cms_admin schemas are dropped (all plugin data deleted), its tools/workers/skills are removed, and pages whose URLs it reshaped move back with 301 redirects. " +
+    "This is a TWO-STEP flow: you propose, the Owner approves the in-chat card. Do NOT claim the plugin was uninstalled after proposing. " +
+    "For a temporary stop use plugins.disable instead — it keeps all data.",
+  schema: z
+    .object({
+      slug: z.string().min(1).max(120),
+      reason: z.string().max(500).optional(),
+    })
+    .strict(),
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["slug"],
+    properties: {
+      slug: { type: "string", minLength: 1, maxLength: 120 },
+      reason: { type: "string", maxLength: 500 },
+    },
+  },
+  summarize: (input) => `uninstall plugin ${input.slug} (drops its data)`,
+});
+
 export const proposeUrlMigrationTool = makeProposeTool({
   toolName: "propose_url_migration",
   opName: "url_migrations.propose_migrate",

@@ -51,6 +51,7 @@ import {
   setContextFactory,
   setHostInfra,
 } from "./dispatch.js";
+import { applyPluginLifecycle } from "./lifecycle.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
 import { pluginToolsRegistry } from "./tools-registry.js";
@@ -489,14 +490,15 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
     urlContributionsRegistry.register(def.slug, def.urlContributions, def.urlAnnotationsOperation);
   }
   // Upsert the plugins row + actor row; reuses migration 0036's partial unique index.
-  const { pluginId, pluginActorId } = await opts.infra.adapter.withAdminTransaction(
-    {
-      actorId: opts.systemActorId,
-      actorKind: "system",
-      requestId: `plugin-load-${def.slug}`,
-    },
-    async (tx) => {
-      const rows = (await tx.execute(sql`
+  const { pluginId, pluginActorId, persistedStatus } =
+    await opts.infra.adapter.withAdminTransaction(
+      {
+        actorId: opts.systemActorId,
+        actorKind: "system",
+        requestId: `plugin-load-${def.slug}`,
+      },
+      async (tx) => {
+        const rows = (await tx.execute(sql`
         INSERT INTO plugins (
           slug, version, tier, status,
           manifest_json, source_path, manifest_signature, submitted_by
@@ -509,30 +511,34 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
         )
         ON CONFLICT (slug) DO UPDATE SET
           version = EXCLUDED.version,
-          status = 'active',
+          -- #393 — an Owner's disable SURVIVES restarts: boot refreshes
+          -- the manifest/signature but never resurrects a disabled
+          -- plugin (re-enable goes through plugins.activate).
+          status = CASE WHEN plugins.status = 'disabled' THEN 'disabled' ELSE 'active' END,
           manifest_json = EXCLUDED.manifest_json,
           source_path = EXCLUDED.source_path,
           manifest_signature = EXCLUDED.manifest_signature,
           activated_by = EXCLUDED.submitted_by,
           activated_at = now(),
           updated_at = now()
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-      const id = rows[0]?.id;
-      if (!id) throw new Error("plugins upsert returned no id");
+        RETURNING id::text AS id, status
+      `)) as unknown as { id: string; status: string }[];
+        const id = rows[0]?.id;
+        if (!id) throw new Error("plugins upsert returned no id");
+        const persistedStatus = rows[0]?.status ?? "active";
 
-      const actorRows = (await tx.execute(sql`
+        const actorRows = (await tx.execute(sql`
         INSERT INTO actors (kind, display_name, plugin_id)
         VALUES ('plugin', ${`Plugin: ${def.slug}`}, ${id}::uuid)
         ON CONFLICT (plugin_id) WHERE plugin_id IS NOT NULL DO UPDATE
           SET display_name = EXCLUDED.display_name
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];
-      const actorId = actorRows[0]?.id;
-      if (!actorId) throw new Error("actor upsert returned no id");
-      return { pluginId: id, pluginActorId: actorId };
-    },
-  );
+        const actorId = actorRows[0]?.id;
+        if (!actorId) throw new Error("actor upsert returned no id");
+        return { pluginId: id, pluginActorId: actorId, persistedStatus };
+      },
+    );
 
   // #387 — provision the plugin's declared cms_public schema at load.
   // Before this, only the sandboxed activation path ran `schemaFromSpec`,
@@ -598,6 +604,52 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
       dispatch: runPluginOperation,
       pluginActorId,
     });
+  }
+
+  // #393 — plugin-shipped skills land at awaiting_activation. The
+  // two-level model is untouched: the Owner's site-wide click promotes
+  // to active (skills.set), per-chat engagement is unchanged. On
+  // re-boot the upsert refreshes body/description but NEVER touches
+  // status — an Owner's activation (or archive) decision sticks.
+  if (def.skills && def.skills.length > 0) {
+    await opts.infra.adapter.withAdminTransaction(
+      {
+        actorId: opts.systemActorId,
+        actorKind: "system",
+        requestId: `plugin-skills-${def.slug}`,
+      },
+      async (tx) => {
+        for (const skill of def.skills ?? []) {
+          await tx.execute(sql`
+            INSERT INTO skills (
+              slug, display_name, description, body,
+              allowlisted_tools, auto_engagement_hints,
+              status, plugin_id
+            ) VALUES (
+              ${skill.slug}, ${skill.displayName}, ${skill.description}, ${skill.body},
+              (${JSON.stringify(skill.allowlistedTools ?? [])}::text)::jsonb,
+              (${JSON.stringify(skill.autoEngagementHints ?? {})}::text)::jsonb,
+              'awaiting_activation',
+              ${pluginId}::uuid
+            )
+            ON CONFLICT (slug) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              description = EXCLUDED.description,
+              body = EXCLUDED.body,
+              allowlisted_tools = EXCLUDED.allowlisted_tools,
+              auto_engagement_hints = EXCLUDED.auto_engagement_hints,
+              plugin_id = EXCLUDED.plugin_id
+          `);
+        }
+      },
+    );
+  }
+
+  // #393 — apply the persisted disabled state to the live registries so
+  // a disabled plugin stays inert (tools hidden, workers paused) right
+  // from boot, not just until the next restart.
+  if (persistedStatus === "disabled") {
+    applyPluginLifecycle(def.slug, "disable");
   }
 
   return lp;

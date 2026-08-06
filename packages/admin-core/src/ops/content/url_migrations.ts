@@ -75,6 +75,48 @@ export async function computeUrlMigrationDiff(
   return diff;
 }
 
+/**
+ * Apply a URL diff: per moved page the current_path update + a 301 from
+ * the old path, in the CALLER'S tx. Loud staleness guard — a page that
+ * no longer sits at the diff's `from` aborts the whole tx (applying
+ * would write stale paths + wrong redirects; the caller re-diffs).
+ * Shared by url_migrations.execute_proposal and the gated plugin
+ * uninstall (#393), which must move URLs back when a URL-contributing
+ * plugin is removed.
+ */
+export async function applyUrlMigrationDiff(
+  ctx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[0],
+  tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
+  diff: ReadonlyArray<UrlMigrationDiffEntry>,
+): Promise<{ redirectsCreated: number }> {
+  let redirectsCreated = 0;
+  for (const entry of diff) {
+    const updated = (await tx.execute(sql`
+      UPDATE pages
+         SET current_path = ${entry.to}, updated_at = now()
+       WHERE id = ${entry.pageId}::uuid AND current_path = ${entry.from}
+       RETURNING id
+    `)) as unknown as { id: string }[];
+    if (updated.length === 0) {
+      throw new Error(
+        `url migration aborted — page ${entry.pageId} no longer sits at ${entry.from} (stale proposal; re-propose)`,
+      );
+    }
+    const red = await createRedirectOp.handler(
+      ctx,
+      { fromPath: entry.from, toPath: entry.to, statusCode: 301 },
+      tx,
+    );
+    if (!red.ok) {
+      throw new Error(
+        `url migration aborted — redirect ${entry.from} → ${entry.to} failed to land`,
+      );
+    }
+    redirectsCreated += 1;
+  }
+  return { redirectsCreated };
+}
+
 const proposeInput = z
   .object({
     /** Operator-facing context for the proposal card. */
@@ -181,35 +223,7 @@ export const executeUrlMigrationOp = defineOperation({
       });
     }
     const payload = row.payload as { diff: UrlMigrationDiffEntry[] };
-    let redirectsCreated = 0;
-    for (const entry of payload.diff) {
-      // Staleness guard (no-fallbacks): if the stored path no longer
-      // matches the diff's `from`, the site moved since the proposal
-      // was computed — applying would write stale paths + wrong
-      // redirects. Abort the whole tx; the AI re-proposes.
-      const updated = (await tx.execute(sql`
-        UPDATE pages
-           SET current_path = ${entry.to}, updated_at = now()
-         WHERE id = ${entry.pageId}::uuid AND current_path = ${entry.from}
-         RETURNING id
-      `)) as unknown as { id: string }[];
-      if (updated.length === 0) {
-        throw new Error(
-          `url migration aborted — page ${entry.pageId} no longer sits at ${entry.from} (stale proposal; re-propose)`,
-        );
-      }
-      const red = await createRedirectOp.handler(
-        ctx,
-        { fromPath: entry.from, toPath: entry.to, statusCode: 301 },
-        tx,
-      );
-      if (!red.ok) {
-        throw new Error(
-          `url migration aborted — redirect ${entry.from} → ${entry.to} failed to land`,
-        );
-      }
-      redirectsCreated += 1;
-    }
+    const { redirectsCreated } = await applyUrlMigrationDiff(ctx, tx, payload.diff);
     await tx.execute(sql`
       UPDATE url_migration_pending_actions
          SET status = 'applied', decided_by = ${ctx.actorId}::uuid, decided_at = now()

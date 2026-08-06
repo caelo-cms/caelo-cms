@@ -84,6 +84,10 @@ export {
   formatMicrocentsAsMoney,
   microcentsToMajorUnits,
 } from "./ops/imports-cost.js";
+export {
+  configurePluginUninstallFinalizer,
+  type PluginUninstallFinalizer,
+} from "./ops/plugins/uninstall.js";
 export * from "./ops/roles.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";

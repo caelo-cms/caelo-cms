@@ -19,6 +19,7 @@ import { resolve as resolvePath } from "node:path";
 import {
   buildEmailTransport,
   configureMcpBridge,
+  configurePluginUninstallFinalizer,
   configureProviderResolver,
   type EmailConfigRow,
   emitSnapshot,
@@ -197,6 +198,12 @@ async function bootstrapPlugins(): Promise<void> {
       }
     }
   }
+  // #393 — the uninstall op's schema drops run through these hooks
+  // (DDL on both pools lives with the adapter, not the ops layer).
+  configurePluginUninstallFinalizer({
+    dropPublicSchema: (schemaName) => adapter.dropPluginPublicSchema({ schemaName }),
+    dropAdminSchema: (schemaName) => adapter.dropPluginAdminSchema({ schemaName }),
+  });
   const report = await bootstrapPluginHost({
     infra: {
       adapter,

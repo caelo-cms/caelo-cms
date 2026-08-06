@@ -136,6 +136,38 @@ export const pluginToolSpec = z.object({
 
 export type PluginToolSpec = z.infer<typeof pluginToolSpec>;
 
+/**
+ * #393 — a skill SHIPPED with a plugin (release-signed only). On
+ * activation the host registers it at `awaiting_activation`; the
+ * existing two-level model is untouched — the Owner's site-wide click
+ * and per-chat engagement work exactly like any other skill. Archived
+ * when the plugin is uninstalled. Closes the "companion skill" gap
+ * declaratively instead of via SQL seeds.
+ */
+export const pluginSkillSpec = z
+  .object({
+    slug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z][a-z0-9-]*$/, "must be lowercase, dash-separated"),
+    displayName: z.string().min(1).max(200),
+    description: z.string().min(1).max(2000),
+    body: z.string().min(1).max(50_000),
+    allowlistedTools: z.array(z.string().min(1).max(120)).optional(),
+    autoEngagementHints: z
+      .object({
+        keywords: z.array(z.string().min(1).max(80)).optional(),
+        chipTrigger: z.boolean().optional(),
+        alwaysOn: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type PluginSkillSpec = z.infer<typeof pluginSkillSpec>;
+
 /** Frontend Web Component spec. Same shape both tiers. Mounted in
  *  Shadow DOM by default (per §14.6 — mandatory). */
 export const pluginComponent = z
@@ -270,6 +302,8 @@ export const pluginManifest = z
     /** #391 — head/sitemap contribution claims (release-signed only,
      *  requires the `head_contributions` capability). */
     contributes: z.array(contributionKind).optional(),
+    /** #393 — plugin-shipped skills (release-signed only). */
+    skills: z.array(pluginSkillSpec).optional(),
   })
   .strict();
 
@@ -638,6 +672,8 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly urlAnnotationsOperation?: string;
   /** #391 — see `pluginManifest.contributes`. */
   readonly contributes?: ReadonlyArray<ContributionKind>;
+  /** #393 — see `pluginManifest.skills`. */
+  readonly skills?: ReadonlyArray<PluginSkillSpec>;
   /**
    * #391 — the I/O half of head/sitemap contributions: an operation in
    * `operations` taking `{pageIds: string[], siteBaseUrl: string}` and
@@ -678,6 +714,7 @@ export function manifestFromDefinition(def: {
   readonly adminSchema?: PluginSchemaMap;
   readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
   readonly contributes?: ReadonlyArray<ContributionKind>;
+  readonly skills?: ReadonlyArray<PluginSkillSpec>;
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
   readonly staticRender?: unknown;

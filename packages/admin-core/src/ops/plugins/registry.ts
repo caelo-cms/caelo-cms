@@ -22,7 +22,7 @@
  *   in P11.5+); it only ships the ops that read + mutate the registry.
  */
 
-import { applyPluginLifecycle } from "@caelo-cms/plugin-host";
+import { applyPluginLifecycle, loadedPlugins } from "@caelo-cms/plugin-host";
 import { type EmittedSchema, schemaFromSpec, validatePlugin } from "@caelo-cms/plugin-sandbox";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
@@ -544,11 +544,17 @@ export const activatePluginOp = defineOperation({
         message: `no plugin with slug "${input.slug}"`,
       });
     }
-    if (r.tier !== 2) {
+    // #393 — release-signed plugins re-enable through this op too (the
+    // UI used to say "re-enable via host restart"). The verify path ran
+    // at boot: a disabled release-signed plugin is still fully loaded +
+    // verified in the host registry, just flagged inert. FRESH tier-1
+    // activation stays loader-only.
+    if (r.tier !== 2 && r.status !== "disabled") {
       return err({
         kind: "HandlerError",
         operation: "plugins.activate",
-        message: "Tier 1 plugins are auto-activated by the host loader.",
+        message:
+          "Release-signed plugins are auto-activated by the host loader; plugins.activate applies to them only for disabled → active re-enable.",
       });
     }
     if (r.status !== "awaiting_activation" && r.status !== "disabled") {
@@ -578,7 +584,20 @@ export const activatePluginOp = defineOperation({
             updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
-      const actorId = await upsertPluginActor(tx, r.id, input.slug);
+      // Re-enable never mints an actor: the loader (tier 1) or the
+      // first activation (tier 2) created it, and it survives disable.
+      // The id comes from the live host registry — the actors table's
+      // RLS (each actor sees only itself) correctly hides plugin
+      // actors from the human approver, and the host already holds the
+      // verified identity of every registered plugin.
+      const actorId = loadedPlugins.bySlug(input.slug)?.pluginActorId;
+      if (!actorId) {
+        return err({
+          kind: "HandlerError",
+          operation: "plugins.activate",
+          message: `plugin "${input.slug}" is not registered in the live host — restart the host, then re-enable`,
+        });
+      }
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -586,7 +605,7 @@ export const activatePluginOp = defineOperation({
         input,
         succeeded: true,
         entityId: r.id,
-        resultSummary: "tier=2 re-enabled",
+        resultSummary: `tier=${r.tier} re-enabled`,
       });
       // Audit fix #2: hot-update the live host. Tools reappear in the
       // AI's catalogue, workers resume, dispatch flips back to ok.

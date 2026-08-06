@@ -96,6 +96,7 @@ import {
   proposeRoleUpdatePermissionsTool,
   proposeTemplateDeleteTool,
   proposeTemplateUpdateTool,
+  proposeUninstallPluginTool,
   proposeUrlMigrationTool,
   proposeUserCreateTool,
   proposeUserDeleteTool,
@@ -378,6 +379,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // proposals through the standard tool-call loop.
   registry.register(proposeLayoutUpdateTool);
   registry.register(proposeUrlMigrationTool);
+  registry.register(proposeUninstallPluginTool);
   registry.register(proposeLayoutDeleteTool);
   registry.register(proposeUserCreateTool);
   registry.register(proposeUserSetRolesTool);

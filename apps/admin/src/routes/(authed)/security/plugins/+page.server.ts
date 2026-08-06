@@ -128,6 +128,25 @@ export const actions: Actions = {
     }
     return { ok: true, message: `Activated ${slug}.` };
   },
+  // #393 — release-signed re-enable without a host restart: the plugin
+  // is still loaded + verified in the host registry, just flagged
+  // inert; plugins.activate flips the row and the live flags.
+  reenable: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    const slug = String(form.get("slug") ?? "");
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "plugins.activate", { slug });
+    if (!r.ok) {
+      const message =
+        typeof r.error === "object" && r.error && "message" in r.error
+          ? String((r.error as { message: unknown }).message)
+          : "re-enable failed";
+      return fail(400, { error: message });
+    }
+    return { ok: true, message: `Plugin ${slug} re-enabled.` };
+  },
+
   disable: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
     const form = await request.formData();

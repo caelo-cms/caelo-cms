@@ -289,6 +289,7 @@ import {
   revalidatePluginOp,
   submitPluginOp,
 } from "./ops/plugins/registry.js";
+import { executeUninstallPluginOp, proposeUninstallPluginOp } from "./ops/plugins/uninstall.js";
 import {
   getProvisioningOutputsOp,
   setProvisioningOutputsOp,
@@ -537,6 +538,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setHomePageOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
+  registry.register(proposeUninstallPluginOp);
+  registry.register(executeUninstallPluginOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
   registry.register(setPageModuleContentManyOp);

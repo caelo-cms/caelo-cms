@@ -122,7 +122,10 @@
                       <Button type="submit" size="sm" variant="outline">Disable</Button>
                     </form>
                   {:else if p.status === "disabled"}
-                    <span class="text-xs text-muted-foreground">disabled · re-enable via host restart</span>
+                    <form method="post" action="?/reenable" use:enhance>
+                      <input type="hidden" name="slug" value={p.slug} />
+                      <Button type="submit" size="sm" variant="outline">Re-enable</Button>
+                    </form>
                   {/if}
                 </TableCell>
               </TableRow>
