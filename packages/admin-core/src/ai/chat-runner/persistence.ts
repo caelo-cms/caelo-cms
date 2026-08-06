@@ -211,6 +211,26 @@ export async function persistAssistantTurn(
   return { ok: false, sessionGone, message: describePersistError(e) };
 }
 
+/**
+ * issue #442 — stamp the SDK's per-step `response.messages` slice onto an
+ * already-persisted assistant anchor row. The anchor persists BEFORE the
+ * step's tool dispatches (crash safety); the slice only exists after they
+ * settle, so it lands in this second write. Returns false on failure — the
+ * row then stays on the reconstruction replay lane (loud at the call site).
+ */
+export async function setResponseMessages(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  humanCtx: ExecutionContext,
+  args: { messageId: string; responseMessages: readonly unknown[] },
+): Promise<boolean> {
+  const r = await execute(registry, adapter, humanCtx, "chat.set_response_messages", {
+    messageId: args.messageId,
+    responseMessages: args.responseMessages,
+  });
+  return r.ok;
+}
+
 /** P10.5 — mark the in-flight assistant message interrupted on abort. */
 export async function markInterrupted(
   registry: OperationRegistry,

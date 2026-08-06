@@ -341,43 +341,62 @@ function tagConversationForCache(messages: ModelMessage[]): ModelMessage[] {
 }
 
 /**
- * System prompt → SDK system shape. The SDK accepts a string OR
- * (via the messages array) `SystemModelMessage` entries with
- * per-part `providerOptions.anthropic.cacheControl` — that's how we
- * keep the cache prefix warm across turns when chips/skills change
- * at the tail (P5.2 #4 / v0.2.x). The last conversation message also gets a
- * rolling breakpoint so the growing history caches incrementally.
+ * System prompt → the Anthropic system encoding: either a flat `system`
+ * string OR leading `SystemModelMessage` entries with per-part
+ * `providerOptions.anthropic.cacheControl` — that's how we keep the cache
+ * prefix warm across turns when chips/skills change at the tail (P5.2 #4 /
+ * v0.2.x). Split out of the full request assembly (issue #442) because the
+ * SDK-loop's per-step messages override must re-prepend the SAME system
+ * messages — an override replaces the whole messages array, and dropping
+ * the system prefix from step 1+ would both lobotomize the model and bust
+ * the prompt cache.
  */
-function buildSystemAndMessages(
+function buildSystemEncoding(
   prompt: GenerateInput["systemPrompt"],
   cacheBreakpoints: GenerateInput["cacheBreakpoints"],
-  inputMessages: readonly ChatMessageInput[],
-): { system?: string; messages: ModelMessage[] } {
-  const userMessages = tagConversationForCache(toSDKMessages(inputMessages));
+): { system?: string; sysMessages: SystemModelMessage[] } {
   if (typeof prompt === "string") {
     if (cacheBreakpoints?.includes("system")) {
-      const sysMsg: SystemModelMessage = {
-        role: "system",
-        content: prompt,
-        providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+      return {
+        sysMessages: [
+          {
+            role: "system",
+            content: prompt,
+            providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+          },
+        ],
       };
-      return { messages: [sysMsg, ...userMessages] };
     }
-    return { system: prompt, messages: userMessages };
+    return { system: prompt, sysMessages: [] };
   }
   // Chunked prompt — each cacheable chunk gets its own SystemModelMessage
   // with anthropic.cacheControl, capped at SYSTEM_CACHE_BREAKPOINTS so the
   // rolling message breakpoint fits inside the API's 4-breakpoint limit.
   const cacheableIndices = prompt.flatMap((c, i) => (c.cacheable ? [i] : []));
   const tagged = new Set(cacheableIndices.slice(-SYSTEM_CACHE_BREAKPOINTS));
-  const sysMessages: SystemModelMessage[] = prompt.map((c, i) => ({
-    role: "system",
-    content: c.body,
-    ...(tagged.has(i)
-      ? { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } }
-      : {}),
-  }));
-  return { messages: [...sysMessages, ...userMessages] };
+  return {
+    sysMessages: prompt.map((c, i) => ({
+      role: "system",
+      content: c.body,
+      ...(tagged.has(i)
+        ? { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } }
+        : {}),
+    })),
+  };
+}
+
+/**
+ * Full request assembly: system encoding + converted conversation with the
+ * rolling cache breakpoint on the last message.
+ */
+function buildSystemAndMessages(
+  prompt: GenerateInput["systemPrompt"],
+  cacheBreakpoints: GenerateInput["cacheBreakpoints"],
+  inputMessages: readonly ChatMessageInput[],
+): { system?: string; messages: ModelMessage[] } {
+  const { system, sysMessages } = buildSystemEncoding(prompt, cacheBreakpoints);
+  const messages = [...sysMessages, ...tagConversationForCache(toSDKMessages(inputMessages))];
+  return system !== undefined ? { system, messages } : { messages };
 }
 
 /**
@@ -430,11 +449,15 @@ export class AnthropicProvider implements AIProvider {
   }
 
   async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
-    const systemAndMessages = buildSystemAndMessages(
-      input.systemPrompt,
-      input.cacheBreakpoints,
-      input.messages,
-    );
+    const systemEncoding = buildSystemEncoding(input.systemPrompt, input.cacheBreakpoints);
+    const encodeConversation = (msgs: readonly ChatMessageInput[]): ModelMessage[] => [
+      ...systemEncoding.sysMessages,
+      ...tagConversationForCache(toSDKMessages(msgs)),
+    ];
+    const systemAndMessages = {
+      ...(systemEncoding.system !== undefined ? { system: systemEncoding.system } : {}),
+      messages: encodeConversation(input.messages),
+    };
     // v0.2.54 — extended thinking. Anthropic-specific provider
     // option; OpenAI/Gemini don't have an equivalent body param.
     const extraOptions: Record<string, unknown> = {};
@@ -563,6 +586,10 @@ export class AnthropicProvider implements AIProvider {
       systemAndMessages,
       extraOptions,
       ...(toolsTransform ? { toolsTransform } : {}),
+      // issue #442 — per-step messages overrides re-use the SAME encoder as
+      // the initial request (system chunks + rolling conversation cache
+      // breakpoint), so an overridden step's bytes match a fresh call's.
+      loopMessages: encodeConversation,
     });
     const wire = wirePath();
     if (!wire) {
@@ -614,24 +641,186 @@ export class AnthropicProvider implements AIProvider {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Test fixtures — scripted models driving the REAL SDK loop (#442)    */
+/* ------------------------------------------------------------------ */
+
 /**
- * Fixture-driven provider for tests. Replays a pre-recorded ProviderEvent
- * stream so PR CI can exercise the chat / tool-dispatch path without
- * hitting the live API. Real-provider tests (gated behind `bun run
- * test:live`) use AnthropicProvider directly.
+ * issue #442 — convert one scripted per-step ProviderEvent array into the
+ * LanguageModelV3 stream parts a mock model emits for that step. Fixture
+ * scripts keep their pre-#442 shape (text/thinking/tool-call/usage/done per
+ * provider call), but the events now feed a `MockLanguageModelV3` underneath
+ * the REAL `streamText` multi-step loop — so fixture-driven tests exercise
+ * the actual step machinery (execute wrappers, deferred continuations,
+ * stopWhen/prepareStep) instead of a hand-rolled parallel loop.
+ */
+function scriptedStepToParts(events: readonly ProviderEvent[]): unknown[] {
+  const parts: unknown[] = [
+    { type: "stream-start", warnings: [] },
+    { type: "response-metadata", id: "fixture-response", modelId: "fixture" },
+  ];
+  let usage = {
+    inputTokens: {
+      total: 0,
+      noCache: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
+    outputTokens: { total: 0, text: 0, reasoning: 0 },
+  };
+  let seq = 0;
+  let openTextId: string | null = null;
+  let openReasoning: { id: string; emitted: number } | null = null;
+  const closeText = (): void => {
+    if (openTextId !== null) {
+      parts.push({ type: "text-end", id: openTextId });
+      openTextId = null;
+    }
+  };
+  for (const ev of events) {
+    switch (ev.kind) {
+      case "text-delta": {
+        if (openTextId === null) {
+          openTextId = `fixture-text-${seq++}`;
+          parts.push({ type: "text-start", id: openTextId });
+        }
+        parts.push({ type: "text-delta", id: openTextId, delta: ev.text });
+        break;
+      }
+      case "thinking-delta": {
+        closeText();
+        if (openReasoning === null) {
+          openReasoning = { id: `fixture-reasoning-${seq++}`, emitted: 0 };
+          parts.push({ type: "reasoning-start", id: openReasoning.id });
+        }
+        parts.push({ type: "reasoning-delta", id: openReasoning.id, delta: ev.text });
+        openReasoning.emitted += ev.text.length;
+        break;
+      }
+      case "thinking-stop": {
+        closeText();
+        if (openReasoning === null) {
+          openReasoning = { id: `fixture-reasoning-${seq++}`, emitted: 0 };
+          parts.push({ type: "reasoning-start", id: openReasoning.id });
+        }
+        // The stop event carries the FULL block; emit whatever the deltas
+        // did not already stream so the accumulated text matches exactly.
+        const remainder = ev.thinking.slice(openReasoning.emitted);
+        if (remainder.length > 0) {
+          parts.push({ type: "reasoning-delta", id: openReasoning.id, delta: remainder });
+        }
+        parts.push({
+          type: "reasoning-end",
+          id: openReasoning.id,
+          providerMetadata: { anthropic: { signature: ev.signature } },
+        });
+        openReasoning = null;
+        break;
+      }
+      case "tool-call": {
+        closeText();
+        parts.push({
+          type: "tool-call",
+          toolCallId: ev.id,
+          toolName: ev.name,
+          input: JSON.stringify(ev.arguments ?? {}),
+        });
+        break;
+      }
+      case "usage": {
+        usage = {
+          inputTokens: {
+            total: ev.inputTokens,
+            noCache: ev.inputTokens - ev.cachedTokens,
+            cacheRead: ev.cachedTokens,
+            cacheWrite: ev.cacheCreationTokens ?? 0,
+          },
+          outputTokens: { total: ev.outputTokens, text: ev.outputTokens, reasoning: 0 },
+        };
+        break;
+      }
+      case "done": {
+        closeText();
+        parts.push({
+          type: "finish",
+          finishReason:
+            ev.stopReason === "end_turn"
+              ? "stop"
+              : ev.stopReason === "tool_use"
+                ? "tool-calls"
+                : ev.stopReason === "max_tokens"
+                  ? "length"
+                  : "error",
+          usage,
+        });
+        break;
+      }
+      case "error": {
+        closeText();
+        parts.push({ type: "error", error: new Error(ev.message) });
+        break;
+      }
+      default:
+        // server-tool events are wire-level Anthropic behavior; fixture
+        // scripts must replay recorded SSE through the real provider for
+        // those (see the tool-search fixture tests). Fail loud (§2).
+        throw new Error(`fixture script cannot express ProviderEvent kind ${ev.kind}`);
+    }
+  }
+  return parts;
+}
+
+function partsToStream(parts: readonly unknown[]): ReadableStream<unknown> {
+  return new ReadableStream<unknown>({
+    start(controller) {
+      for (const p of parts) controller.enqueue(p);
+      controller.close();
+    },
+  });
+}
+
+/**
+ * Fixture-driven provider for tests. issue #442 — replays scripted
+ * ProviderEvents through a `MockLanguageModelV3` under the REAL SDK loop
+ * (`runSDKStream`), so PR CI exercises the actual multi-step machinery
+ * without hitting the live API. Every SDK step replays the SAME script
+ * (the pre-#442 contract: every `generate` call replayed the same events).
+ * Real-provider tests (gated behind `bun run test:live`) use
+ * AnthropicProvider directly.
  */
 export class FixtureProvider implements AIProvider {
   readonly name: ProviderName = "anthropic";
   readonly model: string;
-  readonly #events: readonly ProviderEvent[];
+  readonly #stepEvents: () => readonly ProviderEvent[];
 
   constructor(events: readonly ProviderEvent[], model = "claude-opus-4-7") {
-    this.#events = events;
+    this.#stepEvents = () => events;
     this.model = model;
   }
 
-  async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
-    for (const e of this.#events) yield e;
+  /** Subclass hook — which script the NEXT model step replays. */
+  protected nextStepEvents(): readonly ProviderEvent[] {
+    return this.#stepEvents();
+  }
+
+  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
+    const { MockLanguageModelV3 } = await import("ai/test");
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: partsToStream(
+          scriptedStepToParts(this.nextStepEvents()),
+        ) as ReadableStream<never>,
+      }),
+    });
+    const system =
+      typeof input.systemPrompt === "string"
+        ? input.systemPrompt
+        : input.systemPrompt.map((c) => c.body).join("\n\n");
+    yield* runSDKStream({
+      model: model as unknown as import("ai").LanguageModel,
+      input,
+      systemAndMessages: { system, messages: toSDKMessages(input.messages) },
+    });
   }
 
   // FixtureProvider scripts the streaming (generate) path only. Tests that
@@ -643,11 +832,11 @@ export class FixtureProvider implements AIProvider {
 }
 
 /**
- * Multi-loop fixture for tool-use → continuation flows. The chat runner
- * calls `generate()` once per loop iteration: first call returns the
- * queue's first sub-array (typically ending in stopReason `tool_use`),
- * second call returns the continuation after the tool result lands. Past
- * the queue, returns a single end_turn event so the runner exits cleanly.
+ * Multi-step fixture for tool-use → continuation flows. issue #442 — the
+ * queue advances once per MODEL STEP of the real SDK loop (pre-#442 it
+ * advanced once per `generate` call; one old call maps 1:1 onto one new
+ * step, so existing scripts keep their meaning). Past the queue, a single
+ * end_turn step ends the run cleanly.
  */
 export class MultiFixtureProvider extends FixtureProvider {
   readonly #queue: readonly (readonly ProviderEvent[])[];
@@ -658,11 +847,11 @@ export class MultiFixtureProvider extends FixtureProvider {
     this.#queue = queue;
   }
 
-  override async *generate(_input: GenerateInput): AsyncIterable<ProviderEvent> {
+  protected override nextStepEvents(): readonly ProviderEvent[] {
     const events = this.#queue[this.#idx] ?? [
       { kind: "done", stopReason: "end_turn" } as ProviderEvent,
     ];
     this.#idx += 1;
-    for (const e of events) yield e;
+    return events;
   }
 }

@@ -195,6 +195,33 @@ export async function* runChatTurn(
   const baseMessages: ChatMessageInput[] = await buildProviderHistory(
     session.messages,
     createMediaAttachmentLoader(registry, adapter, humanCtx),
+    // issue #442 (unwedge) — a healed dangling providerExecuted tool-search
+    // call means this session WAS wedged (every prior turn 400'd on the
+    // poisoned replay). The heal itself is deterministic + byte-stable per
+    // stored row, but it must be LOUD: one auto bug-report row per healed
+    // session (deduped by the op's per-session/op dedup), never a silent
+    // recovery (CLAUDE.md §2). Best-effort — a failed report write must not
+    // block the now-healed turn.
+    async (repair) => {
+      if (repair.strippedServerToolCallIds.length === 0) return;
+      await execute(registry, adapter, aiCtx, "ai_bug_reports.create", {
+        chatSessionId: input.chatSessionId,
+        title: "Chat history healed: dangling provider-executed tool-search call removed",
+        whatHappened:
+          `The persisted history carried ${repair.strippedServerToolCallIds.length} ` +
+          `provider-executed tool call(s) without a paired result ` +
+          `(${repair.strippedServerToolCallIds.join(", ")}). This is the issue-#442 ` +
+          "deferred-tool-search poison: every provider call replaying it was rejected " +
+          "with a pairing 400, wedging the session. The replay-time repair stripped the " +
+          "dangling call(s); this turn proceeds on the healed history.",
+        expected:
+          "Provider-executed tool calls persist with their paired results (the SDK loop " +
+          "consumes deferred continuations in-turn since #442).",
+        suspectedTool: "tool_search",
+        severity: "degraded",
+        source: "auto",
+      }).catch(() => undefined);
+    },
   );
   markPhase("buildProviderHistoryMs");
 

@@ -35,18 +35,35 @@ export interface ToolDefinition {
    * `tool-approval-request` (the turn PAUSES before `execute` runs), and the
    * turn resumes only when a `tool-approval-response` is appended to history
    * (the Owner's in-chat Approve). A gated tool MUST also supply `execute`
-   * (the SDK gates the execute call). Routine tools leave both unset and are
-   * dispatched by the chat-runner loop as client tools.
+   * (the SDK gates the execute call).
    */
   readonly approvalMode?: "user-approval";
   /**
-   * SDK-executed handler for a gated tool. Supplied by the chat-runner,
-   * closing over the real dispatch pipeline + the resolved ExecutionContext,
-   * so the actual mutation runs through the Query API exactly as a
-   * client-dispatched tool would — only the invocation site (SDK vs our
-   * loop) differs. Only meaningful alongside `approvalMode`.
+   * SDK-executed handler. Since the SDK-loop migration (issue #442) EVERY
+   * chat-runner tool ships an `execute` — routine tools get a wrapper that
+   * runs the full dispatch pipeline (validation, audit, snapshot ctx, tool-row
+   * persistence, subagent spawning) so the SDK's own multi-step loop drives
+   * dispatch and provider-deferred tool results (Anthropic tool search) get
+   * their continuation consumed in-turn. Gated tools supply the
+   * propose→execute_proposal chain instead (see `approvalMode`). The second
+   * argument carries the SDK-assigned `toolCallId` the wrapper needs for
+   * tool-row persistence + dedup; implementations may ignore it.
    */
-  readonly execute?: (input: unknown) => Promise<unknown>;
+  readonly execute?: (
+    input: unknown,
+    options?: ProviderToolExecuteOptions,
+  ) => Promise<unknown>;
+}
+
+/**
+ * Options the SDK passes into a tool `execute` call, narrowed to what the
+ * chat-runner's wrappers consume. `toolCallId` is the provider-assigned
+ * tool_use id — the pairing key for the persisted tool row and the dedup
+ * cache.
+ */
+export interface ProviderToolExecuteOptions {
+  readonly toolCallId?: string;
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface ChatMessageInput {
@@ -185,6 +202,95 @@ export interface GenerateInput {
    * ≥ 1024 and < maxTokens. Providers without thinking ignore this.
    */
   readonly thinking?: { readonly budgetTokens: number };
+  /**
+   * issue #442 — SDK-loop configuration. When present, `generate` runs the
+   * AI SDK's own multi-step tool loop (`streamText` + stopWhen/prepareStep/
+   * onStepFinish) and the caller's callbacks own the between-step policy
+   * (budget gate, runaway guard, compaction, per-step persistence). When
+   * absent, the provider still runs the SDK loop but with a default stop
+   * condition that ends after one step UNLESS a provider-deferred tool
+   * result (Anthropic tool-search continuation) is outstanding — consuming
+   * the deferred continuation is a correctness requirement, not a policy
+   * choice (a dangling providerExecuted call poisons every later request).
+   */
+  readonly loop?: ProviderLoopConfig;
+  /**
+   * issue #442 — per-step first-chunk watchdog, SDK-native (`timeout:
+   * {firstChunkMs}`). Replaces the chat-runner's hand-rolled first-event
+   * watchdog: when a step's model call produces no chunk inside the window,
+   * the SDK aborts the run with a TimeoutError the caller retries on.
+   */
+  readonly firstChunkTimeoutMs?: number;
+}
+
+/**
+ * A lightweight per-step summary the loop callbacks receive — enough for
+ * step-count ceilings, the same-tool runaway streak, and the approval-pause
+ * guard, without leaking the SDK's StepResult shape across the boundary.
+ * Usage totals deliberately do NOT ride here: the caller's shared
+ * UsageAccumulator is authoritative at both hook points (the SDK awaits
+ * `onStepFinish` — which quiesces the event pump — before evaluating
+ * stopWhen or preparing the next step).
+ */
+export interface ProviderStepSummary {
+  readonly stepIndex: number;
+  /** SDK finishReason string ("stop" | "tool-calls" | "length" | …). */
+  readonly finishReason: string;
+  /** Client (non-providerExecuted) tool calls the model emitted this step. */
+  readonly clientToolNames: readonly string[];
+  /** True when the step paused a gated tool on a tool-approval-request. */
+  readonly hasApprovalRequests: boolean;
+}
+
+/**
+ * Per-step slice delivered to `ProviderLoopConfig.onStepFinish`. The
+ * `responseMessages` are the SDK's OWN per-step assembly
+ * (`StepResult.response.messages`) — the Option-C canonical lane, now per
+ * step. `initialResponseMessages` are non-empty only on step 0 of an
+ * approval-resume run: the SDK executes the approved gated tool BEFORE the
+ * first model step and delivers its tool_result as leading messages that
+ * belong to no step (captured from `prepareStep(stepNumber=0)`'s
+ * accumulated `responseMessages`, which at step 0 contain exactly them).
+ */
+export interface ProviderStepFinish {
+  readonly stepIndex: number;
+  readonly finishReason: string;
+  readonly responseMessages: readonly ProviderResponseMessage[];
+  readonly initialResponseMessages: readonly ProviderResponseMessage[];
+}
+
+/**
+ * issue #442 — the caller-owned loop policy `generate` threads into the AI
+ * SDK's multi-step loop. All three hooks run INSIDE the SDK's step
+ * machinery: `prepareStep` before each model call, `onStepFinish` after the
+ * step's tool executions settle (the SDK awaits it before continuing — the
+ * chat-runner persists the step there), `stopWhen` after `onStepFinish` to
+ * decide continuation.
+ */
+export interface ProviderLoopConfig {
+  /**
+   * Pre-step hook. May return a per-step tool-choice override (the RECOVER
+   * forced re-run sets `"required"` for step 0 only) and/or a full messages
+   * override in the caller's ChatMessageInput shape — the provider converts
+   * it with the SAME encoder the initial request used, so step bytes match
+   * the cross-turn replay exactly (prompt-cache parity). The SDK carries an
+   * override forward into later steps per its prepareStep contract.
+   */
+  prepareStep(info: {
+    readonly stepIndex: number;
+    readonly steps: readonly ProviderStepSummary[];
+  }): Promise<
+    | { readonly messages?: readonly ChatMessageInput[]; readonly toolChoice?: "required" }
+    | undefined
+  >;
+  /**
+   * Post-step persistence hook. The SDK loop BLOCKS until this resolves, so
+   * the caller's history append + DB writes are ordered before the next
+   * step's prepareStep/model call.
+   */
+  onStepFinish(info: ProviderStepFinish): Promise<void>;
+  /** Post-step stop policy — `true` ends the run cleanly after this step. */
+  stopWhen(info: { readonly steps: readonly ProviderStepSummary[] }): Promise<boolean> | boolean;
 }
 
 /**
@@ -228,6 +334,12 @@ export type ProviderEvent =
   | { kind: "server-tool-call"; id: string; name: string; arguments: unknown }
   | { kind: "server-tool-result"; id: string; name: string; result: unknown }
   /**
+   * issue #442 — a new SDK-loop step began (maps the fullStream `start-step`
+   * part). Consumers reset their per-step accumulators here; `stepIndex` is
+   * 0-based and strictly increasing within one `generate` run.
+   */
+  | { kind: "step-start"; stepIndex: number }
+  /**
    * Option C (2026-07) — the SDK's canonical messages for this turn, emitted
    * once at turn-end from `result.responseMessages` (NOT `response.messages`,
    * which omits a pre-loop tool-approval resolution's leading tool_result). The
@@ -239,6 +351,11 @@ export type ProviderEvent =
    * next call; consumers persist these instead of rebuilding history from
    * the event stream. See CLAUDE.md §12. */
   | { kind: "turn-messages"; messages: readonly ProviderResponseMessage[] }
+  /**
+   * Token usage for ONE SDK-loop step (emitted at each `finish-step`).
+   * Consumers accumulate across steps; a single-step run emits exactly one,
+   * preserving the pre-#442 per-call semantics.
+   */
   | {
       kind: "usage";
       inputTokens: number;
