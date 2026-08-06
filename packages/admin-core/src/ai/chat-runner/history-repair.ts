@@ -70,7 +70,14 @@ function harvestSdkPairIds(
       if (p.type === "tool-call") {
         toolUseIds.add(p.toolCallId);
         if (p.providerExecuted === true) providerExecutedCallIds.add(p.toolCallId);
-      } else if (p.type === "tool-result") toolResultIds.add(p.toolCallId);
+      } else if (p.type === "tool-result" || p.type === "tool-error") {
+        // "tool-error" is defensive: the SDK's toResponseMessages maps
+        // errored executions into `tool-result` parts (verified against
+        // ai@7.0.55), so persisted assemblies never carry it today — but an
+        // errored result is an ANSWERED call either way, and treating it as
+        // dangling would wrongly strip a paired call.
+        toolResultIds.add(p.toolCallId);
+      }
     }
   }
 }
