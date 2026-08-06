@@ -1,5 +1,8 @@
 # Phase 9 — i18n foundation + locale URL strategies
 
+> **Superseded (epic #380, v0.12):** this phase shipped and its surfaces were then deliberately removed in the plugin-system-v2 cleanup (#381–#385). The capability returns as the first-party `international-site` plugin (CMS_REQUIREMENTS §7). Kept as the historical build record.
+
+
 **Status:** stub — detail to be filled when this phase is picked up.
 **Dependencies:** P3, P6, P8.
 **Unblocks:** P10 (AI translation), P15 (per-locale domain provisioning).

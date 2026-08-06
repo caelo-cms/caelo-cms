@@ -1,7 +1,6 @@
 ---
 slug: mcp
 template: doc-page
-locale: en
 status: published
 seo:
   title: Talk to Caelo from your IDE — MCP servers
@@ -98,7 +97,7 @@ A handful of tools only make sense inside Caelo's own loop and are filtered out 
 ## Token scopes, caps, rotation
 
 - **Scopes.** `chat` drives `caelo_chat` only. `admin` additionally unlocks the Power-MCP endpoints. Existing tokens stay `chat`; using one against the Power-MCP returns a 401 naming the fix.
-- **Cost cap.** `ai_cost_cap_microcents` (set at mint time) bounds a leaked token's wallet impact. On the chat surface the runner checks it during the turn (`cost cap reached: spent ~N µ¢ / cap M µ¢`); on the Power-MCP it gates the tools that make their own provider calls (`generate_image`, `query_page_html`, translation) against the session's accumulated spend. To change a cap, mint a replacement token and revoke the old one.
+- **Cost cap.** `ai_cost_cap_microcents` (set at mint time) bounds a leaked token's wallet impact. On the chat surface the runner checks it during the turn (`cost cap reached: spent ~N µ¢ / cap M µ¢`); on the Power-MCP it gates the tools that make their own provider calls (`generate_image`, `query_page_html`) against the session's accumulated spend. To change a cap, mint a replacement token and revoke the old one.
 - **Rotation.** Tokens TTL out at **90 days** by default. Mint a new one, paste the new snippet, revoke the old at `/security/mcp`. The next call with a revoked bearer returns `auth_error: token revoked`.
 
 ## What's NOT exposed

@@ -1,7 +1,6 @@
 ---
 slug: plugins-build
 template: doc-page
-locale: en
 status: published
 seo:
   title: Build a plugin — Caelo CMS
@@ -16,7 +15,7 @@ Caelo's plugin host has **two tiers** that share the SDK shape but differ in tru
 
 **You're shipping code into the canonical Caelo release.** Tier 1 plugins live under `packages/plugins/<slug>/` in the source repo, are audited, signed with the Caelo Ed25519 key, and run in-process in the Bun host with the full SDK — cross-`cms_admin` writes, snapshot emission, AI provider access, chat-runner tool registration, background workers.
 
-Examples shipped today: translation, forms, comments, newsletter, ratings, auth.
+Examples shipped today: forms, comments, newsletter, ratings, auth. The first-party `international-site` plugin (i18n — epic #380) is being built on the same shape.
 
 **Who writes Tier 1:** humans only. AI cannot edit Tier 1 source — that's audited code shipped with releases. AI can *propose* a Tier 1 PR by drafting it in chat and asking you to land it.
 
@@ -34,7 +33,7 @@ Examples shipped today: translation, forms, comments, newsletter, ratings, auth.
 
 ```json
 {
-  "slug": "translation",
+  "slug": "international-site",
   "version": "1.0.0",
   "tier": 1,
   "requestedCapabilities": [
@@ -60,7 +59,7 @@ Tier 2 runs in a **Deno subprocess** with `--no-read --no-write --no-net --no-en
 
 - `ctx.query.*` — over the plugin's own `cms_public.plugin_<slug>.<table>` schema
 - `ctx.api.*` — visitor-side public read API
-- `ctx.theme` — read-only theme tokens + locale
+- `ctx.theme` — read-only theme tokens
 - `ctx.visitor` — visitor identity from the cookie
 - `ctx.captcha` — CAPTCHA / PoW gate
 
@@ -90,8 +89,6 @@ The validator (`packages/plugin-sandbox/src/validate.ts`, oxc-parser-based) reje
 - Template literal strings containing SQL keywords (use `ctx.query.*` instead of raw SQL)
 - `eval`, `Function`, `new Function`
 - Top-level `globalThis` writes
-
-Plus a schema rule: any table declaring a `page_id` column **must** also declare `locale`. Per-page plugin data is locale-aware by default.
 
 ## Web Components for the visitor side
 

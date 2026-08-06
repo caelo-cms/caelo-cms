@@ -1,5 +1,8 @@
 # Phase 10 — AI translation (Mode 1 + Mode 2) + dashboard
 
+> **Superseded (epic #380, v0.12):** this phase shipped and its surfaces were then deliberately removed in the plugin-system-v2 cleanup (#381–#385). The capability returns as the first-party `international-site` plugin (CMS_REQUIREMENTS §7). Kept as the historical build record.
+
+
 **Status:** stub — detail to be filled when this phase is picked up.
 **Dependencies:** P5, P9.
 

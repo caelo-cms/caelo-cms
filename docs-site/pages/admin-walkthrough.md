@@ -1,7 +1,6 @@
 ---
 slug: admin
 template: doc-page
-locale: en
 status: published
 seo:
   title: Using the Caelo admin
@@ -31,7 +30,6 @@ The structured surfaces for when the chat isn't the right tool:
 - `/content/pages` — list, search, filter; bulk operations
 - `/content/modules` — the module library
 - `/content/templates` — page-type templates
-- `/content/translations` — per-page × per-locale matrix; bulk-translate
 - `/content/chat` — chat history (separate from `/edit`'s session list)
 - `/content/snapshots` — Advanced History; per-module / per-site revert
 
@@ -48,7 +46,6 @@ Tiles:
 - **Costs** — `/security/costs` — five-panel dashboard (totals + budget status + per-day + per-attribution + roll-up)
 - **MCP tokens** — `/security/mcp` — bearer tokens for `bunx @caelo-cms/mcp-server`
 - **Plugins** — `/security/plugins` — Tier 1 + Tier 2 management, awaiting-activation queue
-- **Locales** — `/security/locales` — language registry + URL strategies (admin-only; AI rejected)
 - **Email** — `/security/email` — Resend / SMTP / SES selection
 - **Gateway** — `/security/gateway` — rate limits, captcha, body cap, request log
 - **Users + roles** — `/security/users` + `/security/roles`
@@ -62,7 +59,7 @@ Tiles:
 Two surfaces:
 
 1. **The live-edit chat overlay** — for editing pages (the primary surface)
-2. **The standalone chat at `/content/chat`** — for everything else (translation jobs, plugin moderation, drafting kits)
+2. **The standalone chat at `/content/chat`** — for everything else (plugin moderation, drafting kits, site-wide changes)
 
 A third surface — **MCP** — exposes the same chat-runner outside the browser. See [`/mcp`](/mcp).
 
@@ -73,7 +70,6 @@ Per `CLAUDE.md` §2 invariants:
 - Can't write raw HTML to a page (only modules can be raw HTML, and those are versioned)
 - Can't publish a page without your click
 - Can't activate a plugin without your click (Tier 1 ships signed; Tier 2 needs Owner approve)
-- Can't change locale config (admin-only at the validator)
 - Can't trigger a deploy past staging without an Ops-role human
 - Can't bypass the snapshot system; every write is reversible
 

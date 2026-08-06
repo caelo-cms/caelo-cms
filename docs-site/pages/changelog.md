@@ -1,7 +1,6 @@
 ---
 slug: changelog
 template: doc-page
-locale: en
 status: published
 seo:
   title: Changelog — Caelo CMS
@@ -9,6 +8,10 @@ seo:
 ---
 
 # Changelog
+
+## Unreleased — plugin-system v2 (epic #380)
+
+- **Core i18n removed** (#381–#385): locale registry, per-locale URL strategies, AI translation (Mode 1/2), hreflang emitter, and the language-selector set are no longer core features. Pages are identified by a globally unique slug; the homepage is a `site_defaults` pointer. The capability returns as the first-party `international-site` plugin built on the composition-point SDK.
 
 The canonical changelog lives in [`CHANGELOG.md`](https://github.com/caelo-cms/caelo-cms/blob/main/CHANGELOG.md) in the source repo and follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Pre-1.0 follows the **no-fallbacks invariant** documented in `CLAUDE.md` §2 — code paths fail loudly with structured errors when expected data is missing rather than silently substituting defaults. This rule is relaxed deliberately at 1.0.0 with a documented breaking-change policy.
 
@@ -22,8 +25,8 @@ What's in the box:
 - **Two-database split** — `cms_admin` + `cms_public` with RLS forced on every table both ways
 - **Live-edit overlay** — your real site in a chrome-less iframe + a floating chat overlay; click any element, ask the AI, watch it change in place
 - **Snapshot versioning + chat-keyed Undo** — every write emits a snapshot; every revert is one click
-- **Multi-locale + URL strategies** — subdirectory / subdomain / separate domain, mixed within one site
-- **AI translation** (Mode 1 + Mode 2) with per-locale glossary + style guide
+- **Multi-locale + URL strategies** — subdirectory / subdomain / separate domain, mixed within one site *(removed from core in the plugin-system-v2 cleanup — returns as the `international-site` plugin)*
+- **AI translation** (Mode 1 + Mode 2) with per-locale glossary + style guide *(removed from core in the plugin-system-v2 cleanup — returns as the `international-site` plugin)*
 - **Skills system** — Claude-style skill bodies the AI engages per turn, Owner-curated, AI-proposable
 - **Subagents** — the AI spawns parallel reasoning loops on demand
 - **Two-tier plugin host** — Tier 1 (signed, in-process, full SDK) + Tier 2 (Deno-sandboxed, locked SDK, AI-authorable)

@@ -1,7 +1,6 @@
 ---
 slug: quickstart
 template: doc-page
-locale: en
 status: published
 seo:
   title: Quickstart — Caelo CMS
