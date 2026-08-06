@@ -1,0 +1,52 @@
+{
+  "recordedAt": "2026-08-06T08:49:41.094Z",
+  "model": "claude-haiku-4-5",
+  "sdkVersions": {
+    "ai": "7.0.55",
+    "@ai-sdk/anthropic": "4.0.33"
+  },
+  "attempts": 1,
+  "turnShape": "deferred",
+  "dangling": [
+    "srvtoolu_01Sj6goooDYboY4chfGvPaVC"
+  ],
+  "continuationErrors": [],
+  "continuationStop": "end_turn",
+  "sdkLoopOutcome": "completed; messages=3; dangling=[]",
+  "usage": {
+    "inputTokens": 2287,
+    "outputTokens": 108,
+    "requests": 3
+  },
+  "turnMessages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool-call",
+          "toolCallId": "srvtoolu_01Sj6goooDYboY4chfGvPaVC",
+          "toolName": "tool_search_tool_bm25",
+          "input": {
+            "query": "map external page types"
+          },
+          "providerExecuted": true
+        },
+        {
+          "type": "tool-call",
+          "toolCallId": "toolu_01FLoh1e2EE5v1CqMVP5F2cv",
+          "toolName": "capture_screen_grab",
+          "input": {
+            "address": "https://example.com/"
+          },
+          "providerOptions": {
+            "anthropic": {
+              "caller": {
+                "type": "direct"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
