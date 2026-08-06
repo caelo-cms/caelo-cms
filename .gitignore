@@ -65,6 +65,9 @@ packages/plugins/*/manifest.json
 # a commit, and made `biome check .` fail on the generated manifests.
 data/fonts/
 apps/admin/data/fonts/
+# …and the same cache when a test run's cwd is the package itself (a local
+# `bun test` from packages/admin-core writes it there).
+packages/*/data/fonts/
 
 # Local debug/analysis artifacts from e2e-livedit runs (wire logs, A/B rounds,
 # dev-run logs) — session working material, never repo content.
