@@ -113,7 +113,7 @@ const helloPluginDef = definePlugin({
       return r;
     },
   },
-  requestedCapabilities: ["cms_admin"],
+  requestedCapabilities: ["cms_admin", "chat_runner_tools"],
   tools: [
     {
       name: "test_p115_greet",
@@ -229,6 +229,10 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
     const withWorkerDef = definePlugin({
       ...helloPluginDef,
       slug: "test-p115-workered",
+      requestedCapabilities: [
+        ...(helloPluginDef.requestedCapabilities ?? []),
+        "background_workers",
+      ],
       workers: [
         { name: "tick", cron: "0 0 * * *", operationName: "greet" }, // daily; never fires in test
       ],
@@ -282,5 +286,70 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
     expect(r.ok).toBe(true);
     expect(loadedPlugins.bySlug("test-p115-good")).toBeDefined();
     expect(loadedPlugins.bySlug("test-p115-bad")).toBeUndefined();
+  });
+});
+
+describe("#388 — capability enforcement at registration", () => {
+  it("tools without chat_runner_tools: validator + registration refuse", async () => {
+    const toolsNoCapDef = definePlugin({
+      ...helloPluginDef,
+      slug: "test-388-tools-nocap",
+      requestedCapabilities: [],
+      tools: [
+        {
+          name: "probe_tool",
+          description: "adversarial probe",
+          operationName: "greet",
+          inputJsonSchema: {},
+        },
+      ],
+    });
+    const report = await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: toolsNoCapDef }],
+    });
+    expect(report.loaded).toHaveLength(0);
+    expect(report.failed[0]?.reason).toContain("manifest-cap-missing");
+    expect(loadedPlugins.bySlug("test-388-tools-nocap")).toBeUndefined();
+    expect(pluginToolsRegistry.resolve("probe_tool")).toBeNull();
+  });
+
+  it("workers without background_workers: validator + registration refuse", async () => {
+    const workersNoCapDef = definePlugin({
+      ...helloPluginDef,
+      slug: "test-388-workers-nocap",
+      requestedCapabilities: [],
+      workers: [{ name: "tick", cron: "0 0 * * *", operationName: "greet" }],
+    });
+    const report = await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: workersNoCapDef }],
+    });
+    expect(report.loaded).toHaveLength(0);
+    expect(report.failed[0]?.reason).toContain("manifest-cap-missing");
+    expect(
+      pluginWorkerScheduler.list().filter((w) => w.pluginSlug === "test-388-workers-nocap"),
+    ).toHaveLength(0);
+  });
+
+  it("runtime-authored (tier 2) requesting capabilities: rejected", async () => {
+    const overreachDef = definePlugin({
+      ...helloPluginDef,
+      slug: "test-388-tier2-overreach",
+      tier: 2,
+      requestedCapabilities: ["cms_admin"],
+    });
+    const report = await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: overreachDef }],
+    });
+    expect(report.loaded).toHaveLength(0);
+    expect(report.failed[0]?.reason).toContain("manifest-tier2-cap-leak");
   });
 });

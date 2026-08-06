@@ -33,15 +33,12 @@
  *     where branch-write IS the desired semantic, store branchId in
  *     the persisted row and read it here.
  *
- * (b) Built-in tools only. The dispatch uses
- *     `createDefaultToolRegistry()` which is the BUILT-IN catalogue
- *     only — Tier-1 plugin tools registered through
- *     `pluginToolsRegistry` are NOT included. Plugin tools with
- *     `needsApproval` would queue fine but Approve would 400 with
- *     "unknown tool". Lift this constraint by importing
- *     `pluginToolsRegistry` here and folding its entries into the
- *     dispatcher's lookup, mirroring the chat-runner's catalogue
- *     assembly at chat-runner.ts:966.
+ * (b) Plugin tools fold in (#388). The dispatch first resolves the
+ *     tool against `pluginToolsRegistry` (mirroring the chat-runner's
+ *     dispatcher) and routes plugin tools through
+ *     `runPluginOperation`; built-ins fall through to the built-in
+ *     registry. A queued plugin tool's Approve therefore dispatches
+ *     instead of 400ing with "unknown tool".
  *
  * (c) Owner-ctx dispatch + actor-scope mismatch (v0.6.0 alpha.4 Fix R).
  *     The dispatched tool runs with `locals.ctx` (actorKind: "human")
@@ -59,6 +56,7 @@
  */
 
 import { createDefaultToolRegistry } from "@caelo-cms/admin-core";
+import { pluginToolsRegistry, runPluginOperation } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "$lib/server/csrf.js";
@@ -122,14 +120,28 @@ export const actions: Actions = {
     // Step 2: dispatch through the same tool registry the chat-runner
     // uses. ctx is the Owner's session ctx, not the AI ctx — audit
     // shows the human approver as the actor that ran the tool.
-    const tools = createDefaultToolRegistry();
     let dispatchResult: { ok: boolean; content: string };
     try {
-      dispatchResult = await tools.dispatch(toolName, args, locals.ctx, {
-        adapter,
-        registry,
-        ...(chatSessionId ? { chatSessionId } : {}),
-      });
+      // #388 — plugin tools resolve first (mirrors tool-dispatch.ts);
+      // built-ins fall through to the built-in registry.
+      const pluginTool = pluginToolsRegistry.resolve(toolName);
+      if (pluginTool) {
+        const r = await runPluginOperation({
+          pluginSlug: pluginTool.pluginSlug,
+          operationName: pluginTool.spec.operationName,
+          args,
+        });
+        dispatchResult = r.ok
+          ? { ok: true, content: JSON.stringify(r.value) }
+          : { ok: false, content: `${r.error.kind}: ${r.error.message}` };
+      } else {
+        const tools = createDefaultToolRegistry();
+        dispatchResult = await tools.dispatch(toolName, args, locals.ctx, {
+          adapter,
+          registry,
+          ...(chatSessionId ? { chatSessionId } : {}),
+        });
+      }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       dispatchResult = { ok: false, content: `dispatch threw: ${errMsg}` };

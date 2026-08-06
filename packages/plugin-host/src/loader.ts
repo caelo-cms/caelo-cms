@@ -333,6 +333,7 @@ async function loadActiveTier2Plugins(opts: BootstrapOpts): Promise<{
         slug: row.slug,
         version: row.version,
         tier: 2,
+        provenance: "runtime-authored",
         pluginActorId: actorId,
         definition: stubDef,
         executionStub: true,
@@ -453,6 +454,23 @@ interface RegisterOpts {
 
 async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
   const def = opts.definition;
+
+  // #388 — capability enforcement at the registration seam (defense in
+  // depth behind the validator's manifest-cap-missing rule): a tool or
+  // worker whose capability was not granted must never register. Checked
+  // BEFORE any side effect so a refused plugin leaves no row, no schema,
+  // and no registry entry behind.
+  const grantedCaps = new Set(def.requestedCapabilities ?? []);
+  if ((def.tools?.length ?? 0) > 0 && !grantedCaps.has("chat_runner_tools")) {
+    throw new Error(
+      `plugin "${def.slug}" declares tools without the chat_runner_tools capability — registration refused`,
+    );
+  }
+  if ((def.workers?.length ?? 0) > 0 && !grantedCaps.has("background_workers")) {
+    throw new Error(
+      `plugin "${def.slug}" declares workers without the background_workers capability — registration refused`,
+    );
+  }
   // Upsert the plugins row + actor row; reuses migration 0036's partial unique index.
   const { pluginId, pluginActorId } = await opts.infra.adapter.withAdminTransaction(
     {
@@ -516,6 +534,11 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
     slug: def.slug,
     version: def.version,
     tier: def.tier,
+    // Every plugin reaching this point had its manifest verified: disk
+    // plugins against the release/dev trust root, test plugins against
+    // the per-bootstrap ephemeral key. Runtime-authored (Tier-2) plugins
+    // never pass through here — they register via the stub path.
+    provenance: def.tier === 1 ? "release-signed" : "runtime-authored",
     definition: def,
     pluginActorId,
   };

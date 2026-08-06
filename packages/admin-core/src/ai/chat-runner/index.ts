@@ -23,7 +23,7 @@ import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
-import { attachGatedExecute } from "../tools/gated-tools.js";
+import { attachGatedExecute, attachPluginGatedExecute } from "../tools/gated-tools.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
 import {
   resolveCompactionRecentTokens,
@@ -281,9 +281,17 @@ export async function* runChatTurn(
   // never fronts an Owner approval.
   const isSubagentTurn = options.subagentResultCapture !== undefined;
   const filteredTools = catalogueTools.flatMap((t) => {
-    if (!t.gated) return [t];
-    if (isSubagentTurn) return [];
-    return [attachGatedExecute(t, registry, adapter, aiCtxWithBranch, humanCtx)];
+    if (t.gated) {
+      if (isSubagentTurn) return [];
+      return [attachGatedExecute(t, registry, adapter, aiCtxWithBranch, humanCtx)];
+    }
+    // #388 — approval-declared plugin tools get the same SDK gate;
+    // subagent turns strip them (a child never fronts an Owner approval).
+    if (t.pluginGated) {
+      if (isSubagentTurn) return [];
+      return [attachPluginGatedExecute(t)];
+    }
+    return [t];
   });
 
   // The system prompt is fully static now — the only passthrough is the static

@@ -66,8 +66,12 @@ export const pluginSchemaMap = z.record(z.string(), pluginTableSchema);
 
 export type PluginSchemaMap = z.infer<typeof pluginSchemaMap>;
 
-/** Tier 1 capability requests. Tier 2 manifests declaring this field
- *  are rejected by the validator (these capabilities are core-only). */
+/** Capability requests. Every capability is runtime-enforced; what is
+ *  GRANTABLE is capped by provenance (epic #380 decision 2): a
+ *  release-signed plugin may request any capability, a runtime-authored
+ *  plugin none beyond the sandbox base (query/api/theme/visitor/captcha).
+ *  The validator rejects runtime-authored manifests that reach over the
+ *  ceiling. */
 export const pluginCapability = z.enum([
   "cms_admin",
   "ai_provider",
@@ -78,6 +82,18 @@ export const pluginCapability = z.enum([
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
+
+/**
+ * Provenance is the trust axis (epic #380): who authored the plugin and
+ * how it entered the system. `release-signed` = the manifest carries a
+ * verified Ed25519 signature over the shipped artifact set (disk-loaded
+ * core plugins). `runtime-authored` = submitted at runtime (AI or Owner
+ * paste), gated by the validator + Owner activation, never signed.
+ * Provenance sets the grantability ceiling; the legacy `tier` column
+ * (1|2) is the persisted encoding of the same fact and is now derived
+ * trust, not a parallel interface.
+ */
+export type PluginProvenance = "release-signed" | "runtime-authored";
 
 /** Tier 1 background worker spec (cron-style). */
 export const pluginWorkerSpec = z.object({
@@ -99,6 +115,13 @@ export const pluginToolSpec = z.object({
   operationName: z.string().min(1).max(120),
   /** Zod-shaped JSON schema for the tool's input. Stored as a JSON object. */
   inputJsonSchema: z.record(z.string(), z.unknown()),
+  /** §11.A human-confirmation gate. When set, the chat-runner ships the
+   *  tool with the SDK's native approval: the turn PAUSES on a
+   *  tool-approval-request, the Owner clicks Approve in-chat, and only
+   *  then does the host dispatch `operationName`. Closes the historical
+   *  bypass where plugin tools skipped the approvals surface entirely
+   *  (#388). The tool's description must state the two-step contract. */
+  approvalMode: z.literal("user-approval").optional(),
 });
 
 export type PluginToolSpec = z.infer<typeof pluginToolSpec>;

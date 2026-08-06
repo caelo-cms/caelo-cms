@@ -57,6 +57,11 @@ export const BULK_TOOL_SIBLINGS: ReadonlyMap<string, string> = new Map(
  */
 export type FilteredTool = ToolDefinition & {
   gated?: { proposeOp: string; executeOp: string };
+  /** #388 — a plugin tool that declared `approvalMode` in its spec. The
+   *  chat-runner attaches an SDK `execute` that dispatches the plugin
+   *  operation only after the Owner's in-chat Approve — plugin tools no
+   *  longer bypass the approvals surface. */
+  pluginGated?: { pluginSlug: string; operationName: string };
 };
 
 /**
@@ -246,11 +251,20 @@ export function buildToolCatalogue(args: {
   // rest defer behind the provider's tool-search surface.
   const result: FilteredTool[] = [
     ...builtinTools.map((t) => (preload.has(t.name) ? { ...t, alwaysLoaded: true } : t)),
-    ...pluginTools.map(({ spec }) => ({
+    ...pluginTools.map(({ pluginSlug, spec }) => ({
       name: spec.name,
       description: spec.description,
       inputSchema: spec.inputJsonSchema,
       ...(preload.has(spec.name) ? { alwaysLoaded: true } : {}),
+      // #388 — carry the plugin's approval declaration into the
+      // catalogue so the chat-runner can wire the SDK gate; without
+      // this, plugin tools ran unqueued and unapproved on every call.
+      ...(spec.approvalMode
+        ? {
+            approvalMode: spec.approvalMode,
+            pluginGated: { pluginSlug, operationName: spec.operationName },
+          }
+        : {}),
     })),
   ];
   warnOnDisappearedTools(

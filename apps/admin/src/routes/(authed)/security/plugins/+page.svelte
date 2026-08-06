@@ -28,6 +28,15 @@
     TableRow,
   } from "$lib/components/ui/table/index.js";
 
+  // #388 — the granted capability set is the stored manifest's
+  // requestedCapabilities (grants == requests for a loaded plugin; the
+  // validator + loader refuse anything over the provenance ceiling).
+  function capabilitiesOf(manifestJson: unknown): string[] {
+    if (manifestJson === null || typeof manifestJson !== "object") return [];
+    const caps = (manifestJson as { requestedCapabilities?: unknown }).requestedCapabilities;
+    return Array.isArray(caps) ? caps.filter((c): c is string => typeof c === "string") : [];
+  }
+
   let { data, form } = $props();
 
   function fmtTime(s: string | null): string {
@@ -79,6 +88,7 @@
               <TableHead>Slug</TableHead>
               <TableHead>Version</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Capabilities</TableHead>
               <TableHead>Source</TableHead>
               <TableHead>Action</TableHead>
             </TableRow>
@@ -92,6 +102,17 @@
                   <Badge variant={p.status === "active" ? "default" : "secondary"}>
                     {p.status}
                   </Badge>
+                </TableCell>
+                <TableCell>
+                  {#if capabilitiesOf(p.manifestJson).length === 0}
+                    <span class="text-xs text-muted-foreground">sandbox base only</span>
+                  {:else}
+                    <div class="flex flex-wrap gap-1">
+                      {#each capabilitiesOf(p.manifestJson) as cap (cap)}
+                        <Badge variant="outline" class="font-mono text-[10px]">{cap}</Badge>
+                      {/each}
+                    </div>
+                  {/if}
                 </TableCell>
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>
                 <TableCell>

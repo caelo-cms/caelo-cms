@@ -14,7 +14,12 @@
  */
 
 import { createHash } from "node:crypto";
-import type { PluginContext, PluginContextTier1, PluginDefinition } from "@caelo-cms/plugin-sdk";
+import type {
+  PluginContext,
+  PluginContextTier1,
+  PluginDefinition,
+  PluginProvenance,
+} from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import type { AIProvider } from "./types.js";
@@ -60,6 +65,13 @@ export interface LoadedPlugin {
   readonly slug: string;
   readonly version: string;
   readonly tier: 1 | 2;
+  /** #388 — the trust axis. `release-signed` = manifest carried a
+   *  verified Ed25519 signature (disk-shipped core plugins; also the
+   *  ephemeral-signed test path). `runtime-authored` = submitted at
+   *  runtime, validator + Owner-activation gated, never signed.
+   *  Provenance caps grantable capabilities; `tier` is its persisted
+   *  encoding (derived trust, not a parallel interface). */
+  readonly provenance: PluginProvenance;
   readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
   /** Per-plugin actor row id — set as caelo.actor_id when the plugin's
    *  operations write through the Query API. */

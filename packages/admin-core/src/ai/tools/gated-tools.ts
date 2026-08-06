@@ -22,6 +22,7 @@
  * the separate Owner queue are gone.
  */
 
+import { runPluginOperation } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -78,6 +79,35 @@ export function attachGatedExecute(
         };
       }
       return { ok: true, value: applied.value };
+    },
+  };
+}
+
+/**
+ * #388 — attach the SDK `execute` to an approval-declared PLUGIN tool.
+ * Same pause semantics as `attachGatedExecute`, different apply path:
+ * after the Owner's in-chat Approve, the SDK runs `execute`, which
+ * dispatches the plugin operation through `runPluginOperation` (the
+ * plugin's own actor + RLS scoping). Before this, a plugin tool had no
+ * way to express an approval requirement at all — every call ran
+ * unqueued and unapproved.
+ */
+export function attachPluginGatedExecute(tool: FilteredTool): FilteredTool {
+  const pluginGated = tool.pluginGated;
+  if (!pluginGated) return tool;
+  return {
+    ...tool,
+    approvalMode: "user-approval",
+    execute: async (input: unknown): Promise<unknown> => {
+      const r = await runPluginOperation({
+        pluginSlug: pluginGated.pluginSlug,
+        operationName: pluginGated.operationName,
+        args: input,
+      });
+      if (!r.ok) {
+        return { ok: false, error: `${r.error.kind}: ${r.error.message}` };
+      }
+      return { ok: true, value: r.value };
     },
   };
 }

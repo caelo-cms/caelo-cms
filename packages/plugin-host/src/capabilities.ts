@@ -10,8 +10,9 @@
  *
  * Capability gating: `ctx.cms` / `ctx.ai` / `ctx.snapshots` are only attached
  * if the plugin's manifest declares the matching `requestedCapabilities`.
- * Tier 2 plugins NEVER get these — the loader passes Tier-2 to this module
- * via `tier: 2` and the function returns the locked `PluginContext` only.
+ * Runtime-authored plugins NEVER get these — provenance is the grantability
+ * ceiling (#388); the function returns the locked base `PluginContext` for
+ * them regardless of the manifest.
  */
 
 import type {
@@ -56,9 +57,10 @@ export type SessionMutation =
   | { kind: "clear" };
 
 /**
- * Build the per-call context. Returns a locked PluginContext for Tier 2 and
- * an extended PluginContextTier1 for Tier 1 (with only the requested
- * capability handles attached).
+ * Build the per-call context. Returns the locked base PluginContext for
+ * runtime-authored plugins and an extended PluginContextTier1 for
+ * release-signed plugins (with only the requested capability handles
+ * attached) — provenance is the ceiling, the capability set the grant.
  */
 export async function makePluginContext(
   opts: MakePluginContextOpts,
@@ -74,9 +76,14 @@ export async function makePluginContext(
     captcha: makePluginCaptcha(),
   };
 
-  if (plugin.tier === 2) return baseCtx;
+  // #388 grantability ceiling — provenance, not tier, decides what a
+  // plugin can be GIVEN: runtime-authored plugins get the sandbox base
+  // and nothing else, regardless of what their manifest requests (the
+  // validator rejects such manifests anyway; this is the runtime's
+  // independent enforcement of the same ceiling).
+  if (plugin.provenance === "runtime-authored") return baseCtx;
 
-  // Tier 1 — attach elevated handles per requestedCapabilities.
+  // Release-signed — attach elevated handles per requestedCapabilities.
   const tier1: Mutable<PluginContextTier1> = { ...baseCtx };
   if (requested.has("cms_admin")) {
     tier1.cms = makePluginCms(plugin, infra);

@@ -50,6 +50,7 @@ export type ValidationFailureKind =
   | "manifest-shape"
   | "manifest-tier-mismatch"
   | "manifest-tier2-cap-leak"
+  | "manifest-cap-missing"
   | "schema-shape"
   | "forbidden-import"
   | "forbidden-call"
@@ -96,7 +97,27 @@ export function validateManifest(rawManifest: unknown): {
   }
   const m = parsed.data;
 
-  // Tier 2 cannot request elevated capabilities.
+  // #388 — every capability is enforced, starting at the manifest:
+  // declaring tools[] / workers[] without holding the matching
+  // capability is a validation failure, not a silently-honoured extra.
+  if (m.tier === 1) {
+    const caps = new Set(m.requestedCapabilities ?? []);
+    if (m.tools && m.tools.length > 0 && !caps.has("chat_runner_tools")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `tools` but does not request the `chat_runner_tools` capability. Add it to `requestedCapabilities` (or drop the tools).",
+      });
+    }
+    if (m.workers && m.workers.length > 0 && !caps.has("background_workers")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `workers` but does not request the `background_workers` capability. Add it to `requestedCapabilities` (or drop the workers).",
+      });
+    }
+  }
+
+  // Tier 2 (runtime-authored) cannot reach over the grantability
+  // ceiling: no capabilities, no workers, no chat tools.
   if (m.tier === 2) {
     if (m.requestedCapabilities && m.requestedCapabilities.length > 0) {
       failures.push({
