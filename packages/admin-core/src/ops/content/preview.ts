@@ -14,6 +14,7 @@
  * render the post-AI-edit view of a page without requiring publish.
  */
 
+import { collectContributions, composeHeadBlock } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -1106,7 +1107,13 @@ export const renderPagePreviewOp = defineOperation({
       ogImageUrl,
       organization,
     });
-    html = injectSeoIntoHead(html, headBlock);
+    // #391 — plugin head contributions ride the SAME compose call the
+    // static generator uses (byte parity by construction).
+    const contributions = await collectContributions([input.pageId], { siteBaseUrl });
+    html = injectSeoIntoHead(
+      html,
+      composeHeadBlock(headBlock, contributions.head.get(input.pageId)),
+    );
 
     // issue #156 — surface unknown `var(--…)` references in the page's
     // CSS bundle (layout + template + placed modules) on the existing

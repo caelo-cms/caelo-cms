@@ -35,6 +35,12 @@ export {
   setPluginDisabled,
   type VisitorDispatchContext,
 } from "./dispatch.js";
+export {
+  type CollectedContributions,
+  collectContributions,
+  composeHeadBlock,
+  renderHeadEntries,
+} from "./head-composition.js";
 export { applyPluginLifecycle } from "./lifecycle.js";
 export { type BootstrapOpts, bootstrap, type LoadReport, resetPluginHost } from "./loader.js";
 export {

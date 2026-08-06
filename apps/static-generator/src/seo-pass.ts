@@ -19,6 +19,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { collectContributions, composeHeadBlock } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   injectSeoIntoHead,
@@ -155,6 +156,15 @@ export async function runSeoPass(args: {
     ogImageUrlByAsset.set(id, assetUrl);
   }
 
+  // #391 — collect every plugin's head/sitemap contributions in ONE
+  // batch call before the loops. Zod-validated + contradiction-checked
+  // by the host; serialization shares the exact code path the preview
+  // uses (composeHeadBlock), so both surfaces stay byte-identical.
+  const contributions = await collectContributions(
+    seoBundles.map((b) => b.pageId),
+    { siteBaseUrl: args.settings.siteBaseUrl },
+  );
+
   // #390 — canonical follows the MATERIALIZED composed path; home
   // designation, prefixes, and slug formats are already baked into
   // pages.current_path by the write ops.
@@ -179,7 +189,10 @@ export async function runSeoPass(args: {
       ogImageUrl,
       organization: args.settings.organization,
     });
-    p.html = injectSeoIntoHead(p.html, headBlock);
+    p.html = injectSeoIntoHead(
+      p.html,
+      composeHeadBlock(headBlock, contributions.head.get(bundle.pageId)),
+    );
   }
 
   // sitemap.xml — only when enabled AND env isn't noindex.
@@ -187,6 +200,9 @@ export async function runSeoPass(args: {
   if (sitemapEnabled) {
     const entries = seoBundles
       .filter((b) => !b.noindex)
+      // #391 — plugin-contributed exclusion (e.g. an unpublished
+      // variant URL must not appear; clean-404 semantics).
+      .filter((b) => contributions.sitemap.get(b.pageId)?.exclude !== true)
       .map((b) => {
         const canonical = resolveCanonicalUrl({
           siteBaseUrl: args.settings.siteBaseUrl,
@@ -194,9 +210,18 @@ export async function runSeoPass(args: {
           override: b.canonicalOverride,
           pageUrlStyle: args.pageUrlStyle,
         });
+        // #391 — contributed xhtml alternates (hreflang) inside the
+        // page's <url> entry, sorted for deterministic output.
+        const alternates = [...(contributions.sitemap.get(b.pageId)?.alternates ?? [])]
+          .sort((x, y) => x.hreflang.localeCompare(y.hreflang))
+          .map(
+            (a) =>
+              `    <xhtml:link rel="alternate" hreflang="${enc(a.hreflang)}" href="${enc(a.href)}" />`,
+          );
         return [
           "  <url>",
           `    <loc>${enc(canonical)}</loc>`,
+          ...alternates,
           `    <lastmod>${b.updatedAt.slice(0, 10)}</lastmod>`,
           `    <changefreq>${b.changefreq}</changefreq>`,
           `    <priority>${b.priority.toFixed(1)}</priority>`,
@@ -205,7 +230,7 @@ export async function runSeoPass(args: {
       });
     const xml = [
       '<?xml version="1.0" encoding="UTF-8"?>',
-      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
       ...entries,
       "</urlset>",
       "",

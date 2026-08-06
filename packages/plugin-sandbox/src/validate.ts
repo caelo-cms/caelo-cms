@@ -121,6 +121,12 @@ export function validateManifest(rawManifest: unknown): {
         hint: "manifest declares `adminSchema` but does not request the `cms_admin_schema` capability. Add it to `requestedCapabilities` (or drop the adminSchema).",
       });
     }
+    if (m.contributes && m.contributes.length > 0 && !caps.has("head_contributions")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `contributes` (head/sitemap) but does not request the `head_contributions` capability. Add it to `requestedCapabilities` (or drop the contributions).",
+      });
+    }
     if (m.tools && m.tools.length > 0 && !caps.has("chat_runner_tools")) {
       failures.push({
         kind: "manifest-cap-missing",
@@ -139,6 +145,18 @@ export function validateManifest(rawManifest: unknown): {
   // ceiling: no capabilities, no workers, no chat tools, no cms_admin
   // schema.
   if (m.tier === 2) {
+    if (m.contributes && m.contributes.length > 0) {
+      failures.push({
+        kind: "manifest-tier2-cap-leak",
+        hint: "Runtime-authored plugins cannot declare `contributes` — head/sitemap contributions are release-signed only (#391).",
+      });
+    }
+    if (m.urlContributions && m.urlContributions.length > 0) {
+      failures.push({
+        kind: "manifest-tier2-cap-leak",
+        hint: "Runtime-authored plugins cannot declare `urlContributions` — URL-slot claims are release-signed only (#390).",
+      });
+    }
     if (m.adminSchema && Object.keys(m.adminSchema).length > 0) {
       failures.push({
         kind: "manifest-tier2-cap-leak",

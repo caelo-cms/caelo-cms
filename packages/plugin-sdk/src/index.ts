@@ -88,6 +88,7 @@ export const pluginCapability = z.enum([
   "background_workers",
   "domain_events",
   "email",
+  "head_contributions",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -165,6 +166,71 @@ export type UrlSlot = z.infer<typeof urlSlot>;
  *  from the signed manifest without loading code. */
 export const urlContributionClaim = z.object({ slot: urlSlot }).strict();
 
+// ---------------------------------------------------------------------------
+// #391 — head + sitemap contribution points.
+// ---------------------------------------------------------------------------
+
+/**
+ * A typed per-page `<head>` entry. STRUCTURED on purpose — the §2
+ * invariant "no raw HTML into <head>" holds for plugins too: plugins
+ * return these shapes, CORE serializes + escapes them, and the same
+ * serializer feeds the static generator and the admin preview (one
+ * code path, byte parity).
+ */
+export const headEntry = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("link"),
+      rel: z.string().min(1).max(60),
+      href: z.string().min(1).max(2000),
+      hreflang: z.string().min(2).max(35).optional(),
+      media: z.string().max(200).optional(),
+      type: z.string().max(100).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("meta"),
+      name: z.string().min(1).max(120).optional(),
+      property: z.string().min(1).max(120).optional(),
+      content: z.string().max(2000),
+    })
+    .strict()
+    .refine((v) => (v.name !== undefined) !== (v.property !== undefined), {
+      message: "meta entries carry exactly one of `name` or `property`",
+    }),
+]);
+
+export type HeadEntry = z.infer<typeof headEntry>;
+
+/** Per-page sitemap adjustments contributed by a plugin. */
+export const sitemapContribution = z
+  .object({
+    /** Drop this page from the sitemap entirely (e.g. an unpublished
+     *  variant URL must not appear — clean-404 semantics). */
+    exclude: z.boolean().optional(),
+    /** xhtml alternate links attached to the page's <url> entry. */
+    alternates: z
+      .array(
+        z
+          .object({
+            hreflang: z.string().min(2).max(35),
+            href: z.string().min(1).max(2000),
+          })
+          .strict(),
+      )
+      .optional(),
+  })
+  .strict();
+
+export type SitemapContribution = z.infer<typeof sitemapContribution>;
+
+/** Manifest-side claim of contribution kinds (release-signed only,
+ *  capability `head_contributions`). */
+export const contributionKind = z.enum(["head", "sitemap"]);
+
+export type ContributionKind = z.infer<typeof contributionKind>;
+
 /** Plugin manifest (the structural part the host consumes). The actual
  *  operation bodies + frontend mount handler live in source — the
  *  manifest references them by name. */
@@ -201,6 +267,9 @@ export const pluginManifest = z
     /** #390 — URL-slot claims (release-signed only). The definition
      *  supplies the matching pure encode/decode pairs. */
     urlContributions: z.array(urlContributionClaim).optional(),
+    /** #391 — head/sitemap contribution claims (release-signed only,
+     *  requires the `head_contributions` capability). */
+    contributes: z.array(contributionKind).optional(),
   })
   .strict();
 
@@ -567,6 +636,17 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * `{annotations: Record<pageId, Record<string, unknown>>}`.
    */
   readonly urlAnnotationsOperation?: string;
+  /** #391 — see `pluginManifest.contributes`. */
+  readonly contributes?: ReadonlyArray<ContributionKind>;
+  /**
+   * #391 — the I/O half of head/sitemap contributions: an operation in
+   * `operations` taking `{pageIds: string[], siteBaseUrl: string}` and
+   * returning `{head?: Record<pageId, HeadEntry[]>, sitemap?:
+   * Record<pageId, SitemapContribution>}`. The host Zod-validates every
+   * entry and serializes them itself — a plugin can never inject raw
+   * head HTML.
+   */
+  readonly contributionsOperation?: string;
 }
 
 /**
@@ -597,6 +677,7 @@ export function manifestFromDefinition(def: {
   readonly schema: PluginSchemaMap;
   readonly adminSchema?: PluginSchemaMap;
   readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
+  readonly contributes?: ReadonlyArray<ContributionKind>;
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
   readonly staticRender?: unknown;
@@ -621,6 +702,7 @@ export function manifestFromDefinition(def: {
     ...(def.urlContributions && def.urlContributions.length > 0
       ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
       : {}),
+    ...(def.contributes && def.contributes.length > 0 ? { contributes: [...def.contributes] } : {}),
   });
 }
 
