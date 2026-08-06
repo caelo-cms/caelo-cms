@@ -21,6 +21,7 @@
     { "path": "./packages/plugins/newsletter" },
     { "path": "./packages/plugins/comments" },
     { "path": "./packages/plugins/auth" },
+    { "path": "./packages/plugins/international-site" },
     { "path": "./packages/provisioning" },
     { "path": "./packages/migrations" },
     { "path": "./apps/admin" },

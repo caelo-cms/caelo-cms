@@ -126,6 +126,7 @@
         "@caelo-cms/plugin-auth": "workspace:*",
         "@caelo-cms/plugin-comments": "workspace:*",
         "@caelo-cms/plugin-forms": "workspace:*",
+        "@caelo-cms/plugin-international-site": "workspace:*",
         "@caelo-cms/plugin-newsletter": "workspace:*",
         "@caelo-cms/plugin-ratings": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -214,6 +215,13 @@
       "version": "0.10.24",
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
+        "@caelo-cms/plugin-sdk": "workspace:*",
+      },
+    },
+    "packages/plugins/international-site": {
+      "name": "@caelo-cms/plugin-international-site",
+      "version": "0.10.24",
+      "dependencies": {
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
     },
@@ -423,6 +431,8 @@
     "@caelo-cms/plugin-forms": ["@caelo-cms/plugin-forms@workspace:packages/plugins/forms"],
 
     "@caelo-cms/plugin-host": ["@caelo-cms/plugin-host@workspace:packages/plugin-host"],
+
+    "@caelo-cms/plugin-international-site": ["@caelo-cms/plugin-international-site@workspace:packages/plugins/international-site"],
 
     "@caelo-cms/plugin-newsletter": ["@caelo-cms/plugin-newsletter@workspace:packages/plugins/newsletter"],
 
