@@ -71,10 +71,23 @@ describe("#387 — shipped plugins pass the disk-load pipeline", () => {
       const manifestCheck = validateManifest(manifest);
       expect(manifestCheck.failures).toEqual([]);
 
-      // 2. Source validator over the exact artifact the loader imports.
-      const source = readFileSync(distPath, "utf8");
-      const sourceFailures = validateSource({ filename: `${slug}/dist/index.js`, source });
-      expect(sourceFailures).toEqual([]);
+      // 2. Source validator over the exact artifacts the loader imports
+      // — every .js in dist, mirroring validateDistDirectory (a
+      // multi-file dist must not smuggle an unvalidated sibling).
+      const distDir = resolve(dir, "dist");
+      const jsFiles = readdirSync(distDir, { recursive: true })
+        .map(String)
+        .filter((f) => f.endsWith(".js"));
+      expect(jsFiles.length).toBeGreaterThan(0);
+      for (const rel of jsFiles) {
+        const source = readFileSync(resolve(distDir, rel), "utf8");
+        const sourceFailures = validateSource({
+          filename: `${slug}/dist/${rel}`,
+          source,
+          allowRelativeImports: true,
+        });
+        expect(sourceFailures).toEqual([]);
+      }
 
       // 3. Signature round-trip — the same sign/verify pair the release
       // tooling and the loader use.

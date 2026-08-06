@@ -129,18 +129,9 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
           if (!sig.ok) throw new Error(`signature verification failed: ${sig.reason}`);
         }
         if (tp.sourcePath) {
-          const distPath = resolvePath(tp.sourcePath, "dist", "index.js");
-          if (existsSync(distPath)) {
-            const source = readFileSync(distPath, "utf8");
-            const sourceFailures = validateSource({
-              filename: `${tp.definition.slug}/dist/index.js`,
-              source,
-            });
-            if (sourceFailures.length > 0) {
-              throw new Error(
-                `validator rejected source: ${sourceFailures.map((f) => f.kind).join(", ")}`,
-              );
-            }
+          const distDir = resolvePath(tp.sourcePath, "dist");
+          if (existsSync(resolvePath(distDir, "index.js"))) {
+            validateDistDirectory(distDir, tp.definition.slug);
           }
         }
         const lp = await registerLoadedPlugin({
@@ -401,18 +392,12 @@ async function loadOnePlugin(opts: LoadOpts): Promise<LoadedPlugin> {
   });
   if (!sig.ok) throw new Error(`signature verification failed: ${sig.reason}`);
 
-  // 4. Validator (defense-in-depth on Tier 1).
+  // 4. Validator (defense-in-depth on Tier 1) — every .js in dist.
   const distPath = resolvePath(opts.pluginDir, "dist", "index.js");
-  let source: string;
-  try {
-    source = readFileSync(distPath, "utf8");
-  } catch {
+  if (!existsSync(distPath)) {
     throw new Error("missing dist/index.js (run `bun run build` in the plugin dir)");
   }
-  const sourceFailures = validateSource({ filename: `${opts.slug}/dist/index.js`, source });
-  if (sourceFailures.length > 0) {
-    throw new Error(`validator rejected source: ${sourceFailures.map((f) => f.kind).join(", ")}`);
-  }
+  validateDistDirectory(resolvePath(opts.pluginDir, "dist"), opts.slug);
   const manifestCheck = validateManifest(opts.rawManifest);
   if (manifestCheck.failures.length > 0) {
     throw new Error(
@@ -453,6 +438,31 @@ interface RegisterOpts {
   readonly manifestSignatureHex: string;
   readonly infra: PluginHostInfra;
   readonly systemActorId: string;
+}
+
+/**
+ * Defense-in-depth over a release-signed dist: validate EVERY compiled
+ * .js file, not just the entry — a multi-file dist (`import "./x.js"`)
+ * must not smuggle an unvalidated sibling past the entry-only check.
+ */
+function validateDistDirectory(distDir: string, slug: string): void {
+  const jsFiles = readdirSync(distDir, { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith(".js"));
+  if (jsFiles.length === 0) throw new Error("dist directory contains no .js files");
+  for (const rel of jsFiles) {
+    const source = readFileSync(resolvePath(distDir, rel), "utf8");
+    const failures = validateSource({
+      filename: `${slug}/dist/${rel}`,
+      source,
+      allowRelativeImports: true,
+    });
+    if (failures.length > 0) {
+      throw new Error(
+        `validator rejected source (${rel}): ${failures.map((f) => f.kind).join(", ")}`,
+      );
+    }
+  }
 }
 
 async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {

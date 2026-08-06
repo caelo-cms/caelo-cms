@@ -215,11 +215,25 @@ const ALLOWED_IMPORTS = new Set<string>([
   "@caelo-cms/plugin-component-kit",
 ]);
 
+/** Same-package relative import: starts with `./`, never traverses up
+ *  (`..` is rejected anywhere in the path), ends in `.js`. Only the
+ *  release-signed dist path opts into this — a multi-file dist is
+ *  legitimate for audited plugins, and the loader validates EVERY .js
+ *  in the dist so the sibling file gets the same scrutiny. */
+const SAME_PACKAGE_IMPORT_RE = /^\.\/(?!.*\.\.)[\w./-]+\.js$/;
+
 /**
  * Walk the AST and collect failures. Called for both Tier 1 (defense
  * in depth at startup) and Tier 2 (gating activation).
  */
-export function validateSource(opts: { filename: string; source: string }): ValidationFailure[] {
+export function validateSource(opts: {
+  filename: string;
+  source: string;
+  /** Release-signed dist only — permits `./sibling.js` imports within
+   *  the plugin package. Runtime-authored source stays single-file:
+   *  the Deno sandbox has nothing else on disk to resolve against. */
+  allowRelativeImports?: boolean;
+}): ValidationFailure[] {
   const { filename, source } = opts;
   const failures: ValidationFailure[] = [];
 
@@ -243,7 +257,11 @@ export function validateSource(opts: { filename: string; source: string }): Vali
     // ImportDeclaration — only @caelo-cms/plugin-sdk allowed.
     if (type === "ImportDeclaration") {
       const sourceVal = (node as { source?: { value?: unknown } }).source?.value;
-      if (typeof sourceVal !== "string" || !ALLOWED_IMPORTS.has(sourceVal)) {
+      const relativeOk =
+        opts.allowRelativeImports === true &&
+        typeof sourceVal === "string" &&
+        SAME_PACKAGE_IMPORT_RE.test(sourceVal);
+      if (!relativeOk && (typeof sourceVal !== "string" || !ALLOWED_IMPORTS.has(sourceVal))) {
         failures.push({
           kind: "forbidden-import",
           nodeType: type,

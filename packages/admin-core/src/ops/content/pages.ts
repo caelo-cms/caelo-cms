@@ -935,11 +935,13 @@ function rewriteHrefs(items: unknown[], oldPath: string, newPath: string): HrefR
 
 export const updatePageOp = defineOperation({
   name: "pages.update",
+  // #397 — plugin actors update too (the translator writes the
+  // variant's translated title).
   // P6.7.5 — the three identifiers (name / title / slug) are separate optional
   // fields so a caller can never silently substitute one for another. A `slug`
   // change additionally fires the URL side-effects (301 + link rewrites) in
   // this same transaction — see applySlugChangeSideEffects.
-  actorScope: ["human", "ai", "system"],
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: pageUpdateSchema,
   output: z.object({}),

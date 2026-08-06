@@ -36,8 +36,20 @@
 import {
   definePlugin,
   type PluginAdminQuery,
+  type PluginAi,
   type PluginContextTier1,
+  type PluginEvents,
 } from "@caelo-cms/plugin-sdk";
+import {
+  alignSlots,
+  buildFullTranslationPrompt,
+  buildUpdateTranslationPrompt,
+  type ContentSlot,
+  type GlossaryEntry,
+  stripJsonFence,
+  translationResultPayload,
+  validateStructuralLock,
+} from "./translation.js";
 
 export interface LocaleRow {
   id: string;
@@ -77,6 +89,218 @@ function cmsOf(ctx: unknown): CmsHandle {
     );
   }
   return cms;
+}
+
+function aiOf(ctx: unknown): PluginAi {
+  const ai = (ctx as { ai?: PluginAi }).ai;
+  if (!ai) {
+    throw new Error(
+      "international-site: ctx.ai missing — the ai_provider capability was not granted (Owner must configure an AI provider)",
+    );
+  }
+  return ai;
+}
+
+function eventsOf(ctx: unknown): PluginEvents {
+  const events = (ctx as { events?: PluginEvents }).events;
+  if (!events) {
+    throw new Error(
+      "international-site: ctx.events missing — domain_events capability not granted",
+    );
+  }
+  return events;
+}
+
+interface GlossaryRow {
+  id: string;
+  term: string;
+  locale_code: string;
+  translation: string;
+  context: string | null;
+}
+
+interface StyleGuideRow {
+  id: string;
+  locale_code: string;
+  body: string;
+}
+
+async function loadPlacements(cms: CmsHandle, pageId: string): Promise<ContentSlot[]> {
+  const r = await cms.call<{
+    placements: {
+      blockName: string;
+      position: number;
+      moduleSlug: string;
+      values: Record<string, unknown>;
+    }[];
+  }>("page_module_content.list_for_page", { pageId });
+  return r.placements;
+}
+
+/**
+ * #397 — one context-aware translation pass for a variant page. Whole
+ * page in ONE ctx.ai call (never sentence-by-sentence); structural
+ * lock validated post-hoc; the result lands on the DRAFT variant.
+ */
+async function translateVariantPage(
+  ctx: unknown,
+  args: { variantPageId: string; mode?: "auto" | "full" | "update" },
+): Promise<{ mode: "full" | "update"; slotsApplied: number; titleApplied: boolean }> {
+  const q = adminQueryOf(ctx);
+  const cms = cmsOf(ctx);
+  const ai = aiOf(ctx);
+  await refreshLocaleCache(q);
+
+  const variantRows = (await q.list("page_variants", {
+    page_id: args.variantPageId,
+    limit: 1,
+  })) as unknown as PageVariantRow[];
+  const variantRow = variantRows[0];
+  if (!variantRow) {
+    throw new Error(
+      `page ${args.variantPageId} is not in a variant group — create_variant / link_page_variants first`,
+    );
+  }
+  const group = (await q.list("page_variants", {
+    group_id: variantRow.group_id,
+    limit: 100,
+  })) as unknown as PageVariantRow[];
+  const sourceRow = group.find((v) => v.translation_status === "source");
+  if (!sourceRow) {
+    throw new Error(
+      `variant group ${variantRow.group_id} has no source variant — link the original page first`,
+    );
+  }
+  if (sourceRow.page_id === args.variantPageId) {
+    throw new Error("this page IS the source of its group — pick a target variant to translate");
+  }
+  const sourceLocale = localeCache.get(sourceRow.locale_code);
+  const targetLocale = localeCache.get(variantRow.locale_code);
+  if (!sourceLocale || !targetLocale) {
+    throw new Error("group references locales that are no longer registered — fix via set_locales");
+  }
+
+  // Page titles via the open read surface.
+  const pages = await cms.call<{ pages: { id: string; title: string }[] }>("pages.list", {});
+  const sourceTitle = pages.pages.find((p) => p.id === sourceRow.page_id)?.title ?? "";
+  const variantTitle = pages.pages.find((p) => p.id === args.variantPageId)?.title ?? "";
+
+  const sourceSlots = await loadPlacements(cms, sourceRow.page_id);
+  const variantSlots = await loadPlacements(cms, args.variantPageId);
+  const alignment = alignSlots(sourceSlots, variantSlots);
+
+  // Glossary + style guide for the TARGET locale.
+  const glossaryRows = (await q.list("glossary", {
+    locale_code: targetLocale.code,
+    limit: 500,
+  })) as unknown as GlossaryRow[];
+  const glossary: GlossaryEntry[] = glossaryRows.map((g) => ({
+    term: g.term,
+    translation: g.translation,
+    context: g.context,
+  }));
+  const styleRows = (await q.list("style_guides", {
+    locale_code: targetLocale.code,
+    limit: 1,
+  })) as unknown as StyleGuideRow[];
+  const styleGuide = styleRows[0]?.body ?? null;
+
+  // Mode: a fresh clone still carries the source strings verbatim →
+  // full; anything already (partially) translated → update, which
+  // preserves human polish on slots the model omits.
+  let mode: "full" | "update";
+  if (args.mode === "full" || args.mode === "update") {
+    mode = args.mode;
+  } else {
+    const untouched = alignment
+      .filter((a) => a.kind === "aligned")
+      .every(
+        (a) =>
+          a.kind === "aligned" &&
+          JSON.stringify(a.source.values) === JSON.stringify(a.variant.values),
+      );
+    mode = untouched ? "full" : "update";
+  }
+
+  const prompt =
+    mode === "full"
+      ? buildFullTranslationPrompt({
+          sourceLocale: sourceLocale.code,
+          targetLocale: targetLocale.code,
+          targetLocaleDisplayName: targetLocale.display_name,
+          sourceTitle,
+          sourceSlots,
+          glossary,
+          styleGuide,
+        })
+      : buildUpdateTranslationPrompt({
+          sourceLocale: sourceLocale.code,
+          targetLocale: targetLocale.code,
+          targetLocaleDisplayName: targetLocale.display_name,
+          sourceTitle,
+          sourceSlots,
+          variantTitle,
+          variantSlots,
+          alignment,
+          glossary,
+          styleGuide,
+        });
+
+  const result = await ai.complete({
+    system: prompt.system,
+    messages: [{ role: "user", content: prompt.user }],
+    maxTokens: 16_000,
+  });
+  let payload: ReturnType<typeof translationResultPayload.parse>;
+  try {
+    payload = translationResultPayload.parse(JSON.parse(stripJsonFence(result.text)));
+  } catch (e) {
+    throw new Error(
+      `translation response did not match the contract: ${(e as Error).message}. Re-run translate_variant; if this repeats, the page may contain content the model cannot return as JSON.`,
+    );
+  }
+  validateStructuralLock(payload, alignment, mode);
+
+  // Apply — merge translated strings over the variant's current values.
+  const variantByKey = new Map(variantSlots.map((s) => [`${s.blockName}|${s.position}`, s]));
+  let slotsApplied = 0;
+  for (const slot of payload.slots) {
+    const current = variantByKey.get(`${slot.blockName}|${slot.position}`);
+    if (!current) continue; // full-mode 'added' slots have no variant placement — skip
+    const merged = { ...current.values, ...slot.values };
+    try {
+      await cms.call("page_module_content.set", {
+        pageId: args.variantPageId,
+        blockName: slot.blockName,
+        position: slot.position,
+        contentValues: merged,
+      });
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (!/synced/i.test(msg)) throw e;
+      // A synced placement is shared with other pages — a translation
+      // is by definition page-private, so fork first, then write.
+      await cms.call("placement.fork_content", {
+        pageId: args.variantPageId,
+        blockName: slot.blockName,
+        position: slot.position,
+      });
+      await cms.call("page_module_content.set", {
+        pageId: args.variantPageId,
+        blockName: slot.blockName,
+        position: slot.position,
+        contentValues: merged,
+      });
+    }
+    slotsApplied += 1;
+  }
+  let titleApplied = false;
+  if (payload.title && payload.title !== variantTitle) {
+    await cms.call("pages.update", { pageId: args.variantPageId, title: payload.title });
+    titleApplied = true;
+  }
+  await q.update("page_variants", variantRow.id, { translation_status: "up_to_date" });
+  return { mode, slotsApplied, titleApplied };
 }
 
 function adminQueryOf(ctx: unknown): PluginAdminQuery {
@@ -452,12 +676,175 @@ export default definePlugin<PluginContextTier1>({
           "Locale registry updated. If existing pages' URLs are affected, call propose_url_migration next — the Owner approves the move separately.",
       };
     },
+
+    /**
+     * #397 — translate one variant page. ONE context-aware AI call for
+     * the whole page (glossary + style guide included); NEVER
+     * sentence-by-sentence. Modes: full (fresh clone) / update
+     * (source changed after a translation existed) — auto-detected.
+     */
+    translate_variant: async (ctx, args) =>
+      translateVariantPage(
+        ctx,
+        args as { variantPageId: string; mode?: "auto" | "full" | "update" },
+      ),
+
+    /**
+     * #397 — bulk pass over every needs_update variant. Pauses (not
+     * fails) when the plugin's 24h AI cost cap is hit, reporting what
+     * remains so the AI can tell the operator instead of silently
+     * half-finishing.
+     */
+    translate_all_stale: async (ctx) => {
+      const q = adminQueryOf(ctx);
+      const stale = (await q.list("page_variants", {
+        translation_status: "needs_update",
+        limit: 500,
+      })) as unknown as PageVariantRow[];
+      const translated: string[] = [];
+      const failed: Array<{ pageId: string; error: string }> = [];
+      let paused = false;
+      for (const row of stale) {
+        try {
+          await translateVariantPage(ctx, { variantPageId: row.page_id });
+          translated.push(row.page_id);
+        } catch (e) {
+          const msg = (e as Error).message;
+          if (msg.startsWith("PluginAiCapExceeded:")) {
+            // Pause-on-overage: the cap is the Owner's budget decision,
+            // not an error in the work — stop cleanly, report the rest.
+            paused = true;
+            break;
+          }
+          failed.push({ pageId: row.page_id, error: msg });
+        }
+      }
+      return {
+        translated: translated.length,
+        failed,
+        paused,
+        remaining: stale.length - translated.length - failed.length,
+        ...(paused
+          ? {
+              nextStep:
+                "The plugin's 24h AI budget is exhausted. Tell the operator; the Owner can raise the cap at /security/plugins/international-site, then re-run translate_all_stale.",
+            }
+          : {}),
+      };
+    },
+
+    /** #397 — upsert a glossary term for a target locale. */
+    set_glossary_term: async (ctx, args) => {
+      const { term, localeCode, translation, context } = args as {
+        term: string;
+        localeCode: string;
+        translation: string;
+        context?: string;
+      };
+      const q = adminQueryOf(ctx);
+      await refreshLocaleCache(q);
+      if (!localeCache.has(localeCode)) {
+        throw new Error(`locale "${localeCode}" is not registered — call set_locales first`);
+      }
+      const existing = (await q.list("glossary", {
+        term,
+        locale_code: localeCode,
+        limit: 1,
+      })) as unknown as GlossaryRow[];
+      const prev = existing[0];
+      if (prev) {
+        await q.update("glossary", prev.id, { translation, context: context ?? null });
+        return { glossaryId: prev.id, updated: true };
+      }
+      const row = (await q.insert("glossary", {
+        term,
+        locale_code: localeCode,
+        translation,
+        context: context ?? null,
+      })) as { id: string };
+      return { glossaryId: row.id, updated: false };
+    },
+
+    /** #397 — set (replace) the style guide for a target locale. */
+    set_style_guide: async (ctx, args) => {
+      const { localeCode, body } = args as { localeCode: string; body: string };
+      const q = adminQueryOf(ctx);
+      await refreshLocaleCache(q);
+      if (!localeCache.has(localeCode)) {
+        throw new Error(`locale "${localeCode}" is not registered — call set_locales first`);
+      }
+      const existing = (await q.list("style_guides", {
+        locale_code: localeCode,
+        limit: 1,
+      })) as unknown as StyleGuideRow[];
+      const prev = existing[0];
+      if (prev) {
+        await q.update("style_guides", prev.id, { body });
+        return { styleGuideId: prev.id, updated: true };
+      }
+      const row = (await q.insert("style_guides", { locale_code: localeCode, body })) as {
+        id: string;
+      };
+      return { styleGuideId: row.id, updated: false };
+    },
+
+    /**
+     * #397 worker tick — consume the domain-event outbox and mark
+     * sibling variants of edited SOURCE pages needs_update. Branch
+     * writes (payload.chatBranchId) are skipped: staleness starts when
+     * the change lands on main (page.updated on publish/merge carries
+     * no branch id). At-least-once delivery is safe — the mark is
+     * idempotent.
+     */
+    translation_staleness_tick: async (ctx) => {
+      const q = adminQueryOf(ctx);
+      const events = eventsOf(ctx);
+      const batch = await events.poll({
+        kinds: ["page.updated", "page.published"],
+        limit: 200,
+      });
+      if (batch.events.length === 0) return { marked: 0, scanned: 0 };
+      const sourcePageIds = new Set<string>();
+      for (const ev of batch.events) {
+        const payload = ev.payload as { chatBranchId?: string | null };
+        if (payload?.chatBranchId) continue;
+        sourcePageIds.add(ev.entityId);
+      }
+      let marked = 0;
+      for (const pageId of sourcePageIds) {
+        const rows = (await q.list("page_variants", {
+          page_id: pageId,
+          limit: 1,
+        })) as unknown as PageVariantRow[];
+        const row = rows[0];
+        if (row?.translation_status !== "source") continue;
+        const siblings = (await q.list("page_variants", {
+          group_id: row.group_id,
+          limit: 100,
+        })) as unknown as PageVariantRow[];
+        for (const sib of siblings) {
+          if (sib.id === row.id || sib.translation_status === "needs_update") continue;
+          await q.update("page_variants", sib.id, {
+            translation_status: "needs_update",
+            source_event_cursor: batch.nextCursor,
+          });
+          marked += 1;
+        }
+      }
+      await events.commit(batch.nextCursor);
+      return { marked, scanned: batch.events.length };
+    },
   },
   workers: [
     {
       name: "locale-cache-refresh",
       cron: "0 * * * * *",
       operationName: "refresh_locales",
+    },
+    {
+      name: "translation-staleness",
+      cron: "*/30 * * * * *",
+      operationName: "translation_staleness_tick",
     },
   ],
   tools: [
@@ -552,6 +939,75 @@ export default definePlugin<PluginContextTier1>({
               },
             },
           },
+        },
+      },
+    },
+    {
+      name: "translate_variant",
+      description:
+        "Translate ONE variant page from its group's source language — the whole page in a single context-aware pass (module layout locked; glossary + style guide applied; existing human-polished translations preserved where the source did not change). " +
+        "Use after create_variant (the draft still carries the source language) and for any variant intl_status marks needs_update. The result stays a DRAFT — review, then publish. " +
+        "NOT for many pages at once — prefer translate_all_stale. NOT for the group's source page itself.",
+      operationName: "translate_variant",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["variantPageId"],
+        properties: {
+          variantPageId: { type: "string", format: "uuid" },
+          mode: {
+            type: "string",
+            enum: ["auto", "full", "update"],
+            description:
+              "auto (default) picks full for untranslated clones, update to refresh an existing translation after source edits.",
+          },
+        },
+      },
+    },
+    {
+      name: "translate_all_stale",
+      description:
+        "Re-translate EVERY variant marked needs_update (source pages changed after translation) in one call. Prefer this over repeated translate_variant calls when intl_status shows stale counts > 1. " +
+        "If the plugin's 24h AI budget runs out mid-pass, the result carries paused=true + remaining — tell the operator instead of retrying; the Owner can raise the cap at /security/plugins/international-site.",
+      operationName: "translate_all_stale",
+      inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
+    },
+    {
+      name: "set_glossary_term",
+      description:
+        "Pin the exact translation of a term for a target locale (e.g. 'checkout' → 'Kasse' for de). Every future translation into that locale uses it verbatim. " +
+        "Use when the operator corrects a translated word or names brand/product terminology ('never translate our product name'). One call per term+locale; re-calling updates the entry.",
+      operationName: "set_glossary_term",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["term", "localeCode", "translation"],
+        properties: {
+          term: { type: "string", minLength: 1, maxLength: 200 },
+          localeCode: { type: "string", minLength: 2, maxLength: 35 },
+          translation: { type: "string", minLength: 1, maxLength: 500 },
+          context: {
+            type: "string",
+            maxLength: 500,
+            description:
+              "Optional disambiguation shown to the translator (e.g. 'the e-commerce checkout, not a cash register').",
+          },
+        },
+      },
+    },
+    {
+      name: "set_style_guide",
+      description:
+        "Set the tone/style instructions applied to every translation into a locale (formality like du/Sie, register, phrasing conventions). Replaces the previous guide for that locale. " +
+        "Use when the operator states a preference ('use informal du on the German site'). For single-word fixes use set_glossary_term instead.",
+      operationName: "set_style_guide",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["localeCode", "body"],
+        properties: {
+          localeCode: { type: "string", minLength: 2, maxLength: 35 },
+          body: { type: "string", minLength: 1, maxLength: 10000 },
         },
       },
     },

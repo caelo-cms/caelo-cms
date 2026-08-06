@@ -1248,7 +1248,9 @@ export const setPlacementContentOp = defineOperation({
  */
 export const forkPlacementContentOp = defineOperation({
   name: "placement.fork_content",
-  actorScope: ["human", "ai", "system"],
+  // #397 — plugin actors fork too: translating a SYNCED placement must
+  // detach it first (a translation is by definition page-private).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: forkPlacementContentSchema,
   output: z.object({ contentInstanceId: z.string() }),

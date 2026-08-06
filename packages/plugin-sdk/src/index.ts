@@ -28,6 +28,11 @@
 
 import { z } from "zod";
 
+/** Re-exported so plugins can validate at their boundaries (CLAUDE.md
+ *  §4 "Zod at every boundary") without importing zod directly — the
+ *  sandbox validator allowlists only the SDK + component-kit. */
+export { z };
+
 // ---------------------------------------------------------------------------
 // Zod schemas — the wire format the validator + host both consume.
 // ---------------------------------------------------------------------------

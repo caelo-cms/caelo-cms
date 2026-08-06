@@ -96,6 +96,7 @@ import {
 } from "./ops/content/modules.js";
 import {
   getPageModuleContentOp,
+  listPageModuleContentOp,
   setPageModuleContentManyOp,
   setPageModuleContentOp,
 } from "./ops/content/page-module-content.js";
@@ -537,6 +538,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(buildPageOp);
   // 0184 — explicit homepage designation (site_defaults.home_page_id).
   registry.register(setHomePageOp);
+  registry.register(listPageModuleContentOp);
   registry.register(refreshCurrentPathOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
