@@ -25,14 +25,15 @@
 
   interface Props {
     open: boolean;
-    slug: string;
+    /** The page's composed public path (pages.currentPath, #390). */
+    path: string;
     chatBranchId: string;
     /** Module ids the AI has edited on this branch — populated by the
      *  caller (chat-runner records edited module ids on the session). */
     editedModules: { moduleId: string; label: string }[];
     onclose: () => void;
   }
-  let { open, slug, chatBranchId, editedModules, onclose }: Props = $props();
+  let { open, path, chatBranchId, editedModules, onclose }: Props = $props();
 
   // Set of module ids the user has UN-checked → those get excluded
   // from the branch overlay on the right iframe.
@@ -45,11 +46,11 @@
     excluded = next;
   }
 
-  const leftSrc = $derived(`/edit/preview-by-path/${slug}`);
+  const leftSrc = $derived(`/edit/preview-by-path${path === "/" ? "" : path}`);
   const rightSrc = $derived(() => {
     const params = new URLSearchParams({ branch: chatBranchId });
     if (excluded.size > 0) params.set("exclude", [...excluded].join(","));
-    return `/edit/preview-by-path/${slug}?${params.toString()}`;
+    return `/edit/preview-by-path${path === "/" ? "" : path}?${params.toString()}`;
   });
 </script>
 
@@ -61,7 +62,7 @@
   >
     <header class="flex h-12 shrink-0 items-center gap-2 border-b px-3">
       <strong class="text-sm">Side-by-side diff</strong>
-      <span class="text-xs text-muted-foreground">/{slug}</span>
+      <span class="text-xs text-muted-foreground">{path}</span>
       <Button
         variant="ghost"
         size="icon"

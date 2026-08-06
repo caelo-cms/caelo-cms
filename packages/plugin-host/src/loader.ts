@@ -54,6 +54,7 @@ import {
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
 import { pluginToolsRegistry } from "./tools-registry.js";
+import { urlContributionsRegistry } from "./url-composition.js";
 
 export interface BootstrapOpts {
   readonly infra: PluginHostInfra;
@@ -472,6 +473,21 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
       `plugin "${def.slug}" declares workers without the background_workers capability — registration refused`,
     );
   }
+
+  // #390 — claim URL slots. Exclusive: a conflict throws here (clean
+  // failure, no row/schema/registry side effects yet) and surfaces to
+  // the Owner as "conflicts with <holder>". urlContributions are
+  // release-signed only (runtime-authored plugins never reach
+  // registerLoadedPlugin with a definition carrying them — the manifest
+  // validator has no claim field for tier 2 to smuggle functions in).
+  if (def.urlContributions && def.urlContributions.length > 0) {
+    if (def.tier !== 1) {
+      throw new Error(
+        `plugin "${def.slug}" declares urlContributions but is not release-signed — refused`,
+      );
+    }
+    urlContributionsRegistry.register(def.slug, def.urlContributions, def.urlAnnotationsOperation);
+  }
   // Upsert the plugins row + actor row; reuses migration 0036's partial unique index.
   const { pluginId, pluginActorId } = await opts.infra.adapter.withAdminTransaction(
     {
@@ -628,6 +644,7 @@ export function resetPluginHost(): void {
   pluginWorkerScheduler.shutdown();
   pluginToolsRegistry.reset();
   pluginPromptContextRegistry.reset();
+  urlContributionsRegistry.reset();
   loadedPlugins.reset();
   // Audit fix #2: also clear the disabled-flags set so a previous test's
   // disable() doesn't leak into the next fixture.

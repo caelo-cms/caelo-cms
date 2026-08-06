@@ -49,5 +49,13 @@ export {
   pluginToolsRegistry,
   type RegisteredPluginTool,
 } from "./tools-registry.js";
-
 export type { AIMessage, AIProvider } from "./types.js";
+export {
+  collectUrlAnnotations,
+  type DecodedPagePath,
+  decodePagePath,
+  type RegisteredUrlContribution,
+  type ResolvedPageUrl,
+  resolvePageUrl,
+  urlContributionsRegistry,
+} from "./url-composition.js";

@@ -215,7 +215,7 @@ function makeScopedQuery(
         valueFragments.push(sql`${v}`);
       }
       if (cols.length === 0) {
-        throw new Error("${scope.label}.insert: data must include at least one declared column");
+        throw new Error(`${scope.label}.insert: data must include at least one declared column`);
       }
       const colsSql = sql.raw(cols.join(", "));
       const valuesSql = sql.join(valueFragments, sql`, `);
@@ -225,7 +225,7 @@ function makeScopedQuery(
           sql`INSERT INTO ${fqTable} (${colsSql}) VALUES (${valuesSql}) RETURNING id::text AS id`,
         )) as unknown as { id: string }[];
         const id = rows[0]?.id;
-        if (!id) throw new Error("${scope.label}.insert: no id returned");
+        if (!id) throw new Error(`${scope.label}.insert: no id returned`);
         return { id };
       });
     },
@@ -249,13 +249,13 @@ function makeScopedQuery(
       for (const [k, v] of Object.entries(filter ?? {})) {
         if (k === "limit") {
           if (typeof v !== "number" || v <= 0 || v > 1000) {
-            throw new Error("${scope.label}.list: limit must be 1..1000");
+            throw new Error(`${scope.label}.list: limit must be 1..1000`);
           }
           limit = v;
           continue;
         }
         if (k === "orderBy") {
-          if (typeof v !== "string") throw new Error("${scope.label}.list: orderBy must be string");
+          if (typeof v !== "string") throw new Error(`${scope.label}.list: orderBy must be string`);
           if (!declared.has(v)) {
             throw new Error(`${scope.label}.list: orderBy "${v}" not declared in schema`);
           }
@@ -265,13 +265,13 @@ function makeScopedQuery(
         }
         if (k === "orderDir") {
           if (v !== "asc" && v !== "desc")
-            throw new Error("${scope.label}.list: orderDir must be asc|desc");
+            throw new Error(`${scope.label}.list: orderDir must be asc|desc`);
           orderDir = v;
           continue;
         }
         if (k === "since") {
           if (typeof v !== "string")
-            throw new Error("${scope.label}.list: since must be ISO timestamp string");
+            throw new Error(`${scope.label}.list: since must be ISO timestamp string`);
           since = v;
           continue;
         }
@@ -286,7 +286,7 @@ function makeScopedQuery(
       }
       if (since !== null) {
         if (!declared.has("created_at")) {
-          throw new Error("${scope.label}.list: `since` requires a created_at column");
+          throw new Error(`${scope.label}.list: \`since\` requires a created_at column`);
         }
         wheres.push(sql`"created_at" > ${since}`);
       }
@@ -327,7 +327,7 @@ function makeScopedQuery(
         sets.push(sql`${colSql} = ${v}`);
       }
       if (sets.length === 0) {
-        throw new Error("${scope.label}.update: patch must include at least one declared column");
+        throw new Error(`${scope.label}.update: patch must include at least one declared column`);
       }
       const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
       const setsSql = sql.join(sets, sql`, `);

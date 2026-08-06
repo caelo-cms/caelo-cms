@@ -22,7 +22,6 @@ import { join } from "node:path";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   injectSeoIntoHead,
-  isDesignatedHomePage,
   renderSeoHead,
   resolveCanonicalUrl,
   type SiteSeoSettings,
@@ -32,6 +31,8 @@ import { sql } from "drizzle-orm";
 interface PageSeoBundle {
   pageId: string;
   slug: string;
+  /** The composed public path (pages.current_path, #390). */
+  currentPath: string;
   title: string;
   metaDescription: string;
   noindex: boolean;
@@ -71,7 +72,7 @@ export async function runSeoPass(args: {
   for (const slug of slugs) {
     const rows = (await args.tx.execute(sql`
       SELECT
-        p.id::text AS page_id, p.slug, p.title,
+        p.id::text AS page_id, p.slug, p.current_path, p.title,
         coalesce(s.meta_description, '') AS meta_description,
         coalesce(s.noindex, false) AS noindex,
         coalesce(s.changefreq, 'weekly') AS changefreq,
@@ -86,6 +87,7 @@ export async function runSeoPass(args: {
     `)) as unknown as {
       page_id: string;
       slug: string;
+      current_path: string;
       title: string;
       meta_description: string;
       noindex: boolean;
@@ -100,6 +102,7 @@ export async function runSeoPass(args: {
     seoBundles.push({
       pageId: r.page_id,
       slug: r.slug,
+      currentPath: r.current_path,
       title: r.title,
       metaDescription: r.meta_description,
       noindex: r.noindex,
@@ -152,23 +155,18 @@ export async function runSeoPass(args: {
     ogImageUrlByAsset.set(id, assetUrl);
   }
 
-  // 0184 — the designated homepage id (site_defaults since #384).
-  const homeRows = (await args.tx.execute(sql`
-    SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
-  `)) as unknown as { home_page_id: string | null }[];
-  const designatedHomePageId = homeRows[0]?.home_page_id ?? null;
-
-  // Inject the head block per page, matched by slug.
+  // #390 — canonical follows the MATERIALIZED composed path; home
+  // designation, prefixes, and slug formats are already baked into
+  // pages.current_path by the write ops.
   const bundleBySlug = new Map<string, PageSeoBundle>(seoBundles.map((b) => [b.slug, b]));
   for (const p of args.pages) {
     const bundle = bundleBySlug.get(p.pageSlug);
     if (!bundle) continue;
     const canonical = resolveCanonicalUrl({
       siteBaseUrl: args.settings.siteBaseUrl,
-      pageSlug: bundle.slug,
+      pagePath: bundle.currentPath,
       override: bundle.canonicalOverride,
       pageUrlStyle: args.pageUrlStyle,
-      isHomePage: isDesignatedHomePage(bundle.pageId, bundle.slug, designatedHomePageId),
     });
     const ogImageUrl = bundle.ogImageAssetId
       ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
@@ -192,10 +190,9 @@ export async function runSeoPass(args: {
       .map((b) => {
         const canonical = resolveCanonicalUrl({
           siteBaseUrl: args.settings.siteBaseUrl,
-          pageSlug: b.slug,
+          pagePath: b.currentPath,
           override: b.canonicalOverride,
           pageUrlStyle: args.pageUrlStyle,
-          isHomePage: isDesignatedHomePage(b.pageId, b.slug, designatedHomePageId),
         });
         return [
           "  <url>",

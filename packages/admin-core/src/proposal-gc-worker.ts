@@ -47,6 +47,8 @@ const PENDING_TABLES = [
   "plugin_rate_limit_proposals",
   // v0.11.0 (#45) — themes primitive uses the standard pending shape.
   "theme_pending_actions",
+  // #390 — URL-migration proposals use the standard pending shape.
+  "url_migration_pending_actions",
 ] as const;
 
 let workerHandle: ReturnType<typeof setInterval> | null = null;

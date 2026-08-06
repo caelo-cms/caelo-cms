@@ -554,7 +554,7 @@
   {#if activePage && data.activeChat}
     <DiffPanel
       open={diffOpen}
-      slug={activePage.slug}
+      path={activePage.currentPath}
       chatBranchId={data.activeChat.chatBranchId}
       editedModules={editedModules}
       onclose={() => (diffOpen = false)}

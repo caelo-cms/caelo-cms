@@ -133,6 +133,31 @@ export const proposeLayoutDeleteTool = makeProposeTool({
 
 // ─── users ───────────────────────────────────────────────────────────
 
+/**
+ * #390 — the generic URL-migration gate. The AI (or an activation flow)
+ * proposes; the diff engine computes the blast radius from the
+ * MATERIALIZED current_path column, so this works even when the plugin
+ * that caused the change is already gone.
+ */
+export const proposeUrlMigrationTool = makeProposeTool({
+  toolName: "propose_url_migration",
+  opName: "url_migrations.propose_migrate",
+  pendingQueuePath: "/security/pending",
+  when:
+    "Propose migrating every page whose public URL no longer matches the active URL-contribution set (after a URL plugin was activated, deactivated, or reconfigured). " +
+    "Computes the full old→new path diff + redirect fan-out as the preview; the Owner approves in-chat. " +
+    "If nothing changed the propose fails with 'no URL changes' — that is success (zero-diff retrofit), do NOT retry.",
+  schema: z.object({ reason: z.string().max(500).optional() }).strict(),
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      reason: { type: "string", maxLength: 500 },
+    },
+  },
+  summarize: (input) => `migrate page URLs${input.reason ? ` — ${input.reason}` : ""}`,
+});
+
 export const proposeUserCreateTool = makeProposeTool({
   toolName: "propose_create_user",
   opName: "users.propose_create",

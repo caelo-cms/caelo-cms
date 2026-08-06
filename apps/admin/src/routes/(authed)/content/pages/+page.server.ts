@@ -112,8 +112,8 @@ export const actions: Actions = {
       // (mirrors static-generator's pageOutputPath).
       const pageRow = await execute(registry, adapter, locals.ctx, "pages.get", { pageId });
       if (pageRow.ok) {
-        const p = (pageRow.value as { page: { slug: string } }).page;
-        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.slug)}`;
+        const p = (pageRow.value as { page: { currentPath: string } }).page;
+        previewUrl = `/_staging-preview/${summary.runId}/${stagingPreviewPath(p.currentPath)}`;
       } else {
         previewUrl = `/_staging-preview/${summary.runId}/`;
       }

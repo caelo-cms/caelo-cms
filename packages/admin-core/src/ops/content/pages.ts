@@ -40,10 +40,13 @@ import { createRedirectOp } from "../redirects.js";
 import { rewriteModuleLinksOp } from "../seo.js";
 import { readSiteDefaults } from "../site_defaults.js";
 import { listStructuredSetsOp, setStructuredSetOp } from "../structured_sets.js";
+import { recomputeCurrentPaths } from "./current-path.js";
 
 const pageRowSchema = z.object({
   id: z.string(),
   slug: z.string(),
+  /** #390 — the composed public path (pages.current_path). */
+  currentPath: z.string(),
   /** P6.7.5 — internal editor label, distinct from `title` and `slug`. */
   name: z.string(),
   title: z.string(),
@@ -100,6 +103,7 @@ const pageWithModulesSchema = pageRowSchema.extend({
 type RawPageRow = {
   id: string;
   slug: string;
+  current_path: string;
   name: string | null;
   title: string;
   template_id: string;
@@ -137,6 +141,7 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
   return {
     id: r.id,
     slug: r.slug,
+    currentPath: r.current_path,
     // P6.7.5 — legacy rows + raw INSERTs may leave `name` null. The
     // rest of the codebase treats name as a non-null friendly label,
     // so we fall back to title here so the editor never shows a blank
@@ -177,7 +182,7 @@ export const listPagesOp = defineOperation({
       filters.push(sql`pages.chat_branch_id IS NULL`);
     }
     const rows = (await tx.execute(sql`
-      SELECT pages.id::text AS id, pages.slug, pages.name, pages.title,
+      SELECT pages.id::text AS id, pages.slug, pages.current_path, pages.name, pages.title,
              pages.template_id::text AS template_id,
              templates.kind AS template_kind,
              pages.status, pages.version,
@@ -250,7 +255,7 @@ export const getPageOp = defineOperation({
     // (re-enables the v0.5.7 workflow that was reverted in v0.5.19).
     const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, name, title, template_id::text AS template_id,
+      SELECT id::text AS id, slug, current_path, name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -280,7 +285,7 @@ export const getPageWithModulesOp = defineOperation({
     // works inside the same chat without waiting for merge.
     const branchFilter = branchVisibilityFilter(ctx);
     const pageRows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, name, title, template_id::text AS template_id,
+      SELECT id::text AS id, slug, current_path, name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -795,6 +800,10 @@ export const createPageOp = defineOperation({
         },
       });
     }
+    // #390 — compose + materialize the public path (the INSERT trigger
+    // wrote the plugin-free default; this accounts for designation +
+    // active URL contributions).
+    await recomputeCurrentPaths(tx, [pageId]);
     return ok({ pageId });
   },
 });
@@ -820,11 +829,15 @@ async function applySlugChangeSideEffects(
   args: {
     oldSlug: string;
     newSlug: string;
+    /** COMPOSED paths (#390) — the caller reads the row's current_path
+     *  before the write and recomputes after, so redirects + href
+     *  rewrites operate on the real public URLs, prefixes included. */
+    oldPath: string;
+    newPath: string;
     redirectFromOld: "auto" | "skip";
   },
 ): Promise<{ rewrittenSets: number; rewrittenModules: number }> {
-  const oldPath = publicPathFor(args.oldSlug);
-  const newPath = publicPathFor(args.newSlug);
+  const { oldPath, newPath } = args;
 
   // Rewrite nav-menu / link-list hrefs (recursing into nav-menu children).
   // Queried per-kind rather than listing everything and filtering here: these
@@ -881,10 +894,10 @@ async function applySlugChangeSideEffects(
 }
 
 /**
- * Public URL for a page: `/<slug>`. URL shape beyond base + slug
- * becomes a plugin contribution on the URL composition point (#390).
- * (Resolves the old FIXME #326 — the hardcoded default-locale prefix
- * died with page-locale identity, epic #380 #384.)
+ * Composition-FREE path shape `/<slug>` — the same default the 0211
+ * INSERT trigger writes. Only a last-resort shape for rows that predate
+ * a current_path read in the same statement; every real consumer reads
+ * `pages.current_path` (#390).
  */
 function publicPathFor(slug: string): string {
   return `/${slug}`;
@@ -1066,9 +1079,25 @@ export const updatePageOp = defineOperation({
       // THIS transaction. Every caller of pages.update (incl. the update_many
       // bulk path) inherits this; before, only the change_page_slug tool did.
       if (input.slug !== undefined && input.slug !== existing.slug) {
+        // #390 — side effects operate on COMPOSED paths: the pre-write
+        // current_path is the URL the world knows; the recompute yields
+        // the new one (plugin prefixes included).
+        const oldPathRows = (await tx.execute(sql`
+          SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid
+        `)) as unknown as { current_path: string }[];
+        const recomputed = await recomputeCurrentPaths(tx, [input.pageId]);
+        const newPath = recomputed.get(input.pageId);
+        const oldPath = oldPathRows[0]?.current_path;
+        if (!oldPath || !newPath) {
+          throw new Error(
+            `pages.update: could not resolve current_path for slug change on ${input.pageId}`,
+          );
+        }
         await applySlugChangeSideEffects(ctx, tx, {
           oldSlug: existing.slug,
           newSlug: input.slug,
+          oldPath,
+          newPath,
           redirectFromOld: input.redirectFromOld ?? "auto",
         });
       }
@@ -1733,7 +1762,12 @@ export const deletePageOp = defineOperation({
     // (delete doesn't change it). A failed 301 aborts the delete rather than
     // leaving the URL silently unredirected (§2 no-fallbacks).
     if (input.disposition === "redirect" && state) {
-      const oldPath = publicPathFor(state.slug);
+      // #390 — the composed path (prefixes included) is the URL that
+      // needs the 301, not the bare slug shape.
+      const pathRows = (await tx.execute(sql`
+        SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid
+      `)) as unknown as { current_path: string }[];
+      const oldPath = pathRows[0]?.current_path ?? publicPathFor(state.slug);
       const red = await createRedirectOp.handler(
         ctx,
         { fromPath: oldPath, toPath: input.redirectTo as string, statusCode: 301 },
@@ -1975,6 +2009,7 @@ export const duplicatePageOp = defineOperation({
         payload: { slug: input.newSlug, duplicatedFrom: input.sourcePageId },
       });
     }
+    await recomputeCurrentPaths(tx, [newPageId]);
     const layoutState = await loadPageLayoutState(tx, newPageId);
     await emitSnapshot(tx, {
       actorId: ctx.actorId,

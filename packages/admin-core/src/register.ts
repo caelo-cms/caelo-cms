@@ -130,6 +130,7 @@ import {
   setTemplateLayoutOp,
   updateTemplateOp,
 } from "./ops/content/templates.js";
+import { executeUrlMigrationOp, proposeUrlMigrationOp } from "./ops/content/url_migrations.js";
 import {
   listDeployRunsOp,
   listDeployTargetsOp,
@@ -534,6 +535,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(buildPageOp);
   // 0184 — explicit homepage designation (site_defaults.home_page_id).
   registry.register(setHomePageOp);
+  registry.register(proposeUrlMigrationOp);
+  registry.register(executeUrlMigrationOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
   registry.register(setPageModuleContentManyOp);

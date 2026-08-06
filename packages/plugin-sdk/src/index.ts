@@ -150,6 +150,21 @@ export const pluginComponent = z
 
 export type PluginComponent = z.infer<typeof pluginComponent>;
 
+/**
+ * #390 — the slots of Caelo's fixed URL grammar (epic #380 decision 1):
+ * `scheme+host · path-prefix · slug (filtered by slug-format)`, plus
+ * `full-path` as the exclusive escape slot. Composition order comes
+ * from the grammar, never from registration order; each slot has at
+ * most one claimant across all active plugins.
+ */
+export const urlSlot = z.enum(["host", "path-prefix", "slug-format", "full-path"]);
+
+export type UrlSlot = z.infer<typeof urlSlot>;
+
+/** Manifest-side claim: slot names only, so conflicts are detectable
+ *  from the signed manifest without loading code. */
+export const urlContributionClaim = z.object({ slot: urlSlot }).strict();
+
 /** Plugin manifest (the structural part the host consumes). The actual
  *  operation bodies + frontend mount handler live in source — the
  *  manifest references them by name. */
@@ -183,6 +198,9 @@ export const pluginManifest = z
     workers: z.array(pluginWorkerSpec).optional(),
     /** Tier 1 only. */
     tools: z.array(pluginToolSpec).optional(),
+    /** #390 — URL-slot claims (release-signed only). The definition
+     *  supplies the matching pure encode/decode pairs. */
+    urlContributions: z.array(urlContributionClaim).optional(),
   })
   .strict();
 
@@ -241,6 +259,70 @@ export interface PluginQuery {
  * enforced by Postgres, never written through this handle).
  */
 export interface PluginAdminQuery extends PluginQuery {}
+
+// ---------------------------------------------------------------------------
+// #390 — URL composition point.
+// ---------------------------------------------------------------------------
+
+/**
+ * The page as the URL resolver sees it. `annotations` is the plugin's
+ * own per-page data (e.g. `{ locale: "de", isDefaultLocale: false }`),
+ * collected BEFORE resolution via the plugin's `urlAnnotations`
+ * operation — encode/decode themselves are pure and perform no I/O.
+ */
+export interface UrlComposePage {
+  readonly pageId: string;
+  readonly slug: string;
+  /** True when this page is the designated site root (site_defaults). */
+  readonly isHomePage: boolean;
+  readonly annotations: Readonly<Record<string, unknown>>;
+}
+
+/** Decode result for prefix/host/full-path: the annotations the path
+ *  implies (e.g. `{ locale: "de" }`), consumed by page lookup. */
+export interface UrlDecodeMatch {
+  readonly annotations: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Definition-side contribution: pure encode + decode per slot. Decode
+ * is MANDATORY — preview-by-path, link integrity, and the URL-diff
+ * engine all need inversion; a contribution that cannot invert its own
+ * encoding is rejected at registration.
+ */
+export type UrlContributionDef =
+  | {
+      readonly slot: "host";
+      /** Host for this page (e.g. "de.example.com") or null for the site default. */
+      readonly encode: (page: UrlComposePage) => string | null;
+      /** Inverse: what does an inbound host imply? null = not one of ours (default host). */
+      readonly decode: (host: string) => UrlDecodeMatch | null;
+    }
+  | {
+      readonly slot: "path-prefix";
+      /** Leading path segments for this page ([] = none / default variant). */
+      readonly encode: (page: UrlComposePage) => ReadonlyArray<string>;
+      /** Inverse: given the path's leading segments, how many belong to
+       *  this contribution and what do they imply? null = no prefix
+       *  (default). MUST be unambiguous; throw on ambiguity. */
+      readonly decode: (
+        segments: ReadonlyArray<string>,
+      ) => (UrlDecodeMatch & { readonly consumed: number }) | null;
+    }
+  | {
+      readonly slot: "slug-format";
+      /** Transform the stored slug into its URL form. */
+      readonly encode: (page: UrlComposePage) => string;
+      /** Inverse: URL slug segment back to the stored slug. */
+      readonly decode: (urlSlug: string) => string;
+    }
+  | {
+      readonly slot: "full-path";
+      /** The complete path (leading slash) — owns the whole grammar. */
+      readonly encode: (page: UrlComposePage) => string;
+      /** Inverse: path back to {slug, annotations}; null = unknown path. */
+      readonly decode: (path: string) => (UrlDecodeMatch & { readonly slug: string }) | null;
+    };
 
 /**
  * #392 — one row from the transactional domain-event outbox. Events are
@@ -473,6 +555,18 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   /** Tier 1 only. Plugin-emitted system-prompt blocks rendered every
    *  turn. */
   readonly promptContext?: ReadonlyArray<PluginPromptContextSpec<C>>;
+  /** #390 — pure URL-slot contributions (release-signed only). Each
+   *  entry's slot must also be claimed in the manifest. */
+  readonly urlContributions?: ReadonlyArray<UrlContributionDef>;
+  /**
+   * #390 — the I/O half of URL resolution: given page ids, return each
+   * page's URL annotations from the plugin's own data (e.g. its locale
+   * from the variant table). Called by core BEFORE composing; the
+   * contributions themselves stay pure. Name of an operation in
+   * `operations` taking `{pageIds: string[]}` and returning
+   * `{annotations: Record<pageId, Record<string, unknown>>}`.
+   */
+  readonly urlAnnotationsOperation?: string;
 }
 
 /**
@@ -502,6 +596,7 @@ export function manifestFromDefinition(def: {
   readonly tier: 1 | 2;
   readonly schema: PluginSchemaMap;
   readonly adminSchema?: PluginSchemaMap;
+  readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
   readonly staticRender?: unknown;
@@ -523,6 +618,9 @@ export function manifestFromDefinition(def: {
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.workers ? { workers: [...def.workers] } : {}),
     ...(def.tools ? { tools: [...def.tools] } : {}),
+    ...(def.urlContributions && def.urlContributions.length > 0
+      ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
+      : {}),
   });
 }
 

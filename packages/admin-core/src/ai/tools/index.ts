@@ -96,6 +96,7 @@ import {
   proposeRoleUpdatePermissionsTool,
   proposeTemplateDeleteTool,
   proposeTemplateUpdateTool,
+  proposeUrlMigrationTool,
   proposeUserCreateTool,
   proposeUserDeleteTool,
   proposeUserSetRolesTool,
@@ -376,6 +377,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // chat-runner-callable tools so the AI can actually queue
   // proposals through the standard tool-call loop.
   registry.register(proposeLayoutUpdateTool);
+  registry.register(proposeUrlMigrationTool);
   registry.register(proposeLayoutDeleteTool);
   registry.register(proposeUserCreateTool);
   registry.register(proposeUserSetRolesTool);

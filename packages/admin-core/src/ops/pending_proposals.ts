@@ -88,6 +88,11 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                chat_session_id::text
           FROM layout_pending_actions WHERE status = 'pending'
         UNION ALL
+        SELECT 'url_migrations', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'pagesMoved', '0') || ' pages move',
+               chat_session_id::text
+          FROM url_migration_pending_actions WHERE status = 'pending'
+        UNION ALL
         SELECT 'users', kind, id::text, proposed_by::text, created_at,
                COALESCE(preview->>'email', preview->>'displayName', 'user'),
                chat_session_id::text
@@ -193,6 +198,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
       WITH all_pending AS (
         SELECT 'deploy'::text AS domain FROM deploy_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'layouts' FROM layout_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'url_migrations' FROM url_migration_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'users' FROM user_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'roles' FROM role_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'snapshots' FROM snapshot_revert_pending_actions WHERE status = 'pending'
