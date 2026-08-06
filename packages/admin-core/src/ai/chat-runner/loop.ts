@@ -554,12 +554,17 @@ export async function* runToolLoop(
       // from the persisted row (Theme B): their tool_result rows were never
       // written, and an unpaired tool_use poisons the replay.
       const p = run.pendingStep;
-      if (p && p.anchorMessageId === null) {
+      if (p === null || p.anchorMessageId === null) {
+        // No pending step means the SDK's abort path discarded the step's
+        // undelivered parts (or the abort landed between steps) — persist
+        // the empty interrupted MARKER the pre-#442 loop always left, so
+        // the operator sees where the reply died (#303 exempts empty
+        // interrupted rows at the boundary).
         const saved = await persistAssistantTurn(registry, adapter, humanCtx, {
           chatSessionId,
-          content: p.text,
-          toolCalls: p.serverToolCalls.length > 0 ? [...p.serverToolCalls] : null,
-          thinkingBlocks: p.thinking.length > 0 ? p.thinking : null,
+          content: p?.text ?? "",
+          toolCalls: p && p.serverToolCalls.length > 0 ? [...p.serverToolCalls] : null,
+          thinkingBlocks: p && p.thinking.length > 0 ? p.thinking : null,
           responseMessages: null,
           status: "interrupted",
         });

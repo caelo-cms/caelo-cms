@@ -108,12 +108,14 @@ class MultiCallFixtureProvider extends FixtureProvider {
     super([], "claude-test-1");
     this.#queue = queue;
   }
-  override async *generate(): AsyncIterable<ProviderEvent> {
+  protected override nextStepEvents(): readonly ProviderEvent[] {
+    // issue #442 — the queue advances once per MODEL STEP of the real
+    // SDK loop (one pre-#442 provider call maps 1:1 onto one step).
     const events = this.#queue[this.#idx] ?? [
       { kind: "done" as const, stopReason: "end_turn" as const },
     ];
     this.#idx += 1;
-    for (const e of events) yield e;
+    return events;
   }
 }
 

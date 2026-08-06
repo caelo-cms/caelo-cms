@@ -15,7 +15,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { runChatTurn } from "../ai/chat-runner.js";
-import type { AIProvider, GenerateInput, ProviderEvent, ProviderName } from "../ai/provider.js";
+import { FixtureProvider } from "../ai/providers/anthropic.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { registerAdminOps } from "../register.js";
 
@@ -37,18 +37,43 @@ const AI: ExecutionContext = {
   requestId: "p5-2-abort-ai",
 };
 
-class SlowProvider implements AIProvider {
-  readonly name: ProviderName = "anthropic";
-  readonly model = "claude-test-1";
-  constructor(private readonly onFirstYield: () => void) {}
-  async *generate(input: GenerateInput): AsyncIterable<ProviderEvent> {
-    yield { kind: "text-delta", text: "first" };
-    this.onFirstYield();
-    await new Promise((r) => setTimeout(r, 30));
-    if (input.abortSignal?.aborted) return;
-    yield { kind: "text-delta", text: " second" };
-    yield { kind: "usage", inputTokens: 1, outputTokens: 2, cachedTokens: 0 };
-    yield { kind: "done", stopReason: "end_turn" };
+class SlowProvider extends FixtureProvider {
+  readonly #onFirstYield: () => void;
+  constructor(onFirstYield: () => void) {
+    super([], "claude-test-1");
+    this.#onFirstYield = onFirstYield;
+  }
+  // issue #442 — scripted at the raw model-stream level so the REAL SDK
+  // loop handles the mid-stream abort (the SDK cuts the stream and emits
+  // its `abort` part; the chat-runner persists the partial interrupted step).
+  protected override nextStepStream(options: {
+    abortSignal?: AbortSignal;
+  }): ReadableStream<unknown> | null {
+    const onFirstYield = this.#onFirstYield;
+    return new ReadableStream<unknown>({
+      async start(controller) {
+        controller.enqueue({ type: "stream-start", warnings: [] });
+        controller.enqueue({ type: "text-start", id: "t" });
+        controller.enqueue({ type: "text-delta", id: "t", delta: "first" });
+        onFirstYield();
+        await new Promise((r) => setTimeout(r, 30));
+        if (options.abortSignal?.aborted) {
+          controller.close();
+          return;
+        }
+        controller.enqueue({ type: "text-delta", id: "t", delta: " second" });
+        controller.enqueue({ type: "text-end", id: "t" });
+        controller.enqueue({
+          type: "finish",
+          finishReason: { unified: "stop", raw: "end_turn" },
+          usage: {
+            inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+            outputTokens: { total: 2, text: 2, reasoning: 0 },
+          },
+        });
+        controller.close();
+      },
+    });
   }
 }
 
