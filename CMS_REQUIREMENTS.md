@@ -543,6 +543,23 @@ A Web Component covers a plugin surface the page opts into by placing its tag. S
 - **One resolver, two surfaces.** The deploy links the files; the admin preview inlines the identical bytes, because the preview iframe has no build directory to serve from. Delivery differs, content does not — the editor can never show behaviour the deployed site won't have.
 - **Loud, per CLAUDE.md §2.** A throwing plugin, a malformed file name and an over-budget payload all fail the build. A runtime that silently stops shipping is precisely the defect this channel exists to prevent.
 
+#### Deferred modules — withholding content until a plugin allows it (#450)
+
+A plugin can know something about a module its author does not: this one embeds YouTube, and until the visitor agrees to marketing cookies it must not reach YouTube at all. A plugin declares `deferralsOperation`, receives every module in the render pass, and returns a verdict per withheld module (`reason` + `placeholderModuleSlug`). Core emits:
+
+```html
+<div data-caelo-deferred="<plugin>" data-reason="<key>" data-module="<slug>">
+  <div data-caelo-deferred-placeholder>…placeholder module…</div>
+  <template data-caelo-deferred-content>…the real module…</template>
+</div>
+```
+
+- **`<template>` is the mechanism, not a convention.** Browsers parse its contents but instantiate nothing inside it — no image, iframe, script or stylesheet is fetched. "Not loaded" is therefore a fact about the network, not a promise about the DOM. Hiding the module with CSS or stripping attributes in script would both leave the request already sent. The plugin's client runtime (§14.6) clones the content into place when its condition is met.
+- **Per module, not per placement.** A module classified once is withheld everywhere it appears, including from a layout. A per-placement decision would have to be repeated for every page and would silently miss the next one.
+- **The placeholder is an ordinary module**, named by slug, so the AI authors and styles it like any other content.
+- **Generic by design.** Core learns "withheld by plugin X for reason Y" and nothing about consent. A paywall or an auth gate uses the same primitive.
+- **Loud, per CLAUDE.md §2.** A failing verdict op, a malformed verdict, two plugins gating one module, and a missing placeholder module all fail the render. Rendering the withheld module instead would issue exactly the request the gate exists to prevent.
+
 ### 14.7 Runtime Split
 
 ```

@@ -21,6 +21,7 @@ import {
   injectPluginAssets,
   pluginDataListsRegistry,
   resolveDataLists,
+  resolveModuleDeferrals,
 } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
@@ -944,6 +945,16 @@ export const renderPagePreviewOp = defineOperation({
       modules,
     }));
 
+    // #450 — which of this page's modules is a plugin withholding? The
+    // editor has to see the placeholder the visitor will see; a module
+    // that renders here and is gated on the live site would leave the
+    // operator styling something nobody is shown yet.
+    const placedModuleIds = [
+      ...blocks.flatMap((b) => b.modules.map((m) => m.moduleId)),
+      ...layoutBlocks.flatMap((b) => b.modules.map((m) => m.moduleId)),
+    ];
+    const deferredModules = Object.fromEntries(await resolveModuleDeferrals(placedModuleIds));
+
     // v0.11.0 (#45) — `composeTheme` loaded earlier (above the render
     // loop) so its asset URLs flow into renderModuleWithContent for
     // `{{theme_logo_url}}` substitution (v0.11.1, issue #76). Same row
@@ -978,6 +989,7 @@ export const renderPagePreviewOp = defineOperation({
     let composed: ReturnType<typeof composePageWithLayout>;
     try {
       composed = composePageWithLayout({
+        deferredModules,
         templateHtml: pageRow.template_html,
         templateCss: pageRow.template_css,
         blocks,

@@ -236,6 +236,28 @@ export function setHostInfra(infra: PluginHostInfra): void {
   cachedInfra = infra;
 }
 
+/** The bootstrapped adapter + registry, for host-internal passes that
+ *  need to read core through the Query API (never raw SQL). Throws
+ *  rather than returning null — every caller runs inside a render pass
+ *  that a booted host is a precondition for. */
+export function hostInfra(): PluginHostInfra {
+  if (!cachedInfra) throw new Error("plugin host not bootstrapped");
+  return cachedInfra;
+}
+
+let cachedSystemActorId: string | null = null;
+export function setHostSystemActorId(actorId: string): void {
+  cachedSystemActorId = actorId;
+}
+
+/** Actor the host itself reads core as. Host-internal passes are not
+ *  acting for any plugin — attributing their reads to one would put a
+ *  plugin's id on rows it never asked for. */
+export function hostSystemActorId(): string {
+  if (!cachedSystemActorId) throw new Error("plugin host not bootstrapped");
+  return cachedSystemActorId;
+}
+
 export async function runPluginOperation(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {

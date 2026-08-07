@@ -295,6 +295,35 @@ export const pluginDataListSpec = z
 
 export type PluginDataListSpec = z.infer<typeof pluginDataListSpec>;
 
+/**
+ * A module withheld from the page until the withholding plugin says
+ * otherwise.
+ *
+ * Core emits the module's real HTML inside an inert `<template>` plus a
+ * visible placeholder module; nothing inside a `<template>` issues a
+ * network request, so a third-party embed genuinely does not load. The
+ * plugin's client runtime clones the content into place when its
+ * condition is met.
+ *
+ * Deliberately generic — core learns "withheld by plugin X for reason
+ * Y", never "consent". A paywall or an auth gate uses the same shape.
+ */
+export const moduleDeferralSpec = z
+  .object({
+    /** The plugin's own vocabulary, surfaced as `data-reason`. */
+    reason: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z][a-z0-9_-]*$/, "reason is a lowercase key"),
+    /** Slug of the module rendered in the withheld one's place. An
+     *  ordinary module, so the AI authors and styles it. */
+    placeholderModuleSlug: z.string().min(1).max(200),
+  })
+  .strict();
+
+export type ModuleDeferralSpec = z.infer<typeof moduleDeferralSpec>;
+
 export const pluginManifest = z
   .object({
     slug: z
@@ -323,6 +352,9 @@ export const pluginManifest = z
      *  files land on every page of the public site, so authorship has
      *  to be auditable. */
     hasBuildAssets: z.boolean().default(false),
+    /** See `PluginDefinition.deferralsOperation`. Release-signed only:
+     *  withholding a module changes what visitors see. */
+    hasDeferrals: z.boolean().default(false),
     /** Tier 1 only. */
     requestedCapabilities: z.array(pluginCapability).optional(),
     /** Tier 1 only. */
@@ -752,6 +784,18 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   /** See `pluginManifest.dataLists`. Release-signed only. */
   readonly dataLists?: ReadonlyArray<PluginDataListSpec>;
   /**
+   * The I/O half of module deferrals: an operation in `operations`
+   * taking `{moduleIds: string[]}` (every module in the current render
+   * pass) and returning
+   * `{deferrals: Record<moduleId, ModuleDeferralSpec>}`.
+   *
+   * Withholding is per MODULE, not per placement: a video module
+   * classified once is withheld everywhere it appears, including from
+   * a layout. Return only the modules actually withheld — an absent id
+   * renders normally.
+   */
+  readonly deferralsOperation?: string;
+  /**
    * The I/O half of `dataLists`: an operation in `operations` taking
    * `{pageIds: string[]}` and returning
    * `{lists: Record<pageId, Record<listName, Array<Record<string, string>>>>}`.
@@ -795,6 +839,7 @@ export function manifestFromDefinition(def: {
   readonly component?: PluginComponent;
   readonly staticRender?: unknown;
   readonly buildAssets?: unknown;
+  readonly deferralsOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
   readonly tools?: ReadonlyArray<PluginToolSpec>;
@@ -811,6 +856,7 @@ export function manifestFromDefinition(def: {
       : undefined,
     hasStaticRender: Boolean(def.staticRender),
     hasBuildAssets: Boolean(def.buildAssets),
+    hasDeferrals: Boolean(def.deferralsOperation),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.workers ? { workers: [...def.workers] } : {}),
     ...(def.tools ? { tools: [...def.tools] } : {}),
