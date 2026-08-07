@@ -82,6 +82,32 @@ export function alignSlots(
   return out;
 }
 
+/**
+ * The identifier the translator echoes back, and the ONLY one it sees.
+ *
+ * A slot is really (blockName, position), but asking the model to
+ * reproduce two fields alongside a third it must not use (moduleSlug)
+ * invites exactly one mistake: a live run returned the module slug as
+ * the block name, the structural lock refused the whole translation,
+ * and the AI fell back to translating by hand. An opaque positional id
+ * removes the choice — there is one token, it is meaningless on its
+ * own, and copying it is the only thing that can be done with it.
+ *
+ * Derived from the SOURCE order, so ids are stable within one call.
+ */
+export function slotIdOf(index: number): string {
+  return `s${index}`;
+}
+
+/** id → (blockName, position) for the slots offered to the translator. */
+export function buildSlotIndex(
+  slots: readonly ContentSlot[],
+): Map<string, { blockName: string; position: number }> {
+  return new Map(
+    slots.map((s, i) => [slotIdOf(i), { blockName: s.blockName, position: s.position }]),
+  );
+}
+
 /** The AI's response contract — strict, one entry per translated slot. */
 export const translationResultPayload = z
   .object({
@@ -89,8 +115,8 @@ export const translationResultPayload = z
     slots: z.array(
       z
         .object({
-          blockName: z.string().min(1),
-          position: z.number().int().min(0),
+          /** The opaque slot id from the prompt, copied verbatim. */
+          slot: z.string().min(1),
           /** Field → translated string. Only fields present here are
            *  written; untouched fields keep their current value. */
           values: z.record(z.string(), z.string()),
@@ -117,22 +143,45 @@ function renderStyleGuideBlock(styleGuide: string | null): string {
   return ["", "## Style guide", styleGuide.trim()].join("\n");
 }
 
-function renderSlots(slots: readonly ContentSlot[]): string {
+/**
+ * Render slots for the prompt.
+ *
+ * `idFor` resolves the heading token. Slot ids are always derived from
+ * the SOURCE list, and the existing-translation listing in update mode
+ * reuses them — numbering that side independently would hand the model
+ * two different ids for one slot, which is the same class of ambiguity
+ * the opaque id exists to remove.
+ */
+function renderSlots(
+  slots: readonly ContentSlot[],
+  idFor: (slot: ContentSlot, index: number) => string | null,
+): string {
   return slots
-    .map((s) => {
+    .map((s, i) => {
       const fields = Object.entries(s.values)
         .filter((e): e is [string, string] => typeof e[1] === "string")
         .map(([k, v]) => `${k}:\n\`\`\`\n${v}\n\`\`\``);
-      return [
-        `### Module ${s.moduleSlug} (block=${s.blockName}, position=${s.position})`,
-        ...(fields.length > 0 ? fields : ["(no translatable string fields)"]),
-      ].join("\n");
+      const id = idFor(s, i);
+      // The id leads; the module slug is context only. Anything the
+      // model might mistake for an identifier has to come after the
+      // one thing it is asked to copy.
+      const heading =
+        id === null
+          ? `### (no slot id — not present on the source page; module ${s.moduleSlug}, block ${s.blockName})`
+          : `### Slot ${id} (module ${s.moduleSlug}, block ${s.blockName})`;
+      return [heading, ...(fields.length > 0 ? fields : ["(no translatable string fields)"])].join(
+        "\n",
+      );
     })
     .join("\n\n");
 }
 
+/** Id resolver for the source listing: plain positional order. */
+const bySourceOrder = (_s: ContentSlot, i: number): string => slotIdOf(i);
+
 const RESPONSE_CONTRACT =
-  'Respond with a JSON object matching: {"title": str (translated page title), "slots": [{"blockName": str, "position": int, "values": {"<field>": "<translated string>", ...}}, ...]}. ' +
+  'Respond with a JSON object matching: {"title": str (translated page title), "slots": [{"slot": "<the slot id from the heading, copied EXACTLY — e.g. s0>", "values": {"<field>": "<translated string>", ...}}, ...]}. ' +
+  'Never invent a slot id and never substitute the module slug or block name for it — copy the "### Slot <id>" token verbatim. ' +
   "Include ONLY string fields you translated; preserve every HTML tag, attribute, class, id, href, and inline style inside field values verbatim — only human-readable text is translated. Numbers, code samples, and untranslatable proper nouns stay as-is.";
 
 export interface FullPromptInput {
@@ -158,7 +207,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
     "",
     "STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Translate ONLY the content fields of each existing module, plus the page title.",
     "",
-    `${RESPONSE_CONTRACT} Return ONE entry per source module — same blockName + position.`,
+    `${RESPONSE_CONTRACT} Return ONE entry per slot listed below.`,
     renderGlossaryBlock(input.glossary),
     renderStyleGuideBlock(input.styleGuide),
   ]
@@ -169,7 +218,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
     "",
     `Title: ${input.sourceTitle}`,
     "",
-    renderSlots(input.sourceSlots),
+    renderSlots(input.sourceSlots, bySourceOrder),
   ].join("\n");
   return { system, user };
 }
@@ -208,13 +257,18 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     "",
     `Title: ${input.sourceTitle}`,
     "",
-    renderSlots(input.sourceSlots),
+    renderSlots(input.sourceSlots, bySourceOrder),
     "",
     "## Existing translation (preserve unchanged slots verbatim)",
     "",
     `Title: ${input.variantTitle}`,
     "",
-    renderSlots(input.variantSlots),
+    renderSlots(input.variantSlots, (slot) => {
+      const i = input.sourceSlots.findIndex(
+        (src) => src.blockName === slot.blockName && src.position === slot.position,
+      );
+      return i === -1 ? null : slotIdOf(i);
+    }),
     "",
     "## Structural alignment",
   ];
@@ -252,7 +306,12 @@ export function validateStructuralLock(
   payload: TranslationResultPayload,
   alignment: readonly SlotAlignment[],
   mode: "full" | "update",
+  slotIndex: ReadonlyMap<string, { blockName: string; position: number }>,
 ): void {
+  const keyOf = (id: string): string | null => {
+    const t = slotIndex.get(id);
+    return t ? `${t.blockName}|${t.position}` : null;
+  };
   const alignedKeys = new Set(
     alignment.filter((a) => a.kind === "aligned").map((a) => `${a.blockName}|${a.position}`),
   );
@@ -263,19 +322,24 @@ export function validateStructuralLock(
   );
   const seen = new Set<string>();
   for (const slot of payload.slots) {
-    const key = `${slot.blockName}|${slot.position}`;
+    const key = keyOf(slot.slot);
+    if (key === null) {
+      throw new Error(
+        `structural lock: response uses slot id "${slot.slot}", which was not offered in the prompt (valid ids: ${[...slotIndex.keys()].join(", ")}) — refusing to apply`,
+      );
+    }
     if (seen.has(key)) {
-      throw new Error(`structural lock: duplicate slot ${key} in the response`);
+      throw new Error(`structural lock: duplicate slot ${slot.slot} in the response`);
     }
     seen.add(key);
     if (mode === "update" && !alignedKeys.has(key)) {
       throw new Error(
-        `structural lock: response includes slot ${key} which is not aligned between source and translation — refusing to apply`,
+        `structural lock: response includes slot ${slot.slot} which is not aligned between source and translation — refusing to apply`,
       );
     }
     if (mode === "full" && !sourceKeys.has(key)) {
       throw new Error(
-        `structural lock: response includes slot ${key} which does not exist on the source page — refusing to apply`,
+        `structural lock: response includes slot ${slot.slot} which does not exist on the source page — refusing to apply`,
       );
     }
   }

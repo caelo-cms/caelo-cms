@@ -44,6 +44,7 @@ import {
 import {
   alignSlots,
   buildFullTranslationPrompt,
+  buildSlotIndex,
   buildUpdateTranslationPrompt,
   type ContentSlot,
   type GlossaryEntry,
@@ -260,12 +261,19 @@ async function translateVariantPage(
       `translation response did not match the contract: ${(e as Error).message}. Re-run translate_variant; if this repeats, the page may contain content the model cannot return as JSON.`,
     );
   }
-  validateStructuralLock(payload, alignment, mode);
+  // The translator answers with opaque slot ids; resolve them back to
+  // (blockName, position) here, against the very index the prompt was
+  // built from.
+  const slotIndex = buildSlotIndex(sourceSlots);
+  validateStructuralLock(payload, alignment, mode, slotIndex);
 
   // Apply — merge translated strings over the variant's current values.
   const variantByKey = new Map(variantSlots.map((s) => [`${s.blockName}|${s.position}`, s]));
   let slotsApplied = 0;
-  for (const slot of payload.slots) {
+  for (const entry of payload.slots) {
+    const target = slotIndex.get(entry.slot);
+    if (!target) continue; // validateStructuralLock already refused these
+    const slot = { ...target, values: entry.values };
     const current = variantByKey.get(`${slot.blockName}|${slot.position}`);
     if (!current) continue; // full-mode 'added' slots have no variant placement — skip
     const merged = { ...current.values, ...slot.values };

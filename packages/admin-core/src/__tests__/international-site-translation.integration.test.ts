@@ -194,8 +194,10 @@ describe("#397 — context-aware translation", () => {
       JSON.stringify({
         title: "Preise",
         slots: [
-          { blockName: "main", position: 0, values: { headline: "Willkommen" } },
-          { blockName: "ghost", position: 9, values: { headline: "X" } },
+          { slot: "s0", values: { headline: "Willkommen" } },
+          // An id that was never offered — the module slug is what a
+          // live run actually returned here.
+          { slot: "t397-hero", values: { headline: "X" } },
         ],
       }),
     );
@@ -215,8 +217,7 @@ describe("#397 — context-aware translation", () => {
           title: "Preise",
           slots: [
             {
-              blockName: "main",
-              position: 0,
+              slot: "s0",
               values: { headline: "Willkommen", body_html: "<p>Hallo <b>Welt</b></p>" },
             },
           ],
@@ -301,7 +302,7 @@ describe("#397 — context-aware translation", () => {
     aiScript.push(() =>
       JSON.stringify({
         title: "Preise v2",
-        slots: [{ blockName: "main", position: 0, values: { headline: "Willkommen v2" } }],
+        slots: [{ slot: "s0", values: { headline: "Willkommen v2" } }],
       }),
     );
     const bulk = await op<{ translated: number; paused: boolean; remaining: number }>(
