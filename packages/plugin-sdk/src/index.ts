@@ -271,6 +271,30 @@ export type ContributionKind = z.infer<typeof contributionKind>;
 /** Plugin manifest (the structural part the host consumes). The actual
  *  operation bodies + frontend mount handler live in source — the
  *  manifest references them by name. */
+/**
+ * A named, per-page list a plugin offers to module templates.
+ *
+ * `name` is what a module writes as `{{#name}}`; it is claimed
+ * site-wide so two plugins can never disagree about what a name means.
+ * `itemFields` documents the keys each element carries, so the AI can
+ * author the inner markup without reading the plugin's source.
+ */
+export const pluginDataListSpec = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z][a-z0-9_]*$/, "data-list names are lowercase snake_case"),
+    /** One line: what this list contains and when it is non-empty. */
+    description: z.string().min(1).max(300),
+    /** Keys present on every element, for the module author. */
+    itemFields: z.array(z.string().min(1).max(64)).min(1),
+  })
+  .strict();
+
+export type PluginDataListSpec = z.infer<typeof pluginDataListSpec>;
+
 export const pluginManifest = z
   .object({
     slug: z
@@ -309,6 +333,14 @@ export const pluginManifest = z
     contributes: z.array(contributionKind).optional(),
     /** #393 — plugin-shipped skills (release-signed only). */
     skills: z.array(pluginSkillSpec).optional(),
+    /**
+     * Named lists a module can iterate with `{{#name}}…{{/name}}`,
+     * resolved per rendered page. The plugin supplies the DATA; the
+     * module (authored by the AI) owns the markup — so a language
+     * switcher looks like the site it lives on instead of carrying a
+     * plugin's fixed HTML. Names are claimed site-wide, like URL slots.
+     */
+    dataLists: z.array(pluginDataListSpec).optional(),
   })
   .strict();
 
@@ -688,6 +720,15 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * head HTML.
    */
   readonly contributionsOperation?: string;
+  /** See `pluginManifest.dataLists`. Release-signed only. */
+  readonly dataLists?: ReadonlyArray<PluginDataListSpec>;
+  /**
+   * The I/O half of `dataLists`: an operation in `operations` taking
+   * `{pageIds: string[]}` and returning
+   * `{lists: Record<pageId, Record<listName, Array<Record<string, string>>>>}`.
+   * Called once per render pass, batched over the pages being rendered.
+   */
+  readonly dataListsOperation?: string;
 }
 
 /**
@@ -719,6 +760,7 @@ export function manifestFromDefinition(def: {
   readonly adminSchema?: PluginSchemaMap;
   readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
   readonly contributes?: ReadonlyArray<ContributionKind>;
+  readonly dataLists?: ReadonlyArray<PluginDataListSpec>;
   readonly skills?: ReadonlyArray<PluginSkillSpec>;
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
@@ -745,6 +787,7 @@ export function manifestFromDefinition(def: {
       ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
       : {}),
     ...(def.contributes && def.contributes.length > 0 ? { contributes: [...def.contributes] } : {}),
+    ...(def.dataLists && def.dataLists.length > 0 ? { dataLists: [...def.dataLists] } : {}),
   });
 }
 
