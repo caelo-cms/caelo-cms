@@ -139,6 +139,22 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
     },
   },
   {
+    name: "export_consent_log",
+    description:
+      "Export the record of who consented to what and when, as CSV. This is the evidence a data-protection authority or a DPO asks for. " +
+      "Use when the operator asks to prove consent, hand records to a DPO, or before uninstalling the plugin — uninstall DROPS these records and there is no recovery. " +
+      "Returns at most 1000 rows by default; when `truncated` comes back true, export again with `since` set to the oldest row you received.",
+    operationName: "export_log",
+    inputJsonSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        since: { type: "string", description: "ISO timestamp; only records at or after it." },
+        limit: { type: "number", description: "Max rows, capped at 5000." },
+      },
+    },
+  },
+  {
     name: "bump_consent_policy_version",
     description:
       "Invalidate every stored consent so all visitors are asked again. " +
