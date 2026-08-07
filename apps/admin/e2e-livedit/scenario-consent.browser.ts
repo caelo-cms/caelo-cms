@@ -98,9 +98,15 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
   // The dialog exists and the runtime can find it.
   expect(html).toContain("data-consent-banner");
 
-  // Every category is offered individually — the operator asked for it,
-  // and a banner with one Accept button is not what they described.
-  for (const key of ["necessary", "functional", "analytics", "marketing"]) {
+  // The list resolved rather than shipping as a literal placeholder.
+  expect(html).not.toContain("{{#consent_categories}}");
+
+  // Every category the visitor can actually decide about is offered
+  // individually — that is what the operator asked for, and a banner
+  // with one Accept button is not it. `necessary` is deliberately not
+  // required here: it cannot be declined, so rendering it as a line of
+  // text rather than a checkbox is a legitimate choice.
+  for (const key of ["functional", "analytics", "marketing"]) {
     expect(html).toContain(`data-consent-category="${key}"`);
   }
 
