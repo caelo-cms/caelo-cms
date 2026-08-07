@@ -86,9 +86,15 @@ test.afterEach(async () => {
     const sql = new SQL(process.env.ADMIN_DATABASE_URL);
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      // Plugin-schema rows are RLS-scoped to caelo.plugin_id.
+      // Plugin-schema rows are RLS-scoped to caelo.plugin_id. The
+      // schema itself only exists after an Owner activated the plugin
+      // (the loader provisions it then), so a run that failed before
+      // the Activate click has a plugins ROW but no relations.
       const plug = await tx\`SELECT id FROM plugins WHERE slug = 'international-site'\`;
-      if (plug[0]) {
+      const provisioned = await tx.unsafe(
+        "SELECT to_regclass('plugin_international_site.page_variants') IS NOT NULL AS ok",
+      );
+      if (plug[0] && provisioned[0]?.ok) {
         await tx.unsafe(\`SET LOCAL caelo.plugin_id = '\${plug[0].id}'\`);
         await tx.unsafe("DELETE FROM plugin_international_site.page_variants");
         await tx.unsafe("DELETE FROM plugin_international_site.locales");

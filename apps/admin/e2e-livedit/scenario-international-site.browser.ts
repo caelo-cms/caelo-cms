@@ -143,8 +143,16 @@ function resetIntlState(): void {
       const sql = new SQL(process.env.ADMIN_DATABASE_URL);
       await sql.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        // The plugins ROW exists as soon as the host discovers the
+        // plugin, but its SCHEMA only exists once an Owner activated it
+        // and the loader provisioned it. On a cold database there is
+        // nothing to reset — checking the row would pass and the DELETE
+        // would then fail on a missing relation.
         const plug = await tx\`SELECT id FROM plugins WHERE slug = 'international-site'\`;
-        if (plug[0]) {
+        const provisioned = await tx.unsafe(
+          "SELECT to_regclass('plugin_international_site.page_variants') IS NOT NULL AS ok",
+        );
+        if (plug[0] && provisioned[0]?.ok) {
           await tx.unsafe(\`SET LOCAL caelo.plugin_id = '\${plug[0].id}'\`);
           await tx.unsafe("DELETE FROM plugin_international_site.page_variants");
           await tx.unsafe("DELETE FROM plugin_international_site.locales");
