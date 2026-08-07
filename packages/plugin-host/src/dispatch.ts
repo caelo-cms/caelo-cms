@@ -219,7 +219,7 @@ export type RunPluginOperationResult =
           | "PluginNotFound"
           | "PluginDisabled"
           | "OperationNotDeclared"
-      | "OperationNotPublic"
+          | "OperationNotPublic"
           | "OperationFailed"
           | "Tier2RuntimePending";
         readonly message: string;

@@ -66,7 +66,7 @@ html.caelo-consent-open [data-consent-banner]{display:revert}`;
  * The runtime body. Plain browser JS, no imports, no template literals
  * (it is embedded in one).
  */
-const RUNTIME_BODY = String.raw`
+const RUNTIME_BODY = `
 var COOKIE = "caelo_consent";
 var doc = document;
 var root = doc.documentElement;
@@ -322,21 +322,26 @@ if (doc.readyState === "loading") {
 }
 `;
 
-/** No tag support yet — #452 replaces this with the real injector. */
-const TAGS_STUB = "function loadTags() {}\n";
-
 /**
  * Emit the runtime with this site's configuration baked in.
  *
  * @param config categories, policy version and endpoint as they stand
  *   at build time.
+ * @param tagInjector the tag loader for this site's registered tags. No
+ *   tag reaches the document at build time — a tag written into the
+ *   page has already run by the time any script could decide whether it
+ *   should, so the runtime holds them all and injects only the ones
+ *   whose category is granted.
  */
-export function buildRuntimeJs(config: RuntimeConfig & { slug: string }): string {
+export function buildRuntimeJs(
+  config: RuntimeConfig & { slug: string },
+  tagInjector: string,
+): string {
   return [
     "(function () {",
     '"use strict";',
     `var CONFIG = ${JSON.stringify(config)};`,
-    TAGS_STUB,
+    tagInjector,
     RUNTIME_BODY,
     "})();",
   ].join("\n");

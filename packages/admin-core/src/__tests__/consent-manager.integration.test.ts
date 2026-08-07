@@ -232,6 +232,66 @@ describe("#451 — consent-manager", () => {
     if (!bad.ok) expect(bad.error.message).toContain("keys are fixed");
   });
 
+  it("pins a tag to a category and injects it only once granted", async () => {
+    const added = await call("add_tag", {
+      name: "GA4",
+      vendor: "google-analytics",
+      justification: "Aggregate page popularity.",
+    });
+    if (!added.ok) throw new Error(JSON.stringify(added.error));
+    // The known vendor supplies the category and the script URL, so the
+    // operator does not have to look either up.
+    expect((added.value as { category: string }).category).toBe("analytics");
+
+    const assets = await collectBuildAssets([pageId]);
+    const js = assets.find((a) => a.fileName === "runtime.js")?.content ?? "";
+    expect(js).toContain("googletagmanager.com");
+    // Baked into the RUNTIME, never into the page: a tag in the page's
+    // HTML has already run by the time anything could check consent.
+    expect(js).toContain('"category":"analytics"');
+    expect(js).toContain("if (!isGranted(tag.category)) continue;");
+  });
+
+  it("refuses a `necessary` tag without a written justification", async () => {
+    // `necessary` runs for everyone, unasked. Without this it is simply
+    // the category that makes the banner stop being an obstacle.
+    const r = await call("add_tag", {
+      name: "SneakyPixel",
+      category: "necessary",
+      scriptSrc: "https://tracker.example.com/p.js",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.message).toContain("strictly required");
+  });
+
+  it("refuses a tag that loads nothing and a duplicate name", async () => {
+    const empty = await call("add_tag", { name: "Empty", category: "analytics" });
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.error.message).toContain("scriptSrc");
+
+    const dupe = await call("add_tag", {
+      name: "GA4",
+      vendor: "google-analytics",
+      justification: "again",
+    });
+    expect(dupe.ok).toBe(false);
+    if (!dupe.ok) expect(dupe.error.message).toContain("already exists");
+  });
+
+  it("stops injecting a removed tag", async () => {
+    const listed = await call("list_tags");
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    expect((listed.value as { tags: Array<{ name: string }> }).tags.map((t) => t.name)).toContain(
+      "GA4",
+    );
+
+    const removed = await call("remove_tag", { name: "GA4" });
+    if (!removed.ok) throw new Error(JSON.stringify(removed.error));
+    const js =
+      (await collectBuildAssets([pageId])).find((a) => a.fileName === "runtime.js")?.content ?? "";
+    expect(js).not.toContain("googletagmanager.com");
+  });
+
   it("re-asks everyone when the policy version is bumped", async () => {
     const before = await collectBuildAssets([pageId]);
     const r = await call("bump_policy_version");
