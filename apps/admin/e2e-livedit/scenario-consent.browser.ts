@@ -49,9 +49,12 @@ function seedSecondPage(templateId: string): string {
       const sql = new SQL(process.env.ADMIN_DATABASE_URL);
       const rows = await sql.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        return tx\`INSERT INTO pages (slug, title, template_id, status, current_path)
-                  VALUES ('kontakt', 'Kontakt', \${templateId}::uuid, 'published', '/kontakt')
-                  RETURNING id::text AS id\`;
+        // The id is baked in by THIS template literal — escaping it
+        // would hand the subprocess a variable name it has never heard
+        // of, which is what the first version did.
+        return tx.unsafe(\`INSERT INTO pages (slug, title, template_id, status, current_path)
+          VALUES ('kontakt', 'Kontakt', '${templateId}'::uuid, 'published', '/kontakt')
+          RETURNING id::text AS id\`);
       });
       console.log(rows[0].id);
       await sql.end();
