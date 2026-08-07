@@ -207,7 +207,10 @@ test("übersetze die Seite ins Deutsche — locale gate, /de/ variant, values-le
   const source = state.variants.find((v) => v.page_id === seed.pageId);
   expect(source?.translation_status).toBe("source");
   expect(state.dePage).not.toBeNull();
-  expect(state.dePage?.current_path).toMatch(/^\/de\//);
+  // Under /de — either `/de/<localized-slug>` for an ordinary page, or
+  // the bare `/de` when the translated page is the site's home, which
+  // is the root of its own locale and carries no slug segment.
+  expect(state.dePage?.current_path).toMatch(/^\/de(\/|$)/);
 
   // #397 — translation landed on the VARIANT's values; the source
   // page's content is untouched (module HTML is shared — a leak into
