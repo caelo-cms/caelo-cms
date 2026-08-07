@@ -65,14 +65,7 @@ RUN bun run --filter @caelo-cms/shared build
 # endpoint 404'd in production. The .tier1-trust-root drop file bakes
 # the verification key next to the manifests; the private half is
 # deleted in the same layer.
-RUN bunx tsc -b \
-  packages/plugins/forms \
-  packages/plugins/comments \
-  packages/plugins/newsletter \
-  packages/plugins/ratings \
-  packages/plugins/auth \
-  packages/plugins/international-site \
-  packages/plugins/consent-manager
+RUN bunx tsc -b packages/plugins/*
 COPY apps/admin/scripts/sign-tier1-manifest.ts apps/admin/scripts/
 RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-dev-key
 

@@ -131,14 +131,7 @@ RUN bun run --filter @caelo-cms/shared build
 # status='failed'. .dockerignore excludes dist/ from the COPY, so the
 # Dockerfile must produce them itself. tsc -b is incremental, so the
 # cost is negligible after the first cached layer.
-RUN bunx tsc -b \
-  packages/plugins/forms \
-  packages/plugins/comments \
-  packages/plugins/newsletter \
-  packages/plugins/ratings \
-  packages/plugins/auth \
-  packages/plugins/international-site \
-  packages/plugins/consent-manager
+RUN bunx tsc -b packages/plugins/*
 
 # #387 one-trust-path — sign the plugin manifests this image ships with a
 # throwaway build key and bake the matching public key as
