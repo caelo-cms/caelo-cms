@@ -29,6 +29,7 @@ import {
   injectPluginAssets,
   pluginDataListsRegistry,
   resolveDataLists,
+  resolveModuleDeferrals,
 } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
@@ -569,6 +570,15 @@ export async function generateSite(args: {
   // exactly as it does in the editor preview.
   const allLists = await resolveDataLists(pageRows.map((p) => p.page_id));
   const dormantLists = Object.fromEntries(pluginDataListsRegistry.dormantNames());
+  // #450 — withheld modules, resolved ONCE for the build. Asking per
+  // page would be one plugin round-trip per page for a verdict that is
+  // per MODULE; the module set is the same question every time.
+  const allModuleIdRows = (await tx.execute(sql`
+    SELECT id::text AS id FROM modules WHERE deleted_at IS NULL
+  `)) as unknown as { id: string }[];
+  const deferredModules = Object.fromEntries(
+    await resolveModuleDeferrals(allModuleIdRows.map((r) => r.id)),
+  );
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
     if (!page) continue;
@@ -623,6 +633,7 @@ export async function generateSite(args: {
         layoutSlug: page.layout_slug,
         dataLists: allLists.get(page.page_id) ?? {},
         dormantDataLists: dormantLists,
+        deferredModules,
       });
     } catch (e) {
       if (e instanceof ComposeError) {

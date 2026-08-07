@@ -58,6 +58,7 @@ import {
   runPluginOperation,
   setContextFactory,
   setHostInfra,
+  setHostSystemActorId,
 } from "./dispatch.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
@@ -177,6 +178,7 @@ let bootOpts: BootstrapOpts | null = null;
 
 export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   setHostInfra(opts.infra);
+  setHostSystemActorId(opts.systemActorId);
   setContextFactory(makePluginContext);
   bootOpts = opts;
 
