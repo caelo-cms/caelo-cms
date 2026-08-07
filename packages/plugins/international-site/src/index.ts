@@ -762,7 +762,7 @@ export default definePlugin<PluginContextTier1>({
       const { sourcePageId, localeCode, slug, title } = args as {
         sourcePageId: string;
         localeCode: string;
-        slug: string;
+        slug?: string;
         title?: string;
       };
       const q = adminQueryOf(ctx);
@@ -771,17 +771,67 @@ export default definePlugin<PluginContextTier1>({
       if (!localeCache.has(localeCode)) {
         throw new Error(`locale "${localeCode}" is not registered — call set_locales first`);
       }
-      const duplicated = await cms.call<{ pageId: string }>("pages.duplicate", {
-        sourcePageId,
-        newSlug: slug,
-        ...(title ? { newTitle: title } : {}),
-      });
+
+      // Is the source the site's home? Then its counterpart is the ROOT
+      // of its locale (`/de`), and the slug never reaches the URL —
+      // which is precisely why the slug must not be the AI's problem
+      // here. Slugs went globally unique with #384, so the obvious
+      // expression of "this is the German homepage" — reusing the
+      // source's own `home` — collides with the English page and leaves
+      // the AI improvising renames that cannot succeed either.
+      const defaults = await cms.call<{ defaults: { homePageId: string | null } | null }>(
+        "site_defaults.get",
+        {},
+      );
+      const isLocaleRoot = defaults.defaults?.homePageId === sourcePageId;
+
+      const pages = await cms.call<{ pages: { id: string; slug: string }[] }>("pages.list", {});
+      const sourceSlug = pages.pages.find((p) => p.id === sourcePageId)?.slug;
+      if (!sourceSlug) {
+        throw new Error(`source page ${sourcePageId} not found — check intl_status for page ids`);
+      }
+
+      // A locale root gets a derived, guaranteed-unique slug; anything
+      // the caller passed would be ignored, so refuse it rather than
+      // silently drop it (CLAUDE.md §2).
+      if (isLocaleRoot && slug !== undefined) {
+        throw new Error(
+          `create_variant: "${sourceSlug}" is the site's home page, so its ${localeCode} counterpart is the root of that locale and resolves at "/${localeCode}" — its slug never appears in a URL. Omit \`slug\` and it is derived automatically.`,
+        );
+      }
+      if (!isLocaleRoot && slug === undefined) {
+        throw new Error(
+          `create_variant: this page is not the site home, so the slug IS its URL segment under /${localeCode}/. Pass a localized slug (e.g. "ueber-uns" for "about"). Slugs are unique site-wide — the locale prefix comes from the locale's URL strategy, not from the slug.`,
+        );
+      }
+      const newSlug = slug ?? `${sourceSlug}-${localeCode}`;
+
+      let duplicated: { pageId: string };
+      try {
+        duplicated = await cms.call<{ pageId: string }>("pages.duplicate", {
+          sourcePageId,
+          newSlug,
+          ...(title ? { newTitle: title } : {}),
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Re-frame core's slug collision into the decision the caller
+        // actually has to make; the raw message reads as "the page
+        // already exists", which invites a pointless retry.
+        if (msg.includes("page already exists for slug=")) {
+          throw new Error(
+            `create_variant: slug "${newSlug}" is already taken. Slugs are unique across the WHOLE site, not per locale (#384) — the "/${localeCode}/" prefix comes from the locale's URL strategy, not from the slug. Pick a localized slug that is free (e.g. "${sourceSlug}-${localeCode}").`,
+          );
+        }
+        throw e;
+      }
+
       const linked = await linkPageIntoGroup(ctx, {
         groupPageId: sourcePageId,
         pageId: duplicated.pageId,
         localeCode,
       });
-      return { pageId: duplicated.pageId, ...linked };
+      return { pageId: duplicated.pageId, slug: newSlug, isLocaleRoot, ...linked };
     },
 
     /**
@@ -1068,18 +1118,25 @@ export default definePlugin<PluginContextTier1>({
       name: "create_variant",
       description:
         "Create the language counterpart of a page: duplicates the source page as a DRAFT, joins it into the source's variant group, and composes its URL (e.g. /de/<slug>). " +
-        "The slug is freely localizable ('preise' for 'pricing') — linkage is by group, never by slug. " +
+        "The slug is freely localizable ('preise' for 'pricing') — linkage is by group, never by slug. Slugs are unique across the WHOLE site, not per locale: the '/de/' prefix comes from the locale's URL strategy, so never reuse the source page's own slug. " +
+        "OMIT `slug` when the source is the site's HOME page — its counterpart is the root of its locale ('/de'), carries no URL segment, and gets a derived slug automatically. Passing one there is an error. " +
         "Use when a page has no variant in the target locale yet (check intl_status). The draft still carries the SOURCE language — run the translation flow next, then publish. " +
         "NOT for linking two ALREADY-EXISTING pages — that is link_page_variants.",
       operationName: "create_variant",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
-        required: ["sourcePageId", "localeCode", "slug"],
+        required: ["sourcePageId", "localeCode"],
         properties: {
           sourcePageId: { type: "string", format: "uuid" },
           localeCode: { type: "string", minLength: 2, maxLength: 35 },
-          slug: { type: "string", minLength: 1, maxLength: 200 },
+          slug: {
+            type: "string",
+            minLength: 1,
+            maxLength: 200,
+            description:
+              "Localized URL segment under /<locale>/. Required for an ordinary page; MUST be omitted when the source is the site home.",
+          },
           title: { type: "string", minLength: 1, maxLength: 256 },
         },
       },
@@ -1277,7 +1334,7 @@ export default definePlugin<PluginContextTier1>({
         "",
         "Flow:",
         "1. Call intl_status FIRST. It answers every 'is X translated / what is missing' question.",
-        "2. If the target-language counterpart does not exist yet: create_variant with a LOCALIZED slug ('preise' for 'pricing', not 'pricing-de'). The draft still carries the source language.",
+        "2. If the target-language counterpart does not exist yet: create_variant with a LOCALIZED slug ('preise' for 'pricing', not 'pricing-de'). For the site's HOME page omit the slug entirely — its counterpart is the locale root ('/de') and has no URL segment. The draft still carries the source language.",
         "3. Call translate_variant on the counterpart. It translates the WHOLE page in one context-aware pass — title and every content field — honouring the site glossary and style guide. Never translate field-by-field yourself, and never edit shared module HTML to translate it: module code is shared across pages, content lives in per-page values.",
         "4. The result stays a DRAFT. Summarise what was translated and let the operator review before publishing.",
         "5. When intl_status shows stale variants (source pages changed after translation), prefer ONE translate_all_stale call over repeated translate_variant calls.",
@@ -1299,7 +1356,7 @@ export default definePlugin<PluginContextTier1>({
         "1. Call intl_status to see the current registry.",
         "2. Call set_locales with the FULL desired list (existing locales + the new one; exactly one isDefault). The turn pauses for the Owner's in-chat Approve. Pick the URL strategy from what the operator wants: subdirectory (/de/...) is the safe default; subdomain/domain need urlHost.",
         "3. If existing pages' URLs are affected by the change, call propose_url_migration next — it previews the URL fan-out and the 301 redirects, and the Owner approves it SEPARATELY.",
-        "4. Seed the language: for each core page the operator cares about, create_variant with a localized slug, then translate_variant. Do not mass-create variants for every page unprompted — ask which pages matter, or start with the pages the operator named.",
+        "4. Seed the language: for each core page the operator cares about, create_variant with a localized slug (omit the slug for the home page — its counterpart is the locale root), then translate_variant. Do not mass-create variants for every page unprompted — ask which pages matter, or start with the pages the operator named.",
         "5. hreflang links and sitemap alternates appear automatically once variants are PUBLISHED (drafts are invisible to search engines by design — a missing translation is a clean 404, never a fallback).",
         '6. To offer visitors a language switcher, add a module whose HTML iterates the plugin\'s list: `<nav>{{#language_links}}<a href="{{href}}" hreflang="{{locale}}">{{label}}</a>{{/language_links}}</nav>`. Each item carries href, label, locale and is_current. Write the markup to match the site\'s design — you own it, the plugin only supplies the data. Because it resolves per page, placing that module in the LAYOUT gives every page a switcher from one placement. The list is empty until a page has at least two PUBLISHED variants.',
       ].join("\n"),
