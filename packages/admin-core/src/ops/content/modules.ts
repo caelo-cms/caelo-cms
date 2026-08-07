@@ -233,7 +233,12 @@ export const listModulesOp = defineOperation({
   // CLAUDE.md §11: read surfaces are open to AI. The AI uses this
   // to plan cross-module changes (e.g. "find every module with a
   // hero in its slug").
-  actorScope: ["human", "ai", "system"],
+  //
+  // #453 — plugin actors read too. A plugin that reasons ABOUT modules
+  // rather than about its own rows (consent-manager scanning each one
+  // for third-party hosts) has no other way to see them, and this is a
+  // read: the write path stays closed to plugins.
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }),
   output: z.object({ modules: z.array(moduleRowSchema) }),

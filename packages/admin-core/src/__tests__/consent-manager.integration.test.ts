@@ -40,6 +40,8 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let pageId = "";
 let pluginId = "";
+let videoModuleId = "";
+let plainModuleId = "";
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -66,6 +68,7 @@ async function cleanup(): Promise<void> {
     await tx.unsafe("DELETE FROM plugins WHERE slug = 'consent-manager'");
     await tx.unsafe("DELETE FROM pages WHERE slug LIKE 't451-%'");
     await tx.unsafe("DELETE FROM templates WHERE slug LIKE 't451-%'");
+    await tx.unsafe("DELETE FROM modules WHERE slug LIKE 't451-%' OR slug = 'consent-placeholder'");
   });
   const pub = new SQL(PUBLIC_URL);
   try {
@@ -91,13 +94,65 @@ beforeAll(async () => {
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
   });
   if (!tpl.ok) throw new Error(JSON.stringify(tpl.error));
+  const templateId = (tpl.value as { templateId: string }).templateId;
+  await execute(registry, adapter, SYS_CTX, "template_blocks.set", {
+    templateId,
+    blocks: [{ name: "content", displayName: "Content", position: 0 }],
+  });
   const page = await execute(registry, adapter, SYS_CTX, "pages.create", {
     slug: "t451-page",
     title: "Consent",
-    templateId: (tpl.value as { templateId: string }).templateId,
+    templateId,
   });
   if (!page.ok) throw new Error(JSON.stringify(page.error));
   pageId = (page.value as { pageId: string }).pageId;
+
+  // The placeholder is an ordinary module — the plugin names it, the
+  // operator styles it.
+  const ph = await execute(registry, adapter, SYS_CTX, "modules.create", {
+    slug: "consent-placeholder",
+    displayName: "Consent placeholder",
+    html: '<div class="cp"><p>{{notice}}</p><button data-consent-open>Choose</button></div>',
+    css: ".cp{border:1px dashed}",
+    js: "",
+    fields: [
+      {
+        name: "notice",
+        kind: "text",
+        label: "Notice",
+        default: "This content needs your consent.",
+      },
+    ],
+  });
+  if (!ph.ok) throw new Error(JSON.stringify(ph.error));
+
+  const video = await execute(registry, adapter, SYS_CTX, "modules.create", {
+    slug: "t451-video",
+    displayName: "Video",
+    html: '<iframe src="https://www.youtube.com/embed/abc"></iframe>',
+    css: "",
+    js: "",
+    fields: [],
+  });
+  if (!video.ok) throw new Error(JSON.stringify(video.error));
+  videoModuleId = (video.value as { moduleId: string }).moduleId;
+
+  const plain = await execute(registry, adapter, SYS_CTX, "modules.create", {
+    slug: "t451-plain",
+    displayName: "Plain",
+    html: "<p>nothing external here</p>",
+    css: "",
+    js: "",
+    fields: [],
+  });
+  if (!plain.ok) throw new Error(JSON.stringify(plain.error));
+  plainModuleId = (plain.value as { moduleId: string }).moduleId;
+
+  const set = await execute(registry, adapter, SYS_CTX, "pages.set_modules", {
+    pageId,
+    blocks: [{ blockName: "content", moduleIds: [videoModuleId, plainModuleId] }],
+  });
+  if (!set.ok) throw new Error(JSON.stringify(set.error));
 
   const report = await bootstrap({
     infra: { adapter, registry },
@@ -290,6 +345,86 @@ describe("#451 — consent-manager", () => {
     const js =
       (await collectBuildAssets([pageId])).find((a) => a.fileName === "runtime.js")?.content ?? "";
     expect(js).not.toContain("googletagmanager.com");
+  });
+
+  it("withholds a module that reaches YouTube, and leaves a plain one alone", async () => {
+    const scan = await call("scan_modules");
+    if (!scan.ok) throw new Error(JSON.stringify(scan.error));
+
+    const listed = await call("list_embeds");
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const embeds = (
+      listed.value as { embeds: Array<{ moduleSlug: string; status: string; hosts: string[] }> }
+    ).embeds;
+    // Only the module that actually reaches out is tracked.
+    expect(embeds.map((e) => e.moduleSlug)).toEqual(["t451-video"]);
+    expect(embeds[0]?.hosts).toEqual(["www.youtube.com"]);
+    expect(embeds[0]?.status).toBe("gated");
+
+    const r = await execute(registry, adapter, SYS_CTX, "pages.render_preview", { pageId });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const html = (r.value as { html: string }).html;
+
+    expect(html).toContain('data-caelo-deferred="consent-manager"');
+    expect(html).toContain('data-reason="marketing"');
+    expect(html).toContain("This content needs your consent.");
+    // The embed exists only inside the inert template, so nothing is
+    // requested from YouTube before the visitor agrees.
+    expect(html.indexOf("youtube.com")).toBeGreaterThan(
+      html.indexOf("<template data-caelo-deferred-content>"),
+    );
+    // The module with no third party is untouched.
+    expect(html).toContain("nothing external here");
+    // Count WRAPPERS, not occurrences of the attribute name: the
+    // runtime is inlined into this page too and mentions the selector.
+    expect(html.match(/<div data-caelo-deferred="/g) ?? []).toHaveLength(1);
+  });
+
+  it("withholds an unrecognised vendor too, until someone rules on it", async () => {
+    // "We have not decided" and "it is fine" must not render the same.
+    const mod = await execute(registry, adapter, SYS_CTX, "modules.create", {
+      slug: "t451-unknown",
+      displayName: "Unknown embed",
+      html: '<iframe src="https://widgets.unknown-vendor.example/x"></iframe>',
+      css: "",
+      js: "",
+      fields: [],
+    });
+    if (!mod.ok) throw new Error(JSON.stringify(mod.error));
+    const unknownId = (mod.value as { moduleId: string }).moduleId;
+
+    await call("scan_modules");
+    const listed = await call("list_embeds");
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const row = (
+      listed.value as { embeds: Array<{ moduleId: string; status: string }> }
+    ).embeds.find((e) => e.moduleId === unknownId);
+    expect(row?.status).toBe("pending");
+
+    const deferrals = await call("consent_deferrals", { moduleIds: [unknownId] });
+    if (!deferrals.ok) throw new Error(JSON.stringify(deferrals.error));
+    const d = (deferrals.value as { deferrals: Record<string, { reason: string }> }).deferrals;
+    // Withheld, and the reason says WHY it is withheld — an editor
+    // seeing "unclassified" knows there is a decision to make, which
+    // "marketing" would have hidden.
+    expect(d[unknownId]?.reason).toBe("unclassified");
+
+    const decided = await call("classify_embed", { moduleId: unknownId, category: "functional" });
+    if (!decided.ok) throw new Error(JSON.stringify(decided.error));
+    const after = await call("consent_deferrals", { moduleIds: [unknownId] });
+    if (!after.ok) throw new Error(JSON.stringify(after.error));
+    expect(
+      (after.value as { deferrals: Record<string, { reason: string }> }).deferrals[unknownId]
+        ?.reason,
+    ).toBe("functional");
+
+    const allowed = await call("classify_embed", { moduleId: unknownId, allow: true });
+    if (!allowed.ok) throw new Error(JSON.stringify(allowed.error));
+    const finally_ = await call("consent_deferrals", { moduleIds: [unknownId] });
+    if (!finally_.ok) throw new Error(JSON.stringify(finally_.error));
+    expect(
+      (finally_.value as { deferrals: Record<string, unknown> }).deferrals[unknownId],
+    ).toBeUndefined();
   });
 
   it("re-asks everyone when the policy version is bumped", async () => {

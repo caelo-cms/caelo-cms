@@ -39,7 +39,10 @@ import {
 } from "@caelo-cms/plugin-sdk";
 import { type CategoryRow, DEFAULT_CATEGORIES } from "./categories.js";
 import { buildRuntimeJs, RUNTIME_CSS } from "./runtime.js";
+import { externalHosts } from "./scan.js";
+import { CONSENT_SKILLS } from "./skills.js";
 import { type BakedTag, buildTagInjector, KNOWN_VENDORS, type TagRow } from "./tags.js";
+import { CONSENT_TOOLS } from "./tools.js";
 
 const SLUG = "consent-manager";
 const RECORD_ENDPOINT = `/api/plugin/${SLUG}/record_consent`;
@@ -48,7 +51,84 @@ interface SettingsRow {
   id: string;
   policy_version: number;
   retention_days: number;
+  /** Module rendered in place of anything withheld. */
+  placeholder_module_slug: string;
 }
+
+interface GuardRow {
+  id: string;
+  module_id: string;
+  category_key: string;
+  detected_hosts: string[];
+  status: "pending" | "gated" | "allowed";
+  decided_by: string;
+}
+
+interface CmsHandle {
+  call: <O>(opName: string, input: unknown) => Promise<O>;
+}
+
+function cmsOf(ctx: unknown): CmsHandle {
+  const cms = (ctx as { cms?: CmsHandle }).cms;
+  if (!cms) {
+    throw new Error("consent-manager: ctx.cms missing — the cms_admin capability was not granted");
+  }
+  return cms;
+}
+
+/**
+ * Which consent category a set of third-party hosts falls under, or
+ * null when any of them is unrecognised.
+ *
+ * Null is deliberately sticky: one unknown host makes the whole module
+ * unclassified, because the known ones say nothing about what the
+ * unknown one does.
+ */
+function classifyHosts(hosts: ReadonlyArray<string>): string | null {
+  let strongest: string | null = null;
+  for (const host of hosts) {
+    const match = Object.entries(HOST_CATEGORIES).find(
+      ([domain]) => host === domain || host.endsWith(`.${domain}`),
+    );
+    if (!match) return null;
+    const category = match[1];
+    // Marketing wins over analytics: a module carrying both must be
+    // held to the stricter of the two.
+    if (category === "marketing" || strongest === null) strongest = category;
+  }
+  return strongest;
+}
+
+/**
+ * Vendors whose category is not in question, so the common cases need
+ * no operator decision. Everything else is `pending` until someone
+ * says otherwise — the list is a shortcut, never a judgement that an
+ * absent host is harmless.
+ */
+const HOST_CATEGORIES: Readonly<Record<string, string>> = {
+  "youtube.com": "marketing",
+  "youtube-nocookie.com": "functional",
+  "vimeo.com": "marketing",
+  "google.com": "marketing",
+  "googleapis.com": "marketing",
+  "gstatic.com": "functional",
+  "googletagmanager.com": "marketing",
+  "google-analytics.com": "analytics",
+  "doubleclick.net": "marketing",
+  "facebook.net": "marketing",
+  "facebook.com": "marketing",
+  "twitter.com": "marketing",
+  "x.com": "marketing",
+  "linkedin.com": "marketing",
+  "instagram.com": "marketing",
+  "hotjar.com": "analytics",
+  "openstreetmap.org": "functional",
+  "soundcloud.com": "marketing",
+  "spotify.com": "marketing",
+};
+
+/** Default placeholder module slug, seeded with the settings row. */
+const DEFAULT_PLACEHOLDER_SLUG = "consent-placeholder";
 
 function adminQueryOf(ctx: unknown): PluginAdminQuery {
   const q = (ctx as { adminQuery?: PluginAdminQuery }).adminQuery;
@@ -72,7 +152,11 @@ async function settingsOf(q: PluginAdminQuery): Promise<SettingsRow> {
   const rows = (await q.list("settings", { limit: 1 })) as unknown as SettingsRow[];
   const existing = rows[0];
   if (existing) return existing;
-  await q.insert("settings", { policy_version: 1, retention_days: 365 });
+  await q.insert("settings", {
+    policy_version: 1,
+    retention_days: 365,
+    placeholder_module_slug: DEFAULT_PLACEHOLDER_SLUG,
+  });
   const seeded = (await q.list("settings", { limit: 1 })) as unknown as SettingsRow[];
   const row = seeded[0];
   if (!row) throw new Error("consent-manager: settings row could not be created");
@@ -107,7 +191,13 @@ export default definePlugin<PluginContextTier1>({
   slug: SLUG,
   version: "0.1.0",
   tier: 1,
-  requestedCapabilities: ["cms_admin_schema", "chat_runner_tools"],
+  requestedCapabilities: [
+    "cms_admin_schema",
+    "chat_runner_tools",
+    "cms_admin",
+    "domain_events",
+    "background_workers",
+  ],
 
   /** Proof of consent. Written by the gateway on a visitor request. */
   schema: {
@@ -133,6 +223,21 @@ export default definePlugin<PluginContextTier1>({
     settings: {
       policy_version: "int",
       retention_days: "int",
+      placeholder_module_slug: "string",
+      created_at: "timestamp",
+    },
+    /**
+     * One verdict per module that reaches a third party. `pending`
+     * means the scanner found a host nobody has ruled on yet — and a
+     * pending module is WITHHELD, because "we have not decided" and
+     * "it is fine" must not render the same.
+     */
+    module_guards: {
+      module_id: "ref:modules:cascade",
+      category_key: "string",
+      detected_hosts: "jsonb",
+      status: "enum:pending,gated,allowed",
+      decided_by: "string",
       created_at: "timestamp",
     },
     tags: {
@@ -167,6 +272,15 @@ export default definePlugin<PluginContextTier1>({
     },
   ],
   dataListsOperation: "consent_data_lists",
+
+  /**
+   * Which modules core must withhold (#450). A module whose third-party
+   * host has no verdict yet is withheld too — see `scan_modules`.
+   */
+  deferralsOperation: "consent_deferrals",
+
+  /** Keeps the scan current without anyone remembering to run it. */
+  workers: [{ name: "consent-embed-scan", cron: "*/5 * * * *", operationName: "scan_modules" }],
 
   /**
    * The runtime + its stylesheet, with this site's categories baked in
@@ -312,6 +426,177 @@ export default definePlugin<PluginContextTier1>({
     },
 
     /**
+     * Core asks which modules to withhold; this answers.
+     *
+     * `pending` withholds exactly like `gated` does. A module whose
+     * vendor nobody has ruled on is not known to be harmless, and
+     * rendering it while the question is open would send the request
+     * this whole mechanism exists to hold back. The difference between
+     * the two is surfaced to the EDITOR, not to the visitor.
+     */
+    consent_deferrals: async (ctx, args) => {
+      const { moduleIds } = args as { moduleIds: string[] };
+      const q = adminQueryOf(ctx);
+      const settings = await settingsOf(q);
+      const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
+      const wanted = new Set(moduleIds);
+      const deferrals: Record<string, { reason: string; placeholderModuleSlug: string }> = {};
+      for (const g of guards) {
+        if (!wanted.has(g.module_id)) continue;
+        if (g.status === "allowed") continue;
+        deferrals[g.module_id] = {
+          reason: g.status === "pending" ? "unclassified" : g.category_key,
+          placeholderModuleSlug: settings.placeholder_module_slug,
+        };
+      }
+      return { deferrals };
+    },
+
+    /**
+     * Scan changed modules for third-party hosts and record a verdict.
+     *
+     * Runs on a schedule rather than on demand because the operator
+     * edits a module and deploys minutes later; a scan that only ran
+     * when someone remembered would be a scan that ran after the
+     * request went out.
+     */
+    scan_modules: async (ctx) => {
+      const q = adminQueryOf(ctx);
+      const cms = cmsOf(ctx);
+      const modules = await cms.call<{
+        modules: Array<{
+          id: string;
+          slug: string;
+          html: string;
+          css: string;
+          js: string;
+          fields?: unknown;
+        }>;
+      }>("modules.list", {});
+      // The vendor URL is DATA, not markup. Authoring lifts
+      // `src="https://youtube.com/…"` out of the HTML into a field
+      // default, and a placement can point the same module at a
+      // different vendor through its content values. Scanning the HTML
+      // alone would therefore find nothing on exactly the modules that
+      // matter most.
+      const instances = await cms.call<{
+        instances: Array<{ moduleId: string; values: unknown }>;
+      }>("content_instances.list", {});
+      const valuesByModule = new Map<string, string[]>();
+      for (const inst of instances.instances) {
+        const bucket = valuesByModule.get(inst.moduleId) ?? [];
+        bucket.push(JSON.stringify(inst.values ?? {}));
+        valuesByModule.set(inst.moduleId, bucket);
+      }
+      const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
+      const byModule = new Map(guards.map((g) => [g.module_id, g]));
+
+      let flagged = 0;
+      let cleared = 0;
+      for (const m of modules.modules) {
+        const hosts = externalHosts({
+          html: m.html,
+          css: m.css,
+          js: [m.js, JSON.stringify(m.fields ?? []), ...(valuesByModule.get(m.id) ?? [])].join(
+            "\n",
+          ),
+        });
+        const existing = byModule.get(m.id);
+        if (hosts.length === 0) {
+          // The module stopped reaching out — drop the guard rather than
+          // leaving a stale one that withholds a now-harmless module.
+          if (existing) {
+            await q.delete("module_guards", existing.id);
+            cleared += 1;
+          }
+          continue;
+        }
+        const known = classifyHosts(hosts);
+        if (!existing) {
+          await q.insert("module_guards", {
+            module_id: m.id,
+            category_key: known ?? "marketing",
+            detected_hosts: hosts,
+            status: known ? "gated" : "pending",
+            decided_by: known ? "vendor-table" : "",
+          });
+          flagged += 1;
+          continue;
+        }
+        // Hosts changed under an existing verdict: the decision was made
+        // about a different set, so it no longer applies.
+        const before = JSON.stringify(existing.detected_hosts ?? []);
+        if (before !== JSON.stringify(hosts)) {
+          const rescored = classifyHosts(hosts);
+          await q.update("module_guards", existing.id, {
+            detected_hosts: hosts,
+            category_key: rescored ?? existing.category_key,
+            status: rescored ? "gated" : "pending",
+            decided_by: rescored ? "vendor-table" : "",
+          });
+          flagged += 1;
+        }
+      }
+      return { flagged, cleared };
+    },
+
+    list_embeds: async (ctx) => {
+      const q = adminQueryOf(ctx);
+      const guards = (await q.list("module_guards", { limit: 1000 })) as unknown as GuardRow[];
+      const cms = cmsOf(ctx);
+      const modules = await cms.call<{ modules: Array<{ id: string; slug: string }> }>(
+        "modules.list",
+        {},
+      );
+      const slugOf = new Map(modules.modules.map((m) => [m.id, m.slug]));
+      return {
+        embeds: guards.map((g) => ({
+          moduleId: g.module_id,
+          moduleSlug: slugOf.get(g.module_id) ?? "(deleted)",
+          hosts: g.detected_hosts,
+          status: g.status,
+          category: g.category_key,
+          decidedBy: g.decided_by,
+        })),
+      };
+    },
+
+    classify_embed: async (ctx, args) => {
+      const { moduleId, category, allow } = args as {
+        moduleId?: unknown;
+        category?: unknown;
+        allow?: unknown;
+      };
+      if (typeof moduleId !== "string") throw new Error("classify_embed: `moduleId` is required");
+      const q = adminQueryOf(ctx);
+      const rows = (await q.list("module_guards", {
+        module_id: moduleId,
+        limit: 1,
+      })) as unknown as GuardRow[];
+      const row = rows[0];
+      if (!row) {
+        throw new Error(
+          `classify_embed: module ${moduleId} has no detected third-party host — nothing to classify. Run list_embeds to see what does.`,
+        );
+      }
+      if (allow === true) {
+        await q.update("module_guards", row.id, { status: "allowed", decided_by: "operator" });
+        return { moduleId, status: "allowed" };
+      }
+      const categories = await categoriesOf(q);
+      const known = new Set(categories.map((c) => c.key));
+      if (typeof category !== "string" || !known.has(category)) {
+        throw new Error(`classify_embed: \`category\` must be one of ${[...known].join(", ")}`);
+      }
+      await q.update("module_guards", row.id, {
+        category_key: category,
+        status: "gated",
+        decided_by: "operator",
+      });
+      return { moduleId, status: "gated", category };
+    },
+
+    /**
      * Register a tracking tag. Gated at the tool layer (#452): the SDK
      * pauses for the Owner's in-chat Approve before this runs.
      *
@@ -428,144 +713,7 @@ export default definePlugin<PluginContextTier1>({
     },
   },
 
-  tools: [
-    {
-      name: "consent_status",
-      description:
-        "Read the consent setup: categories, policy version, and the exact contract a banner module must satisfy. " +
-        "Call this FIRST whenever the operator asks for a cookie banner, consent dialog, or anything about tracking — it tells you which data list to iterate and which data-attributes the runtime binds to. " +
-        "NOT for changing anything.",
-      operationName: "consent_status",
-      inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
-    },
-    {
-      name: "describe_categories",
-      description:
-        "Reword a consent category's name or description to match the site's voice and audience. " +
-        "The category KEYS are fixed (necessary, functional, analytics, marketing) because tags and withheld modules refer to them — only the operator-facing copy changes. " +
-        "Use when the operator asks for different wording, another language, or a specific tone in the banner.",
-      operationName: "describe_categories",
-      inputJsonSchema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["categories"],
-        properties: {
-          categories: {
-            type: "array",
-            minItems: 1,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["key"],
-              properties: {
-                key: { type: "string" },
-                displayName: { type: "string" },
-                description: { type: "string" },
-              },
-            },
-          },
-        },
-      },
-    },
-    {
-      name: "add_tracking_tag",
-      description:
-        "Register a tracking tag (Google Analytics, Meta pixel, Matomo, …) under a consent category. It fires ONLY after the visitor grants that category — you do not need to write any gating yourself. " +
-        "TWO-STEP: this PAUSES for the Owner's in-chat Approve before anything is registered. Say you have prepared it and asked for approval; do not claim the tag is live. " +
-        "Pick the category conservatively: anything that measures or follows a visitor is analytics or marketing, never necessary. Claiming `necessary` requires a written justification and is rejected without one. " +
-        "Known vendors (google-analytics, google-tag-manager, meta-pixel, matomo, hotjar) supply their own category and script URL — pass `vendor` and you can omit both.",
-      operationName: "add_tag",
-      approvalMode: "user-approval",
-      inputJsonSchema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["name"],
-        properties: {
-          name: { type: "string", description: "Operator-facing label, unique." },
-          vendor: {
-            type: "string",
-            description: "One of the known vendor keys, or free text for anything else.",
-          },
-          category: {
-            type: "string",
-            enum: ["necessary", "functional", "analytics", "marketing"],
-          },
-          scriptSrc: { type: "string", description: "External script URL." },
-          inlineSnippet: { type: "string", description: "Inline JS, when the vendor gives one." },
-          position: { type: "string", enum: ["head", "body_end"] },
-          justification: {
-            type: "string",
-            description: "Why this tag is needed. REQUIRED when category is `necessary`.",
-          },
-        },
-      },
-    },
-    {
-      name: "list_tracking_tags",
-      description:
-        "List the registered tracking tags with the consent category each is pinned to, plus the vendors whose category and script URL are already known. " +
-        "Call before adding a tag (to avoid a duplicate) and whenever the operator asks what the site loads or what data leaves it.",
-      operationName: "list_tags",
-      inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
-    },
-    {
-      name: "remove_tracking_tag",
-      description:
-        "Remove a tracking tag by name. It stops being injected at the next deploy. " +
-        "Not gated: removing a tag only ever reduces what the site loads.",
-      operationName: "remove_tag",
-      inputJsonSchema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["name"],
-        properties: { name: { type: "string" } },
-      },
-    },
-    {
-      name: "bump_consent_policy_version",
-      description:
-        "Invalidate every stored consent so all visitors are asked again. " +
-        "Use ONLY when what the site does with data has actually changed — a new tracking vendor, a new purpose. " +
-        "NOT for wording changes (that is describe_categories): re-asking everyone for a reworded sentence trains people to click Accept without reading.",
-      operationName: "bump_policy_version",
-      inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
-    },
-  ],
+  tools: CONSENT_TOOLS,
 
-  skills: [
-    {
-      slug: "consent-banner-setup",
-      displayName: "Set up the consent banner",
-      description:
-        "Build a GDPR consent dialog that matches the site's design, wired to the consent runtime.",
-      body: [
-        "The operator asks for a cookie banner, a consent dialog, or 'the GDPR thing'. They will not describe categories or attributes — that is your job.",
-        "",
-        "The split: the PLUGIN owns behaviour (recording the choice, holding tags and embeds back). YOU own everything visible — markup, copy, layout, colour. Never hand-write the consent logic in module JS; it is already there and it is the part that has to be right.",
-        "",
-        "Flow:",
-        "1. Call consent_status FIRST. It returns the categories, the data list to iterate, and the exact attribute contract.",
-        "2. Author ONE module for the banner and place it in the site LAYOUT — one placement covers every page. A per-page placement will miss the next page the operator adds.",
-        "3. Iterate the categories rather than hard-coding four blocks:",
-        '   <div data-consent-banner>{{#consent_categories}}<label><input type="checkbox" data-consent-category="{{key}}"> {{label}} <span>{{description}}</span></label>{{/consent_categories}}<button data-consent-accept-all>…</button><button data-consent-reject-all>…</button><button data-consent-save>…</button></div>',
-        "4. Style it as part of the site: its own tokens, its own type scale. It should look like the footer belongs to the same site, not like a third-party widget.",
-        "5. Declining must be exactly as easy as accepting — same prominence, same number of clicks. The runtime warns when data-consent-reject-all is missing, and a banner without it is not lawful consent.",
-        "6. Add a data-consent-open link in the footer so visitors can change their mind later.",
-        "7. Do NOT hide the banner yourself in CSS. The runtime decides when it is shown; a hand-rolled rule fights it and usually wins in the wrong direction.",
-        "",
-        "If the operator wants different wording or another language, use describe_categories — do not fork the copy into the module, or the two drift.",
-        "",
-        "When the operator asks to add analytics or a tracking pixel ('add Google Analytics', 'put the Meta pixel in'), use add_tracking_tag. Never paste a vendor snippet into a module: a tag in the page HTML has already run by the time anything could check consent. The tag surface pins it to a category and the runtime injects it only after that category is granted. The call pauses for the Owner's approval — say you prepared it, not that it is live.",
-      ].join("\n"),
-      allowlistedTools: [
-        "consent_status",
-        "describe_categories",
-        "add_tracking_tag",
-        "list_tracking_tags",
-      ],
-      autoEngagementHints: {
-        keywords: ["cookie", "consent", "banner", "gdpr", "dsgvo", "tracking", "privacy"],
-      },
-    },
-  ],
+  skills: CONSENT_SKILLS,
 });
