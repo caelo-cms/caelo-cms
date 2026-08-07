@@ -92,9 +92,14 @@
       ? (form.staged as { previewUrl?: string }).previewUrl ?? null
       : null,
   );
+  // #390 — address the COMPOSED path, matching DiffPanel and the chat
+  // panel. The endpoint's slug lookup is a legacy fallback for pre-#390
+  // bookmarks; the live surface should hit the primary currentPath
+  // branch so a plugin-prefixed page (e.g. `/de/preise`) resolves the
+  // same way here as it does everywhere else.
   const previewSrc = $derived(
     activePage
-      ? `/edit/preview-by-path/${activePage.slug}?branch=${data.activeChat.chatBranchId}`
+      ? `/edit/preview-by-path${activePage.currentPath === "/" ? "" : activePage.currentPath}?branch=${data.activeChat.chatBranchId}`
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);

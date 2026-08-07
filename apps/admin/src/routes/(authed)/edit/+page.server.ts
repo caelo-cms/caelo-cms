@@ -20,6 +20,11 @@ interface PageRow {
   slug: string;
   title: string;
   status: "draft" | "published";
+  // #390 — the materialized URL-composition result. `/edit` addresses
+  // pages by composed path (a URL plugin can prefix it, e.g.
+  // `international-site` puts a variant at `/de/<slug>`), so the slug
+  // alone no longer identifies where a page lives.
+  currentPath: string;
 }
 
 /**
@@ -449,6 +454,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       // v0.9.9 — surfaces on the top-bar status toggle so the editor
       // can flip draft↔published without leaving the live-edit surface.
       status: p.status,
+      currentPath: p.currentPath,
     })),
     activePageId,
     activeChat,
