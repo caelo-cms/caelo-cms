@@ -11,6 +11,12 @@
  */
 
 export {
+  collectBuildAssets,
+  injectPluginAssets,
+  PLUGIN_ASSET_DIR,
+  type PluginClientAsset,
+} from "./client-assets.js";
+export {
   type ResolvedDataLists,
   resolveDataLists,
 } from "./data-list-resolution.js";
@@ -31,6 +37,7 @@ export {
   type RunPluginOperationOpts,
   type RunPluginOperationResult,
   resetDisabledSet,
+  runPluginBuildAssets,
   runPluginMetaSignature,
   runPluginMetaSignatureBatch,
   runPluginOperation,

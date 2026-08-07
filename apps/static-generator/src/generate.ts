@@ -24,7 +24,12 @@
 
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { pluginDataListsRegistry, resolveDataLists } from "@caelo-cms/plugin-host";
+import {
+  collectBuildAssets,
+  injectPluginAssets,
+  pluginDataListsRegistry,
+  resolveDataLists,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -719,6 +724,22 @@ export async function generateSite(args: {
       pages: composedPages,
       bakeTargets,
     });
+  }
+
+  // #449 — plugin client assets: one call per contributing plugin for
+  // the whole build, written under `_caelo/plugin/<slug>/` with the
+  // content hash in the name, then referenced from every page. Runs
+  // AFTER the plugin render pass so a runtime that hydrates baked
+  // markup is guaranteed to find it already in the document.
+  const clientAssets = await collectBuildAssets(pageRows.map((p) => p.page_id));
+  for (const asset of clientAssets) {
+    const assetPath = join(buildDir, asset.relPath);
+    await mkdir(dirname(assetPath), { recursive: true });
+    await writeFile(assetPath, asset.content, "utf8");
+    fileCount += 1;
+  }
+  for (const p of composedPages) {
+    p.html = injectPluginAssets(p.html, clientAssets, "linked");
   }
 
   // v0.2.85 — per-key Content-Type sidecar. When pageUrlStyle is
