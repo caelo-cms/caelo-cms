@@ -38,6 +38,7 @@ const greetingsSchema = {
     id: "uuid",
     page_id: "string",
     message: "string",
+    tags: "jsonb",
     created_at: "timestamp",
   },
 } as const;
@@ -50,10 +51,11 @@ function makePlugin(slug: string) {
     schema: greetingsSchema,
     operations: {
       add: async (ctx, args) => {
-        const a = args as { pageId: string; message: string };
+        const a = args as { pageId: string; message: string; tags?: unknown };
         return ctx.query.insert("greetings", {
           page_id: a.pageId,
           message: a.message,
+          ...(a.tags !== undefined ? { tags: a.tags } : {}),
         });
       },
       list_all: async (ctx, args) => {
@@ -179,6 +181,38 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     const rows = list.value as Array<{ message: string }>;
     expect(rows).toHaveLength(1);
     expect(rows[0]?.message).toBe("hello");
+  });
+
+  it("stores a jsonb ARRAY as an array", async () => {
+    // Two traps met here, and both fail in a way that points at the
+    // plugin rather than at the boundary. Bound straight into the
+    // template, an array expands into a SQL tuple — `VALUES ($1, ($2,
+    // $3))` — and hand-stringifying it first lands a jsonb STRING,
+    // because the driver JSON-encodes string params for jsonb columns.
+    // A plugin author should not have to discover either.
+    await bootstrap({
+      infra: { adapter, registry },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: pluginA }],
+    });
+    await provisionPluginSchema(pluginA);
+
+    const add = await runPluginOperation({
+      pluginSlug: PLUGIN_A,
+      operationName: "add",
+      args: { pageId: "page-1", message: "hi", tags: ["analytics", "marketing"] },
+    });
+    expect(add.ok).toBe(true);
+
+    const list = await runPluginOperation({
+      pluginSlug: PLUGIN_A,
+      operationName: "list_all",
+      args: {},
+    });
+    if (!list.ok) throw new Error(JSON.stringify(list.error));
+    const rows = list.value as Array<{ tags: unknown }>;
+    expect(rows[0]?.tags).toEqual(["analytics", "marketing"]);
   });
 
   it("update + delete work via id", async () => {

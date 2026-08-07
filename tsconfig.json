@@ -22,6 +22,7 @@
     { "path": "./packages/plugins/comments" },
     { "path": "./packages/plugins/auth" },
     { "path": "./packages/plugins/international-site" },
+    { "path": "./packages/plugins/consent-manager" },
     { "path": "./packages/provisioning" },
     { "path": "./packages/migrations" },
     { "path": "./apps/admin" },

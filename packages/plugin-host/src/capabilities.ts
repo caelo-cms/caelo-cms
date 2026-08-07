@@ -128,13 +128,16 @@ function pluginSchemaName(slug: string): string {
   return `plugin_${slug.replace(/-/g, "_")}`;
 }
 
+/** Declared column name → its type spec, or null when the table is not
+ *  the plugin's. Callers need the spec, not just the name, to bind a
+ *  jsonb value correctly. */
 function declaredColumnsIn(
   schemaMap: Readonly<Record<string, Readonly<Record<string, string>>>>,
   table: string,
-): Set<string> | null {
+): Map<string, string> | null {
   const tableSpec = schemaMap[table];
   if (!tableSpec) return null;
-  return new Set(Object.keys(tableSpec));
+  return new Map(Object.entries(tableSpec));
 }
 
 function validateIdent(name: string, label: string): void {
@@ -212,7 +215,20 @@ function makeScopedQuery(
         }
         validateIdent(k, "column");
         cols.push(`"${k}"`);
-        valueFragments.push(sql`${v}`);
+        // A jsonb ARRAY needs `sql.param` to survive the trip. Bound
+        // straight into the template, drizzle expands it into a SQL
+        // tuple — `VALUES ($1, ($2, $3))`, a syntax error — and
+        // hand-stringifying it first lands a jsonb STRING in the column
+        // instead of an array, because the driver JSON-encodes string
+        // params for jsonb. Both are traps a plugin author would have
+        // to discover from a confusing failure, so the boundary handles
+        // it: the driver encodes the value correctly when it arrives as
+        // one parameter.
+        if (declared.get(k) === "jsonb" && v !== null && typeof v === "object") {
+          valueFragments.push(sql`${sql.param(v)}`);
+        } else {
+          valueFragments.push(sql`${v}`);
+        }
       }
       if (cols.length === 0) {
         throw new Error(`${scope.label}.insert: data must include at least one declared column`);
