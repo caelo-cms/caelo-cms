@@ -39,6 +39,7 @@ import {
 } from "@caelo-cms/plugin-sdk";
 import { type CategoryRow, DEFAULT_CATEGORIES } from "./categories.js";
 import { buildRuntimeJs, RUNTIME_CSS } from "./runtime.js";
+import { type BakedTag, buildTagInjector, KNOWN_VENDORS, type TagRow } from "./tags.js";
 
 const SLUG = "consent-manager";
 const RECORD_ENDPOINT = `/api/plugin/${SLUG}/record_consent`;
@@ -134,6 +135,19 @@ export default definePlugin<PluginContextTier1>({
       retention_days: "int",
       created_at: "timestamp",
     },
+    tags: {
+      name: "string",
+      vendor: "string",
+      category_key: "string",
+      script_src: "text",
+      inline_snippet: "text",
+      position: "enum:head,body_end",
+      /** Required for `necessary`; the audit trail for claiming a tag
+       *  may run before anyone is asked. */
+      justification: "text",
+      enabled: "bool",
+      created_at: "timestamp",
+    },
   },
 
   /** Only the record itself. Everything else is the Owner's. */
@@ -164,17 +178,30 @@ export default definePlugin<PluginContextTier1>({
     const q = adminQueryOf(ctx);
     const settings = await settingsOf(q);
     const categories = await categoriesOf(q);
+    const tags = (await q.list("tags", { limit: 200 })) as unknown as TagRow[];
+    const baked: BakedTag[] = tags
+      .filter((t) => t.enabled)
+      .map((t) => ({
+        name: t.name,
+        category: t.category_key,
+        src: t.script_src,
+        inline: t.inline_snippet,
+        position: t.position === "head" ? "head" : "body_end",
+      }));
     return {
-      "runtime.js": buildRuntimeJs({
-        slug: SLUG,
-        policyVersion: settings.policy_version,
-        recordEndpoint: RECORD_ENDPOINT,
-        categories: categories.map((c) => ({
-          key: c.key,
-          displayName: c.display_name,
-          required: c.required,
-        })),
-      }),
+      "runtime.js": buildRuntimeJs(
+        {
+          slug: SLUG,
+          policyVersion: settings.policy_version,
+          recordEndpoint: RECORD_ENDPOINT,
+          categories: categories.map((c) => ({
+            key: c.key,
+            displayName: c.display_name,
+            required: c.required,
+          })),
+        },
+        buildTagInjector(baked),
+      ),
       "runtime.css": RUNTIME_CSS,
     };
   },
@@ -285,6 +312,109 @@ export default definePlugin<PluginContextTier1>({
     },
 
     /**
+     * Register a tracking tag. Gated at the tool layer (#452): the SDK
+     * pauses for the Owner's in-chat Approve before this runs.
+     *
+     * The §11.A test is "can the user undo it with one tool call?" —
+     * deleting the tag, yes; the data already sent to the vendor, no.
+     */
+    add_tag: async (ctx, args) => {
+      const { name, vendor, category, scriptSrc, inlineSnippet, position, justification } =
+        args as {
+          name?: unknown;
+          vendor?: unknown;
+          category?: unknown;
+          scriptSrc?: unknown;
+          inlineSnippet?: unknown;
+          position?: unknown;
+          justification?: unknown;
+        };
+      if (typeof name !== "string" || name.trim().length === 0) {
+        throw new Error("add_tag: `name` is required");
+      }
+      const q = adminQueryOf(ctx);
+      const categories = await categoriesOf(q);
+      const known = new Set(categories.map((c) => c.key));
+      const vendorKey = typeof vendor === "string" ? vendor : "";
+      const suggested = KNOWN_VENDORS[vendorKey]?.category;
+      const categoryKey = typeof category === "string" ? category : suggested;
+      if (!categoryKey || !known.has(categoryKey)) {
+        throw new Error(
+          `add_tag: \`category\` must be one of ${[...known].join(", ")}${
+            suggested ? ` (${vendorKey} is normally ${suggested})` : ""
+          }`,
+        );
+      }
+      const src =
+        typeof scriptSrc === "string" && scriptSrc.length > 0
+          ? scriptSrc
+          : (KNOWN_VENDORS[vendorKey]?.scriptSrc ?? "");
+      const inline = typeof inlineSnippet === "string" ? inlineSnippet : "";
+      if (src.length === 0 && inline.length === 0) {
+        throw new Error("add_tag: give the tag something to load — `scriptSrc` or `inlineSnippet`");
+      }
+      const reason = typeof justification === "string" ? justification.trim() : "";
+      // A `necessary` tag runs for everyone, unasked. That is right for
+      // a session cookie and wrong for anything that measures or follows
+      // a visitor, so claiming it costs a written reason — otherwise
+      // "necessary" is just the category that makes the banner stop
+      // being an obstacle.
+      if (categoryKey === "necessary" && reason.length < 20) {
+        throw new Error(
+          "add_tag: a tag in `necessary` runs before the visitor is asked, so it needs a written `justification` saying why it is strictly required. If it measures or follows visitors, it belongs in analytics or marketing instead.",
+        );
+      }
+      const existing = (await q.list("tags", { name, limit: 1 })) as unknown as TagRow[];
+      if (existing[0]) {
+        throw new Error(`add_tag: a tag named "${name}" already exists — remove it first`);
+      }
+      const r = await q.insert("tags", {
+        name,
+        vendor: vendorKey,
+        category_key: categoryKey,
+        script_src: src,
+        inline_snippet: inline,
+        position: position === "head" ? "head" : "body_end",
+        justification: reason,
+        enabled: true,
+      });
+      return { tagId: r.id, name, category: categoryKey };
+    },
+
+    list_tags: async (ctx) => {
+      const q = adminQueryOf(ctx);
+      const tags = (await q.list("tags", { limit: 200 })) as unknown as TagRow[];
+      return {
+        tags: tags.map((t) => ({
+          id: t.id,
+          name: t.name,
+          vendor: t.vendor,
+          category: t.category_key,
+          loads: t.script_src || "(inline snippet)",
+          position: t.position,
+          enabled: t.enabled,
+          justification: t.justification,
+        })),
+        knownVendors: Object.entries(KNOWN_VENDORS).map(([key, v]) => ({
+          vendor: key,
+          category: v.category,
+          note: v.note,
+        })),
+      };
+    },
+
+    remove_tag: async (ctx, args) => {
+      const { name } = args as { name?: unknown };
+      if (typeof name !== "string") throw new Error("remove_tag: `name` is required");
+      const q = adminQueryOf(ctx);
+      const rows = (await q.list("tags", { name, limit: 1 })) as unknown as TagRow[];
+      const row = rows[0];
+      if (!row) throw new Error(`remove_tag: no tag named "${name}"`);
+      await q.delete("tags", row.id);
+      return { removed: name };
+    },
+
+    /**
      * Re-ask everyone. Separate from `describe_categories` because
      * rewording a description is cosmetic while invalidating consent
      * puts the banner back in front of every visitor.
@@ -338,6 +468,60 @@ export default definePlugin<PluginContextTier1>({
       },
     },
     {
+      name: "add_tracking_tag",
+      description:
+        "Register a tracking tag (Google Analytics, Meta pixel, Matomo, …) under a consent category. It fires ONLY after the visitor grants that category — you do not need to write any gating yourself. " +
+        "TWO-STEP: this PAUSES for the Owner's in-chat Approve before anything is registered. Say you have prepared it and asked for approval; do not claim the tag is live. " +
+        "Pick the category conservatively: anything that measures or follows a visitor is analytics or marketing, never necessary. Claiming `necessary` requires a written justification and is rejected without one. " +
+        "Known vendors (google-analytics, google-tag-manager, meta-pixel, matomo, hotjar) supply their own category and script URL — pass `vendor` and you can omit both.",
+      operationName: "add_tag",
+      approvalMode: "user-approval",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name"],
+        properties: {
+          name: { type: "string", description: "Operator-facing label, unique." },
+          vendor: {
+            type: "string",
+            description: "One of the known vendor keys, or free text for anything else.",
+          },
+          category: {
+            type: "string",
+            enum: ["necessary", "functional", "analytics", "marketing"],
+          },
+          scriptSrc: { type: "string", description: "External script URL." },
+          inlineSnippet: { type: "string", description: "Inline JS, when the vendor gives one." },
+          position: { type: "string", enum: ["head", "body_end"] },
+          justification: {
+            type: "string",
+            description: "Why this tag is needed. REQUIRED when category is `necessary`.",
+          },
+        },
+      },
+    },
+    {
+      name: "list_tracking_tags",
+      description:
+        "List the registered tracking tags with the consent category each is pinned to, plus the vendors whose category and script URL are already known. " +
+        "Call before adding a tag (to avoid a duplicate) and whenever the operator asks what the site loads or what data leaves it.",
+      operationName: "list_tags",
+      inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
+    },
+    {
+      name: "remove_tracking_tag",
+      description:
+        "Remove a tracking tag by name. It stops being injected at the next deploy. " +
+        "Not gated: removing a tag only ever reduces what the site loads.",
+      operationName: "remove_tag",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name"],
+        properties: { name: { type: "string" } },
+      },
+    },
+    {
       name: "bump_consent_policy_version",
       description:
         "Invalidate every stored consent so all visitors are asked again. " +
@@ -370,8 +554,15 @@ export default definePlugin<PluginContextTier1>({
         "7. Do NOT hide the banner yourself in CSS. The runtime decides when it is shown; a hand-rolled rule fights it and usually wins in the wrong direction.",
         "",
         "If the operator wants different wording or another language, use describe_categories — do not fork the copy into the module, or the two drift.",
+        "",
+        "When the operator asks to add analytics or a tracking pixel ('add Google Analytics', 'put the Meta pixel in'), use add_tracking_tag. Never paste a vendor snippet into a module: a tag in the page HTML has already run by the time anything could check consent. The tag surface pins it to a category and the runtime injects it only after that category is granted. The call pauses for the Owner's approval — say you prepared it, not that it is live.",
       ].join("\n"),
-      allowlistedTools: ["consent_status", "describe_categories"],
+      allowlistedTools: [
+        "consent_status",
+        "describe_categories",
+        "add_tracking_tag",
+        "list_tracking_tags",
+      ],
       autoEngagementHints: {
         keywords: ["cookie", "consent", "banner", "gdpr", "dsgvo", "tracking", "privacy"],
       },
