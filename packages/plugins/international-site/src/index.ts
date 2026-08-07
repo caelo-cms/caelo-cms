@@ -484,6 +484,49 @@ async function publishedVariantMatrix(
   return out;
 }
 
+/**
+ * The pages among `pageIds` that are the root of their own locale —
+ * i.e. non-default-locale variants grouped with the site's designated
+ * home page.
+ *
+ * Core knows one home; a multilingual site has one per locale. Core
+ * cannot derive the rest (it has no locale concept since epic #380),
+ * and the variant group is exactly the missing link, so the plugin
+ * supplies it as a URL annotation and the composer honours it.
+ */
+async function localeRootPageIds(
+  ctx: unknown,
+  q: PluginAdminQuery,
+  pageIds: readonly string[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const cms = cmsOf(ctx);
+  const defaults = await cms.call<{ defaults: { homePageId: string | null } | null }>(
+    "site_defaults.get",
+    {},
+  );
+  const homePageId = defaults.defaults?.homePageId ?? null;
+  if (!homePageId) return out; // no designation: core's magic-slug rule stands
+  const homeVariant = (
+    (await q.list("page_variants", {
+      page_id: homePageId,
+      limit: 1,
+    })) as unknown as PageVariantRow[]
+  )[0];
+  if (!homeVariant) return out; // home is not in any variant group
+  const group = (await q.list("page_variants", {
+    group_id: homeVariant.group_id,
+    limit: 100,
+  })) as unknown as PageVariantRow[];
+  const requested = new Set(pageIds);
+  for (const v of group) {
+    // The designated home keeps core's own root handling; only its
+    // counterparts need the annotation.
+    if (v.page_id !== homePageId && requested.has(v.page_id)) out.add(v.page_id);
+  }
+  return out;
+}
+
 export default definePlugin<PluginContextTier1>({
   slug: "international-site",
   version: "0.1.0",
@@ -554,6 +597,16 @@ export default definePlugin<PluginContextTier1>({
         return { annotations };
       }
       const variants = await loadVariantsByPage(q, pageIds);
+      // Which of these pages is the home page IN ITS OWN LOCALE. The
+      // site has exactly one designated home (site_defaults), so core
+      // composes every other page as `<prefix>/<slug>` — which put the
+      // German home at `/de/startseite` instead of `/de/`. A live run
+      // hit this and did the only thing available to it: tried to give
+      // the variant the sentinel slug `home`, which is unique
+      // site-wide, and collided with the English home. The locale root
+      // is variant-group knowledge, so it is answered here rather than
+      // worked around by duplicating a slug.
+      const homeVariantIds = await localeRootPageIds(ctx, q, pageIds);
       for (const id of pageIds) {
         const variant = variants.get(id);
         const locale = variant ? localeCache.get(variant.locale_code) : def;
@@ -567,6 +620,7 @@ export default definePlugin<PluginContextTier1>({
           isDefaultLocale: locale.is_default,
           urlStrategy: locale.url_strategy,
           ...(locale.url_host ? { urlHost: locale.url_host } : {}),
+          ...(homeVariantIds.has(id) ? { isLocaleRoot: true } : {}),
         };
       }
       return { annotations };

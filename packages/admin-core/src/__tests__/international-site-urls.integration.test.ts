@@ -245,21 +245,56 @@ describe("#395 — international-site URL contributions on the generic engine", 
     });
     expect(decodePagePath("/fr/t395-x").annotations).toEqual({});
 
-    // 6. A German HOME variant composes to the prefix root "/de".
+    // 6. The German HOME composes to the prefix root "/de", not
+    //    "/de/<slug>".
+    //
+    //    Core designates exactly ONE home; a multilingual site has one
+    //    per locale, and core cannot derive the others since it has no
+    //    locale concept (epic #380). The variant group is the missing
+    //    link, so the plugin annotates its locale roots and the
+    //    composer honours it. A live run showed what happens without
+    //    this: the AI correctly worked out the German home belongs at
+    //    "/de/", reached for the only lever it had — giving the variant
+    //    the sentinel slug "home" — and hit the site-wide slug
+    //    uniqueness.
     const deHomeId = await seedPage("t395-startseite");
     await sqlAsPlugin(async (tx) => {
+      // Grouped WITH the designated home; that grouping is the whole
+      // signal. A group of its own would leave it an ordinary page.
       await tx.unsafe(
         `INSERT INTO "plugin_international_site"."page_variants" (group_id, page_id, locale_code, translation_status)
-         VALUES (gen_random_uuid(), '${deHomeId}', 'de', 'up_to_date')`,
+         VALUES (gen_random_uuid(), '${homeId}', 'en', 'source')`,
+      );
+      const grp = (await tx.unsafe(
+        `SELECT group_id::text AS group_id FROM "plugin_international_site"."page_variants" WHERE page_id = '${homeId}'`,
+      )) as { group_id: string }[];
+      await tx.unsafe(
+        `INSERT INTO "plugin_international_site"."page_variants" (group_id, page_id, locale_code, translation_status)
+         VALUES ('${grp[0]?.group_id}', '${deHomeId}', 'de', 'up_to_date')`,
       );
     });
-    // The home designation covers the EN home; the de home is a normal
-    // prefixed page unless designated — assert the composed shape.
     const move2 = await execute(registry, adapter, SYS_CTX, "url_migrations.propose_migrate", {});
     if (!move2.ok) throw new Error(JSON.stringify(move2.error));
     await execute(registry, adapter, HUMAN_CTX, "url_migrations.execute_proposal", {
       proposalId: (move2.value as { proposalId: string }).proposalId,
     });
+
+    const deHomePath = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(`SELECT current_path FROM pages WHERE id = '${deHomeId}'`)) as {
+          current_path: string;
+        }[],
+    );
+    expect(deHomePath[0]?.current_path).toBe("/de");
+    // The English home keeps "/" — two locale roots, two paths, so the
+    // current_path uniqueness the composition rests on still holds.
+    const enHomePath = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(`SELECT current_path FROM pages WHERE id = '${homeId}'`)) as {
+          current_path: string;
+        }[],
+    );
+    expect(enHomePath[0]?.current_path).toBe("/");
 
     // 7. TEARDOWN — disable the plugin; contributions go inert; the
     // reverse diff moves everything back from the materialized paths.

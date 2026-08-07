@@ -42,7 +42,20 @@ function isCompositionHome(
   pageId: string,
   slug: string,
   designatedHomePageId: string | null,
+  annotations: Record<string, unknown>,
 ): boolean {
+  // A URL plugin may declare this page the root of its own URL space.
+  // The site has ONE designated home, but a multilingual site has one
+  // per locale, and core cannot derive the others — it has no locale
+  // concept (epic #380). The `international-site` plugin answers it
+  // from the variant group; without this the German home composes to
+  // `/de/<slug>` instead of `/de/`, and the only workaround available
+  // to a caller is duplicating the sentinel slug, which the site-wide
+  // slug uniqueness refuses.
+  //
+  // Uniqueness still holds: each locale root carries a different path
+  // prefix, so `/` and `/de` never collide.
+  if (annotations.isLocaleRoot === true) return true;
   if (designatedHomePageId !== null) return pageId === designatedHomePageId;
   return isHomeSlug(slug);
 }
@@ -90,7 +103,7 @@ export async function recomputeCurrentPaths(
     const resolved = resolvePageUrl({
       pageId: row.id,
       slug: row.slug,
-      isHomePage: isCompositionHome(row.id, row.slug, designated),
+      isHomePage: isCompositionHome(row.id, row.slug, designated, annotations.get(row.id) ?? {}),
       annotations: annotations.get(row.id) ?? {},
     });
     out.set(row.id, resolved.path);
@@ -117,7 +130,7 @@ export async function resolveCurrentPathsDryRun(
     const resolved = resolvePageUrl({
       pageId: row.id,
       slug: row.slug,
-      isHomePage: isCompositionHome(row.id, row.slug, designated),
+      isHomePage: isCompositionHome(row.id, row.slug, designated, annotations.get(row.id) ?? {}),
       annotations: annotations.get(row.id) ?? {},
     });
     out.set(row.id, resolved.path);
