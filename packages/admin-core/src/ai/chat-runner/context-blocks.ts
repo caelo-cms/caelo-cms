@@ -27,6 +27,17 @@ import { buildSkillsContext } from "./context/skills.js";
 export interface PreCatalogueBlocks {
   /** Static `## Skills` index (slug + description per active skill). */
   skillsIndexBlock: string | undefined;
+  /**
+   * One line naming the plugins that are installed but NOT running.
+   *
+   * An inactive plugin is absent from everything else the AI can see —
+   * no tools, no skills, no ops. Without this line the AI could not
+   * tell "this site cannot do translations" from "this site has a
+   * translation plugin nobody switched on", and would quietly improvise
+   * with core tools instead of offering the one click that fixes it.
+   * Undefined when every installed plugin is active.
+   */
+  installedPluginsBlock: string | undefined;
 }
 
 export interface SystemContextResult {
@@ -39,6 +50,11 @@ export interface SystemContextResult {
   /** Skills loaded this chat — feeds the tool-catalogue preload + diagnostics. */
   engagedSkills: ChatEngagement[];
   allowedToolNames: Set<string> | null;
+  /**
+   * Skills activated after this chat began. Deliberately absent from the
+   * pinned index; announced once on the USER message instead.
+   */
+  newlyActivatedSkills: ReadonlyArray<{ slug: string; description: string }>;
   /**
    * Cold-start status ("Theme: needs setup", …), each entry naming the tool
    * that fixes it. Rides on the USER message (first + on change); undefined once
@@ -80,6 +96,34 @@ export function buildStatusLine(args: {
   return `[Site status — base setup still missing] ${missing.join(" | ")}`;
 }
 
+/**
+ * Name the installed-but-inactive plugins, and nothing else about them.
+ *
+ * Deliberately terse: this is a pointer, not a catalogue. The AI reaches
+ * for `list_plugins` when it actually needs detail, which keeps the
+ * cached prefix small and stops the block from turning into a second
+ * tool listing.
+ */
+async function buildInstalledPluginsBlock(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  humanCtx: ExecutionContext,
+): Promise<string | undefined> {
+  const r = await execute(registry, adapter, humanCtx, "plugins.list", {});
+  if (!r.ok) return undefined;
+  const rows = (r.value as { plugins: { slug: string; status: string }[] }).plugins;
+  const dormant = rows
+    .filter((p) => p.status === "awaiting_activation" || p.status === "disabled")
+    .map((p) => p.slug)
+    .sort();
+  if (dormant.length === 0) return undefined;
+  return [
+    "# Installed plugins (not running)",
+    `These plugins are installed on this site but NOT active, so none of their tools or skills exist for you right now: ${dormant.join(", ")}.`,
+    "If the operator asks for something one of them would provide, say so and tell them it takes one click at /security/plugins — do NOT improvise the capability with core tools, and do NOT claim the site cannot do it. Call list_plugins if you need their exact status.",
+  ].join("\n");
+}
+
 export async function buildSystemContextBlocks(deps: {
   registry: OperationRegistry;
   adapter: DatabaseAdapter;
@@ -90,6 +134,10 @@ export async function buildSystemContextBlocks(deps: {
   /** Slugs the model already loaded this chat (parsed from prior load_skill
    *  tool calls in the history) — drives the skills tool preload. */
   loadedSkillSlugs: readonly string[];
+  /** When this chat session was created. Pins the `## Skills` index to
+   *  the skills that were active then, so a mid-chat activation can't
+   *  rewrite the cached system prefix. */
+  chatStartedAt?: string | null;
 }): Promise<SystemContextResult> {
   const { registry, adapter, humanCtx, humanCtxWithBranch, input } = deps;
 
@@ -102,7 +150,9 @@ export async function buildSystemContextBlocks(deps: {
   );
   const skills = await buildSkillsContext(registry, adapter, humanCtx, {
     loadedSkillSlugs: deps.loadedSkillSlugs,
+    chatStartedAt: deps.chatStartedAt ?? null,
   });
+  const installedPluginsBlock = await buildInstalledPluginsBlock(registry, adapter, humanCtx);
 
   // Cold-start status: the ONLY site-state reads that remain, and only to name
   // what base setup is still missing (cheap counts; the line is undefined — no
@@ -124,10 +174,11 @@ export async function buildSystemContextBlocks(deps: {
   });
 
   return {
-    preBlocks: { skillsIndexBlock: skills.skillsIndexBlock },
+    preBlocks: { skillsIndexBlock: skills.skillsIndexBlock, installedPluginsBlock },
     pageContextBlock,
     engagedSkills: skills.engagedSkills,
     allowedToolNames: skills.allowedToolNames,
+    newlyActivatedSkills: skills.newlyActivated,
     statusLine,
   };
 }

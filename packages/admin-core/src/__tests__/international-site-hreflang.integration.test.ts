@@ -23,7 +23,11 @@ import {
 } from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import {
+  type ExecutionContext,
+  type SiteDefaultsSetSeoInput,
+  siteDefaultsSetSeoInputSchema,
+} from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
@@ -41,6 +45,18 @@ const BASE = "https://example.com";
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
+
+/**
+ * The base URL is ambient config: `collectContributions` is TOLD the
+ * base (it takes `siteBaseUrl`), but `staticRender` READS it from
+ * `site_defaults.get_seo`. Asserting the selector's absolute hrefs
+ * against a hardcoded BASE therefore only holds if the site happens to
+ * be configured that way — CI seeds `http://localhost:8082`, a dev box
+ * holds whatever the operator set. Pin it for the duration of the file
+ * so both halves of the contract are measured against one base, and
+ * put it back afterwards so the file leaves no config drift behind.
+ */
+let seoBeforeFile: SiteDefaultsSetSeoInput | null = null;
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -80,9 +96,14 @@ beforeAll(async () => {
     testPlugins: [{ definition: intlPlugin }],
   });
   if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
+  // Parse rather than cast: an ambient config that no longer satisfies
+  // the write schema should fail here, loudly, not silently reshape.
+  seoBeforeFile = siteDefaultsSetSeoInputSchema.parse(await sysOp("site_defaults.get_seo", {}));
+  await sysOp("site_defaults.set_seo", { ...seoBeforeFile, siteBaseUrl: BASE });
 });
 
 afterAll(async () => {
+  if (seoBeforeFile) await sysOp("site_defaults.set_seo", seoBeforeFile);
   await cleanup();
   await adapter.close();
 });

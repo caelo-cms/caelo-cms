@@ -165,6 +165,20 @@ test("gated set_locales pauses for the in-chat click; create_variant lands /de/;
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
+  // The plugin is installed but NOT running until an Owner activates
+  // it — its tools are absent from the catalogue, so the scripted
+  // `set_locales` call below would have nothing to dispatch to. This
+  // click is the same one a real install makes, and it exercises
+  // activate → loader → tool registration for real.
+  await page.goto("/security/plugins");
+  const activate = page.getByTestId("activate-international-site");
+  if ((await activate.count()) > 0) {
+    await activate.click();
+    await expect(page.getByTestId("activate-international-site")).toHaveCount(0, {
+      timeout: 30_000,
+    });
+  }
+
   await page.goto("/content/chat");
   await page.getByRole("button", { name: /\+ new chat/i }).click();
   await expect(page).toHaveURL(/\/content\/chat\/[0-9a-f-]+$/, { timeout: 15_000 });

@@ -3,7 +3,7 @@
 /**
  * #393 — lifecycle completion, end to end: disable survives a re-boot,
  * plugins.activate re-enables a release-signed plugin without restart,
- * manifest-shipped skills land at awaiting_activation (Owner decision
+ * manifest-shipped skills go live with the plugin (the Owner decision
  * sticks across boots), and the gated uninstall archives skills, moves
  * URLs back with redirects, drops the schemas, and removes the row.
  */
@@ -11,6 +11,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
+  loadActivatedPlugin,
   loadedPlugins,
   pluginToolsRegistry,
   resetPluginHost,
@@ -159,25 +160,37 @@ describe("#393 — lifecycle completion", () => {
     const first = await bootHost();
     expect(first.failed).toEqual([]);
 
-    // Manifest skill landed awaiting_activation with ownership.
+    // The manifest skill is live with the plugin, owned by it, stamped.
     const skillRows = await sqlSystem(
       async (tx) =>
         (await tx.unsafe(
-          `SELECT status, plugin_id::text AS plugin_id FROM skills WHERE slug = 't393-skill'`,
-        )) as { status: string; plugin_id: string | null }[],
+          `SELECT status, activated_at, plugin_id::text AS plugin_id FROM skills WHERE slug = 't393-skill'`,
+        )) as { status: string; activated_at: string | Date | null; plugin_id: string | null }[],
     );
-    expect(skillRows[0]?.status).toBe("awaiting_activation");
+    expect(skillRows[0]?.status).toBe("active");
+    expect(skillRows[0]?.activated_at).not.toBeNull();
     expect(skillRows[0]?.plugin_id).not.toBeNull();
 
-    // Owner activates the skill; disable the plugin; re-boot.
+    // Editing an already-active skill must NOT re-stamp activated_at —
+    // the stamp drives the new-skill notice, and a reworded body is not
+    // news to a chat that already has the skill.
+    const stampBefore = String(skillRows[0]?.activated_at);
     const promote = await execute(registry, adapter, HUMAN_CTX, "skills.set", {
       slug: "t393-skill",
       displayName: "T393 Skill",
       description: "lifecycle test skill",
-      body: "Do the t393 thing.",
+      body: "Do the t393 thing, reworded.",
       status: "active",
     });
     if (!promote.ok) throw new Error(JSON.stringify(promote.error));
+    const afterEdit = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(`SELECT activated_at FROM skills WHERE slug = 't393-skill'`)) as {
+          activated_at: string | Date | null;
+        }[],
+    );
+    expect(String(afterEdit[0]?.activated_at)).toBe(stampBefore);
+
     const disabled = await execute(registry, adapter, HUMAN_CTX, "plugins.disable", {
       slug: "t393-life",
     });
@@ -196,7 +209,7 @@ describe("#393 — lifecycle completion", () => {
     expect(status[0]?.status).toBe("disabled");
     // …its tools are hidden from the live catalogue…
     expect(pluginToolsRegistry.list().some((t) => t.spec.name === "t393_noop")).toBe(false);
-    // …and the Owner's skill activation stuck (boot upsert keeps status).
+    // …and the skill stayed active (boot upsert never downgrades).
     const skillAfter = await sqlSystem(
       async (tx) =>
         (await tx.unsafe(`SELECT status FROM skills WHERE slug = 't393-skill'`)) as {
@@ -205,11 +218,19 @@ describe("#393 — lifecycle completion", () => {
     );
     expect(skillAfter[0]?.status).toBe("active");
 
-    // Re-enable through the op — no restart.
+    // Re-enable without a restart. Two steps, exactly as the
+    // /security/plugins route does it: the op flips the row, then the
+    // host loads the plugin. The load CANNOT run inside the op — the
+    // loader opens its own transaction and takes the same row.
     const reenabled = await execute(registry, adapter, HUMAN_CTX, "plugins.activate", {
       slug: "t393-life",
     });
     if (!reenabled.ok) throw new Error(JSON.stringify(reenabled.error));
+    // Flipping the row alone does not resurrect anything — the gate is
+    // in the loader, so until it runs the plugin is still absent.
+    expect(pluginToolsRegistry.list().some((t) => t.spec.name === "t393_noop")).toBe(false);
+    const relive = await loadActivatedPlugin("t393-life");
+    expect(relive).toEqual({ loaded: true });
     expect(pluginToolsRegistry.list().some((t) => t.spec.name === "t393_noop")).toBe(true);
     const statusAfter = await sqlSystem(
       async (tx) =>

@@ -25,6 +25,7 @@
 import { spawnSync } from "node:child_process";
 import { expect, test } from "./fixtures.js";
 import {
+  activatePluginAsOwner,
   assertNoChatRunnerDiagWarnings,
   assertNoOrphanLocks,
   attachChatSessionTracker,
@@ -168,6 +169,12 @@ test("übersetze die Seite ins Deutsche — locale gate, /de/ variant, values-le
 
   const tracker = attachChatSessionTracker(page);
   await loginAsDevOwner(page);
+  // The plugin ships with Caelo but does not run until an Owner says
+  // so. Without this click the AI has no locale tools and no i18n
+  // skills — it would improvise a "translation" out of duplicate_page
+  // and set_page_module_content, which is exactly what this scenario
+  // caught before the activation state was made hard.
+  await activatePluginAsOwner(page, "international-site");
   await page.goto("/edit");
 
   await sendChatPromptAndWait(

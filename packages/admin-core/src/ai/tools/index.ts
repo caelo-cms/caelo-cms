@@ -58,6 +58,7 @@ import { listLayoutsTool } from "./list-layouts.js";
 import { listModulesTool } from "./list-modules.js";
 import { listPageAssetsTool } from "./list-page-assets.js";
 import { listPagesTool } from "./list-pages.js";
+import { listPluginsTool } from "./list-plugins.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
@@ -186,6 +187,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // layouts` / `# All pages` context blocks. Existed only as system-prompt
   // text before; the AI had no fetch path when it claimed to lack a UUID.
   registry.register(listLayoutsTool);
+  registry.register(listPluginsTool);
   registry.register(listTemplatesTool);
   registry.register(listPagesTool);
   registry.register(loadSkillTool);

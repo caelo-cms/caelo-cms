@@ -5,11 +5,18 @@
  *
  * Bootstrap walks `packages/plugins/<slug>/` directories, verifies each
  * manifest's Ed25519 signature, runs the validator over the plugin's source,
- * provisions the plugin's declared cms_public schema (idempotent DDL),
- * registers the plugin's tools + workers + prompt-context renderers, and
- * upserts a `plugins` row at `tier=1, status='active'`. There is NO
- * unverified load path (#387): the in-memory test override runs the same
- * validator + signature pipeline against an ephemeral trust root.
+ * and upserts a `plugins` row. There is NO unverified load path (#387):
+ * the in-memory test override runs the same validator + signature
+ * pipeline against an ephemeral trust root.
+ *
+ * Discovery does NOT start a plugin. A newly found plugin is recorded at
+ * `status='awaiting_activation'` and nothing of it runs — no schema, no
+ * tools, no skills, no workers, no contributions. An Owner activates it
+ * (`plugins.activate`), and only then does the host register it. This is
+ * a hard state, not a display filter: to the running system and to the
+ * AI's tool catalogue, an inactive plugin does not exist. The AI learns
+ * such a plugin is available through the short installed-plugins prompt
+ * block and `list_plugins`, and can offer the operator an activation.
  *
  * Failure isolation per plugin: a corrupted signature, missing migration,
  * or thrown definePlugin call leaves a `plugins` row at `status='failed'`
@@ -51,7 +58,6 @@ import {
   setContextFactory,
   setHostInfra,
 } from "./dispatch.js";
-import { applyPluginLifecycle } from "./lifecycle.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
 import { pluginToolsRegistry } from "./tools-registry.js";
@@ -84,14 +90,97 @@ export interface BootstrapOpts {
 
 export interface LoadReport {
   readonly loaded: ReadonlyArray<{ slug: string; version: string; tier: 1 | 2 }>;
+  /**
+   * Verified and registered in the `plugins` table, but NOT loaded: no
+   * tools, no skills, no workers, no contributions, no schema. A plugin
+   * only becomes part of the running system once an Owner activates it
+   * (CLAUDE.md §2 — the activation state is hard, not cosmetic). The AI
+   * learns these exist through the short installed-plugins prompt block
+   * and `list_plugins`, and can offer the operator an activation.
+   */
+  readonly inactive: ReadonlyArray<{ slug: string; version: string; status: string }>;
   readonly failed: ReadonlyArray<{ slug: string; reason: string }>;
 }
+
+/**
+ * Verify and register a plugin handed to the host as a definition.
+ *
+ * NOT a verification shortcut (#387): the manifest is projected from
+ * the definition, validated, signed with a fresh in-process key and
+ * signature-verified — the same pipeline the disk path runs, differing
+ * only in the trust root. Extracted so an Owner activating an
+ * in-memory plugin at runtime goes through exactly these checks
+ * instead of a laxer second path.
+ */
+async function verifyAndRegisterInMemory(
+  tp: {
+    readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
+    readonly sourcePath?: string;
+  },
+  opts: BootstrapOpts,
+): Promise<RegisterOutcome> {
+  const ephemeral = await generateManifestKeyPair();
+  let manifest: PluginManifest;
+  try {
+    manifest = manifestFromDefinition(tp.definition);
+  } catch (e) {
+    throw new Error(
+      `manifest projection failed for "${tp.definition.slug}": ${(e as Error).message}`,
+    );
+  }
+  const manifestCheck = validateManifest(manifest);
+  if (manifestCheck.failures.length > 0) {
+    throw new Error(
+      `validator rejected manifest: ${manifestCheck.failures.map((f) => f.kind).join(", ")}`,
+    );
+  }
+  let signatureHex = "unsigned-tier2";
+  if (manifest.tier === 1) {
+    signatureHex = (await signManifest({ manifest, privateKeyHex: ephemeral.privateKeyHex }))
+      .signatureHex;
+    const sig = await verifyManifestSignature({
+      manifest,
+      signatureHex,
+      publicKeyHex: ephemeral.publicKeyHex,
+    });
+    if (!sig.ok) throw new Error(`signature verification failed: ${sig.reason}`);
+  }
+  if (tp.sourcePath) {
+    const distDir = resolvePath(tp.sourcePath, "dist");
+    if (existsSync(resolvePath(distDir, "index.js"))) {
+      validateDistDirectory(distDir, tp.definition.slug);
+    }
+  }
+  return registerLoadedPlugin({
+    definition: tp.definition,
+    manifest,
+    sourcePath: tp.sourcePath ?? null,
+    manifestSignatureHex: signatureHex,
+    infra: opts.infra,
+    systemActorId: opts.systemActorId,
+    // Handing the host a definition IS the activation decision — the
+    // caller already chose to run this plugin. Discovery is the case
+    // that needs an Owner.
+    activation: "explicit",
+  });
+}
+
+/**
+ * The options the host booted with. Kept so an Owner activating a
+ * plugin at runtime gets it RUNNING immediately — without this the
+ * activation would only flip a row and the plugin would stay absent
+ * until the next restart, which is exactly the "activated but nothing
+ * happened" trap the hard activation state must not introduce.
+ */
+let bootOpts: BootstrapOpts | null = null;
 
 export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   setHostInfra(opts.infra);
   setContextFactory(makePluginContext);
+  bootOpts = opts;
 
   const loaded: Array<{ slug: string; version: string; tier: 1 | 2 }> = [];
+  const inactive: Array<{ slug: string; version: string; status: string }> = [];
   const failed: Array<{ slug: string; reason: string }> = [];
 
   if (opts.testPlugins) {
@@ -100,54 +189,27 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
     // validator run, Tier-1 manifests signed with an ephemeral key and
     // signature-verified. Only the trust root differs (per-bootstrap
     // key instead of the release/dev key), never the checks.
-    const ephemeral = await generateManifestKeyPair();
     for (const tp of opts.testPlugins) {
       try {
-        let manifest: PluginManifest;
-        try {
-          manifest = manifestFromDefinition(tp.definition);
-        } catch (e) {
-          throw new Error(
-            `manifest projection failed for "${tp.definition.slug}": ${(e as Error).message}`,
-          );
-        }
-        const manifestCheck = validateManifest(manifest);
-        if (manifestCheck.failures.length > 0) {
-          throw new Error(
-            `validator rejected manifest: ${manifestCheck.failures.map((f) => f.kind).join(", ")}`,
-          );
-        }
-        let signatureHex = "unsigned-tier2";
-        if (manifest.tier === 1) {
-          signatureHex = (await signManifest({ manifest, privateKeyHex: ephemeral.privateKeyHex }))
-            .signatureHex;
-          const sig = await verifyManifestSignature({
-            manifest,
-            signatureHex,
-            publicKeyHex: ephemeral.publicKeyHex,
+        const outcome = await verifyAndRegisterInMemory(tp, opts);
+        if (outcome.plugin) {
+          loaded.push({
+            slug: outcome.plugin.slug,
+            version: outcome.plugin.version,
+            tier: outcome.plugin.tier,
           });
-          if (!sig.ok) throw new Error(`signature verification failed: ${sig.reason}`);
+        } else {
+          inactive.push({
+            slug: tp.definition.slug,
+            version: tp.definition.version,
+            status: outcome.status,
+          });
         }
-        if (tp.sourcePath) {
-          const distDir = resolvePath(tp.sourcePath, "dist");
-          if (existsSync(resolvePath(distDir, "index.js"))) {
-            validateDistDirectory(distDir, tp.definition.slug);
-          }
-        }
-        const lp = await registerLoadedPlugin({
-          definition: tp.definition,
-          manifest,
-          sourcePath: tp.sourcePath ?? null,
-          manifestSignatureHex: signatureHex,
-          infra: opts.infra,
-          systemActorId: opts.systemActorId,
-        });
-        loaded.push({ slug: lp.slug, version: lp.version, tier: lp.tier });
       } catch (e) {
         failed.push({ slug: tp.definition.slug, reason: (e as Error).message });
       }
     }
-    return { loaded, failed };
+    return { loaded, inactive, failed };
   }
 
   let entries: string[];
@@ -155,26 +217,10 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
     entries = readdirSync(opts.pluginsRoot);
   } catch (e) {
     // No plugins directory at all — fine on a fresh dev install.
-    return { loaded, failed: [{ slug: "<root>", reason: (e as Error).message }] };
+    return { loaded, inactive, failed: [{ slug: "<root>", reason: (e as Error).message }] };
   }
 
-  // Trust-root resolution (#387): explicit option → env override → the
-  // `.tier1-trust-root` drop file written by the signer next to the
-  // plugins it signed → the embedded release key inside
-  // verifyManifestSignature. The drop file makes dev checkouts and
-  // container images self-contained (the key travels with the manifests
-  // it covers; image provenance is cosign's job).
-  let publicKeyHex = opts.publicKeyHex ?? process.env.CAELO_TIER1_PUBLIC_KEY;
-  if (!publicKeyHex) {
-    try {
-      publicKeyHex = readFileSync(
-        resolvePath(opts.pluginsRoot, ".tier1-trust-root"),
-        "utf8",
-      ).trim();
-    } catch {
-      // no drop file — the embedded release key is the trust root
-    }
-  }
+  const publicKeyHex = resolveTrustRoot(opts);
 
   for (const entry of entries) {
     const pluginDir = resolvePath(opts.pluginsRoot, entry);
@@ -202,7 +248,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
     const slug = (rawManifest as { slug?: unknown }).slug;
     const slugStr = typeof slug === "string" ? slug : entry;
     try {
-      const lp = await loadOnePlugin({
+      const outcome = await loadOnePlugin({
         slug: slugStr,
         pluginDir,
         rawManifest,
@@ -210,7 +256,21 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
         systemActorId: opts.systemActorId,
         publicKeyHex,
       });
-      loaded.push({ slug: lp.slug, version: lp.version, tier: lp.tier });
+      if (outcome.plugin) {
+        loaded.push({
+          slug: outcome.plugin.slug,
+          version: outcome.plugin.version,
+          tier: outcome.plugin.tier,
+        });
+      } else {
+        // Verified and recorded, deliberately not running. This is the
+        // normal state of a freshly installed plugin.
+        inactive.push({
+          slug: slugStr,
+          version: String((rawManifest as { version?: unknown }).version ?? "0.0.0"),
+          status: outcome.status,
+        });
+      }
     } catch (e) {
       failed.push({ slug: slugStr, reason: (e as Error).message });
       // Best-effort: write a `failed` row so /security/plugins shows the error.
@@ -237,7 +297,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   for (const t of tier2.loaded) loaded.push({ slug: t.slug, version: t.version, tier: 2 });
   for (const f of tier2.failed) failed.push(f);
 
-  return { loaded, failed };
+  return { loaded, inactive, failed };
 }
 
 /**
@@ -353,6 +413,25 @@ function extractDeclaredOps(manifestJson: unknown): ReadonlyArray<string> {
   return [];
 }
 
+/**
+ * Trust-root resolution (#387): explicit option → env override → the
+ * `.tier1-trust-root` drop file written by the signer next to the
+ * plugins it signed → the embedded release key inside
+ * verifyManifestSignature. The drop file makes dev checkouts and
+ * container images self-contained (the key travels with the manifests
+ * it covers; image provenance is cosign's job).
+ */
+function resolveTrustRoot(opts: BootstrapOpts): string | undefined {
+  const explicit = opts.publicKeyHex ?? process.env.CAELO_TIER1_PUBLIC_KEY;
+  if (explicit) return explicit;
+  try {
+    return readFileSync(resolvePath(opts.pluginsRoot, ".tier1-trust-root"), "utf8").trim();
+  } catch {
+    // no drop file — the embedded release key is the trust root
+    return undefined;
+  }
+}
+
 interface LoadOpts {
   readonly slug: string;
   readonly pluginDir: string;
@@ -362,7 +441,7 @@ interface LoadOpts {
   readonly publicKeyHex?: string;
 }
 
-async function loadOnePlugin(opts: LoadOpts): Promise<LoadedPlugin> {
+async function loadOnePlugin(opts: LoadOpts): Promise<RegisterOutcome> {
   // 1. Manifest shape.
   const parsed = pluginManifest.safeParse(opts.rawManifest);
   if (!parsed.success) {
@@ -425,7 +504,61 @@ async function loadOnePlugin(opts: LoadOpts): Promise<LoadedPlugin> {
     manifestSignatureHex: signatureHex,
     infra: opts.infra,
     systemActorId: opts.systemActorId,
+    activation: "discovered",
   });
+}
+
+/**
+ * Load a plugin the Owner just activated, without a host restart.
+ *
+ * Call AFTER the `plugins.activate` transaction has committed: the
+ * loader opens its own transaction and takes the same row, so calling
+ * it from inside the activation would self-deadlock.
+ *
+ * Re-reads the plugin from disk and runs the full verify pipeline
+ * again rather than trusting anything cached — activation is exactly
+ * the moment to re-check a signature. Returns the reason instead of
+ * throwing so the caller can surface it on the activation screen; the
+ * row is already active either way, and the next boot retries.
+ */
+export async function loadActivatedPlugin(
+  slug: string,
+): Promise<{ loaded: boolean; reason?: string }> {
+  if (!bootOpts) return { loaded: false, reason: "plugin host not bootstrapped" };
+  if (bootOpts.testPlugins) {
+    const tp = bootOpts.testPlugins.find((t) => t.definition.slug === slug);
+    if (!tp) return { loaded: false, reason: `no in-memory plugin "${slug}"` };
+    try {
+      const outcome = await verifyAndRegisterInMemory(tp, bootOpts);
+      return outcome.plugin
+        ? { loaded: true }
+        : { loaded: false, reason: `plugin is ${outcome.status}, not active` };
+    } catch (e) {
+      return { loaded: false, reason: (e as Error).message };
+    }
+  }
+  const pluginDir = resolvePath(bootOpts.pluginsRoot, slug);
+  let rawManifest: unknown;
+  try {
+    rawManifest = JSON.parse(readFileSync(resolvePath(pluginDir, "manifest.json"), "utf8"));
+  } catch (e) {
+    return { loaded: false, reason: `manifest unreadable: ${(e as Error).message}` };
+  }
+  try {
+    const outcome = await loadOnePlugin({
+      slug,
+      pluginDir,
+      rawManifest,
+      infra: bootOpts.infra,
+      systemActorId: bootOpts.systemActorId,
+      publicKeyHex: resolveTrustRoot(bootOpts),
+    });
+    return outcome.plugin
+      ? { loaded: true }
+      : { loaded: false, reason: `plugin is ${outcome.status}, not active` };
+  } catch (e) {
+    return { loaded: false, reason: (e as Error).message };
+  }
 }
 
 interface RegisterOpts {
@@ -438,6 +571,30 @@ interface RegisterOpts {
   readonly manifestSignatureHex: string;
   readonly infra: PluginHostInfra;
   readonly systemActorId: string;
+  /**
+   * Who decided this plugin should run.
+   *
+   * `"discovered"` — the host found it on disk. A row that does not
+   * exist yet lands at `awaiting_activation` and the plugin is NOT
+   * loaded; an existing row's status is left exactly as the Owner left
+   * it. Discovery never promotes.
+   *
+   * `"explicit"` — a caller handed the host a definition to run (the
+   * `testPlugins` harness). Passing the definition IS the decision, so
+   * a fresh row lands `active`; an Owner's `disabled` still wins.
+   */
+  readonly activation: "discovered" | "explicit";
+}
+
+/**
+ * What a registration attempt produced. `plugin` is non-null only when
+ * the plugin is genuinely running; otherwise `status` says why not
+ * (`awaiting_activation` on a fresh install, `disabled` after an Owner
+ * turned it off).
+ */
+interface RegisterOutcome {
+  readonly plugin: LoadedPlugin | null;
+  readonly status: string;
 }
 
 /**
@@ -465,7 +622,7 @@ function validateDistDirectory(distDir: string, slug: string): void {
   }
 }
 
-async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
+async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome> {
   const def = opts.definition;
 
   // #388 — capability enforcement at the registration seam (defense in
@@ -485,21 +642,16 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
     );
   }
 
-  // #390 — claim URL slots. Exclusive: a conflict throws here (clean
-  // failure, no row/schema/registry side effects yet) and surfaces to
-  // the Owner as "conflicts with <holder>". urlContributions are
-  // release-signed only (runtime-authored plugins never reach
-  // registerLoadedPlugin with a definition carrying them — the manifest
-  // validator has no claim field for tier 2 to smuggle functions in).
-  if (def.urlContributions && def.urlContributions.length > 0) {
-    if (def.tier !== 1) {
-      throw new Error(
-        `plugin "${def.slug}" declares urlContributions but is not release-signed — refused`,
-      );
-    }
-    urlContributionsRegistry.register(def.slug, def.urlContributions, def.urlAnnotationsOperation);
-  }
   // Upsert the plugins row + actor row; reuses migration 0036's partial unique index.
+  //
+  // The status a FRESH row gets is the whole activation model. Discovery
+  // records the plugin and stops there — an Owner has to activate it
+  // before a single line of it runs. An explicit hand-off (testPlugins)
+  // carries its own decision, so it lands active. Neither mode ever
+  // moves an EXISTING row: boot refreshes the manifest, signature and
+  // version, and leaves the Owner's choice — active, disabled, or still
+  // awaiting — exactly where they left it.
+  const initialStatus = opts.activation === "explicit" ? "active" : "awaiting_activation";
   const { pluginId, pluginActorId, persistedStatus } =
     await opts.infra.adapter.withAdminTransaction(
       {
@@ -513,7 +665,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
           slug, version, tier, status,
           manifest_json, source_path, manifest_signature, submitted_by
         ) VALUES (
-          ${def.slug}, ${def.version}, ${def.tier}, 'active',
+          ${def.slug}, ${def.version}, ${def.tier}, ${initialStatus},
           (${JSON.stringify(opts.manifest)}::text)::jsonb,
           ${opts.sourcePath},
           ${opts.manifestSignatureHex},
@@ -521,21 +673,16 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
         )
         ON CONFLICT (slug) DO UPDATE SET
           version = EXCLUDED.version,
-          -- #393 — an Owner's disable SURVIVES restarts: boot refreshes
-          -- the manifest/signature but never resurrects a disabled
-          -- plugin (re-enable goes through plugins.activate).
-          status = CASE WHEN plugins.status = 'disabled' THEN 'disabled' ELSE 'active' END,
+          status = plugins.status,
           manifest_json = EXCLUDED.manifest_json,
           source_path = EXCLUDED.source_path,
           manifest_signature = EXCLUDED.manifest_signature,
-          activated_by = EXCLUDED.submitted_by,
-          activated_at = now(),
           updated_at = now()
         RETURNING id::text AS id, status
       `)) as unknown as { id: string; status: string }[];
         const id = rows[0]?.id;
         if (!id) throw new Error("plugins upsert returned no id");
-        const persistedStatus = rows[0]?.status ?? "active";
+        const persistedStatus = rows[0]?.status ?? initialStatus;
 
         const actorRows = (await tx.execute(sql`
         INSERT INTO actors (kind, display_name, plugin_id)
@@ -549,6 +696,37 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
         return { pluginId: id, pluginActorId: actorId, persistedStatus };
       },
     );
+
+  // THE ACTIVATION GATE. Everything below this line makes the plugin
+  // part of the running system: its schema, its tools, its skills, its
+  // workers, its URL and head contributions. A plugin that is not
+  // `active` gets none of it — it is recorded and verified, and that is
+  // all. "Installed" and "running" are different states and the AI must
+  // never see the difference blurred: an inactive plugin's tools are
+  // absent from the catalogue, not merely filtered out of it.
+  //
+  // The operator reaches an inactive plugin through /security/plugins,
+  // or through the chat — the short installed-plugins prompt block and
+  // `list_plugins` let the AI notice one and offer to activate it.
+  if (persistedStatus !== "active") {
+    return { plugin: null, status: persistedStatus };
+  }
+
+  // #390 — claim URL slots. Exclusive: a conflict throws here and
+  // surfaces to the Owner as "conflicts with <holder>". Claimed only
+  // for a running plugin, so an inactive one never holds a slot its
+  // activation would have to fight for. urlContributions are
+  // release-signed only (runtime-authored plugins never reach
+  // registerLoadedPlugin with a definition carrying them — the manifest
+  // validator has no claim field for tier 2 to smuggle functions in).
+  if (def.urlContributions && def.urlContributions.length > 0) {
+    if (def.tier !== 1) {
+      throw new Error(
+        `plugin "${def.slug}" declares urlContributions but is not release-signed — refused`,
+      );
+    }
+    urlContributionsRegistry.register(def.slug, def.urlContributions, def.urlAnnotationsOperation);
+  }
 
   // #387 — provision the plugin's declared cms_public schema at load.
   // Before this, only the sandboxed activation path ran `schemaFromSpec`,
@@ -616,11 +794,17 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
     });
   }
 
-  // #393 — plugin-shipped skills land at awaiting_activation. The
-  // two-level model is untouched: the Owner's site-wide click promotes
-  // to active (skills.set), per-chat engagement is unchanged. On
-  // re-boot the upsert refreshes body/description but NEVER touches
-  // status — an Owner's activation (or archive) decision sticks.
+  // Plugin skills are live the moment the plugin is. Reaching this line
+  // means an Owner activated the plugin, and a skill is not a second
+  // decision layered on that one — it is part of what the plugin IS.
+  // Asking for a second click would leave a shipped capability the AI
+  // can call (its tools are registered above) but cannot know about,
+  // since the `## Skills` index is the only surface that announces it.
+  // The two-level model is intact for skills that are NOT plugin-owned:
+  // AI-authored proposals still land awaiting_activation.
+  //
+  // On re-boot the upsert refreshes body/description but NEVER touches
+  // status — an Owner's later archive of an individual skill sticks.
   if (def.skills && def.skills.length > 0) {
     await opts.infra.adapter.withAdminTransaction(
       {
@@ -634,12 +818,12 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
             INSERT INTO skills (
               slug, display_name, description, body,
               allowlisted_tools, auto_engagement_hints,
-              status, plugin_id
+              status, activated_at, plugin_id
             ) VALUES (
               ${skill.slug}, ${skill.displayName}, ${skill.description}, ${skill.body},
               (${JSON.stringify(skill.allowlistedTools ?? [])}::text)::jsonb,
               (${JSON.stringify(skill.autoEngagementHints ?? {})}::text)::jsonb,
-              'awaiting_activation',
+              'active', now(),
               ${pluginId}::uuid
             )
             ON CONFLICT (slug) DO UPDATE SET
@@ -648,21 +832,31 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<LoadedPlugin> {
               body = EXCLUDED.body,
               allowlisted_tools = EXCLUDED.allowlisted_tools,
               auto_engagement_hints = EXCLUDED.auto_engagement_hints,
-              plugin_id = EXCLUDED.plugin_id
+              plugin_id = EXCLUDED.plugin_id,
+              -- Every boot re-runs this upsert, so the stamp must only
+              -- move on a real transition — otherwise a restart would
+              -- re-announce every plugin skill to every open chat.
+              activated_at = CASE
+                WHEN skills.status = 'active' THEN skills.activated_at
+                WHEN skills.status = 'archived' THEN NULL
+                ELSE now()
+              END,
+              -- An Owner who archived one skill of an active plugin made
+              -- a per-skill decision; boot refreshes its text but does
+              -- not overrule them.
+              status = CASE WHEN skills.status = 'archived' THEN 'archived' ELSE 'active' END
           `);
         }
       },
     );
   }
 
-  // #393 — apply the persisted disabled state to the live registries so
-  // a disabled plugin stays inert (tools hidden, workers paused) right
-  // from boot, not just until the next restart.
-  if (persistedStatus === "disabled") {
-    applyPluginLifecycle(def.slug, "disable");
-  }
-
-  return lp;
+  // A `disabled` plugin no longer reaches this point at all — the
+  // activation gate above returns before any registry is touched, so
+  // there is nothing left to mark inert at boot. `applyPluginLifecycle`
+  // (lifecycle.ts) stays the live path for a disable that happens WHILE
+  // the host is running.
+  return { plugin: lp, status: persistedStatus };
 }
 
 async function markPluginFailed(opts: {

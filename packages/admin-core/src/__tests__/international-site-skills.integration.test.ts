@@ -2,7 +2,7 @@
 
 /**
  * #399 — the plugin-shipped skills (translate-page, add-language,
- * localize-slugs): registered at awaiting_activation on boot, bodies
+ * localize-slugs): live the moment the plugin is, bodies
  * carry the load-bearing behavioural contracts, and a re-boot never
  * demotes a skill the Owner activated.
  */
@@ -74,6 +74,7 @@ afterAll(async () => {
 interface SkillRow {
   slug: string;
   status: string;
+  activated_at: string | Date | null;
   plugin_id: string | null;
   body: string;
   auto_engagement_hints: { keywords?: string[] } | null;
@@ -83,7 +84,7 @@ async function loadSkillRows(): Promise<Map<string, SkillRow>> {
   const rows = await sqlSystem(
     async (tx) =>
       (await tx.unsafe(
-        `SELECT slug, status, plugin_id::text AS plugin_id, body, auto_engagement_hints
+        `SELECT slug, status, activated_at, plugin_id::text AS plugin_id, body, auto_engagement_hints
          FROM skills WHERE slug IN (${SKILL_SLUGS.map((s) => `'${s}'`).join(", ")})`,
       )) as SkillRow[],
   );
@@ -91,12 +92,19 @@ async function loadSkillRows(): Promise<Map<string, SkillRow>> {
 }
 
 describe("#399 — plugin-shipped i18n skills", () => {
-  it("registers all three at awaiting_activation, attributed to the plugin, with the load-bearing contracts in the bodies", async () => {
+  it("registers all three ACTIVE, attributed to the plugin, with the load-bearing contracts in the bodies", async () => {
     const skills = await loadSkillRows();
     expect([...skills.keys()].sort()).toEqual([...SKILL_SLUGS].sort());
     for (const slug of SKILL_SLUGS) {
       const row = skills.get(slug);
-      expect(row?.status).toBe("awaiting_activation");
+      // A plugin's skills are part of what the plugin IS: loading the
+      // plugin already required an activation decision, and a second
+      // click would leave the AI able to CALL the plugin's tools while
+      // the `## Skills` index — the only surface that announces them —
+      // stayed silent. That gap is what let the AI improvise a
+      // translation with core tools in the #400 livedit run.
+      expect(row?.status).toBe("active");
+      expect(row?.activated_at).not.toBeNull();
       expect(row?.plugin_id).not.toBeNull();
     }
 
@@ -118,16 +126,27 @@ describe("#399 — plugin-shipped i18n skills", () => {
     expect(slugs?.body).toContain("301");
   });
 
-  it("re-boot preserves an Owner-activated skill and refreshes the body", async () => {
+  it("re-boot refreshes bodies without re-stamping activated_at, and an Owner's archive sticks", async () => {
+    const before = await loadSkillRows();
+    const stampBefore = before.get("translate-page")?.activated_at;
+    expect(stampBefore).not.toBeNull();
+
+    // An Owner archived one skill individually — the per-skill decision
+    // is still theirs, and boot must not undo it.
     await sqlSystem(async (tx) => {
-      await tx.unsafe(`UPDATE skills SET status = 'active' WHERE slug = 'translate-page'`);
+      await tx.unsafe(
+        `UPDATE skills SET status = 'archived', activated_at = NULL WHERE slug = 'localize-slugs'`,
+      );
     });
     await boot();
-    const skills = await loadSkillRows();
-    // Owner's site-wide activation survives the upsert…
-    expect(skills.get("translate-page")?.status).toBe("active");
-    // …while never-activated siblings stay awaiting the click.
-    expect(skills.get("add-language")?.status).toBe("awaiting_activation");
-    expect(skills.get("localize-slugs")?.status).toBe("awaiting_activation");
+    const after = await loadSkillRows();
+
+    expect(after.get("translate-page")?.status).toBe("active");
+    // The stamp must NOT move on a re-boot: it drives the new-skill
+    // notice, so re-stamping would re-announce every plugin skill to
+    // every open chat on every restart.
+    expect(String(after.get("translate-page")?.activated_at)).toBe(String(stampBefore));
+    expect(after.get("add-language")?.status).toBe("active");
+    expect(after.get("localize-slugs")?.status).toBe("archived");
   });
 });

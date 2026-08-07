@@ -32,7 +32,7 @@ import {
   resolveProactiveCompaction,
 } from "./compaction.js";
 import { lastNoteSignature, noteSignature } from "./context/page.js";
-import { extractLoadedSkillSlugs } from "./context/skills.js";
+import { extractLoadedSkillSlugs, formatNewSkillsNotice } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import { buildContextSplitEstimate } from "./context-split.js";
 import {
@@ -239,6 +239,7 @@ export async function* runChatTurn(
     aiActorId: aiCtx.actorId,
     input,
     loadedSkillSlugs,
+    chatStartedAt: session.session.createdAt,
   });
   markPhase("contextBlocksMs");
 
@@ -278,6 +279,18 @@ export async function* runChatTurn(
         "pagectx",
         `${input.activePageId}\n${ctx.pageContextBlock}`,
         ctx.pageContextBlock,
+      );
+    }
+    // Skills activated since this chat started are missing from the
+    // pinned `# Skills` index by design; this is how the running chat
+    // hears about them. Seeded on the slug set, so it fires once per
+    // set of new skills rather than once per turn.
+    if (ctx.newlyActivatedSkills.length > 0) {
+      const slugs = ctx.newlyActivatedSkills.map((s) => s.slug).sort();
+      await injectNote(
+        "newskills",
+        slugs.join(","),
+        formatNewSkillsNotice(ctx.newlyActivatedSkills),
       );
     }
   }
@@ -327,6 +340,7 @@ export async function* runChatTurn(
   // state on-demand via tools).
   const systemChunks = composeSystemPromptChunks(memory, {
     skillsIndexBlock: ctx.preBlocks.skillsIndexBlock,
+    installedPluginsBlock: ctx.preBlocks.installedPluginsBlock,
   });
 
   const usage: UsageAccumulator = {

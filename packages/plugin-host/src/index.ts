@@ -42,7 +42,13 @@ export {
   renderHeadEntries,
 } from "./head-composition.js";
 export { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
-export { type BootstrapOpts, bootstrap, type LoadReport, resetPluginHost } from "./loader.js";
+export {
+  type BootstrapOpts,
+  bootstrap,
+  type LoadReport,
+  loadActivatedPlugin,
+  resetPluginHost,
+} from "./loader.js";
 export {
   type PromptContextRenderer,
   pluginPromptContextRegistry,

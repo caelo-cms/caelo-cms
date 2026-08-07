@@ -8,6 +8,7 @@
  * with a public-schema rollback on commit failure.
  */
 
+import { loadActivatedPlugin } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { requirePermission } from "$lib/server/guards.js";
@@ -89,10 +90,14 @@ export const actions: Actions = {
       schemaName: string;
       appliedSql: string;
       isReEnable: boolean;
+      provisionedByLoader: boolean;
     };
+    // Release-signed plugins provision their own schemas when the host
+    // loads them (step 4), so the caller runs no DDL and passes none.
+    const callerProvisions = !prepared.isReEnable && !prepared.provisionedByLoader;
 
-    // Step 2 — provision the cms_public schema (skip on re-enable).
-    if (!prepared.isReEnable) {
+    // Step 2 — provision the cms_public schema.
+    if (callerProvisions) {
       try {
         await adapter.provisionPluginPublicSchema({
           pluginId: prepared.pluginId,
@@ -110,12 +115,12 @@ export const actions: Actions = {
     // we just created so cms_public doesn't leak.
     const commit = await execute(registry, adapter, locals.ctx, "plugins.activate", {
       slug,
-      schemaName: prepared.isReEnable ? undefined : prepared.schemaName,
-      appliedSql: prepared.isReEnable ? undefined : prepared.appliedSql,
-      version: prepared.isReEnable ? undefined : prepared.version,
+      schemaName: callerProvisions ? prepared.schemaName : undefined,
+      appliedSql: callerProvisions ? prepared.appliedSql : undefined,
+      version: callerProvisions ? prepared.version : undefined,
     });
     if (!commit.ok) {
-      if (!prepared.isReEnable) {
+      if (callerProvisions) {
         try {
           await adapter.dropPluginPublicSchema({ schemaName: prepared.schemaName });
         } catch (rollbackError) {
@@ -126,11 +131,21 @@ export const actions: Actions = {
       }
       return fail(400, { error: `commit failed: ${commit.error.kind}` });
     }
+    // Step 4 — put it in the running host. The loader only RECORDS a
+    // discovered plugin; without this the row would say active while
+    // nothing of the plugin was actually loaded until the next restart.
+    const live = await loadActivatedPlugin(slug);
+    if (!live.loaded) {
+      return {
+        ok: true,
+        message: `Activated ${slug}, but it could not be loaded into the running host (${live.reason}). It will be retried on the next restart.`,
+      };
+    }
     return { ok: true, message: `Activated ${slug}.` };
   },
-  // #393 — release-signed re-enable without a host restart: the plugin
-  // is still loaded + verified in the host registry, just flagged
-  // inert; plugins.activate flips the row and the live flags.
+  // Re-enable without a host restart. Boot skips a disabled plugin
+  // entirely now, so this is a real load, not just un-flagging: the
+  // row flips here and the host picks the plugin up right after.
   reenable: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
     const form = await request.formData();
@@ -143,6 +158,13 @@ export const actions: Actions = {
           ? String((r.error as { message: unknown }).message)
           : "re-enable failed";
       return fail(400, { error: message });
+    }
+    const live = await loadActivatedPlugin(slug);
+    if (!live.loaded) {
+      return {
+        ok: true,
+        message: `Re-enabled ${slug}, but it could not be loaded into the running host (${live.reason}). It will be retried on the next restart.`,
+      };
     }
     return { ok: true, message: `Plugin ${slug} re-enabled.` };
   },

@@ -17,6 +17,10 @@ import type { AccumulatedServerToolCall, AccumulatedToolCall } from "./types.js"
 export interface LoadedSession {
   session: {
     chatBranchId: string;
+    /** When the chat began. Pins the `## Skills` index so a skill
+     *  activated mid-chat is announced in the history instead of
+     *  rewriting the cached system prefix (migration 0213). */
+    createdAt: string;
     extendedThinkingEnabled: boolean;
     extendedThinkingBudgetTokens: number | null;
   };

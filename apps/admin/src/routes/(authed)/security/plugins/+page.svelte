@@ -126,6 +126,18 @@
                       <input type="hidden" name="slug" value={p.slug} />
                       <Button type="submit" size="sm" variant="outline">Re-enable</Button>
                     </form>
+                  {:else if p.status === "awaiting_activation"}
+                    <!-- A shipped plugin does nothing until this click.
+                         Without this button the hard activation state
+                         would be a dead end: the plugin is on disk,
+                         recorded and verified, and no surface exists to
+                         turn it on. -->
+                    <form method="post" action="?/activate" use:enhance>
+                      <input type="hidden" name="slug" value={p.slug} />
+                      <Button type="submit" size="sm" data-testid="activate-{p.slug}">
+                        Activate
+                      </Button>
+                    </form>
                   {/if}
                 </TableCell>
               </TableRow>

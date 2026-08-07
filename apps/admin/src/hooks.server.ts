@@ -220,6 +220,16 @@ async function bootstrapPlugins(): Promise<void> {
   console.log(
     `[hooks] plugin host: ${report.loaded.length} loaded${report.loaded.length > 0 ? ` (${report.loaded.map((l) => l.slug).join(", ")})` : ""}`,
   );
+  // Installed but not running. Logged at the same volume as loaded ones
+  // so "why is my plugin doing nothing" is answered by the boot log
+  // rather than by reading the plugins table.
+  if (report.inactive.length > 0) {
+    console.log(
+      `[hooks] plugin host: ${report.inactive.length} installed, awaiting Owner activation at /security/plugins (${report.inactive
+        .map((p) => `${p.slug}:${p.status}`)
+        .join(", ")})`,
+    );
+  }
   for (const f of report.failed) {
     console.error(`[hooks] plugin FAILED to load: ${f.slug} — ${f.reason}`);
   }
