@@ -40,6 +40,7 @@ COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/
 COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
 COPY packages/plugins/international-site/package.json packages/plugins/international-site/
+COPY packages/plugins/consent-manager/package.json packages/plugins/consent-manager/
 
 RUN bun install --frozen-lockfile
 
@@ -70,7 +71,8 @@ RUN bunx tsc -b \
   packages/plugins/newsletter \
   packages/plugins/ratings \
   packages/plugins/auth \
-  packages/plugins/international-site
+  packages/plugins/international-site \
+  packages/plugins/consent-manager
 COPY apps/admin/scripts/sign-tier1-manifest.ts apps/admin/scripts/
 RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-dev-key
 
