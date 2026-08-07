@@ -62,8 +62,6 @@ export const DEFAULT_CATEGORIES: ReadonlyArray<ConsentCategory> = [
   },
 ];
 
-export const CATEGORY_KEYS: ReadonlyArray<string> = DEFAULT_CATEGORIES.map((c) => c.key);
-
 /** Row shape in the plugin's own `categories` table. */
 export interface CategoryRow {
   id: string;

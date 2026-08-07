@@ -53,6 +53,7 @@ COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/
 COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
 COPY packages/plugins/international-site/package.json packages/plugins/international-site/
+COPY packages/plugins/consent-manager/package.json packages/plugins/consent-manager/
 
 RUN bun install
 
@@ -136,7 +137,8 @@ RUN bunx tsc -b \
   packages/plugins/newsletter \
   packages/plugins/ratings \
   packages/plugins/auth \
-  packages/plugins/international-site
+  packages/plugins/international-site \
+  packages/plugins/consent-manager
 
 # #387 one-trust-path — sign the plugin manifests this image ships with a
 # throwaway build key and bake the matching public key as
