@@ -68,6 +68,11 @@ async function cleanup(): Promise<void> {
     await tx.unsafe("DELETE FROM plugins WHERE slug = 'consent-manager'");
     await tx.unsafe("DELETE FROM pages WHERE slug LIKE 't451-%'");
     await tx.unsafe("DELETE FROM templates WHERE slug LIKE 't451-%'");
+    // The layout placement references the banner module; drop the
+    // placement first or the module delete hits the FK.
+    await tx.unsafe(`DELETE FROM layout_modules WHERE module_id IN (
+      SELECT id FROM modules WHERE slug LIKE 't451-%' OR slug = 'consent-placeholder'
+    )`);
     await tx.unsafe("DELETE FROM modules WHERE slug LIKE 't451-%' OR slug = 'consent-placeholder'");
   });
   const pub = new SQL(PUBLIC_URL);
@@ -425,6 +430,54 @@ describe("#451 — consent-manager", () => {
     expect(
       (finally_.value as { deferrals: Record<string, unknown> }).deferrals[unknownId],
     ).toBeUndefined();
+  });
+
+  it("resolves the category list for a module in the LAYOUT", async () => {
+    // The banner is site chrome, so it lives in the layout — and layout
+    // modules reach the composer raw, while page-block modules are
+    // rendered a step earlier. Passing the lists to only one of them
+    // renders `{{#consent_categories}}` literally in the editor and
+    // correctly on the deployed site: a disagreement in the direction
+    // nobody checks, because the deploy looks right.
+    const banner = await execute(registry, adapter, SYS_CTX, "modules.create", {
+      slug: "t451-banner",
+      displayName: "Consent banner",
+      html: '<div data-consent-banner>{{#consent_categories}}<label data-consent-category="{{key}}">{{label}}</label>{{/consent_categories}}</div>',
+      css: "",
+      js: "",
+      fields: [],
+    });
+    if (!banner.ok) throw new Error(JSON.stringify(banner.error));
+    const bannerId = (banner.value as { moduleId: string }).moduleId;
+
+    const layoutId = await sqlSystem(async (tx) => {
+      const rows = (await tx.unsafe(
+        `SELECT l.id::text AS id FROM layouts l
+         JOIN templates t ON t.layout_id = l.id
+         WHERE t.slug = 't451-tpl' LIMIT 1`,
+      )) as { id: string }[];
+      const id = rows[0]?.id;
+      if (!id) throw new Error("no layout behind the template");
+      await tx.unsafe(
+        `INSERT INTO layout_blocks (layout_id, name, display_name, position)
+         VALUES ('${id}', 'footer', 'Footer', 0) ON CONFLICT DO NOTHING`,
+      );
+      await tx.unsafe(
+        `INSERT INTO layout_modules (layout_id, block_name, module_id, position)
+         VALUES ('${id}', 'footer', '${bannerId}', 0)`,
+      );
+      return id;
+    });
+    expect(layoutId).toBeTruthy();
+
+    const r = await execute(registry, adapter, SYS_CTX, "pages.render_preview", { pageId });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const html = (r.value as { html: string }).html;
+
+    // Substituted, not left as a literal placeholder.
+    expect(html).not.toContain("{{#consent_categories}}");
+    expect(html).toContain('data-consent-category="necessary"');
+    expect(html).toContain('data-consent-category="marketing"');
   });
 
   it("exports the consent record as CSV", async () => {

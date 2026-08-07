@@ -990,6 +990,14 @@ export const renderPagePreviewOp = defineOperation({
     try {
       composed = composePageWithLayout({
         deferredModules,
+        // Page-block modules already had their lists applied by
+        // renderModuleWithContent; LAYOUT modules reach the composer
+        // raw, so without these a `{{#list}}` in site chrome renders
+        // literally in the editor and correctly on the deployed site —
+        // the two surfaces disagreeing in exactly the direction nobody
+        // checks. The generator has always passed them here.
+        dataLists: pluginLists.dataLists,
+        dormantDataLists: pluginLists.dormantDataLists,
         templateHtml: pageRow.template_html,
         templateCss: pageRow.template_css,
         blocks,
