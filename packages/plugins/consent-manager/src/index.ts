@@ -280,7 +280,12 @@ export default definePlugin<PluginContextTier1>({
   deferralsOperation: "consent_deferrals",
 
   /** Keeps the scan current without anyone remembering to run it. */
-  workers: [{ name: "consent-embed-scan", cron: "*/5 * * * *", operationName: "scan_modules" }],
+  workers: [
+    { name: "consent-embed-scan", cron: "*/5 * * * *", operationName: "scan_modules" },
+    // Keeping consent evidence forever is itself a data-protection
+    // problem, so the window is enforced rather than documented.
+    { name: "consent-log-retention", cron: "17 3 * * *", operationName: "prune_log" },
+  ],
 
   /**
    * The runtime + its stylesheet, with this site's categories baked in
@@ -697,6 +702,93 @@ export default definePlugin<PluginContextTier1>({
       if (!row) throw new Error(`remove_tag: no tag named "${name}"`);
       await q.delete("tags", row.id);
       return { removed: name };
+    },
+
+    /**
+     * The evidence half of the obligation: who consented to what, when.
+     *
+     * Returned as CSV text rather than written to a file, because the
+     * operator's next step is always to hand it to someone — a DPO, an
+     * auditor, a form — and a path inside the install is not that.
+     *
+     * Deactivating the plugin stops it running; UNINSTALL drops its
+     * schema and takes these rows with it. Export before that, not
+     * after: there is no recovery path once the schema is gone.
+     */
+    export_log: async (ctx, args) => {
+      const { since, limit } = args as { since?: unknown; limit?: unknown };
+      // One under the query handle's own ceiling, because the read asks
+      // for cap+1 to learn whether more exist.
+      const cap = typeof limit === "number" && limit > 0 ? Math.min(limit, 999) : 500;
+      const rows = (await ctx.query.list("consent_log", {
+        ...(typeof since === "string" ? { since } : {}),
+        limit: cap + 1,
+        orderBy: "created_at",
+        orderDir: "desc",
+      })) as unknown as Array<{
+        visitor_id: string;
+        ip_hash: string;
+        granted: unknown;
+        policy_version: number;
+        created_at: string;
+      }>;
+      const truncated = rows.length > cap;
+      const page = truncated ? rows.slice(0, cap) : rows;
+      const csv = [
+        "recorded_at,visitor_id,ip_hash,policy_version,granted",
+        ...page.map((r) =>
+          [
+            r.created_at,
+            r.visitor_id,
+            r.ip_hash,
+            String(r.policy_version),
+            `"${(Array.isArray(r.granted) ? r.granted : []).join(" ")}"`,
+          ].join(","),
+        ),
+      ].join("\n");
+      return {
+        csv,
+        rows: page.length,
+        truncated,
+        ...(truncated
+          ? {
+              note: "More records exist. Narrow with `since` (the oldest row's recorded_at) and export again.",
+            }
+          : {}),
+      };
+    },
+
+    /**
+     * Drop records past the retention window.
+     *
+     * Keeping consent evidence forever is itself a data-protection
+     * problem, so the window is data the operator sets rather than a
+     * constant nobody revisits.
+     */
+    prune_log: async (ctx) => {
+      const q = adminQueryOf(ctx);
+      const settings = await settingsOf(q);
+      const cutoff = Date.now() - settings.retention_days * 24 * 60 * 60 * 1000;
+      const stale = (await ctx.query.list("consent_log", {
+        limit: 1000,
+        orderBy: "created_at",
+        orderDir: "asc",
+      })) as unknown as Array<{ id: string; created_at: string | Date }>;
+      let deleted = 0;
+      for (const row of stale) {
+        // Compare instants, not strings. The driver hands back a Date
+        // (or a Postgres timestamp string, whose format differs from an
+        // ISO one) and lexical comparison across those two silently
+        // deletes records that are well inside the window.
+        const at = new Date(row.created_at).getTime();
+        if (!Number.isFinite(at)) {
+          throw new Error(`prune_log: unreadable created_at on consent record ${row.id}`);
+        }
+        if (at >= cutoff) break;
+        await ctx.query.delete("consent_log", row.id);
+        deleted += 1;
+      }
+      return { deleted, cutoff: new Date(cutoff).toISOString() };
     },
 
     /**

@@ -427,6 +427,25 @@ describe("#451 — consent-manager", () => {
     ).toBeUndefined();
   });
 
+  it("exports the consent record as CSV", async () => {
+    // Uninstall drops this schema and takes the records with it, so the
+    // export has to exist before anyone reaches for uninstall.
+    const r = await call("export_log");
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const out = r.value as { csv: string; rows: number; truncated: boolean };
+    expect(out.truncated).toBe(false);
+    expect(out.rows).toBeGreaterThan(0);
+    const [header, first] = out.csv.split("\n");
+    expect(header).toBe("recorded_at,visitor_id,ip_hash,policy_version,granted");
+    expect(first).toContain("necessary analytics");
+  });
+
+  it("prunes nothing while every record is inside the retention window", async () => {
+    const r = await call("prune_log");
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect((r.value as { deleted: number }).deleted).toBe(0);
+  });
+
   it("re-asks everyone when the policy version is bumped", async () => {
     const before = await collectBuildAssets([pageId]);
     const r = await call("bump_policy_version");
