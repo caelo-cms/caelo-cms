@@ -126,6 +126,11 @@ interface RenderContext {
    *  active theme on this install (renderer emits loud-raw for any
    *  `{{theme_<slot>_url}}` placeholders). */
   readonly themeAssets: RenderThemeAssets | undefined;
+  /** Plugin data lists for the page being rendered, and the names of
+   *  installed-but-inactive plugins' lists. Threaded to every nested
+   *  module: a switcher can sit inside a nested chrome module. */
+  readonly dataLists: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
+  readonly dormantDataLists: Readonly<Record<string, string>>;
 }
 
 function isNestedRef(v: unknown): v is NestedRefValue {
@@ -152,6 +157,10 @@ export function renderModuleWithContent(
   contentInstanceId: string,
   resolver: RenderResolver,
   themeAssets?: RenderThemeAssets,
+  pluginLists?: {
+    readonly dataLists: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
+    readonly dormantDataLists: Readonly<Record<string, string>>;
+  },
 ): RenderResult {
   const touched = new Set<string>();
   const missing: string[] = [];
@@ -162,6 +171,8 @@ export function renderModuleWithContent(
     path: new Set<string>(),
     depth: 0,
     themeAssets,
+    dataLists: pluginLists?.dataLists ?? {},
+    dormantDataLists: pluginLists?.dormantDataLists ?? {},
   });
   return { html, touchedModuleIds: touched, missingSlots: missing };
 }
@@ -204,6 +215,8 @@ function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderCon
     path,
     depth: ctx.depth + 1,
     themeAssets: ctx.themeAssets,
+    dataLists: ctx.dataLists,
+    dormantDataLists: ctx.dormantDataLists,
   };
 
   return substituteWithRecursion(mod, ci, childCtx);
@@ -264,6 +277,8 @@ function substituteWithRecursion(
     contentValues: ci.values,
     partials,
     themeAssets: ctx.themeAssets,
+    dataLists: ctx.dataLists,
+    dormantDataLists: ctx.dormantDataLists,
   });
   for (const m of result.missingSlots) ctx.missing.push(m);
   return result.html;
