@@ -34,7 +34,8 @@ export const DEFAULT_CATEGORIES: ReadonlyArray<ConsentCategory> = [
   {
     key: "necessary",
     displayName: "Necessary",
-    description: "Required for the site to work — session handling, security, and your choices here.",
+    description:
+      "Required for the site to work — session handling, security, and your choices here.",
     required: true,
     position: 0,
   },

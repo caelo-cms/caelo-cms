@@ -42,9 +42,7 @@ import type { ConsentCategory } from "./categories.js";
 
 /** What gets baked into the emitted runtime. */
 export interface RuntimeConfig {
-  readonly categories: ReadonlyArray<
-    Pick<ConsentCategory, "key" | "displayName" | "required">
-  >;
+  readonly categories: ReadonlyArray<Pick<ConsentCategory, "key" | "displayName" | "required">>;
   /** Bumping it re-asks every visitor. */
   readonly policyVersion: number;
   /** Where the runtime posts the record. */
