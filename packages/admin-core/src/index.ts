@@ -59,6 +59,13 @@ export {
   sweepChatImagesOnce,
 } from "./chat-image-gc-worker.js";
 export * from "./csrf.js";
+// P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
+export {
+  _domainEventGcOnceForTests,
+  startDomainEventGcWorker,
+  stopDomainEventGcWorker,
+} from "./domain-event-gc-worker.js";
+export { type DomainEventInput, type DomainEventKind, emitDomainEvent } from "./domain-events.js";
 export {
   type DeliverResetEmailArgs,
   deliverPasswordResetEmail,
@@ -77,6 +84,10 @@ export {
   formatMicrocentsAsMoney,
   microcentsToMajorUnits,
 } from "./ops/imports-cost.js";
+export {
+  configurePluginUninstallFinalizer,
+  type PluginUninstallFinalizer,
+} from "./ops/plugins/uninstall.js";
 export * from "./ops/roles.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";
@@ -97,6 +108,5 @@ export {
   generateKekHex,
   kekFingerprint,
 } from "./security/secret-box.js";
-// P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
 export { emitSnapshot } from "./snapshots/emit.js";
 export * from "./tokens.js";

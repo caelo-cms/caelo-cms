@@ -16,17 +16,17 @@ describe("resolveCanonicalUrl", () => {
     expect(
       resolveCanonicalUrl({
         siteBaseUrl: "https://example.com",
-        pageSlug: "anything",
+        pagePath: "/anything",
         override: "https://canonical.example.com/x",
       }),
     ).toBe("https://canonical.example.com/x");
   });
 
-  it("renders home as the root path", () => {
+  it("renders the composed root path as the bare base URL", () => {
     expect(
       resolveCanonicalUrl({
         siteBaseUrl: "https://example.com",
-        pageSlug: "home",
+        pagePath: "/",
         override: null,
       }),
     ).toBe("https://example.com/");
@@ -36,7 +36,7 @@ describe("resolveCanonicalUrl", () => {
     expect(
       resolveCanonicalUrl({
         siteBaseUrl: "https://example.com/",
-        pageSlug: "about",
+        pagePath: "/about",
         override: null,
       }),
     ).toBe("https://example.com/about/");
@@ -47,18 +47,18 @@ describe("resolveCanonicalUrl", () => {
       expect(
         resolveCanonicalUrl({
           siteBaseUrl: "https://example.com",
-          pageSlug: "about",
+          pagePath: "/about",
           override: null,
           pageUrlStyle: "no-extension",
         }),
       ).toBe("https://example.com/about");
     });
 
-    it("keeps the root URL for the home page", () => {
+    it("keeps the root URL for the composed root path", () => {
       expect(
         resolveCanonicalUrl({
           siteBaseUrl: "https://example.com",
-          pageSlug: "home",
+          pagePath: "/",
           override: null,
           pageUrlStyle: "no-extension",
         }),
@@ -69,7 +69,7 @@ describe("resolveCanonicalUrl", () => {
       expect(
         resolveCanonicalUrl({
           siteBaseUrl: "https://example.com",
-          pageSlug: "about",
+          pagePath: "/about",
           override: null,
         }),
       ).toBe("https://example.com/about/");

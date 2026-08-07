@@ -28,6 +28,15 @@
     TableRow,
   } from "$lib/components/ui/table/index.js";
 
+  // #388 — the granted capability set is the stored manifest's
+  // requestedCapabilities (grants == requests for a loaded plugin; the
+  // validator + loader refuse anything over the provenance ceiling).
+  function capabilitiesOf(manifestJson: unknown): string[] {
+    if (manifestJson === null || typeof manifestJson !== "object") return [];
+    const caps = (manifestJson as { requestedCapabilities?: unknown }).requestedCapabilities;
+    return Array.isArray(caps) ? caps.filter((c): c is string => typeof c === "string") : [];
+  }
+
   let { data, form } = $props();
 
   function fmtTime(s: string | null): string {
@@ -79,6 +88,7 @@
               <TableHead>Slug</TableHead>
               <TableHead>Version</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Capabilities</TableHead>
               <TableHead>Source</TableHead>
               <TableHead>Action</TableHead>
             </TableRow>
@@ -93,6 +103,17 @@
                     {p.status}
                   </Badge>
                 </TableCell>
+                <TableCell>
+                  {#if capabilitiesOf(p.manifestJson).length === 0}
+                    <span class="text-xs text-muted-foreground">sandbox base only</span>
+                  {:else}
+                    <div class="flex flex-wrap gap-1">
+                      {#each capabilitiesOf(p.manifestJson) as cap (cap)}
+                        <Badge variant="outline" class="font-mono text-[10px]">{cap}</Badge>
+                      {/each}
+                    </div>
+                  {/if}
+                </TableCell>
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>
                 <TableCell>
                   {#if p.status === "active"}
@@ -101,7 +122,22 @@
                       <Button type="submit" size="sm" variant="outline">Disable</Button>
                     </form>
                   {:else if p.status === "disabled"}
-                    <span class="text-xs text-muted-foreground">disabled · re-enable via host restart</span>
+                    <form method="post" action="?/reenable" use:enhance>
+                      <input type="hidden" name="slug" value={p.slug} />
+                      <Button type="submit" size="sm" variant="outline">Re-enable</Button>
+                    </form>
+                  {:else if p.status === "awaiting_activation"}
+                    <!-- A shipped plugin does nothing until this click.
+                         Without this button the hard activation state
+                         would be a dead end: the plugin is on disk,
+                         recorded and verified, and no surface exists to
+                         turn it on. -->
+                    <form method="post" action="?/activate" use:enhance>
+                      <input type="hidden" name="slug" value={p.slug} />
+                      <Button type="submit" size="sm" data-testid="activate-{p.slug}">
+                        Activate
+                      </Button>
+                    </form>
                   {/if}
                 </TableCell>
               </TableRow>

@@ -39,6 +39,14 @@ export interface MakeProposeToolArgs<I> {
   readonly inputSchema: Record<string, unknown>;
   /** Render a one-line operator-readable summary from the preview. */
   readonly summarize: (input: I, preview: Record<string, unknown>) => string;
+  /**
+   * Override the derived `<domain>.execute_proposal`. Needed when a
+   * domain has more than one gated action and they cannot share one
+   * executor's output shape (plugins: uninstall vs. activate).
+   */
+  readonly executeOpOverride?: string;
+  /** Post-commit step for the gated tool — see FilteredTool.gated. */
+  readonly afterApply?: "load-activated-plugin";
 }
 
 export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinitionWithHandler<I> {
@@ -47,7 +55,7 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
   // execute (built by the chat-runner) chains propose → execute_proposal after
   // the Owner's in-chat Approve, reusing the existing per-domain apply logic.
   const domain = args.opName.split(".")[0] ?? "";
-  const executeOp = `${domain}.execute_proposal`;
+  const executeOp = args.executeOpOverride ?? `${domain}.execute_proposal`;
   const description =
     `${args.when} ` +
     `APPROVAL-GATED: calling this PAUSES for the operator's Approve/Reject right in the chat before anything changes. ` +
@@ -60,7 +68,11 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
     // Marks the tool SDK-executed + gated; the chat-runner attaches the real
     // execute (propose → execute_proposal). approvalMode makes the SDK pause.
     approvalMode: "user-approval",
-    gated: { proposeOp: args.opName, executeOp },
+    gated: {
+      proposeOp: args.opName,
+      executeOp,
+      ...(args.afterApply ? { afterApply: args.afterApply } : {}),
+    },
     // Fallback handler — NOT used on the gated (SDK-executed) path, kept so the
     // registered tool stays a valid ToolDefinitionWithHandler. If ever reached
     // (gate somehow bypassed), it proposes-only, never silently applies.

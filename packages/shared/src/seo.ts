@@ -8,7 +8,7 @@
  */
 
 import { z } from "zod";
-import { isHomeSlug } from "./url.js";
+import { trimSlashes } from "./url.js";
 
 export const CHANGEFREQ_VALUES = [
   "always",
@@ -108,39 +108,31 @@ export interface SiteSeoSettings {
 
 /**
  * Resolve the canonical URL for a page. If `pages_seo.canonical_url`
- * is set it wins; otherwise build `<siteBaseUrl>/<slug>` (home pages
- * canonicalize to the bare base URL). URL shaping beyond base + slug
- * becomes a plugin contribution on the URL composition point (#390).
+ * is set it wins; otherwise `<siteBaseUrl><pagePath>` — where
+ * `pagePath` is the COMPOSED public path from `pages.current_path`
+ * (#390: the URL composition point materializes prefixes, slug
+ * formats, and the home designation into that one column; canonical
+ * simply follows it).
  */
 export function resolveCanonicalUrl(args: {
   siteBaseUrl: string;
-  pageSlug: string;
+  /** The page's composed path (`pages.current_path`): leading slash,
+   *  "/" for the site root. */
+  pagePath: string;
   override: string | null;
   /**
    * v0.2.85 — page emission style. 'directory' (default) → URLs end
-   * in `/<slug>/`; 'no-extension' → URLs end in `/<slug>` (no
-   * trailing slash) to match what the bucket actually serves when
-   * pages are emitted as bare slugs.
+   * in `/…/`; 'no-extension' → no trailing slash, matching what the
+   * bucket serves when pages are emitted as bare files.
    */
   pageUrlStyle?: "directory" | "no-extension";
-  /**
-   * 0184 — explicit homepage designation. When true this page IS the
-   * site root and canonicalizes to `<base>/` regardless of its slug.
-   * Uses the same predicate (`isHomeSlug`) as the magic-slug fallback
-   * so canonical agrees with the emitted output path.
-   */
-  isHomePage?: boolean;
 }): string {
   if (args.override && args.override.length > 0) return args.override;
-  const base = args.siteBaseUrl.replace(/\/$/, "");
-  const isHome = args.isHomePage === true || isHomeSlug(args.pageSlug);
-  const cleanSlug = isHome ? "" : args.pageSlug;
+  const base = args.siteBaseUrl.endsWith("/") ? args.siteBaseUrl.slice(0, -1) : args.siteBaseUrl;
+  const trimmed = trimSlashes(args.pagePath);
+  if (trimmed.length === 0) return `${base}/`;
   const style = args.pageUrlStyle ?? "directory";
-  // Tail = the slug portion of the canonical URL, with the trailing
-  // shape dictated by the page-emission style. Home pages always
-  // resolve to the base URL (no tail) regardless of style.
-  const tail = cleanSlug ? (style === "no-extension" ? cleanSlug : `${cleanSlug}/`) : "";
-  return tail ? `${base}/${tail}` : `${base}/`;
+  return style === "no-extension" ? `${base}/${trimmed}` : `${base}/${trimmed}/`;
 }
 
 export interface SeoMetaInput {

@@ -28,6 +28,11 @@
 
 import { z } from "zod";
 
+/** Re-exported so plugins can validate at their boundaries (CLAUDE.md
+ *  §4 "Zod at every boundary") without importing zod directly — the
+ *  sandbox validator allowlists only the SDK + component-kit. */
+export { z };
+
 // ---------------------------------------------------------------------------
 // Zod schemas — the wire format the validator + host both consume.
 // ---------------------------------------------------------------------------
@@ -47,15 +52,22 @@ export const pluginColumnType = z.enum([
 export type PluginColumnType = z.infer<typeof pluginColumnType>;
 
 /**
- * Per-column declaration. Either a primitive type or an enum:value,value.
- * The validator parses the leading `enum:` prefix; everything else must
- * match `pluginColumnType`.
+ * Per-column declaration. A primitive type, an enum:value,value, or —
+ * in `adminSchema` ONLY (#389) — a foreign key onto an allowlisted core
+ * table: `ref:<table>` / `ref:<table>:cascade` (uuid REFERENCES
+ * <table>(id), ON DELETE CASCADE with the suffix). The validator rejects
+ * `ref:` columns in the cms_public `schema` (cross-database FKs are
+ * impossible) and outside the allowlist.
  */
 export const pluginColumnSpec = z
   .string()
-  .refine((v) => v.startsWith("enum:") || pluginColumnType.safeParse(v).success, {
-    message: "must be one of uuid|string|text|int|bool|timestamp|jsonb or enum:a,b,c",
-  });
+  .refine(
+    (v) => v.startsWith("enum:") || v.startsWith("ref:") || pluginColumnType.safeParse(v).success,
+    {
+      message:
+        "must be one of uuid|string|text|int|bool|timestamp|jsonb, enum:a,b,c, or ref:<core-table>[:cascade]",
+    },
+  );
 
 /** Per-table column map. */
 export const pluginTableSchema = z.record(z.string(), pluginColumnSpec);
@@ -66,18 +78,37 @@ export const pluginSchemaMap = z.record(z.string(), pluginTableSchema);
 
 export type PluginSchemaMap = z.infer<typeof pluginSchemaMap>;
 
-/** Tier 1 capability requests. Tier 2 manifests declaring this field
- *  are rejected by the validator (these capabilities are core-only). */
+/** Capability requests. Every capability is runtime-enforced; what is
+ *  GRANTABLE is capped by provenance (epic #380 decision 2): a
+ *  release-signed plugin may request any capability, a runtime-authored
+ *  plugin none beyond the sandbox base (query/api/theme/visitor/captcha).
+ *  The validator rejects runtime-authored manifests that reach over the
+ *  ceiling. */
 export const pluginCapability = z.enum([
   "cms_admin",
+  "cms_admin_schema",
   "ai_provider",
   "snapshots",
   "chat_runner_tools",
   "background_workers",
+  "domain_events",
   "email",
+  "head_contributions",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
+
+/**
+ * Provenance is the trust axis (epic #380): who authored the plugin and
+ * how it entered the system. `release-signed` = the manifest carries a
+ * verified Ed25519 signature over the shipped artifact set (disk-loaded
+ * core plugins). `runtime-authored` = submitted at runtime (AI or Owner
+ * paste), gated by the validator + Owner activation, never signed.
+ * Provenance sets the grantability ceiling; the legacy `tier` column
+ * (1|2) is the persisted encoding of the same fact and is now derived
+ * trust, not a parallel interface.
+ */
+export type PluginProvenance = "release-signed" | "runtime-authored";
 
 /** Tier 1 background worker spec (cron-style). */
 export const pluginWorkerSpec = z.object({
@@ -99,9 +130,48 @@ export const pluginToolSpec = z.object({
   operationName: z.string().min(1).max(120),
   /** Zod-shaped JSON schema for the tool's input. Stored as a JSON object. */
   inputJsonSchema: z.record(z.string(), z.unknown()),
+  /** §11.A human-confirmation gate. When set, the chat-runner ships the
+   *  tool with the SDK's native approval: the turn PAUSES on a
+   *  tool-approval-request, the Owner clicks Approve in-chat, and only
+   *  then does the host dispatch `operationName`. Closes the historical
+   *  bypass where plugin tools skipped the approvals surface entirely
+   *  (#388). The tool's description must state the two-step contract. */
+  approvalMode: z.literal("user-approval").optional(),
 });
 
 export type PluginToolSpec = z.infer<typeof pluginToolSpec>;
+
+/**
+ * #393 — a skill SHIPPED with a plugin (release-signed only). On
+ * activation the host registers it at `awaiting_activation`; the
+ * existing two-level model is untouched — the Owner's site-wide click
+ * and per-chat engagement work exactly like any other skill. Archived
+ * when the plugin is uninstalled. Closes the "companion skill" gap
+ * declaratively instead of via SQL seeds.
+ */
+export const pluginSkillSpec = z
+  .object({
+    slug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z][a-z0-9-]*$/, "must be lowercase, dash-separated"),
+    displayName: z.string().min(1).max(200),
+    description: z.string().min(1).max(2000),
+    body: z.string().min(1).max(50_000),
+    allowlistedTools: z.array(z.string().min(1).max(120)).optional(),
+    autoEngagementHints: z
+      .object({
+        keywords: z.array(z.string().min(1).max(80)).optional(),
+        chipTrigger: z.boolean().optional(),
+        alwaysOn: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type PluginSkillSpec = z.infer<typeof pluginSkillSpec>;
 
 /** Frontend Web Component spec. Same shape both tiers. Mounted in
  *  Shadow DOM by default (per §14.6 — mandatory). */
@@ -117,6 +187,86 @@ export const pluginComponent = z
   .strict();
 
 export type PluginComponent = z.infer<typeof pluginComponent>;
+
+/**
+ * #390 — the slots of Caelo's fixed URL grammar (epic #380 decision 1):
+ * `scheme+host · path-prefix · slug (filtered by slug-format)`, plus
+ * `full-path` as the exclusive escape slot. Composition order comes
+ * from the grammar, never from registration order; each slot has at
+ * most one claimant across all active plugins.
+ */
+export const urlSlot = z.enum(["host", "path-prefix", "slug-format", "full-path"]);
+
+export type UrlSlot = z.infer<typeof urlSlot>;
+
+/** Manifest-side claim: slot names only, so conflicts are detectable
+ *  from the signed manifest without loading code. */
+export const urlContributionClaim = z.object({ slot: urlSlot }).strict();
+
+// ---------------------------------------------------------------------------
+// #391 — head + sitemap contribution points.
+// ---------------------------------------------------------------------------
+
+/**
+ * A typed per-page `<head>` entry. STRUCTURED on purpose — the §2
+ * invariant "no raw HTML into <head>" holds for plugins too: plugins
+ * return these shapes, CORE serializes + escapes them, and the same
+ * serializer feeds the static generator and the admin preview (one
+ * code path, byte parity).
+ */
+export const headEntry = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("link"),
+      rel: z.string().min(1).max(60),
+      href: z.string().min(1).max(2000),
+      hreflang: z.string().min(2).max(35).optional(),
+      media: z.string().max(200).optional(),
+      type: z.string().max(100).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("meta"),
+      name: z.string().min(1).max(120).optional(),
+      property: z.string().min(1).max(120).optional(),
+      content: z.string().max(2000),
+    })
+    .strict()
+    .refine((v) => (v.name !== undefined) !== (v.property !== undefined), {
+      message: "meta entries carry exactly one of `name` or `property`",
+    }),
+]);
+
+export type HeadEntry = z.infer<typeof headEntry>;
+
+/** Per-page sitemap adjustments contributed by a plugin. */
+export const sitemapContribution = z
+  .object({
+    /** Drop this page from the sitemap entirely (e.g. an unpublished
+     *  variant URL must not appear — clean-404 semantics). */
+    exclude: z.boolean().optional(),
+    /** xhtml alternate links attached to the page's <url> entry. */
+    alternates: z
+      .array(
+        z
+          .object({
+            hreflang: z.string().min(2).max(35),
+            href: z.string().min(1).max(2000),
+          })
+          .strict(),
+      )
+      .optional(),
+  })
+  .strict();
+
+export type SitemapContribution = z.infer<typeof sitemapContribution>;
+
+/** Manifest-side claim of contribution kinds (release-signed only,
+ *  capability `head_contributions`). */
+export const contributionKind = z.enum(["head", "sitemap"]);
+
+export type ContributionKind = z.infer<typeof contributionKind>;
 
 /** Plugin manifest (the structural part the host consumes). The actual
  *  operation bodies + frontend mount handler live in source — the
@@ -135,6 +285,12 @@ export const pluginManifest = z
       .regex(/^\d+\.\d+\.\d+(-[a-z0-9.]+)?$/, "must be semver"),
     tier: z.union([z.literal(1), z.literal(2)]),
     schema: pluginSchemaMap,
+    /** #389 — release-signed only: the plugin's own authoring-DB schema,
+     *  provisioned as `plugin_<slug>` in cms_admin (FORCE RLS, scoped to
+     *  the plugin's id). Same declarative table spec as `schema`; `ref:`
+     *  columns may FK onto allowlisted core tables. Requires the
+     *  `cms_admin_schema` capability. */
+    adminSchema: pluginSchemaMap.optional(),
     /** Operation names. Bodies live in source — the manifest just lists names. */
     operations: z.array(z.string().min(1).max(120)).min(1),
     component: pluginComponent.optional(),
@@ -145,6 +301,14 @@ export const pluginManifest = z
     workers: z.array(pluginWorkerSpec).optional(),
     /** Tier 1 only. */
     tools: z.array(pluginToolSpec).optional(),
+    /** #390 — URL-slot claims (release-signed only). The definition
+     *  supplies the matching pure encode/decode pairs. */
+    urlContributions: z.array(urlContributionClaim).optional(),
+    /** #391 — head/sitemap contribution claims (release-signed only,
+     *  requires the `head_contributions` capability). */
+    contributes: z.array(contributionKind).optional(),
+    /** #393 — plugin-shipped skills (release-signed only). */
+    skills: z.array(pluginSkillSpec).optional(),
   })
   .strict();
 
@@ -190,6 +354,122 @@ export interface PluginQuery {
     patch: Record<string, unknown>,
   ): Promise<void>;
   delete<TableName extends string>(table: TableName, id: string): Promise<void>;
+}
+
+/**
+ * #389 — typed access to the plugin's OWN cms_admin schema
+ * (`plugin_<slug>`), masked by the `cms_admin_schema` capability.
+ * Identical surface to `PluginQuery`; the host routes it through the
+ * admin pool with the plugin's actor + plugin id session vars so the
+ * per-plugin RLS policy scopes every row. Direct writes to core tables
+ * stay impossible — this handle only reaches tables the plugin declared
+ * in `adminSchema` (FKs to core tables are declared as `ref:` columns,
+ * enforced by Postgres, never written through this handle).
+ */
+export interface PluginAdminQuery extends PluginQuery {}
+
+// ---------------------------------------------------------------------------
+// #390 — URL composition point.
+// ---------------------------------------------------------------------------
+
+/**
+ * The page as the URL resolver sees it. `annotations` is the plugin's
+ * own per-page data (e.g. `{ locale: "de", isDefaultLocale: false }`),
+ * collected BEFORE resolution via the plugin's `urlAnnotations`
+ * operation — encode/decode themselves are pure and perform no I/O.
+ */
+export interface UrlComposePage {
+  readonly pageId: string;
+  readonly slug: string;
+  /** True when this page is the designated site root (site_defaults). */
+  readonly isHomePage: boolean;
+  readonly annotations: Readonly<Record<string, unknown>>;
+}
+
+/** Decode result for prefix/host/full-path: the annotations the path
+ *  implies (e.g. `{ locale: "de" }`), consumed by page lookup. */
+export interface UrlDecodeMatch {
+  readonly annotations: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Definition-side contribution: pure encode + decode per slot. Decode
+ * is MANDATORY — preview-by-path, link integrity, and the URL-diff
+ * engine all need inversion; a contribution that cannot invert its own
+ * encoding is rejected at registration.
+ */
+export type UrlContributionDef =
+  | {
+      readonly slot: "host";
+      /** Host for this page (e.g. "de.example.com") or null for the site default. */
+      readonly encode: (page: UrlComposePage) => string | null;
+      /** Inverse: what does an inbound host imply? null = not one of ours (default host). */
+      readonly decode: (host: string) => UrlDecodeMatch | null;
+    }
+  | {
+      readonly slot: "path-prefix";
+      /** Leading path segments for this page ([] = none / default variant). */
+      readonly encode: (page: UrlComposePage) => ReadonlyArray<string>;
+      /** Inverse: given the path's leading segments, how many belong to
+       *  this contribution and what do they imply? null = no prefix
+       *  (default). MUST be unambiguous; throw on ambiguity. */
+      readonly decode: (
+        segments: ReadonlyArray<string>,
+      ) => (UrlDecodeMatch & { readonly consumed: number }) | null;
+    }
+  | {
+      readonly slot: "slug-format";
+      /** Transform the stored slug into its URL form. */
+      readonly encode: (page: UrlComposePage) => string;
+      /** Inverse: URL slug segment back to the stored slug. */
+      readonly decode: (urlSlug: string) => string;
+    }
+  | {
+      readonly slot: "full-path";
+      /** The complete path (leading slash) — owns the whole grammar. */
+      readonly encode: (page: UrlComposePage) => string;
+      /** Inverse: path back to {slug, annotations}; null = unknown path. */
+      readonly decode: (path: string) => (UrlDecodeMatch & { readonly slug: string }) | null;
+    };
+
+/**
+ * #392 — one row from the transactional domain-event outbox. Events are
+ * ephemeral SIGNALS ("this page changed"), not state: the consumer
+ * re-reads current state through its normal handles; snapshots remain
+ * the durable history.
+ */
+export interface PluginDomainEvent {
+  readonly id: number;
+  readonly kind:
+    | "page.created"
+    | "page.updated"
+    | "page.deleted"
+    | "page.published"
+    | "module.updated";
+  readonly entityId: string;
+  /** Emitter-supplied context (slug at event time; `chatBranchId` when
+   *  the write was branch-scoped — absent means a live write). */
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
+}
+
+/**
+ * #392 — polling access to the domain-event outbox, masked by the
+ * release-signed-only `domain_events` capability. Deliberately NOT an
+ * in-process event bus: workers poll on their existing cron schedule.
+ *
+ * Cursor contract: `poll()` without an explicit cursor resumes from the
+ * plugin's persisted position; `commit(cursor)` advances it AFTER the
+ * worker has fully processed a batch (at-least-once semantics — a crash
+ * between poll and commit re-delivers).
+ */
+export interface PluginEvents {
+  poll(opts?: {
+    readonly cursor?: number;
+    readonly kinds?: ReadonlyArray<PluginDomainEvent["kind"]>;
+    readonly limit?: number;
+  }): Promise<{ events: PluginDomainEvent[]; nextCursor: number }>;
+  commit(cursor: number): Promise<void>;
 }
 
 /** Public-facing API client (cms_public role; rate-limited at the gateway). */
@@ -301,6 +581,10 @@ export interface PluginContext {
  *  ONLY constructs the handles a plugin's `requestedCapabilities`
  *  asked for; unrequested fields are absent. */
 export interface PluginContextTier1 extends PluginContext {
+  /** #389 — attached when the manifest holds `cms_admin_schema`. */
+  readonly adminQuery?: PluginAdminQuery;
+  /** #392 — attached when the manifest holds `domain_events`. */
+  readonly events?: PluginEvents;
   readonly cms?: PluginCms;
   readonly ai?: PluginAi;
   readonly snapshots?: PluginSnapshots;
@@ -337,6 +621,8 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly version: string;
   readonly tier: 1 | 2;
   readonly schema: PluginSchemaMap;
+  /** #389 — see `pluginManifest.adminSchema`. */
+  readonly adminSchema?: PluginSchemaMap;
   readonly operations: Readonly<Record<string, PluginOperation<C>>>;
   readonly component?: PluginComponent & {
     readonly mounted?: (host: HTMLElement, ctx: PluginFrontendContext) => Promise<void> | void;
@@ -377,6 +663,31 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   /** Tier 1 only. Plugin-emitted system-prompt blocks rendered every
    *  turn. */
   readonly promptContext?: ReadonlyArray<PluginPromptContextSpec<C>>;
+  /** #390 — pure URL-slot contributions (release-signed only). Each
+   *  entry's slot must also be claimed in the manifest. */
+  readonly urlContributions?: ReadonlyArray<UrlContributionDef>;
+  /**
+   * #390 — the I/O half of URL resolution: given page ids, return each
+   * page's URL annotations from the plugin's own data (e.g. its locale
+   * from the variant table). Called by core BEFORE composing; the
+   * contributions themselves stay pure. Name of an operation in
+   * `operations` taking `{pageIds: string[]}` and returning
+   * `{annotations: Record<pageId, Record<string, unknown>>}`.
+   */
+  readonly urlAnnotationsOperation?: string;
+  /** #391 — see `pluginManifest.contributes`. */
+  readonly contributes?: ReadonlyArray<ContributionKind>;
+  /** #393 — see `pluginManifest.skills`. */
+  readonly skills?: ReadonlyArray<PluginSkillSpec>;
+  /**
+   * #391 — the I/O half of head/sitemap contributions: an operation in
+   * `operations` taking `{pageIds: string[], siteBaseUrl: string}` and
+   * returning `{head?: Record<pageId, HeadEntry[]>, sitemap?:
+   * Record<pageId, SitemapContribution>}`. The host Zod-validates every
+   * entry and serializes them itself — a plugin can never inject raw
+   * head HTML.
+   */
+  readonly contributionsOperation?: string;
 }
 
 /**
@@ -388,6 +699,53 @@ export function definePlugin<C extends PluginContext = PluginContext>(
   spec: PluginDefinition<C>,
 ): PluginDefinition<C> {
   return Object.freeze({ ...spec });
+}
+
+/**
+ * Project a plugin definition onto its signable/persistable manifest.
+ * ONE projection for every consumer — the host loader's `plugins` row,
+ * the release/dev signing tooling, and the boot-time dev auto-signer all
+ * derive the manifest from the built definition through this function,
+ * so what gets signed is exactly what gets verified and persisted
+ * (issue #387: three hand-kept copies had already drifted on optional
+ * fields). Function bodies (operations, staticRender, …) never enter
+ * the manifest — only their names/flags do.
+ */
+export function manifestFromDefinition(def: {
+  readonly slug: string;
+  readonly version: string;
+  readonly tier: 1 | 2;
+  readonly schema: PluginSchemaMap;
+  readonly adminSchema?: PluginSchemaMap;
+  readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
+  readonly contributes?: ReadonlyArray<ContributionKind>;
+  readonly skills?: ReadonlyArray<PluginSkillSpec>;
+  readonly operations: Readonly<Record<string, unknown>>;
+  readonly component?: PluginComponent;
+  readonly staticRender?: unknown;
+  readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  readonly workers?: ReadonlyArray<PluginWorkerSpec>;
+  readonly tools?: ReadonlyArray<PluginToolSpec>;
+}): PluginManifest {
+  return pluginManifest.parse({
+    slug: def.slug,
+    version: def.version,
+    tier: def.tier,
+    schema: def.schema,
+    ...(def.adminSchema ? { adminSchema: def.adminSchema } : {}),
+    operations: Object.keys(def.operations),
+    component: def.component
+      ? { tag: def.component.tag, shadowMode: def.component.shadowMode ?? "open" }
+      : undefined,
+    hasStaticRender: Boolean(def.staticRender),
+    ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
+    ...(def.workers ? { workers: [...def.workers] } : {}),
+    ...(def.tools ? { tools: [...def.tools] } : {}),
+    ...(def.urlContributions && def.urlContributions.length > 0
+      ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
+      : {}),
+    ...(def.contributes && def.contributes.length > 0 ? { contributes: [...def.contributes] } : {}),
+  });
 }
 
 /**

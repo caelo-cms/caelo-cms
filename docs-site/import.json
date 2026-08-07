@@ -108,6 +108,13 @@
       "title": "Tier 2 plugins (sandboxed)"
     },
     {
+      "source": "pages/multilingual.md",
+      "slug": "multilingual",
+      "template": "doc-page",
+      "name": "Multilingual sites",
+      "title": "Multilingual sites"
+    },
+    {
       "source": "pages/mcp.md",
       "slug": "mcp",
       "template": "doc-page",

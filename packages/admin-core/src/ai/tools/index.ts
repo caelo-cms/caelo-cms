@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { activatePluginTool } from "./activate-plugin.js";
 import { addModuleTool } from "./add-module.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
 import { autofillPageSeoTool } from "./autofill-page-seo.js";
@@ -58,6 +59,7 @@ import { listLayoutsTool } from "./list-layouts.js";
 import { listModulesTool } from "./list-modules.js";
 import { listPageAssetsTool } from "./list-page-assets.js";
 import { listPagesTool } from "./list-pages.js";
+import { listPluginsTool } from "./list-plugins.js";
 import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
@@ -96,6 +98,8 @@ import {
   proposeRoleUpdatePermissionsTool,
   proposeTemplateDeleteTool,
   proposeTemplateUpdateTool,
+  proposeUninstallPluginTool,
+  proposeUrlMigrationTool,
   proposeUserCreateTool,
   proposeUserDeleteTool,
   proposeUserSetRolesTool,
@@ -184,6 +188,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // layouts` / `# All pages` context blocks. Existed only as system-prompt
   // text before; the AI had no fetch path when it claimed to lack a UUID.
   registry.register(listLayoutsTool);
+  registry.register(listPluginsTool);
+  registry.register(activatePluginTool);
   registry.register(listTemplatesTool);
   registry.register(listPagesTool);
   registry.register(loadSkillTool);
@@ -376,6 +382,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // chat-runner-callable tools so the AI can actually queue
   // proposals through the standard tool-call loop.
   registry.register(proposeLayoutUpdateTool);
+  registry.register(proposeUrlMigrationTool);
+  registry.register(proposeUninstallPluginTool);
   registry.register(proposeLayoutDeleteTool);
   registry.register(proposeUserCreateTool);
   registry.register(proposeUserSetRolesTool);

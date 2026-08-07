@@ -17,6 +17,11 @@ export const pages = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     slug: text("slug").notNull(),
+    // #390 — the COMPOSED public path, materialized by the write ops via
+    // the URL composition point ("/" for the designated root; plugin
+    // prefixes/slug formats included). Backfilled + trigger-defaulted in
+    // 0211; unique per branch via pages_current_path_branch_uidx.
+    currentPath: text("current_path").notNull(),
     title: text("title").notNull(),
     templateId: uuid("template_id")
       .notNull()

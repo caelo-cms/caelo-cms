@@ -17,6 +17,7 @@
       "!**/test-results",
       "!**/output",
       "!claude-workflow",
+      "!packages/plugins/*/manifest.json",
       "!**/data/fonts",
       "!**/__tests__/fixtures"
     ]

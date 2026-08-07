@@ -567,6 +567,9 @@ const FINISHING_A_TURN_BLOCK = [
  */
 export interface VolatileContext {
   readonly skillsIndexBlock?: string;
+  /** One short line naming installed-but-inactive plugins. Static like
+   *  the skills index — it changes only on an Owner activation. */
+  readonly installedPluginsBlock?: string;
 }
 
 export function composeSystemPromptChunks(
@@ -626,6 +629,17 @@ export function composeSystemPromptChunks(
   // stays out of the cached system prompt).
   if (volatile.skillsIndexBlock && volatile.skillsIndexBlock.trim().length > 0) {
     chunks.push({ body: volatile.skillsIndexBlock, cacheable: true, label: "skills-index" });
+  }
+
+  // Installed-but-inactive plugins. Same cache profile as the skills
+  // index — it moves only when an Owner activates or disables something,
+  // never turn-to-turn, so it stays in the cached prefix.
+  if (volatile.installedPluginsBlock && volatile.installedPluginsBlock.trim().length > 0) {
+    chunks.push({
+      body: volatile.installedPluginsBlock,
+      cacheable: true,
+      label: "installed-plugins",
+    });
   }
 
   // NO volatile chunks. The system prompt is 100% static so the whole thing

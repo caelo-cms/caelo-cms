@@ -113,7 +113,7 @@ const helloPluginDef = definePlugin({
       return r;
     },
   },
-  requestedCapabilities: ["cms_admin"],
+  requestedCapabilities: ["cms_admin", "chat_runner_tools"],
   tools: [
     {
       name: "test_p115_greet",
@@ -229,6 +229,10 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
     const withWorkerDef = definePlugin({
       ...helloPluginDef,
       slug: "test-p115-workered",
+      requestedCapabilities: [
+        ...(helloPluginDef.requestedCapabilities ?? []),
+        "background_workers",
+      ],
       workers: [
         { name: "tick", cron: "0 0 * * *", operationName: "greet" }, // daily; never fires in test
       ],
@@ -251,14 +255,16 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
 
   it("failure isolation: one bad plugin doesn't block the rest", async () => {
     const goodDef = definePlugin({ ...helloPluginDef, slug: "test-p115-good" });
-    // Bad: definePlugin freezes shape, but we can supply a deliberately-broken
-    // ops handler that throws on registration via missing required field.
+    // Bad: zero operations violates the manifest schema (`operations`
+    // min(1)). Since #387 the testPlugins path runs the REAL manifest
+    // validator, so this must land in `failed` — not silently load like
+    // the pre-#387 fast path allowed.
     const badDef = definePlugin({
       slug: "test-p115-bad",
       version: "0.1.0",
       tier: 1,
       schema: {},
-      operations: {} as never, // empty; loader doesn't enforce min(1) on the in-memory shape, so this loads fine
+      operations: {} as never,
       requestedCapabilities: [],
     });
     const report = await bootstrap({
@@ -267,10 +273,10 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
       systemActorId: SYSTEM_ACTOR_ID,
       testPlugins: [{ definition: badDef }, { definition: goodDef }],
     });
-    // Both registered (the testPlugins fast path skips deep validation).
-    expect(report.loaded.map((p) => p.slug).sort()).toEqual(
-      ["test-p115-bad", "test-p115-good"].sort(),
-    );
+    // The bad plugin fails verification; the good one loads regardless.
+    expect(report.loaded.map((p) => p.slug)).toEqual(["test-p115-good"]);
+    expect(report.failed.map((p) => p.slug)).toEqual(["test-p115-bad"]);
+    expect(report.failed[0]?.reason).toContain("manifest");
     // Direct dispatch on the good one still works.
     const r = await runPluginOperation({
       pluginSlug: "test-p115-good",
@@ -279,5 +285,71 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
     });
     expect(r.ok).toBe(true);
     expect(loadedPlugins.bySlug("test-p115-good")).toBeDefined();
+    expect(loadedPlugins.bySlug("test-p115-bad")).toBeUndefined();
+  });
+});
+
+describe("#388 — capability enforcement at registration", () => {
+  it("tools without chat_runner_tools: validator + registration refuse", async () => {
+    const toolsNoCapDef = definePlugin({
+      ...helloPluginDef,
+      slug: "test-388-tools-nocap",
+      requestedCapabilities: [],
+      tools: [
+        {
+          name: "probe_tool",
+          description: "adversarial probe",
+          operationName: "greet",
+          inputJsonSchema: {},
+        },
+      ],
+    });
+    const report = await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: toolsNoCapDef }],
+    });
+    expect(report.loaded).toHaveLength(0);
+    expect(report.failed[0]?.reason).toContain("manifest-cap-missing");
+    expect(loadedPlugins.bySlug("test-388-tools-nocap")).toBeUndefined();
+    expect(pluginToolsRegistry.resolve("probe_tool")).toBeNull();
+  });
+
+  it("workers without background_workers: validator + registration refuse", async () => {
+    const workersNoCapDef = definePlugin({
+      ...helloPluginDef,
+      slug: "test-388-workers-nocap",
+      requestedCapabilities: [],
+      workers: [{ name: "tick", cron: "0 0 * * *", operationName: "greet" }],
+    });
+    const report = await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: workersNoCapDef }],
+    });
+    expect(report.loaded).toHaveLength(0);
+    expect(report.failed[0]?.reason).toContain("manifest-cap-missing");
+    expect(
+      pluginWorkerScheduler.list().filter((w) => w.pluginSlug === "test-388-workers-nocap"),
+    ).toHaveLength(0);
+  });
+
+  it("runtime-authored (tier 2) requesting capabilities: rejected", async () => {
+    const overreachDef = definePlugin({
+      ...helloPluginDef,
+      slug: "test-388-tier2-overreach",
+      tier: 2,
+      requestedCapabilities: ["cms_admin"],
+    });
+    const report = await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: overreachDef }],
+    });
+    expect(report.loaded).toHaveLength(0);
+    expect(report.failed[0]?.reason).toContain("manifest-tier2-cap-leak");
   });
 });

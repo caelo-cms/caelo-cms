@@ -272,7 +272,7 @@ export class DatabaseAdapter {
     if (!this.#skipVerify) await this.verifyRoles();
     await this.#public.transaction(async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
-      await tx.execute(sql.raw(`SELECT set_config('caelo.plugin_id', '${opts.pluginId}', true)`));
+      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${opts.pluginId}, true)`);
       // The emitted SQL is constructed entirely from validated identifiers
       // (slug regex `^[a-z][a-z0-9-]*$`, table names regex `^[a-z_][a-z0-9_]*$`)
       // and the plugin id is a UUID column from cms_admin.plugins, never user-provided
@@ -292,6 +292,42 @@ export class DatabaseAdapter {
    * uses — accepts only `plugin_<slug>` shapes (lowercase + underscores)
    * to keep the DROP boundary watertight.
    */
+  /**
+   * #389 — provision a release-signed plugin's OWN cms_admin schema
+   * (`plugin_<slug>`) from DDL emitted by
+   * `plugin-sandbox/schema.adminSchemaFromSpec`. Same trust reasoning as
+   * the cms_public variant above: identifiers are regex-validated at
+   * emission, the plugin id is a cms_admin UUID, all statements are
+   * IF-NOT-EXISTS/ADD-IF-NOT-EXISTS guarded (idempotent + additive
+   * evolution on version bumps). Runs as `system` actor on the ADMIN
+   * pool.
+   */
+  async provisionPluginAdminSchema(opts: { pluginId: string; sql: string }): Promise<void> {
+    if (!this.#skipVerify) await this.verifyRoles();
+    await this.#admin.transaction(async (tx) => {
+      await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
+      await tx.execute(sql.raw(`SELECT set_config('caelo.plugin_id', '${opts.pluginId}', true)`));
+      await tx.execute(sql.raw(opts.sql));
+    });
+  }
+
+  /**
+   * #389 — drop a plugin's cms_admin schema (uninstall path, #393).
+   * Same watertight name gate as the cms_public variant.
+   */
+  async dropPluginAdminSchema(opts: { schemaName: string }): Promise<void> {
+    if (!this.#skipVerify) await this.verifyRoles();
+    if (!/^plugin_[a-z][a-z0-9_]*$/.test(opts.schemaName)) {
+      throw new Error(
+        `dropPluginAdminSchema: refusing to drop schema "${opts.schemaName}" — name doesn't match plugin_<slug> pattern`,
+      );
+    }
+    await this.#admin.transaction(async (tx) => {
+      await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
+      await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS "${opts.schemaName}" CASCADE`));
+    });
+  }
+
   async dropPluginPublicSchema(opts: { schemaName: string }): Promise<void> {
     if (!this.#skipVerify) await this.verifyRoles();
     if (!/^plugin_[a-z][a-z0-9_]*$/.test(opts.schemaName)) {

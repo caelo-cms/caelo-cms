@@ -13,17 +13,17 @@
  * to load + a clear error surfaces in /security/plugins).
  *
  * Forbidden patterns (rejected):
- *   - ImportDeclaration of any module other than @caelo-cms/plugin-sdk.
+ *   - ImportDeclaration of any module outside the audited surface
+ *     (@caelo-cms/plugin-sdk, @caelo-cms/plugin-component-kit).
  *   - CallExpression of fetch / XMLHttpRequest / WebSocket / globalThis.fetch.
  *   - Reference to Deno.* (any property access).
  *   - Dynamic import() calls.
- *   - Template literals containing SQL keywords (SELECT/INSERT/UPDATE/
- *     DELETE/DROP/CREATE) — plugins go through query.* helpers.
+ *   - Template/string literals containing SQL *statements* (SELECT…FROM,
+ *     INSERT INTO, DROP TABLE, …) — plugins go through query.* helpers.
  *   - eval / Function / new Function.
  *   - Top-level globalThis writes.
  *
- * Plus the schema invariants (CMS_REQUIREMENTS §14.6):
- *   - Any table with `page_id` MUST also declare `locale`.
+ * Plus the manifest invariants (CMS_REQUIREMENTS §14):
  *   - Tier 2 manifests MUST NOT declare `requestedCapabilities`,
  *     `workers`, or `tools`.
  *   - Tier 2 manifests MUST declare `tier: 2`.
@@ -50,6 +50,7 @@ export type ValidationFailureKind =
   | "manifest-shape"
   | "manifest-tier-mismatch"
   | "manifest-tier2-cap-leak"
+  | "manifest-cap-missing"
   | "schema-shape"
   | "forbidden-import"
   | "forbidden-call"
@@ -96,8 +97,72 @@ export function validateManifest(rawManifest: unknown): {
   }
   const m = parsed.data;
 
-  // Tier 2 cannot request elevated capabilities.
+  // #389 — `ref:` FK columns are an adminSchema-only vocabulary:
+  // cms_public tables cannot FK across databases into cms_admin.
+  for (const [table, cols] of Object.entries(m.schema)) {
+    for (const [col, spec] of Object.entries(cols)) {
+      if (typeof spec === "string" && spec.startsWith("ref:")) {
+        failures.push({
+          kind: "schema-shape",
+          hint: `schema.${table}.${col}: \`ref:\` columns are only valid in \`adminSchema\` (cms_public cannot FK into cms_admin). Store the id as a plain \`uuid\` column instead.`,
+        });
+      }
+    }
+  }
+
+  // #388 — every capability is enforced, starting at the manifest:
+  // declaring tools[] / workers[] without holding the matching
+  // capability is a validation failure, not a silently-honoured extra.
+  if (m.tier === 1) {
+    const caps = new Set(m.requestedCapabilities ?? []);
+    if (m.adminSchema && Object.keys(m.adminSchema).length > 0 && !caps.has("cms_admin_schema")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `adminSchema` but does not request the `cms_admin_schema` capability. Add it to `requestedCapabilities` (or drop the adminSchema).",
+      });
+    }
+    if (m.contributes && m.contributes.length > 0 && !caps.has("head_contributions")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `contributes` (head/sitemap) but does not request the `head_contributions` capability. Add it to `requestedCapabilities` (or drop the contributions).",
+      });
+    }
+    if (m.tools && m.tools.length > 0 && !caps.has("chat_runner_tools")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `tools` but does not request the `chat_runner_tools` capability. Add it to `requestedCapabilities` (or drop the tools).",
+      });
+    }
+    if (m.workers && m.workers.length > 0 && !caps.has("background_workers")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `workers` but does not request the `background_workers` capability. Add it to `requestedCapabilities` (or drop the workers).",
+      });
+    }
+  }
+
+  // Tier 2 (runtime-authored) cannot reach over the grantability
+  // ceiling: no capabilities, no workers, no chat tools, no cms_admin
+  // schema.
   if (m.tier === 2) {
+    if (m.contributes && m.contributes.length > 0) {
+      failures.push({
+        kind: "manifest-tier2-cap-leak",
+        hint: "Runtime-authored plugins cannot declare `contributes` — head/sitemap contributions are release-signed only (#391).",
+      });
+    }
+    if (m.urlContributions && m.urlContributions.length > 0) {
+      failures.push({
+        kind: "manifest-tier2-cap-leak",
+        hint: "Runtime-authored plugins cannot declare `urlContributions` — URL-slot claims are release-signed only (#390).",
+      });
+    }
+    if (m.adminSchema && Object.keys(m.adminSchema).length > 0) {
+      failures.push({
+        kind: "manifest-tier2-cap-leak",
+        hint: "Runtime-authored plugins cannot declare `adminSchema` — a plugin-owned cms_admin schema is release-signed only (#389).",
+      });
+    }
     if (m.requestedCapabilities && m.requestedCapabilities.length > 0) {
       failures.push({
         kind: "manifest-tier2-cap-leak",
@@ -128,17 +193,47 @@ export function validateManifest(rawManifest: unknown): {
 // Source validation — oxc-parser walk.
 // ---------------------------------------------------------------------------
 
-/** SQL keywords flagged inside template literals + string literals. */
-const SQL_KEYWORD_RE = /\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\b/i;
+/**
+ * SQL *statements* flagged inside template literals + string literals.
+ * Matches statement shapes (keyword + its mandatory companion), not lone
+ * keywords: a lone `INSERT`/`DELETE`/`SELECT` word appears in legitimate
+ * plugin strings (operation names like "comment_archive.insert", tool
+ * descriptions like "Delete a comment") and cannot execute as SQL anyway
+ * — issue #387 root-caused the gateway marking every shipped plugin
+ * `failed` partly on this false positive. A payload that WOULD execute
+ * (SELECT…FROM, INSERT INTO, DROP TABLE, …) still trips the rule.
+ */
+const SQL_STATEMENT_RE =
+  /\b(SELECT\s+[\s\S]{0,200}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b|TRUNCATE\s+(TABLE\s+)?\S+|(DROP|CREATE|ALTER)\s+(TABLE|SCHEMA|POLICY|ROLE|INDEX|FUNCTION|TRIGGER|VIEW|DATABASE|EXTENSION)\b|GRANT\s+[\s\S]{0,80}?\bON\b)/i;
 
-/** Allowed import sources. Plugins may ONLY import from this list. */
-const ALLOWED_IMPORTS = new Set<string>(["@caelo-cms/plugin-sdk"]);
+/** Allowed import sources. Plugins may ONLY import from this list.
+ *  `plugin-component-kit` is the shared frontend kit (escapeHtml, honeypot,
+ *  PoW, delta-fetch helpers) every shipped component uses — it is part of
+ *  the audited plugin surface, same trust domain as the SDK. */
+const ALLOWED_IMPORTS = new Set<string>([
+  "@caelo-cms/plugin-sdk",
+  "@caelo-cms/plugin-component-kit",
+]);
+
+/** Same-package relative import: starts with `./`, never traverses up
+ *  (`..` is rejected anywhere in the path), ends in `.js`. Only the
+ *  release-signed dist path opts into this — a multi-file dist is
+ *  legitimate for audited plugins, and the loader validates EVERY .js
+ *  in the dist so the sibling file gets the same scrutiny. */
+const SAME_PACKAGE_IMPORT_RE = /^\.\/(?!.*\.\.)[\w./-]+\.js$/;
 
 /**
  * Walk the AST and collect failures. Called for both Tier 1 (defense
  * in depth at startup) and Tier 2 (gating activation).
  */
-export function validateSource(opts: { filename: string; source: string }): ValidationFailure[] {
+export function validateSource(opts: {
+  filename: string;
+  source: string;
+  /** Release-signed dist only — permits `./sibling.js` imports within
+   *  the plugin package. Runtime-authored source stays single-file:
+   *  the Deno sandbox has nothing else on disk to resolve against. */
+  allowRelativeImports?: boolean;
+}): ValidationFailure[] {
   const { filename, source } = opts;
   const failures: ValidationFailure[] = [];
 
@@ -162,7 +257,11 @@ export function validateSource(opts: { filename: string; source: string }): Vali
     // ImportDeclaration — only @caelo-cms/plugin-sdk allowed.
     if (type === "ImportDeclaration") {
       const sourceVal = (node as { source?: { value?: unknown } }).source?.value;
-      if (typeof sourceVal !== "string" || !ALLOWED_IMPORTS.has(sourceVal)) {
+      const relativeOk =
+        opts.allowRelativeImports === true &&
+        typeof sourceVal === "string" &&
+        SAME_PACKAGE_IMPORT_RE.test(sourceVal);
+      if (!relativeOk && (typeof sourceVal !== "string" || !ALLOWED_IMPORTS.has(sourceVal))) {
         failures.push({
           kind: "forbidden-import",
           nodeType: type,
@@ -282,13 +381,13 @@ export function validateSource(opts: { filename: string; source: string }): Vali
       const quasis = (node as { quasis?: Array<{ value?: { raw?: string } }> }).quasis ?? [];
       for (const q of quasis) {
         const raw = q.value?.raw ?? "";
-        if (SQL_KEYWORD_RE.test(raw)) {
+        if (SQL_STATEMENT_RE.test(raw)) {
           failures.push({
             kind: "forbidden-sql-template",
             nodeType: type,
             snippet: raw.slice(0, 80),
             location: locOf(node),
-            hint: "Template literals containing SQL keywords are not allowed. Use ctx.query.insert/list/update/delete instead of raw SQL.",
+            hint: "Template literals containing SQL statements are not allowed. Use ctx.query.insert/list/update/delete instead of raw SQL.",
           });
           return;
         }
@@ -296,13 +395,13 @@ export function validateSource(opts: { filename: string; source: string }): Vali
     }
     if (type === "Literal" || type === "StringLiteral") {
       const v = (node as { value?: unknown }).value;
-      if (typeof v === "string" && SQL_KEYWORD_RE.test(v)) {
+      if (typeof v === "string" && SQL_STATEMENT_RE.test(v)) {
         failures.push({
           kind: "forbidden-sql-template",
           nodeType: type,
           snippet: v.slice(0, 80),
           location: locOf(node),
-          hint: "String literals containing SQL keywords are not allowed. Use ctx.query.* helpers.",
+          hint: "String literals containing SQL statements are not allowed. Use ctx.query.* helpers.",
         });
         return;
       }

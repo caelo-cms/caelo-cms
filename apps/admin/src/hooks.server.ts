@@ -19,6 +19,7 @@ import { resolve as resolvePath } from "node:path";
 import {
   buildEmailTransport,
   configureMcpBridge,
+  configurePluginUninstallFinalizer,
   configureProviderResolver,
   type EmailConfigRow,
   emitSnapshot,
@@ -26,19 +27,17 @@ import {
   getActiveProvider,
   getMediaStorage,
   startChatImageGcWorker,
+  startDomainEventGcWorker,
   startProposalGcWorker,
   startReleaseCheckWorker,
 } from "@caelo-cms/admin-core";
-import authPluginDefinition from "@caelo-cms/plugin-auth";
-import commentsPluginDefinition from "@caelo-cms/plugin-comments";
-import formsPluginDefinition from "@caelo-cms/plugin-forms";
 import {
   bootstrap as bootstrapPluginHost,
+  ensureDevSignedManifests,
+  loadedPlugins,
   type AIProvider as PluginHostAIProvider,
   type SnapshotEmitter,
 } from "@caelo-cms/plugin-host";
-import newsletterPluginDefinition from "@caelo-cms/plugin-newsletter";
-import ratingsPluginDefinition from "@caelo-cms/plugin-ratings";
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -123,13 +122,33 @@ function makePluginHostAiProvider(): PluginHostAIProvider {
 
 // P11.5 commit 2 — bootstrap the Tier-1 plugin host.
 //
-// P12 review-pass: on-disk loading is now wired (loader reads
-// `packages/plugins/<slug>/manifest.json` + `manifest.sig`, verifies via the
-// embedded Caelo public key OR `CAELO_TIER1_PUBLIC_KEY` env override). For
-// dev iteration we still default to testPlugins mode (no disk hop, instant
-// reload via `bun --bun vite dev`); set `CAELO_USE_DISK_PLUGINS=1` to switch
-// to the disk-loader path. Production builds run the disk loader.
+// #387 one-trust-path: the admin host ALWAYS loads plugins from disk
+// through the full verify pipeline (manifest parse → Ed25519 signature →
+// validator → import). The old testPlugins default that skipped
+// signature + validator is gone. Dev convenience is auto-signing, not
+// skipped verification: on a non-production boot, stale/missing
+// manifest.json + manifest.sig are regenerated from each plugin's built
+// dist with the repo-local `.caelo-dev-key`, and the loader verifies
+// against that key via the `.tier1-trust-root` drop file. Production
+// images sign at image-build time (same mechanism, throwaway build key;
+// image provenance is cosign's job).
 let pluginHostBootstrapped = false;
+
+/** Walk up from cwd to the directory containing `packages/plugins`.
+ *  Throws (no-fallbacks) when the workspace shape isn't found. */
+function findWorkspaceRoot(): string {
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(resolvePath(dir, "packages", "plugins"))) return dir;
+    const parent = resolvePath(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error(
+    `plugin host: could not locate packages/plugins walking up from ${process.cwd()} — set CAELO_PLUGINS_ROOT`,
+  );
+}
+
 async function bootstrapPlugins(): Promise<void> {
   if (pluginHostBootstrapped) return;
   pluginHostBootstrapped = true;
@@ -161,23 +180,31 @@ async function bootstrapPlugins(): Promise<void> {
   } catch {
     // best-effort; ctx.email.send falls back to stderr stub
   }
-  const useDisk = process.env.CAELO_USE_DISK_PLUGINS === "1";
-  // P12 review-pass #3 — startup warning if any active plugin
-  // declared `email` capability but no transport is configured. These
-  // sends will fall through to the stderr stub silently otherwise.
-  if (!emailTransport) {
-    const emailUsers = [
-      newsletterPluginDefinition,
-      authPluginDefinition,
-      formsPluginDefinition,
-    ].filter((p) => p.requestedCapabilities?.includes("email"));
-    if (emailUsers.length > 0) {
-      console.warn(
-        `[hooks] email transport NOT configured — ${emailUsers.map((p) => p.slug).join(", ")} will log sends to stderr only. Configure at /security/email.`,
-      );
+  // Resolve packages/plugins by walking up from cwd — import.meta.url
+  // is useless here because the built SvelteKit output relocates this
+  // module to build/server/chunks/, while dev serves it from src/.
+  // Both the dev server (cwd=apps/admin) and the runtime image
+  // (WORKDIR /app/apps/admin) sit two levels below the workspace root.
+  const workspaceRoot = findWorkspaceRoot();
+  const pluginsRoot = process.env.CAELO_PLUGINS_ROOT ?? `${workspaceRoot}/packages/plugins`;
+  if (process.env.NODE_ENV !== "production") {
+    const signed = await ensureDevSignedManifests({
+      pluginsRoot,
+      keyPath: `${workspaceRoot}/.caelo-dev-key`,
+    });
+    for (const r of signed.reports) {
+      if (r.status === "failed" || r.status === "skipped") {
+        console.warn(`[hooks] plugin dev-sign ${r.status}: ${r.slug} — ${r.reason}`);
+      }
     }
   }
-  await bootstrapPluginHost({
+  // #393 — the uninstall op's schema drops run through these hooks
+  // (DDL on both pools lives with the adapter, not the ops layer).
+  configurePluginUninstallFinalizer({
+    dropPublicSchema: (schemaName) => adapter.dropPluginPublicSchema({ schemaName }),
+    dropAdminSchema: (schemaName) => adapter.dropPluginAdminSchema({ schemaName }),
+  });
+  const report = await bootstrapPluginHost({
     infra: {
       adapter,
       registry,
@@ -185,24 +212,40 @@ async function bootstrapPlugins(): Promise<void> {
       emitSnapshot: emitter,
       emailTransport,
     },
-    // Disk path requires `bun run plugins:sign` to have produced
-    // manifest.json + manifest.sig in each plugin dir, AND
-    // CAELO_TIER1_PUBLIC_KEY env to match the dev key (or the embedded
-    // production key when shipped).
-    pluginsRoot: useDisk
-      ? new URL("../../../packages/plugins", import.meta.url).pathname
-      : "/dev/null/unused",
+    pluginsRoot,
     systemActorId: SYSTEM_CTX.actorId,
-    testPlugins: useDisk
-      ? undefined
-      : [
-          { definition: formsPluginDefinition },
-          { definition: ratingsPluginDefinition },
-          { definition: newsletterPluginDefinition },
-          { definition: commentsPluginDefinition },
-          { definition: authPluginDefinition },
-        ],
   });
+  // #387 — a discarded LoadReport made plugin failures invisible; every
+  // failed plugin is an operator-relevant event, so log loudly.
+  console.log(
+    `[hooks] plugin host: ${report.loaded.length} loaded${report.loaded.length > 0 ? ` (${report.loaded.map((l) => l.slug).join(", ")})` : ""}`,
+  );
+  // Installed but not running. Logged at the same volume as loaded ones
+  // so "why is my plugin doing nothing" is answered by the boot log
+  // rather than by reading the plugins table.
+  if (report.inactive.length > 0) {
+    console.log(
+      `[hooks] plugin host: ${report.inactive.length} installed, awaiting Owner activation at /security/plugins (${report.inactive
+        .map((p) => `${p.slug}:${p.status}`)
+        .join(", ")})`,
+    );
+  }
+  for (const f of report.failed) {
+    console.error(`[hooks] plugin FAILED to load: ${f.slug} — ${f.reason}`);
+  }
+  // P12 review-pass #3 — startup warning if any loaded plugin declared
+  // the `email` capability but no transport is configured. These sends
+  // would fall through to the stderr stub silently otherwise.
+  if (!emailTransport) {
+    const emailUsers = loadedPlugins
+      .all()
+      .filter((p) => p.definition.requestedCapabilities?.includes("email"));
+    if (emailUsers.length > 0) {
+      console.warn(
+        `[hooks] email transport NOT configured — ${emailUsers.map((p) => p.slug).join(", ")} will log sends to stderr only. Configure at /security/email.`,
+      );
+    }
+  }
 }
 
 // P14 — pending bootstrap token uptake. cms-provision init writes
@@ -270,6 +313,11 @@ function bootstrapReleaseCheck(): void {
 // days → 'superseded' once per day across all *_pending_actions
 // tables. Keeps the bell badge meaningful.
 let proposalGcBootstrapped = false;
+function bootstrapDomainEventGc(): void {
+  const { adapter } = getQueryContext();
+  startDomainEventGcWorker({ adapter });
+}
+
 function bootstrapProposalGc(): void {
   if (proposalGcBootstrapped) return;
   proposalGcBootstrapped = true;
@@ -336,6 +384,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapProposalGc();
   bootstrapChatImageGc();
   bootstrapMcpBridge();
+  bootstrapDomainEventGc();
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   const { adapter, registry } = getQueryContext();

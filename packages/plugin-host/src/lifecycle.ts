@@ -7,8 +7,11 @@
  * workers running until process restart.
  */
 
-import { setPluginDisabled } from "./dispatch.js";
+import { loadedPlugins, setPluginDisabled } from "./dispatch.js";
+import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
+import { pluginToolsRegistry } from "./tools-registry.js";
+import { urlContributionsRegistry } from "./url-composition.js";
 
 export type PluginLifecycleAction = "disable" | "enable";
 
@@ -23,4 +26,20 @@ export function applyPluginLifecycle(slug: string, action: PluginLifecycleAction
       pluginWorkerScheduler.resumePlugin(slug);
       return;
   }
+}
+
+/**
+ * #393 — full runtime removal for uninstall: the plugin disappears from
+ * every registry (tools, prompt context, workers, URL contributions,
+ * the loaded-plugins map). Unlike disable, this is not reversible
+ * without a fresh bootstrap — the uninstall op deletes the DB rows and
+ * drops the schemas right after.
+ */
+export function deregisterPlugin(slug: string): void {
+  setPluginDisabled(slug, false);
+  pluginWorkerScheduler.unschedulePlugin(slug);
+  pluginToolsRegistry.unregisterPlugin(slug);
+  pluginPromptContextRegistry.unregisterPlugin(slug);
+  urlContributionsRegistry.unregisterPlugin(slug);
+  loadedPlugins.unload(slug);
 }

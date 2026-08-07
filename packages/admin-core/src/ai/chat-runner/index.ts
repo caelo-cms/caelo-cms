@@ -23,7 +23,7 @@ import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
-import { attachGatedExecute } from "../tools/gated-tools.js";
+import { attachGatedExecute, attachPluginGatedExecute } from "../tools/gated-tools.js";
 import { buildProviderHistory, createMediaAttachmentLoader } from "./attachments.js";
 import {
   resolveCompactionRecentTokens,
@@ -32,7 +32,7 @@ import {
   resolveProactiveCompaction,
 } from "./compaction.js";
 import { lastNoteSignature, noteSignature } from "./context/page.js";
-import { extractLoadedSkillSlugs } from "./context/skills.js";
+import { extractLoadedSkillSlugs, formatNewSkillsNotice } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import { buildContextSplitEstimate } from "./context-split.js";
 import {
@@ -239,6 +239,7 @@ export async function* runChatTurn(
     aiActorId: aiCtx.actorId,
     input,
     loadedSkillSlugs,
+    chatStartedAt: session.session.createdAt,
   });
   markPhase("contextBlocksMs");
 
@@ -280,6 +281,18 @@ export async function* runChatTurn(
         ctx.pageContextBlock,
       );
     }
+    // Skills activated since this chat started are missing from the
+    // pinned `# Skills` index by design; this is how the running chat
+    // hears about them. Seeded on the slug set, so it fires once per
+    // set of new skills rather than once per turn.
+    if (ctx.newlyActivatedSkills.length > 0) {
+      const slugs = ctx.newlyActivatedSkills.map((s) => s.slug).sort();
+      await injectNote(
+        "newskills",
+        slugs.join(","),
+        formatNewSkillsNotice(ctx.newlyActivatedSkills),
+      );
+    }
   }
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion
@@ -308,9 +321,17 @@ export async function* runChatTurn(
   // never fronts an Owner approval.
   const isSubagentTurn = options.subagentResultCapture !== undefined;
   const filteredTools = catalogueTools.flatMap((t) => {
-    if (!t.gated) return [t];
-    if (isSubagentTurn) return [];
-    return [attachGatedExecute(t, registry, adapter, aiCtxWithBranch, humanCtx)];
+    if (t.gated) {
+      if (isSubagentTurn) return [];
+      return [attachGatedExecute(t, registry, adapter, aiCtxWithBranch, humanCtx)];
+    }
+    // #388 — approval-declared plugin tools get the same SDK gate;
+    // subagent turns strip them (a child never fronts an Owner approval).
+    if (t.pluginGated) {
+      if (isSubagentTurn) return [];
+      return [attachPluginGatedExecute(t)];
+    }
+    return [t];
   });
 
   // The system prompt is fully static now — the only passthrough is the static
@@ -319,6 +340,7 @@ export async function* runChatTurn(
   // state on-demand via tools).
   const systemChunks = composeSystemPromptChunks(memory, {
     skillsIndexBlock: ctx.preBlocks.skillsIndexBlock,
+    installedPluginsBlock: ctx.preBlocks.installedPluginsBlock,
   });
 
   const usage: UsageAccumulator = {

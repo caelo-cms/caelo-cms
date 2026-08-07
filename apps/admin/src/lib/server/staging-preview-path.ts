@@ -1,25 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * v0.2.84 — mirror of static-generator's pageOutputPath, returning
- * the SUFFIX (without leading slash) that the admin's
- * /_staging-preview/<runId>/ proxy should append. Strips the trailing
- * `index.html` so the operator sees a clean URL.
- *
- * Used by /edit?/stageAndDeployStaging and /content/pages?/stage to
- * build the "Preview" link in the post-Stage toast. Single source of
- * truth lives in apps/static-generator/src/generate.ts, but the
- * admin doesn't import from static-generator's source (the deploy
- * subprocess does); duplicating the tiny home test here keeps the
- * dep graph tidy. Path shaping beyond slug + home becomes a plugin
- * contribution on the URL composition point (#390).
+ * v0.2.84 → #390 — the staging-preview SUFFIX (without leading slash)
+ * that the admin's /_staging-preview/<runId>/ proxy appends, derived
+ * from the page's COMPOSED path (`pages.currentPath`). The generator
+ * emits files at exactly that path, so no home/prefix knowledge is
+ * duplicated here anymore: "/" → "" (the proxy appends index.html),
+ * "/de/pricing" → "de/pricing/".
  */
 
-export function stagingPreviewPath(slug: string): string {
-  const trimmed = slug.replace(/^\/+|\/+$/g, "");
-  const isHome = trimmed === "" || trimmed === "home" || trimmed === "index";
-  // Generator emits the home page as just `index.html`. The proxy
-  // serves `<runId>/` by appending `index.html`, so the cleanest
-  // URL for home is the empty suffix.
-  return isHome ? "" : `${trimmed}/`;
+export function stagingPreviewPath(currentPath: string): string {
+  const trimmed = currentPath.replace(/^\/+|\/+$/g, "");
+  return trimmed.length === 0 ? "" : `${trimmed}/`;
 }

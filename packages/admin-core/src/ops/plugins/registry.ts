@@ -22,7 +22,7 @@
  *   in P11.5+); it only ships the ops that read + mutate the registry.
  */
 
-import { applyPluginLifecycle } from "@caelo-cms/plugin-host";
+import { applyPluginLifecycle, loadedPlugins } from "@caelo-cms/plugin-host";
 import { type EmittedSchema, schemaFromSpec, validatePlugin } from "@caelo-cms/plugin-sandbox";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
@@ -420,6 +420,11 @@ export const preparePluginActivationOp = defineOperation({
     /** When true the caller should skip provisioning + commit and just
      *  call plugins.activate (re-enable path). */
     isReEnable: z.boolean(),
+    /** True for release-signed plugins: their schemas are emitted from
+     *  the definition and provisioned by the host loader when it loads
+     *  the plugin, so the caller must NOT run DDL of its own — it
+     *  activates, then loads. */
+    provisionedByLoader: z.boolean(),
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
@@ -441,13 +446,6 @@ export const preparePluginActivationOp = defineOperation({
         message: `no plugin with slug "${input.slug}"`,
       });
     }
-    if (r.tier !== 2) {
-      return err({
-        kind: "HandlerError",
-        operation: "plugins.prepare_activation",
-        message: "Tier 1 plugins are auto-activated by the host loader.",
-      });
-    }
     if (r.status !== "awaiting_activation" && r.status !== "disabled") {
       return err({
         kind: "HandlerError",
@@ -463,6 +461,20 @@ export const preparePluginActivationOp = defineOperation({
         schemaName,
         appliedSql: "",
         isReEnable: true,
+        provisionedByLoader: r.tier !== 2,
+      });
+    }
+    // Release-signed: the DDL is derived from the plugin's definition,
+    // which only the host can read. It provisions on load, so there is
+    // nothing for the caller to run here.
+    if (r.tier !== 2) {
+      return ok({
+        pluginId: r.id,
+        version: r.version,
+        schemaName,
+        appliedSql: "",
+        isReEnable: false,
+        provisionedByLoader: true,
       });
     }
     const manifest =
@@ -496,6 +508,7 @@ export const preparePluginActivationOp = defineOperation({
       schemaName: emitted.schemaName,
       appliedSql: emitted.sql,
       isReEnable: false,
+      provisionedByLoader: false,
     });
   },
 });
@@ -522,7 +535,10 @@ export const activatePluginOp = defineOperation({
   output: z.object({
     schemaName: z.string(),
     appliedSql: z.string(),
-    actorId: z.string(),
+    /** Null on the re-enable path when the plugin is not currently
+     *  loaded: the id lives on a row a human actor cannot read, and the
+     *  loader recovers it right after this op. */
+    actorId: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
@@ -544,13 +560,12 @@ export const activatePluginOp = defineOperation({
         message: `no plugin with slug "${input.slug}"`,
       });
     }
-    if (r.tier !== 2) {
-      return err({
-        kind: "HandlerError",
-        operation: "plugins.activate",
-        message: "Tier 1 plugins are auto-activated by the host loader.",
-      });
-    }
+    // Release-signed plugins activate through this op too. They used to
+    // be auto-activated by the loader and this op refused them; the
+    // loader now only RECORDS a discovered plugin, so the Owner's click
+    // lands here for every provenance. The caller loads the plugin into
+    // the running host after this transaction commits — see
+    // `loadActivatedPlugin`.
     if (r.status !== "awaiting_activation" && r.status !== "disabled") {
       return err({
         kind: "HandlerError",
@@ -578,7 +593,19 @@ export const activatePluginOp = defineOperation({
             updated_at = now()
         WHERE id = ${r.id}::uuid
       `);
-      const actorId = await upsertPluginActor(tx, r.id, input.slug);
+      // Re-enable never mints an actor: the loader (tier 1) or the
+      // first activation (tier 2) created it, and it survives disable.
+      //
+      // This used to REQUIRE the live registry entry — reasonable when
+      // a disabled plugin stayed loaded-but-inert, so its absence meant
+      // something was broken. Under the hard activation state a
+      // disabled plugin is genuinely absent, and demanding it here
+      // would reject the exact case this branch exists for. The actor
+      // row is not readable from a human ctx either (actors RLS shows
+      // each actor only itself), so on this path the id is simply not
+      // knowable — reported as null rather than invented. The loader
+      // re-reads it when the caller loads the plugin after commit.
+      const actorId = loadedPlugins.bySlug(input.slug)?.pluginActorId ?? null;
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -586,7 +613,7 @@ export const activatePluginOp = defineOperation({
         input,
         succeeded: true,
         entityId: r.id,
-        resultSummary: "tier=2 re-enabled",
+        resultSummary: `tier=${r.tier} re-enabled`,
       });
       // Audit fix #2: hot-update the live host. Tools reappear in the
       // AI's catalogue, workers resume, dispatch flips back to ok.
@@ -598,7 +625,34 @@ export const activatePluginOp = defineOperation({
       });
     }
 
-    // Fresh activate: provision SQL must come from prepare_activation.
+    // Fresh activate. Release-signed plugins carry no caller-supplied
+    // DDL — the host loader emits and provisions their schemas when it
+    // loads them — so there is no migration row to write here; the row
+    // just flips and the caller loads the plugin.
+    if (r.tier !== 2) {
+      await tx.execute(sql`
+        UPDATE plugins
+        SET status = 'active',
+            activated_by = ${ctx.actorId}::uuid,
+            activated_at = now(),
+            updated_at = now()
+        WHERE id = ${r.id}::uuid
+      `);
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "plugins.activate",
+        input,
+        succeeded: true,
+        entityId: r.id,
+        resultSummary: `tier=${r.tier} activated (loader provisions schemas)`,
+      });
+      return ok({
+        schemaName,
+        appliedSql: "",
+        actorId: loadedPlugins.bySlug(input.slug)?.pluginActorId ?? null,
+      });
+    }
     if (!input.appliedSql || !input.version) {
       return err({
         kind: "HandlerError",

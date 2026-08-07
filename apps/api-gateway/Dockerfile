@@ -39,6 +39,7 @@ COPY packages/plugins/comments/package.json packages/plugins/comments/
 COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/
 COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
+COPY packages/plugins/international-site/package.json packages/plugins/international-site/
 
 RUN bun install --frozen-lockfile
 
@@ -55,6 +56,23 @@ COPY packages packages/
 # without the dist/ artifacts. Build the package once so the symlink
 # target carries a real `dist/` directory.
 RUN bun run --filter @caelo-cms/shared build
+
+# #387 — build every Tier-1 plugin's dist and sign the manifests with a
+# throwaway build key (mirrors the admin Dockerfile). Before this the
+# gateway image shipped NO plugin dists and NO manifests, so its disk
+# loader silently loaded zero plugins — every visitor-facing plugin
+# endpoint 404'd in production. The .tier1-trust-root drop file bakes
+# the verification key next to the manifests; the private half is
+# deleted in the same layer.
+RUN bunx tsc -b \
+  packages/plugins/forms \
+  packages/plugins/comments \
+  packages/plugins/newsletter \
+  packages/plugins/ratings \
+  packages/plugins/auth \
+  packages/plugins/international-site
+COPY apps/admin/scripts/sign-tier1-manifest.ts apps/admin/scripts/
+RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-dev-key
 
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.3.14-slim AS runtime

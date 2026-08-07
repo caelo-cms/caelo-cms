@@ -32,6 +32,11 @@ const siteDefaultsRow = z.object({
   defaultLayoutSlug: z.string(),
   defaultTemplateId: z.string(),
   defaultTemplateSlug: z.string(),
+  /** The page core serves at "/". Null before a home is designated,
+   *  where the magic-slug rule ("", home, index) stands in. Read by URL
+   *  plugins that need to know which page is already the root before
+   *  they can declare others the root of their own URL space. */
+  homePageId: z.string().nullable(),
   // v0.11.4 (issue #76 follow-up) — site identity captured at onboarding.
   // Nullable on fresh installs that pre-date the identity step or where
   // the operator skipped the optional fields.
@@ -51,7 +56,12 @@ function parseDesignBrief(raw: unknown): DesignBrief | null {
 
 export const getSiteDefaultsOp = defineOperation({
   name: "site_defaults.get",
-  actorScope: ["human", "ai", "system"],
+  // Plugin actors read it to find the designated home page: a URL
+  // plugin needs to know which page core treats as the root before it
+  // can say which pages are the root of their own URL space (§11 —
+  // read surfaces stay open; `site_defaults.get_seo` was opened to
+  // plugins for the same reason). Config ids only, no secrets.
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
   output: z.object({ defaults: siteDefaultsRow.nullable() }),
@@ -62,6 +72,7 @@ export const getSiteDefaultsOp = defineOperation({
         l.slug                        AS default_layout_slug,
         sd.default_template_id::text AS default_template_id,
         t.slug                        AS default_template_slug,
+        sd.home_page_id::text         AS home_page_id,
         sd.site_name                  AS site_name,
         sd.site_purpose               AS site_purpose,
         sd.design_brief               AS design_brief,
@@ -76,6 +87,7 @@ export const getSiteDefaultsOp = defineOperation({
       default_layout_slug: string;
       default_template_id: string;
       default_template_slug: string;
+      home_page_id: string | null;
       site_name: string | null;
       site_purpose: string | null;
       design_brief: unknown;
@@ -89,6 +101,7 @@ export const getSiteDefaultsOp = defineOperation({
         defaultLayoutSlug: r.default_layout_slug,
         defaultTemplateId: r.default_template_id,
         defaultTemplateSlug: r.default_template_slug,
+        homePageId: r.home_page_id,
         siteName: r.site_name,
         sitePurpose: r.site_purpose,
         designBrief: parseDesignBrief(r.design_brief),

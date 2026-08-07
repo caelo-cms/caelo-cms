@@ -133,6 +133,62 @@ export const proposeLayoutDeleteTool = makeProposeTool({
 
 // ─── users ───────────────────────────────────────────────────────────
 
+/**
+ * #390 — the generic URL-migration gate. The AI (or an activation flow)
+ * proposes; the diff engine computes the blast radius from the
+ * MATERIALIZED current_path column, so this works even when the plugin
+ * that caused the change is already gone.
+ */
+
+/**
+ * #393 — the gated uninstall. Data loss is explicit in the preview
+ * (both plugin schemas are DROPPED); the Owner approves in-chat.
+ */
+export const proposeUninstallPluginTool = makeProposeTool({
+  toolName: "propose_uninstall_plugin",
+  opName: "plugins.propose_uninstall",
+  pendingQueuePath: "/security/pending",
+  when:
+    "Propose PERMANENTLY uninstalling a plugin: its cms_public AND cms_admin schemas are dropped (all plugin data deleted), its tools/workers/skills are removed, and pages whose URLs it reshaped move back with 301 redirects. " +
+    "This is a TWO-STEP flow: you propose, the Owner approves the in-chat card. Do NOT claim the plugin was uninstalled after proposing. " +
+    "For a temporary stop use plugins.disable instead — it keeps all data.",
+  schema: z
+    .object({
+      slug: z.string().min(1).max(120),
+      reason: z.string().max(500).optional(),
+    })
+    .strict(),
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["slug"],
+    properties: {
+      slug: { type: "string", minLength: 1, maxLength: 120 },
+      reason: { type: "string", maxLength: 500 },
+    },
+  },
+  summarize: (input) => `uninstall plugin ${input.slug} (drops its data)`,
+});
+
+export const proposeUrlMigrationTool = makeProposeTool({
+  toolName: "propose_url_migration",
+  opName: "url_migrations.propose_migrate",
+  pendingQueuePath: "/security/pending",
+  when:
+    "Propose migrating every page whose public URL no longer matches the active URL-contribution set (after a URL plugin was activated, deactivated, or reconfigured). " +
+    "Computes the full old→new path diff + redirect fan-out as the preview; the Owner approves in-chat. " +
+    "If nothing changed the propose fails with 'no URL changes' — that is success (zero-diff retrofit), do NOT retry.",
+  schema: z.object({ reason: z.string().max(500).optional() }).strict(),
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      reason: { type: "string", maxLength: 500 },
+    },
+  },
+  summarize: (input) => `migrate page URLs${input.reason ? ` — ${input.reason}` : ""}`,
+});
+
 export const proposeUserCreateTool = makeProposeTool({
   toolName: "propose_create_user",
   opName: "users.propose_create",

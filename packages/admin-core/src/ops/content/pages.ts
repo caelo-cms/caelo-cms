@@ -23,6 +23,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
+import { emitDomainEvent } from "../../domain-events.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -39,10 +40,13 @@ import { createRedirectOp } from "../redirects.js";
 import { rewriteModuleLinksOp } from "../seo.js";
 import { readSiteDefaults } from "../site_defaults.js";
 import { listStructuredSetsOp, setStructuredSetOp } from "../structured_sets.js";
+import { recomputeCurrentPaths } from "./current-path.js";
 
 const pageRowSchema = z.object({
   id: z.string(),
   slug: z.string(),
+  /** #390 — the composed public path (pages.current_path). */
+  currentPath: z.string(),
   /** P6.7.5 — internal editor label, distinct from `title` and `slug`. */
   name: z.string(),
   title: z.string(),
@@ -99,6 +103,7 @@ const pageWithModulesSchema = pageRowSchema.extend({
 type RawPageRow = {
   id: string;
   slug: string;
+  current_path: string;
   name: string | null;
   title: string;
   template_id: string;
@@ -136,6 +141,7 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
   return {
     id: r.id,
     slug: r.slug,
+    currentPath: r.current_path,
     // P6.7.5 — legacy rows + raw INSERTs may leave `name` null. The
     // rest of the codebase treats name as a non-null friendly label,
     // so we fall back to title here so the editor never shows a blank
@@ -156,7 +162,10 @@ export const listPagesOp = defineOperation({
   name: "pages.list",
   // P6.7.3 — AI lists pages from add_module_to_template to fan a new
   // module out to every page sharing a template. Read-only.
-  actorScope: ["human", "ai", "system"],
+  // #396 — plugin actors read too: deep plugins (international-site's
+  // status matrix) plan against the same list surface (§11: list ops
+  // are open reads).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({
     includeDeleted: z.boolean().default(false),
@@ -176,7 +185,7 @@ export const listPagesOp = defineOperation({
       filters.push(sql`pages.chat_branch_id IS NULL`);
     }
     const rows = (await tx.execute(sql`
-      SELECT pages.id::text AS id, pages.slug, pages.name, pages.title,
+      SELECT pages.id::text AS id, pages.slug, pages.current_path, pages.name, pages.title,
              pages.template_id::text AS template_id,
              templates.kind AS template_kind,
              pages.status, pages.version,
@@ -249,7 +258,7 @@ export const getPageOp = defineOperation({
     // (re-enables the v0.5.7 workflow that was reverted in v0.5.19).
     const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, name, title, template_id::text AS template_id,
+      SELECT id::text AS id, slug, current_path, name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -279,7 +288,7 @@ export const getPageWithModulesOp = defineOperation({
     // works inside the same chat without waiting for merge.
     const branchFilter = branchVisibilityFilter(ctx);
     const pageRows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, name, title, template_id::text AS template_id,
+      SELECT id::text AS id, slug, current_path, name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -785,7 +794,19 @@ export const createPageOp = defineOperation({
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: pageId, state }],
       });
+      await emitDomainEvent(tx, {
+        kind: "page.created",
+        entityId: pageId,
+        payload: {
+          slug: input.slug,
+          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+        },
+      });
     }
+    // #390 — compose + materialize the public path (the INSERT trigger
+    // wrote the plugin-free default; this accounts for designation +
+    // active URL contributions).
+    await recomputeCurrentPaths(tx, [pageId]);
     return ok({ pageId });
   },
 });
@@ -811,11 +832,15 @@ async function applySlugChangeSideEffects(
   args: {
     oldSlug: string;
     newSlug: string;
+    /** COMPOSED paths (#390) — the caller reads the row's current_path
+     *  before the write and recomputes after, so redirects + href
+     *  rewrites operate on the real public URLs, prefixes included. */
+    oldPath: string;
+    newPath: string;
     redirectFromOld: "auto" | "skip";
   },
 ): Promise<{ rewrittenSets: number; rewrittenModules: number }> {
-  const oldPath = publicPathFor(args.oldSlug);
-  const newPath = publicPathFor(args.newSlug);
+  const { oldPath, newPath } = args;
 
   // Rewrite nav-menu / link-list hrefs (recursing into nav-menu children).
   // Queried per-kind rather than listing everything and filtering here: these
@@ -872,10 +897,10 @@ async function applySlugChangeSideEffects(
 }
 
 /**
- * Public URL for a page: `/<slug>`. URL shape beyond base + slug
- * becomes a plugin contribution on the URL composition point (#390).
- * (Resolves the old FIXME #326 — the hardcoded default-locale prefix
- * died with page-locale identity, epic #380 #384.)
+ * Composition-FREE path shape `/<slug>` — the same default the 0211
+ * INSERT trigger writes. Only a last-resort shape for rows that predate
+ * a current_path read in the same statement; every real consumer reads
+ * `pages.current_path` (#390).
  */
 function publicPathFor(slug: string): string {
   return `/${slug}`;
@@ -910,11 +935,13 @@ function rewriteHrefs(items: unknown[], oldPath: string, newPath: string): HrefR
 
 export const updatePageOp = defineOperation({
   name: "pages.update",
+  // #397 — plugin actors update too (the translator writes the
+  // variant's translated title).
   // P6.7.5 — the three identifiers (name / title / slug) are separate optional
   // fields so a caller can never silently substitute one for another. A `slug`
   // change additionally fires the URL side-effects (301 + link rewrites) in
   // this same transaction — see applySlugChangeSideEffects.
-  actorScope: ["human", "ai", "system"],
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: pageUpdateSchema,
   output: z.object({}),
@@ -1057,9 +1084,25 @@ export const updatePageOp = defineOperation({
       // THIS transaction. Every caller of pages.update (incl. the update_many
       // bulk path) inherits this; before, only the change_page_slug tool did.
       if (input.slug !== undefined && input.slug !== existing.slug) {
+        // #390 — side effects operate on COMPOSED paths: the pre-write
+        // current_path is the URL the world knows; the recompute yields
+        // the new one (plugin prefixes included).
+        const oldPathRows = (await tx.execute(sql`
+          SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid
+        `)) as unknown as { current_path: string }[];
+        const recomputed = await recomputeCurrentPaths(tx, [input.pageId]);
+        const newPath = recomputed.get(input.pageId);
+        const oldPath = oldPathRows[0]?.current_path;
+        if (!oldPath || !newPath) {
+          throw new Error(
+            `pages.update: could not resolve current_path for slug change on ${input.pageId}`,
+          );
+        }
         await applySlugChangeSideEffects(ctx, tx, {
           oldSlug: existing.slug,
           newSlug: input.slug,
+          oldPath,
+          newPath,
           redirectFromOld: input.redirectFromOld ?? "auto",
         });
       }
@@ -1082,6 +1125,14 @@ export const updatePageOp = defineOperation({
         chatTaskId: ctx.chatTaskId ?? null,
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: input.pageId, state }],
+      });
+      await emitDomainEvent(tx, {
+        kind: "page.updated",
+        entityId: input.pageId,
+        payload: {
+          slug: state.slug,
+          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+        },
       });
     }
     return ok({});
@@ -1185,6 +1236,15 @@ export const setPageStatusOp = defineOperation({
       entityId: input.pageId,
     });
 
+    await emitDomainEvent(tx, {
+      kind: input.status === "published" ? "page.published" : "page.updated",
+      entityId: input.pageId,
+      payload: {
+        status: input.status,
+        ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+      },
+    });
+
     return ok({});
   },
 });
@@ -1266,6 +1326,17 @@ export const setPagesStatusManyOp = defineOperation({
       succeeded: true,
       resultSummary: `updated=${updated.length}`,
     });
+
+    for (const row of updated) {
+      await emitDomainEvent(tx, {
+        kind: input.status === "published" ? "page.published" : "page.updated",
+        entityId: (row as { id: string }).id,
+        payload: {
+          status: input.status,
+          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+        },
+      });
+    }
 
     return ok({ updatedCount: updated.length });
   },
@@ -1552,6 +1623,11 @@ export const setPageModulesOp = defineOperation({
       chatBranchId: ctx.chatBranchId ?? null,
       entities: [{ kind: "pageLayout", entityId: input.pageId, state: layoutState }],
     });
+    await emitDomainEvent(tx, {
+      kind: "page.updated",
+      entityId: input.pageId,
+      payload: ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {},
+    });
     return ok({});
   },
 });
@@ -1678,12 +1754,25 @@ export const deletePageOp = defineOperation({
         chatBranchId: ctx.chatBranchId ?? null,
         entities: [{ kind: "page", entityId: input.pageId, state }],
       });
+      await emitDomainEvent(tx, {
+        kind: "page.deleted",
+        entityId: input.pageId,
+        payload: {
+          slug: state.slug,
+          ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
+        },
+      });
     }
     // Dead-URL redirect, on this tx. `state` carries the page's slug
     // (delete doesn't change it). A failed 301 aborts the delete rather than
     // leaving the URL silently unredirected (§2 no-fallbacks).
     if (input.disposition === "redirect" && state) {
-      const oldPath = publicPathFor(state.slug);
+      // #390 — the composed path (prefixes included) is the URL that
+      // needs the 301, not the bare slug shape.
+      const pathRows = (await tx.execute(sql`
+        SELECT current_path FROM pages WHERE id = ${input.pageId}::uuid
+      `)) as unknown as { current_path: string }[];
+      const oldPath = pathRows[0]?.current_path ?? publicPathFor(state.slug);
       const red = await createRedirectOp.handler(
         ctx,
         { fromPath: oldPath, toPath: input.redirectTo as string, statusCode: 301 },
@@ -1707,7 +1796,10 @@ export const deletePageOp = defineOperation({
  */
 export const duplicatePageOp = defineOperation({
   name: "pages.duplicate",
-  actorScope: ["human", "ai", "system"],
+  // #396 — plugin actors duplicate too: international-site's
+  // create_variant mints the counterpart page through this op (epic
+  // #380 decision 3 — release-signed plugins hold cms_admin writes).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -1919,7 +2011,13 @@ export const duplicatePageOp = defineOperation({
         description: `pages.duplicate from=${source.slug} to=${input.newSlug}`,
         entities: [{ kind: "page", entityId: newPageId, state }],
       });
+      await emitDomainEvent(tx, {
+        kind: "page.created",
+        entityId: newPageId,
+        payload: { slug: input.newSlug, duplicatedFrom: input.sourcePageId },
+      });
     }
+    await recomputeCurrentPaths(tx, [newPageId]);
     const layoutState = await loadPageLayoutState(tx, newPageId);
     await emitSnapshot(tx, {
       actorId: ctx.actorId,
@@ -2099,6 +2197,11 @@ export const changeTemplateOp = defineOperation({
         opKind: "pages.update",
         description: `pages.change_template slug=${pageRow.slug}`,
         entities: [{ kind: "page", entityId: input.pageId, state }],
+      });
+      await emitDomainEvent(tx, {
+        kind: "page.updated",
+        entityId: input.pageId,
+        payload: { slug: pageRow.slug, templateChanged: true },
       });
     }
     const layoutState = await loadPageLayoutState(tx, input.pageId);

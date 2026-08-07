@@ -142,6 +142,33 @@ describe("validateSource", () => {
     );
   });
 
+  it("relative imports stay forbidden by default (runtime-authored source is single-file)", () => {
+    const src = `import { helper } from "./translation.js";`;
+    const failures = validateSource({ filename: "x.ts", source: src });
+    expect(failures.some((f) => f.kind === "forbidden-import")).toBe(true);
+  });
+
+  it("allowRelativeImports permits same-package siblings but never traversal", () => {
+    const ok = validateSource({
+      filename: "p/dist/index.js",
+      source: `import { helper } from "./translation.js";`,
+      allowRelativeImports: true,
+    });
+    expect(ok).toEqual([]);
+    for (const traversal of [
+      `import x from "../outside.js";`,
+      `import x from "./nested/../../escape.js";`,
+      `import x from "./no-extension";`,
+    ]) {
+      const failures = validateSource({
+        filename: "p/dist/index.js",
+        source: traversal,
+        allowRelativeImports: true,
+      });
+      expect(failures.some((f) => f.kind === "forbidden-import")).toBe(true);
+    }
+  });
+
   it("rejects raw SQL in template literals", () => {
     const src = `
       import { definePlugin } from "@caelo-cms/plugin-sdk";

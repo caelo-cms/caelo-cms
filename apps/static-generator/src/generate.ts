@@ -32,8 +32,6 @@ import {
   type ComposeTheme,
   composePageWithLayout,
   fontUnresolvableMarker,
-  isDesignatedHomePage,
-  isHomeSlug,
   type ModuleFieldKind,
   type ThemeDocument,
   trimSlashes,
@@ -92,6 +90,8 @@ function uuidArrayLiteral(ids: ReadonlyArray<string>): string {
 interface PageRow {
   page_id: string;
   slug: string;
+  /** The composed public path (pages.current_path, #390). */
+  current_path: string;
   title: string;
   status: "draft" | "published";
   template_html: string;
@@ -186,31 +186,21 @@ interface VariantManifestEntry {
 export type ProgressCallback = (progress: { pagesDone: number; pagesTotal: number }) => void;
 
 /**
- * Emits a stable file path for a published page. Slug "/" or "" or "home"
- * become `index.html`; everything else becomes `<slug>/index.html` so the
- * URL looks clean (no `.html` suffix served by static hosts). Path
- * shaping beyond slug + home becomes a plugin contribution on the URL
- * composition point (#390).
+ * Maps a COMPOSED public path (`pages.current_path`, #390) to its
+ * emitted file. "/" becomes `index.html`; "/de/pricing" becomes
+ * `de/pricing/index.html` (directory style) or `de/pricing`
+ * (no-extension) so static hosts serve clean URLs. Home stays at
+ * `index.html` regardless of style — the bucket root must serve
+ * something for `/`, and the page's canonical points at `/` so search
+ * engines consolidate either way.
  */
 export function pageOutputPath(
-  slug: string,
+  currentPath: string,
   pageUrlStyle: "directory" | "no-extension" = "directory",
-  // 0184 — explicit homepage designation. When true the page emits at
-  // the site root (`index.html`) regardless of its slug, so what's
-  // SERVED at `/` matches the canonical.
-  isHomePage?: boolean,
 ): string {
-  const trimmed = trimSlashes(slug);
-  const isHome = isHomePage === true || isHomeSlug(trimmed);
-  // Home page stays at `index.html` regardless of style — the bucket
-  // root must serve something for `/`, and browsers + GCS expect
-  // index.html there. The home page's own canonical link points at
-  // `/` so search engines consolidate /index.html → / either way.
-  return isHome
-    ? "index.html"
-    : pageUrlStyle === "no-extension"
-      ? trimmed
-      : `${trimmed}/index.html`;
+  const trimmed = trimSlashes(currentPath);
+  if (trimmed.length === 0) return "index.html";
+  return pageUrlStyle === "no-extension" ? trimmed : `${trimmed}/index.html`;
 }
 
 /**
@@ -351,7 +341,7 @@ export async function generateSite(args: {
   const statusFilter = target.env === "dev" ? sql.raw("") : sql.raw(" AND p.status = 'published'");
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id,
-           p.slug, p.title, p.status,
+           p.slug, p.current_path, p.title, p.status,
            t.html AS template_html,
            t.css  AS template_css,
            l.id::text AS layout_id,
@@ -384,22 +374,12 @@ export async function generateSite(args: {
   });
   if (zeroPageError !== null) throw new Error(zeroPageError);
 
-  // 0184 — the designated homepage id (site_defaults since #384).
-  // Drives the emitted output path and — via seo-pass — the canonical,
-  // so both agree on which page is the site root.
-  const homeRows = (await tx.execute(sql`
-    SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
-  `)) as unknown as { home_page_id: string | null }[];
-  const designatedHomePageId = homeRows[0]?.home_page_id ?? null;
+  // #390 — the emitted path IS pages.current_path (home designation,
+  // prefixes and slug formats are materialized there by the write ops),
+  // so generator + canonical + sitemap agree by construction.
 
   // issue #302 — fail loudly when no page will land at the bucket root.
-  const plannedPaths = pageRows.map((p) =>
-    pageOutputPath(
-      p.slug,
-      target.pageUrlStyle,
-      isDesignatedHomePage(p.page_id, p.slug, designatedHomePageId),
-    ),
-  );
+  const plannedPaths = pageRows.map((p) => pageOutputPath(p.current_path, target.pageUrlStyle));
   const rootEligibleSlugs = pageRows.map((p) => p.slug);
   const rootError = missingRootPageError({
     outputPaths: plannedPaths,
@@ -640,11 +620,7 @@ export async function generateSite(args: {
       html: composed.html,
       pageSlug: page.slug,
       pageTitle: page.title,
-      relPath: pageOutputPath(
-        page.slug,
-        target.pageUrlStyle,
-        isDesignatedHomePage(page.page_id, page.slug, designatedHomePageId),
-      ),
+      relPath: pageOutputPath(page.current_path, target.pageUrlStyle),
     });
     // P13 — record per-page bake target for the plugin render pass.
     bakeTargets.set(page.slug, {
@@ -825,11 +801,8 @@ export async function generateSite(args: {
     pageCount: pageRows.length,
     pages: pageRows.map((p) => ({
       slug: p.slug,
-      outputPath: pageOutputPath(
-        p.slug,
-        target.pageUrlStyle,
-        isDesignatedHomePage(p.page_id, p.slug, designatedHomePageId),
-      ),
+      path: p.current_path,
+      outputPath: pageOutputPath(p.current_path, target.pageUrlStyle),
     })),
     variants: variantEntries,
   };

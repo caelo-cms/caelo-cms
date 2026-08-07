@@ -22,6 +22,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
+import { emitDomainEvent } from "../../domain-events.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -641,6 +642,14 @@ export const updateModuleOp = defineOperation({
         chatTaskId: ctx.chatTaskId ?? null,
         chatBranchId: branchId,
         entities: [{ kind: "module", entityId: input.moduleId, state }],
+      });
+      await emitDomainEvent(tx, {
+        kind: "module.updated",
+        entityId: input.moduleId,
+        payload: {
+          slug: state.slug,
+          ...(branchId ? { chatBranchId: branchId } : {}),
+        },
       });
     }
     return ok({ extractedFields: extractedSurfacedToCaller });

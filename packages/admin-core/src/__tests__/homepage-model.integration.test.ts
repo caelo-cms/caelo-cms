@@ -162,7 +162,7 @@ describe("0184 (a) set_home_page + resolver", () => {
     expect(
       resolveCanonicalUrl({
         siteBaseUrl: "https://example.com",
-        pageSlug: "welcome",
+        pagePath: "/welcome",
         override: null,
       }),
     ).toBe("https://example.com/welcome/");
@@ -170,9 +170,8 @@ describe("0184 (a) set_home_page + resolver", () => {
     expect(
       resolveCanonicalUrl({
         siteBaseUrl: "https://example.com",
-        pageSlug: "welcome",
+        pagePath: "/",
         override: null,
-        isHomePage: true,
       }),
     ).toBe("https://example.com/");
   });

@@ -117,12 +117,13 @@ afterAll(async () => {
   await adapter.close();
 });
 
-// Each Forms (Tier-2) plugin op spawns a Deno sandbox subprocess. Under the
-// full `bun test --isolate` run (154 files in parallel) subprocess startup
-// contends for CPU and the default 30s per-test budget is exceeded, even
-// though every test here finishes in <1s in isolation. Raise the budget so
-// the real-Postgres + Deno-subprocess path is not a false timeout.
-// (issue #106 step-12 follow-up; the forms plugin itself is unchanged.)
+// Stale-comment fix (#387): these ops do NOT spawn Deno subprocesses —
+// Tier-1 plugins run in-process and the Tier-2 Deno runtime is a stub
+// (Tier2RuntimePending). The raised budget is still needed for the real
+// reason: under the full `bun test --isolate` run the many parallel
+// real-Postgres fixtures contend for CPU/connections and the default 30s
+// per-test budget can be exceeded even though these tests finish quickly
+// in isolation.
 setDefaultTimeout(120_000);
 
 describe("Forms plugin end-to-end (P12 PR2)", () => {

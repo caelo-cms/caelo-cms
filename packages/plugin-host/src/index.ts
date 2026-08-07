@@ -11,6 +11,13 @@
  */
 
 export {
+  type DevKeyPair,
+  type DevSignReport,
+  ensureDevSignedManifests,
+  loadOrCreateDevKey,
+  TRUST_ROOT_FILENAME,
+} from "./dev-signing.js";
+export {
   type EmailTransport,
   isPluginDisabled,
   type LoadedPlugin,
@@ -28,8 +35,20 @@ export {
   setPluginDisabled,
   type VisitorDispatchContext,
 } from "./dispatch.js";
-export { applyPluginLifecycle } from "./lifecycle.js";
-export { type BootstrapOpts, bootstrap, type LoadReport, resetPluginHost } from "./loader.js";
+export {
+  type CollectedContributions,
+  collectContributions,
+  composeHeadBlock,
+  renderHeadEntries,
+} from "./head-composition.js";
+export { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
+export {
+  type BootstrapOpts,
+  bootstrap,
+  type LoadReport,
+  loadActivatedPlugin,
+  resetPluginHost,
+} from "./loader.js";
 export {
   type PromptContextRenderer,
   pluginPromptContextRegistry,
@@ -42,5 +61,13 @@ export {
   pluginToolsRegistry,
   type RegisteredPluginTool,
 } from "./tools-registry.js";
-
 export type { AIMessage, AIProvider } from "./types.js";
+export {
+  collectUrlAnnotations,
+  type DecodedPagePath,
+  decodePagePath,
+  type RegisteredUrlContribution,
+  type ResolvedPageUrl,
+  resolvePageUrl,
+  urlContributionsRegistry,
+} from "./url-composition.js";

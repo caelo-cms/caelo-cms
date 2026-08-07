@@ -139,7 +139,7 @@ export const INJECT_SCRIPT = `
       }
       if (!href.startsWith("/")) return;
       if (href.startsWith("/edit/")) return;
-      var path = href === "/" ? "/home" : href;
+      var path = href === "/" ? "" : href;
       ev.preventDefault();
       // v0.9.7 — preserve the iframe's own ?branch=<uuid> across
       // click-through navigation. The iframe was loaded with the chat's

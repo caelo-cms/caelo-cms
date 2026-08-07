@@ -239,6 +239,25 @@ export async function loginAsDevOwner(page: Page): Promise<void> {
  * timeout guards hangs, not the design loop — same rationale as the
  * 600s per-test budget in playwright.livedit.config.ts.
  */
+/**
+ * Activate a shipped plugin as the Owner would, through the real
+ * /security/plugins screen.
+ *
+ * A discovered plugin is recorded but NOT loaded — no tools, no skills,
+ * no ops — until this click. Driving the actual UI rather than poking
+ * the row keeps the scenario honest: it exercises activate → schema
+ * provisioning → host load, which is the path a real install takes and
+ * the path that has to keep working.
+ */
+export async function activatePluginAsOwner(page: Page, slug: string): Promise<void> {
+  await page.goto("/security/plugins");
+  const activate = page.getByTestId(`activate-${slug}`);
+  // Already active (a rerun against a warm DB) — nothing to click.
+  if ((await activate.count()) === 0) return;
+  await activate.click();
+  await expect(page.getByTestId(`activate-${slug}`)).toHaveCount(0, { timeout: 30_000 });
+}
+
 export async function waitForChatTurnIdle(page: Page, timeoutMs = 480_000): Promise<void> {
   // The status element is `hidden`; assert against the attribute, not
   // visibility.

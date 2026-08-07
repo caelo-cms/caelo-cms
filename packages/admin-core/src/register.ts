@@ -64,6 +64,7 @@ import {
   deleteContentInstancesManyOp,
   setContentInstanceValuesManyOp,
 } from "./ops/content/content-instances-bulk.js";
+import { refreshCurrentPathOp } from "./ops/content/current-path.js";
 import { setHomePageOp } from "./ops/content/home-page.js";
 import {
   executeLayoutProposalOp,
@@ -96,6 +97,7 @@ import {
 } from "./ops/content/modules.js";
 import {
   getPageModuleContentOp,
+  listPageModuleContentOp,
   setPageModuleContentManyOp,
   setPageModuleContentOp,
 } from "./ops/content/page-module-content.js";
@@ -131,6 +133,7 @@ import {
   setTemplateLayoutOp,
   updateTemplateOp,
 } from "./ops/content/templates.js";
+import { executeUrlMigrationOp, proposeUrlMigrationOp } from "./ops/content/url_migrations.js";
 import {
   listDeployRunsOp,
   listDeployTargetsOp,
@@ -274,6 +277,7 @@ import {
 } from "./ops/owner-bootstrap-tokens.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
+import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
   commentArchiveInsertOp,
   commentArchiveListForPageOp,
@@ -289,6 +293,7 @@ import {
   revalidatePluginOp,
   submitPluginOp,
 } from "./ops/plugins/registry.js";
+import { executeUninstallPluginOp, proposeUninstallPluginOp } from "./ops/plugins/uninstall.js";
 import {
   getProvisioningOutputsOp,
   setProvisioningOutputsOp,
@@ -535,6 +540,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(buildPageOp);
   // 0184 — explicit homepage designation (site_defaults.home_page_id).
   registry.register(setHomePageOp);
+  registry.register(listPageModuleContentOp);
+  registry.register(refreshCurrentPathOp);
+  registry.register(proposeUrlMigrationOp);
+  registry.register(executeUrlMigrationOp);
+  registry.register(proposeUninstallPluginOp);
+  registry.register(executeUninstallPluginOp);
+  registry.register(proposePluginActivationOp);
+  registry.register(executePluginActivationOp);
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
   registry.register(setPageModuleContentManyOp);

@@ -28,6 +28,11 @@ const skillRow = z.object({
   allowlistedTools: z.array(z.string()),
   hints: skillAutoEngagementHints,
   status: z.enum(["awaiting_activation", "active", "archived"]),
+  /** When this skill became available to the AI (migration 0213).
+   *  Null while it is not active. The chat-runner pins its `## Skills`
+   *  index to the skills that were already active when the chat began
+   *  and announces anything newer in the history instead. */
+  activatedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -41,6 +46,7 @@ interface SkillDb {
   allowlisted_tools: unknown;
   auto_engagement_hints: unknown;
   status: "awaiting_activation" | "active" | "archived";
+  activated_at: string | Date | null;
   created_at: string | Date;
   updated_at: string | Date;
 }
@@ -67,6 +73,12 @@ function rowToOut(r: SkillDb): z.infer<typeof skillRow> {
       alwaysOn: (hintsRaw as { alwaysOn?: unknown }).alwaysOn ?? false,
     }),
     status: r.status,
+    activatedAt:
+      r.activated_at === null
+        ? null
+        : r.activated_at instanceof Date
+          ? r.activated_at.toISOString()
+          : String(r.activated_at),
     createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
     updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
   };
@@ -90,14 +102,14 @@ export const listSkillsOp = defineOperation({
         ? sql`
             SELECT id::text AS id, slug, display_name, description, body,
                    allowlisted_tools, auto_engagement_hints, status,
-                   created_at, updated_at
+                   activated_at, created_at, updated_at
             FROM skills
             ORDER BY status ASC, slug ASC
           `
         : sql`
             SELECT id::text AS id, slug, display_name, description, body,
                    allowlisted_tools, auto_engagement_hints, status,
-                   created_at, updated_at
+                   activated_at, created_at, updated_at
             FROM skills
             WHERE status = ${input.status}
             ORDER BY slug ASC
@@ -169,16 +181,23 @@ export const setSkillOp = defineOperation({
         message: describeAllowlistProblems(allowlist.problems),
       });
     }
+    // `activated_at` marks when the skill became available to the AI —
+    // it drives the per-chat pin of the `## Skills` index and the
+    // new-skill notice (migration 0213). It moves only on a real
+    // status TRANSITION into `active`: re-saving an active skill (a
+    // reworded body, a widened allowlist) keeps the original stamp, so
+    // an edit never re-announces a skill every chat already knows.
     const rows = (await tx.execute(sql`
       INSERT INTO skills (slug, display_name, description, body,
                           allowlisted_tools, auto_engagement_hints,
-                          status, decided_by, decided_at)
+                          status, decided_by, decided_at, activated_at)
       VALUES (
         ${input.slug}, ${input.displayName}, ${input.description}, ${input.body},
         ${jsonbParam(allowlist.normalized)},
         ${jsonbParam(input.hints)},
         ${input.status},
-        ${ctx.actorId}::uuid, now()
+        ${ctx.actorId}::uuid, now(),
+        CASE WHEN ${input.status} = 'active' THEN now() ELSE NULL END
       )
       ON CONFLICT (slug) DO UPDATE SET
         display_name = EXCLUDED.display_name,
@@ -187,6 +206,11 @@ export const setSkillOp = defineOperation({
         allowlisted_tools = EXCLUDED.allowlisted_tools,
         auto_engagement_hints = EXCLUDED.auto_engagement_hints,
         status = EXCLUDED.status,
+        activated_at = CASE
+          WHEN EXCLUDED.status <> 'active' THEN NULL
+          WHEN skills.status = 'active' THEN skills.activated_at
+          ELSE now()
+        END,
         decided_by = EXCLUDED.decided_by,
         decided_at = now(),
         updated_at = now()
@@ -219,7 +243,7 @@ export const archiveSkillOp = defineOperation({
   output: z.object({}),
   handler: async (ctx, input, tx) => {
     await tx.execute(sql`
-      UPDATE skills SET status = 'archived', updated_at = now(),
+      UPDATE skills SET status = 'archived', activated_at = NULL, updated_at = now(),
         decided_by = ${ctx.actorId}::uuid, decided_at = now()
       WHERE slug = ${input.slug}
     `);

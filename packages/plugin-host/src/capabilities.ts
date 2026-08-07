@@ -10,18 +10,22 @@
  *
  * Capability gating: `ctx.cms` / `ctx.ai` / `ctx.snapshots` are only attached
  * if the plugin's manifest declares the matching `requestedCapabilities`.
- * Tier 2 plugins NEVER get these — the loader passes Tier-2 to this module
- * via `tier: 2` and the function returns the locked `PluginContext` only.
+ * Runtime-authored plugins NEVER get these — provenance is the grantability
+ * ceiling (#388); the function returns the locked base `PluginContext` for
+ * them regardless of the manifest.
  */
 
 import type {
+  PluginAdminQuery,
   PluginAi,
   PluginCapability,
   PluginCaptcha,
   PluginCms,
   PluginContext,
   PluginContextTier1,
+  PluginDomainEvent,
   PluginEmail,
+  PluginEvents,
   PluginQuery,
   PluginQueryFilter,
   PluginSnapshots,
@@ -56,9 +60,10 @@ export type SessionMutation =
   | { kind: "clear" };
 
 /**
- * Build the per-call context. Returns a locked PluginContext for Tier 2 and
- * an extended PluginContextTier1 for Tier 1 (with only the requested
- * capability handles attached).
+ * Build the per-call context. Returns the locked base PluginContext for
+ * runtime-authored plugins and an extended PluginContextTier1 for
+ * release-signed plugins (with only the requested capability handles
+ * attached) — provenance is the ceiling, the capability set the grant.
  */
 export async function makePluginContext(
   opts: MakePluginContextOpts,
@@ -74,12 +79,23 @@ export async function makePluginContext(
     captcha: makePluginCaptcha(),
   };
 
-  if (plugin.tier === 2) return baseCtx;
+  // #388 grantability ceiling — provenance, not tier, decides what a
+  // plugin can be GIVEN: runtime-authored plugins get the sandbox base
+  // and nothing else, regardless of what their manifest requests (the
+  // validator rejects such manifests anyway; this is the runtime's
+  // independent enforcement of the same ceiling).
+  if (plugin.provenance === "runtime-authored") return baseCtx;
 
-  // Tier 1 — attach elevated handles per requestedCapabilities.
+  // Release-signed — attach elevated handles per requestedCapabilities.
   const tier1: Mutable<PluginContextTier1> = { ...baseCtx };
   if (requested.has("cms_admin")) {
     tier1.cms = makePluginCms(plugin, infra);
+  }
+  if (requested.has("cms_admin_schema")) {
+    tier1.adminQuery = makePluginAdminQuery(plugin, infra);
+  }
+  if (requested.has("domain_events")) {
+    tier1.events = makePluginEvents(plugin, infra);
   }
   if (requested.has("ai_provider") && infra.aiProvider) {
     tier1.ai = makePluginAi(plugin, infra);
@@ -112,8 +128,11 @@ function pluginSchemaName(slug: string): string {
   return `plugin_${slug.replace(/-/g, "_")}`;
 }
 
-function declaredColumnsOf(plugin: LoadedPlugin, table: string): Set<string> | null {
-  const tableSpec = plugin.definition.schema[table];
+function declaredColumnsIn(
+  schemaMap: Readonly<Record<string, Readonly<Record<string, string>>>>,
+  table: string,
+): Set<string> | null {
+  const tableSpec = schemaMap[table];
   if (!tableSpec) return null;
   return new Set(Object.keys(tableSpec));
 }
@@ -134,7 +153,20 @@ function assertUuid(value: string, label: string): void {
   }
 }
 
-function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQuery {
+interface QueryScope {
+  /** Error-message prefix — "ctx.query" | "ctx.adminQuery". */
+  readonly label: string;
+  /** Which manifest map declares the reachable tables. */
+  readonly schemaLabel: "schema" | "adminSchema";
+  readonly schemaMap: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  readonly pool: "public" | "admin";
+}
+
+function makeScopedQuery(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  scope: QueryScope,
+): PluginQuery {
   const schemaName = pluginSchemaName(plugin.slug);
   validateIdent(schemaName, "schema");
   // P12 review-pass #1 — UUIDs are validated at construction time so we
@@ -147,7 +179,8 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
   async function withPluginTx<T>(
     fn: (tx: Parameters<Parameters<typeof infra.adapter.public.transaction>[0]>[0]) => Promise<T>,
   ): Promise<T> {
-    return infra.adapter.public.transaction(async (tx) => {
+    const pool = scope.pool === "admin" ? infra.adapter.admin : infra.adapter.public;
+    return pool.transaction(async (tx) => {
       // P12 review-pass #1 — set_config takes parameterised values; the
       // SETTING NAME is a literal (Postgres doesn't parameterise it).
       // Guards above make sure the *values* are UUIDs, and `set_config`'s
@@ -163,10 +196,10 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
     insert: async (table, data) => {
       const tableStr = table as string;
       validateIdent(tableStr, "table");
-      const declared = declaredColumnsOf(plugin, tableStr);
+      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
       if (!declared) {
         throw new Error(
-          `ctx.query.insert: table "${tableStr}" not declared in plugin "${plugin.slug}".schema`,
+          `${scope.label}.insert: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
         );
       }
       const cols: string[] = [];
@@ -174,7 +207,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
       for (const [k, v] of Object.entries(data)) {
         if (!declared.has(k)) {
           throw new Error(
-            `ctx.query.insert: column "${k}" not declared in plugin "${plugin.slug}".schema.${tableStr}`,
+            `${scope.label}.insert: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${tableStr}`,
           );
         }
         validateIdent(k, "column");
@@ -182,7 +215,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
         valueFragments.push(sql`${v}`);
       }
       if (cols.length === 0) {
-        throw new Error("ctx.query.insert: data must include at least one declared column");
+        throw new Error(`${scope.label}.insert: data must include at least one declared column`);
       }
       const colsSql = sql.raw(cols.join(", "));
       const valuesSql = sql.join(valueFragments, sql`, `);
@@ -192,7 +225,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
           sql`INSERT INTO ${fqTable} (${colsSql}) VALUES (${valuesSql}) RETURNING id::text AS id`,
         )) as unknown as { id: string }[];
         const id = rows[0]?.id;
-        if (!id) throw new Error("ctx.query.insert: no id returned");
+        if (!id) throw new Error(`${scope.label}.insert: no id returned`);
         return { id };
       });
     },
@@ -202,10 +235,10 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
       filter?: PluginQueryFilter,
     ): Promise<T[]> => {
       validateIdent(table, "table");
-      const declared = declaredColumnsOf(plugin, table);
+      const declared = declaredColumnsIn(scope.schemaMap, table);
       if (!declared) {
         throw new Error(
-          `ctx.query.list: table "${table}" not declared in plugin "${plugin.slug}".schema`,
+          `${scope.label}.list: table "${table}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
         );
       }
       const wheres: ReturnType<typeof sql>[] = [];
@@ -216,15 +249,15 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
       for (const [k, v] of Object.entries(filter ?? {})) {
         if (k === "limit") {
           if (typeof v !== "number" || v <= 0 || v > 1000) {
-            throw new Error("ctx.query.list: limit must be 1..1000");
+            throw new Error(`${scope.label}.list: limit must be 1..1000`);
           }
           limit = v;
           continue;
         }
         if (k === "orderBy") {
-          if (typeof v !== "string") throw new Error("ctx.query.list: orderBy must be string");
+          if (typeof v !== "string") throw new Error(`${scope.label}.list: orderBy must be string`);
           if (!declared.has(v)) {
-            throw new Error(`ctx.query.list: orderBy "${v}" not declared in schema`);
+            throw new Error(`${scope.label}.list: orderBy "${v}" not declared in schema`);
           }
           validateIdent(v, "column");
           orderBy = v;
@@ -232,19 +265,19 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
         }
         if (k === "orderDir") {
           if (v !== "asc" && v !== "desc")
-            throw new Error("ctx.query.list: orderDir must be asc|desc");
+            throw new Error(`${scope.label}.list: orderDir must be asc|desc`);
           orderDir = v;
           continue;
         }
         if (k === "since") {
           if (typeof v !== "string")
-            throw new Error("ctx.query.list: since must be ISO timestamp string");
+            throw new Error(`${scope.label}.list: since must be ISO timestamp string`);
           since = v;
           continue;
         }
         if (!declared.has(k)) {
           throw new Error(
-            `ctx.query.list: column "${k}" not declared in plugin "${plugin.slug}".schema.${table}`,
+            `${scope.label}.list: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${table}`,
           );
         }
         validateIdent(k, "column");
@@ -253,7 +286,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
       }
       if (since !== null) {
         if (!declared.has("created_at")) {
-          throw new Error("ctx.query.list: `since` requires a created_at column");
+          throw new Error(`${scope.label}.list: \`since\` requires a created_at column`);
         }
         wheres.push(sql`"created_at" > ${since}`);
       }
@@ -275,10 +308,10 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
     update: async (table, id, patch) => {
       const tableStr = table as string;
       validateIdent(tableStr, "table");
-      const declared = declaredColumnsOf(plugin, tableStr);
+      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
       if (!declared) {
         throw new Error(
-          `ctx.query.update: table "${tableStr}" not declared in plugin "${plugin.slug}".schema`,
+          `${scope.label}.update: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
         );
       }
       const sets: ReturnType<typeof sql>[] = [];
@@ -286,7 +319,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
         if (k === "id") continue; // never update id
         if (!declared.has(k)) {
           throw new Error(
-            `ctx.query.update: column "${k}" not declared in plugin "${plugin.slug}".schema.${tableStr}`,
+            `${scope.label}.update: column "${k}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}.${tableStr}`,
           );
         }
         validateIdent(k, "column");
@@ -294,7 +327,7 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
         sets.push(sql`${colSql} = ${v}`);
       }
       if (sets.length === 0) {
-        throw new Error("ctx.query.update: patch must include at least one declared column");
+        throw new Error(`${scope.label}.update: patch must include at least one declared column`);
       }
       const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
       const setsSql = sql.join(sets, sql`, `);
@@ -306,15 +339,140 @@ function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQu
     delete: async (table, id) => {
       const tableStr = table as string;
       validateIdent(tableStr, "table");
-      const declared = declaredColumnsOf(plugin, tableStr);
+      const declared = declaredColumnsIn(scope.schemaMap, tableStr);
       if (!declared) {
         throw new Error(
-          `ctx.query.delete: table "${tableStr}" not declared in plugin "${plugin.slug}".schema`,
+          `${scope.label}.delete: table "${tableStr}" not declared in plugin "${plugin.slug}".${scope.schemaLabel}`,
         );
       }
       const fqTable = sql.raw(`"${schemaName}"."${tableStr}"`);
       await withPluginTx(async (tx) => {
         await tx.execute(sql`DELETE FROM ${fqTable} WHERE id = ${id}::uuid`);
+      });
+    },
+  };
+}
+
+function makePluginQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginQuery {
+  return makeScopedQuery(plugin, infra, {
+    label: "ctx.query",
+    schemaLabel: "schema",
+    schemaMap: plugin.definition.schema,
+    pool: "public",
+  });
+}
+
+/**
+ * #389 — the plugin's OWN cms_admin schema handle. Identical surface to
+ * ctx.query, routed through the ADMIN pool with the same per-plugin
+ * session vars, reaching only tables declared in `adminSchema` (their
+ * RLS policies scope rows to this plugin's id). Attached by
+ * makePluginContext only when the manifest holds `cms_admin_schema`.
+ */
+function makePluginAdminQuery(plugin: LoadedPlugin, infra: PluginHostInfra): PluginAdminQuery {
+  return makeScopedQuery(plugin, infra, {
+    label: "ctx.adminQuery",
+    schemaLabel: "adminSchema",
+    schemaMap: plugin.definition.adminSchema ?? {},
+    pool: "admin",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// PluginEvents (#392) — polling access to the domain-event outbox with
+// per-plugin cursor persistence. Runs on the ADMIN pool under the
+// plugin's session vars; the outbox RLS policy admits actor_kind
+// 'plugin' for SELECT and the cursor table is scoped to caelo.plugin_id.
+// At-least-once: poll() reads past the cursor, commit() advances it.
+// ---------------------------------------------------------------------------
+
+const EVENT_KINDS = new Set([
+  "page.created",
+  "page.updated",
+  "page.deleted",
+  "page.published",
+  "module.updated",
+]);
+
+function makePluginEvents(plugin: LoadedPlugin, infra: PluginHostInfra): PluginEvents {
+  assertUuid(plugin.pluginActorId, "caelo.actor_id");
+  assertUuid(plugin.pluginId, "caelo.plugin_id");
+
+  async function withPluginAdminTx<T>(
+    fn: (tx: Parameters<Parameters<typeof infra.adapter.admin.transaction>[0]>[0]) => Promise<T>,
+  ): Promise<T> {
+    return infra.adapter.admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('caelo.actor_kind', 'plugin', true)`);
+      await tx.execute(sql`SELECT set_config('caelo.actor_id', ${plugin.pluginActorId}, true)`);
+      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${plugin.pluginId}, true)`);
+      return fn(tx);
+    });
+  }
+
+  return {
+    poll: async (opts) => {
+      const limit = opts?.limit ?? 100;
+      if (limit <= 0 || limit > 1000) {
+        throw new Error("ctx.events.poll: limit must be 1..1000");
+      }
+      const kinds = opts?.kinds ?? [];
+      for (const k of kinds) {
+        if (!EVENT_KINDS.has(k)) throw new Error(`ctx.events.poll: unknown kind "${k}"`);
+      }
+      return withPluginAdminTx(async (tx) => {
+        let cursor = opts?.cursor;
+        if (cursor === undefined) {
+          const rows = (await tx.execute(sql`
+            SELECT cursor_id::text AS cursor_id FROM plugin_event_cursors
+            WHERE plugin_id = ${plugin.pluginId}::uuid
+          `)) as unknown as { cursor_id: string }[];
+          cursor = rows[0] ? Number(rows[0].cursor_id) : 0;
+        }
+        const kindFilter =
+          kinds.length > 0
+            ? sql`AND kind IN (${sql.join(
+                kinds.map((k) => sql`${k}`),
+                sql`, `,
+              )})`
+            : sql``;
+        const events = (await tx.execute(sql`
+          SELECT id::text AS id, kind, entity_id::text AS entity_id,
+                 payload, created_at::text AS created_at
+          FROM domain_events
+          WHERE id > ${cursor} ${kindFilter}
+          ORDER BY id ASC
+          LIMIT ${limit}
+        `)) as unknown as {
+          id: string;
+          kind: string;
+          entity_id: string;
+          payload: Record<string, unknown>;
+          created_at: string;
+        }[];
+        const mapped: PluginDomainEvent[] = events.map((e) => ({
+          id: Number(e.id),
+          kind: e.kind as PluginDomainEvent["kind"],
+          entityId: e.entity_id,
+          payload: e.payload ?? {},
+          createdAt: e.created_at,
+        }));
+        const nextCursor = mapped.length > 0 ? (mapped.at(-1)?.id ?? cursor) : cursor;
+        return { events: mapped, nextCursor };
+      });
+    },
+
+    commit: async (cursor) => {
+      if (!Number.isInteger(cursor) || cursor < 0) {
+        throw new Error("ctx.events.commit: cursor must be a non-negative integer");
+      }
+      await withPluginAdminTx(async (tx) => {
+        await tx.execute(sql`
+          INSERT INTO plugin_event_cursors (plugin_id, cursor_id, updated_at)
+          VALUES (${plugin.pluginId}::uuid, ${cursor}, now())
+          ON CONFLICT (plugin_id) DO UPDATE SET
+            cursor_id = GREATEST(plugin_event_cursors.cursor_id, EXCLUDED.cursor_id),
+            updated_at = now()
+        `);
       });
     },
   };

@@ -19,10 +19,10 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { collectContributions, composeHeadBlock } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   injectSeoIntoHead,
-  isDesignatedHomePage,
   renderSeoHead,
   resolveCanonicalUrl,
   type SiteSeoSettings,
@@ -32,6 +32,8 @@ import { sql } from "drizzle-orm";
 interface PageSeoBundle {
   pageId: string;
   slug: string;
+  /** The composed public path (pages.current_path, #390). */
+  currentPath: string;
   title: string;
   metaDescription: string;
   noindex: boolean;
@@ -71,7 +73,7 @@ export async function runSeoPass(args: {
   for (const slug of slugs) {
     const rows = (await args.tx.execute(sql`
       SELECT
-        p.id::text AS page_id, p.slug, p.title,
+        p.id::text AS page_id, p.slug, p.current_path, p.title,
         coalesce(s.meta_description, '') AS meta_description,
         coalesce(s.noindex, false) AS noindex,
         coalesce(s.changefreq, 'weekly') AS changefreq,
@@ -86,6 +88,7 @@ export async function runSeoPass(args: {
     `)) as unknown as {
       page_id: string;
       slug: string;
+      current_path: string;
       title: string;
       meta_description: string;
       noindex: boolean;
@@ -100,6 +103,7 @@ export async function runSeoPass(args: {
     seoBundles.push({
       pageId: r.page_id,
       slug: r.slug,
+      currentPath: r.current_path,
       title: r.title,
       metaDescription: r.meta_description,
       noindex: r.noindex,
@@ -152,23 +156,27 @@ export async function runSeoPass(args: {
     ogImageUrlByAsset.set(id, assetUrl);
   }
 
-  // 0184 — the designated homepage id (site_defaults since #384).
-  const homeRows = (await args.tx.execute(sql`
-    SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
-  `)) as unknown as { home_page_id: string | null }[];
-  const designatedHomePageId = homeRows[0]?.home_page_id ?? null;
+  // #391 — collect every plugin's head/sitemap contributions in ONE
+  // batch call before the loops. Zod-validated + contradiction-checked
+  // by the host; serialization shares the exact code path the preview
+  // uses (composeHeadBlock), so both surfaces stay byte-identical.
+  const contributions = await collectContributions(
+    seoBundles.map((b) => b.pageId),
+    { siteBaseUrl: args.settings.siteBaseUrl },
+  );
 
-  // Inject the head block per page, matched by slug.
+  // #390 — canonical follows the MATERIALIZED composed path; home
+  // designation, prefixes, and slug formats are already baked into
+  // pages.current_path by the write ops.
   const bundleBySlug = new Map<string, PageSeoBundle>(seoBundles.map((b) => [b.slug, b]));
   for (const p of args.pages) {
     const bundle = bundleBySlug.get(p.pageSlug);
     if (!bundle) continue;
     const canonical = resolveCanonicalUrl({
       siteBaseUrl: args.settings.siteBaseUrl,
-      pageSlug: bundle.slug,
+      pagePath: bundle.currentPath,
       override: bundle.canonicalOverride,
       pageUrlStyle: args.pageUrlStyle,
-      isHomePage: isDesignatedHomePage(bundle.pageId, bundle.slug, designatedHomePageId),
     });
     const ogImageUrl = bundle.ogImageAssetId
       ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
@@ -181,7 +189,10 @@ export async function runSeoPass(args: {
       ogImageUrl,
       organization: args.settings.organization,
     });
-    p.html = injectSeoIntoHead(p.html, headBlock);
+    p.html = injectSeoIntoHead(
+      p.html,
+      composeHeadBlock(headBlock, contributions.head.get(bundle.pageId)),
+    );
   }
 
   // sitemap.xml — only when enabled AND env isn't noindex.
@@ -189,17 +200,28 @@ export async function runSeoPass(args: {
   if (sitemapEnabled) {
     const entries = seoBundles
       .filter((b) => !b.noindex)
+      // #391 — plugin-contributed exclusion (e.g. an unpublished
+      // variant URL must not appear; clean-404 semantics).
+      .filter((b) => contributions.sitemap.get(b.pageId)?.exclude !== true)
       .map((b) => {
         const canonical = resolveCanonicalUrl({
           siteBaseUrl: args.settings.siteBaseUrl,
-          pageSlug: b.slug,
+          pagePath: b.currentPath,
           override: b.canonicalOverride,
           pageUrlStyle: args.pageUrlStyle,
-          isHomePage: isDesignatedHomePage(b.pageId, b.slug, designatedHomePageId),
         });
+        // #391 — contributed xhtml alternates (hreflang) inside the
+        // page's <url> entry, sorted for deterministic output.
+        const alternates = [...(contributions.sitemap.get(b.pageId)?.alternates ?? [])]
+          .sort((x, y) => x.hreflang.localeCompare(y.hreflang))
+          .map(
+            (a) =>
+              `    <xhtml:link rel="alternate" hreflang="${enc(a.hreflang)}" href="${enc(a.href)}" />`,
+          );
         return [
           "  <url>",
           `    <loc>${enc(canonical)}</loc>`,
+          ...alternates,
           `    <lastmod>${b.updatedAt.slice(0, 10)}</lastmod>`,
           `    <changefreq>${b.changefreq}</changefreq>`,
           `    <priority>${b.priority.toFixed(1)}</priority>`,
@@ -208,7 +230,7 @@ export async function runSeoPass(args: {
       });
     const xml = [
       '<?xml version="1.0" encoding="UTF-8"?>',
-      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
       ...entries,
       "</urlset>",
       "",

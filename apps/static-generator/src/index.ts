@@ -16,3 +16,4 @@ export {
   generateSite,
   pageOutputPath,
 } from "./generate.js";
+export { runSeoPass } from "./seo-pass.js";

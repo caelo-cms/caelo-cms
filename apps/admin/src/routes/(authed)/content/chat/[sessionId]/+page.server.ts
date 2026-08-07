@@ -21,7 +21,7 @@ interface ChatPageData {
    * the install has zero pages (fresh-install case). Null collapses
    * the preview pane until the AI creates the first page.
    */
-  previewDefault: { slug: string } | null;
+  previewDefault: { path: string } | null;
 }
 
 export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPageData> => {
@@ -55,11 +55,19 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
         : undefined,
   }));
   // v0.3.21 — pick the default preview page (mirrors /edit's logic).
-  // Prefer home/en, fall back to the first page, null when none exist.
-  const allPages = pagesR.ok ? (pagesR.value as { pages: { slug: string }[] }).pages : [];
-  const home = allPages.find((p) => p.slug === "home");
+  // Prefer the composed root, fall back to the first page, null when
+  // none exist.
+  const allPages = pagesR.ok
+    ? (pagesR.value as { pages: { slug: string; currentPath: string }[] }).pages
+    : [];
+  const home =
+    allPages.find((p) => p.currentPath === "/") ?? allPages.find((p) => p.slug === "home");
   const firstPage = allPages[0];
-  const previewDefault = home ? { slug: home.slug } : firstPage ? { slug: firstPage.slug } : null;
+  const previewDefault = home
+    ? { path: home.currentPath }
+    : firstPage
+      ? { path: firstPage.currentPath }
+      : null;
 
   return {
     session: sessionData.session,

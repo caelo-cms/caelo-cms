@@ -14,6 +14,7 @@
  * render the post-AI-edit view of a page without requiring publish.
  */
 
+import { collectContributions, composeHeadBlock } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -26,7 +27,6 @@ import {
   extractMediaRefs,
   fontUnresolvableMarker,
   injectSeoIntoHead,
-  isDesignatedHomePage,
   listThemeCssVarNames,
   type ModuleFieldKind,
   ok,
@@ -139,7 +139,7 @@ export const renderPagePreviewOp = defineOperation({
             AND (l.chat_branch_id IS NULL OR l.chat_branch_id = ${chatBranchId}::uuid)`
       : sql`AND p.chat_branch_id IS NULL AND t.chat_branch_id IS NULL AND l.chat_branch_id IS NULL`;
     const pageRows = (await tx.execute(sql`
-      SELECT p.id::text AS page_id, p.slug AS slug, p.title AS title,
+      SELECT p.id::text AS page_id, p.slug AS slug, p.current_path, p.title AS title,
              t.html AS template_html, t.css AS template_css,
              l.id::text AS layout_id, l.slug AS layout_slug,
              l.html AS layout_html, l.css AS layout_css
@@ -151,6 +151,7 @@ export const renderPagePreviewOp = defineOperation({
     `)) as unknown as {
       page_id: string;
       slug: string;
+      current_path: string;
       title: string;
       template_html: string;
       template_css: string;
@@ -1091,19 +1092,12 @@ export const renderPagePreviewOp = defineOperation({
         ogImageUrl = buildMediaUrl(v.slug, v.variant);
       }
     }
-    // 0184 — the designated homepage id (site_defaults since #384).
-    const homeRows = (await tx.execute(sql`
-      SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
-    `)) as unknown as { home_page_id: string | null }[];
-    const designatedHomePageId = homeRows[0]?.home_page_id ?? null;
+    // #390 — canonical follows the MATERIALIZED composed path (home
+    // designation + plugin URL shape are baked into current_path).
     const canonical = resolveCanonicalUrl({
       siteBaseUrl,
-      pageSlug: pageRow.slug,
+      pagePath: pageRow.current_path,
       override: seoRow?.canonical_url ?? null,
-      // 0184 — this page is the site root when it's the designated
-      // home_page_id (or carries a magic slug). input.pageId is this
-      // page's own id.
-      isHomePage: isDesignatedHomePage(input.pageId, pageRow.slug, designatedHomePageId),
     });
     const headBlock = renderSeoHead({
       title: pageRow.title,
@@ -1113,7 +1107,13 @@ export const renderPagePreviewOp = defineOperation({
       ogImageUrl,
       organization,
     });
-    html = injectSeoIntoHead(html, headBlock);
+    // #391 — plugin head contributions ride the SAME compose call the
+    // static generator uses (byte parity by construction).
+    const contributions = await collectContributions([input.pageId], { siteBaseUrl });
+    html = injectSeoIntoHead(
+      html,
+      composeHeadBlock(headBlock, contributions.head.get(input.pageId)),
+    );
 
     // issue #156 — surface unknown `var(--…)` references in the page's
     // CSS bundle (layout + template + placed modules) on the existing

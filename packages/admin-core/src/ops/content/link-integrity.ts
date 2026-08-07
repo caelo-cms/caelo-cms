@@ -110,14 +110,20 @@ export async function scanBranchInternalLinks(
     ? sql`AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${chatBranchId}::uuid)`
     : sql`AND p.chat_branch_id IS NULL`;
 
-  // (1) The slug universe every link resolves against: pages visible
-  // to the branch, plus whether a homepage exists (so `/` resolves).
+  // (1) The path universe every link resolves against (#390): the
+  // COMPOSED public paths of pages visible to the branch — plugin
+  // prefixes included — plus the slug shape as a legacy alias so
+  // pre-composition content that links "/<slug>" doesn't false-flag.
   const pageRows = (await tx.execute(sql`
-    SELECT DISTINCT p.slug AS slug
+    SELECT DISTINCT p.slug AS slug, p.current_path AS current_path
     FROM pages p
     WHERE p.deleted_at IS NULL ${branchFilter}
-  `)) as unknown as { slug: string }[];
-  const validSlugs = new Set(pageRows.map((r) => normalizePath(`/${r.slug}`)));
+  `)) as unknown as { slug: string; current_path: string }[];
+  const validSlugs = new Set<string>();
+  for (const r of pageRows) {
+    validSlugs.add(normalizePath(r.current_path));
+    validSlugs.add(normalizePath(`/${r.slug}`));
+  }
 
   const homeRows = (await tx.execute(sql`
     SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1

@@ -22,6 +22,7 @@
  * the separate Owner queue are gone.
  */
 
+import { loadActivatedPlugin, runPluginOperation } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -77,7 +78,67 @@ export function attachGatedExecute(
           error: `${gated.executeOp} failed: ${describePersistError(applied.error)}`,
         };
       }
+      // 3. Post-commit step, if the domain declared one. The apply
+      //    transaction is closed by now, which is the whole reason this
+      //    is not folded into `execute_proposal`.
+      if (gated.afterApply === "load-activated-plugin") {
+        const slug = (applied.value as { slug?: string }).slug;
+        if (slug) {
+          const live = await loadActivatedPlugin(slug);
+          if (!live.loaded) {
+            // The row IS active; only the in-process load failed. Say so
+            // precisely rather than reporting a clean success the
+            // operator would find untrue, or a failure that would send
+            // them re-approving something already applied.
+            return {
+              ok: true,
+              value: {
+                ...(applied.value as Record<string, unknown>),
+                loadedIntoHost: false,
+                warning: `"${slug}" is activated but could not be loaded into the running host (${live.reason}). It will load on the next restart; do not use its tools before then.`,
+              },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              ...(applied.value as Record<string, unknown>),
+              loadedIntoHost: true,
+              note: "The plugin is running. Its tools and skills become available to you on your NEXT turn — this turn's tool list was fixed before the approval.",
+            },
+          };
+        }
+      }
       return { ok: true, value: applied.value };
+    },
+  };
+}
+
+/**
+ * #388 — attach the SDK `execute` to an approval-declared PLUGIN tool.
+ * Same pause semantics as `attachGatedExecute`, different apply path:
+ * after the Owner's in-chat Approve, the SDK runs `execute`, which
+ * dispatches the plugin operation through `runPluginOperation` (the
+ * plugin's own actor + RLS scoping). Before this, a plugin tool had no
+ * way to express an approval requirement at all — every call ran
+ * unqueued and unapproved.
+ */
+export function attachPluginGatedExecute(tool: FilteredTool): FilteredTool {
+  const pluginGated = tool.pluginGated;
+  if (!pluginGated) return tool;
+  return {
+    ...tool,
+    approvalMode: "user-approval",
+    execute: async (input: unknown): Promise<unknown> => {
+      const r = await runPluginOperation({
+        pluginSlug: pluginGated.pluginSlug,
+        operationName: pluginGated.operationName,
+        args: input,
+      });
+      if (!r.ok) {
+        return { ok: false, error: `${r.error.kind}: ${r.error.message}` };
+      }
+      return { ok: true, value: r.value };
     },
   };
 }

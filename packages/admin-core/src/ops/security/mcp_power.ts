@@ -406,7 +406,24 @@ export const mcpExecuteToolOp = defineOperation({
 
     // Tier-1 plugin tools route through the plugin host, exactly like the
     // chat-runner's dispatcher does (tool-dispatch.ts).
+    //
+    // #388 — approval-declared plugin tools are refused here: the SDK's
+    // in-chat Approve card cannot render on the MCP surface, and running
+    // the operation without it would reopen the approvals bypass this
+    // gate exists to close. The AI is told to use the chat surface.
     const pluginTool = pluginToolsRegistry.resolve(input.toolName);
+    if (pluginTool?.spec.approvalMode) {
+      return ok({
+        ok: false,
+        content:
+          `Tool "${input.toolName}" requires the Owner's in-chat approval and cannot run on the MCP surface. ` +
+          `Ask the operator to run this in the Caelo chat, where an Approve card is shown.`,
+        requestId,
+        toolCallId,
+        cached: false,
+        image: null,
+      });
+    }
     const rawResult: ToolResult = pluginTool
       ? await runPluginOperation({
           pluginSlug: pluginTool.pluginSlug,

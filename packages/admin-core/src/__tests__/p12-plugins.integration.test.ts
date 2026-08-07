@@ -129,12 +129,13 @@ async function bootstrapAll(): Promise<void> {
   await provisionAll([ratingsPlugin, newsletterPlugin, commentsPlugin, authPlugin]);
 }
 
-// Each Tier-2/plugin-host op spawns a Deno sandbox subprocess. Under the
-// full `bun test --isolate` run (154 files in parallel) subprocess startup
-// contends for CPU and the default 30s per-test budget can be exceeded even
-// though these tests finish quickly in isolation. Raise the budget so the
-// real-Postgres + Deno-subprocess path is not a false timeout (issue #106
-// step-12 follow-up; mirrors forms-plugin.integration.test.ts).
+// Stale-comment fix (#387): these ops do NOT spawn Deno subprocesses —
+// Tier-1 plugins run in-process and the Tier-2 Deno runtime is a stub
+// (Tier2RuntimePending). The raised budget is still needed for the real
+// reason: under the full `bun test --isolate` run the many parallel
+// real-Postgres fixtures contend for CPU/connections and the default 30s
+// per-test budget can be exceeded even though these tests finish quickly
+// in isolation.
 setDefaultTimeout(120_000);
 
 beforeAll(async () => {

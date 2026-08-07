@@ -9,52 +9,39 @@ import {
 } from "./generate.js";
 
 describe("pageOutputPath", () => {
-  it("emits index.html for empty/root slugs", () => {
-    expect(pageOutputPath("")).toBe("index.html");
+  // #390 — input is the COMPOSED path (pages.current_path): home
+  // designation, prefixes, and slug formats are already baked in by
+  // the write ops; this function only maps path → emitted file.
+  it("emits index.html for the composed root", () => {
     expect(pageOutputPath("/")).toBe("index.html");
-    expect(pageOutputPath("home")).toBe("index.html");
-    expect(pageOutputPath("index")).toBe("index.html");
+    expect(pageOutputPath("")).toBe("index.html");
   });
 
-  it("emits clean-URL nested paths for non-root slugs", () => {
-    expect(pageOutputPath("about")).toBe("about/index.html");
+  it("emits clean-URL nested paths for non-root paths", () => {
+    expect(pageOutputPath("/about")).toBe("about/index.html");
     expect(pageOutputPath("/about/")).toBe("about/index.html");
-    expect(pageOutputPath("blog/first-post")).toBe("blog/first-post/index.html");
+    expect(pageOutputPath("/blog/first-post")).toBe("blog/first-post/index.html");
+    // A prefixed path (URL-plugin contribution) nests the same way.
+    expect(pageOutputPath("/de/pricing")).toBe("de/pricing/index.html");
   });
 
   describe("no-extension mode (v0.2.85)", () => {
-    it("emits bare slug (no extension) for non-home pages", () => {
-      expect(pageOutputPath("about", "no-extension")).toBe("about");
-      expect(pageOutputPath("blog/post-1", "no-extension")).toBe("blog/post-1");
+    it("emits the bare path (no extension) for non-root pages", () => {
+      expect(pageOutputPath("/about", "no-extension")).toBe("about");
+      expect(pageOutputPath("/blog/post-1", "no-extension")).toBe("blog/post-1");
+      expect(pageOutputPath("/de/pricing", "no-extension")).toBe("de/pricing");
     });
 
-    it("keeps index.html for the home page regardless of style", () => {
-      // Home must serve from the bucket root + browsers expect
+    it("keeps index.html for the root regardless of style", () => {
+      // Root must serve from the bucket root + browsers expect
       // /index.html; the page emits <link rel='canonical' href='/'>
       // so search engines consolidate.
-      expect(pageOutputPath("", "no-extension")).toBe("index.html");
-      expect(pageOutputPath("home", "no-extension")).toBe("index.html");
-      expect(pageOutputPath("index", "no-extension")).toBe("index.html");
+      expect(pageOutputPath("/", "no-extension")).toBe("index.html");
     });
 
     it("default 'directory' style preserves pre-v0.2.85 behavior", () => {
-      expect(pageOutputPath("about")).toBe("about/index.html");
-      expect(pageOutputPath("about", "directory")).toBe("about/index.html");
-    });
-  });
-
-  describe("explicit homepage designation (0184)", () => {
-    it("a page designated home on a NON-magic slug emits at the site root", () => {
-      // Without the flag `landing` is a normal nested page...
-      expect(pageOutputPath("landing")).toBe("landing/index.html");
-      // ...with the designation it emits at the bucket root, so it is
-      // actually served at `/` (matching its canonical).
-      expect(pageOutputPath("landing", "directory", true)).toBe("index.html");
-      expect(pageOutputPath("landing", "no-extension", true)).toBe("index.html");
-    });
-
-    it("a normal (non-designated) page is unaffected", () => {
-      expect(pageOutputPath("about", "directory", false)).toBe("about/index.html");
+      expect(pageOutputPath("/about")).toBe("about/index.html");
+      expect(pageOutputPath("/about", "directory")).toBe("about/index.html");
     });
   });
 });
