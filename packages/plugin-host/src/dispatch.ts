@@ -219,6 +219,7 @@ export type RunPluginOperationResult =
           | "PluginNotFound"
           | "PluginDisabled"
           | "OperationNotDeclared"
+      | "OperationNotPublic"
           | "OperationFailed"
           | "Tier2RuntimePending";
         readonly message: string;
@@ -315,6 +316,26 @@ export async function runPluginOperation(
         message: `plugin "${opts.pluginSlug}" does not declare operation "${opts.operationName}"`,
       },
     };
+  }
+  // Visitor-facing dispatch is DEFAULT DENY.
+  //
+  // A plugin's operations mix two audiences with no naming rule to tell
+  // them apart — `submit` sits next to `moderate`, `subscribe` next to
+  // `send_campaign`, `me` next to `apply_auth_config` — and every one of
+  // them runs with whatever capabilities the plugin was granted. The
+  // check lives HERE rather than at the gateway route so a second entry
+  // point cannot be added later without it.
+  if (opts.visitorContext) {
+    const allowed = plugin.definition.publicOperations ?? [];
+    if (!allowed.includes(opts.operationName)) {
+      return {
+        ok: false,
+        error: {
+          kind: "OperationNotPublic",
+          message: `operation "${opts.operationName}" of plugin "${opts.pluginSlug}" is not visitor-facing. Add it to the plugin's \`publicOperations\` if it genuinely is.`,
+        },
+      };
+    }
   }
   if (!cachedInfra || !makeContext) {
     return {

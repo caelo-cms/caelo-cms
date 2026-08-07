@@ -653,6 +653,17 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       `plugin "${def.slug}" declares buildAssets but is not release-signed — refused`,
     );
   }
+  // A `publicOperations` entry naming an operation that does not exist
+  // reads as "this is exposed" while exposing nothing — and the reverse
+  // typo (an intended-public op misspelled) silently 404s the visitor
+  // surface. Both are caught here, at load, rather than in production.
+  for (const name of def.publicOperations ?? []) {
+    if (!def.operations[name]) {
+      throw new Error(
+        `plugin "${def.slug}" lists "${name}" in publicOperations, which is not one of its operations`,
+      );
+    }
+  }
 
   // Declared BEFORE the activation gate on purpose. An inactive plugin
   // contributes nothing, but a module written while it ran still says

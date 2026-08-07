@@ -355,6 +355,8 @@ export const pluginManifest = z
     /** See `PluginDefinition.deferralsOperation`. Release-signed only:
      *  withholding a module changes what visitors see. */
     hasDeferrals: z.boolean().default(false),
+    /** See `PluginDefinition.publicOperations`. */
+    publicOperations: z.array(z.string().min(1).max(120)).optional(),
     /** Tier 1 only. */
     requestedCapabilities: z.array(pluginCapability).optional(),
     /** Tier 1 only. */
@@ -784,6 +786,26 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   /** See `pluginManifest.dataLists`. Release-signed only. */
   readonly dataLists?: ReadonlyArray<PluginDataListSpec>;
   /**
+   * Operations reachable by an unauthenticated visitor through the API
+   * gateway (`POST /api/plugin/<slug>/<operation>`).
+   *
+   * DEFAULT DENY. An operation not listed here cannot be dispatched
+   * with a visitor context, no matter what route reaches for it.
+   *
+   * Declaring the visitor surface explicitly is the only workable
+   * shape: a plugin's operation list mixes the two audiences freely —
+   * `submit` next to `moderate`, `subscribe` next to `send_campaign`,
+   * `me` next to `apply_auth_config` — and the difference is not
+   * derivable from a name. An allowlist is also the half that a
+   * reviewer can check at a glance, which a deny-list is not.
+   *
+   * Keep it minimal. Everything here runs for anyone on the internet,
+   * with whatever capabilities the plugin was granted; the gateway
+   * adds a body cap, a rate limit, a honeypot and CAPTCHA, but it
+   * cannot know that an operation was meant for the Owner.
+   */
+  readonly publicOperations?: ReadonlyArray<string>;
+  /**
    * The I/O half of module deferrals: an operation in `operations`
    * taking `{moduleIds: string[]}` (every module in the current render
    * pass) and returning
@@ -843,6 +865,7 @@ export function manifestFromDefinition(def: {
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly workers?: ReadonlyArray<PluginWorkerSpec>;
   readonly tools?: ReadonlyArray<PluginToolSpec>;
+  readonly publicOperations?: ReadonlyArray<string>;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -857,6 +880,9 @@ export function manifestFromDefinition(def: {
     hasStaticRender: Boolean(def.staticRender),
     hasBuildAssets: Boolean(def.buildAssets),
     hasDeferrals: Boolean(def.deferralsOperation),
+    ...(def.publicOperations && def.publicOperations.length > 0
+      ? { publicOperations: [...def.publicOperations] }
+      : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.workers ? { workers: [...def.workers] } : {}),
     ...(def.tools ? { tools: [...def.tools] } : {}),
