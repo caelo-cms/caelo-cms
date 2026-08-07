@@ -14,7 +14,15 @@
  * render the post-AI-edit view of a page without requiring publish.
  */
 
-import { collectContributions, composeHeadBlock } from "@caelo-cms/plugin-host";
+import {
+  collectBuildAssets,
+  collectContributions,
+  composeHeadBlock,
+  injectPluginAssets,
+  pluginDataListsRegistry,
+  resolveDataLists,
+  resolveModuleDeferrals,
+} from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -693,6 +701,15 @@ export const renderPagePreviewOp = defineOperation({
     // Collect CSS/JS from every nested module touched during recursion
     // so the page's <style>/<script> tags include them. Dedup by
     // moduleId; the composer dedupes by moduleId as well (issue #158).
+    // Plugin data lists for THIS page: the editor preview must show the
+    // same thing the deploy will, including the loud marker when a
+    // plugin whose list a module iterates has been switched off.
+    const resolvedLists = await resolveDataLists([input.pageId]);
+    const pluginLists = {
+      dataLists: resolvedLists.get(input.pageId) ?? {},
+      dormantDataLists: Object.fromEntries(pluginDataListsRegistry.dormantNames()),
+    };
+
     const nestedCssJsByModuleId = new Map<string, ModuleResource>();
     for (const m of modRows) {
       const binding = placementBindings.get(`${m.block_name}#${m.position}`);
@@ -705,6 +722,7 @@ export const renderPagePreviewOp = defineOperation({
         binding.contentInstanceId,
         resolver,
         renderThemeAssets,
+        pluginLists,
       );
       m.html = result.html;
       // CSS/JS dedup: emit CSS/JS for every module the recursion touched
@@ -927,6 +945,16 @@ export const renderPagePreviewOp = defineOperation({
       modules,
     }));
 
+    // #450 — which of this page's modules is a plugin withholding? The
+    // editor has to see the placeholder the visitor will see; a module
+    // that renders here and is gated on the live site would leave the
+    // operator styling something nobody is shown yet.
+    const placedModuleIds = [
+      ...blocks.flatMap((b) => b.modules.map((m) => m.moduleId)),
+      ...layoutBlocks.flatMap((b) => b.modules.map((m) => m.moduleId)),
+    ];
+    const deferredModules = Object.fromEntries(await resolveModuleDeferrals(placedModuleIds));
+
     // v0.11.0 (#45) — `composeTheme` loaded earlier (above the render
     // loop) so its asset URLs flow into renderModuleWithContent for
     // `{{theme_logo_url}}` substitution (v0.11.1, issue #76). Same row
@@ -961,6 +989,15 @@ export const renderPagePreviewOp = defineOperation({
     let composed: ReturnType<typeof composePageWithLayout>;
     try {
       composed = composePageWithLayout({
+        deferredModules,
+        // Page-block modules already had their lists applied by
+        // renderModuleWithContent; LAYOUT modules reach the composer
+        // raw, so without these a `{{#list}}` in site chrome renders
+        // literally in the editor and correctly on the deployed site —
+        // the two surfaces disagreeing in exactly the direction nobody
+        // checks. The generator has always passed them here.
+        dataLists: pluginLists.dataLists,
+        dormantDataLists: pluginLists.dormantDataLists,
         templateHtml: pageRow.template_html,
         templateCss: pageRow.template_css,
         blocks,
@@ -1114,6 +1151,14 @@ export const renderPagePreviewOp = defineOperation({
       html,
       composeHeadBlock(headBlock, contributions.head.get(input.pageId)),
     );
+
+    // #449 — plugin client assets. The deploy LINKS these files; the
+    // preview iframe has no build directory to serve from, so it
+    // inlines the identical bytes. Same resolver, so the editor can
+    // never show behaviour the deployed site won't have — a consent
+    // dialog that works in preview and is missing on the live site is
+    // the failure this parity exists to prevent.
+    html = injectPluginAssets(html, await collectBuildAssets([input.pageId]), "inline");
 
     // issue #156 — surface unknown `var(--…)` references in the page's
     // CSS bundle (layout + template + placed modules) on the existing

@@ -70,6 +70,9 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   requestedCapabilities: ["ai_provider", "email", "background_workers"],
+  /** Visitor-facing surface (default deny — everything else is
+   *  refused a visitor-context dispatch). */
+  publicOperations: ["subscribe", "confirm", "unsubscribe"],
   operations: {
     subscribe: async (ctx, args) => {
       const input = args as { email: string };

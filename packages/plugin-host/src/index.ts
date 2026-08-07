@@ -11,6 +11,22 @@
  */
 
 export {
+  collectBuildAssets,
+  injectPluginAssets,
+  PLUGIN_ASSET_DIR,
+  type PluginClientAsset,
+} from "./client-assets.js";
+export {
+  type ResolvedDataLists,
+  resolveDataLists,
+} from "./data-list-resolution.js";
+export { type DataListItem, pluginDataListsRegistry } from "./data-lists.js";
+export {
+  type ResolvedDeferral,
+  type ResolvedDeferrals,
+  resolveModuleDeferrals,
+} from "./deferrals.js";
+export {
   type DevKeyPair,
   type DevSignReport,
   ensureDevSignedManifests,
@@ -19,6 +35,7 @@ export {
 } from "./dev-signing.js";
 export {
   type EmailTransport,
+  hostInfra,
   isPluginDisabled,
   type LoadedPlugin,
   loadedPlugins,
@@ -26,6 +43,7 @@ export {
   type RunPluginOperationOpts,
   type RunPluginOperationResult,
   resetDisabledSet,
+  runPluginBuildAssets,
   runPluginMetaSignature,
   runPluginMetaSignatureBatch,
   runPluginOperation,

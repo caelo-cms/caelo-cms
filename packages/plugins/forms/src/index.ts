@@ -86,6 +86,9 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   requestedCapabilities: ["cms_admin", "ai_provider", "chat_runner_tools", "email"],
+  /** Visitor-facing surface (default deny — everything else is
+   *  refused a visitor-context dispatch). */
+  publicOperations: ["submit"],
   operations: {
     /**
      * `submit` — PUBLIC visitor write. Routes through the gateway:

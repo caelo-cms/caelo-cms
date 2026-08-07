@@ -24,6 +24,13 @@
 
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import {
+  collectBuildAssets,
+  injectPluginAssets,
+  pluginDataListsRegistry,
+  resolveDataLists,
+  resolveModuleDeferrals,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
@@ -556,6 +563,22 @@ export async function generateSite(args: {
   }[] = [];
   // P13 — per-slug bake target for the plugin render pass.
   const bakeTargets = new Map<string, BakeTarget>();
+  // Plugin data lists for the whole deploy, resolved in ONE call per
+  // contributing plugin rather than per page. Names declared by
+  // installed-but-inactive plugins come along so a module still
+  // iterating a switched-off plugin's list emits the loud marker here
+  // exactly as it does in the editor preview.
+  const allLists = await resolveDataLists(pageRows.map((p) => p.page_id));
+  const dormantLists = Object.fromEntries(pluginDataListsRegistry.dormantNames());
+  // #450 — withheld modules, resolved ONCE for the build. Asking per
+  // page would be one plugin round-trip per page for a verdict that is
+  // per MODULE; the module set is the same question every time.
+  const allModuleIdRows = (await tx.execute(sql`
+    SELECT id::text AS id FROM modules WHERE deleted_at IS NULL
+  `)) as unknown as { id: string }[];
+  const deferredModules = Object.fromEntries(
+    await resolveModuleDeferrals(allModuleIdRows.map((r) => r.id)),
+  );
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
     if (!page) continue;
@@ -608,6 +631,9 @@ export async function generateSite(args: {
         layoutCss: page.layout_css,
         layoutBlocks,
         layoutSlug: page.layout_slug,
+        dataLists: allLists.get(page.page_id) ?? {},
+        dormantDataLists: dormantLists,
+        deferredModules,
       });
     } catch (e) {
       if (e instanceof ComposeError) {
@@ -709,6 +735,22 @@ export async function generateSite(args: {
       pages: composedPages,
       bakeTargets,
     });
+  }
+
+  // #449 — plugin client assets: one call per contributing plugin for
+  // the whole build, written under `_caelo/plugin/<slug>/` with the
+  // content hash in the name, then referenced from every page. Runs
+  // AFTER the plugin render pass so a runtime that hydrates baked
+  // markup is guaranteed to find it already in the document.
+  const clientAssets = await collectBuildAssets(pageRows.map((p) => p.page_id));
+  for (const asset of clientAssets) {
+    const assetPath = join(buildDir, asset.relPath);
+    await mkdir(dirname(assetPath), { recursive: true });
+    await writeFile(assetPath, asset.content, "utf8");
+    fileCount += 1;
+  }
+  for (const p of composedPages) {
+    p.html = injectPluginAssets(p.html, clientAssets, "linked");
   }
 
   // v0.2.85 — per-key Content-Type sidecar. When pageUrlStyle is

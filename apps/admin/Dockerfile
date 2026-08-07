@@ -53,6 +53,7 @@ COPY packages/plugins/newsletter/package.json packages/plugins/newsletter/
 COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
 COPY packages/plugins/international-site/package.json packages/plugins/international-site/
+COPY packages/plugins/consent-manager/package.json packages/plugins/consent-manager/
 
 RUN bun install
 
@@ -130,13 +131,7 @@ RUN bun run --filter @caelo-cms/shared build
 # status='failed'. .dockerignore excludes dist/ from the COPY, so the
 # Dockerfile must produce them itself. tsc -b is incremental, so the
 # cost is negligible after the first cached layer.
-RUN bunx tsc -b \
-  packages/plugins/forms \
-  packages/plugins/comments \
-  packages/plugins/newsletter \
-  packages/plugins/ratings \
-  packages/plugins/auth \
-  packages/plugins/international-site
+RUN bunx tsc -b packages/plugins/*
 
 # #387 one-trust-path — sign the plugin manifests this image ships with a
 # throwaway build key and bake the matching public key as

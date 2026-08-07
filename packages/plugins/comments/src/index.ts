@@ -130,6 +130,9 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   requestedCapabilities: ["ai_provider", "chat_runner_tools", "cms_admin"],
+  /** Visitor-facing surface (default deny — everything else is
+   *  refused a visitor-context dispatch). */
+  publicOperations: ["submit", "list_approved"],
   operations: {
     submit: async (ctx, args) => {
       const input = args as SubmitInput;

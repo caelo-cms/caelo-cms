@@ -219,6 +219,7 @@ export type RunPluginOperationResult =
           | "PluginNotFound"
           | "PluginDisabled"
           | "OperationNotDeclared"
+          | "OperationNotPublic"
           | "OperationFailed"
           | "Tier2RuntimePending";
         readonly message: string;
@@ -234,6 +235,28 @@ export type RunPluginOperationResult =
 let cachedInfra: PluginHostInfra | null = null;
 export function setHostInfra(infra: PluginHostInfra): void {
   cachedInfra = infra;
+}
+
+/** The bootstrapped adapter + registry, for host-internal passes that
+ *  need to read core through the Query API (never raw SQL). Throws
+ *  rather than returning null — every caller runs inside a render pass
+ *  that a booted host is a precondition for. */
+export function hostInfra(): PluginHostInfra {
+  if (!cachedInfra) throw new Error("plugin host not bootstrapped");
+  return cachedInfra;
+}
+
+let cachedSystemActorId: string | null = null;
+export function setHostSystemActorId(actorId: string): void {
+  cachedSystemActorId = actorId;
+}
+
+/** Actor the host itself reads core as. Host-internal passes are not
+ *  acting for any plugin — attributing their reads to one would put a
+ *  plugin's id on rows it never asked for. */
+export function hostSystemActorId(): string {
+  if (!cachedSystemActorId) throw new Error("plugin host not bootstrapped");
+  return cachedSystemActorId;
 }
 
 export async function runPluginOperation(
@@ -293,6 +316,26 @@ export async function runPluginOperation(
         message: `plugin "${opts.pluginSlug}" does not declare operation "${opts.operationName}"`,
       },
     };
+  }
+  // Visitor-facing dispatch is DEFAULT DENY.
+  //
+  // A plugin's operations mix two audiences with no naming rule to tell
+  // them apart — `submit` sits next to `moderate`, `subscribe` next to
+  // `send_campaign`, `me` next to `apply_auth_config` — and every one of
+  // them runs with whatever capabilities the plugin was granted. The
+  // check lives HERE rather than at the gateway route so a second entry
+  // point cannot be added later without it.
+  if (opts.visitorContext) {
+    const allowed = plugin.definition.publicOperations ?? [];
+    if (!allowed.includes(opts.operationName)) {
+      return {
+        ok: false,
+        error: {
+          kind: "OperationNotPublic",
+          message: `operation "${opts.operationName}" of plugin "${opts.pluginSlug}" is not visitor-facing. Add it to the plugin's \`publicOperations\` if it genuinely is.`,
+        },
+      };
+    }
   }
   if (!cachedInfra || !makeContext) {
     return {
@@ -465,6 +508,35 @@ export async function runPluginStaticRender(opts: {
   const ctx = await makeContext({ plugin, infra: cachedInfra });
   const out = await render(ctx as PluginContext, { pageId: opts.pageId });
   return typeof out === "string" ? out : "";
+}
+
+/**
+ * #449 — invoke the plugin's `buildAssets(...)` once for a build.
+ *
+ * Returns `{}` for a plugin that declares none, so callers can iterate
+ * every plugin without branching. A plugin that DOES declare it and
+ * throws propagates: see `collectBuildAssets` for why a missing runtime
+ * has to stop the build rather than ship a silently inert page.
+ */
+export async function runPluginBuildAssets(opts: {
+  pluginSlug: string;
+  pageIds: ReadonlyArray<string>;
+}): Promise<Record<string, string>> {
+  const plugin = loadedPlugins.bySlug(opts.pluginSlug);
+  if (!plugin) return {};
+  const build = plugin.definition.buildAssets;
+  if (typeof build !== "function") return {};
+  if (!cachedInfra || !makeContext) {
+    throw new Error("plugin host not bootstrapped");
+  }
+  const ctx = await makeContext({ plugin, infra: cachedInfra });
+  const out = await build(ctx as PluginContext, { pageIds: opts.pageIds });
+  if (out === null || typeof out !== "object" || Array.isArray(out)) {
+    throw new Error(
+      `plugin "${opts.pluginSlug}" buildAssets returned ${Array.isArray(out) ? "an array" : typeof out} — expected an object of {fileName: contents}`,
+    );
+  }
+  return out;
 }
 
 /**

@@ -45,7 +45,21 @@ export interface ExtractResult {
   readonly defaultValues: Record<string, unknown>;
 }
 
-const PLACEHOLDER_RE = /^\s*\{\{\s*[a-z][a-z0-9_]*\s*\}\}\s*$/;
+/**
+ * Text that is ALREADY template syntax, in every form the grammar has
+ * (CMS_REQUIREMENTS §3.2): `{{name}}`, the section markers
+ * `{{#name}}` / `{{/name}}`, and the nested-module reference
+ * `{{>name}}`.
+ *
+ * Recognising only the bare form was a silent content-destroyer. A
+ * section marker sitting in a text position — which is where every
+ * `{{#nav_links}}` and `{{#consent_categories}}` sits — read as
+ * hardcoded content, so the extractor lifted it into an invented field
+ * whose DEFAULT VALUE was the marker itself. The loop was gone, the
+ * module still validated in some shapes, and the page rendered
+ * `{{#consent_categories}}` as literal text to visitors.
+ */
+const PLACEHOLDER_RE = /^\s*\{\{\s*[#/>]?\s*[a-z][a-z0-9_]*\s*\}\}\s*$/;
 
 const EXTRACT_ATTRS = new Set(["href", "src", "alt", "aria-label", "title", "placeholder"]);
 
@@ -397,9 +411,16 @@ export function extractModuleStructure(
  * construction; the validator fires when the AI passes explicit
  * `fields` that don't line up with explicit `{{…}}` placeholders.
  */
+/**
+ * @param knownDataLists names a plugin claims as an iterable list
+ *   (#447). A module iterating one declares no field for it — the data
+ *   comes from the plugin, not from the module's own content — so
+ *   demanding a declaration would make those modules unauthorable.
+ */
 export function validateTemplatizedModule(
   html: string,
   fields: readonly ModuleField[],
+  knownDataLists?: ReadonlySet<string>,
 ): { ok: true } | { ok: false; message: string } {
   const declared = new Set(fields.map((f) => f.name));
   const referenced = new Set<string>();
@@ -425,12 +446,12 @@ export function validateTemplatizedModule(
     m = ref.exec(topLevelHtml);
   }
   for (const name of referenced) {
-    if (!declared.has(name)) {
-      return {
-        ok: false,
-        message: `placeholder {{${name}}} references undeclared field "${name}"`,
-      };
-    }
+    if (declared.has(name)) continue;
+    if (knownDataLists?.has(name)) continue;
+    return {
+      ok: false,
+      message: `placeholder {{${name}}} references undeclared field "${name}"`,
+    };
   }
   for (const name of declared) {
     if (!referenced.has(name)) {
